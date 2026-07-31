@@ -37,7 +37,7 @@
     "ollama": "^0.6.3",
     "openai": "^6.46.0",
     "pdfjs-dist": "^6.1.200",
-    "react": "^19.2.0",
+    "react": "^19.2.8",
     "sharp": "^0.35.3"
   },
   "devDependencies": {
