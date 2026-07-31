@@ -1,0 +1,191 @@
+name: Post-Merge CI
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  full-test:
+    name: Full Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: npx vitest run --passWithNoTests
+      - name: Check clean worktree
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Build modified source files:"
+            git diff --name-only
+            exit 1
+          fi
+
+  binary-smoke:
+    name: Binary Smoke Test (${{ matrix.target }})
+    strategy:
+      matrix:
+        include:
+          - target: linux-x64
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: bun install react-devtools-core
+      - name: Build binary
+        run: bun build source/cli.tsx --compile --outfile /tmp/agav-test
+      - name: Smoke test binary
+        run: |
+          /tmp/agav-test --version
+          /tmp/agav-test --help | grep -q "Agav"
+          echo "Binary smoke test passed."
+
+  license-check:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: |
+          npx license-checker --production --onlyAllow 'MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;CC0-1.0;CC-BY-4.0;Unlicense;Python-2.0;BlueOak-1.0.0' \
+            --excludePrivatePackages 2>/dev/null || echo "::warning::Non-standard licenses found"
+
+  sbom:
+    name: SBOM Generation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - name: Generate SBOM
+        run: |
+          npx @cyclonedx/cyclonedx-npm --output-file sbom.json --output-format JSON 2>/dev/null || \
+            pnpm licenses list --json > sbom.json 2>/dev/null || \
+            echo '{"notice": "SBOM generation skipped"}' > sbom.json
+          echo "SBOM generated: $(wc -c < sbom.json) bytes"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+          retention-days: 90
+
+  container-scan:
+    name: Container Image Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - name: Install Trivy
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq trivy
+      - run: trivy image --severity HIGH,CRITICAL --exit-code 0 --no-progress node:22-slim || true
+
+  file-size:
+    name: File Size Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - name: Check for large files
+        run: |
+          for f in $(find source -name '*.ts' -o -name '*.tsx' | sort); do
+            lines=$(wc -l < "$f")
+            if [ "$lines" -gt 500 ]; then
+              echo "::warning file=$f::$f has $lines lines (limit: 500)"
+            fi
+          done
+
+  dependency-pinning:
+    name: Dependency Pinning Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - name: Check for unpinned dependencies
+        run: |
+          for field in dependencies devDependencies; do
+            if node -e "
+              const pkg = require('./package.json');
+              const deps = pkg['$field'] || {};
+              let found = false;
+              for (const [name, version] of Object.entries(deps)) {
+                if (/^[\^~]/.test(version) && !version.includes('workspace:')) {
+                  console.log('  ' + name + ': ' + version);
+                  found = true;
+                }
+              }
+              process.exit(found ? 1 : 0);
+            " 2>/dev/null; then
+              :
+            else
+              echo "::warning::Unpinned $field found — consider exact versions"
+            fi
+          done
+
+  commit-signing:
+    name: Commit Signing Verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+          fetch-depth: 10
+      - name: Check recent commit signatures
+        run: |
+          UNSIGNED=0
+          TOTAL=0
+          for sha in $(git log --format='%H' -10); do
+            TOTAL=$((TOTAL + 1))
+            SIG=$(git log --format='%G?' -1 "$sha" 2>/dev/null)
+            case "$SIG" in
+              G|U) ;;
+              *) UNSIGNED=$((UNSIGNED + 1)) ;;
+            esac
+          done
+          if [ "$UNSIGNED" -gt 0 ]; then
+            echo "::warning::$UNSIGNED of $TOTAL recent commits are unsigned"
+          fi

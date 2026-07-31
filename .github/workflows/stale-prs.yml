@@ -1,0 +1,36 @@
+name: Close Stale PRs
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close-stale:
+    name: Close Inactive PRs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGAV_APP_ID }}
+          private-key: ${{ secrets.AGAV_APP_PRIVATE_KEY }}
+
+      - name: Close stale PRs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          STALE_DAYS=14
+          CUTOFF=$(date -u -d "$STALE_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-${STALE_DAYS}d +%Y-%m-%dT%H:%M:%SZ)
+
+          gh pr list --repo ${{ github.repository }} --state open --json number,updatedAt,title,author --limit 50 | \
+            jq -r --arg cutoff "$CUTOFF" '.[] | select(.updatedAt < $cutoff) | "\(.number)\t\(.title)\t\(.author.login)"' | \
+            while IFS=$'\t' read -r num title author; do
+              echo "Closing stale PR #${num}: ${title} (by ${author})"
+              gh pr comment "$num" --repo ${{ github.repository }} --body "Closing this PR due to inactivity (no updates for $STALE_DAYS days). Feel free to reopen if you'd like to continue working on it."
+              gh pr close "$num" --repo ${{ github.repository }}
+            done

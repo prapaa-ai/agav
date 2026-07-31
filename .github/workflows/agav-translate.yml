@@ -1,0 +1,74 @@
+name: Agav Issue Translator
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  translate:
+    name: Translate Non-English Issues
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGAV_APP_ID }}
+          private-key: ${{ secrets.AGAV_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install Agav
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh release download --repo ${{ github.repository }} --pattern 'agav-linux-x64' --dir /tmp
+          install -m 755 /tmp/agav-linux-x64 /usr/local/bin/agav
+
+      - name: Check and translate
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # Skip if already translated
+          BODY=$(gh issue view ${{ github.event.issue.number }} --json body -q .body)
+          if echo "$BODY" | grep -qF '<!-- agav-translated -->'; then
+            echo "Already translated, skipping."
+            exit 0
+          fi
+
+          TITLE="${{ github.event.issue.title }}"
+          PROMPT="Determine if this text is in English. Title: ${TITLE}. Body: $(echo "$BODY" | head -c 2000). If the text is NOT in English, respond with a JSON object: {\"needs_translation\":true,\"translated_title\":\"English title\",\"translated_body\":\"English translation of the body\",\"language\":\"detected language\"}. If the text IS in English, respond with: {\"needs_translation\":false}. Respond with ONLY the JSON object."
+          agav -P "$PROMPT" --provider gemini --model gemini-3.5-flash-lite > /tmp/translate-raw.txt 2>/dev/null
+          grep -o '{[^}]*}' /tmp/translate-raw.txt > /tmp/translate.json || echo '{"needs_translation":false}' > /tmp/translate.json
+
+      - name: Post translation
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AGAV_NO_SANDBOX: "1"
+        run: |
+          if [ ! -f /tmp/translate.json ]; then exit 0; fi
+          NEEDS=$(jq -r '.needs_translation // false' /tmp/translate.json 2>/dev/null)
+          if [ "$NEEDS" != "true" ]; then
+            echo "Issue is in English, no translation needed."
+            exit 0
+          fi
+          LANG=$(jq -r '.language // "unknown"' /tmp/translate.json 2>/dev/null)
+          TITLE=$(jq -r '.translated_title // empty' /tmp/translate.json 2>/dev/null)
+          BODY=$(jq -r '.translated_body // empty' /tmp/translate.json 2>/dev/null)
+          if [ -n "$TITLE" ]; then
+            gh issue edit ${{ github.event.issue.number }} --title "$TITLE" || true
+          fi
+          if [ -n "$BODY" ]; then
+            COMMENT="<!-- agav-translated -->
+          **Translated from ${LANG}:**
+
+          ${BODY}"
+            gh issue comment ${{ github.event.issue.number }} --body "$COMMENT" || true
+          fi

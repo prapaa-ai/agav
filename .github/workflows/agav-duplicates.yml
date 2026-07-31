@@ -1,0 +1,77 @@
+name: Agav Duplicate Detection
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  check-duplicates:
+    name: Check for Duplicates
+    if: "!contains(github.event.issue.labels.*.name, 'duplicate')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGAV_APP_ID }}
+          private-key: ${{ secrets.AGAV_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install Agav
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh release download --repo ${{ github.repository }} --pattern 'agav-linux-x64' --dir /tmp
+          install -m 755 /tmp/agav-linux-x64 /usr/local/bin/agav
+
+      - name: Check duplicates with Agav
+        timeout-minutes: 3
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AGAV_NO_SANDBOX: "1"
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          TITLE=$(gh issue view ${{ github.event.issue.number }} --json title -q .title)
+          BODY=$(gh issue view ${{ github.event.issue.number }} --json body -q .body | head -c 500)
+          OPEN=$(gh issue list --state open --limit 30 --json number,title | jq -r '[.[] | select(.number != ${{ github.event.issue.number }})] | .[] | "#\(.number): \(.title)"' | head -30)
+          PROMPT="New issue: ${TITLE}. Body: ${BODY}. Open issues: ${OPEN}. If the new issue matches an open issue, respond ONLY with: DUPLICATE #NUMBER reason. If no match, respond ONLY with: NO_DUPLICATE"
+          RESULT=$(agav -P "$PROMPT" --provider gemini --model gemini-3.5-flash-lite)
+          echo "$RESULT" > /tmp/agav-result.txt
+          echo "Agav result: $RESULT"
+
+      - name: Apply duplicate label
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ ! -f /tmp/agav-result.txt ]; then exit 0; fi
+          RESULT=$(cat /tmp/agav-result.txt)
+          if echo "$RESULT" | grep -q "DUPLICATE #"; then
+            DUP_NUM=$(echo "$RESULT" | grep -oP 'DUPLICATE #\K[0-9]+' | head -1)
+            REASON=$(echo "$RESULT" | sed 's/DUPLICATE #[0-9]* *//')
+            if [ -n "$DUP_NUM" ]; then
+              gh issue edit ${{ github.event.issue.number }} --add-label duplicate || true
+              gh issue comment ${{ github.event.issue.number }} --body "Possible duplicate of #${DUP_NUM}. ${REASON}" || true
+            fi
+          fi
+
+      - name: Apply duplicate label
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ ! -f duplicate.json ]; then exit 0; fi
+          DUP=$(jq -r '.duplicate_of // empty' duplicate.json 2>/dev/null)
+          COMMENT=$(jq -r '.comment // empty' duplicate.json 2>/dev/null)
+          if [ -n "$DUP" ] && [ "$DUP" != "null" ]; then
+            gh issue edit ${{ github.event.issue.number }} --add-label duplicate || true
+            gh issue comment ${{ github.event.issue.number }} --body "Possible duplicate of #${DUP}. ${COMMENT}" || true
+          fi

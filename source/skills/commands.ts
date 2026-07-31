@@ -1,0 +1,140 @@
+import type { SlashCommand, CommandResult, CommandContext } from "../commands/types.js";
+import type { SkillDefinition } from "./types.js";
+import { loadSkills, getSkill } from "./loader.js";
+import { executeSkill } from "./executor.js";
+import { installFromUrl, installFromPath, removeSkill, fetchMarketplaceIndex } from "./marketplace.js";
+import { getSkillTraces } from "./improvement.js";
+
+export function createSkillSlashCommand(skill: SkillDefinition): SlashCommand {
+  return {
+    name: skill.slug,
+    description: skill.description,
+    async execute(args: string, context: CommandContext): Promise<CommandResult> {
+      if (skill.frontmatter.invocation === "user") {
+        if (!context.provider) {
+          return { type: "message", text: "No provider configured." };
+        }
+        context.setRunningSkill(skill.name);
+        try {
+          const result = await executeSkill(skill, args.trim(), {
+            provider: context.provider,
+            parentRegistry: context.toolRegistry,
+            model: context.config.model,
+            systemPrompt: context.config.systemPrompt ?? "",
+            permissionMode: context.config.permissionMode,
+            effort: context.config.effort,
+            maxIterations: context.config.maxIterations,
+          });
+          return { type: "message", text: result.output, _tokenUsage: result.tokenUsage, _isSkill: true } as any;
+        } catch (err) {
+          return {
+            type: "message",
+            text: `Skill "${skill.name}" failed: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      }
+
+      const prompt = args.trim()
+        ? `[skill:${skill.name}] ${args.trim()}`
+        : `[skill:${skill.name}]`;
+      return { type: "submit", text: prompt };
+    },
+  };
+}
+
+export const skillsCommand: SlashCommand = {
+  name: "skills",
+  description: "Manage skills",
+  usage: "Usage: /skills [action]\n\n  /skills              List installed skills\n  /skills list         Same as above\n  /skills add <path>   Install a skill from a local SKILL.md file\n  /skills remove <name> Uninstall a skill\n  /skills info <name>  Show details about a skill\n  /skills marketplace  Browse available skills\n\nSkills are SKILL.md files with YAML frontmatter. The agent can\nactivate them automatically or you can invoke them as slash commands.",
+  async execute(args: string, _context: CommandContext): Promise<CommandResult> {
+    const parts = args.trim().split(/\s+/);
+    const action = parts[0]?.toLowerCase() || "list";
+
+    if (action === "list" || !args.trim()) {
+      const skills = await loadSkills();
+      if (skills.length === 0) {
+        return { type: "message", text: "No skills installed. Use /skills add <url|path> or /skills marketplace." };
+      }
+      const lines = skills.map((s) => {
+        const inv = s.frontmatter.invocation ?? "both";
+        const label = inv === "both" ? "auto+manual" : inv === "agav" ? "auto" : "manual";
+        const origin = s.origin === "bundled" ? " (bundled)" : s.origin === "project" ? " (project)" : "";
+        return `  /${s.slug.padEnd(18)} ${s.description.slice(0, 50).padEnd(50)} [${label}]${origin}`;
+      });
+      return { type: "message", text: "Installed skills:\n" + lines.join("\n") };
+    }
+
+    if (action === "add") {
+      const source = parts.slice(1).join(" ").trim();
+      if (!source) {
+        return { type: "message", text: "Usage: /skills add <url|path>" };
+      }
+      const result = source.startsWith("http")
+        ? await installFromUrl(source)
+        : await installFromPath(source);
+
+      if ("error" in result) {
+        return { type: "message", text: result.error };
+      }
+      const warns = result.warnings.length > 0 ? `\nWarnings:\n${result.warnings.join("\n")}` : "";
+      return { type: "message", text: `Installed skill: ${result.name}${warns}\nRestart to activate.` };
+    }
+
+    if (action === "remove" || action === "rm") {
+      const name = parts.slice(1).join(" ").trim();
+      if (!name) return { type: "message", text: "Usage: /skills remove <name>" };
+      const removed = await removeSkill(name);
+      return { type: "message", text: removed ? `Removed skill: ${name}. Restart to take effect.` : `Skill "${name}" not found.` };
+    }
+
+    if (action === "info") {
+      const name = parts.slice(1).join(" ").trim();
+      if (!name) return { type: "message", text: "Usage: /skills info <name>" };
+      const skill = getSkill(name);
+      if (!skill) return { type: "message", text: `Skill "${name}" not found.` };
+      const traces = await getSkillTraces(skill.name);
+      const totalTokens = traces.reduce((sum, t) => sum + t.tokensUsed, 0);
+      const avgTokens = traces.length > 0 ? Math.round(totalTokens / traces.length) : 0;
+      const successRate = traces.length > 0
+        ? Math.round(traces.filter((t) => t.success !== false).length / traces.length * 100)
+        : 0;
+      const lines = [
+        `Name: ${skill.name}`,
+        `Description: ${skill.description}`,
+        `Version: ${skill.frontmatter.version ?? "unversioned"}`,
+        `Invocation: ${skill.frontmatter.invocation ?? "both"}`,
+        `Origin: ${skill.origin}`,
+        `Tags: ${skill.frontmatter.tags?.join(", ") ?? "none"}`,
+        `Allowed tools: ${skill.frontmatter["allowed-tools"]?.join(", ") ?? "all"}`,
+        `Disallowed tools: ${skill.frontmatter["disallowed-tools"]?.join(", ") ?? "none"}`,
+        `Usage: ${traces.length} runs · ${avgTokens} avg tokens · ${successRate}% success`,
+        `Path: ${skill.filePath}`,
+      ];
+      return { type: "message", text: lines.join("\n") };
+    }
+
+    if (action === "marketplace") {
+      const num = parts[1] ? parseInt(parts[1], 10) : NaN;
+      const index = await fetchMarketplaceIndex();
+
+      if (!isNaN(num) && num >= 1 && num <= index.length) {
+        const pick = index[num - 1]!;
+        if (!pick.url) return { type: "message", text: `No install URL for "${pick.name}".` };
+        const result = await installFromUrl(pick.url);
+        if ("error" in result) return { type: "message", text: result.error };
+        return { type: "message", text: `Installed skill: ${result.name}. Restart to activate.` };
+      }
+
+      const lines = index.map((s, i) =>
+        `  ${String(i + 1).padStart(2)}. ${s.name}`,
+      );
+      return {
+        type: "message",
+        text: "Skill Marketplace (anthropics/skills):\n" + lines.join("\n") +
+          "\n\nInstall: /skills marketplace <number>",
+      };
+    }
+
+    return { type: "message", text: "Unknown action. Usage: /skills [list|add|remove|info|marketplace]" };
+  },
+};

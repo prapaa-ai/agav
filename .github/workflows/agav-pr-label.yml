@@ -1,0 +1,63 @@
+name: Agav PR Labeler
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    name: Auto-Label PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGAV_APP_ID }}
+          private-key: ${{ secrets.AGAV_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Install Agav
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh release download --repo ${{ github.repository }} --pattern 'agav-linux-x64' --dir /tmp
+          install -m 755 /tmp/agav-linux-x64 /usr/local/bin/agav
+
+      - name: Get PR info
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} --name-only > /tmp/pr-stat.txt
+
+      - name: Label with Agav
+        timeout-minutes: 3
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AGAV_NO_SANDBOX: "1"
+        run: |
+          FILES=$(cat /tmp/pr-stat.txt)
+          PROMPT="PR title: ${{ github.event.pull_request.title }}. Changed files: ${FILES}. Pick 1-2 labels from: bug, feature, refactor, docs, ci, tests, dependencies, provider, ui. Respond with ONLY a JSON object: {\"labels\":[\"label1\"]}. No explanation."
+          agav -P "$PROMPT" --provider gemini --model gemini-3.5-flash-lite > labels-raw.txt
+          grep -o '{[^}]*}' labels-raw.txt > labels.json || echo '{"labels":[]}' > labels.json
+
+      - name: Apply labels
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ ! -f labels.json ]; then exit 0; fi
+          LABELS=$(jq -r '.labels[]' labels.json 2>/dev/null | head -2)
+          for label in $LABELS; do
+            gh pr edit ${{ github.event.pull_request.number }} --add-label "$label" || true
+          done

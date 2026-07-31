@@ -1,0 +1,353 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write
+
+jobs:
+  # --- Change detection ---
+  changed:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      source: ${{ steps.diff.outputs.source }}
+      workflows: ${{ steps.diff.outputs.workflows }}
+      docs: ${{ steps.diff.outputs.docs }}
+      deps: ${{ steps.diff.outputs.deps }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+          fetch-depth: 0
+      - name: Compute changed paths
+        id: diff
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          FILES=$(git diff --name-only "$BASE" "$HEAD")
+          echo "source=false" >> "$GITHUB_OUTPUT"
+          echo "workflows=false" >> "$GITHUB_OUTPUT"
+          echo "docs=false" >> "$GITHUB_OUTPUT"
+          echo "deps=false" >> "$GITHUB_OUTPUT"
+          if echo "$FILES" | grep -qE '^source/'; then
+            echo "source=true" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$FILES" | grep -qE '^\.github/'; then
+            echo "workflows=true" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$FILES" | grep -qE '(README|\.md$|docs/)'; then
+            echo "docs=true" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$FILES" | grep -qE '(package\.json|pnpm-lock\.yaml)'; then
+            echo "deps=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # --- Core checks (only when source or deps change) ---
+  typecheck:
+    name: Type Check
+    needs: changed
+    if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true' || needs.changed.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: npx tsc --noEmit
+      - name: Check clean worktree
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Build modified source files:"
+            git diff --name-only
+            exit 1
+          fi
+
+  build:
+    name: Build Check
+    needs: changed
+    if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: npx tsx source/cli.tsx -- --version
+      - name: Check clean worktree
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Build modified source files:"
+            git diff --name-only
+            exit 1
+          fi
+
+  test:
+    name: Tests
+    needs: changed
+    if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: npx vitest run --passWithNoTests
+
+  # --- Always-run checks ---
+  pr-title:
+    name: PR Title Lint
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            refactor
+            docs
+            chore
+            test
+            perf
+            ci
+          requireScope: false
+
+  secret-scan:
+    name: Secret Leak Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+          fetch-depth: 0
+      - name: Scan for leaked secrets
+        run: |
+          echo "Scanning for hardcoded secrets..."
+          FAIL=0
+          if grep -rn --include='*.ts' --include='*.tsx' --include='*.json' --include='*.env' \
+            -E '(sk-ant-|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY)' \
+            source/ .github/ 2>/dev/null | grep -v 'node_modules' | grep -v '.test.' | grep -v 'sk-ant-\.\.\.' | grep -v 'sk-\.\.\.'; then
+            echo "::error::Potential secrets found in source files"
+            FAIL=1
+          fi
+          if find . -name '.env' -not -path '*/node_modules/*' -not -path '*/.git/*' | grep -q .; then
+            echo "::error::Found .env file(s) — these should be gitignored"
+            FAIL=1
+          fi
+          if [ "$FAIL" -eq 1 ]; then exit 1; fi
+          echo "No secrets detected."
+
+  blob-size:
+    name: Blob Size Policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+          fetch-depth: 0
+      - name: Check for oversized files
+        run: |
+          MAX_BYTES=512000
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          FAIL=0
+          for file in $(git diff --name-only --diff-filter=ACM "$BASE" "$HEAD"); do
+            if [ -f "$file" ]; then
+              size=$(wc -c < "$file")
+              if [ "$size" -gt "$MAX_BYTES" ]; then
+                echo "::error file=$file::$file is ${size} bytes (max: ${MAX_BYTES})"
+                FAIL=1
+              fi
+            fi
+          done
+          if [ "$FAIL" -eq 1 ]; then exit 1; fi
+          echo "All files within size limits."
+
+  security-patterns:
+    name: Dangerous Pattern Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - name: Scan for dangerous code patterns
+        run: |
+          echo "Scanning for dangerous patterns in source..."
+          FAIL=0
+          if grep -rn --include='*.ts' --include='*.tsx' \
+            -E '\beval\s*\(|new\s+Function\s*\(' source/ 2>/dev/null | grep -v 'node_modules' | grep -v '\.test\.'; then
+            echo "::error::eval() or new Function() found — code injection risk"
+            FAIL=1
+          fi
+          if grep -rn --include='*.ts' --include='*.tsx' \
+            -E 'exec(File|Sync)?\s*\(\s*`' source/ 2>/dev/null | grep -v 'node_modules'; then
+            echo "::error::Shell exec with template literal — command injection risk"
+            FAIL=1
+          fi
+          if grep -rn --include='*.ts' --include='*.tsx' \
+            -E 'rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED.*0' source/ 2>/dev/null \
+            | grep -v 'cli.tsx'; then
+            echo "::error::TLS verification disabled — MITM risk"
+            FAIL=1
+          fi
+          if grep -rn --include='*.ts' --include='*.tsx' \
+            -E 'innerHTML|dangerouslySetInnerHTML' source/ 2>/dev/null; then
+            echo "::error::innerHTML usage found — XSS risk"
+            FAIL=1
+          fi
+          if [ "$FAIL" -eq 1 ]; then exit 1; fi
+          echo "No dangerous patterns detected."
+
+  dependency-audit:
+    name: Dependency Vulnerability Audit
+    needs: changed
+    if: needs.changed.outputs.deps == 'true' || needs.changed.outputs.source == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod || echo "::warning::Dependency vulnerabilities found"
+
+  lockfile-integrity:
+    name: Lockfile Integrity
+    needs: changed
+    if: needs.changed.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - name: Verify lockfile exists
+        run: |
+          if [ ! -f pnpm-lock.yaml ]; then
+            echo "::error::pnpm-lock.yaml missing"
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+
+  semgrep:
+    name: SAST (Semgrep)
+    needs: changed
+    if: needs.changed.outputs.source == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - run: |
+          semgrep scan \
+            --config "p/javascript" \
+            --config "p/typescript" \
+            --config "p/owasp-top-ten" \
+            --config "p/nodejs" \
+            --config "p/command-injection" \
+            --config "p/xss" \
+            --error \
+            source/
+
+  sensitive-files:
+    name: Sensitive File Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - name: Check sensitive files are not tracked
+        run: |
+          FAIL=0
+          PATTERNS=('.env' '.env.local' '.env.production' '*.pem' '*.key' '*.p12' '*.pfx'
+                    'credentials.json' 'service-account.json' 'id_rsa' 'id_ed25519')
+          for pattern in "${PATTERNS[@]}"; do
+            matches=$(git ls-files "$pattern" 2>/dev/null)
+            if [ -n "$matches" ]; then
+              echo "::error::Sensitive file tracked: $matches"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -eq 1 ]; then exit 1; fi
+          echo "No sensitive files tracked."
+
+  # --- Terminal gate ---
+  required:
+    name: All Checks
+    if: always()
+    needs:
+      - typecheck
+      - build
+      - test
+      - pr-title
+      - secret-scan
+      - blob-size
+      - security-patterns
+      - dependency-audit
+      - lockfile-integrity
+      - semgrep
+      - sensitive-files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate results
+        run: |
+          echo "Check results:"
+          FAIL=0
+          for result in \
+            "${{ needs.typecheck.result }}" \
+            "${{ needs.build.result }}" \
+            "${{ needs.test.result }}" \
+            "${{ needs.pr-title.result }}" \
+            "${{ needs.secret-scan.result }}" \
+            "${{ needs.blob-size.result }}" \
+            "${{ needs.security-patterns.result }}" \
+            "${{ needs.dependency-audit.result }}" \
+            "${{ needs.lockfile-integrity.result }}" \
+            "${{ needs.semgrep.result }}" \
+            "${{ needs.sensitive-files.result }}"; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::Check failed: $result"; FAIL=1 ;;
+            esac
+          done
+          if [ "$FAIL" -eq 1 ]; then exit 1; fi
+          echo "All checks passed."

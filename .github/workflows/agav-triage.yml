@@ -1,0 +1,61 @@
+name: Agav Issue Triage
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  triage:
+    name: Auto-Triage Issue
+    if: "!contains(github.event.issue.labels.*.name, 'triaged')"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGAV_APP_ID }}
+          private-key: ${{ secrets.AGAV_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install Agav
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh release download --repo ${{ github.repository }} --pattern 'agav-linux-x64' --dir /tmp
+          install -m 755 /tmp/agav-linux-x64 /usr/local/bin/agav
+
+      - name: Triage with Agav
+        timeout-minutes: 3
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AGAV_NO_SANDBOX: "1"
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          TITLE=$(gh issue view ${{ github.event.issue.number }} --json title -q .title)
+          BODY=$(gh issue view ${{ github.event.issue.number }} --json body -q .body | head -c 2000)
+          PROMPT="Issue title: ${TITLE}. Body: ${BODY}. Pick ONE label from: bug, feature, question, documentation, good-first-issue. If the issue is unclear, also write a short comment asking for details. Respond with ONLY a JSON object: {\"label\":\"chosen\",\"comment\":\"text or empty\"}. No explanation."
+          agav -P "$PROMPT" --provider gemini --model gemini-3.5-flash-lite > triage-raw.txt
+          grep -o '{[^}]*}' triage-raw.txt > triage.json || echo '{"label":"","comment":""}' > triage.json
+
+      - name: Apply triage
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ ! -f triage.json ]; then exit 0; fi
+          LABEL=$(jq -r '.label // empty' triage.json 2>/dev/null)
+          COMMENT=$(jq -r '.comment // empty' triage.json 2>/dev/null)
+          if [ -n "$LABEL" ]; then
+            gh issue edit ${{ github.event.issue.number }} --add-label "$LABEL" || true
+          fi
+          if [ -n "$COMMENT" ]; then
+            gh issue comment ${{ github.event.issue.number }} --body "$COMMENT" || true
+          fi

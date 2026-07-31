@@ -1,0 +1,177 @@
+import { Ollama } from "ollama";
+import type { Message as OllamaMessage, Tool as OllamaTool } from "ollama";
+import type {
+  LLMProvider,
+  StreamParams,
+  StreamEvent,
+  Message,
+  ToolSchema,
+} from "./types.js";
+import { applyOllamaEffortPrompt } from "./effort.js";
+
+export class OllamaProvider implements LLMProvider {
+  readonly name = "ollama";
+  private client: Ollama;
+
+  constructor(host: string, apiKey?: string) {
+    this.client = new Ollama({
+      host,
+      ...(apiKey
+        ? { headers: { Authorization: `Bearer ${apiKey}` } }
+        : {}),
+    });
+  }
+
+  // Adapt Ollama's chat stream to the shared event format while smoothing over model-specific tool-call quirks.
+  async *stream(params: StreamParams): AsyncIterable<StreamEvent> {
+    const messages = this.toMessages(
+      params.messages,
+      applyOllamaEffortPrompt(params.systemPrompt, params.effort ?? "medium"),
+    );
+    const tools = params.tools?.length ? params.tools.map(this.toTool) : undefined;
+
+    try {
+      const response = await this.client.chat({
+        model: params.model,
+        messages,
+        tools,
+        stream: true,
+        options: { num_predict: params.maxTokens ?? 16384 },
+      });
+
+      yield { type: "message_start" };
+
+      // Tracks IDs already emitted so tool_calls repeated across chunks don't double-fire.
+      const emittedToolIds = new Set<string>();
+
+      for await (const part of response) {
+        const msg = part.message;
+        if (!msg) continue;
+
+        if (msg.thinking) {
+          yield { type: "thinking_delta", text: msg.thinking };
+        }
+
+        if (msg.content) {
+          yield { type: "text_delta", text: msg.content };
+        }
+
+        // Tool calls arrive in non-done chunks — do not gate on part.done.
+        if (msg.tool_calls?.length) {
+          for (const tc of msg.tool_calls) {
+            const id: string = (tc as any).id ?? `call_${tc.function.name}_${Date.now()}`;
+            if (emittedToolIds.has(id)) continue;
+            emittedToolIds.add(id);
+
+            // Some models return arguments as a JSON string; normalise either way.
+            const argsJson =
+              typeof tc.function.arguments === "string"
+                ? tc.function.arguments
+                : JSON.stringify(tc.function.arguments);
+
+            yield { type: "tool_call_start", toolCallId: id, toolName: tc.function.name };
+            yield { type: "tool_call_delta", toolCallId: id, argsJson };
+            yield { type: "tool_call_end", toolCallId: id };
+          }
+        }
+
+        if (part.done) {
+          yield {
+            type: "usage",
+            inputTokens: part.prompt_eval_count ?? 0,
+            outputTokens: part.eval_count ?? 0,
+          };
+
+          yield {
+            type: "message_end",
+            stopReason: part.done_reason ?? "stop",
+          };
+        }
+      }
+    }
+    catch (e: any) {
+      console.error("Error while calling ollama api", e);
+    }
+  }
+
+  // Rebuild tool-result messages with tool_name metadata because Ollama links results by name, not call ID.
+  private toMessages(messages: Message[], systemPrompt?: string): OllamaMessage[] {
+    const result: OllamaMessage[] = [];
+    // Built incrementally as we encounter assistant tool_use blocks so that
+    // subsequent tool-result messages can resolve their tool_name.
+    const idToName = new Map<string, string>();
+
+    if (systemPrompt) {
+      result.push({ role: "system", content: systemPrompt });
+    }
+
+    for (const msg of messages) {
+      if (msg.role === "user") {
+        const toolResults = msg.content.filter((b) => b.type === "tool_result");
+        if (toolResults.length > 0) {
+          const previewImages: string[] = [];
+          for (const block of toolResults) {
+            const toolName = block.toolCallId ? idToName.get(block.toolCallId) : undefined;
+            result.push({
+              role: "tool",
+              content: block.toolResult ?? "",
+              ...(toolName ? { tool_name: toolName } : {}),
+            });
+            previewImages.push(...(block.toolResultContent ?? [])
+              .filter((item) => item.type === "image" && item.imageData)
+              .map((item) => item.imageData!));
+          }
+          if (previewImages.length > 0) {
+            result.push({ role: "user", content: "Visual previews returned by the preceding tool results.", images: previewImages });
+          }
+        } else {
+          const text = msg.content
+            .filter((b) => b.type === "text")
+            .map((b) => b.text)
+            .join("\n");
+          const images = msg.content.filter((b) => b.type === "image" && b.imageData).map((b) => b.imageData!);
+          result.push({ role: "user", content: text, ...(images.length > 0 ? { images } : {}) });
+        }
+      } else if (msg.role === "assistant") {
+        const text = msg.content
+          .filter((b) => b.type === "text")
+          .map((b) => b.text)
+          .join("");
+
+        const toolCalls = msg.content
+          .filter((b) => b.type === "tool_use")
+          .map((b) => {
+            if (b.toolCallId && b.toolName) {
+              idToName.set(b.toolCallId, b.toolName);
+            }
+            return {
+              function: {
+                name: b.toolName!,
+                // Ollama expects arguments as an object, not a JSON string
+                arguments: b.toolInput ?? {},
+              },
+            };
+          });
+
+        result.push({
+          role: "assistant",
+          content: text,
+          ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+        });
+      }
+    }
+
+    return result;
+  }
+
+  private toTool(schema: ToolSchema): OllamaTool {
+    return {
+      type: "function",
+      function: {
+        name: schema.name,
+        description: schema.description,
+        parameters: schema.inputSchema as OllamaTool["function"]["parameters"],
+      },
+    };
+  }
+}

@@ -1,0 +1,68 @@
+# ==========================================================
+# Default owner
+# All files require maintainer review
+# ==========================================================
+
+* @prapaa-ai/maintainers
+
+
+# ==========================================================
+# Repository governance
+# ==========================================================
+
+/README.md @prapaa-ai/maintainers
+/CONTRIBUTING.md @prapaa-ai/maintainers
+/CODE_OF_CONDUCT.md @prapaa-ai/maintainers
+/SECURITY.md @prapaa-ai/security
+/LICENSE @prapaa-ai/maintainers
+
+
+# ==========================================================
+# GitHub configuration and automation
+# ==========================================================
+
+/.github/ @prapaa-ai/devops
+/.github/workflows/ @prapaa-ai/devops
+/.github/CODEOWNERS @prapaa-ai/maintainers
+
+
+# ==========================================================
+# CI/CD and scripts
+# ==========================================================
+
+/scripts/ @prapaa-ai/devops
+
+
+# ==========================================================
+# Application source
+# ==========================================================
+
+/source/ @prapaa-ai/maintainers
+
+
+# ==========================================================
+# High-risk application areas
+# Require specialist review
+# ==========================================================
+
+/source/providers/ @prapaa-ai/maintainers
+/source/mcp/ @prapaa-ai/maintainers
+/source/plugins/ @prapaa-ai/maintainers
+/source/security/ @prapaa-ai/security
+
+
+# ==========================================================
+# Package management
+# ==========================================================
+
+/package.json @prapaa-ai/release
+/pnpm-lock.yaml @prapaa-ai/release
+/pnpm-workspace.yaml @prapaa-ai/release
+
+
+# ==========================================================
+# Release and publishing
+# ==========================================================
+
+/CHANGELOG.md @prapaa-ai/release
+/.release/ @prapaa-ai/release

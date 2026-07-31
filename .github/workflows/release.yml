@@ -1,0 +1,199 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check-version:
+    name: Check Version Change
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.version.outputs.changed }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+          fetch-depth: 2
+      - name: Detect version bump
+        id: version
+        run: |
+          CURRENT=$(node -p "require('./package.json').version")
+          PREV=$(git show HEAD~1:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).version" 2>/dev/null || echo "")
+          if [ "$CURRENT" != "$PREV" ] && [ -n "$PREV" ]; then
+            # Validate version format
+            if ! echo "$CURRENT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+(\.[0-9]+)?)?$'; then
+              echo "::error::Invalid version format: $CURRENT. Expected: x.y.z or x.y.z-beta.N"
+              exit 1
+            fi
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
+            echo "Version changed: $PREV → $CURRENT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No version change"
+          fi
+
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    strategy:
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-latest
+          - target: darwin-x64
+            os: macos-latest
+          - target: linux-x64
+            os: ubuntu-latest
+          - target: linux-arm64
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: bun install react-devtools-core
+      - name: Build binary
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.target }}" = "$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')" ]; then
+            bun build source/cli.tsx --compile --outfile dist/agav-${{ matrix.target }}
+          else
+            bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}
+          fi
+      - name: Sign binary (macOS)
+        if: startsWith(matrix.target, 'darwin')
+        run: |
+          codesign --sign - --force --timestamp dist/agav-${{ matrix.target }}
+          echo "macOS ad-hoc signed."
+
+      - name: Sign binary (Linux - cosign)
+        if: startsWith(matrix.target, 'linux')
+        continue-on-error: true
+        run: |
+          if command -v cosign >/dev/null 2>&1; then
+            cosign sign-blob --yes --output-signature dist/agav-${{ matrix.target }}.sig dist/agav-${{ matrix.target }}
+            echo "Linux binary signed with cosign."
+          else
+            echo "cosign not available, skipping signing."
+          fi
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum agav-${{ matrix.target }} > agav-${{ matrix.target }}.sha256
+          cat agav-${{ matrix.target }}.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agav-${{ matrix.target }}
+          path: |
+            dist/agav-${{ matrix.target }}
+            dist/agav-${{ matrix.target }}.sha256
+            dist/agav-${{ matrix.target }}.sig
+
+  release:
+    name: Create Release
+    needs: [check-version, build-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for dir in artifacts/agav-*; do
+            target=$(basename "$dir")
+            # Copy binary
+            if [ -f "$dir/$target" ]; then
+              cp "$dir/$target" "release/$target"
+              chmod +x "release/$target"
+            fi
+            # Copy checksums and signatures
+            for ext in sha256 sig; do
+              if [ -f "$dir/${target}.${ext}" ]; then
+                cp "$dir/${target}.${ext}" "release/${target}.${ext}"
+              fi
+            done
+          done
+          # Generate combined SHA256SUMS file
+          cd release
+          sha256sum agav-* 2>/dev/null | grep -v '\.sha256$\|\.sigstore' > SHA256SUMS || true
+          cd ..
+          ls -lh release/
+      - name: Generate release notes
+        id: notes
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)
+          NOTES=$(git log "$PREV_TAG"..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          echo "notes<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$NOTES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.check-version.outputs.version }}
+          name: v${{ needs.check-version.outputs.version }}
+          body: |
+            ## Changes
+
+            ${{ steps.notes.outputs.notes }}
+
+            ## Installation
+
+            ### macOS
+
+            ```bash
+            # Apple Silicon (M1/M2/M3/M4)
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-darwin-arm64 -o agav
+            chmod +x agav && sudo mv agav /usr/local/bin/
+
+            # Intel
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-darwin-x64 -o agav
+            chmod +x agav && sudo mv agav /usr/local/bin/
+            ```
+
+            ### Linux
+
+            ```bash
+            # x64
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-linux-x64 -o agav
+            chmod +x agav && sudo mv agav /usr/local/bin/
+
+            # ARM64
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-linux-arm64 -o agav
+            chmod +x agav && sudo mv agav /usr/local/bin/
+            ```
+
+            ### Windows
+
+            ```powershell
+            # Download and install
+            Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-windows-x64.exe" -OutFile "$env:LOCALAPPDATA\agav.exe"
+
+            # Add to PATH (run once)
+            $path = [Environment]::GetEnvironmentVariable("Path", "User")
+            if ($path -notlike "*$env:LOCALAPPDATA*") {
+              [Environment]::SetEnvironmentVariable("Path", "$env:LOCALAPPDATA;$path", "User")
+            }
+            ```
+          generate_release_notes: true
+          files: release/*

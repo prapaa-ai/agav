@@ -1,0 +1,43 @@
+# Build output
+build/
+dist/
+coverage/
+benchmarks/
+
+# Dependencies
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Runtime
+*.log
+.agav/
+
+# Secrets
+credentials.json
+service-account.json
+*.p12
+*.pfx
+.npmrc
+
+# Lock files (commit pnpm-lock.yaml, ignore others)
+package-lock.json
+yarn.lock
+bun.lock
+bun.lockb

@@ -1,0 +1,54 @@
+{
+  "name": "agav-cli",
+  "version": "0.1.0",
+  "description": "A terminal-native environment for running local AI systems",
+  "type": "module",
+  "bin": {
+    "agav": "./bin/agav.mjs"
+  },
+  "files": [
+    "build"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('fs').copyFileSync('source/cli.tsx','build/cli.js')\"",
+    "dev": "tsx --watch source/cli.tsx",
+    "start": "tsx source/cli.tsx",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run source",
+    "test:coverage": "vitest run --coverage",
+    "build:binary": "bun build source/cli.tsx --compile --outfile dist/agav",
+    "build:binary:all": "bash scripts/build-binary.sh all",
+    "prepare": "husky"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
+    "@napi-rs/canvas": "^1.0.2",
+    "ajv": "^8.20.0",
+    "chalk": "^5.4.0",
+    "ink": "^7.1.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "marked": "^15.0.0",
+    "marked-terminal": "^7.3.0",
+    "officeparser": "^7.3.0",
+    "ollama": "^0.6.3",
+    "openai": "^6.46.0",
+    "pdfjs-dist": "^6.1.200",
+    "react": "^19.2.0",
+    "sharp": "^0.35.3"
+  },
+  "devDependencies": {
+    "@sindresorhus/tsconfig": "^8.1.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0",
+    "react-devtools-core": "^7.0.1",
+    "vitest": "^2.1.8",
+    "@vitest/coverage-v8": "^2.1.8",
+    "husky": "^9.0.0"
+  }
+}

@@ -1,0 +1,74 @@
+name: Agav Docs Update
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-docs:
+    name: Update Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Generate App Token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.AGAV_APP_ID }}
+          private-key: ${{ secrets.AGAV_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 50
+
+      - name: Check for recent commits
+        id: check
+        run: |
+          RECENT=$(git log --since="6 hours ago" --oneline | head -20)
+          if [ -z "$RECENT" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "No recent commits — skipping docs update"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Recent commits found:"
+            echo "$RECENT"
+          fi
+
+      - name: Install Agav
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh release download --repo ${{ github.repository }} --pattern 'agav-linux-x64' --dir /tmp
+          install -m 755 /tmp/agav-linux-x64 /usr/local/bin/agav
+
+      - name: Update docs with Agav
+        if: steps.check.outputs.skip != 'true'
+        timeout-minutes: 5
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AGAV_NO_SANDBOX: "1"
+          AGAV_PERMISSION: '{"*":"deny","read_file":"allow","write_file":"allow","edit_file":"allow"}'
+        run: |
+          RECENT=$(git log --since='6 hours ago' --oneline --stat | head -c 3000)
+          PROMPT="Recent commits: ${RECENT}. If any commits added new features, changed CLI flags, or added providers, update README.md. Read it with read_file, then edit with edit_file. If no changes needed, do nothing."
+          agav run --provider gemini --model gemini-3.5-flash-lite --max-turns 10 "$PROMPT"
+
+      - name: Commit and push if changed
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name "agav-bot[bot]"
+          git config user.email "agav-bot[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No docs changes"
+          else
+            git add README.md
+            git commit -m "docs: auto-update documentation [skip ci]"
+            git push
+          fi
