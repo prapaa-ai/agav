@@ -6,6 +6,7 @@ export interface SubagentProgress {
   task: string;
   status: "running" | "done" | "error";
   toolCalls: ToolCallInfo[];
+  thinkingText: string;
   streamingText: string;
   result?: string;
   error?: string;

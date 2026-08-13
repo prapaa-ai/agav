@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import Spinner from "ink-spinner";
 import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
+import type { DiffLine } from "../utils/diff.js";
 
 /** Describes a tool invocation shown in the UI. */
 export interface ToolCallInfo {
@@ -11,6 +12,7 @@ export interface ToolCallInfo {
   argsJson?: string;
   status: "running" | "done" | "error";
   result?: string;
+  diffLines?: DiffLine[];
 }
 
 interface Props {

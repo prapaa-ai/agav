@@ -111,6 +111,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
         task,
         status: "running",
         toolCalls: [],
+        thinkingText: "",
         streamingText: "",
         startedAt: Date.now(),
         totalToolCalls: 0,
@@ -164,12 +165,36 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
           maxIterations: config.maxIterations,
         });
 
-        let currentToolCalls: ToolCallInfo[] = [];
+        const MAX_RECENT_ACTIONS = 10;
+
+        let startNewReasoningSummary = true;
+
+        const updateToolCall = (
+          toolCallId: string | undefined,
+          toolName: string,
+          update: (toolCall: ToolCallInfo) => ToolCallInfo,
+        ) => {
+          const matchingIndex = toolCallId
+            ? progress.toolCalls.findIndex((toolCall) => toolCall.toolCallId === toolCallId)
+            : progress.toolCalls.map((toolCall, index) => ({ toolCall, index })).reverse()
+              .find(({ toolCall }) => toolCall.toolName === toolName && toolCall.status === "running")?.index ?? -1;
+
+          if (matchingIndex < 0) return;
+          progress.toolCalls = progress.toolCalls.map((toolCall, index) =>
+            index === matchingIndex ? update(toolCall) : toolCall,
+          );
+        };
 
         for await (const event of loop) {
           if (signal?.aborted) break;
 
           switch (event.type) {
+            case "thinking":
+              progress.thinkingText = (startNewReasoningSummary ? event.text : progress.thinkingText + event.text).slice(-2_000);
+              startNewReasoningSummary = false;
+              broadcast();
+              break;
+
             case "streaming_text":
               progress.streamingText += event.text;
               broadcast();
@@ -177,21 +202,32 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
 
             case "tool_call_start":
               progress.totalToolCalls++;
-              currentToolCalls = [
-                ...currentToolCalls,
-                { toolName: event.toolName, input: {}, status: "running" },
-              ];
-              progress.toolCalls = currentToolCalls;
+              progress.toolCalls = [
+                ...progress.toolCalls,
+                { toolName: event.toolName, toolCallId: event.toolCallId, input: {}, argsJson: "", status: "running" as const },
+              ].slice(-MAX_RECENT_ACTIONS);
+              broadcast();
+              break;
+
+            case "tool_call_input_delta":
+              updateToolCall(event.toolCallId, "", (toolCall) => {
+                const argsJson = (toolCall.argsJson ?? "") + event.argsJson;
+                try {
+                  return { ...toolCall, argsJson, input: JSON.parse(argsJson) };
+                } catch {
+                  return { ...toolCall, argsJson };
+                }
+              });
               broadcast();
               break;
 
             case "tool_result": {
-              currentToolCalls = currentToolCalls.map((tc) =>
-                tc.toolName === event.toolName && tc.status === "running"
-                  ? { ...tc, status: event.isError ? "error" : "done" }
-                  : tc,
-              );
-              progress.toolCalls = currentToolCalls;
+              updateToolCall(event.toolCallId, event.toolName, (toolCall) => ({
+                ...toolCall,
+                status: event.isError ? "error" : "done",
+                result: event.output,
+                diffLines: event.diffLines,
+              }));
               broadcast();
               break;
             }
@@ -199,8 +235,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
             case "assistant_message_complete":
               finalText = event.text;
               progress.streamingText = "";
-              currentToolCalls = [];
-              progress.toolCalls = currentToolCalls;
+              startNewReasoningSummary = true;
               broadcast();
               break;
 

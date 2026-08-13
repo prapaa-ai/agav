@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { DisplayMessage } from "../components/message-list.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
-import type { LLMProvider, ContentBlock } from "../providers/types.js";
+import type { LLMProvider, ContentBlock, InvocationReason } from "../providers/types.js";
 import type { AgavConfig } from "../config/config.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
@@ -73,7 +73,7 @@ interface UseAgentReturn {
   mcpPromptCount: number;
   subagentStates: SubagentProgress[];
   activePlan: Plan | null;
-  submit: (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[]) => Promise<boolean>;
+  submit: (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason) => Promise<boolean>;
   addDisplayMessage: (msg: DisplayMessage) => void;
   cancel: () => void;
   clearMessages: () => void;
@@ -141,6 +141,7 @@ export function useAgent(
           role: msg.role === "user" ? "user" : "assistant",
           content: msg.displayText,
           sourceText: msg.sourceText,
+          invocationReason: msg.invocationReason,
         });
         continue;
       }
@@ -394,7 +395,7 @@ export function useAgent(
 
   /** Start a new agent turn, wiring UI events to loop events and persisting results on completion. */
   const submit = useCallback(
-    async (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[]): Promise<boolean> => {
+    async (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason): Promise<boolean> => {
       if (!provider) {
         setError("No LLM provider configured. Check your API key.");
         return false;
@@ -429,11 +430,11 @@ export function useAgent(
 
       setMessages((prev) => [
         ...prev,
-        { id: nextId(), role: "user", content: visibleText, sourceText: trimmed },
+        { id: nextId(), role: "user", content: visibleText, sourceText: trimmed, invocationReason },
         ...(followUpMessages ?? []),
       ]);
 
-      conversationRef.current.addUserMessage(submittedText, submittedBlocks, visibleText, trimmed);
+      conversationRef.current.addUserMessage(submittedText, submittedBlocks, visibleText, trimmed, invocationReason);
 
       setIsLoading(true);
       setStreamingText("");

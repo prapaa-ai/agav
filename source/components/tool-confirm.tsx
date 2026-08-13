@@ -4,6 +4,7 @@ import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
 import type { DiffLine } from "../utils/diff.js";
 import { getTheme } from "../config/theme.js";
 import { KeybindingResolver, type Keybindings } from "../config/keybindings.js";
+import { terminalToolValue } from "../utils/display-path.js";
 
 /** Represents the user's approval decision for a tool request. */
 export type ConfirmChoice = "yes" | "no" | "always";
@@ -39,9 +40,8 @@ export default function ToolConfirm({ toolName, input, diffLines, onConfirm, sub
   const details = Object.entries(input)
     .filter(([k]) => k !== "old_string" && k !== "new_string" && k !== "content")
     .map(([k, v]) => {
-      const val = typeof v === "string"
-        ? v.length > 80 ? v.slice(0, 80) + "..." : v
-        : JSON.stringify(v);
+      const formatted = terminalToolValue(k, v);
+      const val = formatted.length > 80 ? formatted.slice(0, 80) + "..." : formatted;
       return `  ${k}: ${val}`;
     })
     .join("\n");

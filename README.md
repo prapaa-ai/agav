@@ -88,12 +88,6 @@ git clone https://github.com/prapaa-ai/agav; cd agav; pnpm install --frozen-lock
 
 Detailed CLI documentation can be found [here](https://example.com/docs).
 
-### New Features & CLI Flags
-
-- **`agav run "prompt"`**: Run non-interactive agent tasks directly from the command line.
-- **`--trajectory <path>`**: Capture and export detailed agent trajectories and token usage stats in ATIF format.
-- **Benchmarks**: Full support for Terminal-Bench 2.1 via harbor and local wrapper scripts under `benchmarks/`.
-
 ## Contact
 
 Discord: https://discord.gg/example

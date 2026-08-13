@@ -9,6 +9,8 @@ export interface AgavTheme {
   diffRemoveFg: string;
   bannerColor: string;
   promptColor: string;
+  userBg?: string;
+  userFg?: string;
 }
 
 const DEFAULT_THEME: AgavTheme = {
@@ -22,6 +24,8 @@ const DEFAULT_THEME: AgavTheme = {
   diffRemoveFg: "#d4a0a0",
   bannerColor: "cyan",
   promptColor: "green",
+  userBg: "#2d2d2d",
+  userFg: "white",
 };
 
 let currentTheme: AgavTheme = { ...DEFAULT_THEME };

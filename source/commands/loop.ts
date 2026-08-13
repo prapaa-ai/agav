@@ -1,4 +1,5 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
+import type { InvocationReason } from "../providers/types.js";
 
 /**
  * Tracks the state of the currently running automated prompt loop.
@@ -18,11 +19,20 @@ interface ActiveLoop {
   /** Number of prompt submissions triggered so far. */
   tickCount: number;
   /** Callback used to submit the prompt back into the app. */
-  submitFn: (text: string) => void;
+  submitFn: (text: string, invocationReason?: InvocationReason) => void;
 }
 
 /** Singleton state for the currently active loop, if any. */
 let activeLoop: ActiveLoop | null = null;
+
+/** Stop the active loop and release its timer so it cannot keep Agav alive. */
+export function stopActiveLoop(): number | null {
+  if (!activeLoop) return null;
+  const ticks = activeLoop.tickCount;
+  clearInterval(activeLoop.timer);
+  activeLoop = null;
+  return ticks;
+}
 
 /**
  * Parse a short interval token into milliseconds.
@@ -38,14 +48,16 @@ let activeLoop: ActiveLoop | null = null;
  * @returns The parsed interval in milliseconds, or `null` when invalid.
  */
 function parseInterval(token: string): number | null {
-  const match = token.match(/^(\d+)(s|m|h)?$/);
+  const match = token.match(/^(\d+)(s|m|h|d)?$/);
   if (!match) return null;
   const value = parseInt(match[1]!, 10);
   if (value <= 0) return null;
   const unit = match[2] ?? "m";
   if (unit === "s") return value * 1000;
   if (unit === "m") return value * 60_000;
-  return value * 3_600_000;
+  if (unit === "h") return value * 3_600_000;
+  if (unit === "d") return value * 86_400_000;
+  return null;
 }
 
 /**
@@ -106,19 +118,14 @@ export const loopCommand: SlashCommand = {
     }
 
     if (trimmed === "stop") {
-      if (!activeLoop) {
+      const ticks = stopActiveLoop();
+      if (ticks === null) {
         return { type: "message", text: "No active loop to stop." };
       }
-      clearInterval(activeLoop.timer);
-      const ticks = activeLoop.tickCount;
-      activeLoop = null;
       return { type: "message", text: `Loop stopped after ${ticks} ticks.` };
     }
 
-    if (activeLoop) {
-      clearInterval(activeLoop.timer);
-      activeLoop = null;
-    }
+    stopActiveLoop();
 
     const parts = trimmed.split(/\s+/);
     let intervalMs: number;
@@ -135,12 +142,18 @@ export const loopCommand: SlashCommand = {
 
     const submitFn = context.handleSubmit;
 
+    const timer = setInterval(() => {
+      if (!activeLoop) return;
+      activeLoop.tickCount++;
+      activeLoop.submitFn(activeLoop.prompt, {
+        source: "loop",
+        detail: `tick #${activeLoop.tickCount} · every ${formatInterval(activeLoop.intervalMs)}`,
+      });
+    }, intervalMs);
+    timer.unref();
+
     activeLoop = {
-      timer: setInterval(() => {
-        if (!activeLoop) return;
-        activeLoop.tickCount++;
-        activeLoop.submitFn(activeLoop.prompt);
-      }, intervalMs),
+      timer,
       prompt,
       intervalMs,
       startedAt: Date.now(),
