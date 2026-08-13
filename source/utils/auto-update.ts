@@ -1,8 +1,9 @@
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { homedir, platform, arch } from "node:os";
-import { readFile, writeFile, rename, chmod, copyFile, unlink } from "node:fs/promises";
+import { readFile, writeFile, rename, chmod, copyFile, unlink, mkdir, symlink, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { createWriteStream } from "node:fs";
+import { createWriteStream, createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { ensureDir } from "./fs.js";
 import { VERSION } from "../version.js";
@@ -62,6 +63,7 @@ async function downloadBinary(version: string): Promise<string | null> {
   const tmpPath = join(AGAV_DIR, `agav-update-${version}`);
 
   try {
+    await ensureDir(AGAV_DIR);
     const res = await fetch(url, {
       redirect: "follow",
       signal: AbortSignal.timeout(30000),
@@ -70,26 +72,148 @@ async function downloadBinary(version: string): Promise<string | null> {
 
     const fileStream = createWriteStream(tmpPath);
     await pipeline(res.body as any, fileStream);
+
+    // Verify against the published checksum before this ever becomes
+    // executable. We are about to replace our own binary and re-exec it, so an
+    // unverified download is a code-execution primitive. Fail closed: if the
+    // .sha256 asset is missing or doesn't match, abandon the update.
+    if (!(await verifyChecksum(tmpPath, `${url}.sha256`))) {
+      await rm(tmpPath, { force: true });
+      return null;
+    }
+
     await chmod(tmpPath, 0o755);
     return tmpPath;
+  } catch {
+    await rm(tmpPath, { force: true }).catch(() => {});
+    return null;
+  }
+}
+
+/** Compare a downloaded file against the release's published .sha256 asset. */
+async function verifyChecksum(filePath: string, checksumUrl: string): Promise<boolean> {
+  try {
+    const res = await fetch(checksumUrl, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return false;
+    // Format is `<hex>  <filename>` (sha256sum output).
+    const expected = (await res.text()).trim().split(/\s+/)[0]?.toLowerCase();
+    if (!expected || !/^[a-f0-9]{64}$/.test(expected)) return false;
+    const actual = (await sha256File(filePath)).toLowerCase();
+    return actual === expected;
+  } catch {
+    return false;
+  }
+}
+
+export function getCurrentBinaryPath(): string | null {
+  try {
+    // Use execPath, NOT argv[0]. Bun sets argv[0] to the literal string "bun"
+    // inside a compiled standalone binary, so keying off argv[0] made this
+    // return null for every released build — auto-update could never run.
+    // execPath is the real executable in a compiled binary, and correctly
+    // resolves to the interpreter (bun/node) when run from source, so the
+    // guard below still blocks overwriting a system runtime.
+    const exec = process.execPath;
+    if (!exec) return null;
+    const base = exec.split(sep).pop() ?? "";
+    // Never overwrite the system Node/Bun binary
+    if (/^(node|bun|deno|npx|tsx)/.test(base)) return null;
+    // Only update if the binary looks like a Agav binary
+    if (!base.startsWith("agav")) return null;
+    return exec;
   } catch {
     return null;
   }
 }
 
-function getCurrentBinaryPath(): string | null {
+/**
+ * The installer lays binaries out as
+ *   <root>/packages/standalone/releases/<version>/agav
+ * with `<root>/packages/standalone/current` symlinked at the active release and
+ * ~/.local/bin/agav pointing through it.
+ *
+ * execPath resolves symlinks, so it lands on the *versioned* release file.
+ * Overwriting that in place would leave a 0.1.3 binary inside a directory named
+ * 0.1.2, which desyncs the installer's bookkeeping (it prunes release dirs that
+ * don't match the current target). Detect the layout structurally — not via
+ * AGAV_HOME — so a relocated install still works.
+ */
+export function detectManagedLayout(binaryPath: string): {
+  releasesDir: string;
+  currentLink: string;
+  binaryName: string;
+} | null {
+  const parts = binaryPath.split(sep);
+  const n = parts.length;
+  // need at least /standalone/releases/<version>/<binary>
+  if (n < 4) return null;
+  if (parts[n - 3] !== "releases" || parts[n - 4] !== "standalone") return null;
+  const standaloneRoot = parts.slice(0, n - 3).join(sep);
+  if (!standaloneRoot) return null;
+  return {
+    releasesDir: join(standaloneRoot, "releases"),
+    currentLink: join(standaloneRoot, "current"),
+    binaryName: parts[n - 1] ?? "agav",
+  };
+}
+
+/** Atomically point `linkPath` at `target` (mirrors install.sh replace_symlink). */
+async function replaceSymlink(linkPath: string, target: string): Promise<void> {
+  const tmpLink = `${linkPath}.tmp.${process.pid}`;
+  await rm(tmpLink, { force: true });
+  await symlink(target, tmpLink);
   try {
-    const argv0 = process.argv[0];
-    if (!argv0) return null;
-    const base = argv0.split("/").pop() ?? "";
-    // Never overwrite the system Node/Bun binary
-    if (/^(node|bun|deno|npx|tsx)/.test(base)) return null;
-    // Only update if the binary looks like a Agav binary
-    if (!base.startsWith("agav")) return null;
-    return argv0;
+    await rename(tmpLink, linkPath);
   } catch {
-    return null;
+    await rm(linkPath, { force: true, recursive: true });
+    await rename(tmpLink, linkPath);
   }
+}
+
+/**
+ * Move a verified download into place. Managed installs get a new versioned
+ * release dir plus a symlink swap; a plain binary is replaced in place.
+ */
+async function installUpdate(
+  downloadedPath: string,
+  versionTag: string,
+  binaryPath: string,
+): Promise<void> {
+  const layout = detectManagedLayout(binaryPath);
+
+  if (layout) {
+    // Installer names release dirs by bare version (no leading "v").
+    const bare = versionTag.replace(/^v/, "");
+    const releaseDir = join(layout.releasesDir, bare);
+    await mkdir(releaseDir, { recursive: true });
+    const dest = join(releaseDir, layout.binaryName);
+    await safeMove(downloadedPath, dest);
+    await chmod(dest, 0o755);
+    await replaceSymlink(layout.currentLink, releaseDir);
+    return;
+  }
+
+  const backupPath = `${binaryPath}.bak`;
+  await safeMove(binaryPath, backupPath);
+  await safeMove(downloadedPath, binaryPath);
+  await chmod(binaryPath, 0o755);
+  // Don't leave a stale copy of the previous version lying around.
+  await rm(backupPath, { force: true });
+}
+
+/** Resolve the path the running process should re-exec after an update. */
+function relaunchPath(binaryPath: string): string {
+  const layout = detectManagedLayout(binaryPath);
+  return layout ? join(layout.currentLink, layout.binaryName) : binaryPath;
+}
+
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(path), hash);
+  return hash.digest("hex");
 }
 
 function extractBullets(body: string): string[] {
@@ -197,22 +321,19 @@ export async function forceUpdate(targetVersion?: string): Promise<boolean> {
   const binaryPath = getCurrentBinaryPath();
   if (!binaryPath) {
     process.stderr.write(`  Cannot auto-update — not running as a standalone binary.\n`);
-    process.stderr.write(`  Update manually: npm update -g agav-cli\n`);
+    process.stderr.write(`  Reinstall with: curl -fsSL https://agav.dev/install.sh | bash\n`);
     return false;
   }
 
   process.stderr.write(`  Downloading ${latestTag}...`);
   const downloaded = await downloadBinary(latestTag);
   if (!downloaded) {
-    process.stderr.write(` failed.\n`);
+    process.stderr.write(` failed (download or checksum verification failed).\n`);
     return false;
   }
 
   try {
-    const backupPath = `${binaryPath}.bak`;
-    await safeMove(binaryPath, backupPath);
-    await safeMove(downloaded, binaryPath);
-    await chmod(binaryPath, 0o755);
+    await installUpdate(downloaded, latestTag, binaryPath);
     process.stderr.write(` done.\n`);
 
     const bullets = extractBullets(releaseBody);
@@ -289,15 +410,12 @@ export async function checkAndUpdate(): Promise<void> {
 
   const downloaded = await downloadBinary(latestTag);
   if (!downloaded) {
-    process.stderr.write(" failed (download error). Continuing with current version.\n");
+    process.stderr.write(" failed (download or checksum error). Continuing with current version.\n");
     return;
   }
 
   try {
-    const backupPath = `${binaryPath}.bak`;
-    await safeMove(binaryPath, backupPath);
-    await safeMove(downloaded, binaryPath);
-    await chmod(binaryPath, 0o755);
+    await installUpdate(downloaded, latestTag, binaryPath);
     process.stderr.write(" done.\n");
 
     // Show release notes summary
@@ -320,9 +438,15 @@ export async function checkAndUpdate(): Promise<void> {
       showChangelog: false,
     });
 
-    // Re-exec with the new binary (state is already saved above to prevent restart loops)
+    // Re-exec the NEW binary (state is already saved above to prevent restart
+    // loops). For a managed install this must go through the `current` symlink
+    // we just swapped — binaryPath still points at the old versioned release.
+    //
+    // Args start at index 2, not 1: argv is [runtime, script, ...userArgs] for
+    // node AND for Bun standalone builds (where argv[1] is /$bunfs/root/<name>).
+    // slice(1) leaked that internal path through as the first user argument.
     try {
-      execFileSync(binaryPath, process.argv.slice(1), { stdio: "inherit" });
+      execFileSync(relaunchPath(binaryPath), process.argv.slice(2), { stdio: "inherit" });
     } catch (e: any) {
       process.exit(e.status ?? 0);
     }
