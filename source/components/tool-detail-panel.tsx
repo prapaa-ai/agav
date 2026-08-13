@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
 import type { DisplayMessage } from "./message-list.js";
+import { terminalRelativePaths, terminalToolValue, toolPathValues } from "../utils/display-path.js";
 
 interface Props {
   tools: DisplayMessage[];
@@ -18,9 +19,8 @@ function formatInput(toolName: string, input?: Record<string, unknown>): string 
   const parts = Object.entries(input)
     .filter(([k]) => k !== "old_string" && k !== "new_string" && k !== "content")
     .map(([k, v]) => {
-      const val = typeof v === "string"
-        ? v.length > 80 ? v.slice(0, 80) + "..." : v
-        : JSON.stringify(v);
+      const formatted = terminalToolValue(k, v);
+      const val = formatted.length > 80 ? formatted.slice(0, 80) + "..." : formatted;
       return `${k}: ${val}`;
     });
   return parts.length > 0 ? parts.join(", ") : null;
@@ -36,7 +36,7 @@ export default function ToolDetailPanel({ tools, closeKey }: Props) {
       {recent.map((tool) => {
         const label = tool.toolDisplayName ?? (tool.toolName ? getToolLabel(tool.toolName) : "Tool");
         const inputSummary = tool.toolName ? formatInput(tool.toolName, tool.toolInput) : null;
-        const lines = tool.content.split("\n");
+        const lines = terminalRelativePaths(tool.content, toolPathValues(tool.toolInput)).split("\n");
         const maxPreview = 30;
         const visible = lines.slice(0, maxPreview);
         const truncated = lines.length > maxPreview;

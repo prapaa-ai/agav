@@ -5,6 +5,7 @@ import { isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
 import { createProvider } from "./providers/registry.js";
 import type { LLMProvider } from "./providers/types.js";
 import { buildSystemPrompt } from "./utils/system-prompt.js";
+import { expandFileMentions } from "./utils/file-mentions.js";
 import { loadSessionState, markCleanExit } from "./config/session-state.js";
 import { loadTheme } from "./config/theme.js";
 import { ConversationState } from "./agent/conversation.js";
@@ -20,14 +21,12 @@ import {
   validateOutput,
   type OutputSchema,
 } from "./utils/output-schema.js";
-import { writeAgavTrajectory, type AgavRunUsage } from "./utils/trajectory.js";
 
 const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
   "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns",
-  "--trajectory",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -127,10 +126,6 @@ export function parseArgs(argv: string[]) {
       flags.maxTurns = argv[++i] ?? "";
     } else if (arg.startsWith("--max-turns=")) {
       flags.maxTurns = arg.slice("--max-turns=".length);
-    } else if (arg === "--trajectory") {
-      flags.trajectory = argv[++i] ?? "";
-    } else if (arg.startsWith("--trajectory=")) {
-      flags.trajectory = arg.slice("--trajectory=".length);
     } else if (arg === "update" && i === 0) {
       flags.update = true;
       if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
@@ -138,11 +133,7 @@ export function parseArgs(argv: string[]) {
       }
     } else if (arg === "run" && i === 0) {
       flags.run = true;
-    } else if (flags.run && !flags.runPrompt) {
-      // First positional after `run` is the prompt, even if it starts with
-      // "-" (e.g. an instruction beginning with a markdown bullet). Known
-      // flags are matched by the earlier branches, so anything reaching here
-      // in run mode before a prompt is captured is the prompt itself.
+    } else if (flags.run && !arg.startsWith("-") && !flags.runPrompt) {
       flags.runPrompt = arg;
     } else if (arg.startsWith("-")) {
       const suggestion = findClosestFlag(arg);
@@ -169,22 +160,24 @@ export async function runPipeMode(
   prompt: string,
   config: AgavConfig,
   provider: LLMProvider,
-  options: { stream?: boolean; outputSchema?: OutputSchema; stdinContent?: string; includeDynamicContext?: boolean; permissionOverride?: import("./config/config.js").PermissionMode; allowedToolsOverride?: string[]; maxTurns?: number; trajectoryPath?: string } = {},
+  options: { stream?: boolean; outputSchema?: OutputSchema; stdinContent?: string; includeDynamicContext?: boolean; permissionOverride?: import("./config/config.js").PermissionMode; allowedToolsOverride?: string[]; maxTurns?: number } = {},
 ): Promise<number> {
   const { stream = false, outputSchema } = options;
   const stdinContent = options.stdinContent ?? await readStdin();
 
-  // File @-mention expansion is intentionally disabled in non-interactive
-  // (pipe / `agav run` / `-P`) mode. Here the prompt is a complete instruction
-  // supplied by the caller, so a bare "@word" — e.g. a Vim register (`@a`), a
-  // Python decorator, or an email handle — must pass through literally rather
-  // than being treated as a file attachment (which would abort the run with
-  // "File not found" when no such file exists). Callers that want file contents
-  // in the prompt can pipe them via stdin, which is wrapped below.
-  let fullPrompt = prompt;
+  let expansion;
+  try {
+    expansion = await expandFileMentions(prompt, { cwd: process.cwd() });
+  } catch (err) {
+    process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+  for (const warning of expansion.warnings) process.stderr.write(`Warning: ${warning}\n`);
+
+  let fullPrompt = expansion.expanded;
   if (stdinContent) {
     const prefix = `<stdin>\n${stdinContent}\n</stdin>\n\n`;
-    fullPrompt = prefix + (prompt || "Respond to the above input.");
+    fullPrompt = prefix + (expansion.expanded || "Respond to the above input.");
   }
 
   if (!fullPrompt) {
@@ -195,7 +188,7 @@ export async function runPipeMode(
   const toolRegistry = createToolRegistry();
   const conversation = new ConversationState();
   conversation.setModel(config.model);
-  conversation.addUserMessage(fullPrompt, undefined, undefined, prompt);
+  conversation.addUserMessage(fullPrompt, expansion.contentBlocks, undefined, prompt);
 
   let effectiveSystemPrompt = config.systemPrompt ?? "";
   if (options.includeDynamicContext) {
@@ -210,34 +203,6 @@ export async function runPipeMode(
     : `${effectiveSystemPrompt}\n\nYour final response MUST be valid JSON matching this schema: ${schemaJson}. Return only the JSON value, with no markdown fences or commentary.`;
 
   const permissionMode = options.permissionOverride ?? "auto-accept";
-
-  // Trajectory capture: accumulate token usage (the loop's `usage` events are
-  // otherwise dropped in pipe mode) and record run timing, so we can emit a
-  // faithful native trajectory after the run regardless of how it exits.
-  const usage: AgavRunUsage = {
-    input_tokens: 0,
-    output_tokens: 0,
-    cache_read_tokens: 0,
-    cache_write_tokens: 0,
-  };
-  const startedAt = new Date().toISOString();
-  const flushTrajectory = async (): Promise<void> => {
-    if (!options.trajectoryPath) return;
-    try {
-      await writeAgavTrajectory(options.trajectoryPath, {
-        model: config.model,
-        provider: config.provider,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        usage,
-        messages: conversation.getMessages(),
-      });
-    } catch (err) {
-      process.stderr.write(
-        `Warning: failed to write trajectory: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    }
-  };
 
   const runTurn = async (streamText: boolean): Promise<{ finalText: string; exitCode: number; wroteStreamText: boolean }> => {
     let finalText = "";
@@ -285,12 +250,6 @@ export async function runPipeMode(
           case "compacted":
             process.stderr.write(`  ${icons.warning} Auto-compacted: ${event.droppedCount} messages summarized\n`);
             break;
-          case "usage":
-            usage.input_tokens += event.inputTokens ?? 0;
-            usage.output_tokens += event.outputTokens ?? 0;
-            usage.cache_read_tokens += event.cacheReadTokens ?? 0;
-            usage.cache_write_tokens += event.cacheWriteTokens ?? 0;
-            break;
           case "assistant_message_complete":
             finalText = event.text;
             break;
@@ -322,49 +281,43 @@ export async function runPipeMode(
 
   // Schema output must stay buffered so an invalid first attempt never contaminates stdout.
   let result = await runTurn(stream && outputSchema === undefined);
-  // A trajectory is written on every post-loop exit path (including errors) via
-  // the finally block, so the adapter always has a transcript to convert.
-  try {
-    if (result.exitCode !== 0) return result.exitCode;
+  if (result.exitCode !== 0) return result.exitCode;
 
-    if (outputSchema !== undefined) {
-      let validate;
-      try {
-        validate = createOutputValidator(outputSchema);
-      } catch (error) {
-        process.stderr.write(`Error: Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}\n`);
-        return 1;
-      }
-
-      let validation = validateOutput(result.finalText, validate);
-      if (!validation.valid) {
-        const details = formatValidationErrors(validation);
-        process.stderr.write(`Schema validation failed; retrying once: ${details}\n`);
-        conversation.addUserMessage(
-          `Your previous response was invalid. ${details}\nCorrect it and return ONLY valid JSON matching the required schema, with no markdown fences or commentary.`,
-        );
-        result = await runTurn(false);
-        if (result.exitCode !== 0) return result.exitCode;
-        validation = validateOutput(result.finalText, validate);
-      }
-
-      if (!validation.valid) {
-        process.stderr.write(`Error: Response failed JSON Schema validation after retry: ${formatValidationErrors(validation)}\n`);
-        return 1;
-      }
-      process.stdout.write(`${JSON.stringify(validation.value)}\n`);
-      return 0;
+  if (outputSchema !== undefined) {
+    let validate;
+    try {
+      validate = createOutputValidator(outputSchema);
+    } catch (error) {
+      process.stderr.write(`Error: Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
     }
 
-    if (stream && result.wroteStreamText) {
-      process.stdout.write("\n");
-    } else if (result.finalText) {
-      process.stdout.write(result.finalText + "\n");
+    let validation = validateOutput(result.finalText, validate);
+    if (!validation.valid) {
+      const details = formatValidationErrors(validation);
+      process.stderr.write(`Schema validation failed; retrying once: ${details}\n`);
+      conversation.addUserMessage(
+        `Your previous response was invalid. ${details}\nCorrect it and return ONLY valid JSON matching the required schema, with no markdown fences or commentary.`,
+      );
+      result = await runTurn(false);
+      if (result.exitCode !== 0) return result.exitCode;
+      validation = validateOutput(result.finalText, validate);
     }
-    return result.exitCode;
-  } finally {
-    await flushTrajectory();
+
+    if (!validation.valid) {
+      process.stderr.write(`Error: Response failed JSON Schema validation after retry: ${formatValidationErrors(validation)}\n`);
+      return 1;
+    }
+    process.stdout.write(`${JSON.stringify(validation.value)}\n`);
+    return 0;
   }
+
+  if (stream && result.wroteStreamText) {
+    process.stdout.write("\n");
+  } else if (result.finalText) {
+    process.stdout.write(result.finalText + "\n");
+  }
+  return result.exitCode;
 }
 
 export async function main() {
@@ -394,7 +347,6 @@ export async function main() {
     --output-schema      Require pipe-mode output to match an inline JSON Schema or @file
     --openai-api         OpenAI API mode: responses or chat (default: responses)
     --permission         JSON tool permissions for run mode (or set AGAV_PERMISSION env var)
-    --trajectory         Write a native JSON trajectory of the run to the given path
     --resume, -r [id]    Resume a session (list if no id, prefix match if given)
     --auto-accept, -y    Skip tool confirmations
     --deny-writes        Block all write operations
@@ -644,7 +596,6 @@ export async function main() {
     const exitCode = await runPipeMode(String(flags.printPrompt ?? ""), config, provider, {
       stream: flags.stream === true,
       outputSchema,
-      trajectoryPath: typeof flags.trajectory === "string" && flags.trajectory ? flags.trajectory : undefined,
     });
     process.exit(exitCode);
     return;
@@ -656,9 +607,6 @@ export async function main() {
       stream: true,
       includeDynamicContext: true,
     };
-    if (typeof flags.trajectory === "string" && flags.trajectory) {
-      runOptions.trajectoryPath = flags.trajectory;
-    }
 
     // Parse permission from --permission flag or AGAV_PERMISSION env var
     const permissionJson = (typeof flags.permission === "string" && flags.permission)
@@ -720,7 +668,9 @@ export async function main() {
     process.exit(0);
   });
 
-  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={resumeSessionName} />, {
+  const { getGitContext } = await import("./utils/git.js");
+  const gitContext = await getGitContext();
+  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={resumeSessionName} repoBranch={gitContext?.branch} />, {
     exitOnCtrlC: true,
   });
 

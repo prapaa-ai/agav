@@ -1,4 +1,4 @@
-import type { Message, ContentBlock } from "../providers/types.js";
+import type { Message, ContentBlock, InvocationReason } from "../providers/types.js";
 import {
   estimateConversationTokens,
   estimateMessageTokens,
@@ -16,7 +16,13 @@ export class ConversationState {
     this.model = model;
   }
 
-  addUserMessage(text: string, extraBlocks?: ContentBlock[], displayText?: string, sourceText?: string): void {
+  addUserMessage(
+    text: string,
+    extraBlocks?: ContentBlock[],
+    displayText?: string,
+    sourceText?: string,
+    invocationReason?: InvocationReason,
+  ): void {
     const content: ContentBlock[] = [{ type: "text", text }];
     if (extraBlocks) {
       content.push(...extraBlocks);
@@ -26,6 +32,7 @@ export class ConversationState {
       content,
       ...(displayText ? { displayText } : {}),
       ...(sourceText ? { sourceText } : {}),
+      ...(invocationReason ? { invocationReason } : {}),
     });
   }
 

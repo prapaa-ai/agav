@@ -1,5 +1,11 @@
 export type Role = "user" | "assistant";
 
+/** Explains when a turn or command was started by an automated workflow. */
+export interface InvocationReason {
+  source: "loop" | "schedule" | "watch";
+  detail: string;
+}
+
 export interface ContentBlock {
   type: "text" | "tool_use" | "tool_result" | "image";
   text?: string;
@@ -20,6 +26,7 @@ export interface Message {
   content: ContentBlock[];
   displayText?: string;
   sourceText?: string;
+  invocationReason?: InvocationReason;
 }
 
 export type StreamEvent =

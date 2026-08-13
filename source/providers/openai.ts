@@ -59,7 +59,7 @@ export class OpenAIProvider implements LLMProvider {
       tools,
       max_output_tokens: params.maxTokens ?? 16384,
       stream: true,
-      ...(useNativeEffort ? { reasoning: { effort: mapOpenAIEffort(params.effort!) } } : {}),
+      ...(useNativeEffort ? { reasoning: { effort: mapOpenAIEffort(params.effort!), summary: "concise" } } : {}),
     });
 
     yield { type: "message_start" };
