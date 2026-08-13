@@ -493,21 +493,16 @@ add_to_path
 
 handle_conflicting_install
 
+start_hint=""
 case "$path_action" in
   added)
     printf '\n'
     step "PATH updated in $path_profile"
-    step "Run: export PATH=\"$BIN_DIR:\$PATH\" && agav"
-    step "Or open a new terminal and run: agav"
+    start_hint="Open a new terminal first, or run: export PATH=\"$BIN_DIR:\$PATH\""
     ;;
   configured)
     printf '\n'
     step "PATH already configured in $path_profile"
-    step "Run: agav"
-    ;;
-  *)
-    printf '\n'
-    step "Run: agav"
     ;;
 esac
 
@@ -523,18 +518,24 @@ if [ -d "$RELEASES_DIR" ]; then
   done
 fi
 
-printf '\nAgav %s installed successfully.\n' "$installed_ver"
-
-if prompt_yes_no "Start Agav now?"; then
-  step "Launching Agav"
-  # Under `curl … | bash` our stdin is the curl pipe, not the terminal. Agav's
-  # UI needs a real TTY, so reattach one — otherwise it dies on raw-mode setup.
-  # `exec` hands the terminal over cleanly instead of nesting under the pipe.
-  if [ -e /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
-    exec "$BIN_PATH" </dev/tty
-  elif [ -t 0 ]; then
-    exec "$BIN_PATH"
-  else
-    warn "No terminal available to launch Agav. Run: $BIN_PATH"
-  fi
+# Deliberately do NOT launch Agav from here. Under `curl … | bash` this script
+# has no controlling terminal of its own, so an exec'd Ink UI inherits a stdin
+# the terminal driver never hands keystrokes to — it paints its first frame and
+# then sits there dead to input, Ctrl+C included. Telling the user to type
+# `agav` costs one line and always works.
+printf '\n'
+printf '  ────────────────────────────────────────────\n'
+printf '\n'
+printf '   Agav %s is installed.\n' "$installed_ver"
+printf '\n'
+if [ -n "$start_hint" ]; then
+  printf '   %s\n' "$start_hint"
+  printf '\n'
 fi
+printf '   Type  agav  to get started.\n'
+printf '\n'
+printf '   Docs      https://agav.dev\n'
+printf '   Update    agav update\n'
+printf '\n'
+printf '  ────────────────────────────────────────────\n'
+printf '\n'
