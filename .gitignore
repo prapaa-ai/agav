@@ -2,7 +2,6 @@
 build/
 dist/
 coverage/
-benchmarks/
 
 # Dependencies
 node_modules/
@@ -41,3 +40,7 @@ package-lock.json
 yarn.lock
 bun.lock
 bun.lockb
+
+jobs/
+terminal-bench-2-1/
+benchmarks/agav-agent/bin/
