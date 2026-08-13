@@ -642,6 +642,21 @@ export async function main() {
     return;
   }
 
+  // Every non-interactive path has returned by now, so the Ink UI is next.
+  // Ink needs raw mode, which requires a TTY — without this guard a piped
+  // stdin (e.g. the installer launching us from `curl … | bash`) surfaces as
+  // an unreadable React stack trace instead of an actionable message.
+  if (!process.stdin.isTTY) {
+    process.stderr.write(
+      "\n  Agav's interactive UI needs a terminal, but stdin is not a TTY.\n\n" +
+        "    • Run `agav` directly from your shell.\n" +
+        "    • For piped or scripted use:  agav -P \"your prompt\"\n" +
+        "    • Just installed via `curl … | bash`? That pipe is still attached —\n" +
+        "      open your terminal and run `agav`.\n\n",
+    );
+    process.exit(1);
+  }
+
   /** Print a subtle reminder pointing at the most recent resumable session. */
   async function showResumeHint() {
     try {
