@@ -12,7 +12,7 @@
 **A terminal-native AI coding assistant for real repositories**
 
 <p>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.1-111?style=for-the-badge">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.1.2-111?style=for-the-badge">
   <img alt="Node.js" src="https://img.shields.io/badge/node-22%2B-111?style=for-the-badge&logo=node.js&logoColor=83CD29">
   <img alt="TypeScript" src="https://img.shields.io/badge/typescript-5.x-111?style=for-the-badge&logo=typescript&logoColor=3178C6">
   <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-111?style=for-the-badge">
