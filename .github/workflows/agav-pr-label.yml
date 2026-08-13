@@ -2,7 +2,7 @@ name: Agav PR Labeler
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, reopened]
     branches: [main]
 
 permissions:
@@ -25,39 +25,100 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ steps.app-token.outputs.token }}
-          fetch-depth: 0
+          fetch-depth: 1
+          # Nothing here pushes, so keep the token out of .git/config.
+          persist-credentials: false
 
       - name: Install Agav
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          gh release download --repo ${{ github.repository }} --pattern 'agav-linux-x64' --dir /tmp
+          gh release download --repo "${GITHUB_REPOSITORY}" --pattern 'agav-linux-x64' --dir /tmp
           install -m 755 /tmp/agav-linux-x64 /usr/local/bin/agav
 
       - name: Get PR info
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gh pr diff ${{ github.event.pull_request.number }} --name-only > /tmp/pr-stat.txt
+          # Cap the file list: a large PR would otherwise blow up the prompt.
+          gh pr diff "${PR_NUMBER}" --name-only | head -50 > /tmp/pr-files.txt
+          wc -l < /tmp/pr-files.txt
 
       - name: Label with Agav
+        id: label
         timeout-minutes: 3
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          AGAV_NO_SANDBOX: "1"
+          # Untrusted, attacker-controlled input. Passed via env so the shell
+          # never re-parses it — NEVER interpolate ${{ }} into the run block.
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          FILES=$(cat /tmp/pr-stat.txt)
-          PROMPT="PR title: ${{ github.event.pull_request.title }}. Changed files: ${FILES}. Pick 1-2 labels from: bug, feature, refactor, docs, ci, tests, dependencies, provider, ui. Respond with ONLY a JSON object: {\"labels\":[\"label1\"]}. No explanation."
-          agav -P "$PROMPT" --provider gemini --model gemini-3.5-flash-lite > labels-raw.txt
-          grep -o '{[^}]*}' labels-raw.txt > labels.json || echo '{"labels":[]}' > labels.json
+          FILES=$(cat /tmp/pr-files.txt)
+          PROMPT="PR title: ${PR_TITLE}
+          Changed files:
+          ${FILES}
+
+          Pick 1-2 labels from exactly this list: bug, feature, refactor, docs, ci, tests, dependencies, provider, ui.
+          Respond with ONLY a JSON object: {\"labels\":[\"label1\"]}. No explanation."
+
+          # 'run' (not -P) so --permission is honoured: -P ignores it. '*: deny'
+          # blocks run_command/edit_file/write_file; read-only tools still work.
+          # Classification needs no shell — without this the agent runs tests and
+          # can clobber files in the workspace.
+          if ! agav run \
+                --permission '{"*":"deny"}' \
+                --max-turns 1 \
+                --provider gemini \
+                --model gemini-3.5-flash-lite \
+                "$PROMPT" > /tmp/labels-raw.txt 2>/tmp/labels-err.txt; then
+            echo "::warning::agav exited non-zero; skipping labels."
+            cat /tmp/labels-err.txt || true
+            exit 0
+          fi
+
+          if [ ! -s /tmp/labels-raw.txt ]; then
+            echo "::warning::agav produced no output; skipping labels."
+            exit 0
+          fi
+
+          # Pull the JSON object out of the response and validate it parses.
+          RAW=$(tr -d '\n' < /tmp/labels-raw.txt | grep -o '{.*}' | head -1 || true)
+          if [ -z "$RAW" ] || ! printf '%s' "$RAW" | jq -e '.labels | arrays' >/dev/null 2>&1; then
+            echo "::warning::Could not parse labels JSON from agav output:"
+            head -c 500 /tmp/labels-raw.txt
+            exit 0
+          fi
+          printf '%s' "$RAW" > /tmp/labels.json
+          echo "parsed=true" >> "$GITHUB_OUTPUT"
 
       - name: Apply labels
-        if: always()
+        if: steps.label.outputs.parsed == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          if [ ! -f labels.json ]; then exit 0; fi
-          LABELS=$(jq -r '.labels[]' labels.json 2>/dev/null | head -2)
-          for label in $LABELS; do
-            gh pr edit ${{ github.event.pull_request.number }} --add-label "$label" || true
-          done
+          # Only ever apply labels we recognise — the model's output is untrusted.
+          VALID="bug feature refactor docs ci tests dependencies provider ui"
+          APPLIED=0
+          while IFS= read -r label; do
+            [ -z "$label" ] && continue
+            case " $VALID " in
+              *" $label "*)
+                if gh pr edit "${PR_NUMBER}" --add-label "$label"; then
+                  APPLIED=$((APPLIED + 1))
+                else
+                  echo "::warning::Failed to apply label '${label}'"
+                fi
+                ;;
+              *)
+                echo "::warning::Ignoring unknown label from model: '${label}'"
+                ;;
+            esac
+          done < <(jq -r '.labels[]? | select(type == "string")' /tmp/labels.json | head -2)
+
+          if [ "$APPLIED" -eq 0 ]; then
+            echo "::warning::No valid labels applied."
+          else
+            echo "Applied ${APPLIED} label(s)."
+          fi
