@@ -2,6 +2,7 @@ import React, { useMemo } from "react";
 import { Box, Text } from "ink";
 import Spinner from "ink-spinner";
 import { renderMarkdown } from "./markdown-text.js";
+import { terminalRelativePaths } from "../utils/display-path.js";
 
 /** Props for the streaming assistant response view. */
 interface Props {
@@ -18,7 +19,7 @@ export default function StreamingResponse({ text, thinkingText, isLoading }: Pro
 
   const rendered = useMemo(() => {
     if (!text) return "";
-    return renderMarkdown(text);
+    return renderMarkdown(terminalRelativePaths(text));
   }, [text]);
 
   const isThinking = isLoading && thinkingText && !text;

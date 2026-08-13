@@ -114,6 +114,56 @@ jobs:
         with:
           token: ${{ secrets.TOKEN }}
           fetch-depth: 0
+      - name: Update README version badge
+        id: readme_update
+        env:
+          NEW_VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          # 1. Update version badge in README.md
+          node -e "
+            const fs = require('fs');
+            const file = 'README.md';
+            let content = fs.readFileSync(file, 'utf8');
+            const target = 'version-' + process.env.NEW_VERSION + '-111';
+            content = content.replace(/version-[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?-111/, target);
+            fs.writeFileSync(file, content, 'utf8');
+          "
+          
+          # 2. Check if there are changes
+          if git diff --quiet README.md; then
+            echo "README.md version badge is already up to date."
+            echo "commit_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 3. Determine target branch
+          if [ "${{ github.ref_type }}" = "branch" ]; then
+            BRANCH="${{ github.ref_name }}"
+          else
+            # If triggered by a tag push, find branch containing the commit
+            BRANCH=$(git branch -r --contains HEAD | grep -v 'HEAD' | head -n 1 | sed 's|origin/||' | tr -d '[:space:]')
+            if [ -z "$BRANCH" ]; then
+              BRANCH="${{ github.event.repository.default_branch }}"
+            fi
+          fi
+          
+          echo "Target branch to push README update: $BRANCH"
+          
+          # 4. Commit and push
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "chore: update README version badge to v${NEW_VERSION} [skip ci]"
+          
+          # Push to the branch, allowing failure if branch protection blocks it
+          if git push origin HEAD:"$BRANCH"; then
+            echo "Successfully updated README version badge on branch $BRANCH."
+            echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Failed to push README update to branch $BRANCH. Reverting local commit."
+            git reset --hard HEAD~1
+            echo "commit_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -152,6 +202,7 @@ jobs:
         with:
           tag_name: v${{ needs.check-version.outputs.version }}
           name: v${{ needs.check-version.outputs.version }}
+          target_commitish: ${{ steps.readme_update.outputs.commit_sha || github.sha }}
           body: |
             ## Changes
 

@@ -43,6 +43,7 @@ export interface AgavConfig {
   hooks?: AgavHooks;
   theme?: Partial<AgavTheme>;
   mcpServers?: Record<string, MCPServerConfig>;
+  hideAbsolutePath?: boolean;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -96,6 +97,11 @@ const PROJECT_CONFIG_TEMPLATE = {
     description: "Additional project-specific instructions included in the system prompt.",
     type: "string",
     eg: "Follow the conventions documented in this repository.",
+  },
+  hideAbsolutePath: {
+    description: "Whether to hide absolute paths in terminal outputs, replacing them with relative ones.",
+    type: "boolean",
+    eg: false,
   },
   anthropicApiKey: {
     description: "Anthropic API key. Prefer the ANTHROPIC_API_KEY environment variable for secrets.",

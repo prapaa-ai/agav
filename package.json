@@ -1,10 +1,10 @@
 {
   "name": "agav-cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A terminal-native environment for running local AI systems",
   "type": "module",
   "bin": {
-    "agav": "./bin/agav.mjs"
+    "agav": "./build/cli.js"
   },
   "files": [
     "build"
