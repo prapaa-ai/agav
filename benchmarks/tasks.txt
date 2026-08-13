@@ -1,0 +1,24 @@
+# Terminal-Bench 2.1 tasks to run — one task name per line.
+# Lines starting with '#' and blank lines are ignored.
+# (To run the WHOLE board instead of this list, use: ./run-tasks.sh --all)
+#
+# Put the exact task NAMES here (the harness filters with --include-task-name).
+# Find available task names by listing the dataset (see README.md), e.g.:
+#   harbor run -d terminal-bench/terminal-bench-2-1 -a oracle --dry-run
+#
+# Replace the examples below with the tasks you actually want:
+
+# example-task-one
+# example-task-two
+
+cobol-modernization
+fix-git
+overfull-hbox
+prove-plus-comm
+adaptive-rejection-sampler
+break-filter-js-from-html
+build-cython-ext
+build-pmars
+sanitize-git-repo
+rstan-to-pystan
+portfolio-optimization
