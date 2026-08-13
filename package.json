@@ -4,7 +4,7 @@
   "description": "A terminal-native environment for running local AI systems",
   "type": "module",
   "bin": {
-    "agav": "./bin/agav.mjs"
+    "agav": "./build/cli.js"
   },
   "files": [
     "build"
