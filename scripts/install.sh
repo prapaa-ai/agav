@@ -527,5 +527,14 @@ printf '\nAgav %s installed successfully.\n' "$installed_ver"
 
 if prompt_yes_no "Start Agav now?"; then
   step "Launching Agav"
-  "$BIN_PATH"
+  # Under `curl … | bash` our stdin is the curl pipe, not the terminal. Agav's
+  # UI needs a real TTY, so reattach one — otherwise it dies on raw-mode setup.
+  # `exec` hands the terminal over cleanly instead of nesting under the pipe.
+  if [ -e /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
+    exec "$BIN_PATH" </dev/tty
+  elif [ -t 0 ]; then
+    exec "$BIN_PATH"
+  else
+    warn "No terminal available to launch Agav. Run: $BIN_PATH"
+  fi
 fi
