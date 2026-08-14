@@ -1,5 +1,6 @@
 import { DEFAULT_KEYBINDINGS, formatKeybinding, type Keybindings } from "../config/keybindings.js";
 import { agavHomePath } from "./shell-hints.js";
+import { detectSandboxBackend, getSandboxName } from "./sandbox.js";
 
 const HINTS = [
   "/undo reverts the last file change",
@@ -39,7 +40,6 @@ const HINTS = [
   "/schedule list shows all scheduled tasks",
   "/effort low|medium|high|max controls reasoning depth",
   "Agav saves memories automatically when you share preferences or corrections",
-  "Shell commands run inside an OS sandbox (Seatbelt/Bubblewrap)",
   "Destructive commands (rm -rf, git push --force) are always blocked",
   "API keys are encrypted at rest in {agavHome}config.json",
   "{agavHome}skills stores installed skills — add your own SKILL.md",
@@ -61,6 +61,11 @@ export function getRandomHint(keybindings: Keybindings = DEFAULT_KEYBINDINGS): s
     `${formatKeybinding(keybindings, "historyUp")}/${formatKeybinding(keybindings, "historyDown")} to recall previous messages`,
     `${formatKeybinding(keybindings, "toggleToolDetail")} expands tool output details`,
     `${formatKeybinding(keybindings, "cancel")} cancels a streaming response`,
+    // Seatbelt and Bubblewrap are POSIX-only, so Windows resolves to "none".
+    // Stating the sandbox unconditionally would promise isolation we do not have.
+    detectSandboxBackend() === "none"
+      ? "No OS sandbox detected - shell commands run unsandboxed"
+      : `Shell commands run inside an OS sandbox (${getSandboxName()})`,
   ];
   const hints = [
     ...HINTS.map((hint) => hint.replaceAll("{agavHome}", agavHomePath(""))),
