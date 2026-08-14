@@ -44,6 +44,38 @@ describe("conversation state", () => {
     expect(convo.wasCompacted).toBe(false);
     expect(convo.lastCompactionSummary).toBe("");
   });
+
+  // Per-turn environment context rides at the tail of the user message so the
+  // prefix ahead of it stays byte-identical and stays cacheable.
+  it("appends turn context to the newest user message", async () => {
+    const { ConversationState } = await import("../agent/conversation.js");
+    const convo = new ConversationState();
+    convo.addUserMessage("first");
+    convo.addUserMessage("second");
+    convo.appendToLastUserMessage("env block");
+
+    const messages = convo.getMessages();
+    expect(messages[0]!.content).toHaveLength(1);
+    expect(messages[1]!.content).toEqual([
+      { type: "text", text: "second" },
+      { type: "text", text: "env block" },
+    ]);
+  });
+
+  it("ignores empty turn context and non-user tail messages", async () => {
+    const { ConversationState } = await import("../agent/conversation.js");
+    const convo = new ConversationState();
+    convo.addUserMessage("hi");
+    convo.appendToLastUserMessage("");
+    expect(convo.getMessages()[0]!.content).toHaveLength(1);
+
+    convo.addAssistantMessage([{ type: "text", text: "reply" }]);
+    convo.appendToLastUserMessage("env block");
+    expect(convo.getMessages().at(-1)!.content).toEqual([{ type: "text", text: "reply" }]);
+
+    const empty = new ConversationState();
+    expect(() => empty.appendToLastUserMessage("env block")).not.toThrow();
+  });
 });
 
 describe("hooks", () => {

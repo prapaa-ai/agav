@@ -36,6 +36,19 @@ export class ConversationState {
     });
   }
 
+  /**
+   * Append a text block to the newest user message. Used to attach per-turn
+   * environment context after the turn's message already exists, keeping
+   * volatile text at the tail of the request where it cannot invalidate the
+   * provider's prefix cache. No-op when the newest message is not a user turn.
+   */
+  appendToLastUserMessage(text: string): void {
+    if (!text) return;
+    const last = this.messages[this.messages.length - 1];
+    if (!last || last.role !== "user") return;
+    last.content.push({ type: "text", text });
+  }
+
   addAssistantMessage(content: ContentBlock[]): void {
     this.messages.push({ role: "assistant", content });
   }
