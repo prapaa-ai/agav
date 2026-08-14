@@ -63,6 +63,67 @@ For Windows Command Prompt (`cmd.exe`):
 
 Or download a specific platform binary from [Releases](../../releases).
 
+### Uninstall
+
+Both installers accept `--uninstall`.
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://agav.dev/install.sh | bash -s -- --uninstall
+```
+
+**Windows PowerShell:**
+
+```powershell
+& ([scriptblock]::Create((irm https://agav.dev/install.ps1))) --uninstall
+```
+
+**Windows Command Prompt (`cmd.exe`):**
+
+```bat
+curl -fsSL https://agav.dev/install.cmd -o install.cmd
+install.cmd --uninstall
+del install.cmd
+```
+
+If you installed via a package manager instead, remove it the same way:
+
+```bash
+npm uninstall -g agav-cli    # or: bun remove -g agav-cli
+```
+
+#### What `--uninstall` leaves behind
+
+It removes the binary, but deliberately keeps your settings and does not edit your shell profile:
+
+| | Removed | Left behind |
+| --- | --- | --- |
+| macOS / Linux | `~/.local/bin/agav`, `~/.agav/packages/standalone/` | `~/.agav/` config, `PATH` line in your shell profile |
+| Windows | `%LOCALAPPDATA%\agav\agav.exe` | `%USERPROFILE%\.agav\` config, `PATH` entry in your user environment |
+
+To remove your configuration as well — this deletes `config.json` (which holds your **encrypted API keys**), `prompt-history.json`, `keybindings.json`, and any installed `plugins/` and `skills/`:
+
+```bash
+rm -rf ~/.agav                       # macOS / Linux
+```
+
+```powershell
+Remove-Item -Recurse -Force "$HOME\.agav"    # Windows
+```
+
+To remove the `PATH` entry, delete this block from your shell profile — `~/.zprofile` (macOS + zsh), `~/.bash_profile` (macOS + bash), `~/.zshrc` or `~/.bashrc` (Linux), or `~/.profile`:
+
+```bash
+# >>> Agav installer >>>
+export PATH="$HOME/.local/bin:$PATH"
+# <<< Agav installer <<<
+```
+
+On Windows, remove the Agav entry from your user `PATH` under **Settings → Edit environment variables for your account**.
+
+Agav also writes per-project directories inside repositories you've worked in — `.agav/` (cached images) and `.agav-worktrees/`. Delete those individually if you want them gone.
+
 ### Run from source
 
 #### macOS
