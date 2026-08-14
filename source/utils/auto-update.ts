@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { ensureDir } from "./fs.js";
 import { VERSION } from "../version.js";
+import { reinstallHint } from "./shell-hints.js";
 
 const AGAV_DIR = join(homedir(), ".agav");
 const UPDATE_STATE_FILE = join(AGAV_DIR, "update-state.json");
@@ -325,7 +326,7 @@ export async function forceUpdate(targetVersion?: string): Promise<boolean> {
   const binaryPath = getCurrentBinaryPath();
   if (!binaryPath) {
     process.stderr.write(`  Cannot auto-update — not running as a standalone binary.\n`);
-    process.stderr.write(`  Reinstall with: curl -fsSL https://agav.dev/install.sh | bash\n`);
+    process.stderr.write(`  Reinstall with: ${reinstallHint()}\n`);
     return false;
   }
 
