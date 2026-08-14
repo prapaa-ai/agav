@@ -1,6 +1,6 @@
 {
   "name": "agav-cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "A terminal-native environment for running local AI systems",
   "type": "module",
   "bin": {
