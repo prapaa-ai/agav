@@ -40,6 +40,9 @@ case "$TARGETS" in
     build_target "darwin-x64" "agav-darwin-x64"
     build_target "linux-x64" "agav-linux-x64"
     build_target "linux-arm64" "agav-linux-arm64"
+    # No windows-arm64: Bun has no such compile target. ARM64 Windows runs
+    # the x64 build under emulation.
+    build_target "windows-x64" "agav-windows-x64.exe"
     ;;
   *)
     build_target "$TARGETS" "agav-$TARGETS"

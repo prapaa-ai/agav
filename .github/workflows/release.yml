@@ -50,6 +50,11 @@ jobs:
             os: ubuntu-latest
           - target: linux-arm64
             os: ubuntu-latest
+          # Bun cross-compiles, so no Windows runner is needed. `ext` is empty
+          # for every other target. No windows-arm64: Bun has no such target.
+          - target: windows-x64
+            os: ubuntu-latest
+            ext: .exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -68,9 +73,9 @@ jobs:
         run: |
           mkdir -p dist
           if [ "${{ matrix.target }}" = "$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')" ]; then
-            bun build source/cli.tsx --compile --outfile dist/agav-${{ matrix.target }}
+            bun build source/cli.tsx --compile --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
           else
-            bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}
+            bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
           fi
       - name: Sign binary (macOS)
         if: startsWith(matrix.target, 'darwin')
@@ -92,15 +97,15 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum agav-${{ matrix.target }} > agav-${{ matrix.target }}.sha256
-          cat agav-${{ matrix.target }}.sha256
+          sha256sum agav-${{ matrix.target }}${{ matrix.ext }} > agav-${{ matrix.target }}${{ matrix.ext }}.sha256
+          cat agav-${{ matrix.target }}${{ matrix.ext }}.sha256
 
       - uses: actions/upload-artifact@v4
         with:
           name: agav-${{ matrix.target }}
           path: |
-            dist/agav-${{ matrix.target }}
-            dist/agav-${{ matrix.target }}.sha256
+            dist/agav-${{ matrix.target }}${{ matrix.ext }}
+            dist/agav-${{ matrix.target }}${{ matrix.ext }}.sha256
             dist/agav-${{ matrix.target }}.sig
 
   release:
@@ -172,16 +177,19 @@ jobs:
           mkdir -p release
           for dir in artifacts/agav-*; do
             target=$(basename "$dir")
-            # Copy binary
-            if [ -f "$dir/$target" ]; then
-              cp "$dir/$target" "release/$target"
-              chmod +x "release/$target"
-            fi
-            # Copy checksums and signatures
-            for ext in sha256 sig; do
-              if [ -f "$dir/${target}.${ext}" ]; then
-                cp "$dir/${target}.${ext}" "release/${target}.${ext}"
-              fi
+            # The artifact dir is named after the target, but the Windows
+            # binary inside it carries a .exe suffix, so try both.
+            for asset in "$target" "$target.exe"; do
+              [ -f "$dir/$asset" ] || continue
+              # Copy binary
+              cp "$dir/$asset" "release/$asset"
+              chmod +x "release/$asset"
+              # Copy checksums and signatures
+              for ext in sha256 sig; do
+                if [ -f "$dir/${asset}.${ext}" ]; then
+                  cp "$dir/${asset}.${ext}" "release/${asset}.${ext}"
+                fi
+              done
             done
           done
           # Generate combined SHA256SUMS file
@@ -237,13 +245,15 @@ jobs:
             ### Windows
 
             ```powershell
-            # Download and install
-            Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-windows-x64.exe" -OutFile "$env:LOCALAPPDATA\agav.exe"
+            # Download and install (x64; ARM64 runs this under emulation)
+            New-Item -ItemType Directory -Force -Path "$env:LOCALAPPDATA\agav" | Out-Null
+            Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-windows-x64.exe" -OutFile "$env:LOCALAPPDATA\agav\agav.exe"
 
             # Add to PATH (run once)
+            $dir = "$env:LOCALAPPDATA\agav"
             $path = [Environment]::GetEnvironmentVariable("Path", "User")
-            if ($path -notlike "*$env:LOCALAPPDATA*") {
-              [Environment]::SetEnvironmentVariable("Path", "$env:LOCALAPPDATA;$path", "User")
+            if ($path -notlike "*$dir*") {
+              [Environment]::SetEnvironmentVariable("Path", "$dir;$path", "User")
             }
             ```
           generate_release_notes: true

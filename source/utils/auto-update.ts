@@ -52,6 +52,10 @@ async function saveState(state: UpdateState): Promise<void> {
 function getBinaryName(): string {
   const os = platform();
   const cpu = arch();
+  // Windows ships x64 only — Bun has no windows-arm64 target, and ARM64
+  // Windows runs the x64 build under emulation. It is also the one asset
+  // that carries a file extension.
+  if (os === "win32") return "agav-windows-x64.exe";
   const osName = os === "darwin" ? "darwin" : "linux";
   const archName = cpu === "arm64" ? "arm64" : "x64";
   return `agav-${osName}-${archName}`;

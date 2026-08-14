@@ -37,14 +37,19 @@ foreach ($arg in $args) {
 }
 
 # --- Detect architecture ---
-$Arch = if ([Environment]::Is64BitOperatingSystem) {
-    if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
-} else {
-    Write-Error "Unsupported: 32-bit systems are not supported."
+if (-not [Environment]::Is64BitOperatingSystem) {
+    Write-Host "Unsupported: 32-bit systems are not supported." -ForegroundColor Red
     exit 1
 }
 
-$Target = "win32-$Arch"
+# Bun has no windows-arm64 compile target, and Windows on ARM runs x64
+# binaries under emulation, so every 64-bit machine gets the x64 build.
+$Arch = "x64"
+if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
+    Write-Host "agav -> ARM64 detected; installing the x64 build (runs under emulation)." -ForegroundColor Cyan
+}
+
+$Target = "windows-$Arch"
 $AssetName = "agav-$Target.exe"
 
 # --- Check existing install ---
