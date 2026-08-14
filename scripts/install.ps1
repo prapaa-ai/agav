@@ -1,3 +1,8 @@
+# Keep this file pure ASCII. install.cmd fetches it with Invoke-WebRequest,
+# which writes raw bytes, and Windows PowerShell 5.1 decodes a BOM-less -File
+# script as Windows-1252. A UTF-8 char whose trailing byte is 0x93/0x94 then
+# becomes a smart quote, which the parser accepts as a string delimiter and
+# the whole script fails to parse.
 $ErrorActionPreference = "Stop"
 
 $Repo = "prapaa-ai/agav"
@@ -70,7 +75,7 @@ $TmpFile = Join-Path $InstallDir "$BinaryName.tmp"
 try {
     Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpFile -UseBasicParsing
 } catch {
-    Write-Error "Download failed — release not found for $Target"
+    Write-Error "Download failed - release not found for $Target"
     Write-Error "Check available releases: https://github.com/$Repo/releases"
     if (Test-Path $TmpFile) { Remove-Item $TmpFile -Force }
     exit 1
@@ -82,9 +87,9 @@ Move-Item -Path $TmpFile -Destination $FinalPath -Force
 # --- Verify ---
 try {
     $InstalledVer = & $FinalPath --version 2>&1 | Select-String -Pattern '\d+\.\d+\.\d+' | ForEach-Object { $_.Matches[0].Value }
-    Write-Host "✓ Agav v$InstalledVer installed to $FinalPath" -ForegroundColor Green
+    Write-Host "Agav v$InstalledVer installed to $FinalPath" -ForegroundColor Green
 } catch {
-    Write-Host "✓ Agav installed to $FinalPath" -ForegroundColor Green
+    Write-Host "Agav installed to $FinalPath" -ForegroundColor Green
 }
 
 # --- PATH check ---
