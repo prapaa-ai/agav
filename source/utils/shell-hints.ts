@@ -1,0 +1,40 @@
+type Shell = "posix" | "powershell" | "cmd";
+
+function detectShell(): Shell {
+  if (process.platform !== "win32") return "posix";
+  return process.env.PSModulePath ? "powershell" : "cmd";
+}
+
+export function setEnvHint(name: string, value: string): string {
+  switch (detectShell()) {
+    case "powershell":
+      return `$env:${name}="${value}"`;
+    case "cmd":
+      return `set ${name}=${value}`;
+    default:
+      return `export ${name}="${value}"`;
+  }
+}
+
+export function agavHomePath(relativePath = ""): string {
+  const normalizedPath = relativePath.replace(/^\/+/, "");
+  switch (detectShell()) {
+    case "powershell":
+      return `$HOME\\.agav\\${normalizedPath.replaceAll("/", "\\")}`;
+    case "cmd":
+      return `%USERPROFILE%\\.agav\\${normalizedPath.replaceAll("/", "\\")}`;
+    default:
+      return `~/.agav/${normalizedPath}`;
+  }
+}
+
+export function reinstallHint(): string {
+  switch (detectShell()) {
+    case "powershell":
+      return "irm https://agav.dev/install.ps1 | iex";
+    case "cmd":
+      return "curl -fsSL https://agav.dev/install.cmd -o install.cmd && install.cmd";
+    default:
+      return "curl -fsSL https://agav.dev/install.sh | bash";
+  }
+}
