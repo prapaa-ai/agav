@@ -281,6 +281,12 @@ export function useAgent(
             maxIterations: configRef.current.maxIterations,
           }),
           confirmTool: skillConfirmCallback,
+          onTokenUsage: (usage) => setTokenUsage((prev) => ({
+            inputTokens: prev.inputTokens + usage.inputTokens,
+            outputTokens: prev.outputTokens + usage.outputTokens,
+            cacheReadTokens: prev.cacheReadTokens + usage.cacheReadTokens,
+            cacheWriteTokens: prev.cacheWriteTokens + usage.cacheWriteTokens,
+          })),
           getSignal: () => abortRef.current?.signal,
         });
         toolRegistryRef.current.register(skillTool);
