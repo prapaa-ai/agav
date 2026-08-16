@@ -22,14 +22,35 @@ type ResponseStreamEvent = OpenAI.Responses.ResponseStreamEvent;
 export type OpenAIApiMode = "responses" | "chat";
 
 export class OpenAIProvider implements LLMProvider {
-  readonly name = "openai";
+  readonly name: string;
   private client: OpenAI;
   private apiMode: OpenAIApiMode;
   private toolEffortUnsupportedModels = new Set<string>();
 
-  constructor(apiKey: string, apiMode: OpenAIApiMode = "responses") {
-    this.client = new OpenAI({ apiKey });
+  constructor(
+    apiKey: string,
+    apiMode: OpenAIApiMode = "responses",
+    baseURL?: string,
+    name = "openai",
+  ) {
+    this.name = name;
+    this.client = new OpenAI({ apiKey, ...(baseURL ? { baseURL } : {}) });
     this.apiMode = apiMode;
+  }
+
+  /**
+   * Ceiling on completion tokens for a model, or undefined when the endpoint
+   * accepts whatever we ask for. Subclasses covering OpenAI-compatible APIs
+   * with tighter per-model limits override this.
+   */
+  protected maxOutputCap(_model: string): number | undefined {
+    return undefined;
+  }
+
+  protected resolveMaxTokens(params: StreamParams): number {
+    const requested = params.maxTokens ?? 16384;
+    const cap = this.maxOutputCap(params.model);
+    return cap === undefined ? requested : Math.min(requested, cap);
   }
 
   async *stream(params: StreamParams): AsyncIterable<StreamEvent> {
@@ -41,7 +62,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   private async *streamResponses(params: StreamParams): AsyncIterable<StreamEvent> {
-    const useNativeEffort = params.effort && supportsNativeEffort("openai", params.model);
+    const useNativeEffort = params.effort && supportsNativeEffort(this.name, params.model);
     const systemPrompt = useNativeEffort
       ? params.systemPrompt
       : applyEffortPrompt(params.systemPrompt, params.effort ?? "medium");
@@ -57,7 +78,7 @@ export class OpenAIProvider implements LLMProvider {
       instructions: systemPrompt || undefined,
       input,
       tools,
-      max_output_tokens: params.maxTokens ?? 16384,
+      max_output_tokens: this.resolveMaxTokens(params),
       stream: true,
       ...(useNativeEffort ? { reasoning: { effort: mapOpenAIEffort(params.effort!), summary: "concise" } } : {}),
     });
@@ -68,6 +89,12 @@ export class OpenAIProvider implements LLMProvider {
     // and item_id (the output item ID). Deltas reference item_id, but our agent loop
     // matches on the call_id from tool_call_start. Track the mapping.
     const itemToCallId = new Map<string, string>();
+
+    // Consumers sum usage events, so a provider must emit at most one per
+    // request. OpenAI itself reports usage exactly once, but this class also
+    // backs OpenAI-compatible endpoints whose wire behaviour we don't control,
+    // so hold the latest figures and emit them once the stream is done.
+    let lastUsage: Extract<StreamEvent, { type: "usage" }> | null = null;
 
     for await (const event of response as AsyncIterable<ResponseStreamEvent>) {
       switch (event.type) {
@@ -111,7 +138,7 @@ export class OpenAIProvider implements LLMProvider {
 
         case "response.completed":
           if (event.response.usage) {
-            yield {
+            lastUsage = {
               type: "usage",
               inputTokens: event.response.usage.input_tokens ?? 0,
               outputTokens: event.response.usage.output_tokens ?? 0,
@@ -129,6 +156,8 @@ export class OpenAIProvider implements LLMProvider {
           break;
       }
     }
+
+    if (lastUsage) yield lastUsage;
   }
 
   private async *streamChat(params: StreamParams): AsyncIterable<StreamEvent> {
@@ -149,7 +178,7 @@ export class OpenAIProvider implements LLMProvider {
     const createStream = (effort: typeof nativeEffort, prompt: string | undefined) =>
       this.client.chat.completions.create({
         model: params.model,
-        max_completion_tokens: params.maxTokens ?? 16384,
+        max_completion_tokens: this.resolveMaxTokens(params),
         messages: this.toChatMessages(params.messages, prompt),
         ...(effort ? { reasoning_effort: effort } : {}),
         tools: params.tools?.length ? params.tools.map((t) => this.toChatTool(t)) : undefined,
@@ -180,10 +209,14 @@ export class OpenAIProvider implements LLMProvider {
 
     yield { type: "message_start" };
 
+    // See streamResponses: at most one usage event per request, whatever the
+    // endpoint chooses to send. Groq and friends run through this path too.
+    let lastUsage: Extract<StreamEvent, { type: "usage" }> | null = null;
+
     for await (const chunk of stream) {
       if ((chunk as any).usage) {
         const u = (chunk as any).usage;
-        yield {
+        lastUsage = {
           type: "usage",
           inputTokens: u.prompt_tokens ?? 0,
           outputTokens: u.completion_tokens ?? 0,
@@ -235,6 +268,8 @@ export class OpenAIProvider implements LLMProvider {
         };
       }
     }
+
+    if (lastUsage) yield lastUsage;
   }
 
   // --- Responses API helpers ---

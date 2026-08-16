@@ -73,6 +73,25 @@ async function fetchGeminiModels(apiKey: string): Promise<FetchedModel[]> {
   }
 }
 
+async function fetchGroqModels(apiKey: string): Promise<FetchedModel[]> {
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { data?: { id: string }[] };
+    return (data.data ?? [])
+      // orpheus is speech synthesis and prompt-guard is a safety classifier;
+      // neither can hold a conversation, so keep them out of the picker.
+      .filter((m) => !/transcribe|tts|realtime|image|search|embed|whisper|moderation|audio|orpheus|prompt-guard/i.test(m.id))
+      .map((m) => ({ id: m.id, provider: "groq" }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  } catch {
+    return [];
+  }
+}
+
 function pickModel(
   models: FetchedModel[],
   currentModel: string,
@@ -230,6 +249,7 @@ export const modelCommand: SlashCommand = {
       if (context.config.anthropicApiKey) fetches.push(fetchAnthropicModels(context.config.anthropicApiKey));
       if (context.config.openaiApiKey) fetches.push(fetchOpenAIModels(context.config.openaiApiKey));
       if (context.config.geminiApiKey) fetches.push(fetchGeminiModels(context.config.geminiApiKey));
+      if (context.config.groqApiKey) fetches.push(fetchGroqModels(context.config.groqApiKey));
       const ollamaBase = context.config.ollamaEndpoint ?? `http://${context.config.ollamaHost ?? "localhost"}:${context.config.ollamaPort ?? 11434}`;
       fetches.push(fetchOllamaModels(ollamaBase));
 
@@ -267,6 +287,9 @@ export const modelCommand: SlashCommand = {
     if (context.config.geminiApiKey) {
       fetches.push(fetchGeminiModels(context.config.geminiApiKey));
     }
+    if (context.config.groqApiKey) {
+      fetches.push(fetchGroqModels(context.config.groqApiKey));
+    }
 
     const ollamaBase = context.config.ollamaEndpoint ??
       `http://${context.config.ollamaHost ?? "localhost"}:${context.config.ollamaPort ?? 11434}`;
@@ -278,7 +301,7 @@ export const modelCommand: SlashCommand = {
     if (allModels.length === 0) {
       return {
         type: "message",
-        text: `Current: ${currentModel} (${currentProvider})\n\nNo providers reachable. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or start Ollama.`,
+        text: `Current: ${currentModel} (${currentProvider})\n\nNo providers reachable. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, or start Ollama.`,
       };
     }
 

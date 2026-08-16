@@ -4,6 +4,7 @@ import { AnthropicProvider } from "./anthropic.js";
 import { OpenAIProvider } from "./openai.js";
 import { OllamaProvider } from "./ollama.js";
 import { GeminiProvider } from "./gemini.js";
+import { GroqProvider } from "./groq.js";
 import { RetryProvider } from "./retry.js";
 import { agavHomePath } from "../utils/shell-hints.js";
 
@@ -46,6 +47,16 @@ export function createProvider(config: AgavConfig): LLMProvider {
         );
       }
       provider = new GeminiProvider(key);
+      break;
+    }
+    case "groq": {
+      const key = config.groqApiKey;
+      if (!key) {
+        throw new Error(
+          `Groq API key not found. Set GROQ_API_KEY or add it to ${agavHomePath("config.json")}`,
+        );
+      }
+      provider = new GroqProvider(key, config.groqApi ?? "responses");
       break;
     }
     default:

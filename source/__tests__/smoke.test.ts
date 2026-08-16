@@ -44,9 +44,27 @@ describe("CLI boot", () => {
       ANTHROPIC_API_KEY: "",
       OPENAI_API_KEY: "",
       GEMINI_API_KEY: "",
+      GROQ_API_KEY: "",
     });
     expect(result.exitCode).toBe(1);
     expect(`${result.stdout}\n${result.stderr}`).toContain("API key");
+  });
+
+  // --provider must accept every provider the help text advertises. groq was
+  // wired through config and the registry but left out of the flag allowlist,
+  // so the documented flag exited 1 as an unknown provider.
+  it("accepts every advertised --provider value", async () => {
+    const { PROVIDERS } = await import("../config/config.js");
+
+    for (const provider of PROVIDERS) {
+      const result = await runCli(["-P", "hi", "--provider", provider], {
+        ANTHROPIC_API_KEY: "",
+        OPENAI_API_KEY: "",
+        GEMINI_API_KEY: "",
+        GROQ_API_KEY: "",
+      });
+      expect(`${result.stdout}\n${result.stderr}`).not.toContain("Unknown provider");
+    }
   });
 });
 

@@ -22,13 +22,25 @@ export interface AgavHooks {
   preCommit?: string;
 }
 
+/** Every provider Agav can talk to. Single source of truth — the CLI flag,
+ * session resume, and the config schema all validate against this list. */
+export const PROVIDERS = ["anthropic", "openai", "ollama", "gemini", "groq"] as const;
+
+export type ProviderName = (typeof PROVIDERS)[number];
+
+export function isKnownProvider(value: unknown): value is ProviderName {
+  return typeof value === "string" && (PROVIDERS as readonly string[]).includes(value);
+}
+
 export interface AgavConfig {
-  provider: "anthropic" | "openai" | "ollama" | "gemini";
+  provider: ProviderName;
   model: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
   openaiApi?: "chat" | "responses";
   geminiApiKey?: string;
+  groqApiKey?: string;
+  groqApi?: "chat" | "responses";
   ollamaEndpoint?: string;  // e.g. "http://192.168.1.5:11434" — takes precedence over host+port
   ollamaHost?: string;
   ollamaPort?: number;
@@ -52,7 +64,7 @@ const CONFIG_PATH = join(AGAV_DIR, "config.json");
 const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
-    enum: ["openai", "ollama", "anthropic", "gemini"],
+    enum: [...PROVIDERS],
     type: "string",
     eg: "openai",
   },
@@ -117,6 +129,17 @@ const PROJECT_CONFIG_TEMPLATE = {
     description: "Google Gemini API key. Prefer the GEMINI_API_KEY environment variable for secrets.",
     type: "string",
     eg: "set-via-GEMINI_API_KEY",
+  },
+  groqApiKey: {
+    description: "Groq API key. Prefer the GROQ_API_KEY environment variable for secrets.",
+    type: "string",
+    eg: "set-via-GROQ_API_KEY",
+  },
+  groqApi: {
+    description: "Groq API surface to call. Independent of openaiApi.",
+    enum: ["chat", "responses"],
+    type: "string",
+    eg: "responses",
   },
   ollamaEndpoint: {
     description: "Complete Ollama API base URL; overrides ollamaHost and ollamaPort.",
@@ -262,6 +285,11 @@ export async function loadConfig(): Promise<AgavConfig> {
     globalConfig.geminiApiKey ??
     DEFAULT_CONFIG.geminiApiKey ?? "",
   ) || undefined;
+  merged.groqApiKey = decrypt(
+    process.env["GROQ_API_KEY"] ??
+    globalConfig.groqApiKey ??
+    DEFAULT_CONFIG.groqApiKey ?? "",
+  ) || undefined;
 
   // Ollama — env vars take precedence over config file
   if (process.env["OLLAMA_ENDPOINT"]) {
@@ -287,11 +315,12 @@ export async function loadConfig(): Promise<AgavConfig> {
 /** Persist config to the global config file, encrypting any API keys present. */
 export async function saveConfig(config: AgavConfig): Promise<void> {
   await ensureDir(AGAV_DIR);
-  const { anthropicApiKey, openaiApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
+  const { anthropicApiKey, openaiApiKey, geminiApiKey, groqApiKey, ollamaApiKey, ...safe } = config;
   const out: Record<string, unknown> = { ...safe };
   if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
   if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
   if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
+  if (groqApiKey) out.groqApiKey = encrypt(groqApiKey);
   if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
   await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
 }

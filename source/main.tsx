@@ -1,7 +1,7 @@
 import React from "react";
 import { render } from "ink";
 import App from "./app.js";
-import { isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
+import { isEffortLevel, isKnownProvider, loadConfig, type AgavConfig } from "./config/config.js";
 import { createProvider } from "./providers/registry.js";
 import type { LLMProvider } from "./providers/types.js";
 import { buildSystemPrompt } from "./utils/system-prompt.js";
@@ -336,7 +336,7 @@ export async function main() {
     $ cat file | agav -P "explain this"
 
   Options
-    --provider, -p       LLM provider: anthropic, openai, gemini, or ollama (default: anthropic)
+    --provider, -p       LLM provider: anthropic, openai, gemini, groq, or ollama (default: anthropic)
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
     --effort             Reasoning effort: low, medium, high, or max (default: high)
     --ollama-host        Ollama host (default: localhost)
@@ -381,12 +381,14 @@ export async function main() {
     return;
   }
 
-  // Auto-update check (silent on failure, skipped in CI/pipe mode)
-  try {
-    const { checkAndUpdate } = await import("./utils/auto-update.js");
-    await checkAndUpdate();
-  } catch {
-    // Never block startup on update failures
+  // Auto-update check (silent on failure, skipped in CI/pipe mode and non-interactive runs)
+  if (!flags.print && !flags.run) {
+    try {
+      const { checkAndUpdate } = await import("./utils/auto-update.js");
+      await checkAndUpdate();
+    } catch {
+      // Never block startup on update failures
+    }
   }
 
   let outputSchema: OutputSchema | undefined;
@@ -405,8 +407,8 @@ export async function main() {
 
   if (typeof flags.provider === "string") {
     const p = flags.provider;
-    if (p !== "anthropic" && p !== "openai" && p !== "ollama" && p !== "gemini") {
-      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "gemini", or "ollama".`);
+    if (!isKnownProvider(p)) {
+      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "gemini", "groq", or "ollama".`);
       process.exit(1);
     }
     const providerChanged = p !== config.provider;
@@ -521,7 +523,7 @@ export async function main() {
       if (typeof flags.model !== "string") {
         config.model = session.model || config.model;
       }
-      if (typeof flags.provider !== "string" && (session.provider === "anthropic" || session.provider === "openai" || session.provider === "ollama" || session.provider === "gemini")) {
+      if (typeof flags.provider !== "string" && isKnownProvider(session.provider)) {
         config.provider = session.provider;
       }
     } else {
@@ -546,7 +548,7 @@ export async function main() {
       if (typeof flags.model !== "string") {
         config.model = session.model || config.model;
       }
-      if (typeof flags.provider !== "string" && (session.provider === "anthropic" || session.provider === "openai" || session.provider === "ollama" || session.provider === "gemini")) {
+      if (typeof flags.provider !== "string" && isKnownProvider(session.provider)) {
         config.provider = session.provider;
       }
     }
@@ -557,6 +559,7 @@ export async function main() {
       anthropic: "anthropicApiKey",
       openai: "openaiApiKey",
       gemini: "geminiApiKey",
+      groq: "groqApiKey",
     };
     const finalKey = keyMap[config.provider] ?? "anthropicApiKey";
     if (!config[finalKey]) {
@@ -572,8 +575,11 @@ export async function main() {
         } else if (config.geminiApiKey) {
           config.provider = "gemini";
           config.model = "gemini-3.5-flash-lite";
+        } else if (config.groqApiKey) {
+          config.provider = "groq";
+          config.model = "llama-3.3-70b-versatile";
         } else {
-          const message = `\n  Agav — no API key found.\n  Set one of:\n    ${setEnvHint("ANTHROPIC_API_KEY", "sk-ant-...")}\n    ${setEnvHint("OPENAI_API_KEY", "sk-...")}\n    ${setEnvHint("GEMINI_API_KEY", "...")}\n  Or start Ollama: agav --provider ollama\n`;
+          const message = `\n  Agav — no API key found.\n  Set one of:\n    ${setEnvHint("ANTHROPIC_API_KEY", "sk-ant-...")}\n    ${setEnvHint("OPENAI_API_KEY", "sk-...")}\n    ${setEnvHint("GEMINI_API_KEY", "...")}\n    ${setEnvHint("GROQ_API_KEY", "...")}\n  Or start Ollama: agav --provider ollama\n`;
           process.stderr.write(message);
           process.exit(1);
         }
@@ -582,6 +588,7 @@ export async function main() {
           anthropic: "ANTHROPIC_API_KEY",
           openai: "OPENAI_API_KEY",
           gemini: "GEMINI_API_KEY",
+          groq: "GROQ_API_KEY",
         };
         const keyName = envMap[config.provider] ?? "API_KEY";
         const message = `\n  Agav — ${keyName} not set.\n  Set it:  ${setEnvHint(keyName, "your-key")}\n`;

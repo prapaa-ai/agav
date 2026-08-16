@@ -1,4 +1,5 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
+import { isKnownProvider } from "../config/config.js";
 import { listSessions, loadSession } from "../config/history.js";
 
 /** List saved sessions or load one into the active conversation. */
@@ -24,7 +25,7 @@ export const historyCommand: SlashCommand = {
       }
       context.loadSession(loaded);
       context.setModel(loaded.model || context.config.model);
-      if (loaded.provider === "anthropic" || loaded.provider === "openai" || loaded.provider === "ollama") {
+      if (isKnownProvider(loaded.provider)) {
         context.setProvider(loaded.provider);
       }
       return {
