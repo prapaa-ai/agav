@@ -42,12 +42,20 @@ download_file() {
   output="$2"
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fL "$url" -o "$output"
+    if [ -t 2 ]; then
+      curl -fL --progress-bar "$url" -o "$output"
+    else
+      curl -fsSL "$url" -o "$output"
+    fi
     return
   fi
 
   if command -v wget >/dev/null 2>&1; then
-    wget -O "$output" "$url"
+    if [ -t 2 ]; then
+      wget -O "$output" "$url"
+    else
+      wget -q -O "$output" "$url"
+    fi
     return
   fi
 
