@@ -31,7 +31,7 @@
 One command, no Node.js required — Agav ships as a self-contained binary compiled with [Bun](https://bun.sh):
 
 ```bash
-curl -fL https://agav.dev/install.sh | bash
+curl -fsSL https://agav.dev/install.sh | bash
 ```
 
 For Windows PowerShell:
@@ -45,7 +45,7 @@ For Windows Command Prompt (`cmd.exe`):
 1. Download the installer:
 
    ```bat
-   curl -fL https://agav.dev/install.cmd -o install.cmd
+   curl -fsSL https://agav.dev/install.cmd -o install.cmd
    ```
 
 2. Run it from the same Command Prompt window:
@@ -70,7 +70,7 @@ Both installers accept `--uninstall`.
 **macOS / Linux:**
 
 ```bash
-curl -fL https://agav.dev/install.sh | bash -s -- --uninstall
+curl -fsSL https://agav.dev/install.sh | bash -s -- --uninstall
 ```
 
 **Windows PowerShell:**
@@ -82,7 +82,7 @@ curl -fL https://agav.dev/install.sh | bash -s -- --uninstall
 **Windows Command Prompt (`cmd.exe`):**
 
 ```bat
-curl -fL https://agav.dev/install.cmd -o install.cmd
+curl -fsSL https://agav.dev/install.cmd -o install.cmd
 install.cmd --uninstall
 del install.cmd
 ```

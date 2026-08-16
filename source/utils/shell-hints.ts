@@ -44,8 +44,8 @@ export function reinstallHint(): string {
     case "powershell":
       return "irm https://agav.dev/install.ps1 | iex";
     case "cmd":
-      return "curl -fL https://agav.dev/install.cmd -o install.cmd && install.cmd";
+      return "curl -fsSL https://agav.dev/install.cmd -o install.cmd && install.cmd";
     default:
-      return "curl -fL https://agav.dev/install.sh | bash";
+      return "curl -fsSL https://agav.dev/install.sh | bash";
   }
 }

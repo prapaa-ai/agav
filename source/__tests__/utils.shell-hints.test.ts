@@ -40,7 +40,7 @@ describe("shell hints", () => {
     withShell("linux", {}, () => {
       expect(setEnvHint("GEMINI_API_KEY", "test-key")).toBe('export GEMINI_API_KEY="test-key"');
       expect(agavHomePath("config.json")).toBe("~/.agav/config.json");
-      expect(reinstallHint()).toBe("curl -fL https://agav.dev/install.sh | bash");
+      expect(reinstallHint()).toBe("curl -fsSL https://agav.dev/install.sh | bash");
     });
   });
 
@@ -56,7 +56,7 @@ describe("shell hints", () => {
     withShell("win32", { PROMPT: "C:\\Users\\x>" }, () => {
       expect(setEnvHint("GEMINI_API_KEY", "test-key")).toBe("set GEMINI_API_KEY=test-key");
       expect(agavHomePath("config.json")).toBe("%USERPROFILE%\\.agav\\config.json");
-      expect(reinstallHint()).toBe("curl -fL https://agav.dev/install.cmd -o install.cmd && install.cmd");
+      expect(reinstallHint()).toBe("curl -fsSL https://agav.dev/install.cmd -o install.cmd && install.cmd");
     });
   });
 
@@ -64,7 +64,7 @@ describe("shell hints", () => {
     withShell("win32", { PSModulePath: PS_MODULE_PATH, PROMPT: "C:\\Users\\x>" }, () => {
       expect(setEnvHint("OPENAI_API_KEY", "test-key")).toBe("set OPENAI_API_KEY=test-key");
       expect(agavHomePath("config.json")).toBe("%USERPROFILE%\\.agav\\config.json");
-      expect(reinstallHint()).toBe("curl -fL https://agav.dev/install.cmd -o install.cmd && install.cmd");
+      expect(reinstallHint()).toBe("curl -fsSL https://agav.dev/install.cmd -o install.cmd && install.cmd");
     });
   });
 
@@ -74,7 +74,7 @@ describe("shell hints", () => {
     withShell("win32", { PSModulePath: PS_MODULE_PATH, MSYSTEM: "MINGW64" }, () => {
       expect(setEnvHint("GEMINI_API_KEY", "test-key")).toBe('export GEMINI_API_KEY="test-key"');
       expect(agavHomePath("config.json")).toBe("~/.agav/config.json");
-      expect(reinstallHint()).toBe("curl -fL https://agav.dev/install.sh | bash");
+      expect(reinstallHint()).toBe("curl -fsSL https://agav.dev/install.sh | bash");
     });
   });
 
