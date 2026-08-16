@@ -72,13 +72,64 @@ if ($Version -eq "latest") {
 Write-Host "agav -> Downloading agav for $Target..." -ForegroundColor Cyan
 
 # --- Download ---
+function Save-FileWithProgress {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    Add-Type -AssemblyName System.Net.Http
+    $Handler = New-Object System.Net.Http.HttpClientHandler
+    $Handler.DefaultProxyCredentials = [System.Net.CredentialCache]::DefaultCredentials
+    $Client = New-Object System.Net.Http.HttpClient($Handler)
+    $Client.DefaultRequestHeaders.UserAgent.ParseAdd("agav-installer")
+    $Response = $null
+    $InputStream = $null
+    $OutputStream = $null
+
+    try {
+        $Response = $Client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        $Response.EnsureSuccessStatusCode() | Out-Null
+
+        $TotalBytes = $Response.Content.Headers.ContentLength
+        $InputStream = $Response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $OutputStream = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Create)
+        $Buffer = New-Object byte[] (64KB)
+        $Downloaded = [int64]0
+        $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+        while (($Read = $InputStream.Read($Buffer, 0, $Buffer.Length)) -gt 0) {
+            $OutputStream.Write($Buffer, 0, $Read)
+            $Downloaded += $Read
+            $DownloadedMB = $Downloaded / 1MB
+            $Speed = if ($Stopwatch.Elapsed.TotalSeconds -gt 0) { $DownloadedMB / $Stopwatch.Elapsed.TotalSeconds } else { 0 }
+
+            if ($TotalBytes -and $TotalBytes -gt 0) {
+                $Percent = [Math]::Min(100, [int](($Downloaded * 100) / $TotalBytes))
+                $Status = "{0:N1} MB / {1:N1} MB ({2:N1} MB/s)" -f $DownloadedMB, ($TotalBytes / 1MB), $Speed
+                Write-Progress -Activity "Downloading $AssetName" -Status $Status -PercentComplete $Percent
+            } else {
+                $Status = "{0:N1} MB ({1:N1} MB/s)" -f $DownloadedMB, $Speed
+                Write-Progress -Activity "Downloading $AssetName" -Status $Status
+            }
+        }
+    } finally {
+        Write-Progress -Activity "Downloading $AssetName" -Completed
+        if ($OutputStream) { $OutputStream.Dispose() }
+        if ($InputStream) { $InputStream.Dispose() }
+        if ($Response) { $Response.Dispose() }
+        $Client.Dispose()
+        $Handler.Dispose()
+    }
+}
+
 if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
 $TmpFile = Join-Path $InstallDir "$BinaryName.tmp"
 try {
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpFile -UseBasicParsing
+    Save-FileWithProgress -Url $DownloadUrl -Destination $TmpFile
 } catch {
     Write-Error "Download failed - release not found for $Target"
     Write-Error "Check available releases: https://github.com/$Repo/releases"

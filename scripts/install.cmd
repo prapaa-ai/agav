@@ -11,7 +11,7 @@ if errorlevel 1 (
 )
 
 echo agav ^> Downloading installer...
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -Uri '%INSTALLER_URL%' -OutFile '%TMP_PS1%'"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri '%INSTALLER_URL%' -OutFile '%TMP_PS1%'"
 if errorlevel 1 (
   echo ERROR: Failed to download installer from %INSTALLER_URL%
   if exist "%TMP_PS1%" del "%TMP_PS1%" >nul 2>nul

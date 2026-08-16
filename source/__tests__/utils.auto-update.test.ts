@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, it, expect, afterEach } from "vitest";
 import { getCurrentBinaryPath, detectManagedLayout } from "../utils/auto-update.js";
 
@@ -60,6 +62,24 @@ describe("getCurrentBinaryPath", () => {
 
   it("refuses a binary that isn't ours", () => {
     expect(withExecPath("/usr/local/bin/something-else", getCurrentBinaryPath)).toBeNull();
+  });
+});
+
+describe("installer docs and scripts", () => {
+  it("uses curl flags that preserve download progress while still failing on HTTP errors", () => {
+    const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+    const installSh = readFileSync(new URL("../../scripts/install.sh", import.meta.url), "utf8");
+
+    expect(readme).toContain("curl -fL https://agav.dev/install.sh | bash");
+    expect(readme).toContain("curl -fL https://agav.dev/install.cmd -o install.cmd");
+    expect(installSh).toContain('curl -fL "$url" -o "$output"');
+  });
+
+  it("does not suppress PowerShell web request progress in install.cmd", () => {
+    const installCmd = readFileSync(new URL("../../scripts/install.cmd", import.meta.url), "utf8");
+
+    expect(installCmd).toContain("Invoke-WebRequest -Uri '%INSTALLER_URL%' -OutFile '%TMP_PS1%'");
+    expect(installCmd).not.toContain("$ProgressPreference='SilentlyContinue'");
   });
 });
 

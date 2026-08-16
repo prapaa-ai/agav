@@ -325,7 +325,7 @@ export async function forceUpdate(targetVersion?: string): Promise<boolean> {
   const binaryPath = getCurrentBinaryPath();
   if (!binaryPath) {
     process.stderr.write(`  Cannot auto-update — not running as a standalone binary.\n`);
-    process.stderr.write(`  Reinstall with: curl -fsSL https://agav.dev/install.sh | bash\n`);
+    process.stderr.write(`  Reinstall with: curl -fL https://agav.dev/install.sh | bash\n`);
     return false;
   }
 
