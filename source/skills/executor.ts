@@ -19,6 +19,9 @@ interface SkillExecDeps {
   effort: EffortLevel;
   maxIterations: number;
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
+  // Optional nested-skill accounting callback: /skill-name continues to use _tokenUsage on the
+  // returned command result, while activate_skill uses this to merge usage into the parent turn.
+  onTokenUsage?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   signal?: AbortSignal;
 }
 
@@ -106,25 +109,35 @@ export async function executeSkill(
   });
 
   let result = "";
+  let failed = false;
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
-  for await (const event of loop) {
-    switch (event.type) {
-      case "streaming_text":
-        result += event.text;
-        break;
-      case "assistant_message_complete":
-        result = event.text;
-        break;
-      case "usage":
-        usage.inputTokens += event.inputTokens;
-        usage.outputTokens += event.outputTokens;
-        usage.cacheReadTokens += event.cacheReadTokens ?? 0;
-        usage.cacheWriteTokens += event.cacheWriteTokens ?? 0;
-        break;
-    }
-  }
 
-  recordSkillTrace(skill.name, args, usage.inputTokens + usage.outputTokens).catch(() => {});
+  // Report usage and record the trace from a finally so an abort or provider
+  // error part-way through still accounts for the tokens already spent.
+  try {
+    for await (const event of loop) {
+      switch (event.type) {
+        case "streaming_text":
+          result += event.text;
+          break;
+        case "assistant_message_complete":
+          result = event.text;
+          break;
+        case "usage":
+          usage.inputTokens += event.inputTokens;
+          usage.outputTokens += event.outputTokens;
+          usage.cacheReadTokens += event.cacheReadTokens ?? 0;
+          usage.cacheWriteTokens += event.cacheWriteTokens ?? 0;
+          break;
+      }
+    }
+  } catch (err) {
+    failed = true;
+    throw err;
+  } finally {
+    deps.onTokenUsage?.(usage);
+    recordSkillTrace(skill.name, args, usage.inputTokens + usage.outputTokens, !failed).catch(() => {});
+  }
 
   return {
     output: result || "(skill produced no output)",

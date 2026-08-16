@@ -5,6 +5,7 @@ import { OpenAIProvider } from "./openai.js";
 import { OllamaProvider } from "./ollama.js";
 import { GeminiProvider } from "./gemini.js";
 import { RetryProvider } from "./retry.js";
+import { agavHomePath } from "../utils/shell-hints.js";
 
 export function createProvider(config: AgavConfig): LLMProvider {
   let provider: LLMProvider;
@@ -14,7 +15,7 @@ export function createProvider(config: AgavConfig): LLMProvider {
       const key = config.anthropicApiKey;
       if (!key) {
         throw new Error(
-          "Anthropic API key not found. Set ANTHROPIC_API_KEY or add it to ~/.agav/config.json",
+          `Anthropic API key not found. Set ANTHROPIC_API_KEY or add it to ${agavHomePath("config.json")}`,
         );
       }
       provider = new AnthropicProvider(key);
@@ -24,7 +25,7 @@ export function createProvider(config: AgavConfig): LLMProvider {
       const key = config.openaiApiKey;
       if (!key) {
         throw new Error(
-          "OpenAI API key not found. Set OPENAI_API_KEY or add it to ~/.agav/config.json",
+          `OpenAI API key not found. Set OPENAI_API_KEY or add it to ${agavHomePath("config.json")}`,
         );
       }
       provider = new OpenAIProvider(key, config.openaiApi ?? "responses");
@@ -41,7 +42,7 @@ export function createProvider(config: AgavConfig): LLMProvider {
       const key = config.geminiApiKey;
       if (!key) {
         throw new Error(
-          "Gemini API key not found. Set GEMINI_API_KEY or add it to ~/.agav/config.json",
+          `Gemini API key not found. Set GEMINI_API_KEY or add it to ${agavHomePath("config.json")}`,
         );
       }
       provider = new GeminiProvider(key);

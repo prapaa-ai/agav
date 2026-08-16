@@ -14,6 +14,7 @@ import { createToolRegistry } from "./tools/registry-factory.js";
 import { getToolLabel } from "./utils/tool-labels.js";
 import { loadKeybindings } from "./config/keybindings.js";
 import { dim, icons } from "./utils/color.js";
+import { setEnvHint } from "./utils/shell-hints.js";
 import {
   createOutputValidator,
   formatValidationErrors,
@@ -572,7 +573,7 @@ export async function main() {
           config.provider = "gemini";
           config.model = "gemini-3.5-flash-lite";
         } else {
-          const message = `\n  Agav — no API key found.\n  Set one of:\n    export ANTHROPIC_API_KEY="sk-ant-..."\n    export OPENAI_API_KEY="sk-..."\n    export GEMINI_API_KEY="..."\n  Or start Ollama: agav --provider ollama\n`;
+          const message = `\n  Agav — no API key found.\n  Set one of:\n    ${setEnvHint("ANTHROPIC_API_KEY", "sk-ant-...")}\n    ${setEnvHint("OPENAI_API_KEY", "sk-...")}\n    ${setEnvHint("GEMINI_API_KEY", "...")}\n  Or start Ollama: agav --provider ollama\n`;
           process.stderr.write(message);
           process.exit(1);
         }
@@ -583,7 +584,7 @@ export async function main() {
           gemini: "GEMINI_API_KEY",
         };
         const keyName = envMap[config.provider] ?? "API_KEY";
-        const message = `\n  Agav — ${keyName} not set.\n  Export it:  export ${keyName}="your-key"\n`;
+        const message = `\n  Agav — ${keyName} not set.\n  Set it:  ${setEnvHint(keyName, "your-key")}\n`;
         process.stderr.write(message);
         process.exit(1);
       }
@@ -644,14 +645,14 @@ export async function main() {
 
   // Every non-interactive path has returned by now, so the Ink UI is next.
   // Ink needs raw mode, which requires a TTY — without this guard a piped
-  // stdin (e.g. the installer launching us from `curl … | bash`) surfaces as
+  // stdin (e.g. an installer launching us through a pipe) surfaces as
   // an unreadable React stack trace instead of an actionable message.
   if (!process.stdin.isTTY) {
     process.stderr.write(
       "\n  Agav's interactive UI needs a terminal, but stdin is not a TTY.\n\n" +
         "    • Run `agav` directly from your shell.\n" +
         "    • For piped or scripted use:  agav -P \"your prompt\"\n" +
-        "    • Just installed via `curl … | bash`? That pipe is still attached —\n" +
+        "    • Just installed through a pipe? That pipe is still attached —\n" +
         "      open your terminal and run `agav`.\n\n",
     );
     process.exit(1);

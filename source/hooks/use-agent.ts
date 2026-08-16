@@ -281,6 +281,12 @@ export function useAgent(
             maxIterations: configRef.current.maxIterations,
           }),
           confirmTool: skillConfirmCallback,
+          onTokenUsage: (usage) => setTokenUsage((prev) => ({
+            inputTokens: prev.inputTokens + usage.inputTokens,
+            outputTokens: prev.outputTokens + usage.outputTokens,
+            cacheReadTokens: prev.cacheReadTokens + usage.cacheReadTokens,
+            cacheWriteTokens: prev.cacheWriteTokens + usage.cacheWriteTokens,
+          })),
           getSignal: () => abortRef.current?.signal,
         });
         toolRegistryRef.current.register(skillTool);
@@ -460,12 +466,23 @@ export function useAgent(
         let currentThinking = "";
 
         try {
-          // Refresh dynamic context (git state, AGAV.md) before each turn
-          const { refreshDynamicContext } = await import("../utils/system-prompt.js");
-          const dynamicCtx = await refreshDynamicContext(mcpManagerRef.current);
-          let effectiveSystemPrompt = dynamicCtx
-            ? (config.systemPrompt ?? "") + "\n\n" + dynamicCtx
+          // Split per-turn context by how often it changes. Stable pieces (AGAV.md,
+          // memories, skills, MCP resources) stay in the system prompt; volatile
+          // pieces (git state, steers, plan) are appended to this turn's user
+          // message below. Anything volatile at the front of the request evicts the
+          // tool schemas and the whole conversation from the provider's prefix cache.
+          const { refreshStableContext, refreshVolatileContext, formatTurnContext } =
+            await import("../utils/system-prompt.js");
+          const [stableCtx, volatileCtx] = await Promise.all([
+            refreshStableContext(mcpManagerRef.current),
+            refreshVolatileContext(),
+          ]);
+          const effectiveSystemPrompt = stableCtx
+            ? (config.systemPrompt ?? "") + "\n\n" + stableCtx
             : config.systemPrompt;
+
+          const turnContextParts: string[] = [];
+          if (volatileCtx) turnContextParts.push(volatileCtx);
 
           const existingPlan = await loadPlan();
           const hasActivePlan = existingPlan && existingPlan.steps.some((s) => s.status !== "done");
@@ -547,7 +564,7 @@ export function useAgent(
                   },
                 ]);
 
-                effectiveSystemPrompt = (config.systemPrompt ?? "") + "\n\n" + planText;
+                turnContextParts.push(planText);
               }
             } catch {
               setMessages((prev) => [
@@ -558,8 +575,18 @@ export function useAgent(
           } else {
             // Inject active plan if one exists
             if (stillHasPlan && planAfterClear) {
-              effectiveSystemPrompt = (config.systemPrompt ?? "") + "\n\n" + formatPlanForPrompt(planAfterClear);
+              turnContextParts.push(formatPlanForPrompt(planAfterClear));
             }
+          }
+
+          // Attach volatile context to the tail of this turn's user message. It is
+          // left frozen in history rather than rewritten on later turns: editing an
+          // earlier message would invalidate the very prefix this split protects,
+          // so the wrapper tells the model to trust the most recent copy.
+          if (turnContextParts.length > 0) {
+            conversationRef.current.appendToLastUserMessage(
+              formatTurnContext(turnContextParts.join("\n\n")),
+            );
           }
 
           const loop = runAgentLoop({

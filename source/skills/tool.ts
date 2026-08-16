@@ -17,6 +17,7 @@ interface SkillToolDeps {
     maxIterations: number;
   };
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
+  onTokenUsage?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   getSignal: () => AbortSignal | undefined;
 }
 
@@ -67,6 +68,7 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
           effort: config.effort,
           maxIterations: config.maxIterations,
           confirmTool: deps.confirmTool,
+          onTokenUsage: deps.onTokenUsage,
           signal: deps.getSignal(),
         });
         return { output: result.output, isError: false };
