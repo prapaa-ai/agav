@@ -10,7 +10,7 @@
     "build"
   ],
   "scripts": {
-    "build": "tsc && node -e \"require('fs').copyFileSync('source/cli.tsx','build/cli.js')\"",
+    "build": "tsc && node -e \"require('fs').copyFileSync('source/cli.tsx','build/cli.js')\" && node -e \"require('fs').cpSync('source/agents/bundled','build/agents/bundled',{recursive:true})\"",
     "dev": "tsx --watch source/cli.tsx",
     "start": "tsx source/cli.tsx",
     "typecheck": "tsc --noEmit",
@@ -38,7 +38,8 @@
     "openai": "^6.46.0",
     "pdfjs-dist": "^6.1.200",
     "react": "^19.2.0",
-    "sharp": "^0.35.3"
+    "sharp": "^0.35.3",
+    "yaml": "^2.3.4"
   },
   "devDependencies": {
     "@sindresorhus/tsconfig": "^8.1.0",

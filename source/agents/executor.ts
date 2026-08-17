@@ -1,0 +1,220 @@
+/**
+ * Agent executor - runs native and A2A agents
+ */
+
+import type { AgentDefinition } from "./types.js";
+import { ConversationState } from "../agent/conversation.js";
+import { ToolRegistry } from "../tools/registry.js";
+import type { LLMProvider } from "../providers/types.js";
+import type { AgavConfig } from "../config/config.js";
+import { runAgentLoop } from "../agent/loop.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { decrypt } from "../utils/encrypt.js";
+
+// AgavHooks type - defined locally since it's not exported from hooks.js
+interface AgavHooks {
+  afterEdit?: string;
+  afterShell?: string;
+  preCommit?: string;
+}
+
+/**
+ * Load agent credentials from config.json.
+ * Tries the agent's own path first, then falls back to the global
+ * ~/.agav/agents/<name> path so bundled agents can be configured
+ * without touching the app's source directory.
+ */
+async function loadAgentCredentials(agentPath: string, agentName?: string): Promise<Record<string, string>> {
+  const paths = [agentPath];
+
+  if (agentName) {
+    const { homedir } = await import("node:os");
+    const globalPath = join(homedir(), ".agav", "agents", agentName);
+    if (globalPath !== agentPath) paths.push(globalPath);
+  }
+
+  for (const p of paths) {
+    const configPath = join(p, "config.json");
+    try {
+      const content = await readFile(configPath, "utf-8");
+      const config = JSON.parse(content);
+
+      const decrypted: Record<string, string> = {};
+      for (const [key, value] of Object.entries(config)) {
+        if (typeof value === "string") {
+          try {
+            decrypted[key] = decrypt(value);
+          } catch {
+            // Not encrypted, use as-is
+            decrypted[key] = value;
+          }
+        }
+      }
+
+      if (Object.keys(decrypted).length > 0) return decrypted;
+    } catch {
+      // No config.json at this path — try next
+    }
+  }
+
+  return {};
+}
+
+/**
+ * Execute a native agent (JS/TS in-process)
+ */
+export async function executeNativeAgent(
+  agent: AgentDefinition,
+  task: string,
+  deps: {
+    provider: LLMProvider;
+    config: AgavConfig;
+    hooks?: AgavHooks;
+    /** Called for each AgentEvent emitted by the child loop, keyed by a per-invocation callId. */
+    onProgressUpdate?: (callId: string, event: import("../agent/loop.js").AgentEvent) => void;
+    /** Parent's confirmTool — when provided, agent sub-tools that are marked
+     *  destructive will pause and surface HITL confirmation to the user. */
+    confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<import("../agent/loop.js").ConfirmResult>;
+  }
+): Promise<string> {
+  // Unique ID for this invocation — used to correlate progress events in the UI
+  const callId = `${agent.manifest.name}-${Math.random().toString(36).slice(2, 7)}`;
+
+  // Load per-agent runtime config: credentials + optional model/effort overrides.
+  // Priority: config.json > AGENT.md manifest > session config.
+  const runtimeConfig = await loadAgentCredentials(agent.path, agent.manifest.name);
+  const originalEnv: Record<string, string | undefined> = {};
+
+  for (const [key, value] of Object.entries(runtimeConfig)) {
+    originalEnv[key] = process.env[key];
+    process.env[key] = value;
+  }
+
+  const model  = runtimeConfig["model"]  || agent.manifest.model  || deps.config.model;
+  const effort = (runtimeConfig["effort"] || agent.manifest.effort || deps.config.effort) as import("../config/config.js").EffortLevel;
+
+  // Start per-agent MCP servers declared in the manifest
+  let agentMCPManager: import("../mcp/manager.js").MCPManager | null = null;
+  const mcpServersDecl = agent.manifest["mcp-servers"] ?? [];
+  if (mcpServersDecl.length > 0) {
+    const { MCPManager } = await import("../mcp/manager.js");
+    agentMCPManager = new MCPManager();
+    for (const srv of mcpServersDecl) {
+      const serverConfig = {
+        command: srv.command,
+        args: srv.args ?? [],
+        env: runtimeConfig, // inject agent credentials as subprocess env vars
+      };
+      try {
+        await agentMCPManager.startServer(srv.key, serverConfig);
+      } catch (err) {
+        // Non-fatal: log but continue without this MCP server
+        console.warn(`[agent:${agent.manifest.name}] Failed to start MCP server "${srv.key}":`, err);
+      }
+    }
+  }
+
+  try {
+    // Create child tool registry with only the agent's tools
+    const childRegistry = new ToolRegistry();
+    for (const tool of agent.tools) {
+      childRegistry.register(tool);
+    }
+
+    // Register MCP tools from per-agent MCP servers
+    if (agentMCPManager) {
+      for (const tool of agentMCPManager.getToolDefinitions()) {
+        childRegistry.register(tool);
+      }
+    }
+
+    // Create fresh conversation state
+    const conversation = new ConversationState();
+    conversation.addUserMessage(task);
+
+    // Build system prompt — avoid "undefined\n\n" if config has no custom prompt
+    const base = deps.config.systemPrompt ?? "";
+    const systemPrompt = base ? `${base}\n\n${agent.systemPrompt}` : agent.systemPrompt;
+
+    // Collect output
+    let output = "";
+    let loopError: Error | null = null;
+
+    const loopGenerator = runAgentLoop({
+      provider: deps.provider,
+      conversation,
+      toolRegistry: childRegistry,
+      model,
+      systemPrompt,
+      effort,
+      maxTokens: deps.config.maxTokens,
+      // If the parent provided a confirmTool callback, use it so that tools
+      // marked as destructive inside the agent get proper HITL approval.
+      confirmTool: deps.confirmTool,
+      permissionMode: deps.confirmTool ? "ask" : "auto-accept",
+      maxIterations: 50,
+      hooks: deps.hooks,
+    });
+
+    for await (const event of loopGenerator) {
+      // Forward every event to the UI progress tracker keyed by this invocation's callId
+      deps.onProgressUpdate?.(callId, event);
+
+      // Collect text output
+      if (event.type === "streaming_text") {
+        output += event.text;
+      } else if (event.type === "assistant_message_complete") {
+        // Use the accumulated streaming text as output
+        if (output) {
+          // Already have streaming text
+        } else if (event.text) {
+          output = event.text;
+        }
+      } else if (event.type === "error") {
+        loopError = event.error;
+      }
+    }
+
+    // Surface loop errors instead of silently returning empty output
+    if (loopError && !output) {
+      throw loopError;
+    }
+
+    return output || "Agent completed with no output.";
+  } finally {
+    // Signal the UI that this agent invocation is complete (success or failure)
+    deps.onProgressUpdate?.(callId, { type: "turn_complete" });
+
+    // Stop per-agent MCP servers
+    if (agentMCPManager) {
+      agentMCPManager.stopAll();
+    }
+
+    // Restore original env vars
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+/**
+ * Execute an A2A agent (external process via HTTP)
+ */
+export async function executeA2AAgent(
+  agent: AgentDefinition,
+  task: string
+): Promise<string> {
+  const { executeA2AAgent: a2aExecute } = await import("./a2a-client.js");
+
+  try {
+    const output = await a2aExecute(agent, task);
+    return output;
+  } catch (error) {
+    return `A2A agent error: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}

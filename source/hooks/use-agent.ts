@@ -289,6 +289,13 @@ export function useAgent(
         .map((s) => createSkillSlashCommand(s));
       setSkillCommands(userSkillCmds);
 
+      // Load agents — do NOT register as tools yet; registration happens lazily per-turn
+      if (provider) {
+        const { loadAgents, setCachedAgents } = await import("../agents/loader.js");
+        const agents = await loadAgents();
+        setCachedAgents(agents);
+      }
+
       // Start MCP servers
       if (config.mcpServers) {
         for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
@@ -459,12 +466,59 @@ export function useAgent(
         let currentThinking = "";
 
         try {
-          // Refresh dynamic context (git state, AGAV.md) before each turn
+          // Refresh dynamic context (git state, AGAV.md, agent catalog) before each turn.
+          // Pass the user message so the agent catalog is only injected when relevant.
           const { refreshDynamicContext } = await import("../utils/system-prompt.js");
-          const dynamicCtx = await refreshDynamicContext(mcpManagerRef.current);
+          const { context: dynamicCtx, includeAgentTools } = await refreshDynamicContext(
+            mcpManagerRef.current,
+            trimmed
+          );
           let effectiveSystemPrompt = dynamicCtx
             ? (config.systemPrompt ?? "") + "\n\n" + dynamicCtx
             : config.systemPrompt;
+
+          // Tool registration: always register enabled agents so they are callable
+          // regardless of whether the catalog was included in the system prompt.
+          // Lazy catalog injection (via includeAgentTools) only controls the hint text
+          // in the system prompt — it must not gate whether tools are actually available.
+          if (provider) {
+            const { getCachedAgents } = await import("../agents/loader.js");
+            const { agentToTool } = await import("../agents/registry-factory.js");
+            const agents = getCachedAgents();
+            const enabledAgents = agents.filter((a) => a.manifest.enabled !== false);
+            for (const agent of enabledAgents) {
+              const toolName = `${agent.alias || agent.manifest.name}_agent`;
+              if (!toolRegistryRef.current.getSchemas().find((s) => s.name === toolName)) {
+                const { makeAgentProgressTracker } = await import("../agent/subagent-progress.js");
+                // Cache one tracker per callId so seed() runs exactly once per invocation,
+                // not once per event (which caused duplicate subagentStates entries).
+                const trackerCache = new Map<string, (event: import("../agent/loop.js").AgentEvent) => void>();
+                toolRegistryRef.current.register(agentToTool(agent, {
+                  provider,
+                  config: configRef.current,
+                  onProgressUpdate: (callId, event) => {
+                    if (!trackerCache.has(callId)) {
+                      trackerCache.set(callId, makeAgentProgressTracker(
+                        callId,
+                        agent.alias || agent.manifest.name,
+                        agent.manifest.description || agent.manifest.name,
+                        setSubagentStates,
+                      ));
+                    }
+                    trackerCache.get(callId)!(event);
+                  },
+                  confirmTool: confirmToolCallback,
+                }));
+              }
+            }
+            // Remove tools for agents that were disabled since last turn
+            const enabledNames = new Set(enabledAgents.map((a) => `${a.alias || a.manifest.name}_agent`));
+            for (const schema of toolRegistryRef.current.getSchemas()) {
+              if (schema.name.endsWith("_agent") && !enabledNames.has(schema.name)) {
+                toolRegistryRef.current.unregister(schema.name);
+              }
+            }
+          }
 
           const existingPlan = await loadPlan();
           const hasActivePlan = existingPlan && existingPlan.steps.some((s) => s.status !== "done");

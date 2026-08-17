@@ -9,6 +9,11 @@ export type EffortLevel = "low" | "medium" | "high" | "max";
 
 export const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "max"];
 
+/** Default marketplace URL — override via agentMarketplace in config.json or AGAV_MARKETPLACE_URL env var */
+export const DEFAULT_MARKETPLACE_URL =
+  process.env.AGAV_MARKETPLACE_URL ||
+  "https://raw.githubusercontent.com/prapaa-ai/agav-marketplace/main";
+
 export function isEffortLevel(value: unknown): value is EffortLevel {
   return typeof value === "string" && EFFORT_LEVELS.includes(value as EffortLevel);
 }
@@ -43,6 +48,7 @@ export interface AgavConfig {
   hooks?: AgavHooks;
   theme?: Partial<AgavTheme>;
   mcpServers?: Record<string, MCPServerConfig>;
+  agentMarketplace?: string; // URL to agent marketplace repository
 }
 
 const AGAV_DIR = join(homedir(), ".agav");

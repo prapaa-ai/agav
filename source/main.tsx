@@ -131,6 +131,11 @@ export function parseArgs(argv: string[]) {
       if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
         flags.updateVersion = argv[++i]!;
       }
+    } else if (arg === "agents" && i === 0) {
+      flags.agents = true;
+      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
+        flags.agentsCommand = argv[++i]!;
+      }
     } else if (arg === "run" && i === 0) {
       flags.run = true;
     } else if (flags.run && !arg.startsWith("-") && !flags.runPrompt) {
@@ -331,6 +336,7 @@ export async function main() {
     $ agav [options]
     $ agav run "prompt"            Non-interactive agent mode (CI/scripting)
     $ agav update                  Update to the latest version
+    $ agav agents [command]        Manage service agents
     $ agav --print "prompt"
     $ cat file | agav -P "explain this"
 
@@ -353,6 +359,13 @@ export async function main() {
     --help, -h           Show this help
     --version, -v        Show version
 
+  Agent Commands
+    $ agav agents list             List installed agents
+    $ agav agents install <url>    Install agent from git URL or local path
+    $ agav agents remove <name>    Uninstall an agent
+    $ agav agents enable <name>    Enable an agent
+    $ agav agents disable <name>   Disable an agent
+
   Examples
     $ agav
     $ agav --provider openai --model gpt-4o
@@ -361,6 +374,8 @@ export async function main() {
     $ agav -P "what does this project do?"
     $ agav -P --stream "explain this repository"
     $ cat error.log | agav -P "explain this error"
+    $ agav agents install https://github.com/user/repo/agents/jira
+    $ agav agents list
 `);
     process.exit(0);
   }
@@ -377,6 +392,17 @@ export async function main() {
     const targetVersion = typeof flags.updateVersion === "string" ? flags.updateVersion : undefined;
     const ok = await forceUpdate(targetVersion);
     process.exit(ok ? 0 : 1);
+    return;
+  }
+
+  // Agent management: agav agents <command>
+  if (flags.agents) {
+    const { runAgentsCommand } = await import("./cli/agents-cli.js");
+    const agentsCommand = typeof flags.agentsCommand === "string" ? flags.agentsCommand : undefined;
+    // Calculate offset: "agents" at position 2, command (if present) at position 3
+    const argsStartIndex = agentsCommand ? 4 : 3;
+    const exitCode = await runAgentsCommand(agentsCommand, process.argv.slice(argsStartIndex));
+    process.exit(exitCode);
     return;
   }
 
@@ -656,14 +682,24 @@ export async function main() {
   }
 
   // Mark clean exits so crash recovery only offers truly interrupted sessions.
-  process.on("exit", () => { markCleanExit(); });
+  process.on("exit", () => {
+    markCleanExit();
+    // Clean up any running A2A agent processes
+    import("./agents/a2a-client.js").then(({ stopAllA2AAgents }) => {
+      stopAllA2AAgents();
+    }).catch(() => {});
+  });
   process.on("SIGINT", async () => {
     markCleanExit();
+    const { stopAllA2AAgents } = await import("./agents/a2a-client.js");
+    stopAllA2AAgents();
     await showResumeHint();
     process.exit(0);
   });
   process.on("SIGTERM", async () => {
     markCleanExit();
+    const { stopAllA2AAgents } = await import("./agents/a2a-client.js");
+    stopAllA2AAgents();
     await showResumeHint();
     process.exit(0);
   });

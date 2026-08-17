@@ -4,6 +4,30 @@ import { formatMemoriesForPrompt } from "../config/memory.js";
 import type { MCPManager } from "../mcp/manager.js";
 import { getCachedSkills, buildSkillCatalog, loadSkills } from "../skills/loader.js";
 import { formatSteersForPrompt } from "../commands/steer.js";
+import type { AgentDefinition } from "../agents/types.js";
+
+/**
+ * Returns true if the user's message suggests they may want to delegate to a
+ * specialized agent. Used to gate agent catalog injection and tool registration
+ * so they don't add tokens/tools on every unrelated turn.
+ */
+export function shouldIncludeAgentCatalog(userMessage: string, agents: AgentDefinition[]): boolean {
+  if (agents.length === 0) return false;
+  const msg = userMessage.toLowerCase();
+  // Always include if the message explicitly mentions any installed agent by name
+  if (agents.some((a) => msg.includes(a.manifest.name.toLowerCase()))) return true;
+  // Include if message contains integration or delegation keywords
+  const keywords = [
+    "jira", "github", "gitlab", "slack", "aws", "gcp", "azure", "argocd",
+    "ticket", "issue", "pr ", "pull request", "pipeline", "deploy", "deployment",
+    "kubernetes", "k8s", "kubectl", "cluster", "pod", "node",
+    "agent", "use the", "ask the", "delegate to", "check with",
+    "repo", "repository", "commit", "branch", "merge",
+    "cloud", "ec2", "s3", "bucket", "instance", "vm",
+    "sprint", "backlog", "story", "epic", "workflow",
+  ];
+  return keywords.some((k) => msg.includes(k));
+}
 
 const STATIC_BASE = [
   "You are Agav, an AI coding assistant running in the user's terminal.",
@@ -61,8 +85,13 @@ const STATIC_BASE = [
   `The user's current working directory is: ${process.cwd()}`,
 ].join("\n");
 
-/** Rebuild dynamic prompt context that depends on the current repo state and local instructions. */
-export async function refreshDynamicContext(mcpManager?: MCPManager): Promise<string> {
+/** Rebuild dynamic prompt context that depends on the current repo state and local instructions.
+ * Pass `userMessage` to enable lazy agent catalog injection — the catalog is only included
+ * when the message suggests the user wants to delegate to a specialized agent. */
+export async function refreshDynamicContext(
+  mcpManager?: MCPManager,
+  userMessage?: string
+): Promise<{ context: string; includeAgentTools: boolean }> {
   const parts: string[] = [];
 
   const gitCtx = await getGitContext();
@@ -99,7 +128,20 @@ export async function refreshDynamicContext(mcpManager?: MCPManager): Promise<st
     parts.push(steers);
   }
 
-  return parts.join("\n\n");
+  // Agent catalog — only inject when the user message suggests agent delegation
+  const { getCachedAgents } = await import("../agents/loader.js");
+  const { buildAgentCatalog } = await import("../agents/catalog.js");
+  const agents = getCachedAgents();
+  const includeAgentTools = !userMessage || shouldIncludeAgentCatalog(userMessage, agents);
+
+  if (includeAgentTools) {
+    const agentCatalog = buildAgentCatalog(agents);
+    if (agentCatalog) {
+      parts.push(agentCatalog);
+    }
+  }
+
+  return { context: parts.join("\n\n"), includeAgentTools };
 }
 
 /** Assemble the baseline system prompt (memories are now loaded per-turn in refreshDynamicContext). */

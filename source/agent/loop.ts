@@ -317,9 +317,27 @@ export async function* runAgentLoop(
         continue;
       }
 
-      const isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
+      // Check tool's destructive flag from schema
+      const tool = params.toolRegistry.list().find((t) => t.schema.name === call.name);
+      const toolDestructiveFlag = tool?.schema.destructive;
+
+      // Determine if destructive:
+      // - destructive === true → always destructive
+      // - destructive === false → never destructive (safe)
+      // - destructive === undefined → fallback to legacy logic
+      let isDestructive: boolean;
+      if (toolDestructiveFlag === true) {
+        isDestructive = true;
+      } else if (toolDestructiveFlag === false) {
+        isDestructive = false;
+      } else {
+        // Legacy logic: check if run_command with destructive command
+        isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
+      }
+
       const needsConfirm = isDestructive
         || (!SAFE_TOOLS.has(call.name)
+          && toolDestructiveFlag !== false // explicit safe tools skip confirmation
           && permissionMode !== "auto-accept"
           && !isAllowed(call.name, input, params.allowedTools));
       if (needsConfirm && permissionMode === "deny-writes") {
