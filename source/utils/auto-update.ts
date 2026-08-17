@@ -63,16 +63,30 @@ function getBinaryName(): string {
   return `agav-${osName}-${archName}`;
 }
 
-async function downloadBinary(version: string): Promise<string | null> {
+async function downloadBinary(version: string, label?: string): Promise<string | null> {
   const binaryName = getBinaryName();
   const url = `https://github.com/${REPO}/releases/download/${version}/${binaryName}`;
   const tmpPath = join(AGAV_DIR, `agav-update-${version}`);
+  const activity = label ?? `Downloading ${version}`;
+
+  // A fixed deadline on the whole transfer would kill a healthy download on a
+  // slow link, because the signal stays live while the body streams. Abort on
+  // inactivity instead, re-arming the timer each time a chunk arrives.
+  const STALL_TIMEOUT_MS = 60_000;
+  const controller = new AbortController();
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  const armStallTimer = (): void => {
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => controller.abort(), STALL_TIMEOUT_MS);
+    stallTimer.unref?.();
+  };
 
   try {
     await ensureDir(AGAV_DIR);
+    armStallTimer();
     const res = await fetch(url, {
       redirect: "follow",
-      signal: AbortSignal.timeout(200_000),
+      signal: controller.signal,
     });
     if (!res.ok || !res.body) return null;
 
@@ -94,21 +108,23 @@ async function downloadBinary(version: string): Promise<string | null> {
         const filled = Math.round((percent / 100) * barWidth);
         const bar = `${"=".repeat(filled)}${"-".repeat(barWidth - filled)}`;
         const totalMb = (totalBytes / 1024 / 1024).toFixed(1);
-        process.stderr.write(`\r  Downloading ${version} [${bar}] ${percent.toString().padStart(3)}% (${downloadedMb}/${totalMb} MB)`);
+        process.stderr.write(`\r  ${activity} [${bar}] ${percent.toString().padStart(3)}% (${downloadedMb}/${totalMb} MB)`);
       } else {
-        process.stderr.write(`\r  Downloading ${version} (${downloadedMb} MB)`);
+        process.stderr.write(`\r  ${activity} (${downloadedMb} MB)`);
       }
     };
 
     const progressStream = new Transform({
       transform(chunk, _encoding, callback) {
         downloadedBytes += chunk.length;
+        armStallTimer();
         renderProgress();
         callback(null, chunk);
       },
     });
     const fileStream = createWriteStream(tmpPath);
     await pipeline(res.body as any, progressStream, fileStream);
+    if (stallTimer) clearTimeout(stallTimer);
     renderProgress(true);
 
     // Verify against the published checksum before this ever becomes
@@ -125,6 +141,8 @@ async function downloadBinary(version: string): Promise<string | null> {
   } catch {
     await rm(tmpPath, { force: true }).catch(() => {});
     return null;
+  } finally {
+    if (stallTimer) clearTimeout(stallTimer);
   }
 }
 
@@ -446,7 +464,7 @@ export async function checkAndUpdate(): Promise<void> {
 
   process.stderr.write(`  Updating Agav ${local} → ${latestTag}...`);
 
-  const downloaded = await downloadBinary(latestTag);
+  const downloaded = await downloadBinary(latestTag, `Updating Agav ${local} → ${latestTag}`);
   if (!downloaded) {
     process.stderr.write(" failed (download or checksum error). Continuing with current version.\n");
     return;
