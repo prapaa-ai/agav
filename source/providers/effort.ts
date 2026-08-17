@@ -39,12 +39,12 @@ export function supportsNativeEffort(provider: string, model: string): boolean {
 
   if (provider === "anthropic") {
     // Anthropic added effort controls to the newer 4.5+ model generation.
-    return /^claude-(?:opus|sonnet)-4-[5-9](?:-|$)/.test(normalized)
-      || /^claude-(?:fable|mythos)-5(?:-|$)/.test(normalized);
+    return /^claude-(?:opus|sonnet)-4-[5-9](?:[-@]|$)/.test(normalized)
+      || /^claude-(?:fable|mythos)-5(?:[-@]|$)/.test(normalized);
   }
 
-  if (provider === "gemini") {
-    return /^gemini-[23]\.5/.test(normalized);
+  if (provider === "gemini" || provider === "vertex-ai") {
+    return /^(?:google\/)?gemini-[23]\.5/.test(normalized);
   }
 
   return false;

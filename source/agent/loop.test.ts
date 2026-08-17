@@ -120,6 +120,39 @@ describe("runAgentLoop", () => {
     expect(provider.stream).toHaveBeenCalledTimes(1);
   });
 
+  it("persists provider metadata returned with a tool call", async () => {
+    const provider = new MockProvider([
+      [
+        { type: "tool_call_start", toolCallId: "call-1", toolName: "lookup" },
+        {
+          type: "tool_call_delta",
+          toolCallId: "call-1",
+          argsJson: "{}",
+          providerMetadata: { vertexAIThoughtSignature: "opaque-signature" },
+        },
+        { type: "tool_call_end", toolCallId: "call-1" },
+        { type: "message_end", stopReason: "tool_calls" },
+      ],
+      [
+        { type: "text_delta", text: "done" },
+        { type: "message_end", stopReason: "stop" },
+      ],
+    ]);
+    const conversation = new ConversationState();
+    conversation.addUserMessage("look it up");
+    const tools = new ToolRegistry();
+    tools.register(createTool("lookup", async () => ({ output: "result", isError: false })));
+
+    await collectEvents(runAgentLoop({ provider, conversation, toolRegistry: tools, model: "m" }));
+
+    const toolUse = conversation.getMessages()[1]?.content[0];
+    expect(toolUse).toMatchObject({
+      type: "tool_use",
+      toolCallId: "call-1",
+      providerMetadata: { vertexAIThoughtSignature: "opaque-signature" },
+    });
+  });
+
   it("executes safe tools and continues into a follow-up provider turn", async () => {
     const execute = vi.fn(async (input: Record<string, unknown>) => ({
       output: `read:${String(input.path)}`,
@@ -382,6 +415,61 @@ describe("runAgentLoop", () => {
       type: "tool_result",
       toolName: "write_file",
       output: "Write operations are denied (--deny-writes mode).",
+      isError: true,
+    });
+  });
+
+  it("denies write tools without confirmation handler in headless mode", async () => {
+    const execute = vi.fn(async () => ({
+      output: "should not run",
+      isError: false,
+    }));
+
+    const provider = new MockProvider([
+      [
+        {
+          type: "tool_call_start",
+          toolCallId: "write-1",
+          toolName: "write_file",
+        },
+        {
+          type: "tool_call_delta",
+          toolCallId: "write-1",
+          argsJson: '{"path":"blocked.txt","content":"x"}',
+        },
+        { type: "message_end", stopReason: "tool_use" },
+      ],
+      [
+        { type: "text_delta", text: "cannot do that" },
+        { type: "message_end", stopReason: "end_turn" },
+      ],
+    ]);
+
+    const conversation = new ConversationState();
+    conversation.setModel("gpt-4");
+    conversation.addUserMessage("write file");
+
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createTool("write_file", execute));
+
+    // No confirmTool provided — simulates headless/pipe mode.
+    // Default permissionMode is "ask", so without a handler there is no way
+    // to approve the tool; it must be denied rather than silently executed.
+    const events = await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry,
+        model: "gpt-4",
+        // confirmTool intentionally omitted (headless mode)
+      }),
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(events).toContainEqual({
+      type: "tool_result",
+      toolName: "write_file",
+      output: "Tool 'write_file' requires confirmation but no confirmation handler is available (headless mode).",
       isError: true,
     });
   });

@@ -5,6 +5,7 @@ const FAST_MODELS: Record<string, string> = {
   anthropic: "claude-haiku-4-5-20251001",
   openai: "gpt-4o-mini",
   gemini: "gemini-3.5-flash-lite",
+  "vertex-ai": "vertex/gemini-3.7-flash",
 }
 
 /** Default deep-model choices keyed by provider name. */
@@ -12,6 +13,7 @@ const DEEP_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-20250514",
   openai: "gpt-4o",
   gemini: "gemini-3.5-pro",
+  "vertex-ai": "vertex/gemini-3.1-pro",
 }
 
 /** Switch to the configured fast model for the active provider. */

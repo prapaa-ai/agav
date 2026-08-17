@@ -54,7 +54,7 @@ interface LoopParams {
   hooks?: import("../config/config.js").AgavHooks;
 }
 
-const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_directory", "web_search", "lsp_query", "read_notebook", "fetch_url", "overview", "activate_skill", "save_memory"]);
+const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_directory", "web_search", "lsp_query", "read_notebook", "fetch_url", "overview", "activate_skill", "save_memory", "update_plan"]);
 
 function isAllowed(
   toolName: string,
@@ -165,7 +165,7 @@ export async function* runAgentLoop(
     let textAccum = "";
     const toolCalls = new Map<
       string,
-      { name: string; argsJson: string }
+      { name: string; argsJson: string; providerMetadata?: Record<string, unknown> }
     >();
     let stopReason = "";
 
@@ -210,11 +210,16 @@ export async function* runAgentLoop(
             const call = toolCalls.get(event.toolCallId);
             if (call) {
               call.argsJson += event.argsJson;
-              yield {
-                type: "tool_call_input_delta",
-                toolCallId: event.toolCallId,
-                argsJson: event.argsJson,
-              };
+              if (event.providerMetadata) {
+                call.providerMetadata = { ...call.providerMetadata, ...event.providerMetadata };
+              }
+              if (event.argsJson) {
+                yield {
+                  type: "tool_call_input_delta",
+                  toolCallId: event.toolCallId,
+                  argsJson: event.argsJson,
+                };
+              }
             }
             break;
           }
@@ -269,6 +274,7 @@ export async function* runAgentLoop(
         toolCallId: id,
         toolName: call.name,
         toolInput: input,
+        ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
       });
     }
     conversation.addAssistantMessage(assistantContent);
@@ -322,9 +328,12 @@ export async function* runAgentLoop(
         || (!SAFE_TOOLS.has(call.name)
           && permissionMode !== "auto-accept"
           && !isAllowed(call.name, input, params.allowedTools));
-      if (needsConfirm && permissionMode === "deny-writes") {
-        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: "Write operations are denied (--deny-writes mode).", isError: true });
-        yield { type: "tool_result", toolName: call.name, output: "Write operations are denied (--deny-writes mode).", isError: true };
+      if (needsConfirm && (permissionMode === "deny-writes" || !confirmTool)) {
+        const reason = permissionMode === "deny-writes"
+          ? "Write operations are denied (--deny-writes mode)."
+          : `Tool '${call.name}' requires confirmation but no confirmation handler is available (headless mode).`;
+        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+        yield { type: "tool_result", toolName: call.name, output: reason, isError: true };
         continue;
       }
       if (needsConfirm && confirmTool) {

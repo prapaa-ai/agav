@@ -4,6 +4,7 @@ import { AnthropicProvider } from "./anthropic.js";
 import { OpenAIProvider } from "./openai.js";
 import { OllamaProvider } from "./ollama.js";
 import { GeminiProvider } from "./gemini.js";
+import { VertexAIProvider } from "./vertex-ai.js";
 import { RetryProvider } from "./retry.js";
 import { agavHomePath } from "../utils/shell-hints.js";
 
@@ -46,6 +47,20 @@ export function createProvider(config: AgavConfig): LLMProvider {
         );
       }
       provider = new GeminiProvider(key);
+      break;
+    }
+    case "vertex-ai": {
+      if (!config.AGAV_USE_VERTEX_AI) {
+        throw new Error(
+          `Vertex AI is not enabled. Set AGAV_USE_VERTEX_AI=true or add it to ${agavHomePath("config.json")}`,
+        );
+      }
+      if (!config.VERTEX_AI_CREDENTIALS_PATH) {
+        throw new Error(
+          `Vertex AI credentials path not found. Set VERTEX_AI_CREDENTIALS_PATH or add it to ${agavHomePath("config.json")}`,
+        );
+      }
+      provider = new VertexAIProvider(config.VERTEX_AI_CREDENTIALS_PATH);
       break;
     }
     default:

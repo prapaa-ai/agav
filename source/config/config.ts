@@ -23,12 +23,14 @@ export interface AgavHooks {
 }
 
 export interface AgavConfig {
-  provider: "anthropic" | "openai" | "ollama" | "gemini";
+  provider: "anthropic" | "openai" | "ollama" | "gemini" | "vertex-ai";
   model: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
   openaiApi?: "chat" | "responses";
   geminiApiKey?: string;
+  AGAV_USE_VERTEX_AI?: boolean;
+  VERTEX_AI_CREDENTIALS_PATH?: string;
   ollamaEndpoint?: string;  // e.g. "http://192.168.1.5:11434" — takes precedence over host+port
   ollamaHost?: string;
   ollamaPort?: number;
@@ -52,7 +54,7 @@ const CONFIG_PATH = join(AGAV_DIR, "config.json");
 const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
-    enum: ["openai", "ollama", "anthropic", "gemini"],
+    enum: ["openai", "ollama", "anthropic", "gemini", "vertex-ai"],
     type: "string",
     eg: "openai",
   },
@@ -117,6 +119,16 @@ const PROJECT_CONFIG_TEMPLATE = {
     description: "Google Gemini API key. Prefer the GEMINI_API_KEY environment variable for secrets.",
     type: "string",
     eg: "set-via-GEMINI_API_KEY",
+  },
+  AGAV_USE_VERTEX_AI: {
+    description: "Enable the Vertex AI provider. Can also be set with the AGAV_USE_VERTEX_AI environment variable.",
+    type: "boolean",
+    eg: true,
+  },
+  VERTEX_AI_CREDENTIALS_PATH: {
+    description: "Path to a Google Cloud service-account JSON file used by Vertex AI.",
+    type: "string",
+    eg: "/path/to/service-account.json",
   },
   ollamaEndpoint: {
     description: "Complete Ollama API base URL; overrides ollamaHost and ollamaPort.",
@@ -249,19 +261,30 @@ export async function loadConfig(): Promise<AgavConfig> {
 
   merged.anthropicApiKey = decrypt(
     process.env["ANTHROPIC_API_KEY"] ??
+    projectConfig.anthropicApiKey ??
     globalConfig.anthropicApiKey ??
     DEFAULT_CONFIG.anthropicApiKey ?? "",
   ) || undefined;
   merged.openaiApiKey = decrypt(
     process.env["OPENAI_API_KEY"] ??
+    projectConfig.openaiApiKey ??
     globalConfig.openaiApiKey ??
     DEFAULT_CONFIG.openaiApiKey ?? "",
   ) || undefined;
   merged.geminiApiKey = decrypt(
     process.env["GEMINI_API_KEY"] ??
+    projectConfig.geminiApiKey ??
     globalConfig.geminiApiKey ??
     DEFAULT_CONFIG.geminiApiKey ?? "",
   ) || undefined;
+
+  const vertexEnabled = process.env["AGAV_USE_VERTEX_AI"];
+  if (vertexEnabled !== undefined) {
+    merged.AGAV_USE_VERTEX_AI = /^(?:1|true|yes|on)$/i.test(vertexEnabled);
+  }
+  if (process.env["VERTEX_AI_CREDENTIALS_PATH"]) {
+    merged.VERTEX_AI_CREDENTIALS_PATH = process.env["VERTEX_AI_CREDENTIALS_PATH"];
+  }
 
   // Ollama — env vars take precedence over config file
   if (process.env["OLLAMA_ENDPOINT"]) {
@@ -276,8 +299,8 @@ export async function loadConfig(): Promise<AgavConfig> {
   }
   merged.ollamaApiKey = decrypt(
     process.env["OLLAMA_API_KEY"] ??
-    globalConfig.ollamaApiKey ??
     projectConfig.ollamaApiKey ??
+    globalConfig.ollamaApiKey ??
     DEFAULT_CONFIG.ollamaApiKey ?? "",
   ) || undefined;
 

@@ -24,7 +24,7 @@ export const historyCommand: SlashCommand = {
       }
       context.loadSession(loaded);
       context.setModel(loaded.model || context.config.model);
-      if (loaded.provider === "anthropic" || loaded.provider === "openai" || loaded.provider === "ollama") {
+      if (loaded.provider === "anthropic" || loaded.provider === "openai" || loaded.provider === "ollama" || loaded.provider === "gemini" || loaded.provider === "vertex-ai") {
         context.setProvider(loaded.provider);
       }
       return {

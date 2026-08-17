@@ -22,6 +22,7 @@ import {
   validateOutput,
   type OutputSchema,
 } from "./utils/output-schema.js";
+import { fetchVertexAIModels } from "./providers/vertex-ai.js";
 
 const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
@@ -336,7 +337,7 @@ export async function main() {
     $ cat file | agav -P "explain this"
 
   Options
-    --provider, -p       LLM provider: anthropic, openai, gemini, or ollama (default: anthropic)
+    --provider, -p       LLM provider: anthropic, openai, gemini, vertex-ai, or ollama (default: anthropic)
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
     --effort             Reasoning effort: low, medium, high, or max (default: high)
     --ollama-host        Ollama host (default: localhost)
@@ -357,6 +358,7 @@ export async function main() {
   Examples
     $ agav
     $ agav --provider openai --model gpt-4o
+    $ agav --provider vertex-ai --model vertex/gemini-2.5-flash
     $ agav run "review the code in src/"
     $ agav run --permission '{"bash":"deny"}' "check for security issues"
     $ agav -P "what does this project do?"
@@ -405,8 +407,8 @@ export async function main() {
 
   if (typeof flags.provider === "string") {
     const p = flags.provider;
-    if (p !== "anthropic" && p !== "openai" && p !== "ollama" && p !== "gemini") {
-      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "gemini", or "ollama".`);
+    if (p !== "anthropic" && p !== "openai" && p !== "ollama" && p !== "gemini" && p !== "vertex-ai") {
+      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "gemini", "vertex-ai", or "ollama".`);
       process.exit(1);
     }
     const providerChanged = p !== config.provider;
@@ -414,6 +416,7 @@ export async function main() {
     if (providerChanged && typeof flags.model !== "string") {
       if (p === "openai") config.model = "gpt-5.4-mini";
       else if (p === "gemini") config.model = "gemini-3.5-flash-lite";
+      else if (p === "vertex-ai") config.model = "vertex/gemini-3.5-flash";
       else if (p === "ollama") config.model = "";
       else config.model = "claude-sonnet-4-20250514";
     }
@@ -521,7 +524,7 @@ export async function main() {
       if (typeof flags.model !== "string") {
         config.model = session.model || config.model;
       }
-      if (typeof flags.provider !== "string" && (session.provider === "anthropic" || session.provider === "openai" || session.provider === "ollama" || session.provider === "gemini")) {
+      if (typeof flags.provider !== "string" && (session.provider === "anthropic" || session.provider === "openai" || session.provider === "ollama" || session.provider === "gemini" || session.provider === "vertex-ai")) {
         config.provider = session.provider;
       }
     } else {
@@ -546,13 +549,21 @@ export async function main() {
       if (typeof flags.model !== "string") {
         config.model = session.model || config.model;
       }
-      if (typeof flags.provider !== "string" && (session.provider === "anthropic" || session.provider === "openai" || session.provider === "ollama" || session.provider === "gemini")) {
+      if (typeof flags.provider !== "string" && (session.provider === "anthropic" || session.provider === "openai" || session.provider === "ollama" || session.provider === "gemini" || session.provider === "vertex-ai")) {
         config.provider = session.provider;
       }
     }
   }
 
-  if (config.provider !== "ollama") {
+  if (config.provider === "vertex-ai") {
+    if (!config.AGAV_USE_VERTEX_AI || !config.VERTEX_AI_CREDENTIALS_PATH) {
+      const message = `\n  Agav — Vertex AI configuration is incomplete.\n  Set both:\n    ${setEnvHint("AGAV_USE_VERTEX_AI", "true")}\n    ${setEnvHint("VERTEX_AI_CREDENTIALS_PATH", "/path/to/service-account.json")}\n`;
+      process.stderr.write(message);
+      process.exit(1);
+    }
+
+    const models = await fetchVertexAIModels(config.VERTEX_AI_CREDENTIALS_PATH)
+  } else if (config.provider !== "ollama") {
     const keyMap: Record<string, keyof AgavConfig> = {
       anthropic: "anthropicApiKey",
       openai: "openaiApiKey",
@@ -572,8 +583,11 @@ export async function main() {
         } else if (config.geminiApiKey) {
           config.provider = "gemini";
           config.model = "gemini-3.5-flash-lite";
+        } else if (config.AGAV_USE_VERTEX_AI && config.VERTEX_AI_CREDENTIALS_PATH) {
+          config.provider = "vertex-ai";
+          config.model = "vertex/gemini-3.5-flash";
         } else {
-          const message = `\n  Agav — no API key found.\n  Set one of:\n    ${setEnvHint("ANTHROPIC_API_KEY", "sk-ant-...")}\n    ${setEnvHint("OPENAI_API_KEY", "sk-...")}\n    ${setEnvHint("GEMINI_API_KEY", "...")}\n  Or start Ollama: agav --provider ollama\n`;
+          const message = `\n  Agav — no provider credentials found.\n  Set an API key, configure Vertex AI, or start Ollama.\n`;
           process.stderr.write(message);
           process.exit(1);
         }

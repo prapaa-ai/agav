@@ -1,4 +1,5 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
+import { fetchVertexAIModels } from "../providers/vertex-ai.js";
 
 interface FetchedModel {
   id: string;
@@ -68,6 +69,14 @@ async function fetchGeminiModels(apiKey: string): Promise<FetchedModel[]> {
       .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
       .map((m) => ({ id: m.name.replace("models/", ""), provider: "gemini" }))
       .sort((a, b) => a.id.localeCompare(b.id));
+  } catch {
+    return [];
+  }
+}
+
+async function fetchVertexModels(credentialsPath: string): Promise<FetchedModel[]> {
+  try {
+    return (await fetchVertexAIModels(credentialsPath)).map((id) => ({ id, provider: "vertex-ai" }));
   } catch {
     return [];
   }
@@ -230,6 +239,9 @@ export const modelCommand: SlashCommand = {
       if (context.config.anthropicApiKey) fetches.push(fetchAnthropicModels(context.config.anthropicApiKey));
       if (context.config.openaiApiKey) fetches.push(fetchOpenAIModels(context.config.openaiApiKey));
       if (context.config.geminiApiKey) fetches.push(fetchGeminiModels(context.config.geminiApiKey));
+      if (context.config.AGAV_USE_VERTEX_AI && context.config.VERTEX_AI_CREDENTIALS_PATH) {
+        fetches.push(fetchVertexModels(context.config.VERTEX_AI_CREDENTIALS_PATH));
+      }
       const ollamaBase = context.config.ollamaEndpoint ?? `http://${context.config.ollamaHost ?? "localhost"}:${context.config.ollamaPort ?? 11434}`;
       fetches.push(fetchOllamaModels(ollamaBase));
 
@@ -267,6 +279,9 @@ export const modelCommand: SlashCommand = {
     if (context.config.geminiApiKey) {
       fetches.push(fetchGeminiModels(context.config.geminiApiKey));
     }
+    if (context.config.AGAV_USE_VERTEX_AI && context.config.VERTEX_AI_CREDENTIALS_PATH) {
+      fetches.push(fetchVertexModels(context.config.VERTEX_AI_CREDENTIALS_PATH));
+    }
 
     const ollamaBase = context.config.ollamaEndpoint ??
       `http://${context.config.ollamaHost ?? "localhost"}:${context.config.ollamaPort ?? 11434}`;
@@ -278,7 +293,7 @@ export const modelCommand: SlashCommand = {
     if (allModels.length === 0) {
       return {
         type: "message",
-        text: `Current: ${currentModel} (${currentProvider})\n\nNo providers reachable. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, or start Ollama.`,
+        text: `Current: ${currentModel} (${currentProvider})\n\nNo providers reachable. Set an API key, configure Vertex AI, or start Ollama.`,
       };
     }
 

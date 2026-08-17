@@ -62,10 +62,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [config, setConfig] = useState(initialConfig);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.AGAV_USE_VERTEX_AI, config.VERTEX_AI_CREDENTIALS_PATH, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const activeSideProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.AGAV_USE_VERTEX_AI, config.VERTEX_AI_CREDENTIALS_PATH, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const [showToolDetail, setShowToolDetail] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
@@ -180,7 +180,38 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     setPsLoading(true);
     setPsResponse(undefined);
     try {
-      const historyMessages = conversation.getMessages();
+      // Strip any trailing incomplete tool-use turns from the history snapshot.
+      // When /ps is issued while the agent is running, the conversation may
+      // contain an in-progress assistant message with tool_use blocks whose
+      // tool_result blocks have not been added yet. Sending such a sequence to
+      // Vertex AI Claude (and the Anthropic API) violates the protocol rule
+      // "each tool_use must be immediately followed by a tool_result", causing
+      // a 400 error. Walk backwards and drop any trailing assistant message
+      // whose tool_use IDs are not answered by the very next user message.
+      const rawHistory = conversation.getMessages();
+      const answeredToolIds = new Set<string>();
+      for (const msg of rawHistory) {
+        if (msg.role === "user") {
+          for (const block of msg.content) {
+            if (block.type === "tool_result" && block.toolCallId) {
+              answeredToolIds.add(block.toolCallId);
+            }
+          }
+        }
+      }
+      // If the last assistant message has unanswered tool_use blocks (in-flight
+      // tool calls), drop it and everything after it before sending as context.
+      let historyMessages = rawHistory;
+      for (let i = rawHistory.length - 1; i >= 0; i--) {
+        const msg = rawHistory[i]!;
+        if (msg.role === "assistant") {
+          const hasUnanswered = msg.content.some(
+            (block) => block.type === "tool_use" && block.toolCallId && !answeredToolIds.has(block.toolCallId),
+          );
+          if (hasUnanswered) historyMessages = rawHistory.slice(0, i);
+          break;
+        }
+      }
       const psQuestion: Message = { role: "user", content: [{ type: "text", text: `[SIDE QUESTION — answer ONLY this, do not continue the main conversation]\n${query.text}` }, ...query.blocks] };
       let response = "";
       for await (const event of activeSideProvider.stream({

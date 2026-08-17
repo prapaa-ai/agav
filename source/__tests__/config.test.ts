@@ -28,6 +28,8 @@ describe("config", () => {
     delete process.env.OLLAMA_HOST;
     delete process.env.OLLAMA_PORT;
     delete process.env.OLLAMA_API_KEY;
+    delete process.env.AGAV_USE_VERTEX_AI;
+    delete process.env.VERTEX_AI_CREDENTIALS_PATH;
   });
 
   it("accepts valid effort levels", async () => {
@@ -53,6 +55,37 @@ describe("config", () => {
     expect(result.permissionMode).toBe("ask");
   });
 
+  it("loads project-level secrets when env vars are absent", async () => {
+    readFile.mockImplementation(async (path: any) => {
+      const s = String(path);
+      if (/[\\/]\.agav[\\/]config\.json$/.test(s)) {
+        return JSON.stringify({
+          anthropicApiKey: "enc:anthropic-project",
+          openaiApiKey: "enc:openai-project",
+          geminiApiKey: "enc:gemini-project",
+          ollamaApiKey: "enc:ollama-project",
+        });
+      }
+      if (/[\\/]config\.json$/.test(s)) {
+        return JSON.stringify({
+          anthropicApiKey: "enc:anthropic-global",
+          openaiApiKey: "enc:openai-global",
+          geminiApiKey: "enc:gemini-global",
+          ollamaApiKey: "enc:ollama-global",
+        });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    const loaded = await mod.loadConfig();
+
+    expect(loaded.anthropicApiKey).toBe("anthropic-project");
+    expect(loaded.openaiApiKey).toBe("openai-project");
+    expect(loaded.geminiApiKey).toBe("gemini-project");
+    expect(loaded.ollamaApiKey).toBe("ollama-project");
+  });
+
   it("applies env overrides and encrypts secrets on save", async () => {
     process.env.ANTHROPIC_API_KEY = "enc:anthropic-env";
     process.env.OPENAI_API_KEY = "enc:openai-env";
@@ -61,6 +94,8 @@ describe("config", () => {
     process.env.OLLAMA_HOST = "127.0.0.1";
     process.env.OLLAMA_PORT = "11435";
     process.env.OLLAMA_API_KEY = "enc:ollama-env";
+    process.env.AGAV_USE_VERTEX_AI = "true";
+    process.env.VERTEX_AI_CREDENTIALS_PATH = "/tmp/service-account.json";
 
     readFile.mockImplementation(async (path: any) => {
       const s = String(path);
@@ -83,6 +118,8 @@ describe("config", () => {
     expect(loaded.ollamaEndpoint).toBe("http://localhost:11434");
     expect(loaded.ollamaHost).toBe("127.0.0.1");
     expect(loaded.ollamaPort).toBe(11435);
+    expect(loaded.AGAV_USE_VERTEX_AI).toBe(true);
+    expect(loaded.VERTEX_AI_CREDENTIALS_PATH).toBe("/tmp/service-account.json");
 
     await mod.saveConfig({
       provider: "anthropic",
