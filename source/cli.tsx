@@ -9,4 +9,10 @@ if ("Bun" in globalThis) {
 
 import { main } from "./main.js";
 
-await main();
+try {
+  await main();
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`\n  Agav — startup failed: ${message}\n\n`);
+  process.exitCode = 1;
+}
