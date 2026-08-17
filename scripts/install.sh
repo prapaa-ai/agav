@@ -42,12 +42,26 @@ download_file() {
   output="$2"
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$output"
+    if [ -t 2 ]; then
+      curl -fL --progress-bar "$url" -o "$output"
+    else
+      curl -fsSL "$url" -o "$output"
+    fi
     return
   fi
 
   if command -v wget >/dev/null 2>&1; then
-    wget -q -O "$output" "$url"
+    if [ -t 2 ]; then
+      # --show-progress keeps the bar but drops the verbose request log. It
+      # landed in wget 1.16 and is absent from busybox wget, so probe first.
+      if wget --help 2>&1 | grep -q -- "--show-progress"; then
+        wget -q --show-progress -O "$output" "$url"
+      else
+        wget -O "$output" "$url"
+      fi
+    else
+      wget -q -O "$output" "$url"
+    fi
     return
   fi
 

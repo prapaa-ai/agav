@@ -4,6 +4,7 @@ import { readFile, writeFile, rename, chmod, copyFile, unlink, mkdir, symlink, r
 import { execFileSync } from "node:child_process";
 import { createWriteStream, createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
+import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { ensureDir } from "./fs.js";
 import { VERSION } from "../version.js";
@@ -62,21 +63,69 @@ function getBinaryName(): string {
   return `agav-${osName}-${archName}`;
 }
 
-async function downloadBinary(version: string): Promise<string | null> {
+async function downloadBinary(version: string, label?: string): Promise<string | null> {
   const binaryName = getBinaryName();
   const url = `https://github.com/${REPO}/releases/download/${version}/${binaryName}`;
   const tmpPath = join(AGAV_DIR, `agav-update-${version}`);
+  const activity = label ?? `Downloading ${version}`;
+
+  // A fixed deadline on the whole transfer would kill a healthy download on a
+  // slow link, because the signal stays live while the body streams. Abort on
+  // inactivity instead, re-arming the timer each time a chunk arrives.
+  const STALL_TIMEOUT_MS = 60_000;
+  const controller = new AbortController();
+  let stallTimer: ReturnType<typeof setTimeout> | undefined;
+  const armStallTimer = (): void => {
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => controller.abort(), STALL_TIMEOUT_MS);
+    stallTimer.unref?.();
+  };
 
   try {
     await ensureDir(AGAV_DIR);
+    armStallTimer();
     const res = await fetch(url, {
       redirect: "follow",
-      signal: AbortSignal.timeout(30000),
+      signal: controller.signal,
     });
     if (!res.ok || !res.body) return null;
 
+    const totalBytes = Number(res.headers.get("content-length")) || 0;
+    let downloadedBytes = 0;
+    let lastRender = 0;
+    const showProgress = process.stderr.isTTY;
+    const renderProgress = (complete = false): void => {
+      if (!showProgress) return;
+
+      const now = Date.now();
+      if (!complete && now - lastRender < 100) return;
+      lastRender = now;
+
+      const downloadedMb = (downloadedBytes / 1024 / 1024).toFixed(1);
+      if (totalBytes > 0) {
+        const percent = Math.min(100, Math.round((downloadedBytes / totalBytes) * 100));
+        const barWidth = 24;
+        const filled = Math.round((percent / 100) * barWidth);
+        const bar = `${"=".repeat(filled)}${"-".repeat(barWidth - filled)}`;
+        const totalMb = (totalBytes / 1024 / 1024).toFixed(1);
+        process.stderr.write(`\r  ${activity} [${bar}] ${percent.toString().padStart(3)}% (${downloadedMb}/${totalMb} MB)`);
+      } else {
+        process.stderr.write(`\r  ${activity} (${downloadedMb} MB)`);
+      }
+    };
+
+    const progressStream = new Transform({
+      transform(chunk, _encoding, callback) {
+        downloadedBytes += chunk.length;
+        armStallTimer();
+        renderProgress();
+        callback(null, chunk);
+      },
+    });
     const fileStream = createWriteStream(tmpPath);
-    await pipeline(res.body as any, fileStream);
+    await pipeline(res.body as any, progressStream, fileStream);
+    if (stallTimer) clearTimeout(stallTimer);
+    renderProgress(true);
 
     // Verify against the published checksum before this ever becomes
     // executable. We are about to replace our own binary and re-exec it, so an
@@ -92,6 +141,8 @@ async function downloadBinary(version: string): Promise<string | null> {
   } catch {
     await rm(tmpPath, { force: true }).catch(() => {});
     return null;
+  } finally {
+    if (stallTimer) clearTimeout(stallTimer);
   }
 }
 
@@ -413,7 +464,7 @@ export async function checkAndUpdate(): Promise<void> {
 
   process.stderr.write(`  Updating Agav ${local} → ${latestTag}...`);
 
-  const downloaded = await downloadBinary(latestTag);
+  const downloaded = await downloadBinary(latestTag, `Updating Agav ${local} → ${latestTag}`);
   if (!downloaded) {
     process.stderr.write(" failed (download or checksum error). Continuing with current version.\n");
     return;
