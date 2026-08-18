@@ -80,10 +80,25 @@ $env:FAKE_ASSET = $Asset
 $PSExe = (Get-Process -Id $PID).Path
 if (-not $PSExe) { $PSExe = "pwsh" }
 
+# Quote one argument for the -Command line below.
+function ConvertTo-Quoted([string]$Value) { "'" + ($Value -replace "'", "''") + "'" }
+
+# -Command, not -File. pwsh's -File parser reads `--dir=C:\tools` as a
+# `-name:value` pair and splits it at the colon, so the script sees `--dir=C`
+# and a stray `\tools`; Windows PowerShell 5.1 does not. Neither is how anyone
+# invokes this - install.cmd uses `powershell.exe -File`, and the documented
+# one-liner is `& ([scriptblock]::Create((irm ...))) --dir=...`, which binds
+# arguments the way -Command does here.
+function Invoke-Script([string[]]$Arguments = @()) {
+    $Line = "& $(ConvertTo-Quoted $Script)"
+    foreach ($Arg in $Arguments) { $Line += " $(ConvertTo-Quoted $Arg)" }
+    $out = & $PSExe -NoProfile -Command $Line 2>&1 | Out-String
+    return [pscustomobject]@{ Code = $LASTEXITCODE; Out = $out }
+}
+
 function Invoke-Install([string]$Dir, [string[]]$Arguments = @()) {
     $env:AGAV_INSTALL_DIR = $Dir
-    $out = & $PSExe -NoProfile -File $Script @Arguments 2>&1 | Out-String
-    return [pscustomobject]@{ Code = $LASTEXITCODE; Out = $out }
+    return Invoke-Script $Arguments
 }
 
 # --- State this suite is allowed to change, and must put back ---------------
@@ -334,14 +349,14 @@ New-Item -ItemType Directory -Path "$Root/default" -Force | Out-Null
 Set-Content "$Root/default/agav.exe" "default install" -NoNewline
 New-Item -ItemType Directory -Path "$Root/explicit" -Force | Out-Null
 Set-Content "$Root/explicit/agav.exe" "explicit install" -NoNewline
-$out = & $PSExe -NoProfile -File $Script "--uninstall" "--dir=$Root/explicit" 2>&1 | Out-String
-Check "removed the --dir target" (-not (Test-Path "$Root/explicit/agav.exe")) $out
+$r = Invoke-Script @("--uninstall", "--dir=$Root/explicit")
+Check "removed the --dir target" (-not (Test-Path "$Root/explicit/agav.exe")) $r.Out
 Check "left the default target alone" (Test-Path "$Root/default/agav.exe")
 
 Write-Host "== --dir= wins over AGAV_INSTALL_DIR on install =="
 $env:AGAV_INSTALL_DIR = "$Root/envdir"
-$out = & $PSExe -NoProfile -File $Script "--dir=$Root/flagdir" 2>&1 | Out-String
-Check "installed to --dir" (Test-Path "$Root/flagdir/agav.exe") $out
+$r = Invoke-Script @("--dir=$Root/flagdir")
+Check "installed to --dir" (Test-Path "$Root/flagdir/agav.exe") $r.Out
 Check "did not install to env dir" (-not (Test-Path "$Root/envdir/agav.exe"))
 
 }
