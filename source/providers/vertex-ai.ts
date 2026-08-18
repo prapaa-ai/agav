@@ -4,7 +4,7 @@ import { applyEffortPrompt, mapOpenAIEffort, supportsNativeEffort } from "./effo
 import type { ContentBlock, LLMProvider, Message, StreamEvent, StreamParams, ToolSchema } from "./types.js";
 
 const CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
-const VERTEX_LOCATION = "global";
+const DEFAULT_VERTEX_LOCATION = "global";
 const THOUGHT_SIGNATURE_KEY = "vertexAIThoughtSignature";
 const SKIP_THOUGHT_SIGNATURE_VALIDATOR = "skip_thought_signature_validator";
 
@@ -29,6 +29,7 @@ function base64Url(value: string): string {
 export class VertexAIAuth {
   private credentials?: ServiceAccountCredentials;
   private token?: AccessToken;
+  private pendingToken?: Promise<string>;
 
   constructor(private readonly credentialsPath: string) {}
 
@@ -39,6 +40,15 @@ export class VertexAIAuth {
   async getAccessToken(): Promise<string> {
     if (this.token && this.token.expiresAt > Date.now() + 60_000) return this.token.value;
 
+    // Parallel callers (subagents, concurrent tool turns) share one in-flight
+    // mint instead of each signing a JWT and racing to overwrite this.token.
+    this.pendingToken ??= this.mintAccessToken().finally(() => {
+      this.pendingToken = undefined;
+    });
+    return this.pendingToken;
+  }
+
+  private async mintAccessToken(): Promise<string> {
     const credentials = await this.loadCredentials();
     const now = Math.floor(Date.now() / 1000);
     const tokenUri = credentials.token_uri ?? "https://oauth2.googleapis.com/token";
@@ -109,8 +119,18 @@ export class VertexAIAuth {
   }
 }
 
-function vertexBaseUrl(projectId: string): string {
-  return `https://aiplatform.googleapis.com/v1beta1/projects/${encodeURIComponent(projectId)}/locations/${VERTEX_LOCATION}/endpoints/openapi`;
+/**
+ * The multi-region "global" endpoint lives on the bare host; every other
+ * location is served from its own regional host.
+ */
+function vertexHost(location: string): string {
+  return location === DEFAULT_VERTEX_LOCATION
+    ? "https://aiplatform.googleapis.com"
+    : `https://${encodeURIComponent(location)}-aiplatform.googleapis.com`;
+}
+
+function vertexBaseUrl(projectId: string, location: string): string {
+  return `${vertexHost(location)}/v1beta1/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(location)}/endpoints/openapi`;
 }
 
 function vertexModelName(model: string): string {
@@ -129,8 +149,8 @@ function vertexClaudeModelName(model: string): string {
     .replace(/^publishers\/anthropic\/models\//i, "");
 }
 
-function vertexClaudeUrl(projectId: string, model: string): string {
-  return `https://aiplatform.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/locations/${VERTEX_LOCATION}/publishers/anthropic/models/${encodeURIComponent(vertexClaudeModelName(model))}:streamRawPredict`;
+function vertexClaudeUrl(projectId: string, model: string, location: string): string {
+  return `${vertexHost(location)}/v1/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(location)}/publishers/anthropic/models/${encodeURIComponent(vertexClaudeModelName(model))}:streamRawPredict`;
 }
 
 function extractThoughtSignature(value: any): string | undefined {
@@ -163,9 +183,11 @@ function addMissingThoughtSignatureSentinels(body: Record<string, unknown>): Rec
 export class VertexAIProvider implements LLMProvider {
   readonly name = "vertex-ai";
   private readonly auth: VertexAIAuth;
+  private readonly location: string;
 
-  constructor(credentialsPath: string) {
+  constructor(credentialsPath: string, location?: string) {
     this.auth = new VertexAIAuth(credentialsPath);
+    this.location = location || DEFAULT_VERTEX_LOCATION;
   }
 
   async *stream(params: StreamParams): AsyncIterable<StreamEvent> {
@@ -197,7 +219,7 @@ export class VertexAIProvider implements LLMProvider {
     // Vertex AI implicit prompt caching is enabled automatically. Keeping the
     // system prompt, tools, and message history in a stable prefix lets repeat
     // turns reuse it without creating and managing explicit cache resources.
-    const requestUrl = `${vertexBaseUrl(projectId)}/chat/completions`;
+    const requestUrl = `${vertexBaseUrl(projectId, this.location)}/chat/completions`;
     const send = (requestBody: Record<string, unknown>) => fetch(requestUrl, {
       method: "POST",
       headers: {
@@ -225,6 +247,7 @@ export class VertexAIProvider implements LLMProvider {
     yield { type: "message_start" };
     const activeCalls = new Map<number, { id: string; name: string }>();
     const pendingSignatures = new Map<number, string>();
+    let lastToolCallIndex: number | undefined;
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -251,12 +274,21 @@ export class VertexAIProvider implements LLMProvider {
       if (!choice) return;
       const delta = choice.delta ?? {};
       const messageSignature = extractThoughtSignature(delta) ?? extractThoughtSignature(choice);
-      if (messageSignature) pendingSignatures.set(0, messageSignature);
       const thought = delta.reasoning_content ?? delta.reasoning;
       if (typeof thought === "string" && thought) yield { type: "thinking_delta", text: thought };
       if (typeof delta.content === "string" && delta.content) yield { type: "text_delta", text: delta.content };
+      // A message-level signature carries no index of its own. Attribute it to
+      // a tool call in the same delta when there is one, otherwise to the call
+      // that is currently streaming — assuming index 0 misfiles the signature
+      // whenever the model emits parallel tool calls.
+      if (messageSignature) {
+        const sameDeltaIndex = delta.tool_calls?.[0]?.index;
+        const target = sameDeltaIndex ?? lastToolCallIndex ?? 0;
+        if (!pendingSignatures.has(target)) pendingSignatures.set(target, messageSignature);
+      }
       for (const call of delta.tool_calls ?? []) {
         const index = call.index ?? 0;
+        lastToolCallIndex = index;
         const thoughtSignature = extractThoughtSignature(call) ?? extractThoughtSignature(call.function);
         if (thoughtSignature) pendingSignatures.set(index, thoughtSignature);
         if (call.function?.name) {
@@ -332,7 +364,7 @@ export class VertexAIProvider implements LLMProvider {
       ...(tools?.length ? { tools } : {}),
       ...(nativeEffort ? { output_config: { effort: nativeEffort } } : {}),
     };
-    const response = await fetch(vertexClaudeUrl(projectId, model), {
+    const response = await fetch(vertexClaudeUrl(projectId, model, this.location), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -522,14 +554,15 @@ export class VertexAIProvider implements LLMProvider {
 }
 
 /** List Gemini and Claude publisher models that can be selected for Vertex AI chat. */
-export async function fetchVertexAIModels(credentialsPath: string): Promise<string[]> {
+export async function fetchVertexAIModels(credentialsPath: string, location?: string): Promise<string[]> {
   const auth = new VertexAIAuth(credentialsPath);
   const token = await auth.getAccessToken();
+  const host = vertexHost(location || DEFAULT_VERTEX_LOCATION);
   const fetchPublisher = async (publisher: "google" | "anthropic"): Promise<string[]> => {
     const models: string[] = [];
     let pageToken: string | undefined;
     do {
-      const url = new URL(`https://aiplatform.googleapis.com/v1beta1/publishers/${publisher}/models`);
+      const url = new URL(`${host}/v1beta1/publishers/${publisher}/models`);
       url.searchParams.set("pageSize", "100");
       if (publisher === "anthropic") url.searchParams.set("listAllVersions", "true");
       if (pageToken) url.searchParams.set("pageToken", pageToken);
@@ -555,9 +588,13 @@ export async function fetchVertexAIModels(credentialsPath: string): Promise<stri
 
   const results = await Promise.allSettled([fetchPublisher("google"), fetchPublisher("anthropic")]);
   const models = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
-  if (models.length === 0 && results.every((result) => result.status === "rejected")) {
+  const failures = results.filter((result) => result.status === "rejected");
+  // Surface the failure whenever it left us with nothing to show. Requiring
+  // *every* publisher to fail hid the case where one errored and the other
+  // legitimately returned an empty list, which looked like "no models exist".
+  if (models.length === 0 && failures.length > 0) {
     throw new AggregateError(
-      results.map((result) => result.status === "rejected" ? result.reason : undefined),
+      failures.map((result) => result.reason),
       "Unable to list Vertex AI Gemini or Claude models",
     );
   }

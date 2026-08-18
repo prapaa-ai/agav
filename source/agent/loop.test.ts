@@ -474,6 +474,90 @@ describe("runAgentLoop", () => {
     });
   });
 
+  describe("destructive commands in headless mode", () => {
+    const DESTRUCTIVE = "git clean -fdx";
+
+    const runDestructive = async (
+      execute: ReturnType<typeof vi.fn>,
+      params: { allowedTools?: string[]; permissionMode?: "ask" | "auto-accept" | "deny-writes" },
+    ) => {
+      const provider = new MockProvider([
+        [
+          { type: "tool_call_start", toolCallId: "cmd-1", toolName: "run_command" },
+          {
+            type: "tool_call_delta",
+            toolCallId: "cmd-1",
+            argsJson: JSON.stringify({ command: DESTRUCTIVE }),
+          },
+          { type: "message_end", stopReason: "tool_use" },
+        ],
+        [
+          { type: "text_delta", text: "done" },
+          { type: "message_end", stopReason: "end_turn" },
+        ],
+      ]);
+
+      const conversation = new ConversationState();
+      conversation.setModel("gpt-4");
+      conversation.addUserMessage("clean the tree");
+
+      const toolRegistry = new ToolRegistry();
+      toolRegistry.register(createTool("run_command", execute));
+
+      // confirmTool intentionally omitted throughout — this is headless mode.
+      return collectEvents(
+        runAgentLoop({ provider, conversation, toolRegistry, model: "gpt-4", ...params }),
+      );
+    };
+
+    it("runs one when the allowlist names it", async () => {
+      const execute = vi.fn(async () => ({ output: "cleaned", isError: false }));
+
+      await runDestructive(execute, { allowedTools: [`run_command:${DESTRUCTIVE}`] });
+
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("still blocks one behind a blanket run_command grant", async () => {
+      const execute = vi.fn(async () => ({ output: "should not run", isError: false }));
+
+      const events = await runDestructive(execute, { allowedTools: ["run_command"] });
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(events).toContainEqual({
+        type: "tool_result",
+        toolName: "run_command",
+        output: "Tool 'run_command' requires confirmation but no confirmation handler is available (headless mode).",
+        isError: true,
+      });
+    });
+
+    it("still blocks one under --auto-accept", async () => {
+      const execute = vi.fn(async () => ({ output: "should not run", isError: false }));
+
+      await runDestructive(execute, { permissionMode: "auto-accept" });
+
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it("lets --deny-writes outrank a naming allowlist rule", async () => {
+      const execute = vi.fn(async () => ({ output: "should not run", isError: false }));
+
+      const events = await runDestructive(execute, {
+        allowedTools: [`run_command:${DESTRUCTIVE}`],
+        permissionMode: "deny-writes",
+      });
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(events).toContainEqual({
+        type: "tool_result",
+        toolName: "run_command",
+        output: "Write operations are denied (--deny-writes mode).",
+        isError: true,
+      });
+    });
+  });
+
   it("handles invalid tool JSON by passing raw input through to the registry", async () => {
     const execute = vi.fn(async (input: Record<string, unknown>) => ({
       output: JSON.stringify(input),

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { agavHomePath, reinstallHint, setEnvHint } from "../utils/shell-hints.js";
+import { agavHomePath, examplePath, reinstallHint, setEnvHint } from "../utils/shell-hints.js";
 
 const SHELL_VARS = ["PSModulePath", "PROMPT", "MSYSTEM", "SHELL"] as const;
 
@@ -40,6 +40,7 @@ describe("shell hints", () => {
     withShell("linux", {}, () => {
       expect(setEnvHint("GEMINI_API_KEY", "test-key")).toBe('export GEMINI_API_KEY="test-key"');
       expect(agavHomePath("config.json")).toBe("~/.agav/config.json");
+      expect(examplePath("path", "to", "service-account.json")).toBe("/path/to/service-account.json");
       expect(reinstallHint()).toBe("curl -fsSL https://agav.dev/install.sh | bash");
     });
   });
@@ -48,6 +49,7 @@ describe("shell hints", () => {
     withShell("win32", { PSModulePath: PS_MODULE_PATH }, () => {
       expect(setEnvHint("GEMINI_API_KEY", "test-key")).toBe('$env:GEMINI_API_KEY="test-key"');
       expect(agavHomePath("skills/example")).toBe("$HOME\\.agav\\skills\\example");
+      expect(examplePath("path", "to", "service-account.json")).toBe("C:\\path\\to\\service-account.json");
       expect(reinstallHint()).toBe("irm https://agav.dev/install.ps1 | iex");
     });
   });
@@ -56,6 +58,7 @@ describe("shell hints", () => {
     withShell("win32", { PROMPT: "C:\\Users\\x>" }, () => {
       expect(setEnvHint("GEMINI_API_KEY", "test-key")).toBe("set GEMINI_API_KEY=test-key");
       expect(agavHomePath("config.json")).toBe("%USERPROFILE%\\.agav\\config.json");
+      expect(examplePath("path", "to", "service-account.json")).toBe("C:\\path\\to\\service-account.json");
       expect(reinstallHint()).toBe("curl -fsSL https://agav.dev/install.cmd -o install.cmd && install.cmd");
     });
   });

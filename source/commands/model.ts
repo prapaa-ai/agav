@@ -1,4 +1,6 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
+import type { AgavConfig } from "../config/config.js";
+import { providerSetupHints } from "../config/startup.js";
 import { fetchVertexAIModels } from "../providers/vertex-ai.js";
 
 interface FetchedModel {
@@ -74,12 +76,52 @@ async function fetchGeminiModels(apiKey: string): Promise<FetchedModel[]> {
   }
 }
 
-async function fetchVertexModels(credentialsPath: string): Promise<FetchedModel[]> {
+async function fetchVertexModels(
+  credentialsPath: string,
+  location: string | undefined,
+  warnings: string[],
+): Promise<FetchedModel[]> {
   try {
-    return (await fetchVertexAIModels(credentialsPath)).map((id) => ({ id, provider: "vertex-ai" }));
-  } catch {
+    return (await fetchVertexAIModels(credentialsPath, location)).map((id) => ({ id, provider: "vertex-ai" }));
+  } catch (error) {
+    // Unlike the API-key providers, Vertex fails for reasons the user can act
+    // on — an unreadable key file, a wrong region, a project without model
+    // access. Swallowing that just shows a picker with no Vertex entries, which
+    // reads as "this provider has no models" rather than "it is misconfigured".
+    warnings.push(`Vertex AI models unavailable: ${error instanceof Error ? error.message : String(error)}`);
     return [];
   }
+}
+
+interface FetchAllResult {
+  models: FetchedModel[];
+  /** Actionable problems to append to whatever the command reports back. */
+  warnings: string[];
+}
+
+/** Query every configured provider at once, in the order they appear in the picker. */
+async function fetchAllModels(config: AgavConfig): Promise<FetchAllResult> {
+  const warnings: string[] = [];
+  const fetches: Promise<FetchedModel[]>[] = [];
+
+  if (config.anthropicApiKey) fetches.push(fetchAnthropicModels(config.anthropicApiKey));
+  if (config.openaiApiKey) fetches.push(fetchOpenAIModels(config.openaiApiKey));
+  if (config.geminiApiKey) fetches.push(fetchGeminiModels(config.geminiApiKey));
+  if (config.vertexAICredentialsPath) {
+    fetches.push(fetchVertexModels(config.vertexAICredentialsPath, config.vertexAILocation, warnings));
+  }
+
+  const ollamaBase = config.ollamaEndpoint ??
+    `http://${config.ollamaHost ?? "localhost"}:${config.ollamaPort ?? 11434}`;
+  fetches.push(fetchOllamaModels(ollamaBase));
+
+  const results = await Promise.all(fetches);
+  return { models: results.flat(), warnings };
+}
+
+/** Render warnings as a trailing block, or nothing at all when there are none. */
+function warningSuffix(warnings: string[]): string {
+  return warnings.length > 0 ? `\n\n${warnings.join("\n")}` : "";
 }
 
 function pickModel(
@@ -235,24 +277,18 @@ export const modelCommand: SlashCommand = {
 
     if (model) {
       context.showStatus(`Validating model: ${model}...`);
-      const fetches: Promise<FetchedModel[]>[] = [];
-      if (context.config.anthropicApiKey) fetches.push(fetchAnthropicModels(context.config.anthropicApiKey));
-      if (context.config.openaiApiKey) fetches.push(fetchOpenAIModels(context.config.openaiApiKey));
-      if (context.config.geminiApiKey) fetches.push(fetchGeminiModels(context.config.geminiApiKey));
-      if (context.config.AGAV_USE_VERTEX_AI && context.config.VERTEX_AI_CREDENTIALS_PATH) {
-        fetches.push(fetchVertexModels(context.config.VERTEX_AI_CREDENTIALS_PATH));
-      }
-      const ollamaBase = context.config.ollamaEndpoint ?? `http://${context.config.ollamaHost ?? "localhost"}:${context.config.ollamaPort ?? 11434}`;
-      fetches.push(fetchOllamaModels(ollamaBase));
-
-      const results = await Promise.all(fetches);
-      const allModels = results.flat();
+      const { models: allModels, warnings } = await fetchAllModels(context.config);
       const match = allModels.find((m) => m.id === model);
 
       if (!match && allModels.length > 0) {
         const close = allModels.filter((m) => m.id.includes(model) || model.includes(m.id)).slice(0, 3);
         const hint = close.length > 0 ? `\nDid you mean: ${close.map((m) => m.id).join(", ")}?` : "";
-        return { type: "message", text: `Model '${model}' not found.${hint}\nUse /model to browse available models.` };
+        // The warnings matter most here: a Vertex model looks "not found" when
+        // the listing that would have contained it never came back.
+        return {
+          type: "message",
+          text: `Model '${model}' not found.${hint}\nUse /model to browse available models.${warningSuffix(warnings)}`,
+        };
       }
 
       context.setModel(model);
@@ -268,32 +304,12 @@ export const modelCommand: SlashCommand = {
     const currentModel = context.config.model;
     const currentProvider = context.config.provider;
 
-    const fetches: Promise<FetchedModel[]>[] = [];
-
-    if (context.config.anthropicApiKey) {
-      fetches.push(fetchAnthropicModels(context.config.anthropicApiKey));
-    }
-    if (context.config.openaiApiKey) {
-      fetches.push(fetchOpenAIModels(context.config.openaiApiKey));
-    }
-    if (context.config.geminiApiKey) {
-      fetches.push(fetchGeminiModels(context.config.geminiApiKey));
-    }
-    if (context.config.AGAV_USE_VERTEX_AI && context.config.VERTEX_AI_CREDENTIALS_PATH) {
-      fetches.push(fetchVertexModels(context.config.VERTEX_AI_CREDENTIALS_PATH));
-    }
-
-    const ollamaBase = context.config.ollamaEndpoint ??
-      `http://${context.config.ollamaHost ?? "localhost"}:${context.config.ollamaPort ?? 11434}`;
-    fetches.push(fetchOllamaModels(ollamaBase));
-
-    const results = await Promise.all(fetches);
-    const allModels = results.flat();
+    const { models: allModels, warnings } = await fetchAllModels(context.config);
 
     if (allModels.length === 0) {
       return {
         type: "message",
-        text: `Current: ${currentModel} (${currentProvider})\n\nNo providers reachable. Set an API key, configure Vertex AI, or start Ollama.`,
+        text: `Current: ${currentModel} (${currentProvider})\n\nNo providers reachable.\n${providerSetupHints()}${warningSuffix(warnings)}`,
       };
     }
 
@@ -303,11 +319,11 @@ export const modelCommand: SlashCommand = {
     context.refreshDisplay();
 
     if (!picked) {
-      return { type: "message", text: `Kept model as ${currentModel}` };
+      return { type: "message", text: `Kept model as ${currentModel}${warningSuffix(warnings)}` };
     }
 
     context.setModel(picked.id);
-    context.setProvider(picked.provider as import("../config/config.js").AgavConfig["provider"]);
-    return { type: "message", text: `Model changed to: ${picked.id} (${picked.provider})` };
+    context.setProvider(picked.provider as AgavConfig["provider"]);
+    return { type: "message", text: `Model changed to: ${picked.id} (${picked.provider})${warningSuffix(warnings)}` };
   },
 };

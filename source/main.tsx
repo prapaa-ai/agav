@@ -24,6 +24,7 @@ import {
 import {
   defaultModelForProvider,
   isProviderName,
+  noProviderCredentialsError,
   providerConfigurationError,
   resolveStartupSelection,
   selectConfiguredProvider,
@@ -328,6 +329,16 @@ export async function runPipeMode(
   return result.exitCode;
 }
 
+let startupFinished = false;
+
+/**
+ * Whether provider/model resolution finished. Lets the top-level handler in
+ * cli.tsx avoid blaming a mid-session crash on startup.
+ */
+export function hasStartupFinished(): boolean {
+  return startupFinished;
+}
+
 export async function main() {
   const flags = parseArgs(process.argv.slice(2));
 
@@ -364,7 +375,7 @@ export async function main() {
   Examples
     $ agav
     $ agav --provider openai --model gpt-4o
-    $ agav --provider vertex-ai --model vertex/gemini-2.5-flash
+    $ agav --provider vertex-ai --model vertex/gemini-3.5-flash
     $ agav run "review the code in src/"
     $ agav run --permission '{"bash":"deny"}' "check for security issues"
     $ agav -P "what does this project do?"
@@ -524,9 +535,13 @@ export async function main() {
   // Plain `agav` may fall back to another configured provider. Explicit and
   // resumed selections are pinned and must report their own missing settings.
   if (!cliProvider && !resumeSelection) {
-    const selected = selectConfiguredProvider(config);
+    // Keep an explicit --model: falling back to a different provider should not
+    // silently discard the model the user asked for.
+    const selected = selectConfiguredProvider(config, {
+      keepModel: typeof flags.model === "string",
+    });
     if (!selected) {
-      process.stderr.write("\n  Agav — no provider credentials found.\n  Set an API key, configure Vertex AI, or start Ollama.\n");
+      process.stderr.write(`\n  Agav — ${noProviderCredentialsError()}\n\n`);
       process.exit(1);
     }
     Object.assign(config, selected);
@@ -554,7 +569,16 @@ export async function main() {
       process.exit(1);
     }
     config.model = models[0] ?? defaultModelForProvider("ollama");
+    // Auto-picking the first installed model is a guess, so name the others —
+    // otherwise there is no hint that --model would have chosen differently.
+    process.stderr.write(
+      `\n  Agav — using Ollama model ${config.model}.`
+      + (models.length > 1 ? ` Also installed: ${models.slice(1).join(", ")}.` : "")
+      + "\n\n",
+    );
   }
+
+  startupFinished = true;
 
   // Short-circuit into non-interactive mode before the Ink UI is rendered.
   if (flags.print) {

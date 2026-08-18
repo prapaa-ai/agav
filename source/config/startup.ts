@@ -1,6 +1,6 @@
 import type { AgavConfig } from "./config.js";
 import type { SessionRecord } from "./history.js";
-import { agavHomePath } from "../utils/shell-hints.js";
+import { agavHomePath, examplePath, setEnvHint } from "../utils/shell-hints.js";
 
 export type ProviderName = AgavConfig["provider"];
 
@@ -80,40 +80,72 @@ export function hasProviderConfiguration(config: AgavConfig, provider: ProviderN
     case "anthropic": return Boolean(config.anthropicApiKey);
     case "openai": return Boolean(config.openaiApiKey);
     case "gemini": return Boolean(config.geminiApiKey);
-    case "vertex-ai": return Boolean(config.AGAV_USE_VERTEX_AI && config.VERTEX_AI_CREDENTIALS_PATH);
+    case "vertex-ai": return Boolean(config.vertexAICredentialsPath);
     case "ollama": return true;
   }
 }
 
+interface SelectProviderOptions {
+  /**
+   * Keep `config.model` as-is instead of substituting the newly selected
+   * provider's default. Set when the user named a model explicitly.
+   */
+  keepModel?: boolean;
+}
+
 /** For an unpinned plain start, select the first configured cloud provider. */
-export function selectConfiguredProvider(config: AgavConfig): AgavConfig | null {
+export function selectConfiguredProvider(
+  config: AgavConfig,
+  options: SelectProviderOptions = {},
+): AgavConfig | null {
   if (hasProviderConfiguration(config, config.provider)) return { ...config };
 
   for (const provider of PROVIDERS) {
     if (provider === "ollama" || !hasProviderConfiguration(config, provider)) continue;
+    // An explicit --model is a deliberate choice, so only fall back to the
+    // provider default when the user did not name a model themselves.
+    if (options.keepModel) return { ...config, provider };
     return { ...config, provider, model: defaultModelForProvider(provider) };
   }
   return null;
+}
+
+/**
+ * The set-up commands for every provider, spelled out for the caller's shell
+ * rather than telling them to "set an API key" and leaving them to work out the
+ * syntax. Shared so a caller with its own lead-in sentence does not have to
+ * restate them.
+ */
+export function providerSetupHints(): string {
+  return [
+    "  Set one of:",
+    `    ${setEnvHint("ANTHROPIC_API_KEY", "sk-ant-...")}`,
+    `    ${setEnvHint("OPENAI_API_KEY", "sk-...")}`,
+    `    ${setEnvHint("GEMINI_API_KEY", "...")}`,
+    `    ${setEnvHint("VERTEX_AI_CREDENTIALS_PATH", examplePath("path", "to", "service-account.json"))}`,
+    "  Or start Ollama: agav --provider ollama",
+  ].join("\n");
+}
+
+/** Guidance for a plain start with nothing configured at all. */
+export function noProviderCredentialsError(): string {
+  return `no provider credentials found.\n${providerSetupHints()}`;
 }
 
 export function providerConfigurationError(config: AgavConfig): string | null {
   switch (config.provider) {
     case "anthropic":
       return config.anthropicApiKey ? null
-        : `Anthropic API key not found. Set ANTHROPIC_API_KEY or add it to ${agavHomePath("config.json")}`;
+        : `Anthropic API key not found. Run ${setEnvHint("ANTHROPIC_API_KEY", "sk-ant-...")} or add it to ${agavHomePath("config.json")}`;
     case "openai":
       return config.openaiApiKey ? null
-        : `OpenAI API key not found. Set OPENAI_API_KEY or add it to ${agavHomePath("config.json")}`;
+        : `OpenAI API key not found. Run ${setEnvHint("OPENAI_API_KEY", "sk-...")} or add it to ${agavHomePath("config.json")}`;
     case "gemini":
       return config.geminiApiKey ? null
-        : `Gemini API key not found. Set GEMINI_API_KEY or add it to ${agavHomePath("config.json")}`;
-    case "vertex-ai": {
-      const missing: string[] = [];
-      if (!config.AGAV_USE_VERTEX_AI) missing.push("AGAV_USE_VERTEX_AI=true");
-      if (!config.VERTEX_AI_CREDENTIALS_PATH) missing.push("VERTEX_AI_CREDENTIALS_PATH");
-      return missing.length === 0 ? null
-        : `Vertex AI configuration is incomplete. Missing: ${missing.join(", ")}. Add it to the environment or ${agavHomePath("config.json")}`;
-    }
+        : `Gemini API key not found. Run ${setEnvHint("GEMINI_API_KEY", "...")} or add it to ${agavHomePath("config.json")}`;
+    case "vertex-ai":
+      return config.vertexAICredentialsPath ? null
+        : `Vertex AI service account credentials not found. Run ${setEnvHint("VERTEX_AI_CREDENTIALS_PATH", examplePath("path", "to", "service-account.json"))} or add it to ${agavHomePath("config.json")}`;
     case "ollama": return null;
   }
 }

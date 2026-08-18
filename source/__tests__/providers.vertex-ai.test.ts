@@ -234,4 +234,44 @@ describe("VertexAIProvider", () => {
       "vertex/gemini-2.5-flash",
     ]);
   });
+
+  it("surfaces a publisher failure instead of reporting an empty catalog", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
+      // Gemini errors while Claude legitimately returns nothing, so the only
+      // honest answer is the error — not "no models exist".
+      .mockResolvedValueOnce(new Response("boom", { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ publisherModels: [] }), { status: 200 }));
+
+    await expect(fetchVertexAIModels(credentialsPath)).rejects.toThrow(
+      "Unable to list Vertex AI Gemini or Claude models",
+    );
+  });
+
+  it("targets the regional host when a location is configured", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", expires_in: 3600 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('data: [DONE]\n\n', { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+
+    const provider = new VertexAIProvider(credentialsPath, "us-east5");
+    for await (const _event of provider.stream({
+      model: "vertex/gemini-3.5-flash",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    })) { /* drain */ }
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      "https://us-east5-aiplatform.googleapis.com/v1beta1/projects/test-project/locations/us-east5/endpoints/openapi/chat/completions",
+    );
+  });
+
+  it("mints one access token for concurrent callers", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(JSON.stringify({ access_token: "access-token", expires_in: 3600 }), { status: 200 }));
+
+    const auth = new VertexAIAuth(credentialsPath);
+    const tokens = await Promise.all([auth.getAccessToken(), auth.getAccessToken(), auth.getAccessToken()]);
+
+    expect(tokens).toEqual(["access-token", "access-token", "access-token"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

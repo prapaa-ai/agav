@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgavConfig } from "../config/config.js";
 import {
+  noProviderCredentialsError,
   providerConfigurationError,
   resolveStartupSelection,
   selectConfiguredProvider,
@@ -77,8 +78,31 @@ describe("startup provider and model resolution", () => {
     });
   });
 
+  it("keeps an explicit --model when falling back to another provider", () => {
+    expect(selectConfiguredProvider({ ...base, model: "gpt-4o", openaiApiKey: "key" }, { keepModel: true }))
+      .toMatchObject({ provider: "openai", model: "gpt-4o" });
+  });
+
+  it("enables Vertex AI from the credentials path alone", () => {
+    const config: AgavConfig = { ...base, provider: "vertex-ai", model: "vertex/gemini-3.5-flash" };
+    expect(providerConfigurationError(config)).toContain("VERTEX_AI_CREDENTIALS_PATH");
+    expect(providerConfigurationError({ ...config, vertexAICredentialsPath: "/tmp/sa.json" })).toBeNull();
+  });
+
+  it("names a runnable command for every provider when nothing is configured", () => {
+    const message = noProviderCredentialsError();
+    for (const variable of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "VERTEX_AI_CREDENTIALS_PATH"]) {
+      // The shell-specific prefix is covered by utils.shell-hints; here it only
+      // matters that each variable is shown as a command, not just named.
+      expect(message).toMatch(new RegExp(`(export|set|\\$env:)\\s?${variable}`));
+    }
+    expect(message).toContain("agav --provider ollama");
+  });
+
   it("reports the selected provider's exact missing configuration", () => {
-    expect(providerConfigurationError({ ...base, provider: "vertex-ai", model: "vertex/gemini" }))
-      .toContain("AGAV_USE_VERTEX_AI=true, VERTEX_AI_CREDENTIALS_PATH");
+    expect(providerConfigurationError({ ...base, anthropicApiKey: undefined }))
+      .toContain("ANTHROPIC_API_KEY");
+    expect(providerConfigurationError({ ...base, provider: "openai", openaiApiKey: undefined }))
+      .toContain("OPENAI_API_KEY");
   });
 });

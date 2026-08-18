@@ -8,6 +8,17 @@ import { VertexAIProvider } from "./vertex-ai.js";
 import { RetryProvider } from "./retry.js";
 import { providerConfigurationError } from "../config/startup.js";
 
+/**
+ * `providerConfigurationError` has already rejected a config that is missing
+ * the credential for its provider, so these should never fire — but a plain
+ * check beats a non-null assertion that silently hands `undefined` to a
+ * provider constructor if the two ever drift apart.
+ */
+function required(value: string | undefined, description: string): string {
+  if (!value) throw new Error(`${description} is missing from the resolved configuration`);
+  return value;
+}
+
 export function createProvider(config: AgavConfig): LLMProvider {
   const configurationError = providerConfigurationError(config);
   if (configurationError) throw new Error(configurationError);
@@ -16,12 +27,12 @@ export function createProvider(config: AgavConfig): LLMProvider {
 
   switch (config.provider) {
     case "anthropic": {
-      const key = config.anthropicApiKey!;
+      const key = required(config.anthropicApiKey, "Anthropic API key");
       provider = new AnthropicProvider(key);
       break;
     }
     case "openai": {
-      const key = config.openaiApiKey!;
+      const key = required(config.openaiApiKey, "OpenAI API key");
       provider = new OpenAIProvider(key, config.openaiApi ?? "responses");
       break;
     }
@@ -33,12 +44,13 @@ export function createProvider(config: AgavConfig): LLMProvider {
       break;
     }
     case "gemini": {
-      const key = config.geminiApiKey!;
+      const key = required(config.geminiApiKey, "Gemini API key");
       provider = new GeminiProvider(key);
       break;
     }
     case "vertex-ai": {
-      provider = new VertexAIProvider(config.VERTEX_AI_CREDENTIALS_PATH!);
+      const credentialsPath = required(config.vertexAICredentialsPath, "Vertex AI credentials path");
+      provider = new VertexAIProvider(credentialsPath, config.vertexAILocation);
       break;
     }
     default:

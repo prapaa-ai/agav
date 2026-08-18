@@ -124,31 +124,6 @@ On Windows, remove the Agav entry from your user `PATH` under **Settings → Edi
 
 Agav also writes per-project directories inside repositories you've worked in — `.agav/` (cached images) and `.agav-worktrees/`. Delete those individually if you want them gone.
 
-### Vertex AI
-
-Vertex AI uses a Google Cloud service-account JSON file. Enable it with both settings, then select the provider:
-
-```bash
-export AGAV_USE_VERTEX_AI=true
-export VERTEX_AI_CREDENTIALS_PATH=/path/to/service-account.json
-agav --provider vertex-ai --model google/gemini-2.5-flash
-# Claude partner models are supported by the same provider and credentials:
-agav --provider vertex-ai --model anthropic/claude-sonnet-4-5@20250929
-```
-
-The same settings can be placed in `.agav/config.json` (project) or `~/.agav/config.json` (global):
-
-```json
-{
-  "provider": "vertex-ai",
-  "model": "google/gemini-2.5-flash",
-  "AGAV_USE_VERTEX_AI": true,
-  "VERTEX_AI_CREDENTIALS_PATH": "/path/to/service-account.json"
-}
-```
-
-The service account's `project_id`, `client_email`, `private_key`, and optional `token_uri` are read from that file. Agav exchanges the signed credentials for a short-lived OAuth token and refreshes it automatically. The provider supports Gemini (`google/gemini-*`) and Claude (`anthropic/claude-*`) models. Use the versioned Claude model ID exposed by Vertex AI, including its `@YYYYMMDD` suffix. Vertex AI's implicit Gemini caching and Claude's ephemeral prompt caching are used automatically when supported.
-
 ### Run from source
 
 #### macOS
@@ -168,6 +143,39 @@ git clone https://github.com/prapaa-ai/agav && cd agav && pnpm install --frozen-
 ```powershell
 git clone https://github.com/prapaa-ai/agav; cd agav; pnpm install --frozen-lockfile; pnpm build; pnpm start
 ```
+
+## Provider setup
+
+Anthropic, OpenAI, and Gemini need nothing more than their API key in the environment — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` — and Ollama just needs a local server running. Vertex AI takes a little more.
+
+### Vertex AI
+
+Vertex AI authenticates with a Google Cloud service-account JSON file. Point Agav at it, then select the provider:
+
+```bash
+export VERTEX_AI_CREDENTIALS_PATH=/path/to/service-account.json
+agav --provider vertex-ai --model vertex/gemini-3.5-flash
+# Claude partner models are supported by the same provider and credentials:
+agav --provider vertex-ai --model vertex/claude-sonnet-4-5@20250929
+```
+
+Setting the credentials path is what enables the provider; there is no separate on/off flag to keep in sync with it. Agav uses the multi-region `global` endpoint by default — set `VERTEX_AI_LOCATION` (for example `us-east5`) to pin a region instead, which some Claude partner models require.
+
+The same settings can go in `.agav/config.json` (project) or `~/.agav/config.json` (global):
+
+```json
+{
+  "provider": "vertex-ai",
+  "model": "vertex/gemini-3.5-flash",
+  "vertexAICredentialsPath": "/path/to/service-account.json",
+  "vertexAILocation": "global"
+}
+```
+
+> [!IMPORTANT]
+> **Protect the key file.** The service-account JSON holds an unencrypted private key that can act as that service account against your entire Google Cloud project. Unlike the API keys Agav encrypts into `config.json`, this file is yours to secure: keep it outside the repository, `chmod 600` it, and grant the service account only the `roles/aiplatform.user` role it actually needs.
+
+The service account's `project_id`, `client_email`, `private_key`, and optional `token_uri` are read from that file. Agav exchanges the signed credentials for a short-lived OAuth token and refreshes it automatically. Both model families are addressed with the same `vertex/` prefix — `vertex/gemini-3.5-flash`, `vertex/claude-sonnet-4-5@20250929` — and Claude needs the versioned ID that Vertex AI exposes, including its `@YYYYMMDD` suffix. Vertex AI's implicit Gemini caching and Claude's ephemeral prompt caching are used automatically when supported.
 
 ## Multi-line input
 
