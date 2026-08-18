@@ -45,7 +45,9 @@ export const DEFAULT_KEYBINDINGS: Keybindings = {
   cancel: ["escape"],
   toggleToolDetail: ["ctrl+d"],
   cycleSubagents: ["tab"],
-  newline: ["shift+enter", "meta+enter"],
+  // Shift+Enter only survives an enhanced keyboard protocol; the other two are
+  // the fallbacks every terminal can send. See normalizeKeyEvent below.
+  newline: ["shift+enter", "meta+enter", "ctrl+j"],
   submit: ["enter"],
   historyUp: ["up"],
   historyDown: ["down"],
@@ -122,6 +124,67 @@ interface InkKey {
   meta: boolean;
 }
 
+/** `CSI 27 ; modifiers ; codepoint ~` — xterm's `modifyOtherKeys=2` encoding. */
+const XTERM_OTHER_KEY_RE = /^\x1b?\[27;(\d+);(\d+)~$/;
+
+/** Overlay `patch` on an Ink key event without losing fields Ink adds beyond InkKey. */
+function patchKey<K extends InkKey>(key: K, patch: Partial<InkKey>): K {
+  return { ...key, ...patch } as K;
+}
+
+/**
+ * Fold terminal-specific encodings of a key into the shape Ink reports for its
+ * Kitty-protocol equivalent, so a binding resolves the same way everywhere.
+ *
+ * Ink negotiates the Kitty protocol and parses CSI-u, which covers the modern
+ * terminals. Two encodings fall outside that and reach us raw:
+ *
+ *   - Linefeed (`\n`). Ctrl+J sends it on every terminal and every platform, and
+ *     several terminals send it for Ctrl+Enter. Ink names it `enter` rather than
+ *     `return`, so no key flag and no modifier is set and the byte would be
+ *     inserted as text. Reported as Ctrl+J, the stroke that produces it.
+ *   - xterm's `modifyOtherKeys=2` form, used by xterm and older iTerm2 builds.
+ *     Ink does not parse it at all, so the escape sequence leaked into the prompt
+ *     as literal text.
+ */
+export function normalizeKeyEvent<K extends InkKey>(input: string, key: K): { input: string; key: K } {
+  if (input === "\n") return { input: "j", key: patchKey(key, { ctrl: true }) };
+
+  const otherKey = XTERM_OTHER_KEY_RE.exec(input);
+  if (!otherKey) return { input, key };
+
+  // The protocol sends modifiers biased by one; bits are shift/alt/ctrl.
+  const modifiers = Math.max(0, Number(otherKey[1]) - 1);
+  const codepoint = Number(otherKey[2]);
+  const decoded: Partial<InkKey> = {
+    shift: (modifiers & 1) !== 0,
+    meta: (modifiers & 2) !== 0,
+    ctrl: (modifiers & 4) !== 0,
+  };
+
+  if (codepoint === 13) return { input: "", key: patchKey(key, { ...decoded, return: true }) };
+  if (codepoint === 9) return { input: "", key: patchKey(key, { ...decoded, tab: true }) };
+  if (codepoint === 27) return { input: "", key: patchKey(key, { ...decoded, escape: true }) };
+  if (codepoint === 127 || codepoint === 8) return { input: "", key: patchKey(key, { ...decoded, backspace: true }) };
+  // Anything else is a printable key carrying modifiers. Drop it when the
+  // codepoint is out of range rather than letting fromCodePoint throw.
+  if (!Number.isInteger(codepoint) || codepoint < 32 || codepoint > 0x10_ffff) {
+    return { input: "", key: patchKey(key, decoded) };
+  }
+  return { input: String.fromCodePoint(codepoint), key: patchKey(key, decoded) };
+}
+
+/**
+ * Strokes the legacy terminal encoding cannot represent: it folds Shift+Enter and
+ * Ctrl+Enter into the same bare `\r` a plain Enter sends, so the modifier is
+ * unrecoverable. They only arrive when an enhanced keyboard protocol is active.
+ */
+const ENHANCED_ONLY_STROKES = new Set(["shift+enter", "ctrl+enter", "ctrl+shift+enter", "shift+escape", "ctrl+escape"]);
+
+export function requiresEnhancedKeyboard(binding: string): boolean {
+  return binding.split(" ").some((stroke) => ENHANCED_ONLY_STROKES.has(stroke));
+}
+
 function eventStroke(input: string, key: InkKey): string | null {
   let name: string | null = null;
   if (key.return) name = "enter";
@@ -196,6 +259,23 @@ export function formatKeybinding(bindings: Keybindings, action: KeybindingAction
     }).join("+"))
     .join(" "))
     .join(" / ");
+}
+
+/**
+ * Format only the bindings for `action` this terminal can actually deliver, so a
+ * hint never advertises a key the terminal folds into something else. Falls back
+ * to the full list when every binding needs the protocol — a hint that cannot be
+ * followed still beats no hint at all.
+ */
+export function formatUsableKeybinding(
+  bindings: Keybindings,
+  action: KeybindingAction,
+  enhancedKeyboard: boolean,
+): string {
+  if (enhancedKeyboard) return formatKeybinding(bindings, action);
+  const usable = bindings[action].filter((binding) => !requiresEnhancedKeyboard(binding));
+  if (usable.length === 0) return formatKeybinding(bindings, action);
+  return formatKeybinding({ ...bindings, [action]: usable }, action);
 }
 
 export function formatKeybindings(bindings: Keybindings): string {

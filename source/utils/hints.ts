@@ -1,4 +1,4 @@
-import { DEFAULT_KEYBINDINGS, formatKeybinding, type Keybindings } from "../config/keybindings.js";
+import { DEFAULT_KEYBINDINGS, formatKeybinding, formatUsableKeybinding, type Keybindings } from "../config/keybindings.js";
 import { agavHomePath } from "./shell-hints.js";
 import { detectSandboxBackend, getSandboxName } from "./sandbox.js";
 
@@ -55,9 +55,11 @@ const HINTS = [
 
 let lastIndex = -1;
 
-export function getRandomHint(keybindings: Keybindings = DEFAULT_KEYBINDINGS): string {
+export function getRandomHint(keybindings: Keybindings = DEFAULT_KEYBINDINGS, enhancedKeyboard = false): string {
   const dynamicHints = [
-    `${formatKeybinding(keybindings, "newline")} for multiline input`,
+    // Terminals without an enhanced keyboard protocol cannot send Shift+Enter, so
+    // hinting it there would send the user chasing a key that does nothing.
+    `${formatUsableKeybinding(keybindings, "newline", enhancedKeyboard)} for multiline input`,
     `${formatKeybinding(keybindings, "historyUp")}/${formatKeybinding(keybindings, "historyDown")} to recall previous messages`,
     `${formatKeybinding(keybindings, "toggleToolDetail")} expands tool output details`,
     `${formatKeybinding(keybindings, "cancel")} cancels a streaming response`,
