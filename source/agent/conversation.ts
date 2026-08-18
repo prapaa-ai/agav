@@ -117,18 +117,36 @@ export class ConversationState {
       }
     }
     return messages.map((msg) => {
-      if (msg.role === "user") {
-        const filtered = msg.content.filter((block) => {
-          if (block.type === "tool_result" && block.toolCallId) {
-            return toolCallIds.has(block.toolCallId);
-          }
-          return true;
-        });
-        if (filtered.length === 0) return null;
-        return { ...msg, content: filtered };
-      }
-      return msg;
+      const filtered = msg.content.filter((block) => {
+        // Providers reject an empty text block outright, so one saved into a
+        // session file would make every later request fail until the session
+        // was abandoned. Drop it here and the session loads clean again.
+        if (block.type === "text" && !block.text?.trim()) return false;
+        if (msg.role === "user" && block.type === "tool_result" && block.toolCallId) {
+          return toolCallIds.has(block.toolCallId);
+        }
+        return true;
+      });
+      if (filtered.length === 0) return null;
+      if (filtered.length === msg.content.length) return msg;
+      return { ...msg, content: filtered };
     }).filter((msg): msg is Message => msg !== null);
+  }
+
+  /**
+   * Walk a split point backwards until it no longer cuts a tool cycle in half.
+   * Both halves are used as standalone conversations — the dropped half is sent
+   * off to be summarized, the kept half becomes the new history — and providers
+   * reject either one if a tool_result has lost its tool_use. Moving the
+   * boundary onto the assistant turn that opened the cycle keeps the pair
+   * together on the same side.
+   */
+  private safeSplitPoint(index: number): number {
+    let split = index;
+    while (split > 0 && this.messages[split]!.content.some((block) => block.type === "tool_result")) {
+      split--;
+    }
+    return split;
   }
 
   private trimToolResults(targetTokens: number, preserveRecent: number): number {
@@ -190,6 +208,7 @@ export class ConversationState {
 
     // Keep at least the last 4 messages
     keepFrom = Math.min(keepFrom, Math.max(0, this.messages.length - 4));
+    keepFrom = this.safeSplitPoint(keepFrom);
 
     if (keepFrom <= 0) {
       return { compacted: false, droppedCount: 0 };
@@ -199,24 +218,28 @@ export class ConversationState {
     const droppedMessages = this.messages.slice(0, keepFrom);
     const userMsgCount = droppedMessages.filter((m) => m.role === "user").length;
 
-    let summaryText: string;
+    const placeholder = `[Earlier conversation (${userMsgCount} exchanges) was compacted to save context. Continue from here.]`;
+    let summaryText = placeholder;
 
     if (summarize) {
       try {
         summaryText = await summarize(droppedMessages);
       } catch {
-        summaryText = `[Earlier conversation (${userMsgCount} exchanges) was compacted to save context. Continue from here.]`;
+        summaryText = placeholder;
       }
-    } else {
-      summaryText = `[Earlier conversation (${userMsgCount} exchanges) was compacted to save context. Continue from here.]`;
     }
+
+    // A blank summary would become an empty text block, which providers reject
+    // outright ("text content blocks must be non-empty") — so every message
+    // sent after the compaction fails, not just this one.
+    if (!summaryText.trim()) summaryText = placeholder;
 
     const summary: Message = {
       role: "user",
       content: [{ type: "text", text: summaryText }],
     };
 
-    this.messages = [summary, ...this.messages.slice(keepFrom)];
+    this.messages = this.sanitizeMessages([summary, ...this.messages.slice(keepFrom)]);
     this._compacted = true;
     this._lastCompactionSummary = summaryText;
 

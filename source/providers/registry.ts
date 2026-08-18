@@ -4,30 +4,35 @@ import { AnthropicProvider } from "./anthropic.js";
 import { OpenAIProvider } from "./openai.js";
 import { OllamaProvider } from "./ollama.js";
 import { GeminiProvider } from "./gemini.js";
+import { VertexAIProvider } from "./vertex-ai.js";
 import { RetryProvider } from "./retry.js";
-import { agavHomePath } from "../utils/shell-hints.js";
+import { providerConfigurationError } from "../config/startup.js";
+
+/**
+ * `providerConfigurationError` has already rejected a config that is missing
+ * the credential for its provider, so these should never fire — but a plain
+ * check beats a non-null assertion that silently hands `undefined` to a
+ * provider constructor if the two ever drift apart.
+ */
+function required(value: string | undefined, description: string): string {
+  if (!value) throw new Error(`${description} is missing from the resolved configuration`);
+  return value;
+}
 
 export function createProvider(config: AgavConfig): LLMProvider {
+  const configurationError = providerConfigurationError(config);
+  if (configurationError) throw new Error(configurationError);
+
   let provider: LLMProvider;
 
   switch (config.provider) {
     case "anthropic": {
-      const key = config.anthropicApiKey;
-      if (!key) {
-        throw new Error(
-          `Anthropic API key not found. Set ANTHROPIC_API_KEY or add it to ${agavHomePath("config.json")}`,
-        );
-      }
+      const key = required(config.anthropicApiKey, "Anthropic API key");
       provider = new AnthropicProvider(key);
       break;
     }
     case "openai": {
-      const key = config.openaiApiKey;
-      if (!key) {
-        throw new Error(
-          `OpenAI API key not found. Set OPENAI_API_KEY or add it to ${agavHomePath("config.json")}`,
-        );
-      }
+      const key = required(config.openaiApiKey, "OpenAI API key");
       provider = new OpenAIProvider(key, config.openaiApi ?? "responses");
       break;
     }
@@ -39,13 +44,13 @@ export function createProvider(config: AgavConfig): LLMProvider {
       break;
     }
     case "gemini": {
-      const key = config.geminiApiKey;
-      if (!key) {
-        throw new Error(
-          `Gemini API key not found. Set GEMINI_API_KEY or add it to ${agavHomePath("config.json")}`,
-        );
-      }
+      const key = required(config.geminiApiKey, "Gemini API key");
       provider = new GeminiProvider(key);
+      break;
+    }
+    case "vertex-ai": {
+      const credentialsPath = required(config.vertexAICredentialsPath, "Vertex AI credentials path");
+      provider = new VertexAIProvider(credentialsPath, config.vertexAILocation);
       break;
     }
     default:

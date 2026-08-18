@@ -1,5 +1,6 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import { listSessions, loadSession } from "../config/history.js";
+import { isProviderName } from "../config/startup.js";
 
 /** List saved sessions or load one into the active conversation. */
 export const historyCommand: SlashCommand = {
@@ -24,7 +25,7 @@ export const historyCommand: SlashCommand = {
       }
       context.loadSession(loaded);
       context.setModel(loaded.model || context.config.model);
-      if (loaded.provider === "anthropic" || loaded.provider === "openai" || loaded.provider === "ollama") {
+      if (isProviderName(loaded.provider)) {
         context.setProvider(loaded.provider);
       }
       return {

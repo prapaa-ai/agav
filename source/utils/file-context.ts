@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { ContentBlock } from "../providers/types.js";
+import { setEnvHint } from "./shell-hints.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -379,6 +380,19 @@ async function detectLibreOffice(): Promise<string | null> {
   return null;
 }
 
+/**
+ * Where LibreOffice conventionally installs on this platform. The layout
+ * differs by more than the path separator, so this cannot come from the
+ * generic `examplePath` helper.
+ */
+function libreOfficeExamplePath(): string {
+  switch (process.platform) {
+    case "darwin": return "/Applications/LibreOffice.app/Contents/MacOS/soffice";
+    case "win32": return "C:\\Program Files\\LibreOffice\\program\\soffice.exe";
+    default: return "/usr/bin/soffice";
+  }
+}
+
 function findLibreOffice(): Promise<string | null> {
   libreOfficePromise ??= detectLibreOffice();
   return libreOfficePromise;
@@ -415,7 +429,10 @@ async function readOfficeContext(path: string, size: number, options: FileContex
 
   const extension = extname(path).toLowerCase();
   if (!MODERN_OFFICE_EXTENSIONS.has(extension)) {
-    throw new Error(`LibreOffice is required to read legacy ${extension} files. Install LibreOffice or set LIBREOFFICE_PATH.`);
+    throw new Error(
+      `LibreOffice is required to read legacy ${extension} files. Install LibreOffice, `
+      + `or point Agav at an existing install with ${setEnvHint("LIBREOFFICE_PATH", libreOfficeExamplePath())}`,
+    );
   }
   if (options.startLine !== undefined || options.endLine !== undefined) {
     throw new Error("Line ranges cannot be used with Office documents");

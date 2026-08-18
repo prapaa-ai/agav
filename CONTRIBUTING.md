@@ -22,7 +22,7 @@ source/
 ├── hooks/          # React hooks (use-agent, use-paste-handler)
 ├── mcp/            # MCP server integration
 ├── plugins/        # Plugin system
-├── providers/      # LLM providers (Anthropic, OpenAI, Gemini, Ollama)
+├── providers/      # LLM providers (Anthropic, OpenAI, Gemini, Vertex AI, Ollama)
 ├── skills/         # Skill system (loader, executor, bundled skills)
 ├── tools/          # Agent tools (file read/write, shell, grep, etc.)
 ├── utils/          # Shared utilities (sandbox, diff, encrypt, etc.)
@@ -68,6 +68,8 @@ pnpm start -- --provider gemini         # Use a specific provider
 4. Update `source/main.tsx` (flags, validation, auto-detection, help text)
 5. Add model entries in `source/commands/model-routing.ts`
 6. Add model fetching in `source/commands/model.ts`
+7. Update session restoration in `source/main.tsx` and `source/commands/history.ts`
+8. Update provider memoization in `source/app.tsx` and add provider/config tests
 
 ### Adding a new slash command
 
@@ -180,7 +182,7 @@ Every contribution matters — code is just one of many ways to make Agav better
 - Translate docs into other languages
 
 ### Test and give feedback
-- Try Agav with different providers (Anthropic, OpenAI, Gemini, Ollama) and report issues
+- Try Agav with different providers (Anthropic, OpenAI, Gemini, Vertex AI, Ollama) and report issues
 - Test on different platforms (macOS, Linux, WSL)
 - Try edge cases — large files, long conversations, unusual prompts
 - Report UI glitches, confusing output, or missing feedback

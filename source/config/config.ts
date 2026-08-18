@@ -23,12 +23,14 @@ export interface AgavHooks {
 }
 
 export interface AgavConfig {
-  provider: "anthropic" | "openai" | "ollama" | "gemini";
+  provider: "anthropic" | "openai" | "ollama" | "gemini" | "vertex-ai";
   model: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
   openaiApi?: "chat" | "responses";
   geminiApiKey?: string;
+  vertexAICredentialsPath?: string;
+  vertexAILocation?: string;
   ollamaEndpoint?: string;  // e.g. "http://192.168.1.5:11434" — takes precedence over host+port
   ollamaHost?: string;
   ollamaPort?: number;
@@ -49,10 +51,22 @@ export interface AgavConfig {
 const AGAV_DIR = join(homedir(), ".agav");
 const CONFIG_PATH = join(AGAV_DIR, "config.json");
 
+/**
+ * Expand a leading `~` to the home directory. Users naturally write `~/...` for
+ * a file path in config.json, but no shell is involved when we read it back, so
+ * without this Node tries to open a directory literally named "~" and fails
+ * with ENOENT.
+ */
+export function expandHome(path: string): string {
+  if (path === "~") return homedir();
+  if (path.startsWith("~/") || path.startsWith("~\\")) return join(homedir(), path.slice(2));
+  return path;
+}
+
 const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
-    enum: ["openai", "ollama", "anthropic", "gemini"],
+    enum: ["openai", "ollama", "anthropic", "gemini", "vertex-ai"],
     type: "string",
     eg: "openai",
   },
@@ -117,6 +131,16 @@ const PROJECT_CONFIG_TEMPLATE = {
     description: "Google Gemini API key. Prefer the GEMINI_API_KEY environment variable for secrets.",
     type: "string",
     eg: "set-via-GEMINI_API_KEY",
+  },
+  vertexAICredentialsPath: {
+    description: "Path to a Google Cloud service-account JSON file used by Vertex AI. Setting it enables the provider. Prefer the VERTEX_AI_CREDENTIALS_PATH environment variable.",
+    type: "string",
+    eg: "/path/to/service-account.json",
+  },
+  vertexAILocation: {
+    description: "Vertex AI region, or \"global\" for the multi-region endpoint. Can also be set with VERTEX_AI_LOCATION.",
+    type: "string",
+    eg: "global",
   },
   ollamaEndpoint: {
     description: "Complete Ollama API base URL; overrides ollamaHost and ollamaPort.",
@@ -249,19 +273,36 @@ export async function loadConfig(): Promise<AgavConfig> {
 
   merged.anthropicApiKey = decrypt(
     process.env["ANTHROPIC_API_KEY"] ??
+    projectConfig.anthropicApiKey ??
     globalConfig.anthropicApiKey ??
     DEFAULT_CONFIG.anthropicApiKey ?? "",
   ) || undefined;
   merged.openaiApiKey = decrypt(
     process.env["OPENAI_API_KEY"] ??
+    projectConfig.openaiApiKey ??
     globalConfig.openaiApiKey ??
     DEFAULT_CONFIG.openaiApiKey ?? "",
   ) || undefined;
   merged.geminiApiKey = decrypt(
     process.env["GEMINI_API_KEY"] ??
+    projectConfig.geminiApiKey ??
     globalConfig.geminiApiKey ??
     DEFAULT_CONFIG.geminiApiKey ?? "",
   ) || undefined;
+
+  // Vertex AI — the credentials path alone enables the provider; there is no
+  // separate on/off flag to keep in sync with it.
+  if (process.env["VERTEX_AI_CREDENTIALS_PATH"]) {
+    merged.vertexAICredentialsPath = process.env["VERTEX_AI_CREDENTIALS_PATH"];
+  }
+  if (process.env["VERTEX_AI_LOCATION"]) {
+    merged.vertexAILocation = process.env["VERTEX_AI_LOCATION"];
+  }
+  // Applied after the env override so a tilde resolves whichever source the
+  // path came from: environment, project config, or global config.
+  if (merged.vertexAICredentialsPath) {
+    merged.vertexAICredentialsPath = expandHome(merged.vertexAICredentialsPath);
+  }
 
   // Ollama — env vars take precedence over config file
   if (process.env["OLLAMA_ENDPOINT"]) {
@@ -276,8 +317,8 @@ export async function loadConfig(): Promise<AgavConfig> {
   }
   merged.ollamaApiKey = decrypt(
     process.env["OLLAMA_API_KEY"] ??
-    globalConfig.ollamaApiKey ??
     projectConfig.ollamaApiKey ??
+    globalConfig.ollamaApiKey ??
     DEFAULT_CONFIG.ollamaApiKey ?? "",
   ) || undefined;
 

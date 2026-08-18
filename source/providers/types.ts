@@ -19,6 +19,8 @@ export interface ContentBlock {
   imageMediaType?: string;
   imageWidth?: number;
   imageHeight?: number;
+  /** Provider-specific opaque state that must survive history persistence. */
+  providerMetadata?: Record<string, unknown>;
 }
 
 export interface Message {
@@ -33,7 +35,7 @@ export type StreamEvent =
   | { type: "thinking_delta"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_call_start"; toolCallId: string; toolName: string }
-  | { type: "tool_call_delta"; toolCallId: string; argsJson: string }
+  | { type: "tool_call_delta"; toolCallId: string; argsJson: string; providerMetadata?: Record<string, unknown> }
   | { type: "tool_call_end"; toolCallId: string }
   | { type: "message_start" }
   | { type: "message_end"; stopReason: string }

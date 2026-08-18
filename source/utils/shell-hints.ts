@@ -39,6 +39,21 @@ export function agavHomePath(relativePath = ""): string {
   }
 }
 
+/**
+ * A sample absolute path written in the local platform's convention, so a
+ * Windows user is not shown `/path/to/file.json` next to a `%USERPROFILE%\…`
+ * path in the same message.
+ */
+export function examplePath(...segments: string[]): string {
+  switch (detectShell()) {
+    case "powershell":
+    case "cmd":
+      return `C:\\${segments.join("\\")}`;
+    default:
+      return `/${segments.join("/")}`;
+  }
+}
+
 export function reinstallHint(): string {
   switch (detectShell()) {
     case "powershell":

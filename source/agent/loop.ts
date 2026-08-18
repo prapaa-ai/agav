@@ -54,12 +54,22 @@ interface LoopParams {
   hooks?: import("../config/config.js").AgavHooks;
 }
 
-const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_directory", "web_search", "lsp_query", "read_notebook", "fetch_url", "overview", "activate_skill", "save_memory"]);
+// Tools that never need confirmation because they cannot modify the working
+// tree or reach outside the session. `save_memory` and `update_plan` write only
+// to Agav's own state — the plan is in-memory scratch space the model rewrites
+// constantly, so prompting for it would make every turn unusable.
+const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_directory", "web_search", "lsp_query", "read_notebook", "fetch_url", "overview", "activate_skill", "save_memory", "update_plan"]);
 
 function isAllowed(
   toolName: string,
   input: Record<string, unknown>,
   allowedTools?: string[],
+  /**
+   * When set, a bare `run_command` rule no longer matches — only a rule that
+   * names the input, such as `run_command:rm -rf build/*`. Used so a blanket
+   * grant cannot quietly authorise a destructive command.
+   */
+  options: { requirePattern?: boolean } = {},
 ): boolean {
   if (!allowedTools || allowedTools.length === 0) return false;
 
@@ -71,7 +81,7 @@ function isAllowed(
 
   for (const rule of allowedTools) {
     if (!rule.includes(":")) {
-      if (rule === toolName) return true;
+      if (!options.requirePattern && rule === toolName) return true;
       continue;
     }
     const colonIdx = rule.indexOf(":");
@@ -176,7 +186,7 @@ export async function* runAgentLoop(
     let textAccum = "";
     const toolCalls = new Map<
       string,
-      { name: string; argsJson: string }
+      { name: string; argsJson: string; providerMetadata?: Record<string, unknown> }
     >();
     let stopReason = "";
 
@@ -221,11 +231,16 @@ export async function* runAgentLoop(
             const call = toolCalls.get(event.toolCallId);
             if (call) {
               call.argsJson += event.argsJson;
-              yield {
-                type: "tool_call_input_delta",
-                toolCallId: event.toolCallId,
-                argsJson: event.argsJson,
-              };
+              if (event.providerMetadata) {
+                call.providerMetadata = { ...call.providerMetadata, ...event.providerMetadata };
+              }
+              if (event.argsJson) {
+                yield {
+                  type: "tool_call_input_delta",
+                  toolCallId: event.toolCallId,
+                  argsJson: event.argsJson,
+                };
+              }
             }
             break;
           }
@@ -280,6 +295,7 @@ export async function* runAgentLoop(
         toolCallId: id,
         toolName: call.name,
         toolInput: input,
+        ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
       });
     }
     conversation.addAssistantMessage(assistantContent);
@@ -329,13 +345,26 @@ export async function* runAgentLoop(
       }
 
       const isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
-      const needsConfirm = isDestructive
+      // Escape hatch for headless runs: a destructive command may be run
+      // unattended only when the allowlist names it (`run_command:rm -rf dist`).
+      // --auto-accept and a blanket `run_command` grant deliberately do not
+      // qualify, but without this there was no way to approve one at all and
+      // CI pipelines that legitimately clean a build directory just failed.
+      const destructiveApproved = isDestructive
+        && isAllowed(call.name, input, params.allowedTools, { requirePattern: true });
+      const denyWrites = permissionMode === "deny-writes";
+      const needsConfirm = (isDestructive && !destructiveApproved)
         || (!SAFE_TOOLS.has(call.name)
           && permissionMode !== "auto-accept"
           && !isAllowed(call.name, input, params.allowedTools));
-      if (needsConfirm && permissionMode === "deny-writes") {
-        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: "Write operations are denied (--deny-writes mode).", isError: true });
-        yield { type: "tool_result", toolName: call.name, output: "Write operations are denied (--deny-writes mode).", isError: true };
+      // --deny-writes outranks the allowlist: the escape hatch must not be able
+      // to punch a destructive command through an explicit "no writes" run.
+      if ((denyWrites && isDestructive) || (needsConfirm && (denyWrites || !confirmTool))) {
+        const reason = denyWrites
+          ? "Write operations are denied (--deny-writes mode)."
+          : `Tool '${call.name}' requires confirmation but no confirmation handler is available (headless mode).`;
+        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+        yield { type: "tool_result", toolName: call.name, output: reason, isError: true };
         continue;
       }
       if (needsConfirm && confirmTool) {
