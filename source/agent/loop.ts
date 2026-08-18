@@ -142,6 +142,17 @@ export async function* runAgentLoop(
     return result || "";
   };
 
+  // Ask the provider for the window it will actually enforce before the first
+  // compaction check runs. Providers cache this, so it costs at most one probe
+  // per model; a failure just leaves the name-based estimate in place.
+  if (provider.getContextWindow) {
+    try {
+      conversation.setContextWindow(await provider.getContextWindow(model));
+    } catch {
+      // Non-fatal — fall back to the name-based limits.
+    }
+  }
+
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     // Auto-compact if conversation is getting long
     const { compacted, droppedCount } = await conversation.compactIfNeeded(false, summarize);

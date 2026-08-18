@@ -29,6 +29,14 @@ export class OllamaProvider implements LLMProvider {
     });
   }
 
+  /**
+   * Report the window actually sent as num_ctx, so conversation compaction
+   * targets the real limit instead of the generic name-based fallback.
+   */
+  async getContextWindow(model: string): Promise<number | undefined> {
+    return this.resolveContextSize(model);
+  }
+
   // Use as much context as the model was trained for, bounded so a large model
   // does not allocate a KV cache the machine cannot hold.
   private async resolveContextSize(model: string): Promise<number> {
@@ -80,8 +88,11 @@ export class OllamaProvider implements LLMProvider {
 
       yield { type: "message_start" };
 
-      // Tracks IDs already emitted so tool_calls repeated across chunks don't double-fire.
-      const emittedToolIds = new Set<string>();
+      // Ollama repeats a tool_call across chunks, so each one needs a stable
+      // identity. Keyed by that identity to the ID we handed out, so repeats
+      // collapse and genuinely distinct calls stay distinct.
+      const emittedToolCalls = new Map<string, string>();
+      let toolCallSeq = 0;
 
       for await (const part of response) {
         const msg = part.message;
@@ -98,15 +109,27 @@ export class OllamaProvider implements LLMProvider {
         // Tool calls arrive in non-done chunks — do not gate on part.done.
         if (msg.tool_calls?.length) {
           for (const tc of msg.tool_calls) {
-            const id: string = (tc as any).id ?? `call_${tc.function.name}_${Date.now()}`;
-            if (emittedToolIds.has(id)) continue;
-            emittedToolIds.add(id);
-
             // Some models return arguments as a JSON string; normalise either way.
             const argsJson =
               typeof tc.function.arguments === "string"
                 ? tc.function.arguments
                 : JSON.stringify(tc.function.arguments);
+
+            // Neither `id` nor `function.index` is in the ollama package's
+            // ToolCall type, but servers do send them, so prefer them and keep
+            // the casts. The last resort keys on name+arguments: timestamps
+            // used to collide for parallel calls to the same tool within a
+            // millisecond, which silently dropped every call but the first.
+            const rawId = (tc as { id?: string }).id;
+            const rawIndex = (tc.function as { index?: number }).index;
+            const key = rawId
+              ?? (typeof rawIndex === "number"
+                ? `${tc.function.name}#${rawIndex}`
+                : `${tc.function.name}:${argsJson}`);
+            if (emittedToolCalls.has(key)) continue;
+
+            const id = rawId ?? `call_${tc.function.name}_${toolCallSeq++}`;
+            emittedToolCalls.set(key, id);
 
             yield { type: "tool_call_start", toolCallId: id, toolName: tc.function.name };
             yield { type: "tool_call_delta", toolCallId: id, argsJson };

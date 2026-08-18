@@ -42,7 +42,19 @@ export interface ContextLimits {
   warningThreshold: number;
 }
 
-export function getContextLimits(model: string): ContextLimits {
+/**
+ * Resolve the usable context window for a model.
+ *
+ * `explicitMax` wins over the name-based table below. Providers that know their
+ * real window at runtime — Ollama reads it from /api/show and clamps it — must
+ * pass it, otherwise the table's fallback silently over-estimates and the
+ * conversation is left to grow past what the provider will actually accept.
+ */
+export function getContextLimits(model: string, explicitMax?: number): ContextLimits {
+  if (explicitMax !== undefined && explicitMax > 0) {
+    return { maxTokens: explicitMax, warningThreshold: Math.floor(explicitMax * 0.8) };
+  }
+
   const m = model.toLowerCase();
 
   // GPT-5.4-mini: 400k context
