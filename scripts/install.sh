@@ -22,7 +22,9 @@ lock_dir_held=0
 path_action="already"
 path_profile=""
 conflict_manager=""
-conflict_path=""
+# Newline-separated, not space-separated: a home directory with a space in it
+# would otherwise split one path into several when this is read back.
+path_removed_from=""
 
 # --- Output helpers ---
 
@@ -248,7 +250,6 @@ detect_conflicting_install() {
       *".bun"*) conflict_manager="bun" ;;
       *)        conflict_manager="npm" ;;
     esac
-    conflict_path="$existing_path"
     step "Detected existing $conflict_manager-managed Agav at $existing_path"
     warn "Multiple installs can be ambiguous — PATH order decides which one runs."
   fi
@@ -364,7 +365,8 @@ add_to_path() {
     # A block is already here but points somewhere else — a previous run with a
     # different --dir. Rewrite that block instead of appending a second one,
     # which used to stack up a new stanza on every re-run.
-    rewritten="${TMPDIR:-/tmp}/agav-profile.$$"
+    # Alongside the profile rather than in /tmp — see remove_path_block.
+    rewritten="$profile.agav-install.$$"
     if awk -v begin="$begin_marker" -v end="$end_marker" -v line="$path_line" '
       $0 == begin { print; print line; skipping = 1; next }
       $0 == end   { print; skipping = 0; next }
@@ -412,7 +414,11 @@ remove_path_block() {
     [ -f "$profile" ] || continue
     grep -qF "# >>> Agav installer >>>" "$profile" 2>/dev/null || continue
 
-    stripped="${TMPDIR:-/tmp}/agav-uninstall.$$"
+    # Alongside the profile rather than in /tmp: $HOME is not world-writable, so
+    # nobody else on the machine can pre-plant a symlink on this name and have
+    # the redirect below clobber whatever it points at. It is also guaranteed to
+    # be on the same filesystem.
+    stripped="$profile.agav-uninstall.$$"
     # Blank lines are buffered and only emitted once something follows them, so
     # the blank line add_to_path printed before the block goes with it instead
     # of piling up one more empty line per install/uninstall cycle.
@@ -428,7 +434,8 @@ remove_path_block() {
       # profile keeps its inode, mode, and ownership. No -s guard here: a
       # profile that contained nothing but our block correctly ends up empty.
       if cat "$stripped" >"$profile"; then
-        path_removed_from="$path_removed_from $profile"
+        path_removed_from="$path_removed_from$profile
+"
       fi
     fi
     rm -f "$stripped"
@@ -558,8 +565,10 @@ if [ "$do_uninstall" -eq 1 ]; then
     exit 1
   fi
 
-  for profile in $path_removed_from; do
-    step "Removed the Agav PATH entry from $profile"
+  # read -r, not `for x in $list`: word splitting would break any path with a
+  # space in it into several bogus entries.
+  printf '%s' "$path_removed_from" | while IFS= read -r cleaned_profile; do
+    step "Removed the Agav PATH entry from $cleaned_profile"
   done
 
   if [ "$purged" -eq 1 ]; then

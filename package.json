@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run source",
     "test:coverage": "vitest run --coverage",
+    "test:installer": "sh scripts/tests/run-installer-tests.sh",
     "build:binary": "bun build source/cli.tsx --compile --outfile dist/agav",
     "build:binary:all": "bash scripts/build-binary.sh all",
     "prepare": "husky"

@@ -38,11 +38,19 @@ function Remove-StaleArtifacts {
                 return
             }
             if ($Leftover -notmatch "^$([regex]::Escape($Name))\.(\d+)\.(bak|tmp)$") { return }
-            $OwnerPid = [int]$Matches[1]
+            $PidText = $Matches[1]
             $Kind = $Matches[2]
+            # TryParse, not [int]: \d+ happily matches a number too large for an
+            # Int32, and the cast would throw under $ErrorActionPreference =
+            # "Stop", aborting the whole install from inside a cleanup routine
+            # whose entire job is to tolerate junk. Nothing we wrote looks like
+            # that, so treat it as ownerless and sweep it.
+            $OwnerPid = 0
+            $HasOwner = [int]::TryParse($PidText, [ref]$OwnerPid)
             # A .tmp belonging to a live process is a download in flight for a
             # second installer. Locked .bak files just fail to delete, harmlessly.
-            if ($Kind -eq "tmp" -and (Get-Process -Id $OwnerPid -ErrorAction SilentlyContinue)) { return }
+            if ($Kind -eq "tmp" -and $HasOwner -and
+                (Get-Process -Id $OwnerPid -ErrorAction SilentlyContinue)) { return }
             Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
         }
 }
