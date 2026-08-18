@@ -50,7 +50,8 @@ describe("shell hints", () => {
       expect(setEnvHint("GEMINI_API_KEY", "test-key")).toBe('$env:GEMINI_API_KEY="test-key"');
       expect(agavHomePath("skills/example")).toBe("$HOME\\.agav\\skills\\example");
       expect(examplePath("path", "to", "service-account.json")).toBe("C:\\path\\to\\service-account.json");
-      expect(reinstallHint()).toBe("irm https://agav.dev/install.ps1 | iex");
+      // www, not the apex: PowerShell 5.1 cannot follow the apex's 308.
+      expect(reinstallHint()).toBe("irm https://www.agav.dev/install.ps1 | iex");
     });
   });
 

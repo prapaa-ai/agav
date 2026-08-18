@@ -56,8 +56,12 @@ export function examplePath(...segments: string[]): string {
 
 export function reinstallHint(): string {
   switch (detectShell()) {
+    // The apex domain answers with a 308 to www, and Windows PowerShell 5.1 —
+    // still the default on Windows — cannot follow one: its HttpWebRequest
+    // auto-redirect handles 301/302/303/307 and fails the request outright on
+    // 308. curl follows it fine, so only this line needs the www host.
     case "powershell":
-      return "irm https://agav.dev/install.ps1 | iex";
+      return "irm https://www.agav.dev/install.ps1 | iex";
     case "cmd":
       return "curl -fsSL https://agav.dev/install.cmd -o install.cmd && install.cmd";
     default:
