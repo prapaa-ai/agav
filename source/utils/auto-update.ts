@@ -1,6 +1,6 @@
 import { join, sep } from "node:path";
 import { homedir, platform, arch } from "node:os";
-import { readFile, writeFile, rename, chmod, copyFile, unlink, mkdir, symlink, rm } from "node:fs/promises";
+import { readFile, writeFile, rename, chmod, copyFile, unlink, mkdir, readdir, symlink, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { createWriteStream, createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
@@ -233,7 +233,7 @@ async function replaceSymlink(linkPath: string, target: string): Promise<void> {
  * Move a verified download into place. Managed installs get a new versioned
  * release dir plus a symlink swap; a plain binary is replaced in place.
  */
-async function installUpdate(
+export async function installUpdate(
   downloadedPath: string,
   versionTag: string,
   binaryPath: string,
@@ -252,12 +252,39 @@ async function installUpdate(
     return;
   }
 
-  const backupPath = `${binaryPath}.bak`;
+  // Windows will happily rename a running executable but refuses to delete it,
+  // and it keeps the lock for as long as this process lives. The backup name is
+  // therefore per-process: a leftover from an older still-running agav must not
+  // become an undeletable obstacle in the path of the next update's rename.
+  const backupPath = `${binaryPath}.${process.pid}.bak`;
   await safeMove(binaryPath, backupPath);
   await safeMove(downloadedPath, binaryPath);
   await chmod(binaryPath, 0o755);
-  // Don't leave a stale copy of the previous version lying around.
-  await rm(backupPath, { force: true });
+  // Best-effort only. By this point the new binary is already in place, so
+  // failing to delete the old one is untidy, not a failed update — reporting it
+  // as one sent Windows users chasing an update that had actually succeeded.
+  await rm(backupPath, { force: true }).catch(() => {});
+}
+
+/**
+ * Delete backups left behind by earlier updates. On Windows the process that
+ * created one could not delete it while running, so the next launch does it.
+ */
+export async function cleanupStaleBackups(binaryPath: string): Promise<void> {
+  try {
+    const parts = binaryPath.split(sep);
+    const name = parts.pop() ?? "";
+    const dir = parts.join(sep);
+    if (!dir || !name) return;
+    const stale = (await readdir(dir)).filter(
+      (entry) => entry.startsWith(`${name}.`) && entry.endsWith(".bak"),
+    );
+    for (const entry of stale) {
+      await rm(join(dir, entry), { force: true }).catch(() => {});
+    }
+  } catch {
+    // Cleanup is never worth failing a launch over.
+  }
 }
 
 /** Resolve the path the running process should re-exec after an update. */
@@ -381,6 +408,8 @@ export async function forceUpdate(targetVersion?: string): Promise<boolean> {
     return false;
   }
 
+  await cleanupStaleBackups(binaryPath);
+
   process.stderr.write(`  Downloading ${latestTag}...`);
   const downloaded = await downloadBinary(latestTag);
   if (!downloaded) {
@@ -409,8 +438,10 @@ export async function forceUpdate(targetVersion?: string): Promise<boolean> {
 
     process.stderr.write(`\n  Agav updated: v${local} → ${latestTag}\n`);
     return true;
-  } catch {
-    process.stderr.write(` failed (replace error).\n`);
+  } catch (error) {
+    // Name the reason. "replace error" alone gave a Windows user reporting a
+    // locked-file failure nothing to act on.
+    process.stderr.write(` failed (${error instanceof Error ? error.message : String(error)}).\n`);
     return false;
   }
 }
@@ -422,6 +453,11 @@ export async function checkAndUpdate(): Promise<void> {
   if (process.env["CI"] || process.env["AGAV_NO_UPDATE"] === "1" || !process.stdout.isTTY) {
     return;
   }
+
+  // A previous update on Windows could not delete its own backup while it was
+  // still running. This launch is the first moment that lock is gone.
+  const currentBinary = getCurrentBinaryPath();
+  if (currentBinary) await cleanupStaleBackups(currentBinary);
 
   // Check rate limit
   const state = await loadState();
@@ -507,7 +543,8 @@ export async function checkAndUpdate(): Promise<void> {
       process.exit(e.status ?? 0);
     }
     process.exit(0);
-  } catch {
-    process.stderr.write(" failed (replace error). Continuing with current version.\n");
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    process.stderr.write(` failed (${reason}). Continuing with current version.\n`);
   }
 }

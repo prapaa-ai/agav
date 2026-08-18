@@ -37,8 +37,14 @@ curl -fsSL https://agav.dev/install.sh | bash
 For Windows PowerShell:
 
 ```powershell
-irm https://agav.dev/install.ps1 | iex
+irm https://www.agav.dev/install.ps1 | iex
 ```
+
+> [!NOTE]
+> The `www.` is deliberate. `agav.dev` redirects with a 308, and Windows
+> PowerShell 5.1 cannot follow that status — it fails with
+> `(308) Permanent Redirect`. `curl` follows it fine, so the other commands
+> here use the short host.
 
 For Windows Command Prompt (`cmd.exe`):
 
@@ -76,7 +82,7 @@ curl -fsSL https://agav.dev/install.sh | bash -s -- --uninstall
 **Windows PowerShell:**
 
 ```powershell
-& ([scriptblock]::Create((irm https://agav.dev/install.ps1))) --uninstall
+& ([scriptblock]::Create((irm https://www.agav.dev/install.ps1))) --uninstall
 ```
 
 **Windows Command Prompt (`cmd.exe`):**
