@@ -5,35 +5,216 @@
 # the whole script fails to parse.
 $ErrorActionPreference = "Stop"
 
+# .NET Framework older than 4.7 negotiates TLS 1.0/1.1 by default, which
+# github.com refuses outright. Additive so we never downgrade a host that
+# already prefers something stronger.
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch {}
+
 $Repo = "prapaa-ai/agav"
 $BinaryName = "agav.exe"
 $Version = if ($env:AGAV_VERSION) { $env:AGAV_VERSION } else { "latest" }
 $InstallDir = if ($env:AGAV_INSTALL_DIR) { $env:AGAV_INSTALL_DIR } else { "$env:LOCALAPPDATA\agav" }
+$SkipChecksum = $env:AGAV_SKIP_CHECKSUM -match '^(1|true|yes)$'
+
+# Windows refuses to delete the image of a running process, so an update
+# renames the old exe aside and deletes it later. Sweep whatever earlier runs
+# could not, before anything else touches the directory. A ~100 MB leftover per
+# interrupted install adds up fast.
+function Remove-StaleArtifacts {
+    param([Parameter(Mandatory = $true)][string]$Dir, [Parameter(Mandatory = $true)][string]$Name)
+
+    if (-not (Test-Path -LiteralPath $Dir)) { return }
+
+    Get-ChildItem -LiteralPath $Dir -Filter "$Name.*" -File -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            $Leftover = $_.Name
+            # Both are named "<binary>.<pid>.<ext>"; the legacy installer wrote a
+            # plain "<binary>.tmp" with no pid, which nothing produces any more.
+            if ($Leftover -eq "$Name.tmp") {
+                Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+                return
+            }
+            if ($Leftover -notmatch "^$([regex]::Escape($Name))\.(\d+)\.(bak|tmp)$") { return }
+            $OwnerPid = [int]$Matches[1]
+            $Kind = $Matches[2]
+            # A .tmp belonging to a live process is a download in flight for a
+            # second installer. Locked .bak files just fail to delete, harmlessly.
+            if ($Kind -eq "tmp" -and (Get-Process -Id $OwnerPid -ErrorAction SilentlyContinue)) { return }
+            Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+        }
+}
+
+# Does this one PATH segment name that directory?
+#
+# Compares whole segments. `-like "*$Dir*"` treated the directory as a wildcard
+# pattern and matched substrings, so an unrelated "C:\agav-old" already on PATH
+# looked like a hit and suppressed the edit.
+#
+# Install and uninstall both go through here so the two can never disagree
+# about what counts as "already on PATH".
+function Test-PathSegment {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Segment,
+          [Parameter(Mandatory = $true)][string]$Needle)
+
+    $Candidate = $Segment.Trim().Trim('"').TrimEnd('\')
+    if ($Candidate.Length -eq 0) { return $false }
+    if ($Candidate -eq $Needle) { return $true }
+    # The stored value may still hold %VARS%; the expanded form is what the
+    # shell will actually search.
+    try {
+        return [Environment]::ExpandEnvironmentVariables($Candidate).TrimEnd('\') -eq $Needle
+    } catch {}
+    return $false
+}
+
+function Test-PathContainsDir {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$PathValue,
+          [Parameter(Mandatory = $true)][string]$Dir)
+
+    if ([string]::IsNullOrEmpty($PathValue)) { return $false }
+    $Needle = $Dir.TrimEnd('\')
+    foreach ($Segment in $PathValue.Split(';')) {
+        if (Test-PathSegment -Segment $Segment -Needle $Needle) { return $true }
+    }
+    return $false
+}
+
+# Drop a directory from a PATH value, leaving every other segment byte-for-byte
+# alone. Returns $null when nothing matched, so the caller can skip the write.
+#
+# Uninstalling used to leave the PATH entry behind, pointing at a directory it
+# had just deleted.
+function Remove-PathSegment {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$PathValue,
+          [Parameter(Mandatory = $true)][string]$Dir)
+
+    if ([string]::IsNullOrEmpty($PathValue)) { return $null }
+    $Needle = $Dir.TrimEnd('\')
+    $Kept = @()
+    $Dropped = $false
+    foreach ($Segment in $PathValue.Split(';')) {
+        if (Test-PathSegment -Segment $Segment -Needle $Needle) { $Dropped = $true }
+        else { $Kept += $Segment }
+    }
+    if (-not $Dropped) { return $null }
+    return ($Kept -join ';')
+}
 
 # --- Parse flags ---
+# Two passes: collect every flag first, then act. Acting inline meant
+# `--uninstall --dir=C:\tools` uninstalled from the default directory, because
+# --uninstall was reached before --dir had been read.
+$DoUninstall = $false
+$Purge = $false
+
 foreach ($arg in $args) {
-    if ($arg -eq "--uninstall") {
-        $Target = Join-Path $InstallDir $BinaryName
-        if (Test-Path $Target) {
-            Remove-Item $Target -Force
-            Write-Host "Uninstalled agav from $InstallDir" -ForegroundColor Green
-        } else {
-            Write-Host "agav not found in $InstallDir" -ForegroundColor Red
-        }
-        exit 0
-    }
+    if ($arg -eq "--uninstall") { $DoUninstall = $true }
+    # --purge is useless on its own, so it implies --uninstall.
+    if ($arg -eq "--purge") { $DoUninstall = $true; $Purge = $true }
     if ($arg -match "^--version=(.+)$") { $Version = $Matches[1] }
     if ($arg -match "^--dir=(.+)$") { $InstallDir = $Matches[1] }
+    if ($arg -eq "--skip-checksum") { $SkipChecksum = $true }
     if ($arg -eq "--help" -or $arg -eq "-h") {
         Write-Host "Usage: install.ps1 [OPTIONS]"
         Write-Host ""
         Write-Host "Options:"
         Write-Host "  --version=<tag>    Install a specific version (default: latest)"
         Write-Host "  --dir=<path>       Install directory (default: %LOCALAPPDATA%\agav)"
-        Write-Host "  --uninstall        Remove agav"
+        Write-Host "  --skip-checksum    Install without verifying the SHA-256 checksum"
+        Write-Host "  --uninstall        Remove agav, keeping your settings and history"
+        Write-Host "  --purge            Remove agav and delete %USERPROFILE%\.agav as well"
         Write-Host "  -h, --help         Show this help"
+        Write-Host ""
+        Write-Host "Environment:"
+        Write-Host "  AGAV_VERSION         Version to install; overridden by --version."
+        Write-Host "  AGAV_INSTALL_DIR     Install directory; overridden by --dir."
+        Write-Host "  AGAV_SKIP_CHECKSUM   Set to 1/true/yes to skip verification."
         exit 0
     }
+}
+
+if ($DoUninstall) {
+    $Target = Join-Path $InstallDir $BinaryName
+    $Removed = $false
+    $PathChanged = $false
+    Remove-StaleArtifacts -Dir $InstallDir -Name $BinaryName
+
+    if (Test-Path -LiteralPath $Target) {
+        try {
+            Remove-Item -LiteralPath $Target -Force
+            $Removed = $true
+        } catch {
+            # Almost always a running agav holding its own image open.
+            Write-Host "Could not remove $Target." -ForegroundColor Red
+            Write-Host "Close any running agav sessions and try again." -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    # Same registry-direct read/write as the install path, and for the same
+    # reason: the [Environment] API hands back an already-expanded PATH, so
+    # writing it back would flatten every %VAR% in the segments we are keeping.
+    try {
+        $EnvKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+        if ($EnvKey) {
+            $RawPath = [string]$EnvKey.GetValue(
+                "PATH", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $Trimmed = Remove-PathSegment -PathValue $RawPath -Dir $InstallDir
+            if ($null -ne $Trimmed) {
+                $EnvKey.SetValue("PATH", $Trimmed, $EnvKey.GetValueKind("PATH"))
+                $Removed = $true
+                $PathChanged = $true
+            }
+            $EnvKey.Close()
+        }
+    } catch {
+        Write-Host "Could not update your PATH: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "Remove $InstallDir from it yourself." -ForegroundColor Yellow
+    }
+
+    # Only when we are the ones who left it empty. Never delete a directory the
+    # user has put their own files in.
+    if ((Test-Path -LiteralPath $InstallDir) -and
+        -not (Get-ChildItem -LiteralPath $InstallDir -Force -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $InstallDir -Force -ErrorAction SilentlyContinue
+    }
+
+    # Guarded: USERPROFILE is always set on Windows, but a null here would blow up
+    # Join-Path and abort the run with a stack trace after the binary is already
+    # gone - a confusing way to end a mostly-successful uninstall.
+    $DataDir = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".agav" } else { $null }
+    $HasData = $DataDir -and (Test-Path -LiteralPath $DataDir)
+
+    # Purge runs before the not-found check on purpose: someone who deleted the
+    # exe by hand and then ran --purge to finish the job should get their data
+    # directory cleaned up, not "agav not found" with the data still sitting there.
+    $Purged = $false
+    if ($Purge -and $HasData) {
+        Remove-Item -LiteralPath $DataDir -Recurse -Force -ErrorAction SilentlyContinue
+        $Purged = $true
+        $Removed = $true
+    }
+
+    if (-not $Removed) {
+        Write-Host "agav not found in $InstallDir" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "Uninstalled agav from $InstallDir" -ForegroundColor Green
+    if ($PathChanged) { Write-Host "Removed $InstallDir from your PATH." -ForegroundColor Green }
+    if ($Purged) {
+        Write-Host "Removed $DataDir" -ForegroundColor Green
+    } elseif ($HasData) {
+        Write-Host "Kept your settings and history in $DataDir - delete them with --purge." -ForegroundColor Cyan
+    }
+
+    if ($PathChanged) {
+        Write-Host "Restart your terminal to drop $InstallDir from PATH." -ForegroundColor Cyan
+    }
+    exit 0
 }
 
 # --- Detect architecture ---
@@ -148,11 +329,37 @@ function Save-FileWithProgress {
     }
 }
 
-if (-not (Test-Path $InstallDir)) {
+function Get-RemoteText {
+    param([Parameter(Mandatory = $true)][string]$Url)
+
+    Add-Type -AssemblyName System.Net.Http
+    $Handler = New-Object System.Net.Http.HttpClientHandler
+    try {
+        $Handler.DefaultProxyCredentials = [System.Net.CredentialCache]::DefaultCredentials
+    } catch {}
+    $Client = New-Object System.Net.Http.HttpClient($Handler)
+    $Client.DefaultRequestHeaders.UserAgent.ParseAdd("agav-installer")
+    $Response = $null
+    try {
+        $Response = $Client.GetAsync($Url).GetAwaiter().GetResult()
+        $Response.EnsureSuccessStatusCode() | Out-Null
+        return $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    } finally {
+        if ($Response) { $Response.Dispose() }
+        $Client.Dispose()
+        $Handler.Dispose()
+    }
+}
+
+if (-not (Test-Path -LiteralPath $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
-$TmpFile = Join-Path $InstallDir "$BinaryName.tmp"
+Remove-StaleArtifacts -Dir $InstallDir -Name $BinaryName
+
+# Per-process so a leftover from a still-running agav cannot collide with this
+# one, and so two installers cannot overwrite each other's partial download.
+$TmpFile = Join-Path $InstallDir "$BinaryName.$PID.tmp"
 try {
     Save-FileWithProgress -Url $DownloadUrl -Destination $TmpFile -Activity "Downloading $AssetName"
 } catch {
@@ -160,12 +367,73 @@ try {
     # Write-Error here would abort the handler before the cleanup below runs.
     Write-Host "Download failed: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Check available releases: https://github.com/$Repo/releases" -ForegroundColor Red
-    if (Test-Path $TmpFile) { Remove-Item $TmpFile -Force }
+    if (Test-Path -LiteralPath $TmpFile) { Remove-Item -LiteralPath $TmpFile -Force }
     exit 1
 }
 
+# --- Verify checksum ---
+# The other two installers refuse to install an unverified binary; this one used
+# to move whatever arrived straight into place. Fail closed here too, since the
+# next thing that happens is the user running it.
+if ($SkipChecksum) {
+    Write-Host "agav -> WARNING: skipping checksum verification." -ForegroundColor Yellow
+} else {
+    Write-Host "agav -> Verifying checksum..." -ForegroundColor Cyan
+    $Expected = $null
+    try {
+        # Published as "<hex>  <asset>" next to the binary, one file per asset.
+        $Expected = ((Get-RemoteText "$DownloadUrl.sha256").Trim() -split '\s+')[0]
+    } catch {
+        Write-Host "Could not download $DownloadUrl.sha256 - $($_.Exception.Message)" -ForegroundColor Red
+    }
+
+    if ($Expected -notmatch '^[0-9a-fA-F]{64}$') {
+        Write-Host "No usable SHA-256 checksum was published for $AssetName." -ForegroundColor Red
+        Write-Host "Re-run with --skip-checksum to install without verification." -ForegroundColor Red
+        Remove-Item -LiteralPath $TmpFile -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
+
+    $Actual = (Get-FileHash -LiteralPath $TmpFile -Algorithm SHA256).Hash
+    if ($Actual -ne $Expected.ToUpperInvariant()) {
+        Write-Host "Checksum verification failed - refusing to install." -ForegroundColor Red
+        Write-Host "Expected: $($Expected.ToUpperInvariant())" -ForegroundColor Red
+        Write-Host "Actual:   $Actual" -ForegroundColor Red
+        Remove-Item -LiteralPath $TmpFile -Force -ErrorAction SilentlyContinue
+        exit 1
+    }
+    Write-Host "agav -> Checksum verified." -ForegroundColor Cyan
+}
+
 # --- Install ---
-Move-Item -Path $TmpFile -Destination $FinalPath -Force
+# Move-Item -Force onto a running agav.exe fails with a sharing violation:
+# Windows will not let the destination be deleted while the image is loaded. It
+# will happily *rename* it though, so shift the old binary aside first. That is
+# the same dance the in-app updater does.
+$BackupPath = "$FinalPath.$PID.bak"
+$MovedAside = $false
+try {
+    if (Test-Path -LiteralPath $FinalPath) {
+        Move-Item -LiteralPath $FinalPath -Destination $BackupPath -Force
+        $MovedAside = $true
+    }
+    Move-Item -LiteralPath $TmpFile -Destination $FinalPath -Force
+} catch {
+    Write-Host "Install failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Close any running agav sessions and try again." -ForegroundColor Red
+    # Put the working binary back rather than leaving the user with nothing.
+    if ($MovedAside -and -not (Test-Path -LiteralPath $FinalPath)) {
+        Move-Item -LiteralPath $BackupPath -Destination $FinalPath -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $TmpFile -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+
+# Best-effort: the old image stays locked for as long as that process lives, so
+# a failure here is untidy, not a failed install. The next run sweeps it.
+if ($MovedAside) {
+    Remove-Item -LiteralPath $BackupPath -Force -ErrorAction SilentlyContinue
+}
 
 # --- Verify ---
 try {
@@ -176,13 +444,50 @@ try {
 }
 
 # --- PATH check ---
-$UserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-if ($UserPath -notlike "*$InstallDir*") {
-    [Environment]::SetEnvironmentVariable("PATH", "$InstallDir;$UserPath", "User")
-    Write-Host ""
-    Write-Host "agav -> Added $InstallDir to your PATH." -ForegroundColor Cyan
-    Write-Host "agav -> Restart your terminal, then run 'agav' to get started." -ForegroundColor Cyan
+#
+# Read and write the registry value directly instead of using
+# [Environment]::GetEnvironmentVariable/SetEnvironmentVariable. Get returns the
+# *expanded* value, so writing it back stored every %USERPROFILE%-style entry
+# as a baked-in absolute path and permanently flattened a REG_EXPAND_SZ PATH.
+$RawUserPath = ""
+$PathKind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+$EnvKey = $null
+try {
+    $EnvKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+    if ($EnvKey) {
+        $Existing = $EnvKey.GetValue(
+            "PATH", $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($null -ne $Existing) {
+            $RawUserPath = [string]$Existing
+            $PathKind = $EnvKey.GetValueKind("PATH")
+        }
+    }
+} catch {
+    $EnvKey = $null
+}
+
+$AlreadyOnPath = Test-PathContainsDir -PathValue $RawUserPath -Dir $InstallDir
+if (-not $AlreadyOnPath -and $EnvKey) {
+    $NewPath = if ([string]::IsNullOrEmpty($RawUserPath)) { $InstallDir } else { "$InstallDir;$RawUserPath" }
+    try {
+        $EnvKey.SetValue("PATH", $NewPath, $PathKind)
+        $AlreadyOnPath = $true
+        Write-Host ""
+        Write-Host "agav -> Added $InstallDir to your PATH." -ForegroundColor Cyan
+        Write-Host "agav -> Restart your terminal, then run 'agav' to get started." -ForegroundColor Cyan
+    } catch {
+        Write-Host ""
+        Write-Host "agav -> Could not update your PATH: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "agav -> Add $InstallDir to it yourself, or run agav from $FinalPath." -ForegroundColor Yellow
+    }
 } else {
     Write-Host ""
     Write-Host "agav -> Run 'agav' to get started." -ForegroundColor Cyan
+}
+if ($EnvKey) { $EnvKey.Close() }
+
+# The registry write does not reach this already-running shell, and under
+# `irm | iex` that shell is the one the user is about to type into.
+if (-not (Test-PathContainsDir -PathValue $env:PATH -Dir $InstallDir)) {
+    $env:PATH = "$InstallDir;$env:PATH"
 }

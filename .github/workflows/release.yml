@@ -218,43 +218,87 @@ jobs:
 
             ## Installation
 
-            ### macOS
+            Both installers verify the SHA-256 checksum of the download and
+            refuse to install if it does not match.
+
+            ### macOS / Linux
 
             ```bash
-            # Apple Silicon (M1/M2/M3/M4)
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-darwin-arm64 -o agav
-            chmod +x agav && sudo mv agav /usr/local/bin/
-
-            # Intel
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-darwin-x64 -o agav
-            chmod +x agav && sudo mv agav /usr/local/bin/
-            ```
-
-            ### Linux
-
-            ```bash
-            # x64
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-linux-x64 -o agav
-            chmod +x agav && sudo mv agav /usr/local/bin/
-
-            # ARM64
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-linux-arm64 -o agav
-            chmod +x agav && sudo mv agav /usr/local/bin/
+            curl -fsSL https://agav.dev/install.sh | bash
             ```
 
             ### Windows
 
             ```powershell
-            # Download and install (x64; ARM64 runs this under emulation)
-            New-Item -ItemType Directory -Force -Path "$env:LOCALAPPDATA\agav" | Out-Null
-            Invoke-WebRequest -Uri "https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/agav-windows-x64.exe" -OutFile "$env:LOCALAPPDATA\agav\agav.exe"
-
-            # Add to PATH (run once)
-            $dir = "$env:LOCALAPPDATA\agav"
-            $path = [Environment]::GetEnvironmentVariable("Path", "User")
-            if ($path -notlike "*$dir*") {
-              [Environment]::SetEnvironmentVariable("Path", "$dir;$path", "User")
-            }
+            irm https://www.agav.dev/install.ps1 | iex
             ```
+
+            The `www.` is deliberate: the apex answers with a 308 and Windows
+            PowerShell 5.1 cannot follow that status.
+
+            <details>
+            <summary>Manual install</summary>
+
+            **macOS / Linux** — pick one of `agav-darwin-arm64`,
+            `agav-darwin-x64`, `agav-linux-x64`, `agav-linux-arm64`.
+
+            ```bash
+            BASE="https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}"
+            ASSET="agav-darwin-arm64"
+
+            curl -fsSL "$BASE/$ASSET" -o agav
+            curl -fsSL "$BASE/$ASSET.sha256" -o agav.sha256
+
+            # Fail closed: install nothing unless the published digest matches.
+            if command -v sha256sum >/dev/null 2>&1; then CHECK="sha256sum -c"; else CHECK="shasum -a 256 -c"; fi
+            if sed "s| $ASSET| agav|" agav.sha256 | $CHECK -; then
+              chmod +x agav && sudo mv agav /usr/local/bin/agav
+            else
+              echo "Checksum mismatch - refusing to install." && rm -f agav
+            fi
+            rm -f agav.sha256
+            ```
+
+            **Windows** — x64 only; ARM64 runs the x64 build under emulation.
+            Close any running agav first: Windows will not let a loaded .exe be
+            overwritten.
+
+            ```powershell
+            $dir = "$env:LOCALAPPDATA\agav"
+            $base = "https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}"
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+            # .NET below 4.7 negotiates TLS 1.0, which github.com refuses.
+            # -UseBasicParsing keeps this off the IE engine, absent on Server Core.
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -UseBasicParsing -Uri "$base/agav-windows-x64.exe" -OutFile "$dir\agav.exe.tmp"
+
+            # Verify before running it. Fail closed.
+            $expected = (((Invoke-WebRequest -UseBasicParsing -Uri "$base/agav-windows-x64.exe.sha256").Content) -split '\s+')[0]
+            if ((Get-FileHash "$dir\agav.exe.tmp" -Algorithm SHA256).Hash -ne $expected.ToUpperInvariant()) {
+              Remove-Item "$dir\agav.exe.tmp" -Force
+              throw "Checksum mismatch - refusing to install."
+            }
+            Move-Item "$dir\agav.exe.tmp" "$dir\agav.exe" -Force
+
+            # Add to PATH (run once). Write the registry value directly:
+            # [Environment]::GetEnvironmentVariable returns PATH already expanded,
+            # so writing it back bakes every %USERPROFILE%-style entry into a
+            # literal path and flattens a REG_EXPAND_SZ PATH permanently.
+            $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+            $raw = [string]$key.GetValue("PATH", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            $kind = if ($raw) { $key.GetValueKind("PATH") } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
+            # Compare whole segments. `-like "*$dir*"` treats $dir as a wildcard
+            # pattern and matches substrings, so an unrelated "C:\agav-old"
+            # already on PATH would silently suppress the edit.
+            $onPath = @($raw.Split(';') | Where-Object { $_.Trim().Trim('"').TrimEnd('\') -eq $dir }).Count -gt 0
+            if (-not $onPath) {
+              $key.SetValue("PATH", $(if ($raw) { "$dir;$raw" } else { $dir }), $kind)
+            }
+            $key.Close()
+            $env:PATH = "$dir;$env:PATH"
+            ```
+
+            </details>
           generate_release_notes: true
           files: release/*

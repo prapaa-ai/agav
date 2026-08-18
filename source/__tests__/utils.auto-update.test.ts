@@ -84,8 +84,57 @@ describe("installer docs and scripts", () => {
   it("does not suppress PowerShell web request progress in install.cmd", () => {
     const installCmd = readFileSync(new URL("../../scripts/install.cmd", import.meta.url), "utf8");
 
-    expect(installCmd).toContain("Invoke-WebRequest -Uri '%INSTALLER_URL%' -OutFile '%TMP_PS1%'");
+    expect(installCmd).toContain("Invoke-WebRequest -UseBasicParsing -Uri '%INSTALLER_URL%' -OutFile '%TMP_PS1%'");
     expect(installCmd).not.toContain("$ProgressPreference='SilentlyContinue'");
+  });
+
+  // Fetching from a branch meant cmd users always ran whatever happened to be
+  // on main rather than a released installer.
+  it("fetches install.ps1 from the release host, not a git branch", () => {
+    const installCmd = readFileSync(new URL("../../scripts/install.cmd", import.meta.url), "utf8");
+
+    expect(installCmd).not.toContain("raw.githubusercontent.com");
+    // www, not the apex: PowerShell 5.1 cannot follow the apex's 308.
+    expect(installCmd).toContain("https://www.agav.dev/install.ps1");
+  });
+
+  it("verifies the download in every installer, and fails closed", () => {
+    const installSh = readFileSync(new URL("../../scripts/install.sh", import.meta.url), "utf8");
+    const installPs1 = readFileSync(new URL("../../scripts/install.ps1", import.meta.url), "utf8");
+
+    // Nothing may skip verification except the documented opt-out.
+    expect(installSh).toContain("checksum_abort");
+    expect(installSh).toContain("AGAV_SKIP_CHECKSUM");
+    expect(installPs1).toContain("Get-FileHash");
+    expect(installPs1).toContain("$DownloadUrl.sha256");
+    expect(installPs1).toContain("Checksum verification failed");
+  });
+
+  // Windows cannot delete the image of a running process, so the installer has
+  // to rename the old binary aside exactly like the in-app updater does.
+  it("install.ps1 moves a running binary aside instead of overwriting it", () => {
+    const installPs1 = readFileSync(new URL("../../scripts/install.ps1", import.meta.url), "utf8");
+
+    expect(installPs1).toContain('$BackupPath = "$FinalPath.$PID.bak"');
+    expect(installPs1).toMatch(/Move-Item -LiteralPath \$FinalPath -Destination \$BackupPath/);
+  });
+
+  // The expanded value written back as a literal destroys %USERPROFILE%-style
+  // entries in the user's PATH.
+  it("install.ps1 edits PATH without flattening REG_EXPAND_SZ", () => {
+    const installPs1 = readFileSync(new URL("../../scripts/install.ps1", import.meta.url), "utf8");
+
+    expect(installPs1).toContain("DoNotExpandEnvironmentNames");
+    expect(installPs1).toContain("GetValueKind");
+    expect(installPs1).not.toContain('[Environment]::SetEnvironmentVariable("PATH"');
+  });
+
+  // `file` is absent from slim containers; an absent tool is not a bad download.
+  it("install.sh treats a missing `file` command as skippable, not fatal", () => {
+    const installSh = readFileSync(new URL("../../scripts/install.sh", import.meta.url), "utf8");
+
+    expect(installSh).toContain("if command -v file >/dev/null 2>&1; then");
+    expect(installSh).not.toContain('file "$archive_path" 2>/dev/null || echo "unknown"');
   });
 });
 
