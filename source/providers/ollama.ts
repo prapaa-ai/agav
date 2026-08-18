@@ -9,9 +9,16 @@ import type {
 } from "./types.js";
 import { applyOllamaEffortPrompt } from "./effort.js";
 
+// Ollama defaults to a 4096-token context and silently truncates anything longer.
+// Agav's system prompt plus tool schemas already exceeds that, so the model would
+// lose its instructions — and often the user's own message — without any error.
+const CONTEXT_CAP = 32768;
+
 export class OllamaProvider implements LLMProvider {
   readonly name = "ollama";
   private client: Ollama;
+  /** Resolved context size per model, so /api/show is only hit once each. */
+  private contextSizes = new Map<string, number>();
 
   constructor(host: string, apiKey?: string) {
     this.client = new Ollama({
@@ -20,6 +27,35 @@ export class OllamaProvider implements LLMProvider {
         ? { headers: { Authorization: `Bearer ${apiKey}` } }
         : {}),
     });
+  }
+
+  // Use as much context as the model was trained for, bounded so a large model
+  // does not allocate a KV cache the machine cannot hold.
+  private async resolveContextSize(model: string): Promise<number> {
+    const cached = this.contextSizes.get(model);
+    if (cached) return cached;
+
+    const cap = Number(process.env["AGAV_OLLAMA_NUM_CTX"]) || CONTEXT_CAP;
+    let trained = cap;
+
+    try {
+      const info = await this.client.show({ model });
+      // model_info is a plain object at runtime and keys are arch-prefixed,
+      // e.g. "gemma3.context_length" / "llama.context_length".
+      const entries = Object.entries(
+        (info.model_info ?? {}) as unknown as Record<string, unknown>,
+      );
+      const match = entries.find(([key]) => key.endsWith(".context_length"));
+      if (typeof match?.[1] === "number" && match[1] > 0) {
+        trained = match[1];
+      }
+    } catch {
+      // Older servers or restricted endpoints — fall back to the cap.
+    }
+
+    const size = Math.min(trained, cap);
+    this.contextSizes.set(model, size);
+    return size;
   }
 
   // Adapt Ollama's chat stream to the shared event format while smoothing over model-specific tool-call quirks.
@@ -36,7 +72,10 @@ export class OllamaProvider implements LLMProvider {
         messages,
         tools,
         stream: true,
-        options: { num_predict: params.maxTokens ?? 16384 },
+        options: {
+          num_predict: params.maxTokens ?? 16384,
+          num_ctx: await this.resolveContextSize(params.model),
+        },
       });
 
       yield { type: "message_start" };
@@ -89,8 +128,11 @@ export class OllamaProvider implements LLMProvider {
         }
       }
     }
-    catch (e: any) {
-      console.error("Error while calling ollama api", e);
+    catch (e: unknown) {
+      // Swallowing this used to end the turn with no output and no explanation.
+      // Rethrow so the agent loop can surface it (and attempt context recovery).
+      const detail = e instanceof Error ? e.message : String(e);
+      throw new Error(`Ollama request failed (${params.model}): ${detail}`, { cause: e });
     }
   }
 
