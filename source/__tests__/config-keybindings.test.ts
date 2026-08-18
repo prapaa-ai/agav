@@ -97,3 +97,89 @@ describe("keybindings", () => {
     expect(resolver.feed("w", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false })).toMatchObject({ action: "deleteWordBackward" });
   });
 });
+
+/** A key event with nothing pressed, so each test only states the bits it cares about. */
+const NO_KEY = {
+  upArrow: false, downArrow: false, leftArrow: false, rightArrow: false,
+  return: false, escape: false, ctrl: false, shift: false,
+  tab: false, backspace: false, delete: false, meta: false,
+};
+
+describe("newline keybinding", () => {
+  /** Feed one event through the resolver the input prompt uses. */
+  async function resolveNewline(input: string, key: Partial<typeof NO_KEY>) {
+    const mod = await import("../config/keybindings.js");
+    const resolver = new mod.KeybindingResolver(mod.DEFAULT_KEYBINDINGS, ["newline", "submit"]);
+    const normalized = mod.normalizeKeyEvent(input, { ...NO_KEY, ...key });
+    return { ...resolver.feed(normalized.input, normalized.key), normalized };
+  }
+
+  // The regression this guards: Shift+Enter used to resolve to "enter" because the
+  // legacy encoding drops the modifier, so it submitted instead of inserting.
+  it("resolves shift+enter to newline", async () => {
+    expect(await resolveNewline("", { return: true, shift: true })).toMatchObject({ action: "newline" });
+  });
+
+  it("still resolves a plain enter to submit", async () => {
+    expect(await resolveNewline("", { return: true })).toMatchObject({ action: "submit" });
+  });
+
+  it("keeps meta+enter bound to newline for terminals without the protocol", async () => {
+    expect(await resolveNewline("", { return: true, meta: true })).toMatchObject({ action: "newline" });
+  });
+
+  // Ctrl+J sends a bare linefeed on every terminal and platform, which Ink names
+  // "enter" with no modifiers — it would otherwise be inserted as a raw byte.
+  it("resolves a bare linefeed to newline as ctrl+j", async () => {
+    const result = await resolveNewline("\n", {});
+    expect(result.normalized).toMatchObject({ input: "j", key: expect.objectContaining({ ctrl: true }) });
+    expect(result).toMatchObject({ action: "newline" });
+  });
+
+  // xterm and older iTerm2 send modifyOtherKeys=2 sequences that Ink does not
+  // parse, so the escape sequence used to land in the prompt as literal text.
+  it("decodes the xterm modifyOtherKeys form of shift+enter", async () => {
+    const result = await resolveNewline("[27;2;13~", {});
+    expect(result.normalized.input).toBe("");
+    expect(result.normalized.key).toMatchObject({ return: true, shift: true, ctrl: false, meta: false });
+    expect(result).toMatchObject({ action: "newline" });
+  });
+
+  it("decodes modifyOtherKeys sequences that still carry their escape prefix", async () => {
+    const mod = await import("../config/keybindings.js");
+    expect(mod.normalizeKeyEvent("\x1b[27;5;9~", NO_KEY).key).toMatchObject({ tab: true, ctrl: true });
+    expect(mod.normalizeKeyEvent("\x1b[27;3;27~", NO_KEY).key).toMatchObject({ escape: true, meta: true });
+    expect(mod.normalizeKeyEvent("\x1b[27;5;97~", NO_KEY)).toMatchObject({ input: "a", key: expect.objectContaining({ ctrl: true }) });
+  });
+
+  it("leaves ordinary input untouched", async () => {
+    const mod = await import("../config/keybindings.js");
+    expect(mod.normalizeKeyEvent("a", NO_KEY)).toEqual({ input: "a", key: NO_KEY });
+    expect(mod.normalizeKeyEvent("\r", { ...NO_KEY, return: true })).toEqual({ input: "\r", key: { ...NO_KEY, return: true } });
+  });
+
+  it("only advertises newline bindings the terminal can send", async () => {
+    const mod = await import("../config/keybindings.js");
+    const withProtocol = mod.formatUsableKeybinding(mod.DEFAULT_KEYBINDINGS, "newline", true);
+    const withoutProtocol = mod.formatUsableKeybinding(mod.DEFAULT_KEYBINDINGS, "newline", false);
+
+    expect(withProtocol).toContain("Shift+");
+    expect(withoutProtocol).not.toContain("Shift+");
+    expect(withoutProtocol).toContain("Ctrl+J");
+  });
+
+  it("falls back to the full list rather than advertising nothing", async () => {
+    const mod = await import("../config/keybindings.js");
+    const bindings = { ...mod.DEFAULT_KEYBINDINGS, newline: ["shift+enter"] };
+    expect(mod.formatUsableKeybinding(bindings, "newline", false)).toContain("Shift+");
+  });
+
+  it("treats only strokes the legacy encoding cannot carry as protocol-only", async () => {
+    const mod = await import("../config/keybindings.js");
+    expect(mod.requiresEnhancedKeyboard("shift+enter")).toBe(true);
+    expect(mod.requiresEnhancedKeyboard("ctrl+enter")).toBe(true);
+    expect(mod.requiresEnhancedKeyboard("meta+enter")).toBe(false);
+    expect(mod.requiresEnhancedKeyboard("ctrl+j")).toBe(false);
+    expect(mod.requiresEnhancedKeyboard("ctrl+k shift+enter")).toBe(true);
+  });
+});

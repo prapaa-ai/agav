@@ -7,6 +7,7 @@ import { fileLink } from "../utils/hyperlink.js";
 import type { DiffLine } from "../utils/diff.js";
 import type { InvocationReason } from "../providers/types.js";
 import { projectRelativePath, terminalRelativePaths, toolPathValues } from "../utils/display-path.js";
+import { visualLen, wrapToWidth } from "../utils/wrap-text.js";
 import { VERSION } from "../version.js";
 
 /** Normalized message shape used for terminal rendering. */
@@ -178,24 +179,9 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
 
   if (message.role === "user") {
     const cols = process.stdout.columns || 80;
-    const usable = cols - 2;
-    // Strip ANSI escape codes for visual width measurement
-    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\]8;[^]*?\x1b\\/g, "");
-    const visualLen = (s: string) => stripAnsi(s).length;
-
-    const words = message.content.split(" ");
-    const lines: string[] = [];
-    let current = "";
-    for (const word of words) {
-      const test = current ? `${current} ${word}` : word;
-      if (visualLen(test) > usable && current) {
-        lines.push(current);
-        current = word;
-      } else {
-        current = test;
-      }
-    }
-    if (current) lines.push(current);
+    // Every line is padded out to the full width below, which only paints a clean
+    // band while each one fits on a single row. `wrapToWidth` guarantees that.
+    const lines = wrapToWidth(message.content, cols - 2);
 
     const emptyLine = " ".repeat(cols);
     const invocationText = message.invocationReason

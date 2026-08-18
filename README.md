@@ -144,6 +144,44 @@ git clone https://github.com/prapaa-ai/agav && cd agav && pnpm install --frozen-
 git clone https://github.com/prapaa-ai/agav; cd agav; pnpm install --frozen-lockfile; pnpm build; pnpm start
 ```
 
+## Multi-line input
+
+Press **Shift+Enter** to insert a newline instead of sending the message.
+
+This requires the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) — without it your terminal transmits the exact same byte for Shift+Enter and Enter, so the modifier is lost before Agav ever sees it. Agav asks the terminal on startup and adapts: Kitty, Ghostty, WezTerm, foot, Alacritty and recent iTerm2 support it, and terminals that don't are left untouched.
+
+`Ctrl+J` inserts a newline on **every terminal and every platform**, with no configuration. It is the fallback to reach for when Shift+Enter does nothing.
+
+`Alt+Enter` (`Option+Enter` on macOS) also works, but only where the terminal sends Option as Meta.
+
+The prompt footer only advertises the bindings your terminal can actually send, so whatever it shows will work.
+
+### macOS Terminal.app
+
+Terminal.app implements neither the Kitty protocol nor CSI-u, and ships with Option-as-Meta **off**, so out of the box `Ctrl+J` is the only newline key. You can verify the limitation yourself — Enter and Shift+Enter both emit a single `0d` byte:
+
+```bash
+# press Enter, then Shift+Enter, then Ctrl+C to quit
+( trap 'stty sane' EXIT INT; stty -icanon -echo; cat -v )
+```
+
+Both print `^M`. In a terminal that supports the protocol, Shift+Enter prints `^[[13;2u` instead.
+
+Either of these recovers a dedicated key:
+
+- **Option+Enter** — Settings → Profiles → **Keyboard** → check **Use Option as Meta key**.
+- **Shift+Enter** — Settings → Profiles → **Keyboard** → **+** → Key `Return`, Modifier `Shift`, Action `Send Text`, then press the Esc key followed by Return so the field contains `\033\r`. Agav already binds that sequence to `newline`.
+
+For Shift+Enter with no setup at all, use a terminal that implements the protocol: Kitty, Ghostty, WezTerm, foot, Alacritty, or a recent iTerm2.
+
+To bind something else, set `newline` in `~/.agav/keybindings.json` (or `.agav/keybindings.json` in a project):
+
+```json
+{ "newline": ["shift+enter", "meta+enter", "ctrl+o"] }
+```
+
+If a terminal answers the protocol query but handles it badly, set `AGAV_KITTY_KEYBOARD=0` to force the legacy encoding, or `AGAV_KITTY_KEYBOARD=1` to force the protocol on.
+
 ## Documentation
 
 Detailed CLI documentation can be found [here](https://docs.agav.dev).

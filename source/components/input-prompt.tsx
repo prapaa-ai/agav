@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Box, Text, useInput, useStdin } from "ink";
-import { KeybindingResolver, formatKeybinding, type Keybindings } from "../config/keybindings.js";
+import { KeybindingResolver, formatKeybinding, formatUsableKeybinding, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { loadPromptHistory, savePromptHistory } from "../config/prompt-history.js";
 import { readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
@@ -22,6 +22,8 @@ interface Props {
   disabled?: boolean;
   commands?: CommandInfo[];
   keybindings: Keybindings;
+  /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
+  enhancedKeyboard?: boolean;
   resumeUserMessages?: string[];
 }
 
@@ -73,7 +75,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
 }
 
 /** Renders the interactive prompt with history, completion, and paste handling. */
-export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, disabled, commands = [], keybindings, resumeUserMessages }: Props) {
+export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, disabled, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
   const { isRawModeSupported } = useStdin();
   const [cursorPos, setCursorPos] = useState(0);
   const historyRef = useRef<string[]>([]);
@@ -181,8 +183,9 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
   }, [activeFileToken?.query]);
 
   useInput(
-    (input, key) => {
+    (rawInput, rawKey) => {
       if (disabled) return;
+      const { input, key } = normalizeKeyEvent(rawInput, rawKey);
       const match = keyResolverRef.current.feed(input, key);
       if (match.pending) return;
 
@@ -491,7 +494,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
       )}
       {isMultiline && (
         <Box marginTop={1}>
-          <Text dimColor>  {formatKeybinding(keybindings, "submit")} to send · {formatKeybinding(keybindings, "newline")} for newline</Text>
+          <Text dimColor>  {formatKeybinding(keybindings, "submit")} to send · {formatUsableKeybinding(keybindings, "newline", enhancedKeyboard)} for newline</Text>
         </Box>
       )}
     </Box>
