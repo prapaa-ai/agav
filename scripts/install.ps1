@@ -72,16 +72,94 @@ if ($Version -eq "latest") {
 Write-Host "agav -> Downloading agav for $Target..." -ForegroundColor Cyan
 
 # --- Download ---
+function Save-FileWithProgress {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [string]$Activity = "Downloading"
+    )
+
+    # `irm | iex` inherits the caller's session, where a profile may have set
+    # this to SilentlyContinue and would silently swallow the whole bar.
+    $ProgressPreference = "Continue"
+
+    Add-Type -AssemblyName System.Net.Http
+    $Handler = New-Object System.Net.Http.HttpClientHandler
+    # DefaultProxyCredentials needs .NET Framework 4.7.1+; older machines still
+    # download fine, just without automatic proxy auth.
+    try {
+        $Handler.DefaultProxyCredentials = [System.Net.CredentialCache]::DefaultCredentials
+    } catch {}
+    $Client = New-Object System.Net.Http.HttpClient($Handler)
+    $Client.DefaultRequestHeaders.UserAgent.ParseAdd("agav-installer")
+    $Response = $null
+    $InputStream = $null
+    $OutputStream = $null
+
+    try {
+        $Response = $Client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        $Response.EnsureSuccessStatusCode() | Out-Null
+
+        $TotalBytes = $Response.Content.Headers.ContentLength
+        $InputStream = $Response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $OutputStream = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Create)
+        $Buffer = New-Object byte[] (64KB)
+        $Downloaded = [int64]0
+        $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+        # Every Write-Progress forces a console redraw, which is slow enough on
+        # the PS 5.1 host to dominate the download. Repaint at most every
+        # 100 ms, and only when something visible actually changed.
+        $LastPaintMs = [int64]-1000
+        $LastPercent = -1
+
+        while (($Read = $InputStream.Read($Buffer, 0, $Buffer.Length)) -gt 0) {
+            $OutputStream.Write($Buffer, 0, $Read)
+            $Downloaded += $Read
+
+            $ElapsedMs = $Stopwatch.ElapsedMilliseconds
+            if ($TotalBytes -and $TotalBytes -gt 0) {
+                $Percent = [Math]::Min(100, [int](($Downloaded * 100) / $TotalBytes))
+            } else {
+                $Percent = -1
+            }
+            if (($ElapsedMs - $LastPaintMs) -lt 100 -and $Percent -eq $LastPercent) { continue }
+            $LastPaintMs = $ElapsedMs
+            $LastPercent = $Percent
+
+            $DownloadedMB = $Downloaded / 1MB
+            $Seconds = $Stopwatch.Elapsed.TotalSeconds
+            $Speed = if ($Seconds -gt 0) { $DownloadedMB / $Seconds } else { 0 }
+
+            if ($Percent -ge 0) {
+                $Status = "{0:N1} MB / {1:N1} MB ({2:N1} MB/s)" -f $DownloadedMB, ($TotalBytes / 1MB), $Speed
+                Write-Progress -Activity $Activity -Status $Status -PercentComplete $Percent
+            } else {
+                $Status = "{0:N1} MB ({1:N1} MB/s)" -f $DownloadedMB, $Speed
+                Write-Progress -Activity $Activity -Status $Status
+            }
+        }
+    } finally {
+        Write-Progress -Activity $Activity -Completed
+        if ($OutputStream) { $OutputStream.Dispose() }
+        if ($InputStream) { $InputStream.Dispose() }
+        if ($Response) { $Response.Dispose() }
+        $Client.Dispose()
+        $Handler.Dispose()
+    }
+}
+
 if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
 
 $TmpFile = Join-Path $InstallDir "$BinaryName.tmp"
 try {
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $TmpFile -UseBasicParsing
+    Save-FileWithProgress -Url $DownloadUrl -Destination $TmpFile -Activity "Downloading $AssetName"
 } catch {
-    Write-Error "Download failed - release not found for $Target"
-    Write-Error "Check available releases: https://github.com/$Repo/releases"
+    # Write-Host, not Write-Error: $ErrorActionPreference is Stop, so a
+    # Write-Error here would abort the handler before the cleanup below runs.
+    Write-Host "Download failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Check available releases: https://github.com/$Repo/releases" -ForegroundColor Red
     if (Test-Path $TmpFile) { Remove-Item $TmpFile -Force }
     exit 1
 }

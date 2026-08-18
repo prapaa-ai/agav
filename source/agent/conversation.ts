@@ -9,11 +9,29 @@ import {
 export class ConversationState {
   private messages: Message[] = [];
   private model = "";
+  private contextWindow?: number;
   private _compacted = false;
   private _lastCompactionSummary = "";
 
   setModel(model: string): void {
+    // A window resolved for the previous model says nothing about the new one,
+    // so drop it and let the provider re-report.
+    if (model !== this.model) this.contextWindow = undefined;
     this.model = model;
+  }
+
+  /**
+   * Record the real context window reported by the provider, overriding the
+   * name-based estimate. Ollama models are the motivating case: their names
+   * carry no context information, so without this they fall back to a generic
+   * 128k while the server is actually enforcing something far smaller.
+   */
+  setContextWindow(tokens: number | undefined): void {
+    this.contextWindow = tokens !== undefined && tokens > 0 ? tokens : undefined;
+  }
+
+  getContextWindow(): number | undefined {
+    return this.contextWindow;
   }
 
   addUserMessage(
@@ -139,7 +157,7 @@ export class ConversationState {
     force = false,
     summarize?: (messages: Message[]) => Promise<string>,
   ): Promise<{ compacted: boolean; droppedCount: number; summary?: string }> {
-    const limits = getContextLimits(this.model);
+    const limits = getContextLimits(this.model, this.contextWindow);
     const currentTokens = this.tokenCount;
 
     if (!force && currentTokens < limits.warningThreshold) {

@@ -61,4 +61,10 @@ export interface StreamParams {
 export interface LLMProvider {
   readonly name: string;
   stream(params: StreamParams): AsyncIterable<StreamEvent>;
+  /**
+   * Real context window this provider will enforce for the model, when it can
+   * be discovered at runtime. Optional: providers whose window is implied by
+   * the model name leave it undefined and fall back to the name-based table.
+   */
+  getContextWindow?(model: string): Promise<number | undefined>;
 }

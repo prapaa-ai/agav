@@ -1,5 +1,12 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
 import { describe, it, expect, afterEach } from "vitest";
 import { getCurrentBinaryPath, detectManagedLayout } from "../utils/auto-update.js";
+
+const binaryName = process.platform === "win32" ? "agav.exe" : "agav";
+const fixturePath = (...parts: string[]) => join(tmpdir(), "agav-tests", ...parts);
 
 /** process.execPath is read-only in type terms but writable at runtime. */
 function withExecPath<T>(value: string, fn: () => T): T {
@@ -19,17 +26,17 @@ describe("getCurrentBinaryPath", () => {
   });
 
   it("allows a compiled standalone binary", () => {
-    const p = "/Users/x/.agav/packages/standalone/releases/0.1.3/agav";
+    const p = fixturePath("packages", "standalone", "releases", "0.1.3", binaryName);
     expect(withExecPath(p, getCurrentBinaryPath)).toBe(p);
   });
 
   it("allows a plain binary on PATH", () => {
-    const p = "/usr/local/bin/agav";
+    const p = fixturePath("bin", binaryName);
     expect(withExecPath(p, getCurrentBinaryPath)).toBe(p);
   });
 
   it("allows an arch-suffixed binary", () => {
-    const p = "/tmp/agav-darwin-arm64";
+    const p = fixturePath(process.platform === "win32" ? "agav-windows-x64.exe" : "agav-darwin-arm64");
     expect(withExecPath(p, getCurrentBinaryPath)).toBe(p);
   });
 
@@ -41,7 +48,7 @@ describe("getCurrentBinaryPath", () => {
     const originalArgv = process.argv;
     process.argv = ["bun", "/$bunfs/root/agav-darwin-arm64", "update"];
     try {
-      const p = "/Users/x/.agav/packages/standalone/releases/0.1.3/agav";
+      const p = fixturePath("packages", "standalone", "releases", "0.1.3", binaryName);
       expect(withExecPath(p, getCurrentBinaryPath)).toBe(p);
     } finally {
       process.argv = originalArgv;
@@ -49,49 +56,68 @@ describe("getCurrentBinaryPath", () => {
   });
 
   it.each([
-    ["/usr/local/bin/node", "node"],
-    ["/Users/x/.bun/bin/bun", "bun"],
-    ["/usr/bin/deno", "deno"],
-    ["/usr/local/bin/npx", "npx"],
-    ["/usr/local/bin/tsx", "tsx"],
+    [fixturePath("bin", "node"), "node"],
+    [fixturePath("bin", "bun"), "bun"],
+    [fixturePath("bin", "deno"), "deno"],
+    [fixturePath("bin", "npx"), "npx"],
+    [fixturePath("bin", "tsx"), "tsx"],
   ])("refuses to overwrite the %s runtime", (p) => {
     expect(withExecPath(p, getCurrentBinaryPath)).toBeNull();
   });
 
   it("refuses a binary that isn't ours", () => {
-    expect(withExecPath("/usr/local/bin/something-else", getCurrentBinaryPath)).toBeNull();
+    expect(withExecPath(fixturePath("bin", "something-else"), getCurrentBinaryPath)).toBeNull();
+  });
+});
+
+describe("installer docs and scripts", () => {
+  it("uses curl flags that preserve download progress while still failing on HTTP errors", () => {
+    const readme = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+    const installSh = readFileSync(new URL("../../scripts/install.sh", import.meta.url), "utf8");
+
+    expect(readme).toContain("curl -fsSL https://agav.dev/install.sh | bash");
+    expect(readme).toContain("curl -fsSL https://agav.dev/install.cmd -o install.cmd");
+    expect(installSh).toContain('curl -fL --progress-bar "$url" -o "$output"');
+    expect(installSh).toContain('curl -fsSL "$url" -o "$output"');
+  });
+
+  it("does not suppress PowerShell web request progress in install.cmd", () => {
+    const installCmd = readFileSync(new URL("../../scripts/install.cmd", import.meta.url), "utf8");
+
+    expect(installCmd).toContain("Invoke-WebRequest -Uri '%INSTALLER_URL%' -OutFile '%TMP_PS1%'");
+    expect(installCmd).not.toContain("$ProgressPreference='SilentlyContinue'");
   });
 });
 
 describe("detectManagedLayout", () => {
   it("recognises the installer's versioned layout", () => {
-    const layout = detectManagedLayout(
-      "/Users/x/.agav/packages/standalone/releases/0.1.2/agav",
-    );
+    const standaloneRoot = fixturePath(".agav", "packages", "standalone");
+    const layout = detectManagedLayout(join(standaloneRoot, "releases", "0.1.2", binaryName));
     expect(layout).toEqual({
-      releasesDir: "/Users/x/.agav/packages/standalone/releases",
-      currentLink: "/Users/x/.agav/packages/standalone/current",
-      binaryName: "agav",
+      releasesDir: join(standaloneRoot, "releases"),
+      currentLink: join(standaloneRoot, "current"),
+      binaryName,
     });
   });
 
   it("works for a relocated AGAV_HOME (detection is structural, not env-based)", () => {
-    const layout = detectManagedLayout("/opt/tools/packages/standalone/releases/2.0.0/agav");
-    expect(layout?.currentLink).toBe("/opt/tools/packages/standalone/current");
-    expect(layout?.releasesDir).toBe("/opt/tools/packages/standalone/releases");
+    const standaloneRoot = fixturePath("relocated", "packages", "standalone");
+    const layout = detectManagedLayout(join(standaloneRoot, "releases", "2.0.0", binaryName));
+    expect(layout?.currentLink).toBe(join(standaloneRoot, "current"));
+    expect(layout?.releasesDir).toBe(join(standaloneRoot, "releases"));
   });
 
   it("returns null for a plain binary", () => {
-    expect(detectManagedLayout("/usr/local/bin/agav")).toBeNull();
+    expect(detectManagedLayout(fixturePath("bin", binaryName))).toBeNull();
   });
 
   it("returns null for a lookalike path", () => {
-    expect(detectManagedLayout("/a/b/releases/0.1.0/agav")).toBeNull();
-    expect(detectManagedLayout("/a/standalone/other/0.1.0/agav")).toBeNull();
+    expect(detectManagedLayout(fixturePath("a", "b", "releases", "0.1.0", binaryName))).toBeNull();
+    expect(detectManagedLayout(fixturePath("a", "standalone", "other", "0.1.0", binaryName))).toBeNull();
   });
 
   it("returns null for a short path", () => {
-    expect(detectManagedLayout("/agav")).toBeNull();
-    expect(detectManagedLayout("agav")).toBeNull();
+    expect(detectManagedLayout(join(tmpdir(), binaryName))).toBeNull();
+    expect(detectManagedLayout(binaryName)).toBeNull();
   });
 });

@@ -55,4 +55,19 @@ describe("utils/tokens", () => {
     expect(getContextLimits("gpt-4-turbo")).toEqual({ maxTokens: 128_000, warningThreshold: 100_000 });
     expect(getContextLimits("unknown-model")).toEqual({ maxTokens: 128_000, warningThreshold: 100_000 });
   });
+
+  // Ollama model names carry no context information, so without an explicit
+  // window they fall through to the generic 128k while the server enforces
+  // something far smaller, and compaction never fires in time.
+  it("prefers an explicit context window over the name-based table", () => {
+    expect(getContextLimits("llama3.2:1b", 32_768)).toEqual({ maxTokens: 32_768, warningThreshold: 26_214 });
+    expect(getContextLimits("gpt-4o", 8_192)).toEqual({ maxTokens: 8_192, warningThreshold: 6_553 });
+  });
+
+  it("ignores an absent or non-positive explicit window", () => {
+    const fallback = { maxTokens: 128_000, warningThreshold: 100_000 };
+    expect(getContextLimits("llama3.2:1b")).toEqual(fallback);
+    expect(getContextLimits("llama3.2:1b", 0)).toEqual(fallback);
+    expect(getContextLimits("llama3.2:1b", -1)).toEqual(fallback);
+  });
 });
