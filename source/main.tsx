@@ -650,9 +650,18 @@ export async function main() {
   });
 
   const { getGitContext } = await import("./utils/git.js");
-  const gitContext = await getGitContext();
-  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={resumeSessionName} repoBranch={gitContext?.branch} />, {
+  const { detectKittyKeyboard } = await import("./utils/terminal-keyboard.js");
+  // The keyboard probe waits on the terminal, so overlap it with the git lookup
+  // rather than adding its timeout to startup. Both settle rather than reject.
+  const [gitContext, enhancedKeyboard] = await Promise.all([getGitContext(), detectKittyKeyboard()]);
+
+  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={resumeSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} />, {
     exitOnCtrlC: true,
+    // Detection already happened, so pin the mode instead of letting Ink query a
+    // second time. `disambiguateEscapeCodes` alone is deliberate: it is what makes
+    // Shift+Enter distinguishable, and it avoids the key-release events that the
+    // reportEventTypes flag would deliver as phantom presses.
+    kittyKeyboard: { mode: enhancedKeyboard ? "enabled" : "disabled", flags: ["disambiguateEscapeCodes"] },
   });
 
   await waitUntilExit();

@@ -3,7 +3,7 @@ import { Box, Text, useInput } from "ink";
 import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
 import type { DiffLine } from "../utils/diff.js";
 import { getTheme } from "../config/theme.js";
-import { KeybindingResolver, type Keybindings } from "../config/keybindings.js";
+import { KeybindingResolver, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { terminalToolValue } from "../utils/display-path.js";
 
 /** Represents the user's approval decision for a tool request. */
@@ -21,7 +21,8 @@ interface Props {
 /** Prompts the user to approve or reject a pending tool action. */
 export default function ToolConfirm({ toolName, input, diffLines, onConfirm, subagentTask, keybindings }: Props) {
   const keyResolver = React.useRef(new KeybindingResolver(keybindings, ["cancel", "submit"]));
-  useInput((char, key) => {
+  useInput((rawChar, rawKey) => {
+    const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
     const match = keyResolver.current.feed(char, key);
     if (char === "y" || char === "Y" || match.action === "submit") {
       onConfirm("yes");

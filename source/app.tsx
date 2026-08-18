@@ -27,7 +27,7 @@ import { getRandomHint } from "./utils/hints.js";
 import { fileLink } from "./utils/hyperlink.js";
 import { getClipboardImage, type ClipboardImage } from "./utils/clipboard-image.js";
 import { useClipboardImageDetector } from "./hooks/use-paste-handler.js";
-import { KeybindingResolver, formatKeybinding, formatKeybindings, type Keybindings } from "./config/keybindings.js";
+import { KeybindingResolver, formatKeybinding, formatKeybindings, normalizeKeyEvent, type Keybindings } from "./config/keybindings.js";
 import { getLoopStatus, stopActiveLoop } from "./commands/loop.js";
 import { loadScheduledTasks, cronMatches, markTaskRun } from "./config/scheduler.js";
 import { getSandboxName } from "./utils/sandbox.js";
@@ -45,6 +45,8 @@ interface Props {
   resumeCompacted?: boolean;
   resumeSessionName?: string;
   repoBranch?: string;
+  /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
+  enhancedKeyboard?: boolean;
 }
 
 const BANNER: DisplayMessage = {
@@ -56,7 +58,7 @@ const BANNER: DisplayMessage = {
 let sysMessageId = 0;
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
-export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch }: Props) {
+export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false }: Props) {
 
   const [input, setInput] = useState("");
   const [config, setConfig] = useState(initialConfig);
@@ -295,8 +297,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [focusedSubagentId, isLoading]);
 
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
-  useInput((char, key) => {
+  useInput((rawChar, rawKey) => {
     if (pickerActive) return;
+    const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
     const match = keyResolverRef.current.feed(char, key);
     if (match.action === "interrupt" && isLoading && !pendingConfirmation) {
       cancel();
@@ -657,6 +660,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             ...commandRegistryRef.current.list().map((c) => ({ name: c.name, description: c.description })),
           ]}
           keybindings={keybindings}
+          enhancedKeyboard={enhancedKeyboard}
           resumeUserMessages={resumeUserMessages}
         /></Box>
       )}
@@ -670,7 +674,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         outputTokens={tokenUsage.outputTokens}
         cacheReadTokens={tokenUsage.cacheReadTokens}
         cacheWriteTokens={tokenUsage.cacheWriteTokens}
-        hint={useMemo(() => getRandomHint(keybindings), [messages.length, keybindings])}
+        hint={useMemo(() => getRandomHint(keybindings, enhancedKeyboard), [messages.length, keybindings, enhancedKeyboard])}
         psResponse={psResponse}
         psLoading={psLoading}
         loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
