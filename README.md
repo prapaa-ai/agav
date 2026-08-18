@@ -71,18 +71,24 @@ Or download a specific platform binary from [Releases](../../releases).
 
 ### Uninstall
 
-Both installers accept `--uninstall`.
+Both installers accept two flags: `--uninstall` removes the binary and takes the `PATH` entry back out, and `--purge` does that *and* deletes your settings and history. `--purge` implies `--uninstall`, so you never need to pass both.
 
 **macOS / Linux:**
 
 ```bash
 curl -fsSL https://agav.dev/install.sh | bash -s -- --uninstall
+
+# ...or, to delete your settings and history too:
+curl -fsSL https://agav.dev/install.sh | bash -s -- --purge
 ```
 
 **Windows PowerShell:**
 
 ```powershell
 & ([scriptblock]::Create((irm https://www.agav.dev/install.ps1))) --uninstall
+
+# ...or, to delete your settings and history too:
+& ([scriptblock]::Create((irm https://www.agav.dev/install.ps1))) --purge
 ```
 
 **Windows Command Prompt (`cmd.exe`):**
@@ -93,32 +99,23 @@ install.cmd --uninstall
 del install.cmd
 ```
 
-If you installed via a package manager instead, remove it the same way:
+#### What each flag removes
 
-```bash
-npm uninstall -g agav-cli    # or: bun remove -g agav-cli
-```
-
-#### What `--uninstall` leaves behind
-
-It removes the binary, but deliberately keeps your settings and does not edit your shell profile:
-
-| | Removed | Left behind |
+| | `--uninstall` | `--purge` adds |
 | --- | --- | --- |
-| macOS / Linux | `~/.local/bin/agav`, `~/.agav/packages/standalone/` | `~/.agav/` config, `PATH` line in your shell profile |
-| Windows | `%LOCALAPPDATA%\agav\agav.exe` | `%USERPROFILE%\.agav\` config, `PATH` entry in your user environment |
+| macOS / Linux | `~/.local/bin/agav`, `~/.agav/packages/standalone/`, the installer's block in your shell profile | `~/.agav/` |
+| Windows | `%LOCALAPPDATA%\agav\agav.exe`, the `PATH` entry in your user environment | `%USERPROFILE%\.agav\` |
 
-To remove your configuration as well — this deletes `config.json` (which holds your **encrypted API keys**), `prompt-history.json`, `keybindings.json`, and any installed `plugins/` and `skills/`:
+`--purge` deletes `config.json` (which holds your **encrypted API keys**), `prompt-history.json`, `keybindings.json`, and any installed `plugins/` and `skills/`. There is no undo.
 
-```bash
-rm -rf ~/.agav                       # macOS / Linux
-```
+Open a new terminal afterwards — the one you ran this in keeps the `PATH` it started with.
 
-```powershell
-Remove-Item -Recurse -Force "$HOME\.agav"    # Windows
-```
+Agav also writes per-project directories inside repositories you've worked in: `.agav/` (cached images) and `.agav-worktrees/`. Uninstalling never touches those; delete them yourself if you want them gone.
 
-To remove the `PATH` entry, delete this block from your shell profile — `~/.zprofile` (macOS + zsh), `~/.bash_profile` (macOS + bash), `~/.zshrc` or `~/.bashrc` (Linux), or `~/.profile`:
+<details>
+<summary>Uninstalled with an older script?</summary>
+
+Versions before 0.1.8 left the `PATH` entry behind. On macOS or Linux, delete this block from your shell profile — `~/.zprofile` (macOS + zsh), `~/.bash_profile` (macOS + bash), `~/.zshrc` or `~/.bashrc` (Linux), or `~/.profile`:
 
 ```bash
 # >>> Agav installer >>>
@@ -128,7 +125,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 On Windows, remove the Agav entry from your user `PATH` under **Settings → Edit environment variables for your account**.
 
-Agav also writes per-project directories inside repositories you've worked in — `.agav/` (cached images) and `.agav-worktrees/`. Delete those individually if you want them gone.
+</details>
 
 ### Run from source
 

@@ -1,6 +1,6 @@
 import { join, sep } from "node:path";
 import { homedir, platform, arch } from "node:os";
-import { readFile, writeFile, rename, chmod, copyFile, unlink, mkdir, readdir, symlink, rm } from "node:fs/promises";
+import { readFile, writeFile, rename, chmod, copyFile, unlink, mkdir, readdir, stat, symlink, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { createWriteStream, createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
@@ -14,6 +14,10 @@ const AGAV_DIR = join(homedir(), ".agav");
 const UPDATE_STATE_FILE = join(AGAV_DIR, "update-state.json");
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const REPO = "prapaa-ai/agav";
+/** Prefix for in-flight downloads sitting in ~/.agav, swept on a later launch. */
+const DOWNLOAD_PREFIX = "agav-update-";
+/** A download older than this cannot belong to a live process worth waiting on. */
+const STALE_DOWNLOAD_MS = 24 * 60 * 60 * 1000;
 
 interface UpdateState {
   lastCheck: number;
@@ -27,13 +31,30 @@ function currentVersion(): string {
   return VERSION;
 }
 
-function isNewer(remote: string, local: string): boolean {
-  const r = remote.replace(/^v/, "").split(".").map(Number);
-  const l = local.split(".").map(Number);
+/**
+ * Pull `major.minor.patch` out of a tag, ignoring any `v` prefix and any
+ * pre-release or build suffix. Returns null for anything that isn't a version.
+ */
+function parseVersion(value: string): [number, number, number] | null {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(value.trim());
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+export function isNewer(remote: string, local: string): boolean {
+  // Parse rather than `split(".").map(Number)`. A tag like v0.2.0-rc1 turned
+  // the last part into NaN, and NaN loses every comparison, so the loop fell
+  // through to `return false` — one pre-release marked "latest" would have
+  // silently frozen every client on its current version.
+  const r = parseVersion(remote);
+  const l = parseVersion(local);
+  if (!r || !l) return false;
   for (let i = 0; i < 3; i++) {
-    if ((r[i] ?? 0) > (l[i] ?? 0)) return true;
-    if ((r[i] ?? 0) < (l[i] ?? 0)) return false;
+    if (r[i]! > l[i]!) return true;
+    if (r[i]! < l[i]!) return false;
   }
+  // Equal core versions: a pre-release of the version we already run is not an
+  // upgrade, so don't sidegrade v0.1.7 → v0.1.7-rc1.
   return false;
 }
 
@@ -66,7 +87,10 @@ function getBinaryName(): string {
 async function downloadBinary(version: string, label?: string): Promise<string | null> {
   const binaryName = getBinaryName();
   const url = `https://github.com/${REPO}/releases/download/${version}/${binaryName}`;
-  const tmpPath = join(AGAV_DIR, `agav-update-${version}`);
+  // Keyed by pid as well as version: two agav processes updating to the same
+  // version at once would otherwise interleave their writes into one file, and
+  // both would fail the checksum.
+  const tmpPath = join(AGAV_DIR, `${DOWNLOAD_PREFIX}${version}.${process.pid}`);
   const activity = label ?? `Downloading ${version}`;
 
   // A fixed deadline on the whole transfer would kill a healthy download on a
@@ -249,6 +273,10 @@ export async function installUpdate(
     await safeMove(downloadedPath, dest);
     await chmod(dest, 0o755);
     await replaceSymlink(layout.currentLink, releaseDir);
+    // Only after the symlink points at the new release — a prune that ran first
+    // would delete the release we are still running from while `current` still
+    // named it, leaving a window where the install is unusable.
+    await pruneOldReleases(layout.releasesDir, releaseDir);
     return;
   }
 
@@ -264,6 +292,60 @@ export async function installUpdate(
   // failing to delete the old one is untidy, not a failed update — reporting it
   // as one sent Windows users chasing an update that had actually succeeded.
   await rm(backupPath, { force: true }).catch(() => {});
+}
+
+/**
+ * Delete every release directory except the one just installed.
+ *
+ * install.sh prunes like this at the end of every run; the updater did not, so
+ * a managed install grew by one ~100 MB release directory on every single
+ * auto-update and never gave the space back.
+ *
+ * Removing the directory we are currently executing from is safe on POSIX —
+ * this branch never runs on Windows — because the kernel keeps the inode alive
+ * for the lifetime of the running process.
+ */
+export async function pruneOldReleases(releasesDir: string, keepDir: string): Promise<void> {
+  try {
+    const entries = await readdir(releasesDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const dir = join(releasesDir, entry.name);
+      if (dir === keepDir) continue;
+      // Best-effort per directory: one undeletable leftover must not stop the
+      // rest from being reclaimed, and none of it can fail the update.
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  } catch {
+    // Housekeeping. The update itself already succeeded.
+  }
+}
+
+/**
+ * Delete abandoned downloads from ~/.agav. A process killed mid-transfer leaves
+ * a partial ~100 MB file behind, and nothing else ever collects it.
+ *
+ * Age-gated rather than pid-gated: a live download belonging to a concurrently
+ * running agav must not be pulled out from under it, and no legitimate transfer
+ * is still in flight a day later.
+ */
+export async function cleanupStaleDownloads(now = Date.now()): Promise<void> {
+  try {
+    const entries = await readdir(AGAV_DIR);
+    for (const entry of entries) {
+      if (!entry.startsWith(DOWNLOAD_PREFIX)) continue;
+      const path = join(AGAV_DIR, entry);
+      try {
+        const info = await stat(path);
+        if (!info.isFile() || now - info.mtimeMs < STALE_DOWNLOAD_MS) continue;
+        await rm(path, { force: true });
+      } catch {
+        // Vanished or locked — either way, not this launch's problem.
+      }
+    }
+  } catch {
+    // Cleanup is never worth failing a launch over.
+  }
 }
 
 /**
@@ -409,6 +491,7 @@ export async function forceUpdate(targetVersion?: string): Promise<boolean> {
   }
 
   await cleanupStaleBackups(binaryPath);
+  await cleanupStaleDownloads();
 
   process.stderr.write(`  Downloading ${latestTag}...`);
   const downloaded = await downloadBinary(latestTag);
@@ -442,6 +525,9 @@ export async function forceUpdate(targetVersion?: string): Promise<boolean> {
     // Name the reason. "replace error" alone gave a Windows user reporting a
     // locked-file failure nothing to act on.
     process.stderr.write(` failed (${error instanceof Error ? error.message : String(error)}).\n`);
+    // Nothing moved the download into place, so it would otherwise sit in
+    // ~/.agav forever — a ~100 MB leak on every failed update.
+    await rm(downloaded, { force: true }).catch(() => {});
     return false;
   }
 }
@@ -458,6 +544,7 @@ export async function checkAndUpdate(): Promise<void> {
   // still running. This launch is the first moment that lock is gone.
   const currentBinary = getCurrentBinaryPath();
   if (currentBinary) await cleanupStaleBackups(currentBinary);
+  await cleanupStaleDownloads();
 
   // Check rate limit
   const state = await loadState();
@@ -546,5 +633,6 @@ export async function checkAndUpdate(): Promise<void> {
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     process.stderr.write(` failed (${reason}). Continuing with current version.\n`);
+    await rm(downloaded, { force: true }).catch(() => {});
   }
 }

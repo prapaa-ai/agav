@@ -19,6 +19,7 @@ jobs:
       workflows: ${{ steps.diff.outputs.workflows }}
       docs: ${{ steps.diff.outputs.docs }}
       deps: ${{ steps.diff.outputs.deps }}
+      scripts: ${{ steps.diff.outputs.scripts }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,6 +35,7 @@ jobs:
           echo "workflows=false" >> "$GITHUB_OUTPUT"
           echo "docs=false" >> "$GITHUB_OUTPUT"
           echo "deps=false" >> "$GITHUB_OUTPUT"
+          echo "scripts=false" >> "$GITHUB_OUTPUT"
           if echo "$FILES" | grep -qE '^source/'; then
             echo "source=true" >> "$GITHUB_OUTPUT"
           fi
@@ -45,6 +47,9 @@ jobs:
           fi
           if echo "$FILES" | grep -qE '(package\.json|pnpm-lock\.yaml)'; then
             echo "deps=true" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$FILES" | grep -qE '^scripts/'; then
+            echo "scripts=true" >> "$GITHUB_OUTPUT"
           fi
 
   # --- Core checks (only when source or deps change) ---
@@ -116,6 +121,75 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: npx vitest run --passWithNoTests
+
+  # --- Installer scripts ---
+  # These ship outside the release pipeline (hand-copied to agav.dev), so
+  # nothing else in this workflow would ever look at them.
+  installer-sh:
+    name: Installer Tests (sh)
+    needs: changed
+    if: needs.changed.outputs.scripts == 'true' || needs.changed.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - name: ShellCheck
+        run: |
+          shellcheck -s sh \
+            scripts/install.sh \
+            scripts/tests/install-sh.test.sh \
+            scripts/tests/install-sh-path.test.sh \
+            scripts/tests/run-installer-tests.sh
+      - name: Install the other /bin/sh implementations
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends dash busybox
+      - name: Run the suites under every shell
+        # install.sh is `#!/bin/sh`, and which shell that is depends entirely on
+        # the distro: dash on Debian and Ubuntu, bash on Fedora, ash in Alpine.
+        run: |
+          FAIL=0
+          for shell in dash bash "busybox sh"; do
+            echo "::group::$shell"
+            $shell scripts/tests/install-sh.test.sh || FAIL=1
+            $shell scripts/tests/install-sh-path.test.sh || FAIL=1
+            echo "::endgroup::"
+          done
+          if [ "$FAIL" -eq 1 ]; then exit 1; fi
+
+  installer-ps1:
+    name: Installer Tests (PowerShell)
+    needs: changed
+    if: needs.changed.outputs.scripts == 'true' || needs.changed.outputs.workflows == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - name: Suites under Windows PowerShell 5.1
+        # This is the host install.cmd actually launches, and the only place the
+        # registry half of the PATH handling runs for real. The suite captures
+        # HKCU\Environment\PATH first and puts it back afterwards.
+        shell: powershell
+        run: |
+          $Fail = 0
+          foreach ($Suite in @("install-ps1.test.ps1", "install-ps1-path.test.ps1")) {
+            Write-Host "::group::5.1 $Suite"
+            & powershell -NoProfile -File "scripts\tests\$Suite"
+            if ($LASTEXITCODE -ne 0) { $Fail = 1 }
+            Write-Host "::endgroup::"
+          }
+          exit $Fail
+      - name: Suites under pwsh 7
+        shell: pwsh
+        run: |
+          $Fail = 0
+          foreach ($Suite in @("install-ps1.test.ps1", "install-ps1-path.test.ps1", "install-ps1-lint.test.ps1")) {
+            Write-Host "::group::pwsh $Suite"
+            & pwsh -NoProfile -File "scripts\tests\$Suite"
+            if ($LASTEXITCODE -ne 0) { $Fail = 1 }
+            Write-Host "::endgroup::"
+          }
+          exit $Fail
 
   # --- Always-run checks ---
   pr-title:
@@ -318,6 +392,8 @@ jobs:
       - typecheck
       - build
       - test
+      - installer-sh
+      - installer-ps1
       - pr-title
       - secret-scan
       - blob-size
@@ -336,6 +412,8 @@ jobs:
             "${{ needs.typecheck.result }}" \
             "${{ needs.build.result }}" \
             "${{ needs.test.result }}" \
+            "${{ needs.installer-sh.result }}" \
+            "${{ needs.installer-ps1.result }}" \
             "${{ needs.pr-title.result }}" \
             "${{ needs.secret-scan.result }}" \
             "${{ needs.blob-size.result }}" \
