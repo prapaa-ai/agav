@@ -27,7 +27,9 @@ export function buildAgentCatalog(agents: AgentDefinition[]): string {
 
   for (const agent of agentsToShow) {
     const toolName = `${agent.alias || agent.manifest.name}_agent`;
-    const description = agent.manifest.description;
+    const description = agent.manifest.description.length > 120
+      ? agent.manifest.description.slice(0, 117) + "..."
+      : agent.manifest.description;
     lines.push(`- ${toolName}: ${description}`);
   }
 

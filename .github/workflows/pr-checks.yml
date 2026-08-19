@@ -281,7 +281,7 @@ jobs:
             FAIL=1
           fi
           if grep -rn --include='*.ts' --include='*.tsx' \
-            -E 'exec(File|Sync)?\s*\(\s*`' source/ 2>/dev/null | grep -v 'node_modules'; then
+            -E 'exec(File|Sync|Async)?\s*\(\s*`' source/ 2>/dev/null | grep -v 'node_modules'; then
             echo "::error::Shell exec with template literal — command injection risk"
             FAIL=1
           fi

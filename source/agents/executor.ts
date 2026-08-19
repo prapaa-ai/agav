@@ -10,7 +10,17 @@ import type { AgavConfig } from "../config/config.js";
 import { runAgentLoop } from "../agent/loop.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { decrypt } from "../utils/encrypt.js";
+
+// Mutex to serialize process.env mutations across concurrent agent calls
+let envLockQueue: Promise<void> = Promise.resolve();
+function acquireEnvLock(): Promise<() => void> {
+  let release: () => void;
+  const prev = envLockQueue;
+  envLockQueue = new Promise<void>((resolve) => { release = resolve; });
+  return prev.then(() => release!);
+}
 
 // AgavHooks type - defined locally since it's not exported from hooks.js
 interface AgavHooks {
@@ -78,21 +88,22 @@ export async function executeNativeAgent(
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<import("../agent/loop.js").ConfirmResult>;
   }
 ): Promise<string> {
-  // Unique ID for this invocation — used to correlate progress events in the UI
-  const callId = `${agent.manifest.name}-${Math.random().toString(36).slice(2, 7)}`;
+  const callId = `${agent.manifest.name}-${randomUUID().slice(0, 8)}`;
 
   // Load per-agent runtime config: credentials + optional model/effort overrides.
   // Priority: config.json > AGENT.md manifest > session config.
   const runtimeConfig = await loadAgentCredentials(agent.path, agent.manifest.name);
-  const originalEnv: Record<string, string | undefined> = {};
 
+  const model  = runtimeConfig["model"]  || agent.manifest.model  || deps.config.model;
+  const effort = (runtimeConfig["effort"] || agent.manifest.effort || deps.config.effort) as import("../config/config.js").EffortLevel;
+
+  // Serialize env mutations to prevent concurrent agents from interleaving
+  const releaseEnvLock = await acquireEnvLock();
+  const originalEnv: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(runtimeConfig)) {
     originalEnv[key] = process.env[key];
     process.env[key] = value;
   }
-
-  const model  = runtimeConfig["model"]  || agent.manifest.model  || deps.config.model;
-  const effort = (runtimeConfig["effort"] || agent.manifest.effort || deps.config.effort) as import("../config/config.js").EffortLevel;
 
   // Start per-agent MCP servers declared in the manifest
   let agentMCPManager: import("../mcp/manager.js").MCPManager | null = null;
@@ -104,7 +115,7 @@ export async function executeNativeAgent(
       const serverConfig = {
         command: srv.command,
         args: srv.args ?? [],
-        env: runtimeConfig, // inject agent credentials as subprocess env vars
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...runtimeConfig },
       };
       try {
         await agentMCPManager.startServer(srv.key, serverConfig);
@@ -152,7 +163,7 @@ export async function executeNativeAgent(
       // If the parent provided a confirmTool callback, use it so that tools
       // marked as destructive inside the agent get proper HITL approval.
       confirmTool: deps.confirmTool,
-      permissionMode: deps.confirmTool ? "ask" : "auto-accept",
+      permissionMode: deps.confirmTool ? "ask" : "deny-writes",
       maxIterations: 50,
       hooks: deps.hooks,
     });
@@ -161,14 +172,10 @@ export async function executeNativeAgent(
       // Forward every event to the UI progress tracker keyed by this invocation's callId
       deps.onProgressUpdate?.(callId, event);
 
-      // Collect text output
       if (event.type === "streaming_text") {
         output += event.text;
       } else if (event.type === "assistant_message_complete") {
-        // Use the accumulated streaming text as output
-        if (output) {
-          // Already have streaming text
-        } else if (event.text) {
+        if (!output && event.text) {
           output = event.text;
         }
       } else if (event.type === "error") {
@@ -183,15 +190,13 @@ export async function executeNativeAgent(
 
     return output || "Agent completed with no output.";
   } finally {
-    // Signal the UI that this agent invocation is complete (success or failure)
     deps.onProgressUpdate?.(callId, { type: "turn_complete" });
 
-    // Stop per-agent MCP servers
     if (agentMCPManager) {
-      agentMCPManager.stopAll();
+      await agentMCPManager.stopAll();
     }
 
-    // Restore original env vars
+    // Restore original env vars, then release the lock
     for (const [key, value] of Object.entries(originalEnv)) {
       if (value === undefined) {
         delete process.env[key];
@@ -199,6 +204,7 @@ export async function executeNativeAgent(
         process.env[key] = value;
       }
     }
+    releaseEnvLock();
   }
 }
 
@@ -211,10 +217,6 @@ export async function executeA2AAgent(
 ): Promise<string> {
   const { executeA2AAgent: a2aExecute } = await import("./a2a-client.js");
 
-  try {
-    const output = await a2aExecute(agent, task);
-    return output;
-  } catch (error) {
-    return `A2A agent error: ${error instanceof Error ? error.message : String(error)}`;
-  }
+  const output = await a2aExecute(agent, task);
+  return output;
 }

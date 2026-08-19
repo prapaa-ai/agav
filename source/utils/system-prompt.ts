@@ -14,19 +14,22 @@ import type { AgentDefinition } from "../agents/types.js";
 export function shouldIncludeAgentCatalog(userMessage: string, agents: AgentDefinition[]): boolean {
   if (agents.length === 0) return false;
   const msg = userMessage.toLowerCase();
-  // Always include if the message explicitly mentions any installed agent by name
-  if (agents.some((a) => msg.includes(a.manifest.name.toLowerCase()))) return true;
-  // Include if message contains integration or delegation keywords
+  // Always include if the message explicitly mentions any installed agent by name (word boundary)
+  if (agents.some((a) => {
+    const escaped = a.manifest.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\b${escaped}\\b`).test(msg);
+  })) return true;
+  // Include if message contains integration or delegation keywords (word boundary match)
   const keywords = [
     "jira", "github", "gitlab", "slack", "aws", "gcp", "azure", "argocd",
-    "ticket", "issue", "pr ", "pull request", "pipeline", "deploy", "deployment",
-    "kubernetes", "k8s", "kubectl", "cluster", "pod", "node",
+    "ticket", "issue", "pull request", "pipeline", "deploy", "deployment",
+    "kubernetes", "k8s", "kubectl", "cluster", "pod",
     "agent", "use the", "ask the", "delegate to", "check with",
-    "repo", "repository", "commit", "branch", "merge",
     "cloud", "ec2", "s3", "bucket", "instance", "vm",
     "sprint", "backlog", "story", "epic", "workflow",
   ];
-  return keywords.some((k) => msg.includes(k));
+  const kwRegex = new RegExp(`\\b(?:${keywords.join("|")})\\b`, "i");
+  return kwRegex.test(msg);
 }
 
 const STATIC_BASE = [

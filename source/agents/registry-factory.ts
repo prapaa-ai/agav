@@ -34,7 +34,6 @@ export function agentToTool(
     schema: {
       name: toolName,
       description: agent.manifest.description,
-      destructive: false, // Service agents themselves are not destructive; their tools are
       inputSchema: {
         type: "object",
         properties: {

@@ -23,7 +23,7 @@ export async function loadAgentConfig(agentPath: string): Promise<Record<string,
         try {
           decrypted[key] = decrypt(value);
         } catch {
-          // Not encrypted, use as-is
+          console.warn(`[credentials] Decryption failed for "${key}" in ${configPath}, using as plaintext`);
           decrypted[key] = value;
         }
       }
@@ -50,7 +50,8 @@ export async function saveAgentConfig(
   }
 
   const configPath = join(agentPath, "config.json");
-  await writeFile(configPath, JSON.stringify(encrypted, null, 2), "utf-8");
+  await mkdir(agentPath, { recursive: true });
+  await writeFile(configPath, JSON.stringify(encrypted, null, 2), { encoding: "utf-8", mode: 0o600 });
 }
 
 /**
@@ -64,7 +65,7 @@ export async function hasRequiredCredentials(
   if (requiredConfig.length === 0) return true;
 
   const config = await loadAgentConfig(agentPath);
-  return requiredConfig.every((key) => key in config && config[key]);
+  return requiredConfig.every((key) => (key in config && config[key]) || process.env[key]);
 }
 
 /**

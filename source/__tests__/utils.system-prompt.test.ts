@@ -78,7 +78,7 @@ describe("utils/system-prompt", () => {
 
   it("puts only per-turn state in the volatile context", async () => {
     vi.mocked(getGitContext).mockResolvedValue({ isRepo: true, branch: "main", status: "clean", recentCommits: "", remoteUrl: "" });
-    const ctx = await refreshVolatileContext();
+    const { context: ctx } = await refreshVolatileContext();
 
     expect(ctx).toContain("git block");
     expect(ctx).toContain("steers");

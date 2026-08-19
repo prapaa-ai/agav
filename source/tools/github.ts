@@ -30,7 +30,8 @@ export const githubTool: ToolDefinition = {
     description:
       "Interact with GitHub via the gh CLI. Supports creating/viewing PRs and issues. " +
       "Requires the gh CLI to be installed and authenticated.",
-    destructive: true, // create_pr and create_issue are write operations
+    // Not marked destructive — loop.ts handles non-SAFE_TOOLS confirmation.
+    // This avoids blocking read-only operations like view_pr and list_prs.
     inputSchema: {
       type: "object",
       properties: {

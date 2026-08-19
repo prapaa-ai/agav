@@ -480,7 +480,7 @@ export function useAgent(
           // the tool schemas and the whole conversation from the provider's prefix cache.
           const { refreshStableContext, refreshVolatileContext, formatTurnContext } =
             await import("../utils/system-prompt.js");
-          const [stableCtx, { context: volatileCtx, includeAgentTools }] = await Promise.all([
+          const [stableCtx, { context: volatileCtx }] = await Promise.all([
             refreshStableContext(mcpManagerRef.current),
             refreshVolatileContext(trimmed),
           ]);
@@ -521,9 +521,13 @@ export function useAgent(
                 }));
               }
             }
+            // Unregister agent tools that are no longer enabled, using the
+            // full set of known agent names to avoid accidentally removing
+            // unrelated MCP tools that happen to end with "_agent".
+            const allAgentToolNames = new Set(agents.map((a) => `${a.alias || a.manifest.name}_agent`));
             const enabledNames = new Set(enabledAgents.map((a) => `${a.alias || a.manifest.name}_agent`));
             for (const schema of toolRegistryRef.current.getSchemas()) {
-              if (schema.name.endsWith("_agent") && !enabledNames.has(schema.name)) {
+              if (allAgentToolNames.has(schema.name) && !enabledNames.has(schema.name)) {
                 toolRegistryRef.current.unregister(schema.name);
               }
             }

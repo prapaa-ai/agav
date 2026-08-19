@@ -6,6 +6,38 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { AgentDefinition } from "./types.js";
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+function assertLoopbackEndpoint(endpoint: string, allowRemote?: boolean): void {
+  if (allowRemote) return;
+  const parsed = new URL(endpoint);
+  if (!LOOPBACK_HOSTS.has(parsed.hostname)) {
+    throw new Error(
+      `A2A endpoint "${endpoint}" is not loopback. Set "allow-remote-endpoint: true" in the manifest to allow remote endpoints.`
+    );
+  }
+}
+
+function parseCommandString(cmd: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let inQuote: string | null = null;
+  for (const ch of cmd) {
+    if (inQuote) {
+      if (ch === inQuote) { inQuote = null; continue; }
+      current += ch;
+    } else if (ch === '"' || ch === "'") {
+      inQuote = ch;
+    } else if (/\s/.test(ch)) {
+      if (current) { parts.push(current); current = ""; }
+    } else {
+      current += ch;
+    }
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
 /**
  * A2A request format
  */
@@ -69,8 +101,14 @@ export async function startA2AAgent(agent: AgentDefinition): Promise<{ success: 
     return { success: false, error: "No endpoint defined for A2A agent" };
   }
 
-  // Parse command and args
-  const parts = startCommand.split(/\s+/);
+  try {
+    assertLoopbackEndpoint(endpoint, (agent.manifest as any)["allow-remote-endpoint"]);
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
+  // Parse command and args (handles simple quoting)
+  const parts = parseCommandString(startCommand);
   const command = parts[0]!;
   const args = parts.slice(1);
 
@@ -132,7 +170,7 @@ async function waitForAgent(endpoint: string, timeoutMs: number): Promise<boolea
 
   while (Date.now() - startTime < timeoutMs) {
     try {
-      const response = await fetch(healthUrl, { method: "GET" });
+      const response = await fetch(healthUrl, { method: "GET", signal: AbortSignal.timeout(2_000) });
       if (response.ok) {
         return true;
       }
@@ -160,7 +198,7 @@ export function stopA2AAgent(nameOrAlias: string): void {
  * Stop all managed A2A agent processes
  */
 export function stopAllA2AAgents(): void {
-  for (const [key, managed] of managedAgents.entries()) {
+  for (const [, managed] of managedAgents.entries()) {
     managed.process.kill();
   }
   managedAgents.clear();
@@ -197,10 +235,9 @@ export async function executeA2AAgent(
   try {
     const response = await fetch(`${endpoint}/execute`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
@@ -252,11 +289,9 @@ export async function* executeA2AAgentStreaming(
   try {
     const response = await fetch(`${endpoint}/stream`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "text/event-stream",
-      },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify(request),
+      signal: AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
@@ -282,7 +317,7 @@ export async function* executeA2AAgentStreaming(
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
+      const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() || "";
 
       for (const line of lines) {

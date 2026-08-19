@@ -45,7 +45,6 @@ export default {
   schema: {
     name: "${ctx.toolName}",
     description: "...",
-    destructive: false,
     inputSchema: { type: "object", properties: { /* all params */ }, required: [] }
   },
   async execute(input) {
@@ -115,6 +114,14 @@ export async function implementAgentTools(
     });
 
     if (generated) {
+      // Basic syntax check before writing LLM-generated code
+      try {
+        new Function(generated);
+      } catch (syntaxErr) {
+        onStatus(`Skipping ${tool.schema.name}: generated code has syntax errors (${syntaxErr instanceof Error ? syntaxErr.message : String(syntaxErr)})`);
+        continue;
+      }
+
       let actualPath: string;
       try {
         await readFile(join(toolsDir, `${tool.schema.name.replace(/_/g, "-")}.mjs`), "utf-8");

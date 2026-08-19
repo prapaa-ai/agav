@@ -2,9 +2,10 @@
  * Agent registry - manages ~/.agav/agents/registry.json
  */
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { randomBytes } from "node:crypto";
 import type { AgentRegistry, AgentRegistryEntry } from "./types.js";
 
 const REGISTRY_PATH = join(homedir(), ".agav", "agents", "registry.json");
@@ -15,9 +16,13 @@ const REGISTRY_PATH = join(homedir(), ".agav", "agents", "registry.json");
 export async function loadRegistry(): Promise<AgentRegistry> {
   try {
     const content = await readFile(REGISTRY_PATH, "utf-8");
-    return JSON.parse(content);
+    try {
+      return JSON.parse(content);
+    } catch (parseErr) {
+      console.warn(`[agent-registry] Failed to parse ${REGISTRY_PATH}, starting fresh:`, parseErr);
+      return { agents: {} };
+    }
   } catch {
-    // Registry doesn't exist yet
     return { agents: {} };
   }
 }
@@ -27,7 +32,9 @@ export async function loadRegistry(): Promise<AgentRegistry> {
  */
 export async function saveRegistry(registry: AgentRegistry): Promise<void> {
   await mkdir(join(homedir(), ".agav", "agents"), { recursive: true });
-  await writeFile(REGISTRY_PATH, JSON.stringify(registry, null, 2), "utf-8");
+  const tmpPath = REGISTRY_PATH + "." + randomBytes(4).toString("hex") + ".tmp";
+  await writeFile(tmpPath, JSON.stringify(registry, null, 2), "utf-8");
+  await rename(tmpPath, REGISTRY_PATH);
 }
 
 /**

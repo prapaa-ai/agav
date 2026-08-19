@@ -2,17 +2,60 @@
  * Agent installer - sparse-clone from git repos, validate, and install
  */
 
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
-import { readdir, rm, cp, mkdir } from "node:fs/promises";
-import { join, basename } from "node:path";
+import { execFile } from "node:child_process";
+import { readdir, rm, cp, mkdir, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import { loadAgent } from "./loader.js";
 import { registerAgent, isAgentRegistered } from "./agent-registry.js";
 import type { AgentDefinition } from "./types.js";
 
-const execAsync = promisify(exec);
+const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+
+const DEFAULT_ALLOWED_HOSTS = new Set(["github.com", "gitlab.com", "bitbucket.org"]);
+
+function getAllowedHosts(): Set<string> {
+  const extra = process.env.AGAV_ALLOWED_GIT_HOSTS;
+  if (!extra) return DEFAULT_ALLOWED_HOSTS;
+  const hosts = new Set(DEFAULT_ALLOWED_HOSTS);
+  for (const h of extra.split(",")) {
+    const trimmed = h.trim();
+    if (trimmed) hosts.add(trimmed);
+  }
+  return hosts;
+}
+
+function validateAgentName(name: string): void {
+  if (!SAFE_NAME.test(name)) {
+    throw new Error(`Invalid agent name "${name}": must match ${SAFE_NAME}`);
+  }
+}
+
+function validateGitUrl(url: string): void {
+  const parsed = new URL(url);
+  const allowed = getAllowedHosts();
+  if (!allowed.has(parsed.hostname)) {
+    throw new Error(`Untrusted git host: ${parsed.hostname}. Allowed: ${[...allowed].join(", ")}`);
+  }
+}
+
+function assertPathContained(child: string, parent: string): void {
+  const resolved = resolve(child);
+  const root = resolve(parent);
+  if (!resolved.startsWith(root + "/") && !resolved.startsWith(root + "\\") && resolved !== root) {
+    throw new Error("Agent path escapes the agents directory");
+  }
+}
+
+function gitExec(args: string[], cwd: string): Promise<{ stdout: string }> {
+  return new Promise((resolve, reject) => {
+    execFile("git", args, { cwd, timeout: 60_000 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve({ stdout });
+    });
+  });
+}
 
 /**
  * Install agent from a git URL or local path
@@ -26,6 +69,15 @@ export async function installAgent(
   } = {}
 ): Promise<{ success: boolean; agent?: AgentDefinition; error?: string }> {
   const { alias, destination = "global", cwd = process.cwd() } = options;
+
+  // Validate alias early (before loading agent or cloning)
+  if (alias !== undefined) {
+    try {
+      validateAgentName(alias);
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
 
   // Determine if source is a git URL or local path
   const isGitUrl = source.startsWith("http://") || source.startsWith("https://") || source.startsWith("git@");
@@ -56,16 +108,24 @@ export async function installAgent(
 
   // Check for name conflict
   const nameToCheck = alias || agent.manifest.name;
+  try {
+    validateAgentName(nameToCheck);
+  } catch (e) {
+    if (isGitUrl) await rm(agentPath, { recursive: true, force: true });
+    return { success: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
   if (await isAgentRegistered(nameToCheck)) {
     // Verify the registered agent actually has valid files — it may be a stale/broken entry
     // (e.g. only config.json exists but AGENT.md and tools/ are missing)
     const { loadRegistry } = await import("./agent-registry.js");
     const registry = await loadRegistry();
-    const registryEntry = registry.agents[nameToCheck];
-    const { homedir: getHome } = await import("node:os");
-    const registeredPath = join(getHome(), ".agav", "agents", nameToCheck);
+    const registeredPath =
+      destination === "global"
+        ? join(homedir(), ".agav", "agents", nameToCheck)
+        : join(cwd, ".agav", "agents", nameToCheck);
     const loadedCheck = await loadAgent(registeredPath, "global");
-    const isStale = !loadedCheck; // can't load = stale/broken entry
+    const isStale = !loadedCheck;
 
     if (!isStale) {
       // Agent is genuinely installed and healthy — block as before
@@ -83,10 +143,12 @@ export async function installAgent(
   }
 
   // Determine install destination
-  const destPath =
+  const agentsRoot =
     destination === "global"
-      ? join(homedir(), ".agav", "agents", nameToCheck)
-      : join(cwd, ".agav", "agents", nameToCheck);
+      ? join(homedir(), ".agav", "agents")
+      : join(cwd, ".agav", "agents");
+  const destPath = join(agentsRoot, nameToCheck);
+  assertPathContained(destPath, agentsRoot);
 
   // Copy agent to destination
   try {
@@ -127,17 +189,20 @@ export async function installAgent(
  * Clone agent from git URL using sparse checkout
  */
 async function cloneAgent(url: string): Promise<{ success: boolean; path?: string; error?: string }> {
-  // Create temp directory
+  try {
+    validateGitUrl(url);
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
   const tempDir = join(tmpdir(), `agav-agent-${randomBytes(8).toString("hex")}`);
 
   try {
     await mkdir(tempDir, { recursive: true });
 
-    // Parse URL to determine if it's a subdirectory or full repo
     const isSubdirectory = url.includes("/tree/") || url.includes("/agents/");
 
     if (isSubdirectory) {
-      // Extract repo URL and path
       const match = url.match(/^(https?:\/\/[^\/]+\/[^\/]+\/[^\/]+)(?:\/tree\/[^\/]+)?(\/.+)$/);
       if (!match) {
         return { success: false, error: "Invalid git URL format" };
@@ -145,30 +210,48 @@ async function cloneAgent(url: string): Promise<{ success: boolean; path?: strin
 
       const [, repoUrl, subPath] = match;
 
-      // Sparse checkout
-      await execAsync(`git clone --depth=1 --filter=blob:none --sparse "${repoUrl}" .`, { cwd: tempDir });
-      await execAsync(`git sparse-checkout set ${subPath.slice(1)}`, { cwd: tempDir });
+      await gitExec(["clone", "--depth=1", "--filter=blob:none", "--sparse", repoUrl!, "."], tempDir);
+      await gitExec(["sparse-checkout", "set", subPath!.slice(1)], tempDir);
 
-      // Find the agent directory
-      const agentPath = join(tempDir, subPath.slice(1));
-      return { success: true, path: agentPath };
+      // Copy agent out of the clone, then clean up (avoids dragging .git into the install)
+      const agentSrc = join(tempDir, subPath!.slice(1));
+      const outDir = join(tmpdir(), `agav-agent-${randomBytes(8).toString("hex")}`);
+      await mkdir(outDir, { recursive: true });
+      await cp(agentSrc, outDir, {
+        recursive: true,
+        filter: (src) => !src.endsWith(".git") && !src.includes(`${join(".git")}/`) && !src.includes(`${join(".git")}\\`),
+      });
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      return { success: true, path: outDir };
     } else {
-      // Full repo clone
-      await execAsync(`git clone --depth=1 "${url}" .`, { cwd: tempDir });
+      await gitExec(["clone", "--depth=1", url, "."], tempDir);
 
-      // Look for agents/ directory or assume root is the agent
       const entries = await readdir(tempDir);
       if (entries.includes("AGENT.md")) {
+        // Remove .git from the clone before returning
+        await rm(join(tempDir, ".git"), { recursive: true, force: true }).catch(() => {});
         return { success: true, path: tempDir };
       } else if (entries.includes("agents")) {
-        // Multiple agents - return the first one found
         const agentsDir = join(tempDir, "agents");
         const agentDirs = await readdir(agentsDir);
-        if (agentDirs.length > 0) {
-          return { success: true, path: join(agentsDir, agentDirs[0]) };
+        // Find first entry that contains an AGENT.md
+        for (const dir of agentDirs) {
+          const candidate = join(agentsDir, dir);
+          const s = await stat(candidate).catch(() => null);
+          if (!s?.isDirectory()) continue;
+          const candidateEntries = await readdir(candidate);
+          if (candidateEntries.includes("AGENT.md")) {
+            // Copy out of the clone to avoid dragging .git
+            const outDir = join(tmpdir(), `agav-agent-${randomBytes(8).toString("hex")}`);
+            await mkdir(outDir, { recursive: true });
+            await cp(candidate, outDir, { recursive: true });
+            await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+            return { success: true, path: outDir };
+          }
         }
       }
 
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
       return { success: false, error: "No AGENT.md found in repository" };
     }
   } catch (error) {
@@ -184,13 +267,20 @@ async function cloneAgent(url: string): Promise<{ success: boolean; path?: strin
  * Uninstall agent (remove from filesystem and registry)
  */
 export async function uninstallAgent(nameOrAlias: string, destination: "global" | "project" = "global", cwd: string = process.cwd()): Promise<{ success: boolean; error?: string }> {
-  const { unregisterAgent } = await import("./agent-registry.js");
-  const { stat } = await import("node:fs/promises");
+  try {
+    validateAgentName(nameOrAlias);
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) };
+  }
 
-  const agentPath =
+  const { unregisterAgent } = await import("./agent-registry.js");
+
+  const agentsRoot =
     destination === "global"
-      ? join(homedir(), ".agav", "agents", nameOrAlias)
-      : join(cwd, ".agav", "agents", nameOrAlias);
+      ? join(homedir(), ".agav", "agents")
+      : join(cwd, ".agav", "agents");
+  const agentPath = join(agentsRoot, nameOrAlias);
+  assertPathContained(agentPath, agentsRoot);
 
   // Verify the path exists (registry entry is optional — agents can exist on disk
   // without a registry entry if the registry was pruned or manually edited)

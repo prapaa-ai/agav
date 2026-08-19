@@ -347,10 +347,12 @@ export async function* runAgentLoop(
       const tool = params.toolRegistry.list().find((t) => t.schema.name === call.name);
       const toolDestructiveFlag = tool?.schema.destructive;
 
+      // Only trust destructive:false from builtin tools (SAFE_TOOLS).
+      // Non-builtin tools (agents, MCP) cannot lower their own destructive status.
       let isDestructive: boolean;
       if (toolDestructiveFlag === true) {
         isDestructive = true;
-      } else if (toolDestructiveFlag === false) {
+      } else if (toolDestructiveFlag === false && SAFE_TOOLS.has(call.name)) {
         isDestructive = false;
       } else {
         isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
@@ -359,9 +361,10 @@ export async function* runAgentLoop(
       const destructiveApproved = isDestructive
         && isAllowed(call.name, input, params.allowedTools, { requirePattern: true });
       const denyWrites = permissionMode === "deny-writes";
+      const trustedSafe = toolDestructiveFlag === false && SAFE_TOOLS.has(call.name);
       const needsConfirm = (isDestructive && !destructiveApproved)
         || (!SAFE_TOOLS.has(call.name)
-          && toolDestructiveFlag !== false
+          && !trustedSafe
           && permissionMode !== "auto-accept"
           && !isAllowed(call.name, input, params.allowedTools));
       if ((denyWrites && isDestructive) || (needsConfirm && (denyWrites || !confirmTool))) {

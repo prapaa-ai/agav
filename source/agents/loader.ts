@@ -6,6 +6,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { homedir } from "node:os";
+import { parse as parseYAML } from "yaml";
 import type {
   AgentDefinition,
   AgentManifest,
@@ -14,93 +15,10 @@ import type {
 import type { ToolDefinition } from "../tools/types.js";
 
 /**
- * Simple YAML parser for frontmatter
- * Handles basic YAML structures needed for AGENT.md
- */
-function parseSimpleYAML(yamlText: string): Record<string, any> {
-  const result: Record<string, any> = {};
-  const lines = yamlText.split('\n');
-  let currentKey: string | null = null;
-  let currentArray: any[] | null = null;
-  let currentObject: Record<string, any> | null = null;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    // Array item
-    if (trimmed.startsWith('- ')) {
-      const value = trimmed.slice(2).trim();
-      if (currentArray) {
-        currentArray.push(value);
-      } else if (currentKey) {
-        currentArray = [value];
-        result[currentKey] = currentArray;
-      }
-      continue;
-    }
-
-    // Key-value pair
-    const colonIndex = trimmed.indexOf(':');
-    if (colonIndex > 0) {
-      const key = trimmed.slice(0, colonIndex).trim();
-      const value = trimmed.slice(colonIndex + 1).trim();
-
-      // Check if it's a nested object key (indented lines will follow)
-      if (!value) {
-        currentKey = key;
-        currentArray = null;
-        currentObject = {};
-        result[key] = currentObject;
-      } else {
-        currentArray = null;
-        currentObject = null;
-        currentKey = key;
-        // Parse value
-        if (value === 'true') {
-          result[key] = true;
-        } else if (value === 'false') {
-          result[key] = false;
-        } else if (/^\d+$/.test(value)) {
-          result[key] = parseInt(value, 10);
-        } else if (value.startsWith('[') && value.endsWith(']')) {
-          // Parse bracket-style array: [item1, item2, item3]
-          const arrayContent = value.slice(1, -1).trim();
-          if (arrayContent) {
-            result[key] = arrayContent.split(',').map((item) => item.trim().replace(/^["']|["']$/g, ''));
-          } else {
-            result[key] = [];
-          }
-        } else {
-          // Remove quotes if present
-          result[key] = value.replace(/^["']|["']$/g, '');
-        }
-      }
-      continue;
-    }
-
-    // Nested key-value for objects
-    if (currentObject && trimmed.includes(':')) {
-      const nestedColonIndex = trimmed.indexOf(':');
-      const nestedKey = trimmed.slice(0, nestedColonIndex).trim();
-      const nestedValue = trimmed.slice(nestedColonIndex + 1).trim();
-      if (nestedValue === 'true') {
-        currentObject[nestedKey] = true;
-      } else if (nestedValue === 'false') {
-        currentObject[nestedKey] = false;
-      } else {
-        currentObject[nestedKey] = nestedValue.replace(/^["']|["']$/g, '');
-      }
-    }
-  }
-
-  return result;
-}
-
-/**
  * Three-tier search path for agents (later tiers override earlier by name)
  */
 function getAgentSearchPaths(cwd: string): Array<{ path: string; origin: AgentOrigin }> {
+  // NOTE: import.meta.url resolves inside /$bunfs under bun build --compile. See #69.
   const currentFilePath = fileURLToPath(import.meta.url);
   const bundledPath = resolve(dirname(currentFilePath), "bundled");
   const globalPath = join(homedir(), ".agav", "agents");
@@ -119,14 +37,14 @@ function getAgentSearchPaths(cwd: string): Array<{ path: string; origin: AgentOr
 async function parseAgentMarkdown(path: string): Promise<{ manifest: AgentManifest; systemPrompt: string }> {
   const content = await readFile(path, "utf-8");
 
-  // Extract YAML frontmatter between --- delimiters
-  const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  // Extract YAML frontmatter between --- delimiters (handle both LF and CRLF)
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
   if (!match) {
     throw new Error(`Invalid AGENT.md format: missing YAML frontmatter in ${path}`);
   }
 
   const [, frontmatter, body] = match;
-  const manifest = parseSimpleYAML(frontmatter) as AgentManifest;
+  const manifest = parseYAML(frontmatter) as AgentManifest;
 
   // Validate required fields
   if (!manifest.name) {
@@ -143,9 +61,10 @@ async function parseAgentMarkdown(path: string): Promise<{ manifest: AgentManife
 }
 
 /**
- * Load tools from agent's tools directory
+ * Scan tools directory and return lazy ToolDefinitions that defer import() to first invocation.
+ * This prevents third-party tool code from running at scan time.
  */
-async function loadAgentTools(
+async function scanAgentTools(
   agentDir: string,
   toolsDir: string,
   toolPermissions: Record<string, "safe" | "destructive"> = {}
@@ -157,7 +76,6 @@ async function loadAgentTools(
   try {
     entries = await readdir(toolsDirPath);
   } catch {
-    // No tools directory
     return tools;
   }
 
@@ -165,27 +83,59 @@ async function loadAgentTools(
     if (!entry.endsWith(".mjs") && !entry.endsWith(".js")) continue;
 
     const toolPath = join(toolsDirPath, entry);
+    const toolName = entry.replace(/\.(mjs|js)$/, "").replace(/-/g, "_");
+
+    // Try to read schema from a companion .schema.json sidecar
+    let schema: ToolDefinition["schema"];
+    const sidecarPath = toolPath.replace(/\.(mjs|js)$/, ".schema.json");
     try {
-      const mod = await import(pathToFileURL(toolPath).href);
-      const toolDef = mod.default || mod;
-
-      if (!toolDef.schema || !toolDef.execute) {
-        console.warn(`Skipping invalid tool in ${toolPath}: missing schema or execute`);
-        continue;
-      }
-
-      // Apply tool permission from manifest
-      const permission = toolPermissions[toolDef.schema.name];
-      if (permission === "safe") {
-        toolDef.schema.destructive = false;
-      } else if (permission === "destructive") {
-        toolDef.schema.destructive = true;
-      }
-
-      tools.push(toolDef);
-    } catch (error) {
-      console.warn(`Failed to load tool from ${toolPath}:`, error);
+      const sidecar = await readFile(sidecarPath, "utf-8");
+      schema = JSON.parse(sidecar);
+    } catch {
+      // No sidecar — use a placeholder schema derived from the filename
+      schema = {
+        name: toolName,
+        description: `Tool from ${agentDir}`,
+        inputSchema: {
+          type: "object" as const,
+          properties: { task: { type: "string", description: "The task input" } },
+          required: ["task"],
+        },
+      };
     }
+
+    // Apply tool permission from manifest
+    const permission = toolPermissions[schema.name];
+    if (permission === "safe") {
+      schema.destructive = false;
+    } else if (permission === "destructive") {
+      schema.destructive = true;
+    }
+
+    // Lazy-load the actual module on first execute() call
+    let loadedExecute: ((input: Record<string, unknown>) => Promise<any>) | null = null;
+
+    tools.push({
+      schema,
+      async execute(input) {
+        if (!loadedExecute) {
+          const mod = await import(pathToFileURL(toolPath).href);
+          const toolDef = mod.default || mod;
+          if (!toolDef.execute) {
+            return { output: `Tool ${schema.name} has no execute function`, isError: true };
+          }
+          // Update schema with the real one from the module if available
+          if (toolDef.schema) {
+            Object.assign(schema, toolDef.schema);
+            // Re-apply permission override
+            if (permission === "safe") schema.destructive = false;
+            else if (permission === "destructive") schema.destructive = true;
+          }
+          loadedExecute = toolDef.execute;
+        }
+        return loadedExecute!(input);
+      },
+    });
   }
 
   return tools;
@@ -207,7 +157,7 @@ export async function loadAgent(agentDir: string, origin: AgentOrigin, alias?: s
   try {
     const { manifest, systemPrompt } = await parseAgentMarkdown(manifestPath);
     const toolsDir = manifest["tools-dir"] || "./tools";
-    const tools = await loadAgentTools(agentDir, toolsDir, manifest["tool-permissions"]);
+    const tools = await scanAgentTools(agentDir, toolsDir, manifest["tool-permissions"]);
 
     return {
       manifest: { ...manifest, enabled: manifest.enabled ?? true },
@@ -230,12 +180,15 @@ export async function loadAgents(cwd: string = process.cwd()): Promise<AgentDefi
   const searchPaths = getAgentSearchPaths(cwd);
   const agentMap = new Map<string, AgentDefinition>();
 
+  // Load registry first so we can skip disabled agents before importing their tools
+  const { loadRegistry, saveRegistry } = await import("./agent-registry.js");
+  const registry = await loadRegistry();
+
   for (const { path: searchPath, origin } of searchPaths) {
     let entries: string[];
     try {
       entries = await readdir(searchPath);
     } catch {
-      // Directory doesn't exist
       continue;
     }
 
@@ -244,49 +197,50 @@ export async function loadAgents(cwd: string = process.cwd()): Promise<AgentDefi
       const stats = await stat(agentDir).catch(() => null);
       if (!stats?.isDirectory()) continue;
 
+      // Skip agents that are explicitly disabled in the registry
+      const registryEntry = registry.agents[entry];
+      if (registryEntry && registryEntry.enabled === false) continue;
+
       const agent = await loadAgent(agentDir, origin);
       if (!agent) continue;
 
-      // Later tiers override earlier tiers by name
+      // If directory name differs from manifest name, treat it as an alias
+      if (entry !== agent.manifest.name && !agent.alias) {
+        agent.alias = entry;
+      }
+
+      // Apply registry enabled state
       const key = agent.alias || agent.manifest.name;
+      const regEntry = registry.agents[key];
+      if (regEntry) {
+        agent.manifest.enabled = regEntry.enabled;
+      }
+
+      // Later tiers override earlier tiers by name
       agentMap.set(key, agent);
     }
   }
 
-  // Merge registry enabled state and prune stale entries
-  const { loadRegistry, saveRegistry } = await import("./agent-registry.js");
-  const registry = await loadRegistry();
-  let registryDirty = false;
-
-  const agents = Array.from(agentMap.values());
-  for (const agent of agents) {
-    const key = agent.alias || agent.manifest.name;
-    const registryEntry = registry.agents[key];
-    if (registryEntry) {
-      // Registry enabled state overrides manifest
-      agent.manifest.enabled = registryEntry.enabled;
-    }
-  }
-
   // Prune stale registry entries (registered but no loadable files on disk)
+  let registryDirty = false;
   for (const key of Object.keys(registry.agents)) {
-    if (agentMap.has(key)) continue; // already found via scan — fine
-    // Check if files exist at the global path for this registry key
-    const { homedir } = await import("node:os");
+    if (agentMap.has(key)) continue;
+    // Check both global and project paths before marking as stale
     const globalPath = join(homedir(), ".agav", "agents", key);
-    const check = await loadAgent(globalPath, "global");
-    if (!check) {
-      // Stale entry — files are missing or AGENT.md is gone
+    const projectPath = join(cwd, ".agav", "agents", key);
+    const checkGlobal = await loadAgent(globalPath, "global");
+    const checkProject = await loadAgent(projectPath, "project");
+    if (!checkGlobal && !checkProject) {
       delete registry.agents[key];
       registryDirty = true;
     }
   }
 
   if (registryDirty) {
-    await saveRegistry(registry).catch(() => {}); // non-fatal
+    await saveRegistry(registry).catch(() => {});
   }
 
-  return agents;
+  return Array.from(agentMap.values());
 }
 
 /**

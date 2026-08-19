@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Box, Text, useInput } from "ink";
 import type { MarketplaceAgent } from "../agents/types.js";
 import { installAgent, uninstallAgent } from "../agents/installer.js";
-import { DEFAULT_MARKETPLACE_URL } from "../config/config.js";
+import { getDefaultMarketplaceUrl } from "../config/config.js";
 import { parseFileUrl } from "./agents-types.js";
 import { useSearch, filterMarketplaceAgents, SearchBar } from "./agents-search.js";
 import { MarketplaceInspectView } from "./agents-inspect.js";
@@ -40,7 +40,7 @@ export function MarketplaceTab({
       const { loadConfig } = await import("../config/config.js");
       const config = await loadConfig();
       const marketplaceUrl =
-        config.agentMarketplace || DEFAULT_MARKETPLACE_URL;
+        config.agentMarketplace || getDefaultMarketplaceUrl();
 
       setResolvedMarketplaceUrl(marketplaceUrl);
 
@@ -54,13 +54,16 @@ export function MarketplaceTab({
         data = JSON.parse(content);
       } else {
         const indexUrl = `${marketplaceUrl}/index.json`;
-        const response = await fetch(indexUrl);
+        const response = await fetch(indexUrl, { signal: AbortSignal.timeout(10_000) });
 
         if (!response.ok) {
           throw new Error(`Failed to fetch marketplace: ${response.statusText}`);
         }
 
         data = await response.json() as { agents?: MarketplaceAgent[] };
+        if (!data || !Array.isArray(data.agents)) {
+          throw new Error("Invalid marketplace index: missing agents array");
+        }
       }
 
       setMarketplaceAgents(data.agents || []);
@@ -77,7 +80,7 @@ export function MarketplaceTab({
     const { loadConfig } = await import("../config/config.js");
     const config = await loadConfig();
     const marketplaceUrl =
-      config.agentMarketplace || DEFAULT_MARKETPLACE_URL;
+      config.agentMarketplace || getDefaultMarketplaceUrl();
     let agentUrl: string;
     if (marketplaceUrl.startsWith("file://")) {
       const basePath = parseFileUrl(marketplaceUrl);
@@ -89,7 +92,7 @@ export function MarketplaceTab({
     if (result.success) {
       setInstallStatus(`✓ Installed ${agent.name} (${destination})`);
       await onReloadAgents();
-    } else if (result.error?.includes("already installed")) {
+    } else if (result.error?.startsWith("Agent '") && result.error?.includes("is already installed")) {
       setInstallStatus(null);
       setReinstallCandidate({ agent, destination });
     } else {

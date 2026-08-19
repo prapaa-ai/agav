@@ -14,6 +14,7 @@ import { createToolRegistry } from "./tools/registry-factory.js";
 import { getToolLabel } from "./utils/tool-labels.js";
 import { loadKeybindings } from "./config/keybindings.js";
 import { dim, icons } from "./utils/color.js";
+import { stopAllA2AAgents } from "./agents/a2a-client.js";
 import {
   createOutputValidator,
   formatValidationErrors,
@@ -419,8 +420,11 @@ export async function main() {
   if (flags.agents) {
     const { runAgentsCommand } = await import("./cli/agents-cli.js");
     const agentsCommand = typeof flags.agentsCommand === "string" ? flags.agentsCommand : undefined;
-    // Calculate offset: "agents" at position 2, command (if present) at position 3
-    const argsStartIndex = agentsCommand ? 4 : 3;
+    // Find "agents" position in argv to correctly slice remaining args
+    const agentsIdx = process.argv.indexOf("agents");
+    const argsStartIndex = agentsIdx >= 0
+      ? agentsIdx + (agentsCommand ? 2 : 1)
+      : (agentsCommand ? 4 : 3);
     const exitCode = await runAgentsCommand(agentsCommand, process.argv.slice(argsStartIndex));
     process.exit(exitCode);
     return;
@@ -689,21 +693,16 @@ export async function main() {
   // Mark clean exits so crash recovery only offers truly interrupted sessions.
   process.on("exit", () => {
     markCleanExit();
-    // Clean up any running A2A agent processes
-    import("./agents/a2a-client.js").then(({ stopAllA2AAgents }) => {
-      stopAllA2AAgents();
-    }).catch(() => {});
+    stopAllA2AAgents();
   });
   process.on("SIGINT", async () => {
     markCleanExit();
-    const { stopAllA2AAgents } = await import("./agents/a2a-client.js");
     stopAllA2AAgents();
     await showResumeHint();
     process.exit(0);
   });
   process.on("SIGTERM", async () => {
     markCleanExit();
-    const { stopAllA2AAgents } = await import("./agents/a2a-client.js");
     stopAllA2AAgents();
     await showResumeHint();
     process.exit(0);
