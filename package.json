@@ -1,7 +1,7 @@
 {
   "name": "agav-cli",
   "version": "0.1.8",
-  "description": "A terminal-native environment for running local AI systems",
+  "description": "Terminal-native AI coding assistant for real repositories",
   "type": "module",
   "bin": {
     "agav": "./build/cli.js"
