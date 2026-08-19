@@ -241,6 +241,18 @@ git clone https://github.com/prapaa-ai/agav && cd agav && pnpm install --frozen-
 git clone https://github.com/prapaa-ai/agav; cd agav; pnpm install --frozen-lockfile; pnpm build; pnpm start
 ```
 
+### Optional external tools
+
+Agav ships as a single binary with no bundled media libraries — those were 30 MB of download for features most sessions never touch. Attachments still work without any of these; the tools only widen what can be sent.
+
+| Tool | What it adds | Install |
+| --- | --- | --- |
+| Poppler (`pdftoppm`) | Page images for PDFs. Without it, a PDF is read as text only. | `brew install poppler` · `apt install poppler-utils` · `winget install oschwartz10612.Poppler` |
+| `sips` or ImageMagick | Downscales oversized images, and converts formats a model won't accept. Without either, PNG/JPEG/GIF/WebP under 3.5 MB are sent as-is and anything larger or in another format is refused. | `sips` ships with macOS · `brew install imagemagick` · `apt install imagemagick` · `winget install ImageMagick.ImageMagick` |
+| LibreOffice | Higher-fidelity `.docx` and `.pptx` conversion. Without it, Agav extracts the text, tabs, and speaker notes itself. | `brew install --cask libreoffice` · point `LIBREOFFICE_PATH` at a non-standard install |
+
+Agav says which tool is missing when it hits one of these limits, so there is nothing to configure up front.
+
 ## Provider setup
 
 Anthropic, OpenAI, and Gemini need nothing more than their API key in the environment — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` — and Ollama just needs a local server running. Vertex AI takes a little more.

@@ -37,7 +37,7 @@ function Remove-StaleArtifacts {
                 Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
                 return
             }
-            if ($Leftover -notmatch "^$([regex]::Escape($Name))\.(\d+)\.(bak|tmp)$") { return }
+            if ($Leftover -notmatch "^$([regex]::Escape($Name))\.(\d+)\.(bak|tmp)(\.gz)?$") { return }
             $PidText = $Matches[1]
             $Kind = $Matches[2]
             # TryParse, not [int]: \d+ happily matches a number too large for an
@@ -337,6 +337,35 @@ function Save-FileWithProgress {
     }
 }
 
+# Every release publishes "<asset>.gz" beside the raw binary. It is roughly a
+# third of the size, and the raw asset stays published so an installer pinned to
+# an older release keeps resolving. gzip rather than a zip: GZipStream has been
+# in System.dll since .NET 2.0, so there is nothing to Add-Type and nothing that
+# can write outside the file it was handed.
+function Expand-GzipFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $Compressed = $null
+    $Gzip = $null
+    $Output = $null
+    try {
+        $Compressed = [System.IO.File]::OpenRead($Source)
+        $Gzip = New-Object System.IO.Compression.GZipStream($Compressed, [System.IO.Compression.CompressionMode]::Decompress)
+        $Output = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Create)
+        $Buffer = New-Object byte[] (1MB)
+        while (($Read = $Gzip.Read($Buffer, 0, $Buffer.Length)) -gt 0) {
+            $Output.Write($Buffer, 0, $Read)
+        }
+    } finally {
+        if ($Output) { $Output.Dispose() }
+        if ($Gzip) { $Gzip.Dispose() }
+        if ($Compressed) { $Compressed.Dispose() }
+    }
+}
+
 function Get-RemoteText {
     param([Parameter(Mandatory = $true)][string]$Url)
 
@@ -368,15 +397,29 @@ Remove-StaleArtifacts -Dir $InstallDir -Name $BinaryName
 # Per-process so a leftover from a still-running agav cannot collide with this
 # one, and so two installers cannot overwrite each other's partial download.
 $TmpFile = Join-Path $InstallDir "$BinaryName.$PID.tmp"
+$TmpGzFile = "$TmpFile.gz"
+$GotCompressed = $false
 try {
-    Save-FileWithProgress -Url $DownloadUrl -Destination $TmpFile -Activity "Downloading $AssetName"
+    Save-FileWithProgress -Url "$DownloadUrl.gz" -Destination $TmpGzFile -Activity "Downloading $AssetName.gz"
+    Expand-GzipFile -Source $TmpGzFile -Destination $TmpFile
+    $GotCompressed = $true
 } catch {
-    # Write-Host, not Write-Error: $ErrorActionPreference is Stop, so a
-    # Write-Error here would abort the handler before the cleanup below runs.
-    Write-Host "Download failed: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "Check available releases: https://github.com/$Repo/releases" -ForegroundColor Red
-    if (Test-Path -LiteralPath $TmpFile) { Remove-Item -LiteralPath $TmpFile -Force }
-    exit 1
+    Write-Host "agav -> Compressed download unavailable, falling back to the full binary." -ForegroundColor Yellow
+} finally {
+    if (Test-Path -LiteralPath $TmpGzFile) { Remove-Item -LiteralPath $TmpGzFile -Force -ErrorAction SilentlyContinue }
+}
+
+if (-not $GotCompressed) {
+    try {
+        Save-FileWithProgress -Url $DownloadUrl -Destination $TmpFile -Activity "Downloading $AssetName"
+    } catch {
+        # Write-Host, not Write-Error: $ErrorActionPreference is Stop, so a
+        # Write-Error here would abort the handler before the cleanup below runs.
+        Write-Host "Download failed: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Check available releases: https://github.com/$Repo/releases" -ForegroundColor Red
+        if (Test-Path -LiteralPath $TmpFile) { Remove-Item -LiteralPath $TmpFile -Force }
+        exit 1
+    }
 }
 
 # --- Verify checksum ---

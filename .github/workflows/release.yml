@@ -67,16 +67,21 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 9
+      # react-devtools-core is a devDependency and a peer of ink, so
+      # `pnpm install` already puts it where Bun's resolver finds it. The
+      # separate `bun install` this used to run wrote an extra entry into
+      # package.json mid-release for no gain.
       - run: pnpm install --frozen-lockfile
-      - run: bun install react-devtools-core
       - name: Build binary
         run: |
           mkdir -p dist
-          if [ "${{ matrix.target }}" = "$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')" ]; then
-            bun build source/cli.tsx --compile --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
-          else
-            bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
-          fi
+          # Always cross-compile, including for the runner's own platform. A
+          # host-target build embeds whichever native .node addons happen to
+          # resolve locally, while the cross toolchain silently drops the ones
+          # that do not resolve for the target — which is how the macOS
+          # binaries ended up ~27MB heavier than the others and how the two
+          # halves of the matrix stopped behaving alike.
+          bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
       - name: Sign binary (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
@@ -94,11 +99,25 @@ jobs:
             echo "cosign not available, skipping signing."
           fi
 
+      - name: Compress binary
+        run: |
+          # Published next to the raw binary, never in place of it: installers
+          # from earlier releases fetch the bare asset name and have to keep
+          # working. gzip rather than tar or zip because every client already
+          # decompresses it without an archive parser or any path handling —
+          # `gzip -d`, Node's zlib, and PowerShell's GZipStream. -n drops the
+          # name and mtime so the same input produces the same bytes.
+          cd dist
+          gzip -9 -k -n "agav-${{ matrix.target }}${{ matrix.ext }}"
+          ls -lh "agav-${{ matrix.target }}${{ matrix.ext }}" "agav-${{ matrix.target }}${{ matrix.ext }}.gz"
+
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum agav-${{ matrix.target }}${{ matrix.ext }} > agav-${{ matrix.target }}${{ matrix.ext }}.sha256
-          cat agav-${{ matrix.target }}${{ matrix.ext }}.sha256
+          for asset in "agav-${{ matrix.target }}${{ matrix.ext }}" "agav-${{ matrix.target }}${{ matrix.ext }}.gz"; do
+            sha256sum "$asset" > "$asset.sha256"
+            cat "$asset.sha256"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -106,6 +125,8 @@ jobs:
           path: |
             dist/agav-${{ matrix.target }}${{ matrix.ext }}
             dist/agav-${{ matrix.target }}${{ matrix.ext }}.sha256
+            dist/agav-${{ matrix.target }}${{ matrix.ext }}.gz
+            dist/agav-${{ matrix.target }}${{ matrix.ext }}.gz.sha256
             dist/agav-${{ matrix.target }}.sig
 
   release:
@@ -140,17 +161,19 @@ jobs:
               # Copy binary
               cp "$dir/$asset" "release/$asset"
               chmod +x "release/$asset"
-              # Copy checksums and signatures
-              for ext in sha256 sig; do
+              # Copy the compressed binary, checksums, and signatures
+              for ext in sha256 sig gz gz.sha256; do
                 if [ -f "$dir/${asset}.${ext}" ]; then
                   cp "$dir/${asset}.${ext}" "release/${asset}.${ext}"
                 fi
               done
             done
           done
-          # Generate combined SHA256SUMS file
+          # Generate combined SHA256SUMS file. Both the raw and the compressed
+          # binary get a line; the detached .sha256 and .sig files do not.
           cd release
-          sha256sum agav-* 2>/dev/null | grep -v '\.sha256$\|\.sigstore' > SHA256SUMS || true
+          sha256sum agav-* 2>/dev/null | grep -v -e '\.sha256$' -e '\.sig$' -e '\.sigstore$' > SHA256SUMS || true
+          cat SHA256SUMS
           cd ..
           ls -lh release/
       - name: Generate release notes
@@ -194,6 +217,11 @@ jobs:
 
             <details>
             <summary>Manual install</summary>
+
+            Every binary is also published gzipped as `<asset>.gz`, about a
+            third of the size. The installers fetch that and fall back to the
+            raw asset; the digest below is the raw asset's either way, so
+            verify after decompressing.
 
             **macOS / Linux** — pick one of `agav-darwin-arm64`,
             `agav-darwin-x64`, `agav-linux-x64`, `agav-linux-arm64`.

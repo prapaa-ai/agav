@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { ContentBlock } from "../providers/types.js";
+import { downscaleImage, imageToolHint, pdfRasterHint, rasterisePdfRange } from "./media-tools.js";
+import { extractDocxText, extractPptxText } from "./office-text.js";
 import { setEnvHint } from "./shell-hints.js";
 
 const execFileAsync = promisify(execFile);
@@ -17,6 +19,20 @@ export const MAX_DOCUMENT_PAGES = 10;
 const MAX_TEXT_TOOL_BYTES = 1024 * 1024;
 const IMAGE_LONG_EDGE = 1600;
 const IMAGE_QUALITY = 80;
+/**
+ * Ceiling for an image forwarded without downscaling. Base64 inflates by a
+ * third, and providers reject attachments past roughly 5MB encoded, so a
+ * larger original has to be resized or refused rather than sent and bounced.
+ */
+const MAX_RAW_IMAGE_BYTES = 3.5 * 1024 * 1024;
+/** Formats a provider accepts as-is when no downscaler is installed. */
+const RAW_IMAGE_MEDIA_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"]);
 const OFFICE_EXTENSIONS = new Set([".doc", ".docx", ".ppt", ".pptx"]);
@@ -261,38 +277,107 @@ async function readTextContext(path: string, info: Stats, options: FileContextOp
   };
 }
 
-async function imagePreview(path: string): Promise<{ block: ContentBlock; metadata: string }> {
-  try {
-    const { default: sharp } = await import("sharp");
-    const pipeline = sharp(path, { animated: false }).rotate().resize({
-      width: IMAGE_LONG_EDGE,
-      height: IMAGE_LONG_EDGE,
-      fit: "inside",
-      withoutEnlargement: true,
-    });
-    const { data, info } = await pipeline.flatten({ background: "#ffffff" }).jpeg({ quality: IMAGE_QUALITY }).toBuffer({ resolveWithObject: true });
+async function imagePreview(path: string, size: number): Promise<{ block: ContentBlock; metadata: string; warnings: string[] }> {
+  const preview = await downscaleImage(path, IMAGE_LONG_EDGE, IMAGE_QUALITY);
+  if (preview) {
+    const dimensions = preview.width && preview.height ? `${preview.width}x${preview.height}, ` : "";
     return {
-      block: { type: "image", imageData: data.toString("base64"), imageMediaType: "image/jpeg", imageWidth: info.width, imageHeight: info.height },
-      metadata: `${basename(path)} (${info.width}x${info.height}, JPEG preview)`,
-    };
-  } catch {
-    const raw = await readFile(path);
-    const ext = extname(path).toLowerCase();
-    const mime = ext === ".png" ? "image/png" : ext === ".gif" ? "image/gif" : ext === ".webp" ? "image/webp" : "image/jpeg";
-    return {
-      block: { type: "image", imageData: raw.toString("base64"), imageMediaType: mime },
-      metadata: `${basename(path)} (raw ${mime})`,
+      block: { type: "image", imageData: preview.data.toString("base64"), imageMediaType: preview.mediaType, imageWidth: preview.width, imageHeight: preview.height },
+      metadata: `${basename(path)} (${dimensions}JPEG preview)`,
+      warnings: [],
     };
   }
+
+  const extension = extname(path).toLowerCase();
+  const mediaType = RAW_IMAGE_MEDIA_TYPES[extension];
+  if (!mediaType) {
+    throw new Error(`${extension} images have to be converted before they can be sent, and no image tool was found. ${imageToolHint()}`);
+  }
+  if (size > MAX_RAW_IMAGE_BYTES) {
+    throw new Error(`${basename(path)} is ${(size / 1024 / 1024).toFixed(1)}MB and no image tool was found to downscale it. ${imageToolHint()}`);
+  }
+  const raw = await readFile(path);
+  return {
+    block: { type: "image", imageData: raw.toString("base64"), imageMediaType: mediaType },
+    metadata: `${basename(path)} (raw ${mediaType})`,
+    warnings: [`${basename(path)} was sent at full size. ${imageToolHint()}`],
+  };
 }
 
 async function readImageContext(path: string, size: number, options: FileContextOptions): Promise<FileContextResult> {
   if (options.startLine !== undefined || options.endLine !== undefined || options.startPage !== undefined || options.endPage !== undefined) {
     throw new Error("Line and page ranges cannot be used with image files");
   }
-  const preview = await imagePreview(path);
+  const preview = await imagePreview(path, size);
   const output = `Image preview: ${preview.metadata}\nPath: ${path}`;
-  return { path, kind: "image", output, contentBlocks: [{ type: "text", text: output }, preview.block], warnings: [], size };
+  return { path, kind: "image", output, contentBlocks: [{ type: "text", text: output }, preview.block], warnings: preview.warnings, size };
+}
+
+type Pdfjs = typeof import("pdfjs-dist/legacy/build/pdf.mjs");
+
+/**
+ * pdf.mjs constructs a `DOMMatrix` while its own module body runs, and neither
+ * Node nor Bun defines one. Its fallback is @napi-rs/canvas, whose prebuilt
+ * Skia binaries this build deliberately does not carry — and which Bun's
+ * cross-compiled targets dropped anyway, which is why PDFs already failed on
+ * the Linux and Windows releases. Without a matrix in scope the import itself
+ * throws and no PDF can be read at all.
+ *
+ * Construction is all that module initialisation needs. Everything past that
+ * belongs to canvas rendering, which also wants Path2D and a real 2D context;
+ * page images come from Poppler instead, so a method that is missing here
+ * would fail on a path that cannot run regardless.
+ */
+class AffineMatrix {
+  a = 1;
+  b = 0;
+  c = 0;
+  d = 1;
+  e = 0;
+  f = 0;
+
+  constructor(init?: number[]) {
+    if (Array.isArray(init) && init.length >= 6) {
+      [this.a, this.b, this.c, this.d, this.e, this.f] = init as [number, number, number, number, number, number];
+    }
+  }
+
+  get is2D(): boolean {
+    return true;
+  }
+
+  get isIdentity(): boolean {
+    return this.a === 1 && this.b === 0 && this.c === 0 && this.d === 1 && this.e === 0 && this.f === 0;
+  }
+}
+
+let pdfjsPromise: Promise<Pdfjs> | undefined;
+
+function loadPdfjs(): Promise<Pdfjs> {
+  pdfjsPromise ??= (async () => {
+    (globalThis as { DOMMatrix?: unknown }).DOMMatrix ??= AffineMatrix;
+    // pdf.mjs also warns on console during import about the canvas package it
+    // could not load. That write happens inside the module body, before
+    // `verbosity` can be turned down, and stray console output corrupts the
+    // Ink frame, so swallow this one import's warnings.
+    const warn = console.warn;
+    console.warn = () => {};
+    let pdfjs: Pdfjs;
+    try {
+      pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    } finally {
+      console.warn = warn;
+    }
+    // Off the main thread pdf.mjs loads its worker by a bare `./pdf.worker.mjs`
+    // path relative to itself, which no bundler can follow and which does not
+    // exist inside a compiled binary. Importing the worker by name puts it in
+    // the bundle, and `globalThis.pdfjsWorker` is the hook pdf.mjs checks
+    // before it tries that path.
+    const worker = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+    (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker ??= worker;
+    return pdfjs;
+  })();
+  return pdfjsPromise;
 }
 
 async function readPdfContext(path: string, size: number, options: FileContextOptions): Promise<FileContextResult> {
@@ -300,22 +385,9 @@ async function readPdfContext(path: string, size: number, options: FileContextOp
     throw new Error("Line ranges cannot be used with PDF or Office documents");
   }
   validateRange(options.startPage, options.endPage, "Page range");
-  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  let createCanvas: typeof import("@napi-rs/canvas").createCanvas;
-  let sharpModule: typeof import("sharp").default | null = null;
-  try {
-    const [canvasMod, sharpMod] = await Promise.all([
-      import("@napi-rs/canvas"),
-      import("sharp"),
-    ]);
-    createCanvas = canvasMod.createCanvas;
-    sharpModule = sharpMod.default;
-  } catch {
-    const canvasMod = await import("@napi-rs/canvas");
-    createCanvas = canvasMod.createCanvas;
-  }
+  const pdfjs = await loadPdfjs();
   const bytes = await readFile(path);
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes) });
+  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes), verbosity: pdfjs.VerbosityLevel.ERRORS });
   const pdf = await loadingTask.promise;
   const pageCount = pdf.numPages;
   const requestedStart = options.startPage ?? 1;
@@ -328,29 +400,41 @@ async function readPdfContext(path: string, size: number, options: FileContextOp
   const warnings: string[] = [];
   if (requestedEnd > actualEnd) warnings.push(`Document preview was limited to ${MAX_DOCUMENT_PAGES} pages.`);
 
-  const blocks: ContentBlock[] = [];
   const textSections: string[] = [];
+  const viewports = new Map<number, { width: number; height: number }>();
   try {
     for (let pageNumber = requestedStart; pageNumber <= actualEnd; pageNumber++) {
       const page = await pdf.getPage(pageNumber);
-      const baseViewport = page.getViewport({ scale: 1 });
-      const scale = Math.min(2, IMAGE_LONG_EDGE / Math.max(baseViewport.width, baseViewport.height));
-      const viewport = page.getViewport({ scale });
-      const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
-      await page.render({ canvas: canvas as never, canvasContext: canvas.getContext("2d") as never, viewport }).promise;
-      const pngBuf = canvas.toBuffer("image/png");
-      const jpeg = sharpModule
-        ? await sharpModule(pngBuf).jpeg({ quality: IMAGE_QUALITY }).toBuffer()
-        : pngBuf;
+      const viewport = page.getViewport({ scale: 1 });
+      viewports.set(pageNumber, { width: viewport.width, height: viewport.height });
       const textContent = await page.getTextContent();
       const pageText = textContent.items.map((item) => "str" in item ? item.str : "").filter(Boolean).join(" ");
       textSections.push(`--- Page ${pageNumber} ---\n${pageText}`);
-      blocks.push({ type: "image", imageData: jpeg.toString("base64"), imageMediaType: sharpModule ? "image/jpeg" : "image/png", imageWidth: canvas.width, imageHeight: canvas.height });
       page.cleanup();
     }
   } finally {
     await loadingTask.destroy();
   }
+
+  // Page images are a bonus on top of the text. Rendering happens out of
+  // process, so a host without Poppler still gets everything a text PDF
+  // carries; only scans lose out, and the warning says so.
+  const longestPoints = Math.max(...[...viewports.values()].flatMap((v) => [v.width, v.height]));
+  const rasterised = await rasterisePdfRange(path, requestedStart, actualEnd, longestPoints, IMAGE_LONG_EDGE, IMAGE_QUALITY);
+  const blocks: ContentBlock[] = [];
+  for (const [pageNumber, viewport] of viewports) {
+    const data = rasterised?.pages.get(pageNumber);
+    if (!data) continue;
+    blocks.push({
+      type: "image",
+      imageData: data.toString("base64"),
+      imageMediaType: "image/jpeg",
+      imageWidth: Math.max(1, Math.round((viewport.width * rasterised!.dpi) / 72)),
+      imageHeight: Math.max(1, Math.round((viewport.height * rasterised!.dpi) / 72)),
+    });
+  }
+  if (blocks.length === 0) warnings.push(`Only the text of this document was read. ${pdfRasterHint()}`);
+
   const output = [`Document: ${path}`, `Pages ${requestedStart}-${actualEnd} of ${pageCount}`, ...textSections, ...warnings.map((warning) => `[Warning: ${warning}]`)].join("\n");
   return { path, kind: "pdf", output, contentBlocks: [{ type: "text", text: output }, ...blocks], warnings, pageCount, size };
 }
@@ -439,29 +523,22 @@ async function readOfficeContext(path: string, size: number, options: FileContex
   }
   validateRange(options.startPage, options.endPage, "Page range");
   const issues: string[] = [];
-  const { parseOffice } = await import("officeparser");
-  const ast = await parseOffice(path, {
-    extractAttachments: false,
-    includeRawContent: false,
-    ignoreComments: true,
-    ignoreNotes: false,
-    onWarning: (issue) => issues.push(String(issue.message ?? issue)),
-  });
+  const archive = new Uint8Array(await readFile(path));
   let text: string;
   let pageCount: number | undefined;
   const fallbackWarnings: string[] = [];
   if (extension === ".pptx") {
-    const slides = ast.content.filter((node) => node.type === "slide");
+    const slides = extractPptxText(archive).sections;
     pageCount = slides.length;
     const start = options.startPage ?? 1;
     if (start > pageCount) throw new Error(`Slide ${start} is outside the presentation (${pageCount} slides)`);
     const requestedEnd = Math.min(options.endPage ?? pageCount, pageCount);
     const end = Math.min(requestedEnd, start + MAX_DOCUMENT_PAGES - 1);
     if (requestedEnd > end) fallbackWarnings.push(`Document preview was limited to ${MAX_DOCUMENT_PAGES} slides.`);
-    text = slides.slice(start - 1, end).map((slide, index) => `--- Slide ${start + index} ---\n${slide.text ?? ""}`).join("\n");
+    text = slides.slice(start - 1, end).map((slide, index) => `--- Slide ${start + index} ---\n${slide}`).join("\n");
     fallbackWarnings.push(".pptx was read as extracted slide text because LibreOffice is unavailable; visual layout is not preserved.");
   } else {
-    text = ast.toText();
+    text = extractDocxText(archive).sections.join("\n");
     fallbackWarnings.push(".docx was read as extracted text because LibreOffice is unavailable; page ranges and visual layout are not preserved.");
   }
   if (Buffer.byteLength(text, "utf8") > MAX_MENTION_BYTES) {

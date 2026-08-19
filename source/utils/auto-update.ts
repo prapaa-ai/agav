@@ -6,6 +6,7 @@ import { createWriteStream, createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { createGunzip } from "node:zlib";
 import { ensureDir } from "./fs.js";
 import { VERSION } from "../version.js";
 import { reinstallHint } from "./shell-hints.js";
@@ -84,15 +85,20 @@ function getBinaryName(): string {
   return `agav-${osName}-${archName}`;
 }
 
-async function downloadBinary(version: string, label?: string): Promise<string | null> {
-  const binaryName = getBinaryName();
-  const url = `https://github.com/${REPO}/releases/download/${version}/${binaryName}`;
-  // Keyed by pid as well as version: two agav processes updating to the same
-  // version at once would otherwise interleave their writes into one file, and
-  // both would fail the checksum.
-  const tmpPath = join(AGAV_DIR, `${DOWNLOAD_PREFIX}${version}.${process.pid}`);
-  const activity = label ?? `Downloading ${version}`;
-
+/**
+ * Stream one URL to `destPath`, optionally gunzipping it on the way in.
+ *
+ * Returns false — rather than throwing — for anything that makes this attempt
+ * unusable, so the caller can fall back to another URL. The partial file is
+ * removed on failure; a truncated ~100 MB download must not be left behind for
+ * the stale sweep to find a day later.
+ */
+async function streamAssetToFile(
+  url: string,
+  destPath: string,
+  activity: string,
+  decompress: boolean,
+): Promise<boolean> {
   // A fixed deadline on the whole transfer would kill a healthy download on a
   // slow link, because the signal stays live while the body streams. Abort on
   // inactivity instead, re-arming the timer each time a chunk arrives.
@@ -106,13 +112,12 @@ async function downloadBinary(version: string, label?: string): Promise<string |
   };
 
   try {
-    await ensureDir(AGAV_DIR);
     armStallTimer();
     const res = await fetch(url, {
       redirect: "follow",
       signal: controller.signal,
     });
-    if (!res.ok || !res.body) return null;
+    if (!res.ok || !res.body) return false;
 
     const totalBytes = Number(res.headers.get("content-length")) || 0;
     let downloadedBytes = 0;
@@ -138,6 +143,8 @@ async function downloadBinary(version: string, label?: string): Promise<string |
       }
     };
 
+    // Counts bytes off the wire, ahead of any gunzip, so the numbers stay in
+    // step with the content-length the server advertised.
     const progressStream = new Transform({
       transform(chunk, _encoding, callback) {
         downloadedBytes += chunk.length;
@@ -146,10 +153,44 @@ async function downloadBinary(version: string, label?: string): Promise<string |
         callback(null, chunk);
       },
     });
-    const fileStream = createWriteStream(tmpPath);
-    await pipeline(res.body as any, progressStream, fileStream);
-    if (stallTimer) clearTimeout(stallTimer);
+    const fileStream = createWriteStream(destPath);
+    if (decompress) {
+      await pipeline(res.body as any, progressStream, createGunzip(), fileStream);
+    } else {
+      await pipeline(res.body as any, progressStream, fileStream);
+    }
     renderProgress(true);
+    return true;
+  } catch {
+    await rm(destPath, { force: true }).catch(() => {});
+    return false;
+  } finally {
+    if (stallTimer) clearTimeout(stallTimer);
+  }
+}
+
+async function downloadBinary(version: string, label?: string): Promise<string | null> {
+  const binaryName = getBinaryName();
+  const url = `https://github.com/${REPO}/releases/download/${version}/${binaryName}`;
+  // Keyed by pid as well as version: two agav processes updating to the same
+  // version at once would otherwise interleave their writes into one file, and
+  // both would fail the checksum.
+  const tmpPath = join(AGAV_DIR, `${DOWNLOAD_PREFIX}${version}.${process.pid}`);
+  const activity = label ?? `Downloading ${version}`;
+
+  try {
+    await ensureDir(AGAV_DIR);
+
+    // Releases publish a gzipped copy next to the raw binary; it is roughly a
+    // third of the size, which is most of an auto-update's cost on a slow link.
+    // Anything at all wrong with it — a release from before the compressed
+    // asset existed, a 404, bytes that are not a gzip stream — just falls back
+    // to the full binary. Either way the digest below is the one published for
+    // the *raw* asset, checked against the decompressed file, so the compressed
+    // path is not a second thing to trust.
+    let ok = await streamAssetToFile(`${url}.gz`, tmpPath, activity, true);
+    if (!ok) ok = await streamAssetToFile(url, tmpPath, activity, false);
+    if (!ok) return null;
 
     // Verify against the published checksum before this ever becomes
     // executable. We are about to replace our own binary and re-exec it, so an
@@ -165,8 +206,6 @@ async function downloadBinary(version: string, label?: string): Promise<string |
   } catch {
     await rm(tmpPath, { force: true }).catch(() => {});
     return null;
-  } finally {
-    if (stallTimer) clearTimeout(stallTimer);
   }
 }
 
