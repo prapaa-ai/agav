@@ -36,6 +36,7 @@ export function makeAgentProgressTracker(
       status: "running",
       toolCalls: [],
       streamingText: "",
+      thinkingText: "",
       startedAt: Date.now(),
       totalToolCalls: 0,
       tokenUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },

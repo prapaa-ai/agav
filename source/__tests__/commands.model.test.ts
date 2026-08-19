@@ -57,6 +57,7 @@ function createContext(config: Partial<AgavConfig>): CommandContext {
     addTokenUsage: vi.fn(),
     setRunningSkill: vi.fn(),
     setPickerActive: vi.fn(),
+    showAgentsTUI: vi.fn(),
   };
 }
 
