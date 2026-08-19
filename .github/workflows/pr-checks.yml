@@ -384,6 +384,29 @@ jobs:
           if [ "$FAIL" -eq 1 ]; then exit 1; fi
           echo "No sensitive files tracked."
 
+  readme-badges:
+    name: README Badge Freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+      - name: Check the version badge is derived, not hardcoded
+        run: |
+          # A literal shields.io/badge/version-x.y.z badge has to be rewritten
+          # on every release. The release workflow used to do that by pushing
+          # to main, the ruleset rejected it, and the badge sat at 0.1.2 for
+          # six releases. Keep the badge derived from package.json instead.
+          if grep -nE 'img\.shields\.io/badge/version-' README.md; then
+            echo "::error file=README.md::Hardcoded version badge. Use https://img.shields.io/github/package-json/v/${{ github.repository }} so the badge tracks package.json."
+            exit 1
+          fi
+          if ! grep -q 'img\.shields\.io/github/package-json/v/' README.md; then
+            echo "::error file=README.md::The derived version badge is missing from README.md."
+            exit 1
+          fi
+          echo "Version badge is derived from package.json."
+
   # --- Terminal gate ---
   required:
     name: All Checks
@@ -402,6 +425,7 @@ jobs:
       - lockfile-integrity
       - semgrep
       - sensitive-files
+      - readme-badges
     runs-on: ubuntu-latest
     steps:
       - name: Evaluate results
@@ -421,7 +445,8 @@ jobs:
             "${{ needs.dependency-audit.result }}" \
             "${{ needs.lockfile-integrity.result }}" \
             "${{ needs.semgrep.result }}" \
-            "${{ needs.sensitive-files.result }}"; do
+            "${{ needs.sensitive-files.result }}" \
+            "${{ needs.readme-badges.result }}"; do
             case "$result" in
               success|skipped) ;;
               *) echo "::error::Check failed: $result"; FAIL=1 ;;

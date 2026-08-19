@@ -5,7 +5,7 @@
 **A terminal-native AI coding assistant for real repositories**
 
 <p>
-  <img alt="Version" src="https://img.shields.io/badge/version-0.1.8-111?style=for-the-badge">
+  <img alt="Version" src="https://img.shields.io/github/package-json/v/prapaa-ai/agav?style=for-the-badge&amp;label=version&amp;color=111">
   <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-111?style=for-the-badge">
 </p>
 
