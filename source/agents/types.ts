@@ -36,6 +36,7 @@ export interface AgentManifest {
   model?: string; // optional model override
   effort?: EffortLevel; // optional effort override
   tags?: string[];
+  prerequisites?: string[];
   enabled?: boolean; // defaults to true
 
   // Tool permissions

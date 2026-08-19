@@ -86,6 +86,18 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
         </Box>
       )}
 
+      {manifest.prerequisites && manifest.prerequisites.length > 0 && (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text dimColor>Prerequisites:</Text>
+          {manifest.prerequisites.map((prereq) => (
+            <Box key={prereq}>
+              <Text dimColor>  - </Text>
+              <Text color="yellow">{prereq}</Text>
+            </Box>
+          ))}
+        </Box>
+      )}
+
       {hasRequiredConfig && (
         <Box flexDirection="column" marginBottom={1}>
           <Box>
