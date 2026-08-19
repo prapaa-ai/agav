@@ -114,11 +114,9 @@ export async function implementAgentTools(
     });
 
     if (generated) {
-      // Basic syntax check before writing LLM-generated code
-      try {
-        new Function(generated);
-      } catch (syntaxErr) {
-        onStatus(`Skipping ${tool.schema.name}: generated code has syntax errors (${syntaxErr instanceof Error ? syntaxErr.message : String(syntaxErr)})`);
+      // Structural validation: reject LLM output that doesn't look like a tool module
+      if (!generated.includes("export") || !generated.includes("execute")) {
+        onStatus(`Skipping ${tool.schema.name}: generated output does not look like a valid tool module`);
         continue;
       }
 
