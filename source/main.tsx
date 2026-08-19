@@ -21,6 +21,15 @@ import {
   validateOutput,
   type OutputSchema,
 } from "./utils/output-schema.js";
+import {
+  defaultModelForProvider,
+  isProviderName,
+  noProviderCredentialsError,
+  providerConfigurationError,
+  resolveStartupSelection,
+  selectConfiguredProvider,
+  type ProviderName,
+} from "./config/startup.js";
 
 const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
@@ -325,6 +334,16 @@ export async function runPipeMode(
   return result.exitCode;
 }
 
+let startupFinished = false;
+
+/**
+ * Whether provider/model resolution finished. Lets the top-level handler in
+ * cli.tsx avoid blaming a mid-session crash on startup.
+ */
+export function hasStartupFinished(): boolean {
+  return startupFinished;
+}
+
 export async function main() {
   const flags = parseArgs(process.argv.slice(2));
 
@@ -341,7 +360,7 @@ export async function main() {
     $ cat file | agav -P "explain this"
 
   Options
-    --provider, -p       LLM provider: anthropic, openai, gemini, or ollama (default: anthropic)
+    --provider, -p       LLM provider: anthropic, openai, gemini, vertex-ai, or ollama (default: anthropic)
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
     --effort             Reasoning effort: low, medium, high, or max (default: high)
     --ollama-host        Ollama host (default: localhost)
@@ -369,6 +388,7 @@ export async function main() {
   Examples
     $ agav
     $ agav --provider openai --model gpt-4o
+    $ agav --provider vertex-ai --model vertex/gemini-3.5-flash
     $ agav run "review the code in src/"
     $ agav run --permission '{"bash":"deny"}' "check for security issues"
     $ agav -P "what does this project do?"
@@ -428,20 +448,14 @@ export async function main() {
   const config = await loadConfig();
   const keybindings = await loadKeybindings();
 
+  let cliProvider: ProviderName | undefined;
   if (typeof flags.provider === "string") {
     const p = flags.provider;
-    if (p !== "anthropic" && p !== "openai" && p !== "ollama" && p !== "gemini") {
-      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "gemini", or "ollama".`);
+    if (!isProviderName(p)) {
+      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "gemini", "vertex-ai", or "ollama".`);
       process.exit(1);
     }
-    const providerChanged = p !== config.provider;
-    config.provider = p;
-    if (providerChanged && typeof flags.model !== "string") {
-      if (p === "openai") config.model = "gpt-5.4-mini";
-      else if (p === "gemini") config.model = "gemini-3.5-flash-lite";
-      else if (p === "ollama") config.model = "";
-      else config.model = "claude-sonnet-4-20250514";
-    }
+    cliProvider = p;
   }
 
   // Apply explicit CLI connection overrides last so they win over config and environment defaults.
@@ -461,42 +475,12 @@ export async function main() {
   if (typeof flags.ollamaApiKey === "string" && flags.ollamaApiKey) {
     config.ollamaApiKey = flags.ollamaApiKey as string;
   }
-  if (typeof flags.model === "string") {
-    config.model = flags.model;
-  }
   if (typeof flags.effort === "string") {
     if (!isEffortLevel(flags.effort)) {
       console.error(`Unknown effort level: ${flags.effort}. Use "low", "medium", "high", or "max".`);
       process.exit(1);
     }
     config.effort = flags.effort;
-  }
-
-  // If Ollama is selected without a model, query the local server and prompt the user to choose one.
-  if (config.provider === "ollama" && typeof flags.model !== "string") {
-    const ollamaBase =
-      config.ollamaEndpoint ??
-      `http://${config.ollamaHost ?? "localhost"}:${config.ollamaPort ?? 11434}`;
-    let models: string[] = [];
-    try {
-      const res = await fetch(`${ollamaBase}/api/tags`);
-      if (res.ok) {
-        const data = await res.json() as { models?: { name: string }[] };
-        models = (data.models ?? []).map((m) => m.name).filter(Boolean);
-      }
-    } catch {}
-
-    if (models.length > 0) {
-      process.stdout.write("\n  Available Ollama models:\n");
-      models.forEach((name, i) => process.stdout.write(`    ${i + 1}. ${name}\n`));
-      process.stdout.write(`\n  Starting with: ${models[0]}\n  Use /model to switch.\n\n`);
-      config.model = models[0]!;
-    } else {
-      console.error("\n  No Ollama models found. Specify a model:\n");
-      console.error("    agav --provider ollama --model llama3.2\n");
-      console.error("  Or pull one first: ollama pull llama3.2\n");
-      process.exit(1);
-    }
   }
 
   if (!config.systemPrompt) {
@@ -517,6 +501,7 @@ export async function main() {
   let resumeTokenUsage: import("./config/history.js").SessionTokenUsage | undefined;
   let resumeCompacted: boolean | undefined;
   let resumeSessionName: string | undefined;
+  let resumeSelection: Pick<import("./config/history.js").SessionRecord, "provider" | "model"> | undefined;
 
   if (flags.resume) {
     const { listSessions, loadSession } = await import("./config/history.js");
@@ -543,12 +528,7 @@ export async function main() {
       resumeTokenUsage = session.tokenUsage;
       resumeCompacted = session.compacted;
       resumeSessionName = session.name;
-      if (typeof flags.model !== "string") {
-        config.model = session.model || config.model;
-      }
-      if (typeof flags.provider !== "string" && (session.provider === "anthropic" || session.provider === "openai" || session.provider === "ollama" || session.provider === "gemini")) {
-        config.provider = session.provider;
-      }
+      resumeSelection = session;
     } else {
       // ID prefix given — find matching session
       const prefix = String(flags.resume);
@@ -568,53 +548,63 @@ export async function main() {
       resumeTokenUsage = session.tokenUsage;
       resumeCompacted = session.compacted;
       resumeSessionName = session.name;
-      if (typeof flags.model !== "string") {
-        config.model = session.model || config.model;
-      }
-      if (typeof flags.provider !== "string" && (session.provider === "anthropic" || session.provider === "openai" || session.provider === "ollama" || session.provider === "gemini")) {
-        config.provider = session.provider;
-      }
+      resumeSelection = session;
     }
   }
 
-  if (config.provider !== "ollama") {
-    const keyMap: Record<string, keyof AgavConfig> = {
-      anthropic: "anthropicApiKey",
-      openai: "openaiApiKey",
-      gemini: "geminiApiKey",
-    };
-    const finalKey = keyMap[config.provider] ?? "anthropicApiKey";
-    if (!config[finalKey]) {
-      const explicitProvider = typeof flags.provider === "string";
-      if (!explicitProvider) {
-        // Auto-switch to whichever provider has a key
-        if (config.anthropicApiKey) {
-          config.provider = "anthropic";
-          config.model = "claude-sonnet-4-20250514";
-        } else if (config.openaiApiKey) {
-          config.provider = "openai";
-          config.model = "gpt-5.4-mini";
-        } else if (config.geminiApiKey) {
-          config.provider = "gemini";
-          config.model = "gemini-3.5-flash-lite";
-        } else {
-          const message = `\n  Agav — no API key found.\n  Set one of:\n    export ANTHROPIC_API_KEY="sk-ant-..."\n    export OPENAI_API_KEY="sk-..."\n    export GEMINI_API_KEY="..."\n  Or start Ollama: agav --provider ollama\n`;
-          process.stderr.write(message);
-          process.exit(1);
-        }
-      } else {
-        const envMap: Record<string, string> = {
-          anthropic: "ANTHROPIC_API_KEY",
-          openai: "OPENAI_API_KEY",
-          gemini: "GEMINI_API_KEY",
-        };
-        const keyName = envMap[config.provider] ?? "API_KEY";
-        const message = `\n  Agav — ${keyName} not set.\n  Export it:  export ${keyName}="your-key"\n`;
-        process.stderr.write(message);
-        process.exit(1);
-      }
+  Object.assign(config, resolveStartupSelection(config, {
+    cliProvider,
+    cliModel: typeof flags.model === "string" ? flags.model : undefined,
+    session: resumeSelection,
+  }));
+
+  // Plain `agav` may fall back to another configured provider. Explicit and
+  // resumed selections are pinned and must report their own missing settings.
+  if (!cliProvider && !resumeSelection) {
+    // Keep an explicit --model: falling back to a different provider should not
+    // silently discard the model the user asked for.
+    const selected = selectConfiguredProvider(config, {
+      keepModel: typeof flags.model === "string",
+    });
+    if (!selected) {
+      process.stderr.write(`\n  Agav — ${noProviderCredentialsError()}\n\n`);
+      process.exit(1);
     }
+    Object.assign(config, selected);
   }
+
+  const configurationError = providerConfigurationError(config);
+  if (configurationError) {
+    process.stderr.write(`\n  Agav — ${configurationError}\n\n`);
+    process.exit(1);
+  }
+
+  // If Ollama is selected without a model, query the local server and choose one.
+  if (config.provider === "ollama" && !config.model) {
+    const ollamaBase = config.ollamaEndpoint ?? `http://${config.ollamaHost ?? "localhost"}:${config.ollamaPort ?? 11434}`;
+    let models: string[] = [];
+    try {
+      const res = await fetch(`${ollamaBase}/api/tags`);
+      if (res.ok) {
+        const data = await res.json() as { models?: { name: string }[] };
+        models = (data.models ?? []).map((model) => model.name).filter(Boolean);
+      }
+    } catch {}
+    if (models.length === 0) {
+      process.stderr.write("\n  Agav — no Ollama models found. Specify --model or run `ollama pull <model>`.\n\n");
+      process.exit(1);
+    }
+    config.model = models[0] ?? defaultModelForProvider("ollama");
+    // Auto-picking the first installed model is a guess, so name the others —
+    // otherwise there is no hint that --model would have chosen differently.
+    process.stderr.write(
+      `\n  Agav — using Ollama model ${config.model}.`
+      + (models.length > 1 ? ` Also installed: ${models.slice(1).join(", ")}.` : "")
+      + "\n\n",
+    );
+  }
+
+  startupFinished = true;
 
   // Short-circuit into non-interactive mode before the Ink UI is rendered.
   if (flags.print) {
@@ -668,6 +658,21 @@ export async function main() {
     return;
   }
 
+  // Every non-interactive path has returned by now, so the Ink UI is next.
+  // Ink needs raw mode, which requires a TTY — without this guard a piped
+  // stdin (e.g. an installer launching us through a pipe) surfaces as
+  // an unreadable React stack trace instead of an actionable message.
+  if (!process.stdin.isTTY) {
+    process.stderr.write(
+      "\n  Agav's interactive UI needs a terminal, but stdin is not a TTY.\n\n" +
+        "    • Run `agav` directly from your shell.\n" +
+        "    • For piped or scripted use:  agav -P \"your prompt\"\n" +
+        "    • Just installed through a pipe? That pipe is still attached —\n" +
+        "      open your terminal and run `agav`.\n\n",
+    );
+    process.exit(1);
+  }
+
   /** Print a subtle reminder pointing at the most recent resumable session. */
   async function showResumeHint() {
     try {
@@ -704,8 +709,19 @@ export async function main() {
     process.exit(0);
   });
 
-  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={resumeSessionName} />, {
+  const { getGitContext } = await import("./utils/git.js");
+  const { detectKittyKeyboard } = await import("./utils/terminal-keyboard.js");
+  // The keyboard probe waits on the terminal, so overlap it with the git lookup
+  // rather than adding its timeout to startup. Both settle rather than reject.
+  const [gitContext, enhancedKeyboard] = await Promise.all([getGitContext(), detectKittyKeyboard()]);
+
+  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={resumeSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} />, {
     exitOnCtrlC: true,
+    // Detection already happened, so pin the mode instead of letting Ink query a
+    // second time. `disambiguateEscapeCodes` alone is deliberate: it is what makes
+    // Shift+Enter distinguishable, and it avoids the key-release events that the
+    // reportEventTypes flag would deliver as phantom presses.
+    kittyKeyboard: { mode: enhancedKeyboard ? "enabled" : "disabled", flags: ["disambiguateEscapeCodes"] },
   });
 
   await waitUntilExit();

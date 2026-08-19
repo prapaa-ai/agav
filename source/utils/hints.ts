@@ -1,4 +1,6 @@
-import { DEFAULT_KEYBINDINGS, formatKeybinding, type Keybindings } from "../config/keybindings.js";
+import { DEFAULT_KEYBINDINGS, formatKeybinding, formatUsableKeybinding, type Keybindings } from "../config/keybindings.js";
+import { agavHomePath } from "./shell-hints.js";
+import { detectSandboxBackend, getSandboxName } from "./sandbox.js";
 
 const HINTS = [
   "/undo reverts the last file change",
@@ -18,8 +20,8 @@ const HINTS = [
   "Ctrl+V pastes an image from clipboard (Cmd+V works in some terminals)",
   "!command runs a shell command and adds output to context",
   "AGAV.md in your project adds custom instructions",
-  "~/.agav/plugins/ loads custom tools",
-  "~/.agav/config.json stores your settings",
+  "{agavHome}plugins loads custom tools",
+  "{agavHome}config.json stores your settings",
   "Press [A]lways during confirmation to auto-accept all",
   "/model shows or changes the current model",
   "/branch lists conversation forks or creates one with a name",
@@ -38,10 +40,9 @@ const HINTS = [
   "/schedule list shows all scheduled tasks",
   "/effort low|medium|high|max controls reasoning depth",
   "Agav saves memories automatically when you share preferences or corrections",
-  "Shell commands run inside an OS sandbox (Seatbelt/Bubblewrap)",
   "Destructive commands (rm -rf, git push --force) are always blocked",
-  "API keys are encrypted at rest in ~/.agav/config.json",
-  "~/.agav/skills/ stores installed skills — add your own SKILL.md",
+  "API keys are encrypted at rest in {agavHome}config.json",
+  "{agavHome}skills stores installed skills — add your own SKILL.md",
   "/security-scan runs a security audit on the codebase",
   "/explain <file> explains code in plain language",
   "/diagnose helps find and fix bugs",
@@ -54,14 +55,24 @@ const HINTS = [
 
 let lastIndex = -1;
 
-export function getRandomHint(keybindings: Keybindings = DEFAULT_KEYBINDINGS): string {
+export function getRandomHint(keybindings: Keybindings = DEFAULT_KEYBINDINGS, enhancedKeyboard = false): string {
   const dynamicHints = [
-    `${formatKeybinding(keybindings, "newline")} for multiline input`,
+    // Terminals without an enhanced keyboard protocol cannot send Shift+Enter, so
+    // hinting it there would send the user chasing a key that does nothing.
+    `${formatUsableKeybinding(keybindings, "newline", enhancedKeyboard)} for multiline input`,
     `${formatKeybinding(keybindings, "historyUp")}/${formatKeybinding(keybindings, "historyDown")} to recall previous messages`,
     `${formatKeybinding(keybindings, "toggleToolDetail")} expands tool output details`,
     `${formatKeybinding(keybindings, "cancel")} cancels a streaming response`,
+    // Seatbelt and Bubblewrap are POSIX-only, so Windows resolves to "none".
+    // Stating the sandbox unconditionally would promise isolation we do not have.
+    detectSandboxBackend() === "none"
+      ? "No OS sandbox detected - shell commands run unsandboxed"
+      : `Shell commands run inside an OS sandbox (${getSandboxName()})`,
   ];
-  const hints = [...HINTS, ...dynamicHints];
+  const hints = [
+    ...HINTS.map((hint) => hint.replaceAll("{agavHome}", agavHomePath(""))),
+    ...dynamicHints,
+  ];
   let idx: number;
   do {
     idx = Math.floor(Math.random() * hints.length);

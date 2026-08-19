@@ -18,7 +18,7 @@ export const contextCommand: SlashCommand = {
   description: "Show context window usage",
   usage: "Usage: /context\n\nShows a breakdown of what's consuming your context window:\nsystem prompt, tools, MCP tools, skills, and conversation messages.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
-    const limits = getContextLimits(context.config.model);
+    const limits = getContextLimits(context.config.model, context.conversation.getContextWindow());
     const maxTokens = limits.maxTokens;
 
     const systemPrompt = await buildSystemPrompt();

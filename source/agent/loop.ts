@@ -54,12 +54,22 @@ interface LoopParams {
   hooks?: import("../config/config.js").AgavHooks;
 }
 
-const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_directory", "web_search", "lsp_query", "read_notebook", "fetch_url", "overview", "activate_skill", "save_memory"]);
+// Tools that never need confirmation because they cannot modify the working
+// tree or reach outside the session. `save_memory` and `update_plan` write only
+// to Agav's own state — the plan is in-memory scratch space the model rewrites
+// constantly, so prompting for it would make every turn unusable.
+const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_directory", "web_search", "lsp_query", "read_notebook", "fetch_url", "overview", "activate_skill", "save_memory", "update_plan"]);
 
 function isAllowed(
   toolName: string,
   input: Record<string, unknown>,
   allowedTools?: string[],
+  /**
+   * When set, a bare `run_command` rule no longer matches — only a rule that
+   * names the input, such as `run_command:rm -rf build/*`. Used so a blanket
+   * grant cannot quietly authorise a destructive command.
+   */
+  options: { requirePattern?: boolean } = {},
 ): boolean {
   if (!allowedTools || allowedTools.length === 0) return false;
 
@@ -71,7 +81,7 @@ function isAllowed(
 
   for (const rule of allowedTools) {
     if (!rule.includes(":")) {
-      if (rule === toolName) return true;
+      if (!options.requirePattern && rule === toolName) return true;
       continue;
     }
     const colonIdx = rule.indexOf(":");
@@ -142,6 +152,17 @@ export async function* runAgentLoop(
     return result || "";
   };
 
+  // Ask the provider for the window it will actually enforce before the first
+  // compaction check runs. Providers cache this, so it costs at most one probe
+  // per model; a failure just leaves the name-based estimate in place.
+  if (provider.getContextWindow) {
+    try {
+      conversation.setContextWindow(await provider.getContextWindow(model));
+    } catch {
+      // Non-fatal — fall back to the name-based limits.
+    }
+  }
+
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     // Auto-compact if conversation is getting long
     const { compacted, droppedCount } = await conversation.compactIfNeeded(false, summarize);
@@ -165,7 +186,7 @@ export async function* runAgentLoop(
     let textAccum = "";
     const toolCalls = new Map<
       string,
-      { name: string; argsJson: string }
+      { name: string; argsJson: string; providerMetadata?: Record<string, unknown> }
     >();
     let stopReason = "";
 
@@ -210,11 +231,16 @@ export async function* runAgentLoop(
             const call = toolCalls.get(event.toolCallId);
             if (call) {
               call.argsJson += event.argsJson;
-              yield {
-                type: "tool_call_input_delta",
-                toolCallId: event.toolCallId,
-                argsJson: event.argsJson,
-              };
+              if (event.providerMetadata) {
+                call.providerMetadata = { ...call.providerMetadata, ...event.providerMetadata };
+              }
+              if (event.argsJson) {
+                yield {
+                  type: "tool_call_input_delta",
+                  toolCallId: event.toolCallId,
+                  argsJson: event.argsJson,
+                };
+              }
             }
             break;
           }
@@ -269,6 +295,7 @@ export async function* runAgentLoop(
         toolCallId: id,
         toolName: call.name,
         toolInput: input,
+        ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
       });
     }
     conversation.addAssistantMessage(assistantContent);
@@ -317,32 +344,32 @@ export async function* runAgentLoop(
         continue;
       }
 
-      // Check tool's destructive flag from schema
       const tool = params.toolRegistry.list().find((t) => t.schema.name === call.name);
       const toolDestructiveFlag = tool?.schema.destructive;
 
-      // Determine if destructive:
-      // - destructive === true → always destructive
-      // - destructive === false → never destructive (safe)
-      // - destructive === undefined → fallback to legacy logic
       let isDestructive: boolean;
       if (toolDestructiveFlag === true) {
         isDestructive = true;
       } else if (toolDestructiveFlag === false) {
         isDestructive = false;
       } else {
-        // Legacy logic: check if run_command with destructive command
         isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
       }
 
-      const needsConfirm = isDestructive
+      const destructiveApproved = isDestructive
+        && isAllowed(call.name, input, params.allowedTools, { requirePattern: true });
+      const denyWrites = permissionMode === "deny-writes";
+      const needsConfirm = (isDestructive && !destructiveApproved)
         || (!SAFE_TOOLS.has(call.name)
-          && toolDestructiveFlag !== false // explicit safe tools skip confirmation
+          && toolDestructiveFlag !== false
           && permissionMode !== "auto-accept"
           && !isAllowed(call.name, input, params.allowedTools));
-      if (needsConfirm && permissionMode === "deny-writes") {
-        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: "Write operations are denied (--deny-writes mode).", isError: true });
-        yield { type: "tool_result", toolName: call.name, output: "Write operations are denied (--deny-writes mode).", isError: true };
+      if ((denyWrites && isDestructive) || (needsConfirm && (denyWrites || !confirmTool))) {
+        const reason = denyWrites
+          ? "Write operations are denied (--deny-writes mode)."
+          : `Tool '${call.name}' requires confirmation but no confirmation handler is available (headless mode).`;
+        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+        yield { type: "tool_result", toolName: call.name, output: reason, isError: true };
         continue;
       }
       if (needsConfirm && confirmTool) {

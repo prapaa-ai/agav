@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import Spinner from "ink-spinner";
 import { getRandomHint } from "../utils/hints.js";
+import { terminalRelativePaths } from "../utils/display-path.js";
 
 /** Props for the status bar footer. */
 interface Props {
@@ -71,7 +72,7 @@ export default function StatusBar({
       {psLoading ? (
         <Text color="cyan" dimColor><Spinner type="dots" />{" ps: thinking..."}</Text>
       ) : psResponse ? (
-        <Text color="cyan" dimColor>{"↪ ps: "}{psResponse}</Text>
+        <Text color="cyan" dimColor>{"↪ ps: "}{terminalRelativePaths(psResponse)}</Text>
       ) : (
         <Text dimColor italic>
           {"💡 "}{displayHint}

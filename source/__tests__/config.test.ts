@@ -28,6 +28,8 @@ describe("config", () => {
     delete process.env.OLLAMA_HOST;
     delete process.env.OLLAMA_PORT;
     delete process.env.OLLAMA_API_KEY;
+    delete process.env.VERTEX_AI_CREDENTIALS_PATH;
+    delete process.env.VERTEX_AI_LOCATION;
   });
 
   it("accepts valid effort levels", async () => {
@@ -53,6 +55,73 @@ describe("config", () => {
     expect(result.permissionMode).toBe("ask");
   });
 
+  it("loads project-level secrets when env vars are absent", async () => {
+    readFile.mockImplementation(async (path: any) => {
+      const s = String(path);
+      if (/[\\/]\.agav[\\/]config\.json$/.test(s)) {
+        return JSON.stringify({
+          anthropicApiKey: "enc:anthropic-project",
+          openaiApiKey: "enc:openai-project",
+          geminiApiKey: "enc:gemini-project",
+          ollamaApiKey: "enc:ollama-project",
+        });
+      }
+      if (/[\\/]config\.json$/.test(s)) {
+        return JSON.stringify({
+          anthropicApiKey: "enc:anthropic-global",
+          openaiApiKey: "enc:openai-global",
+          geminiApiKey: "enc:gemini-global",
+          ollamaApiKey: "enc:ollama-global",
+        });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    const loaded = await mod.loadConfig();
+
+    expect(loaded.anthropicApiKey).toBe("anthropic-project");
+    expect(loaded.openaiApiKey).toBe("openai-project");
+    expect(loaded.geminiApiKey).toBe("gemini-project");
+    expect(loaded.ollamaApiKey).toBe("ollama-project");
+  });
+
+  // No shell is involved when config.json is read back, so a `~` written there
+  // would otherwise reach fs.readFile literally and fail with ENOENT.
+  it("expands a leading ~ in the Vertex AI credentials path", async () => {
+    const { homedir } = await import("node:os");
+    const { join } = await import("node:path");
+
+    readFile.mockImplementation(async (path: any) => {
+      if (/[\\/]\.agav[\\/]config\.json$/.test(String(path))) {
+        return JSON.stringify({ vertexAICredentialsPath: "~/.gcp/sa.json" });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    const loaded = await mod.loadConfig();
+
+    expect(loaded.vertexAICredentialsPath).toBe(join(homedir(), ".gcp/sa.json"));
+  });
+
+  it("expands ~ from the env var and leaves absolute paths untouched", async () => {
+    const { homedir } = await import("node:os");
+    const { join } = await import("node:path");
+    process.env.VERTEX_AI_CREDENTIALS_PATH = "~/keys/sa.json";
+
+    readFile.mockImplementation(async () => {
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    expect((await mod.loadConfig()).vertexAICredentialsPath).toBe(join(homedir(), "keys/sa.json"));
+
+    expect(mod.expandHome("/absolute/sa.json")).toBe("/absolute/sa.json");
+    expect(mod.expandHome("relative/~/sa.json")).toBe("relative/~/sa.json");
+    expect(mod.expandHome("~")).toBe(homedir());
+  });
+
   it("applies env overrides and encrypts secrets on save", async () => {
     process.env.ANTHROPIC_API_KEY = "enc:anthropic-env";
     process.env.OPENAI_API_KEY = "enc:openai-env";
@@ -61,6 +130,8 @@ describe("config", () => {
     process.env.OLLAMA_HOST = "127.0.0.1";
     process.env.OLLAMA_PORT = "11435";
     process.env.OLLAMA_API_KEY = "enc:ollama-env";
+    process.env.VERTEX_AI_CREDENTIALS_PATH = "/tmp/service-account.json";
+    process.env.VERTEX_AI_LOCATION = "us-east5";
 
     readFile.mockImplementation(async (path: any) => {
       const s = String(path);
@@ -83,6 +154,8 @@ describe("config", () => {
     expect(loaded.ollamaEndpoint).toBe("http://localhost:11434");
     expect(loaded.ollamaHost).toBe("127.0.0.1");
     expect(loaded.ollamaPort).toBe(11435);
+    expect(loaded.vertexAICredentialsPath).toBe("/tmp/service-account.json");
+    expect(loaded.vertexAILocation).toBe("us-east5");
 
     await mod.saveConfig({
       provider: "anthropic",

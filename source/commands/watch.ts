@@ -84,10 +84,11 @@ export const watchCommand: SlashCommand = {
 
         if (debounceTimer) clearTimeout(debounceTimer)
         debounceTimer = setTimeout(() => {
+          _context.showStatus(`AUTOMATION  /watch · ${filename} changed → ${command}`)
           execFile("/bin/sh", ["-c", command], { timeout: 30_000, cwd: process.cwd() }, (_err, stdout, stderr) => {
             const output = (stdout + stderr).trim()
             if (output) {
-              process.stderr.write(`\n[watch] ${filename} changed → ${command}\n${output}\n`)
+              process.stderr.write(`\n[AUTOMATION /watch] ${filename} changed → ${command}\n${output}\n`)
             }
           })
         }, 300)

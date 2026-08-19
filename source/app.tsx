@@ -1,4 +1,5 @@
-import React, { useState, useRef, useCallback, useMemo, useEffect, type MutableRefObject } from "react";
+import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
+import { basename } from "node:path";
 import { Box, Text, Static, useInput, useApp } from "ink";
 import MessageList from "./components/message-list.js";
 import type { DisplayMessage } from "./components/message-list.js";
@@ -14,7 +15,7 @@ import Spinner from "ink-spinner";
 import type { AgavConfig } from "./config/config.js";
 import type { LLMProvider } from "./providers/types.js";
 import { createProvider } from "./providers/registry.js";
-import type { ContentBlock } from "./providers/types.js";
+import type { ContentBlock, InvocationReason } from "./providers/types.js";
 import { useAgent } from "./hooks/use-agent.js";
 import { CommandRegistry } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
@@ -27,11 +28,12 @@ import { getRandomHint } from "./utils/hints.js";
 import { fileLink } from "./utils/hyperlink.js";
 import { getClipboardImage, type ClipboardImage } from "./utils/clipboard-image.js";
 import { useClipboardImageDetector } from "./hooks/use-paste-handler.js";
-import { KeybindingResolver, formatKeybinding, formatKeybindings, type Keybindings } from "./config/keybindings.js";
-import { getLoopStatus } from "./commands/loop.js";
+import { KeybindingResolver, formatKeybinding, formatKeybindings, normalizeKeyEvent, type Keybindings } from "./config/keybindings.js";
+import { getLoopStatus, stopActiveLoop } from "./commands/loop.js";
 import { loadScheduledTasks, cronMatches, markTaskRun } from "./config/scheduler.js";
 import { getSandboxName } from "./utils/sandbox.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
+import { terminalRelativePaths } from "./utils/display-path.js";
 
 import type { Message } from "./providers/types.js";
 
@@ -43,6 +45,9 @@ interface Props {
   resumeTokenUsage?: import("./config/history.js").SessionTokenUsage;
   resumeCompacted?: boolean;
   resumeSessionName?: string;
+  repoBranch?: string;
+  /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
+  enhancedKeyboard?: boolean;
 }
 
 const BANNER: DisplayMessage = {
@@ -54,25 +59,30 @@ const BANNER: DisplayMessage = {
 let sysMessageId = 0;
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
-export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName }: Props) {
+export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false }: Props) {
 
   const [input, setInput] = useState("");
   const [config, setConfig] = useState(initialConfig);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const activeSideProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const [showToolDetail, setShowToolDetail] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
+  const [inlineTranscript, setInlineTranscript] = useState(false);
   const [showCompactionSummary, setShowCompactionSummary] = useState(false);
   const [runningSkillName, setRunningSkillName] = useState<string | null>(null);
   const [pickerActive, setPickerActive] = useState(false);
   const [agentsTUIActive, setAgentsTUIActive] = useState(false);
   const agentsTUIResolveRef = useRef<(() => void) | null>(null);
-  const { exit } = useApp();
+  const { exit: exitInk } = useApp();
+  const exit = useCallback(() => {
+    stopActiveLoop();
+    exitInk();
+  }, [exitInk]);
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, [
     "cancel", "interrupt", "cycleSubagents", "toggleToolDetail", "retryLastTurn",
@@ -177,7 +187,38 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     setPsLoading(true);
     setPsResponse(undefined);
     try {
-      const historyMessages = conversation.getMessages();
+      // Strip any trailing incomplete tool-use turns from the history snapshot.
+      // When /ps is issued while the agent is running, the conversation may
+      // contain an in-progress assistant message with tool_use blocks whose
+      // tool_result blocks have not been added yet. Sending such a sequence to
+      // Vertex AI Claude (and the Anthropic API) violates the protocol rule
+      // "each tool_use must be immediately followed by a tool_result", causing
+      // a 400 error. Walk backwards and drop any trailing assistant message
+      // whose tool_use IDs are not answered by the very next user message.
+      const rawHistory = conversation.getMessages();
+      const answeredToolIds = new Set<string>();
+      for (const msg of rawHistory) {
+        if (msg.role === "user") {
+          for (const block of msg.content) {
+            if (block.type === "tool_result" && block.toolCallId) {
+              answeredToolIds.add(block.toolCallId);
+            }
+          }
+        }
+      }
+      // If the last assistant message has unanswered tool_use blocks (in-flight
+      // tool calls), drop it and everything after it before sending as context.
+      let historyMessages = rawHistory;
+      for (let i = rawHistory.length - 1; i >= 0; i--) {
+        const msg = rawHistory[i]!;
+        if (msg.role === "assistant") {
+          const hasUnanswered = msg.content.some(
+            (block) => block.type === "tool_use" && block.toolCallId && !answeredToolIds.has(block.toolCallId),
+          );
+          if (hasUnanswered) historyMessages = rawHistory.slice(0, i);
+          break;
+        }
+      }
       const psQuestion: Message = { role: "user", content: [{ type: "text", text: `[SIDE QUESTION — answer ONLY this, do not continue the main conversation]\n${query.text}` }, ...query.blocks] };
       let response = "";
       for await (const event of activeSideProvider.stream({
@@ -240,7 +281,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           if (!task.enabled) continue;
           if (cronMatches(task.cron, now)) {
             await markTaskRun(task.id);
-            submit(task.prompt);
+            submit(task.prompt, undefined, undefined, undefined, {
+              source: "schedule",
+              detail: `${task.name} · cron ${task.cron}`,
+            });
           }
         }
       } catch {}
@@ -251,12 +295,16 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const hasSubagents = isLoading && subagentStates.length > 0;
 
   useEffect(() => {
-    if (!isLoading) setFocusedSubagentId(null);
-  }, [isLoading]);
+    if (!isLoading) {
+      if (focusedSubagentId) setInlineTranscript(true);
+      setFocusedSubagentId(null);
+    }
+  }, [focusedSubagentId, isLoading]);
 
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
-  useInput((char, key) => {
+  useInput((rawChar, rawKey) => {
     if (pickerActive) return;
+    const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
     const match = keyResolverRef.current.feed(char, key);
     if (match.action === "interrupt" && isLoading && !pendingConfirmation) {
       cancel();
@@ -264,6 +312,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     }
     if (match.action === "cancel" && isLoading && !pendingConfirmation) {
       if (focusedSubagentId) {
+        setInlineTranscript(true);
         setFocusedSubagentId(null);
       } else {
         cancel();
@@ -271,6 +320,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       return;
     }
     if (match.action === "cycleSubagents" && hasSubagents && !pendingConfirmation) {
+      const focusedIndex = focusedSubagentId
+        ? subagentStates.findIndex((subagent) => subagent.id === focusedSubagentId)
+        : -1;
+      if (focusedSubagentId && (focusedIndex < 0 || focusedIndex >= subagentStates.length - 1)) {
+        setInlineTranscript(true);
+      }
       setFocusedSubagentId((prev) => {
         if (!prev) return subagentStates[0]?.id ?? null;
         const idx = subagentStates.findIndex((s) => s.id === prev);
@@ -315,7 +370,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   /** Route input either to slash commands, side queries, or the main agent turn. */
   const handleSubmit = useCallback(
-    async (value: string) => {
+    async (value: string, invocationReason?: InvocationReason) => {
       const trimmed = value.trim();
 
       // /ps — side query that runs independently of the current turn.
@@ -359,6 +414,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           undefined,
           `! ${cmd}`,
           [{ id: `shell-${Date.now()}`, role: "tool", toolName: "shell", toolDisplayName: `$ ${cmd}`, content: preview }],
+          invocationReason,
         );
         return;
       }
@@ -436,7 +492,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               break;
             }
             case "submit":
-              submit(result.text);
+              submit(result.text, undefined, undefined, undefined, invocationReason);
               break;
             case "clear":
               break;
@@ -450,7 +506,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       // Collect attachment content blocks
       const extraBlocks: ContentBlock[] = attachments.map((a) => a.contentBlock);
       const llmText = trimmed || "See attached content";
-      const accepted = await submit(llmText, extraBlocks);
+      const accepted = await submit(llmText, extraBlocks, undefined, undefined, invocationReason);
       if (!accepted) return;
       setInput("");
       setAttachments([]);
@@ -462,10 +518,11 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   );
 
   const displayError = error;
-  const allMessages = useMemo(
-    () => [BANNER, ...messages],
-    [messages],
-  );
+  const allMessages = useMemo(() => {
+    return [{
+      ...BANNER,
+    }, ...messages];
+  }, [config.model, config.provider, messages, repoBranch, sessionId, sessionName]);
 
   const toolMessages = messages.filter((m) => m.role === "tool");
 
@@ -473,24 +530,25 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     <Box flexDirection="column">
       {displayError && (
         <Box marginBottom={1}>
-          <Text color="red">Error: {displayError}</Text>
+          <Text color="red">Error: {terminalRelativePaths(displayError)}</Text>
         </Box>
       )}
 
-      <MessageList key={transcriptRevision} messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} />
+      <MessageList key={inlineTranscript ? "inline" : transcriptRevision} messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} static={!inlineTranscript} />
 
       {systemMessages.length > 0 && (
         <Box marginBottom={1} flexDirection="column">
           {systemMessages.map((msg) => {
-            const hasMarkdown = /^#{1,3}\s|^\*\*|\*\*$|^- \*\*|```/.test(msg.content);
-            if (hasMarkdown && msg.content.length > 200) {
+            const displayContent = terminalRelativePaths(msg.content);
+            const hasMarkdown = /^#{1,3}\s|^\*\*|\*\*$|^- \*\*|```/.test(displayContent);
+            if (hasMarkdown && displayContent.length > 200) {
               return (
                 <Box key={msg.id} flexDirection="column">
-                  <Text dimColor>{renderMarkdown(msg.content)}</Text>
+                  <Text dimColor>{renderMarkdown(displayContent)}</Text>
                 </Box>
               );
             }
-            const lines = msg.content.split("\n");
+            const lines = displayContent.split("\n");
             return (
               <Box key={msg.id} flexDirection="column">
                 {lines.map((line, i) => (
@@ -514,7 +572,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
       {activePlan && activePlan.steps.length > 0 && (
         <Box flexDirection="column" marginBottom={1} marginLeft={2}>
-          <Text bold dimColor>Plan: {activePlan.goal}</Text>
+          <Text bold dimColor>Plan: {terminalRelativePaths(activePlan.goal)}</Text>
           {activePlan.steps.map((step) => {
             const icon = step.status === "done" ? "\x1b[32m✓\x1b[0m"
               : step.status === "in_progress" ? "\x1b[36m◉\x1b[0m"
@@ -526,7 +584,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               : undefined;
             return (
               <Text key={step.id} dimColor={step.status === "done"} color={textColor as any}>
-                {`  ${icon} Step ${step.id}: ${step.title}`}
+                {`  ${icon} Step ${step.id}: ${terminalRelativePaths(step.title)}`}
               </Text>
             );
           })}
@@ -544,7 +602,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       {showCompactionSummary && conversation.lastCompactionSummary && (
         <Box flexDirection="column" marginBottom={1} marginLeft={2} borderStyle="single" borderColor="gray" paddingX={1}>
           <Text bold dimColor>Compaction Summary</Text>
-          <Text dimColor>{conversation.lastCompactionSummary}</Text>
+          <Text dimColor>{terminalRelativePaths(conversation.lastCompactionSummary)}</Text>
           <Text dimColor italic>{"\n"}Ctrl+O to close</Text>
         </Box>
       )}
@@ -626,6 +684,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             ...commandRegistryRef.current.list().map((c) => ({ name: c.name, description: c.description })),
           ]}
           keybindings={keybindings}
+          enhancedKeyboard={enhancedKeyboard}
           resumeUserMessages={resumeUserMessages}
         /></Box>
       )}
@@ -639,7 +698,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         outputTokens={tokenUsage.outputTokens}
         cacheReadTokens={tokenUsage.cacheReadTokens}
         cacheWriteTokens={tokenUsage.cacheWriteTokens}
-        hint={useMemo(() => getRandomHint(keybindings), [messages.length, keybindings])}
+        hint={useMemo(() => getRandomHint(keybindings, enhancedKeyboard), [messages.length, keybindings, enhancedKeyboard])}
         psResponse={psResponse}
         psLoading={psLoading}
         loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}

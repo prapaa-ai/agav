@@ -1,3 +1,5 @@
+import { projectRelativePath, terminalRelativePaths, toolPathValues } from "./display-path.js";
+
 interface ToolMeta {
   label: string;
   formatSummary: (input: Record<string, unknown>) => string;
@@ -6,15 +8,15 @@ interface ToolMeta {
 const TOOL_META: Record<string, ToolMeta> = {
   read_file: {
     label: "Read File",
-    formatSummary: (input) => String(input.path ?? ""),
+    formatSummary: (input) => projectRelativePath(String(input.path ?? "")),
   },
   write_file: {
     label: "Write File",
-    formatSummary: (input) => String(input.path ?? ""),
+    formatSummary: (input) => projectRelativePath(String(input.path ?? "")),
   },
   edit_file: {
     label: "Edit File",
-    formatSummary: (input) => String(input.path ?? ""),
+    formatSummary: (input) => projectRelativePath(String(input.path ?? "")),
   },
   run_command: {
     label: "Shell",
@@ -37,7 +39,7 @@ const TOOL_META: Record<string, ToolMeta> = {
   },
   list_directory: {
     label: "List Directory",
-    formatSummary: (input) => String(input.path ?? "."),
+    formatSummary: (input) => projectRelativePath(String(input.path ?? ".")),
   },
   web_search: {
     label: "Web Search",
@@ -45,15 +47,15 @@ const TOOL_META: Record<string, ToolMeta> = {
   },
   lsp_query: {
     label: "LSP Query",
-    formatSummary: (input) => `${input.operation} ${input.path ?? ""}`,
+    formatSummary: (input) => `${input.operation} ${projectRelativePath(String(input.path ?? ""))}`,
   },
   read_notebook: {
     label: "Read Notebook",
-    formatSummary: (input) => String(input.path ?? ""),
+    formatSummary: (input) => projectRelativePath(String(input.path ?? "")),
   },
   edit_notebook: {
     label: "Edit Notebook",
-    formatSummary: (input) => `cell ${input.cell} in ${input.path ?? ""}`,
+    formatSummary: (input) => `cell ${input.cell} in ${projectRelativePath(String(input.path ?? ""))}`,
   },
   fetch_url: {
     label: "Fetch URL",
@@ -69,11 +71,11 @@ const TOOL_META: Record<string, ToolMeta> = {
   },
   run_tests: {
     label: "Tests",
-    formatSummary: (input) => String(input.path ?? "all tests"),
+    formatSummary: (input) => input.path ? projectRelativePath(String(input.path)) : "all tests",
   },
   overview: {
     label: "Overview",
-    formatSummary: (input) => String(input.path ?? "."),
+    formatSummary: (input) => projectRelativePath(String(input.path ?? ".")),
   },
   github: {
     label: "GitHub",
@@ -119,11 +121,10 @@ export function getToolSummary(
   name: string,
   input: Record<string, unknown>,
 ): string {
-  if (TOOL_META[name]) return TOOL_META[name].formatSummary(input);
-  // For agent tools, show the task they were given
   if (name.endsWith("_agent") && typeof input.task === "string") {
     const task = input.task as string;
     return task.length > 60 ? task.slice(0, 60) + "..." : task;
   }
-  return DEFAULT_META.formatSummary(input);
+  const summary = (TOOL_META[name] ?? DEFAULT_META).formatSummary(input);
+  return terminalRelativePaths(summary, toolPathValues(input));
 }

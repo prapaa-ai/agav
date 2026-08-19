@@ -11,6 +11,10 @@ export const compactCommand: SlashCommand = {
     context.showStatus("Compacting conversation...");
 
     let summarize: ((msgs: import("../providers/types.js").Message[]) => Promise<string>) | undefined;
+    // Why the summary is missing, when it is. Compaction still succeeds with a
+    // placeholder, but silently discarding the history the user asked to have
+    // summarized is worth saying out loud.
+    let summarizeError: string | undefined;
 
     if (context.provider) {
       const provider = context.provider;
@@ -42,10 +46,15 @@ export const compactCommand: SlashCommand = {
               });
             }
           }
-        } catch {
-          return "";
+        } catch (error) {
+          summarizeError = error instanceof Error ? error.message : String(error);
+          throw error;
         }
-        return result || "";
+        if (!result.trim()) {
+          summarizeError = "the model returned an empty summary";
+          throw new Error(summarizeError);
+        }
+        return result;
       };
     }
 
@@ -62,6 +71,15 @@ export const compactCommand: SlashCommand = {
     context.refreshDisplay();
 
     const after = context.conversation.tokenCount;
+
+    if (summarizeError) {
+      return {
+        type: "message",
+        text: `\x1b[33mCompacted ${droppedCount} messages without a summary (${summarizeError}). `
+          + `Those messages are gone from context — ~${before} → ~${after} tokens.\x1b[0m`,
+      };
+    }
+
     return {
       type: "message",
       text: `\x1b[2mCompacted: ${droppedCount} messages summarized, ~${before} → ~${after} tokens (Ctrl+O to see full summary)\x1b[0m`,

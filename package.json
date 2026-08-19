@@ -1,10 +1,10 @@
 {
   "name": "agav-cli",
-  "version": "0.1.0",
+  "version": "0.1.8",
   "description": "A terminal-native environment for running local AI systems",
   "type": "module",
   "bin": {
-    "agav": "./bin/agav.mjs"
+    "agav": "./build/cli.js"
   },
   "files": [
     "build"
@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run source",
     "test:coverage": "vitest run --coverage",
+    "test:installer": "sh scripts/tests/run-installer-tests.sh",
     "build:binary": "bun build source/cli.tsx --compile --outfile dist/agav",
     "build:binary:all": "bash scripts/build-binary.sh all",
     "prepare": "husky"

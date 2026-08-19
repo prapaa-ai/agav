@@ -3,6 +3,7 @@ import type { ConversationState } from "../agent/conversation.js"
 import type { LLMProvider } from "../providers/types.js"
 import type { ToolRegistry } from "../tools/registry.js"
 import type { SessionRecord } from "../config/history.js"
+import type { InvocationReason } from "../providers/types.js"
 
 /** Token accounting tracked for command-level debug output. */
 export interface TokenUsage {
@@ -40,7 +41,7 @@ export interface CommandContext {
   exit: () => void
   getDebugState: () => DebugState
   submit: (text: string) => void
-  handleSubmit: (text: string) => void
+  handleSubmit: (text: string, invocationReason?: InvocationReason) => void
   toolRegistry: ToolRegistry
   addTokenUsage: (usage: TokenUsage) => void
   setRunningSkill: (name: string | null) => void

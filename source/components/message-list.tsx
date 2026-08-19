@@ -5,6 +5,9 @@ import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
 import { getTheme } from "../config/theme.js";
 import { fileLink } from "../utils/hyperlink.js";
 import type { DiffLine } from "../utils/diff.js";
+import type { InvocationReason } from "../providers/types.js";
+import { projectRelativePath, terminalRelativePaths, toolPathValues } from "../utils/display-path.js";
+import { visualLen, wrapToWidth } from "../utils/wrap-text.js";
 import { VERSION } from "../version.js";
 
 /** Normalized message shape used for terminal rendering. */
@@ -13,6 +16,7 @@ export interface DisplayMessage {
   role: "user" | "assistant" | "system" | "tool" | "banner";
   content: string;
   sourceText?: string;
+  invocationReason?: InvocationReason;
   toolName?: string;
   toolDisplayName?: string;
   toolInput?: Record<string, unknown>;
@@ -23,6 +27,7 @@ export interface DisplayMessage {
 interface Props {
   messages: DisplayMessage[];
   toolDetailKey: string;
+  static?: boolean;
 }
 
 /** Renders a compact preview of diff output. */
@@ -82,12 +87,12 @@ function DiffView({ diffLines }: { diffLines: DiffLine[] }) {
 function ToolResultLine({ message }: { message: DisplayMessage }) {
   const label = message.toolDisplayName ?? (message.toolName ? getToolLabel(message.toolName) : "Tool");
   const summary = message.toolName && message.toolInput ? getToolSummary(message.toolName, message.toolInput) : "";
+  const displayContent = terminalRelativePaths(message.content, toolPathValues(message.toolInput));
 
   // Image reference with hyperlink
   if (message.toolName === "image" && message.content) {
     const filePath = message.content;
-    const fileName = filePath.split("/").pop() ?? filePath;
-    const linked = fileLink(fileName, filePath);
+    const linked = fileLink(projectRelativePath(filePath), filePath);
     return (
       <Box flexDirection="column">
         <Text>
@@ -106,14 +111,14 @@ function ToolResultLine({ message }: { message: DisplayMessage }) {
           <Text dimColor>{"  └─ "}</Text>
           <Text bold color="yellow">{label}</Text>
           {summary ? <Text dimColor> {summary}</Text> : null}
-          <Text dimColor> {message.content}</Text>
+          <Text dimColor> {displayContent}</Text>
         </Text>
         <DiffView diffLines={message.diffLines} />
       </Box>
     );
   }
 
-  const lines = message.content.split("\n");
+  const lines = displayContent.split("\n");
   const preview = lines[0]?.slice(0, 120) ?? "";
   const lineCount = lines.length;
   const suffix = lineCount > 1 ? ` (${lineCount} lines)` : "";
@@ -143,13 +148,23 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
   if (message.role === "banner") {
     return (
       <Box flexDirection="column" marginBottom={1}>
-        <Text bold color="cyan">{`   █████╗  ██████╗  █████╗ ██╗   ██╗
-  ██╔══██╗██╔════╝ ██╔══██╗██║   ██║
-  ███████║██║  ███╗███████║██║   ██║
-  ██╔══██║██║   ██║██╔══██║╚██╗ ██╔╝
-  ██║  ██║╚██████╔╝██║  ██║ ╚████╔╝
-  ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝  ╚═══╝`}</Text>
-        <Text dimColor>{`  terminal-native AI agent · v${VERSION}`}</Text>
+        <Box flexDirection="row">
+          <Box flexDirection="column" marginLeft={3}>
+            <Text bold color="#0891B2">{`
+ █████╗   ██████╗   █████╗  ██╗   ██╗      
+██╔══██╗ ██╔════╝  ██╔══██╗ ██║   ██║      
+███████║ ██║  ███╗ ███████║ ██║   ██║      
+██╔══██║ ██║   ██║ ██╔══██║ ╚██╗ ██╔╝      
+██║  ██║ ╚██████╔╝ ██║  ██║  ╚████╔╝       
+╚═╝  ╚═╝  ╚═════╝  ╚═╝  ╚═╝   ╚═══╝        
+`}</Text>
+</Box>
+          </Box>
+<Box flexDirection="row" marginLeft={3}>
+
+        <Text color={"#0891B2"}>{`Stay in the Shell.   `}</Text> 
+        <Text dimColor>{`Version: v${VERSION}`}</Text>
+</Box>
       </Box>
     );
   }
@@ -164,29 +179,24 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
 
   if (message.role === "user") {
     const cols = process.stdout.columns || 80;
-    const usable = cols - 2;
-    // Strip ANSI escape codes for visual width measurement
-    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[a-zA-Z]|\x1b\]8;[^]*?\x1b\\/g, "");
-    const visualLen = (s: string) => stripAnsi(s).length;
-
-    const words = message.content.split(" ");
-    const lines: string[] = [];
-    let current = "";
-    for (const word of words) {
-      const test = current ? `${current} ${word}` : word;
-      if (visualLen(test) > usable && current) {
-        lines.push(current);
-        current = word;
-      } else {
-        current = test;
-      }
-    }
-    if (current) lines.push(current);
+    // Every line is padded out to the full width below, which only paints a clean
+    // band while each one fits on a single row. `wrapToWidth` guarantees that.
+    const lines = wrapToWidth(message.content, cols - 2);
 
     const emptyLine = " ".repeat(cols);
+    const invocationText = message.invocationReason
+      ? `AUTOMATION  /${message.invocationReason.source} · ${message.invocationReason.detail}`
+      : undefined;
     return (
       <Box flexDirection="column" marginTop={1} marginBottom={1}>
         <Text backgroundColor="#2d2d2d">{emptyLine}</Text>
+        {invocationText ? (
+          <Text backgroundColor="#2d2d2d">
+            <Text color="yellow" bold>{"  AUTOMATION"}</Text>
+            <Text dimColor>{`  /${message.invocationReason!.source} · ${message.invocationReason!.detail}`}</Text>
+            {" ".repeat(Math.max(0, cols - visualLen(invocationText) - 2))}
+          </Text>
+        ) : null}
         {lines.map((line, i) => {
           const prefix = i === 0 ? "❯ " : "  ";
           const pad = Math.max(0, cols - prefix.length - visualLen(line));
@@ -212,7 +222,7 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
     return (
       <Box flexDirection="column" marginBottom={1}>
         {hadTools ? <Text dimColor>  ({toolDetailKey} to expand tools)</Text> : null}
-        <Text>{"  "}{renderMarkdown(message.content)}</Text>
+        <Text>{"  "}{renderMarkdown(terminalRelativePaths(message.content))}</Text>
       </Box>
     );
   }
@@ -222,7 +232,7 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
     return (
       <Box flexDirection="column" marginBottom={1}>
         <Text color={message.isError ? "red" : undefined} dimColor={!message.isError}>
-          {"  "}{isLong ? renderMarkdown(message.content) : message.content}
+          {"  "}{isLong ? renderMarkdown(terminalRelativePaths(message.content)) : terminalRelativePaths(message.content)}
         </Text>
       </Box>
     );
@@ -232,14 +242,20 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
 }
 
 /** Renders the scrolling list of conversation messages. */
-export default function MessageList({ messages, toolDetailKey }: Props) {
+export default function MessageList({ messages, toolDetailKey, static: isStatic = true }: Props) {
+  const renderMessage = (message: DisplayMessage, index: number) => (
+    <Box key={message.id} flexDirection="column">
+      <MessageBubble message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} />
+    </Box>
+  );
+
+  if (!isStatic) {
+    return <Box flexDirection="column">{messages.map(renderMessage)}</Box>;
+  }
+
   return (
     <Static items={messages}>
-      {(message, index) => (
-        <Box key={message.id} flexDirection="column">
-          <MessageBubble message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} />
-        </Box>
-      )}
+      {renderMessage}
     </Static>
   );
 }

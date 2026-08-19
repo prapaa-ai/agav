@@ -3,7 +3,8 @@ import { Box, Text, useInput } from "ink";
 import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
 import type { DiffLine } from "../utils/diff.js";
 import { getTheme } from "../config/theme.js";
-import { KeybindingResolver, type Keybindings } from "../config/keybindings.js";
+import { KeybindingResolver, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
+import { terminalToolValue } from "../utils/display-path.js";
 
 /** Represents the user's approval decision for a tool request. */
 export type ConfirmChoice = "yes" | "no" | "always";
@@ -20,7 +21,8 @@ interface Props {
 /** Prompts the user to approve or reject a pending tool action. */
 export default function ToolConfirm({ toolName, input, diffLines, onConfirm, subagentTask, keybindings }: Props) {
   const keyResolver = React.useRef(new KeybindingResolver(keybindings, ["cancel", "submit"]));
-  useInput((char, key) => {
+  useInput((rawChar, rawKey) => {
+    const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
     const match = keyResolver.current.feed(char, key);
     if (char === "y" || char === "Y" || match.action === "submit") {
       onConfirm("yes");
@@ -39,9 +41,8 @@ export default function ToolConfirm({ toolName, input, diffLines, onConfirm, sub
   const details = Object.entries(input)
     .filter(([k]) => k !== "old_string" && k !== "new_string" && k !== "content")
     .map(([k, v]) => {
-      const val = typeof v === "string"
-        ? v.length > 80 ? v.slice(0, 80) + "..." : v
-        : JSON.stringify(v);
+      const formatted = terminalToolValue(k, v);
+      const val = formatted.length > 80 ? formatted.slice(0, 80) + "..." : formatted;
       return `  ${k}: ${val}`;
     })
     .join("\n");

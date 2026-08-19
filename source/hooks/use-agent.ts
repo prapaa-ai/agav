@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { DisplayMessage } from "../components/message-list.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
-import type { LLMProvider, ContentBlock } from "../providers/types.js";
+import type { LLMProvider, ContentBlock, InvocationReason } from "../providers/types.js";
 import type { AgavConfig } from "../config/config.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
@@ -73,7 +73,7 @@ interface UseAgentReturn {
   mcpPromptCount: number;
   subagentStates: SubagentProgress[];
   activePlan: Plan | null;
-  submit: (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[]) => Promise<boolean>;
+  submit: (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason) => Promise<boolean>;
   addDisplayMessage: (msg: DisplayMessage) => void;
   cancel: () => void;
   clearMessages: () => void;
@@ -141,6 +141,7 @@ export function useAgent(
           role: msg.role === "user" ? "user" : "assistant",
           content: msg.displayText,
           sourceText: msg.sourceText,
+          invocationReason: msg.invocationReason,
         });
         continue;
       }
@@ -280,6 +281,12 @@ export function useAgent(
             maxIterations: configRef.current.maxIterations,
           }),
           confirmTool: skillConfirmCallback,
+          onTokenUsage: (usage) => setTokenUsage((prev) => ({
+            inputTokens: prev.inputTokens + usage.inputTokens,
+            outputTokens: prev.outputTokens + usage.outputTokens,
+            cacheReadTokens: prev.cacheReadTokens + usage.cacheReadTokens,
+            cacheWriteTokens: prev.cacheWriteTokens + usage.cacheWriteTokens,
+          })),
           getSignal: () => abortRef.current?.signal,
         });
         toolRegistryRef.current.register(skillTool);
@@ -401,7 +408,7 @@ export function useAgent(
 
   /** Start a new agent turn, wiring UI events to loop events and persisting results on completion. */
   const submit = useCallback(
-    async (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[]): Promise<boolean> => {
+    async (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason): Promise<boolean> => {
       if (!provider) {
         setError("No LLM provider configured. Check your API key.");
         return false;
@@ -436,11 +443,11 @@ export function useAgent(
 
       setMessages((prev) => [
         ...prev,
-        { id: nextId(), role: "user", content: visibleText, sourceText: trimmed },
+        { id: nextId(), role: "user", content: visibleText, sourceText: trimmed, invocationReason },
         ...(followUpMessages ?? []),
       ]);
 
-      conversationRef.current.addUserMessage(submittedText, submittedBlocks, visibleText, trimmed);
+      conversationRef.current.addUserMessage(submittedText, submittedBlocks, visibleText, trimmed, invocationReason);
 
       setIsLoading(true);
       setStreamingText("");
@@ -466,21 +473,26 @@ export function useAgent(
         let currentThinking = "";
 
         try {
-          // Refresh dynamic context (git state, AGAV.md, agent catalog) before each turn.
-          // Pass the user message so the agent catalog is only injected when relevant.
-          const { refreshDynamicContext } = await import("../utils/system-prompt.js");
-          const { context: dynamicCtx, includeAgentTools } = await refreshDynamicContext(
-            mcpManagerRef.current,
-            trimmed
-          );
-          let effectiveSystemPrompt = dynamicCtx
-            ? (config.systemPrompt ?? "") + "\n\n" + dynamicCtx
+          // Split per-turn context by how often it changes. Stable pieces (AGAV.md,
+          // memories, skills, MCP resources) stay in the system prompt; volatile
+          // pieces (git state, steers, agent catalog) are appended to this turn's
+          // user message below. Anything volatile at the front of the request evicts
+          // the tool schemas and the whole conversation from the provider's prefix cache.
+          const { refreshStableContext, refreshVolatileContext, formatTurnContext } =
+            await import("../utils/system-prompt.js");
+          const [stableCtx, { context: volatileCtx, includeAgentTools }] = await Promise.all([
+            refreshStableContext(mcpManagerRef.current),
+            refreshVolatileContext(trimmed),
+          ]);
+          const effectiveSystemPrompt = stableCtx
+            ? (config.systemPrompt ?? "") + "\n\n" + stableCtx
             : config.systemPrompt;
 
-          // Tool registration: always register enabled agents so they are callable
-          // regardless of whether the catalog was included in the system prompt.
-          // Lazy catalog injection (via includeAgentTools) only controls the hint text
-          // in the system prompt — it must not gate whether tools are actually available.
+          const turnContextParts: string[] = [];
+          if (volatileCtx) turnContextParts.push(volatileCtx);
+
+          // Register enabled agents as callable tools. Registration is always-on
+          // regardless of whether the catalog hint was included in the volatile context.
           if (provider) {
             const { getCachedAgents } = await import("../agents/loader.js");
             const { agentToTool } = await import("../agents/registry-factory.js");
@@ -490,8 +502,6 @@ export function useAgent(
               const toolName = `${agent.alias || agent.manifest.name}_agent`;
               if (!toolRegistryRef.current.getSchemas().find((s) => s.name === toolName)) {
                 const { makeAgentProgressTracker } = await import("../agent/subagent-progress.js");
-                // Cache one tracker per callId so seed() runs exactly once per invocation,
-                // not once per event (which caused duplicate subagentStates entries).
                 const trackerCache = new Map<string, (event: import("../agent/loop.js").AgentEvent) => void>();
                 toolRegistryRef.current.register(agentToTool(agent, {
                   provider,
@@ -511,7 +521,6 @@ export function useAgent(
                 }));
               }
             }
-            // Remove tools for agents that were disabled since last turn
             const enabledNames = new Set(enabledAgents.map((a) => `${a.alias || a.manifest.name}_agent`));
             for (const schema of toolRegistryRef.current.getSchemas()) {
               if (schema.name.endsWith("_agent") && !enabledNames.has(schema.name)) {
@@ -600,7 +609,7 @@ export function useAgent(
                   },
                 ]);
 
-                effectiveSystemPrompt = (config.systemPrompt ?? "") + "\n\n" + planText;
+                turnContextParts.push(planText);
               }
             } catch {
               setMessages((prev) => [
@@ -611,8 +620,18 @@ export function useAgent(
           } else {
             // Inject active plan if one exists
             if (stillHasPlan && planAfterClear) {
-              effectiveSystemPrompt = (config.systemPrompt ?? "") + "\n\n" + formatPlanForPrompt(planAfterClear);
+              turnContextParts.push(formatPlanForPrompt(planAfterClear));
             }
+          }
+
+          // Attach volatile context to the tail of this turn's user message. It is
+          // left frozen in history rather than rewritten on later turns: editing an
+          // earlier message would invalidate the very prefix this split protects,
+          // so the wrapper tells the model to trust the most recent copy.
+          if (turnContextParts.length > 0) {
+            conversationRef.current.appendToLastUserMessage(
+              formatTurnContext(turnContextParts.join("\n\n")),
+            );
           }
 
           const loop = runAgentLoop({

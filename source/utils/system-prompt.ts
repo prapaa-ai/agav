@@ -85,19 +85,18 @@ const STATIC_BASE = [
   `The user's current working directory is: ${process.cwd()}`,
 ].join("\n");
 
-/** Rebuild dynamic prompt context that depends on the current repo state and local instructions.
- * Pass `userMessage` to enable lazy agent catalog injection — the catalog is only included
- * when the message suggests the user wants to delegate to a specialized agent. */
-export async function refreshDynamicContext(
-  mcpManager?: MCPManager,
-  userMessage?: string
-): Promise<{ context: string; includeAgentTools: boolean }> {
+/**
+ * Context that holds still for most of a session: project instructions, MCP
+ * resources, memories, and the skill catalog.
+ *
+ * This belongs in the system prompt, at the very front of the request, because
+ * provider prefix caches key on an exact prefix match — anything placed here
+ * must be stable or everything behind it is evicted. Writing a memory or
+ * editing AGAV.md does invalidate the cache, but that is rare compared with
+ * editing a source file, which is why git state is deliberately excluded.
+ */
+export async function refreshStableContext(mcpManager?: MCPManager): Promise<string> {
   const parts: string[] = [];
-
-  const gitCtx = await getGitContext();
-  if (gitCtx) {
-    parts.push(formatGitPrompt(gitCtx));
-  }
 
   const projectInstructions = await loadProjectInstructions();
   if (projectInstructions) {
@@ -123,6 +122,27 @@ export async function refreshDynamicContext(
     parts.push(skillCatalog);
   }
 
+  return parts.join("\n\n");
+}
+
+/**
+ * Context that changes on almost every turn: git state and steering directives.
+ *
+ * This must NOT go in the system prompt. Measured against Gemini, a request
+ * whose stable head was ~1,550 tokens cached nothing at all, while the same
+ * request repeated in full cached 16k — the volatile block at the front was
+ * invalidating the tool schemas and the entire conversation behind it. Callers
+ * append this to the end of the newest user message instead, so the whole
+ * prefix ahead of it stays byte-identical from turn to turn.
+ */
+export async function refreshVolatileContext(userMessage?: string): Promise<{ context: string; includeAgentTools: boolean }> {
+  const parts: string[] = [];
+
+  const gitCtx = await getGitContext();
+  if (gitCtx) {
+    parts.push(formatGitPrompt(gitCtx));
+  }
+
   const steers = formatSteersForPrompt();
   if (steers) {
     parts.push(steers);
@@ -144,7 +164,33 @@ export async function refreshDynamicContext(
   return { context: parts.join("\n\n"), includeAgentTools };
 }
 
-/** Assemble the baseline system prompt (memories are now loaded per-turn in refreshDynamicContext). */
+/**
+ * Wrap per-turn context so the model can tell it apart from user input, and can
+ * tell which copy is current. Older copies stay frozen in the conversation
+ * rather than being rewritten, because editing history would invalidate the
+ * prefix cache this split exists to preserve.
+ */
+export function formatTurnContext(volatileContext: string): string {
+  return [
+    "<environment-context>",
+    "Environment state as of this message. Earlier copies of this block are from",
+    "previous turns and may be stale — trust the most recent one.",
+    "",
+    volatileContext,
+    "</environment-context>",
+  ].join("\n");
+}
+
+/** Rebuild every piece of per-turn context as one block. Prefer the split variants above. */
+export async function refreshDynamicContext(mcpManager?: MCPManager): Promise<string> {
+  const [stable, { context: volatile }] = await Promise.all([
+    refreshStableContext(mcpManager),
+    refreshVolatileContext(),
+  ]);
+  return [stable, volatile].filter(Boolean).join("\n\n");
+}
+
+/** Assemble the baseline system prompt (per-turn context is layered on by the caller). */
 export async function buildSystemPrompt(): Promise<string> {
   return STATIC_BASE;
 }

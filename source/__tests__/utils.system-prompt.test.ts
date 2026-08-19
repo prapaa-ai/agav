@@ -19,7 +19,13 @@ vi.mock("../commands/steer.js", () => ({
   formatSteersForPrompt: vi.fn(() => "steers"),
 }));
 
-import { refreshDynamicContext, buildSystemPrompt } from "../utils/system-prompt.js";
+import {
+  refreshDynamicContext,
+  refreshStableContext,
+  refreshVolatileContext,
+  formatTurnContext,
+  buildSystemPrompt,
+} from "../utils/system-prompt.js";
 import { formatGitPrompt, getGitContext } from "../utils/git.js";
 import { loadProjectInstructions } from "../utils/project-instructions.js";
 import { formatMemoriesForPrompt } from "../config/memory.js";
@@ -53,5 +59,42 @@ describe("utils/system-prompt", () => {
     expect(ctx).toContain("memories");
     expect(ctx).toContain("skills catalog");
     expect(ctx).toContain("steers");
+  });
+
+  // The split is what makes the request cacheable: anything volatile sitting in
+  // the system prompt evicts the tool schemas and conversation behind it.
+  it("keeps git state and steers out of the stable context", async () => {
+    const ctx = await refreshStableContext({ getResourceContextBlock: () => "mcp block" } as any);
+
+    expect(ctx).toContain("project instructions");
+    expect(ctx).toContain("mcp block");
+    expect(ctx).toContain("memories");
+    expect(ctx).toContain("skills catalog");
+    expect(ctx).not.toContain("git block");
+    expect(ctx).not.toContain("steers");
+    expect(getGitContext).not.toHaveBeenCalled();
+    expect(formatSteersForPrompt).not.toHaveBeenCalled();
+  });
+
+  it("puts only per-turn state in the volatile context", async () => {
+    vi.mocked(getGitContext).mockResolvedValue({ isRepo: true, branch: "main", status: "clean", recentCommits: "", remoteUrl: "" });
+    const ctx = await refreshVolatileContext();
+
+    expect(ctx).toContain("git block");
+    expect(ctx).toContain("steers");
+    expect(ctx).not.toContain("project instructions");
+    expect(ctx).not.toContain("memories");
+    expect(ctx).not.toContain("skills catalog");
+    expect(loadProjectInstructions).not.toHaveBeenCalled();
+    expect(buildSkillCatalog).not.toHaveBeenCalled();
+  });
+
+  it("marks turn context as environment state that may be stale", () => {
+    const wrapped = formatTurnContext("git block");
+
+    expect(wrapped).toContain("<environment-context>");
+    expect(wrapped).toContain("</environment-context>");
+    expect(wrapped).toContain("git block");
+    expect(wrapped).toMatch(/stale/i);
   });
 });

@@ -5,12 +5,16 @@ const skipCli = nodeVersion < 22;
 
 async function runCli(args: string[], env?: NodeJS.ProcessEnv) {
   const { execFile } = await import("node:child_process");
-  return new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-    execFile(process.execPath, ["build/cli.js", ...args], {
+  const { resolve } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const cliPath = resolve("build/cli.js");
+  return new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolvePromise) => {
+    execFile(process.execPath, [cliPath, ...args], {
       timeout: 10000,
+      cwd: tmpdir(),
       env: env ? { ...process.env, ...env } : process.env,
     }, (err, stdout, stderr) => {
-      resolve({
+      resolvePromise({
         stdout: (stdout ?? "").trim(),
         stderr: (stderr ?? "").trim(),
         exitCode: err ? 1 : 0,
@@ -44,9 +48,14 @@ describe("CLI boot", () => {
       ANTHROPIC_API_KEY: "",
       OPENAI_API_KEY: "",
       GEMINI_API_KEY: "",
+      VERTEX_AI_CREDENTIALS_PATH: "",
     });
     expect(result.exitCode).toBe(1);
-    expect(`${result.stdout}\n${result.stderr}`).toContain("API key");
+    // Helpful means naming a variable and a command to set it, not just saying
+    // that credentials are missing.
+    const output = `${result.stdout}\n${result.stderr}`;
+    expect(output).toContain("no provider credentials found");
+    expect(output).toMatch(/(export|set|\$env:)\s?ANTHROPIC_API_KEY/);
   });
 });
 
