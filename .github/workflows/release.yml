@@ -12,7 +12,7 @@ jobs:
       changed: ${{ steps.version.outputs.changed }}
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
           fetch-depth: 2
@@ -57,11 +57,11 @@ jobs:
             ext: .exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
@@ -100,7 +100,7 @@ jobs:
           sha256sum agav-${{ matrix.target }}${{ matrix.ext }} > agav-${{ matrix.target }}${{ matrix.ext }}.sha256
           cat agav-${{ matrix.target }}${{ matrix.ext }}.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: agav-${{ matrix.target }}
           path: |
@@ -115,7 +115,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
           fetch-depth: 0
