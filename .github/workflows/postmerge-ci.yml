@@ -12,10 +12,10 @@ jobs:
     name: Full Test Suite
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
@@ -41,11 +41,11 @@ jobs:
             os: ubuntu-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
@@ -65,10 +65,10 @@ jobs:
     name: License Compliance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
@@ -83,10 +83,10 @@ jobs:
     name: SBOM Generation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
@@ -99,7 +99,7 @@ jobs:
             pnpm licenses list --json > sbom.json 2>/dev/null || \
             echo '{"notice": "SBOM generation skipped"}' > sbom.json
           echo "SBOM generated: $(wc -c < sbom.json) bytes"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: sbom
           path: sbom.json
@@ -108,25 +108,25 @@ jobs:
   container-scan:
     name: Container Image Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
-      - name: Install Trivy
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq wget apt-transport-https gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq trivy
-      - run: trivy image --severity HIGH,CRITICAL --exit-code 0 --no-progress node:22-slim || true
+      - name: Scan container image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: node:22-slim
+          scan-type: image
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: '0'
 
   file-size:
     name: File Size Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - name: Check for large files
@@ -142,7 +142,7 @@ jobs:
     name: Dependency Pinning Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - name: Check for unpinned dependencies
@@ -170,7 +170,7 @@ jobs:
     name: Commit Signing Verification
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
           fetch-depth: 10
