@@ -369,12 +369,25 @@ For Shift+Enter with no setup at all, use a terminal that implements the protoco
 | `Esc` | Cancel a streaming response |
 | `Ctrl+D` | Toggle tool detail panel |
 | `Ctrl+G` | Toggle plan detail panel |
+| `Ctrl+J` | Insert newline (works on every terminal) |
+| `Ctrl+V` | Paste an image from clipboard |
 | `Tab` | Cycle subagent focus |
 | `Ctrl+R` | Retry last turn |
+| `Ctrl+C` | Interrupt the agent |
 | `Ctrl+L` | Clear screen |
 | `Ctrl+Q` | Exit |
 
 Shortcuts are customisable in `~/.agav/keybindings.json` or `.agav/keybindings.json`. See the [keybindings reference](https://docs.agav.dev/reference/keybindings) for the full list.
+
+### Copying output
+
+Agav runs inside your terminal, so copying uses your terminal's own selection mechanism:
+
+- **macOS** — select text with the mouse, then `Cmd+C`. In Terminal.app and iTerm2 this works out of the box.
+- **Linux** — select text, then `Ctrl+Shift+C` (or middle-click to paste a selection).
+- **Windows Terminal** — select text, then `Ctrl+C` (when nothing is running) or `Ctrl+Shift+C`.
+
+To save a full conversation to a file instead, use `/export` — it writes the entire session as Markdown.
 
 ## Extending
 
