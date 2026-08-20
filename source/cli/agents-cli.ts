@@ -105,7 +105,11 @@ async function installAgentCommand(args: string[]): Promise<number> {
   console.log(`✓ Successfully installed agent: ${agentName}`);
   console.log(`  Description: ${result.agent?.manifest.description}`);
   console.log(`  Tools: ${result.agent?.tools.length}`);
-  console.log(`  Origin: ${destination}\n`);
+  console.log(`  Origin: ${destination}`);
+  if (result.warning) {
+    console.error(`  ⚠ ${result.warning}`);
+  }
+  console.log();
 
   return 0;
 }

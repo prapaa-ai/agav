@@ -14,7 +14,7 @@ export function MarketplaceTab({
 }: {
   onReloadAgents: () => Promise<void>;
   onExit: () => void;
-  installedAgents: Map<string, string>;
+  installedAgents: Map<string, { origin: string; version: string }>;
 }) {
   const [marketplaceAgents, setMarketplaceAgents] = useState<MarketplaceAgent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -90,7 +90,10 @@ export function MarketplaceTab({
     }
     const result = await installAgent(agentUrl, { destination });
     if (result.success) {
-      setInstallStatus(`✓ Installed ${agent.name} (${destination})`);
+      const msg = result.warning
+        ? `✓ Installed ${agent.name} (${destination}) — ⚠ ${result.warning}`
+        : `✓ Installed ${agent.name} (${destination})`;
+      setInstallStatus(msg);
       await onReloadAgents();
     } else if (result.error?.startsWith("Agent '") && result.error?.includes("is already installed")) {
       setInstallStatus(null);
@@ -116,6 +119,30 @@ export function MarketplaceTab({
     await doInstall(agent, destination);
   };
 
+  const doUpdate = async (agent: MarketplaceAgent) => {
+    const installed = installedAgents.get(agent.name);
+    if (!installed) return;
+    setInstalling(true);
+
+    // Update in all installed locations (global and/or project)
+    const locations: Array<"global" | "project"> = [];
+    if (installed.origin === "global" || installed.origin === "bundled") {
+      locations.push("global");
+    } else if (installed.origin === "project") {
+      locations.push("project");
+    }
+
+    setInstallStatus(`Updating ${agent.name} (v${installed.version} → v${agent.version})...`);
+    for (const loc of locations) {
+      try {
+        await uninstallAgent(agent.name, loc);
+      } catch {
+        // Continue even if uninstall fails
+      }
+      await doInstall(agent, loc);
+    }
+  };
+
   useInput(async (input, key) => {
     const filteredAgents = filterMarketplaceAgents(marketplaceAgents, searchQuery);
 
@@ -126,7 +153,8 @@ export function MarketplaceTab({
     }
 
     if (pendingInstallAgent) {
-      const existingOrigin = installedAgents.get(pendingInstallAgent.name);
+      const existingEntry = installedAgents.get(pendingInstallAgent.name);
+      const existingOrigin = existingEntry?.origin;
       if (existingOrigin === "global") {
         if (key.escape) { setPendingInstallAgent(null); setInstallStatus(null); }
       } else if (existingOrigin === "project") {
@@ -153,7 +181,8 @@ export function MarketplaceTab({
         setInspecting(false);
         const agent = filteredAgents[selectedIndex];
         if (agent) {
-          const existingOrigin = installedAgents.get(agent.name);
+          const existingEntry = installedAgents.get(agent.name);
+          const existingOrigin = existingEntry?.origin;
           if (existingOrigin === "global" || existingOrigin === "bundled") {
             setInstallStatus(`${agent.name} is already installed globally. Use the List tab to manage it.`);
           } else {
@@ -201,12 +230,23 @@ export function MarketplaceTab({
       setInstallStatus(null);
     } else if (key.return && filteredAgents[selectedIndex]) {
       const target = filteredAgents[selectedIndex]!;
-      const existingOrigin = installedAgents.get(target.name);
+      const existingEntry = installedAgents.get(target.name);
+      const existingOrigin = existingEntry?.origin;
       if (existingOrigin === "global" || existingOrigin === "bundled") {
         setInstallStatus(`${target.name} is already installed globally. Use the List tab to manage it.`);
       } else {
         setPendingInstallAgent(target);
         setInstallStatus(null);
+      }
+    } else if (input === "u" && filteredAgents[selectedIndex]) {
+      const target = filteredAgents[selectedIndex]!;
+      const entry = installedAgents.get(target.name);
+      if (entry && entry.version !== target.version) {
+        await doUpdate(target);
+      } else if (entry) {
+        setInstallStatus(`${target.name} is already up to date (v${target.version}).`);
+      } else {
+        setInstallStatus(`${target.name} is not installed. Press ENTER to install.`);
       }
     } else if (input === "r") {
       await loadMarketplace();
@@ -226,7 +266,7 @@ export function MarketplaceTab({
     const filteredForInspect = filterMarketplaceAgents(marketplaceAgents, searchQuery);
     const agent = filteredForInspect[selectedIndex];
     if (agent) {
-      return <MarketplaceInspectView marketplaceAgent={agent} marketplaceUrl={resolvedMarketplaceUrl} isInstalled={installedAgents.has(agent.name)} />;
+      return <MarketplaceInspectView marketplaceAgent={agent} marketplaceUrl={resolvedMarketplaceUrl} isInstalled={installedAgents.has(agent.name)} hasUpdate={installedAgents.has(agent.name) && installedAgents.get(agent.name)!.version !== agent.version} />;
     }
   }
 
@@ -286,7 +326,8 @@ export function MarketplaceTab({
       )}
 
       {pendingInstallAgent && (() => {
-        const existingOrigin = installedAgents.get(pendingInstallAgent.name);
+        const existingEntry = installedAgents.get(pendingInstallAgent.name);
+        const existingOrigin = existingEntry?.origin;
         if (existingOrigin === "global") {
           return (
             <Box flexDirection="column" marginBottom={1} borderStyle="single" padding={1}>
@@ -327,8 +368,9 @@ export function MarketplaceTab({
       {pageAgents.map((agent) => {
         const absIndex = filteredAgents.indexOf(agent);
         const isSelected = absIndex === selectedIndex;
-        const installedOrigin = installedAgents.get(agent.name);
-        const isInstalled = installedOrigin !== undefined;
+        const installed = installedAgents.get(agent.name);
+        const isInstalled = installed !== undefined;
+        const hasUpdate = isInstalled && installed.version !== agent.version;
         return (
           <Box key={agent.name} flexDirection="column" marginBottom={1}>
             <Box>
@@ -337,7 +379,8 @@ export function MarketplaceTab({
                 {agent.name}
               </Text>
               <Text dimColor> v{agent.version}</Text>
-              {isInstalled && <Text color="green"> ✓ {installedOrigin}</Text>}
+              {isInstalled && !hasUpdate && <Text color="green"> ✓ {installed.origin}</Text>}
+              {hasUpdate && <Text color="yellow"> ↑ update available (installed: v{installed.version})</Text>}
             </Box>
             <Box marginLeft={2}>
               <Text dimColor>{agent.description}</Text>

@@ -294,7 +294,7 @@ export function ConfigEditView({
   );
 }
 
-export function MarketplaceInspectView({ marketplaceAgent, marketplaceUrl, isInstalled, installedOrigin }: { marketplaceAgent: MarketplaceAgent; marketplaceUrl: string; isInstalled?: boolean; installedOrigin?: string }) {
+export function MarketplaceInspectView({ marketplaceAgent, marketplaceUrl, isInstalled, installedOrigin, hasUpdate }: { marketplaceAgent: MarketplaceAgent; marketplaceUrl: string; isInstalled?: boolean; installedOrigin?: string; hasUpdate?: boolean }) {
   const [loadedAgent, setLoadedAgent] = useState<AgentDefinition | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -350,7 +350,8 @@ export function MarketplaceInspectView({ marketplaceAgent, marketplaceUrl, isIns
       <Box marginBottom={1}>
         <Text bold color="cyan">{marketplaceAgent.name}</Text>
         <Text dimColor> v{marketplaceAgent.version}</Text>
-        {isInstalled && <Text color="green"> ✓ installed ({installedOrigin ?? "global"})</Text>}
+        {isInstalled && !hasUpdate && <Text color="green"> ✓ installed ({installedOrigin ?? "global"})</Text>}
+        {hasUpdate && <Text color="yellow"> ↑ update available</Text>}
         {marketplaceAgent["has-destructive-tools"] && <Text color="yellow"> ⚠ Has tools that modify data</Text>}
       </Box>
       <Box flexDirection="column" marginBottom={1}>

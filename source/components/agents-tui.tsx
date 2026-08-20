@@ -99,6 +99,8 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     setLoading(true);
     const loaded = await loadAgents();
     setAgents(loaded);
+    const { setCachedAgents } = await import("../agents/loader.js");
+    setCachedAgents(loaded);
     setLoading(false);
     computeReadiness(loaded);
     loadAllRuntimeConfigs(loaded);
@@ -395,7 +397,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
         <MarketplaceTab
           onReloadAgents={reloadAgents}
           onExit={onExit}
-          installedAgents={new Map(agents.map((a) => [a.alias || a.manifest.name, a.origin]))}
+          installedAgents={new Map(agents.map((a) => [a.alias || a.manifest.name, { origin: a.origin, version: a.manifest.version }]))}
         />
       )}
 
@@ -424,7 +426,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           </Text>
         )}
         {activeTab === "marketplace" && (
-          <Text dimColor>↑↓: Navigate | ←→: Page | ENTER: Install | i: Inspect | s: Search | r: Refresh | ESC: Exit/clear</Text>
+          <Text dimColor>↑↓: Navigate | ←→: Page | ENTER: Install | u: Update | i: Inspect | s: Search | r: Refresh | ESC: Exit/clear</Text>
         )}
       </Box>
     </Box>

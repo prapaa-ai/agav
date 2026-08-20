@@ -19,7 +19,11 @@ export function shouldIncludeAgentCatalog(userMessage: string, agents: AgentDefi
     const escaped = a.manifest.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return new RegExp(`\\b${escaped}\\b`).test(msg);
   })) return true;
-  // Include if message contains integration or delegation keywords (word boundary match)
+  // These keywords gate catalog text injection into the system prompt.
+  // Tools are always registered regardless of this check — the catalog
+  // hint only adds context tokens. Custom agents whose names don't match
+  // these keywords are still callable; the LLM just won't see the
+  // "Available specialized agents:" hint for that turn.
   const keywords = [
     "jira", "github", "gitlab", "slack", "aws", "gcp", "azure", "argocd",
     "ticket", "issue", "pull request", "pipeline", "deploy", "deployment",

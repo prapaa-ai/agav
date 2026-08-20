@@ -67,7 +67,7 @@ export async function installAgent(
     destination?: "global" | "project";
     cwd?: string;
   } = {}
-): Promise<{ success: boolean; agent?: AgentDefinition; error?: string }> {
+): Promise<{ success: boolean; agent?: AgentDefinition; error?: string; warning?: string }> {
   const { alias, destination = "global", cwd = process.cwd() } = options;
 
   // Validate alias early (before loading agent or cloning)
@@ -177,7 +177,11 @@ export async function installAgent(
     // Reload agent from final destination
     const finalAgent = await loadAgent(destPath, destination === "global" ? "global" : "project", alias);
 
-    return { success: true, agent: finalAgent || agent };
+    const installed = finalAgent || agent;
+    const warning = installed.manifest.type === "a2a" && installed.manifest["start-command"]
+      ? `This A2A agent will execute "${installed.manifest["start-command"]}" when invoked. Review the command before use.`
+      : undefined;
+    return { success: true, agent: installed, warning };
   } catch (error) {
     if (isGitUrl) {
       await rm(agentPath, { recursive: true, force: true });

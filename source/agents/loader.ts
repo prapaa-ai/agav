@@ -123,7 +123,7 @@ async function scanAgentTools(
         console.warn(`[agent] No schema for tool "${toolName}" in ${agentDir} — declare it in AGENT.md tools section or provide a .schema.json sidecar`);
         schema = {
           name: toolName,
-          description: `(schema unavailable — declare in AGENT.md tools section)`,
+          description: `Tool: ${toolName}`,
           inputSchema: {
             type: "object" as const,
             properties: { task: { type: "string", description: "The task input" } },
@@ -185,6 +185,32 @@ async function scanAgentTools(
 }
 
 /**
+ * Load only the manifest (no tool scanning) — used for disabled agents
+ * so they appear in the TUI list without executing any tool code.
+ */
+async function loadAgentManifestOnly(agentDir: string, origin: AgentOrigin, alias?: string): Promise<AgentDefinition | null> {
+  const manifestPath = join(agentDir, "AGENT.md");
+  try {
+    await stat(manifestPath);
+  } catch {
+    return null;
+  }
+  try {
+    const { manifest, systemPrompt } = await parseAgentMarkdown(manifestPath);
+    return {
+      manifest: { ...manifest, enabled: false },
+      systemPrompt,
+      tools: [],
+      origin,
+      path: agentDir,
+      alias,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Load a single agent from a directory
  */
 export async function loadAgent(agentDir: string, origin: AgentOrigin, alias?: string): Promise<AgentDefinition | null> {
@@ -240,11 +266,14 @@ export async function loadAgents(cwd: string = process.cwd()): Promise<AgentDefi
       const stats = await stat(agentDir).catch(() => null);
       if (!stats?.isDirectory()) continue;
 
-      // Skip agents that are explicitly disabled in the registry
+      // Disabled agents are loaded (so they appear in the TUI list) but
+      // their tools are not scanned (no code execution for disabled agents).
       const registryEntry = registry.agents[entry];
-      if (registryEntry && registryEntry.enabled === false) continue;
+      const isDisabled = registryEntry && registryEntry.enabled === false;
 
-      const agent = await loadAgent(agentDir, origin);
+      const agent = isDisabled
+        ? await loadAgentManifestOnly(agentDir, origin)
+        : await loadAgent(agentDir, origin);
       if (!agent) continue;
 
       // If directory name differs from manifest name, treat it as an alias

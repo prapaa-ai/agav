@@ -10,7 +10,9 @@ import type { AgentRegistry, AgentRegistryEntry } from "./types.js";
 
 const REGISTRY_PATH = join(homedir(), ".agav", "agents", "registry.json");
 
-// Mutex to serialize read-modify-write operations on the registry
+// In-process mutex only — does not protect against concurrent CLI processes.
+// The atomic temp-file-then-rename in saveRegistry prevents file corruption,
+// but two processes can still race on read-modify-write (last writer wins).
 let registryLockQueue: Promise<void> = Promise.resolve();
 function acquireRegistryLock(): Promise<() => void> {
   let release!: () => void;
