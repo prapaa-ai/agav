@@ -215,6 +215,7 @@ async function cloneAgent(url: string): Promise<{ success: boolean; path?: strin
 
       // Copy agent out of the clone, then clean up (avoids dragging .git into the install)
       const agentSrc = join(tempDir, subPath!.slice(1));
+      assertPathContained(agentSrc, tempDir);
       const outDir = join(tmpdir(), `agav-agent-${randomBytes(8).toString("hex")}`);
       await mkdir(outDir, { recursive: true });
       await cp(agentSrc, outDir, {

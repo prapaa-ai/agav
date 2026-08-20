@@ -8,12 +8,11 @@ import type { AgentDefinition } from "./types.js";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
-function assertLoopbackEndpoint(endpoint: string, allowRemote?: boolean): void {
-  if (allowRemote) return;
+function assertLoopbackEndpoint(endpoint: string): void {
   const parsed = new URL(endpoint);
   if (!LOOPBACK_HOSTS.has(parsed.hostname)) {
     throw new Error(
-      `A2A endpoint "${endpoint}" is not loopback. Set "allow-remote-endpoint: true" in the manifest to allow remote endpoints.`
+      `A2A endpoint "${endpoint}" is not loopback. A2A endpoints must be loopback (127.0.0.1/localhost/::1). Remote endpoints are not supported.`
     );
   }
 }
@@ -102,7 +101,7 @@ export async function startA2AAgent(agent: AgentDefinition): Promise<{ success: 
   }
 
   try {
-    assertLoopbackEndpoint(endpoint, (agent.manifest as any)["allow-remote-endpoint"]);
+    assertLoopbackEndpoint(endpoint);
   } catch (e) {
     return { success: false, error: e instanceof Error ? e.message : String(e) };
   }

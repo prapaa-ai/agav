@@ -39,6 +39,14 @@ export interface AgentManifest {
   prerequisites?: string[];
   enabled?: boolean; // defaults to true
 
+  // Tool schemas declared in the manifest (avoids importing tool modules for schema)
+  tools?: Array<{
+    name: string;
+    description: string;
+    destructive?: boolean;
+    inputSchema: Record<string, unknown>;
+  }>;
+
   // Tool permissions
   "tool-permissions"?: Record<string, ToolPermission>;
 

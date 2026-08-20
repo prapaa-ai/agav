@@ -67,7 +67,8 @@ async function parseAgentMarkdown(path: string): Promise<{ manifest: AgentManife
 async function scanAgentTools(
   agentDir: string,
   toolsDir: string,
-  toolPermissions: Record<string, "safe" | "destructive"> = {}
+  toolPermissions: Record<string, "safe" | "destructive"> = {},
+  manifestTools?: AgentManifest["tools"]
 ): Promise<ToolDefinition[]> {
   const toolsDirPath = resolve(agentDir, toolsDir);
   const tools: ToolDefinition[] = [];
@@ -79,29 +80,45 @@ async function scanAgentTools(
     return tools;
   }
 
+  // Index manifest-declared tool schemas by name for quick lookup
+  const manifestSchemaByName = new Map<string, NonNullable<AgentManifest["tools"]>[number]>();
+  if (manifestTools) {
+    for (const t of manifestTools) manifestSchemaByName.set(t.name, t);
+  }
+
   for (const entry of entries) {
     if (!entry.endsWith(".mjs") && !entry.endsWith(".js")) continue;
 
     const toolPath = join(toolsDirPath, entry);
     const toolName = entry.replace(/\.(mjs|js)$/, "").replace(/-/g, "_");
 
-    // Try to read schema from a companion .schema.json sidecar
+    // Schema resolution: (1) manifest tools section, (2) .schema.json sidecar, (3) placeholder
     let schema: ToolDefinition["schema"];
-    const sidecarPath = toolPath.replace(/\.(mjs|js)$/, ".schema.json");
-    try {
-      const sidecar = await readFile(sidecarPath, "utf-8");
-      schema = JSON.parse(sidecar);
-    } catch {
-      // No sidecar — use a placeholder schema derived from the filename
+    const manifestEntry = manifestSchemaByName.get(toolName);
+    if (manifestEntry) {
       schema = {
-        name: toolName,
-        description: `Tool from ${agentDir}`,
-        inputSchema: {
-          type: "object" as const,
-          properties: { task: { type: "string", description: "The task input" } },
-          required: ["task"],
-        },
+        name: manifestEntry.name,
+        description: manifestEntry.description,
+        destructive: manifestEntry.destructive,
+        inputSchema: manifestEntry.inputSchema,
       };
+    } else {
+      const sidecarPath = toolPath.replace(/\.(mjs|js)$/, ".schema.json");
+      try {
+        const sidecar = await readFile(sidecarPath, "utf-8");
+        schema = JSON.parse(sidecar);
+      } catch {
+        console.warn(`[agent] No schema for tool "${toolName}" in ${agentDir} — declare it in AGENT.md tools section or provide a .schema.json sidecar`);
+        schema = {
+          name: toolName,
+          description: `(schema unavailable — declare in AGENT.md tools section)`,
+          inputSchema: {
+            type: "object" as const,
+            properties: { task: { type: "string", description: "The task input" } },
+            required: ["task"],
+          },
+        };
+      }
     }
 
     // Apply tool permission from manifest
@@ -157,7 +174,7 @@ export async function loadAgent(agentDir: string, origin: AgentOrigin, alias?: s
   try {
     const { manifest, systemPrompt } = await parseAgentMarkdown(manifestPath);
     const toolsDir = manifest["tools-dir"] || "./tools";
-    const tools = await scanAgentTools(agentDir, toolsDir, manifest["tool-permissions"]);
+    const tools = await scanAgentTools(agentDir, toolsDir, manifest["tool-permissions"], manifest.tools);
 
     return {
       manifest: { ...manifest, enabled: manifest.enabled ?? true },

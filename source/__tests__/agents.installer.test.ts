@@ -24,11 +24,30 @@ vi.mock("../agents/agent-registry.js", () => ({
   saveRegistry: vi.fn().mockResolvedValue(undefined),
 }));
 
+import { execFile } from "node:child_process";
 import { installAgent, uninstallAgent } from "../agents/installer.js";
 
 describe("agents/installer", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe("subPath traversal in sparse-checkout URLs", () => {
+    it("rejects URLs with ../ path traversal in the subdirectory portion", async () => {
+      // Mock execFile so git clone "succeeds"
+      vi.mocked(execFile).mockImplementation((...args: any[]) => {
+        const cb = args[args.length - 1];
+        if (typeof cb === "function") cb(null, "", "");
+        return undefined as any;
+      });
+
+      // URL passes host allowlist but has traversal in the path
+      const result = await installAgent(
+        "https://github.com/owner/repo/agents/../../../../etc/passwd"
+      );
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("escapes");
+    });
   });
 
   describe("validateAgentName (via alias)", () => {

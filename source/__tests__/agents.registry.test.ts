@@ -73,6 +73,31 @@ describe("agents/agent-registry", () => {
     warnSpy.mockRestore();
   });
 
+  it("concurrent writes don't corrupt the registry file", async () => {
+    const { registerAgent, loadRegistry } = await import("../agents/agent-registry.js");
+    await Promise.all([
+      registerAgent({
+        name: "agent-a",
+        enabled: true,
+        installedAt: "2026-01-01T00:00:00Z",
+        version: "1.0.0",
+      }),
+      registerAgent({
+        name: "agent-b",
+        enabled: true,
+        installedAt: "2026-01-01T00:00:00Z",
+        version: "1.0.0",
+      }),
+    ]);
+
+    // File should be valid JSON (not corrupted by concurrent writes)
+    const regPath = join(fakeHome, ".agav", "agents", "registry.json");
+    const content = await readFile(regPath, "utf-8");
+    const parsed = JSON.parse(content);
+    // Note: last-writer-wins means one entry may be missing, but file is valid JSON
+    expect(typeof parsed.agents).toBe("object");
+  });
+
   it("saves valid JSON to registry file", async () => {
     const { registerAgent } = await import("../agents/agent-registry.js");
     await registerAgent({

@@ -97,58 +97,68 @@ export async function executeNativeAgent(
   const model  = runtimeConfig["model"]  || agent.manifest.model  || deps.config.model;
   const effort = (runtimeConfig["effort"] || agent.manifest.effort || deps.config.effort) as import("../config/config.js").EffortLevel;
 
-  // Serialize env mutations to prevent concurrent agents from interleaving
-  const releaseEnvLock = await acquireEnvLock();
-  const originalEnv: Record<string, string | undefined> = {};
-  for (const [key, value] of Object.entries(runtimeConfig)) {
-    originalEnv[key] = process.env[key];
-    process.env[key] = value;
-  }
-
-  // Start per-agent MCP servers declared in the manifest
+  // Narrow lock scope: hold the env lock only during MCP server startup,
+  // then restore env and release before running the agent loop.
   let agentMCPManager: import("../mcp/manager.js").MCPManager | null = null;
-  const mcpServersDecl = agent.manifest["mcp-servers"] ?? [];
-  if (mcpServersDecl.length > 0) {
-    const { MCPManager } = await import("../mcp/manager.js");
-    agentMCPManager = new MCPManager();
-    for (const srv of mcpServersDecl) {
-      const serverConfig = {
-        command: srv.command,
-        args: srv.args ?? [],
-        env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...runtimeConfig },
-      };
-      try {
-        await agentMCPManager.startServer(srv.key, serverConfig);
-      } catch (err) {
-        // Non-fatal: log but continue without this MCP server
-        console.warn(`[agent:${agent.manifest.name}] Failed to start MCP server "${srv.key}":`, err);
+  const releaseEnvLock = await acquireEnvLock();
+  try {
+    const originalEnv: Record<string, string | undefined> = {};
+    for (const [key, value] of Object.entries(runtimeConfig)) {
+      originalEnv[key] = process.env[key];
+      process.env[key] = value;
+    }
+
+    try {
+      const mcpServersDecl = agent.manifest["mcp-servers"] ?? [];
+      if (mcpServersDecl.length > 0) {
+        const { MCPManager } = await import("../mcp/manager.js");
+        agentMCPManager = new MCPManager();
+        for (const srv of mcpServersDecl) {
+          const serverConfig = {
+            command: srv.command,
+            args: srv.args ?? [],
+            env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...runtimeConfig },
+          };
+          try {
+            await agentMCPManager.startServer(srv.key, serverConfig);
+          } catch (err) {
+            console.warn(`[agent:${agent.manifest.name}] Failed to start MCP server "${srv.key}":`, err);
+          }
+        }
+      }
+    } finally {
+      // Restore env vars as soon as MCP servers have spawned (they inherit env at spawn time)
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
       }
     }
+  } finally {
+    releaseEnvLock();
   }
 
+  // Agent loop runs without holding the env lock
   try {
-    // Create child tool registry with only the agent's tools
     const childRegistry = new ToolRegistry();
     for (const tool of agent.tools) {
       childRegistry.register(tool);
     }
 
-    // Register MCP tools from per-agent MCP servers
     if (agentMCPManager) {
       for (const tool of agentMCPManager.getToolDefinitions()) {
         childRegistry.register(tool);
       }
     }
 
-    // Create fresh conversation state
     const conversation = new ConversationState();
     conversation.addUserMessage(task);
 
-    // Build system prompt — avoid "undefined\n\n" if config has no custom prompt
     const base = deps.config.systemPrompt ?? "";
     const systemPrompt = base ? `${base}\n\n${agent.systemPrompt}` : agent.systemPrompt;
 
-    // Collect output
     let output = "";
     let loopError: Error | null = null;
 
@@ -160,8 +170,6 @@ export async function executeNativeAgent(
       systemPrompt,
       effort,
       maxTokens: deps.config.maxTokens,
-      // If the parent provided a confirmTool callback, use it so that tools
-      // marked as destructive inside the agent get proper HITL approval.
       confirmTool: deps.confirmTool,
       permissionMode: deps.confirmTool ? "ask" : "deny-writes",
       maxIterations: 50,
@@ -169,7 +177,6 @@ export async function executeNativeAgent(
     });
 
     for await (const event of loopGenerator) {
-      // Forward every event to the UI progress tracker keyed by this invocation's callId
       deps.onProgressUpdate?.(callId, event);
 
       if (event.type === "streaming_text") {
@@ -183,7 +190,6 @@ export async function executeNativeAgent(
       }
     }
 
-    // Surface loop errors instead of silently returning empty output
     if (loopError && !output) {
       throw loopError;
     }
@@ -195,16 +201,6 @@ export async function executeNativeAgent(
     if (agentMCPManager) {
       await agentMCPManager.stopAll();
     }
-
-    // Restore original env vars, then release the lock
-    for (const [key, value] of Object.entries(originalEnv)) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-    releaseEnvLock();
   }
 }
 
