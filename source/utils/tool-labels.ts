@@ -3,6 +3,12 @@ import { projectRelativePath, terminalRelativePaths, toolPathValues } from "./di
 interface ToolMeta {
   label: string;
   formatSummary: (input: Record<string, unknown>) => string;
+  /**
+   * The tool records the agent's own progress rather than doing anything to the
+   * project. Shown without the emphasis real work gets, so it reads as a note
+   * in the margin instead of another action to scan.
+   */
+  bookkeeping?: boolean;
 }
 
 const TOOL_META: Record<string, ToolMeta> = {
@@ -62,8 +68,17 @@ const TOOL_META: Record<string, ToolMeta> = {
     formatSummary: (input) => String(input.url ?? ""),
   },
   update_plan: {
-    label: "Update Plan",
-    formatSummary: (input) => `step ${input.step} → ${input.status}`,
+    // "Update Plan step 3 → in_progress" reads as the agent rewriting its plan
+    // and going off track. All it does is tick a box in .agav/plans, so both
+    // the label and the summary say where it is, not that something changed.
+    label: "Plan Progress",
+    formatSummary: (input) => {
+      const step = `step ${input.step}`;
+      if (input.status === "done") return `${step} complete`;
+      if (input.status === "failed") return `${step} failed`;
+      return `starting ${step}`;
+    },
+    bookkeeping: true,
   },
   image: {
     label: "Image",
@@ -102,6 +117,11 @@ const DEFAULT_META: ToolMeta = {
 
 export function getToolLabel(name: string): string {
   return (TOOL_META[name] ?? DEFAULT_META).label;
+}
+
+/** See `ToolMeta.bookkeeping`. Unknown tools are treated as real work. */
+export function isBookkeepingTool(name: string): boolean {
+  return TOOL_META[name]?.bookkeeping === true;
 }
 
 export function getToolSummary(

@@ -6,6 +6,12 @@ import type {
 } from "../providers/types.js";
 import type { ConversationState } from "./conversation.js";
 import type { ToolRegistry } from "../tools/registry.js";
+import {
+  MAX_STEPS_PROMPT,
+  NEEDS_VERIFY_PROMPT,
+  VERIFY_FAILED_PROMPT,
+  testsFailedPrompt,
+} from "./internal-prompts.js";
 
 export type AgentEvent =
   | { type: "planning"; plan: string }
@@ -181,10 +187,7 @@ export async function* runAgentLoop(
     // Graceful shutdown: on the last step, ask for a summary instead of hard-erroring
     const isLastStep = iteration === maxIterations - 1;
     if (isLastStep) {
-      conversation.addUserMessage(
-        "You have reached the maximum number of steps. Summarize what you have accomplished, " +
-        "list any remaining work, and stop. Do not call any more tools."
-      );
+      conversation.addInternalUserMessage(MAX_STEPS_PROMPT);
     }
 
     let textAccum = "";
@@ -310,13 +313,7 @@ export async function* runAgentLoop(
       const verifyFailed = madeEdits && ranShellAfterEdit && lastShellFailed;
       if ((needsVerify || verifyFailed) && verifyReprompts < MAX_VERIFY_REPROMPTS) {
         verifyReprompts++;
-        const msg = needsVerify
-          ? "You made changes but did not verify they work. Run the program to check your changes produce the correct output. " +
-            "If there are expected output files, compare your output against them. If the task requires compilation, compile and check for errors/warnings. " +
-            "Do not stop until you have verified your solution."
-          : "Your last verification command failed or produced errors/warnings. Read the output carefully, identify the specific issue, fix it, and verify again. " +
-            "Do not stop until verification passes cleanly.";
-        conversation.addUserMessage(msg);
+        conversation.addInternalUserMessage(needsVerify ? NEEDS_VERIFY_PROMPT : VERIFY_FAILED_PROMPT);
         continue;
       }
       yield { type: "assistant_message_complete", text: textAccum };
@@ -464,11 +461,7 @@ export async function* runAgentLoop(
     if (hasTestFailure) {
       testRepairAttempts++;
       if (testRepairAttempts <= MAX_REPAIR_ATTEMPTS) {
-        conversation.addUserMessage(
-          `Tests failed (attempt ${testRepairAttempts}/${MAX_REPAIR_ATTEMPTS}). ` +
-          "Analyze the test failures above carefully. Fix the code and run tests again. " +
-          (testRepairAttempts > 1 ? "Try a different approach — your previous fix didn't work." : ""),
-        );
+        conversation.addInternalUserMessage(testsFailedPrompt(testRepairAttempts, MAX_REPAIR_ATTEMPTS));
       }
     } else if (hasTestRun) {
       testRepairAttempts = 0;

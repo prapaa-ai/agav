@@ -2,7 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import Spinner from "ink-spinner";
 import type { SubagentProgress } from "../agent/subagent-types.js";
-import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
+import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
 import { terminalRelativePaths, terminalToolValue } from "../utils/display-path.js";
 import type { DiffLine } from "../utils/diff.js";
 
@@ -123,6 +123,7 @@ function DetailView({ progress, elapsed }: {
         const branch = isLast ? "└─" : "├─";
         const label = getToolLabel(tc.toolName);
         const summary = getToolSummary(tc.toolName, tc.input);
+        const bookkeeping = isBookkeepingTool(tc.toolName);
 
         return (
           <Box key={`${tc.toolName}-${i}`} flexDirection="column">
@@ -135,7 +136,7 @@ function DetailView({ progress, elapsed }: {
               ) : (
                 <Text color="green">{"✓ "}</Text>
               )}
-              <Text bold color="yellow">{label}</Text>
+              <Text bold={!bookkeeping} color={bookkeeping ? undefined : "yellow"} dimColor={bookkeeping}>{label}</Text>
               {summary ? <Text dimColor> {summary}</Text> : null}
             </Box>
             <ToolInput input={tc.input} argsJson={tc.argsJson} />

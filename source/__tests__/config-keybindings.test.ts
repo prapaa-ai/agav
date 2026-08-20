@@ -96,6 +96,49 @@ describe("keybindings", () => {
     expect(resolver.feed("u", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false })).toMatchObject({ action: "clearInput" });
     expect(resolver.feed("w", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false })).toMatchObject({ action: "deleteWordBackward" });
   });
+
+  // Ctrl+V is the clipboard-image paste and Ctrl+D the tool detail panel, so
+  // the plan shortcut has to be a stroke of its own and must not fire on those.
+  it("binds the plan detail panel to a single free stroke", async () => {
+    const mod = await import("../config/keybindings.js");
+    const resolver = new mod.KeybindingResolver(
+      mod.DEFAULT_KEYBINDINGS,
+      ["togglePlanDetail", "toggleToolDetail"],
+    );
+    const ctrl = (input: string) => resolver.feed(input, { ...NO_KEY, ctrl: true });
+
+    expect(mod.DEFAULT_KEYBINDINGS.togglePlanDetail).toEqual(["ctrl+g"]);
+    expect(mod.formatKeybinding(mod.DEFAULT_KEYBINDINGS, "togglePlanDetail")).toBe("Ctrl+G");
+
+    expect(ctrl("g")).toMatchObject({ action: "togglePlanDetail", pending: false });
+    expect(ctrl("v")).toMatchObject({ action: null });
+    expect(ctrl("d")).toMatchObject({ action: "toggleToolDetail" });
+  });
+
+  // A resolver only reports actions it was constructed with, so an action in
+  // neither list is configurable but dead — the binding simply does nothing.
+  it("routes every action to a resolver", async () => {
+    const mod = await import("../config/keybindings.js");
+    const routed = new Set([...mod.GLOBAL_ACTIONS, ...mod.PROMPT_ACTIONS]);
+
+    for (const action of Object.keys(mod.DEFAULT_KEYBINDINGS)) {
+      expect(routed.has(action as never), `"${action}" is not resolved by any consumer`).toBe(true);
+    }
+  });
+
+  // Every stroke belongs to at most one action, or a keypress would fire two.
+  it("keeps the default bindings free of duplicate strokes", async () => {
+    const mod = await import("../config/keybindings.js");
+    const seen = new Map<string, string>();
+
+    for (const [action, bindings] of Object.entries(mod.DEFAULT_KEYBINDINGS)) {
+      for (const binding of bindings) {
+        const owner = seen.get(binding);
+        expect(owner, `"${binding}" is bound to both ${owner} and ${action}`).toBeUndefined();
+        seen.set(binding, action);
+      }
+    }
+  });
 });
 
 /** A key event with nothing pressed, so each test only states the bits it cares about. */

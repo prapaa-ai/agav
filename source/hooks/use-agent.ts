@@ -1,10 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { DisplayMessage } from "../components/message-list.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
-import type { LLMProvider, ContentBlock, InvocationReason } from "../providers/types.js";
+import type { LLMProvider, ContentBlock, InvocationReason, Message } from "../providers/types.js";
 import type { AgavConfig } from "../config/config.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
+import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { createToolRegistry } from "../tools/registry-factory.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { saveSession, type SessionRecord } from "../config/history.js";
@@ -39,6 +40,45 @@ let messageId = 0;
 /** Generate incremental display ids so transient UI rows have stable React keys. */
 function nextId(): string {
   return String(++messageId);
+}
+
+/**
+ * Rebuild the visible transcript from the conversation the model sees — on
+ * resume, and whenever the screen is redrawn. The two are not the same list:
+ * the conversation also carries prompts the agent wrote to steer itself, and
+ * carries the user's turns as they were sent rather than as they were typed.
+ */
+export function messagesToDisplay(msgs: Message[]): DisplayMessage[] {
+  const displayMsgs: DisplayMessage[] = [];
+  for (const msg of msgs) {
+    // Prompts the agent injected to steer itself are user turns to the model
+    // only; rebuilding the transcript from them is what made a resumed session
+    // quote its own instructions back at the user.
+    if (isInternalUserMessage(msg)) continue;
+    // Falling through to the raw blocks would show the text as sent rather
+    // than as typed — @mentions expanded, per-turn context appended.
+    const rendered = msg.displayText ?? msg.sourceText;
+    if (rendered) {
+      displayMsgs.push({
+        id: nextId(),
+        role: msg.role === "user" ? "user" : "assistant",
+        content: rendered,
+        sourceText: msg.sourceText,
+        invocationReason: msg.invocationReason,
+      });
+      continue;
+    }
+    for (const block of msg.content) {
+      if (block.type === "text" && block.text) {
+        displayMsgs.push({
+          id: nextId(),
+          role: msg.role === "user" ? "user" : "assistant",
+          content: block.text,
+        });
+      }
+    }
+  }
+  return displayMsgs;
 }
 
 /**
@@ -148,32 +188,6 @@ export function useAgent(
   const confirmationQueueRef = useRef(new ConfirmationQueue());
   const conversationRef = useRef(new ConversationState());
   conversationRef.current.setModel(config.model);
-
-  function messagesToDisplay(msgs: import("../providers/types.js").Message[]): DisplayMessage[] {
-    const displayMsgs: DisplayMessage[] = [];
-    for (const msg of msgs) {
-      if (msg.displayText) {
-        displayMsgs.push({
-          id: nextId(),
-          role: msg.role === "user" ? "user" : "assistant",
-          content: msg.displayText,
-          sourceText: msg.sourceText,
-          invocationReason: msg.invocationReason,
-        });
-        continue;
-      }
-      for (const block of msg.content) {
-        if (block.type === "text" && block.text) {
-          displayMsgs.push({
-            id: nextId(),
-            role: msg.role === "user" ? "user" : "assistant",
-            content: block.text,
-          });
-        }
-      }
-    }
-    return displayMsgs;
-  }
 
   const refreshDisplay = useCallback(() => {
     process.stdout.write("\x1Bc");
