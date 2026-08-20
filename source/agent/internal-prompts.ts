@@ -22,6 +22,8 @@ export const MAX_STEPS_PROMPT =
   "You have reached the maximum number of steps. Summarize what you have accomplished, " +
   "list any remaining work, and stop. Do not call any more tools.";
 
+// Extracted as a constant so LEGACY_PREFIXES (below) can match this dynamic
+// prompt by its fixed opening — the full string varies per attempt number.
 export const TESTS_FAILED_PREFIX = "Tests failed (attempt ";
 
 export function testsFailedPrompt(attempt: number, maxAttempts: number): string {
@@ -35,13 +37,17 @@ export function testsFailedPrompt(attempt: number, maxAttempts: number): string 
 export const NO_EDITS_PROMPT =
   "You analyzed the code but did not make any changes. Now write the actual fix. Use edit_file or write_file to modify the source code. Do not just explain — implement the fix.";
 
+// Same as TESTS_FAILED_PREFIX — the full prompt is dynamic (includes error
+// details), so only the fixed opening is extracted for legacy prefix matching.
 export const SCHEMA_RETRY_PREFIX = "Your previous response was invalid.";
 
 export function schemaRetryPrompt(details: string): string {
   return `${SCHEMA_RETRY_PREFIX} ${details}\nCorrect it and return ONLY valid JSON matching the required schema, with no markdown fences or commentary.`;
 }
 
-/** The placeholder compaction falls back to when no summary could be produced. */
+// The placeholder compaction falls back to when no summary could be produced.
+// Needed in LEGACY_PREFIXES so resumed sessions that went through compaction
+// don't display "[Earlier conversation was compacted...]" as a user message.
 export const COMPACTION_PLACEHOLDER_PREFIX = "[Earlier conversation";
 
 /**
