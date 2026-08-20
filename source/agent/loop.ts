@@ -121,9 +121,11 @@ export async function* runAgentLoop(
   let verifyReprompts = 0;
   const MAX_VERIFY_REPROMPTS = 2;
   const maxIterations = params.maxIterations ?? 100;
-  // Calls the user has already refused this turn, keyed by name + arguments.
-  // Nothing else records a refusal, so without this the model can reissue the
-  // identical call every iteration and the user is asked to approve it again.
+  // Calls the user has already refused, keyed by name + arguments. Scoped to
+  // the full loop invocation (not per-turn) so the model cannot retry a denied
+  // call later in the same session. This is intentionally conservative: if the
+  // user changes their mind, they can say so in a new message and the submit()
+  // call starts a fresh loop with an empty set.
   const deniedCalls = new Set<string>();
 
   let pendingSummarizeUsage: Record<string, number> | null = null;

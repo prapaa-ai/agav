@@ -14,6 +14,7 @@ const STATUSES: PlanStep["status"][] = ["pending", "in_progress", "done", "faile
 /** Render "3d ago" style ages for the plan list. */
 function relativeAge(when: Date): string {
   const minutes = Math.max(0, Math.round((Date.now() - when.getTime()) / 60_000))
+  if (minutes < 1) return "just now"
   if (minutes < 60) return `${minutes}m ago`
   const hours = Math.round(minutes / 60)
   if (hours < 48) return `${hours}h ago`

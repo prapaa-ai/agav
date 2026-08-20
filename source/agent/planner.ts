@@ -1,5 +1,5 @@
 import { writeFile, readFile, readdir, stat } from "node:fs/promises";
-import { existsSync, renameSync } from "node:fs";
+import { renameSync, statSync } from "node:fs";
 import { basename, dirname, join, parse as parsePath } from "node:path";
 import { ensureDir } from "../utils/fs.js";
 
@@ -25,6 +25,10 @@ let cachedPlanDir: string | undefined;
  * A plan describes a project, not a directory, so it is anchored at the repo
  * root when there is one. Resolving from `process.cwd()` alone meant launching
  * agav from a subdirectory hid the plan that was created one level up.
+ *
+ * Synchronous because `planFilePath()`, `adoptPlanScope()`, and the callers
+ * that build paths from it are all synchronous. The result is cached by cwd
+ * so the filesystem walk only runs once per directory change.
  */
 function planDir(): string {
   const cwd = process.cwd();
@@ -34,9 +38,13 @@ function planDir(): string {
   const { root } = parsePath(cwd);
   let resolved = join(cwd, ".agav");
   while (true) {
-    if (existsSync(join(dir, ".git"))) {
-      resolved = join(dir, ".agav");
-      break;
+    try {
+      if (statSync(join(dir, ".git")).isDirectory()) {
+        resolved = join(dir, ".agav");
+        break;
+      }
+    } catch {
+      // No .git here, keep walking up.
     }
     if (dir === root) break;
     dir = dirname(dir);
@@ -45,6 +53,12 @@ function planDir(): string {
   cachedCwd = cwd;
   cachedPlanDir = resolved;
   return resolved;
+}
+
+/** Force re-resolution on the next call (e.g. after `git init`). */
+export function resetPlanDirCache(): void {
+  cachedCwd = undefined;
+  cachedPlanDir = undefined;
 }
 
 /**
@@ -58,6 +72,10 @@ let planScope: string = DRAFT_SCOPE;
 
 export function setPlanScope(sessionId?: string | null): void {
   planScope = sessionId || DRAFT_SCOPE;
+  // Also invalidate the directory cache so the next operation resolves from
+  // the current cwd — important when tests change directories between calls.
+  cachedCwd = undefined;
+  cachedPlanDir = undefined;
 }
 
 export function getPlanScope(): string {
@@ -126,12 +144,38 @@ export async function clearPlan(scope?: string): Promise<void> {
 }
 
 /**
+ * One-time migration: the old single-file scheme stored plans at
+ * `.agav/.plan-state.json`. Move it to the new per-session directory so
+ * users upgrading with an active plan don't silently lose it.
+ */
+async function migrateOldPlanFile(): Promise<void> {
+  const oldFile = join(planDir(), ".plan-state.json");
+  try {
+    const content = await readFile(oldFile, "utf-8");
+    const plan = JSON.parse(content) as Plan;
+    if (plan && Array.isArray(plan.steps) && plan.steps.length > 0) {
+      const draftFile = planFile(DRAFT_SCOPE);
+      // Only migrate if no draft already exists — don't overwrite a real plan.
+      try { await stat(draftFile); } catch {
+        await ensureDir(plansDir());
+        await writeFile(draftFile, content);
+      }
+    }
+    const { unlink } = await import("node:fs/promises");
+    await unlink(oldFile);
+  } catch {
+    // No old file, or already migrated — nothing to do.
+  }
+}
+
+/**
  * Make sure the plan directory exists. Deliberately does not create the state
  * file: an absent file is how `loadPlan` reports "no plan", and writing a
  * placeholder into a `.json` path only produced a file that failed to parse.
  */
 export async function ensurePlanFile(): Promise<void> {
   await ensureDir(plansDir());
+  await migrateOldPlanFile();
 }
 
 export interface StoredPlan {

@@ -50,7 +50,7 @@ export default function PlanDetailPanel({ plan, closeKey }: Props) {
         const isCurrent = plan.currentStep >= 0 && plan.steps[plan.currentStep]?.id === step.id;
         return (
           <Box key={step.id} flexDirection="column" marginTop={1}>
-            <Text color={STEP_COLOR[step.status] as any} bold={isCurrent}>
+            <Text color={STEP_COLOR[step.status]} bold={isCurrent}>
               {`${STEP_ICON[step.status]} Step ${step.id}: ${terminalRelativePaths(step.title)}`}
               {isCurrent ? "  ← current" : ""}
             </Text>

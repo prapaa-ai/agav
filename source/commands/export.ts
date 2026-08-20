@@ -26,7 +26,8 @@ export const exportCommand: SlashCommand = {
       if (msg.role === "user") {
         // Prompts the agent injected to steer itself are not the user speaking,
         // so exporting them under "You" misattributes them.
-        const text = isInternalUserMessage(msg) ? "" : stripTerminalLinks(msg.displayText ?? msg.content
+        if (isInternalUserMessage(msg)) continue;
+        const text = stripTerminalLinks(msg.displayText ?? msg.content
           .filter((b) => b.type === "text")
           .map((b) => b.text)
           .join("\n"));

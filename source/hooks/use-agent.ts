@@ -182,7 +182,10 @@ export function useAgent(
   const planContinueRef = useRef<{ stepId: number; attempts: number }>({ stepId: -1, attempts: 0 });
   // "Always" is a session decision, not a per-turn one; the loop's own
   // permission mode is rebuilt on every turn, so remember it out here.
+  // Separate concern from plans — fixes the "always approve" choice not
+  // persisting across turns within the same session.
   const sessionPermissionModeRef = useRef<AgavConfig["permissionMode"] | undefined>(undefined);
+  const resetPlanContinue = () => { planContinueRef.current = { stepId: -1, attempts: 0 }; };
   const resumedRef = useRef(false);
 
   const confirmationQueueRef = useRef(new ConfirmationQueue());
@@ -368,7 +371,7 @@ export function useAgent(
     sessionNameRef.current = undefined;
     setSessionName(undefined);
     sessionPermissionModeRef.current = undefined;
-    planContinueRef.current = { stepId: -1, attempts: 0 };
+    resetPlanContinue();
     // Back to the draft slot, and drop whatever the last unsaved session left
     // there so the new session does not inherit a plan it never made.
     setPlanScope(null);
@@ -440,7 +443,7 @@ export function useAgent(
     setError(null);
     // Show the plan belonging to the session being loaded — not whichever plan
     // happened to be on screen, and without deleting either one.
-    planContinueRef.current = { stepId: -1, attempts: 0 };
+    resetPlanContinue();
     setActivePlan(null);
     setPlanScope(session.id);
     loadPlan()
@@ -501,7 +504,7 @@ export function useAgent(
         setActivePlan(null);
         // A real message from the user is fresh input for the current step, so
         // the no-progress budget starts over.
-        planContinueRef.current = { stepId: -1, attempts: 0 };
+        resetPlanContinue();
       }
 
       setMessages((prev) => [
@@ -622,7 +625,7 @@ export function useAgent(
               if (plan.steps.length === 0) throw new Error("planning response had no steps");
 
               await savePlan(plan);
-              planContinueRef.current = { stepId: -1, attempts: 0 };
+              resetPlanContinue();
               setActivePlan(plan);
 
               setMessages((prev) => [
@@ -851,7 +854,7 @@ export function useAgent(
                   const pendingSteps = latestPlan.steps.filter((s) => s.status === "pending" || s.status === "in_progress");
                   if (pendingSteps.length === 0) {
                     // Plan is complete — clear display and delete the file
-                    planContinueRef.current = { stepId: -1, attempts: 0 };
+                    resetPlanContinue();
                     setActivePlan(null);
                     await clearPlan().catch(() => {});
                     return;
@@ -872,7 +875,7 @@ export function useAgent(
                       (s) => s.status === "pending" || s.status === "in_progress",
                     );
                     await savePlan(latestPlan).catch(() => {});
-                    planContinueRef.current = { stepId: -1, attempts: 0 };
+                    resetPlanContinue();
                     setActivePlan(latestPlan);
                     setMessages((prev) => [
                       ...prev,
