@@ -789,4 +789,56 @@ describe("runAgentLoop", () => {
     expect(saved?.steps.map((step) => step.status)).toEqual(["done", "done"]);
     expect(saved?.currentStep).toBe(-1);
   });
+
+  it("does not re-prompt for a tool call the user already denied", async () => {
+    const writeCall = (id: string): StreamEvent[] => [
+      { type: "tool_call_start", toolCallId: id, toolName: "risky_write" },
+      {
+        type: "tool_call_delta",
+        toolCallId: id,
+        argsJson: '{"path":"out.txt"}',
+      },
+      { type: "message_end", stopReason: "tool_use" },
+    ];
+
+    const provider = new MockProvider([
+      writeCall("deny-1"),
+      writeCall("deny-2"),
+      [
+        { type: "text_delta", text: "giving up" },
+        { type: "message_end", stopReason: "end_turn" },
+      ],
+    ]);
+
+    const conversation = new ConversationState();
+    conversation.setModel("gpt-4");
+    conversation.addUserMessage("write the file");
+
+    const execute = vi.fn(async () => ({ output: "written", isError: false }));
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createTool("risky_write", execute));
+
+    const confirmTool = vi.fn(async () => "no" as const);
+
+    const events = await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry,
+        model: "gpt-4",
+        confirmTool,
+      }),
+    );
+
+    // The user is asked exactly once; the identical retry is refused for them.
+    expect(confirmTool).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+
+    const denials = events.filter(
+      (event) => event.type === "tool_result" && event.toolName === "risky_write",
+    );
+    expect(denials).toHaveLength(2);
+    expect(denials.every((event) => (event as { isError?: boolean }).isError)).toBe(true);
+    expect((denials[1] as { output: string }).output).toContain("already denied");
+  });
 });

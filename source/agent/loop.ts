@@ -115,6 +115,10 @@ export async function* runAgentLoop(
   let verifyReprompts = 0;
   const MAX_VERIFY_REPROMPTS = 2;
   const maxIterations = params.maxIterations ?? 100;
+  // Calls the user has already refused this turn, keyed by name + arguments.
+  // Nothing else records a refusal, so without this the model can reissue the
+  // identical call every iteration and the user is asked to approve it again.
+  const deniedCalls = new Set<string>();
 
   let pendingSummarizeUsage: Record<string, number> | null = null;
 
@@ -367,6 +371,13 @@ export async function* runAgentLoop(
         yield { type: "tool_result", toolName: call.name, output: reason, isError: true };
         continue;
       }
+      const denialKey = `${call.name}:${JSON.stringify(input)}`;
+      if (needsConfirm && deniedCalls.has(denialKey)) {
+        const reason = `User already denied '${call.name}' with these exact arguments. Do not request it again — take a different approach, or stop and explain what you need.`;
+        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+        yield { type: "tool_result", toolName: call.name, toolCallId: id, output: reason, isError: true };
+        continue;
+      }
       if (needsConfirm && confirmTool) {
         // Compute diff preview for file-modifying tools
         let previewDiff: DiffLine[] | undefined;
@@ -390,8 +401,10 @@ export async function* runAgentLoop(
           permissionMode = "auto-accept";
         }
         if (choice === "no") {
-          toolResults.push({ type: "tool_result", toolCallId: id, toolResult: "User denied this tool call.", isError: true });
-          yield { type: "tool_result", toolName: call.name, toolCallId: id, output: "User denied this tool call.", isError: true };
+          deniedCalls.add(denialKey);
+          const reason = "User denied this tool call. Do not retry it with the same arguments — take a different approach, or stop and explain what you need.";
+          toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+          yield { type: "tool_result", toolName: call.name, toolCallId: id, output: reason, isError: true };
           continue;
         }
       }

@@ -103,6 +103,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     mcpPromptCount,
     subagentStates,
     activePlan,
+    refreshPlan,
     submit,
     addDisplayMessage,
     cancel,
@@ -445,6 +446,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             setSystemMessages([]);
             process.stdout.write("\x1Bc");
           },
+          refreshPlan,
           saveSession: saveNow,
           refreshDisplay,
           loadSession,
@@ -505,7 +507,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setPsResponse(undefined);
       setSystemMessages([]);
     },
-    [config, conversation, clearMessages, exit, submit, attachments, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
+    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
   );
 
   const displayError = error;

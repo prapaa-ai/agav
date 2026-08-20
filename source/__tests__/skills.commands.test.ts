@@ -50,6 +50,7 @@ describe("skills/commands", () => {
       setProvider: vi.fn(),
       setEffort: vi.fn(),
       clearMessages: vi.fn(),
+      refreshPlan: vi.fn(),
       showStatus: vi.fn(),
       saveSession: vi.fn(),
       refreshDisplay: vi.fn(),
