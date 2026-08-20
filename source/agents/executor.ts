@@ -13,15 +13,6 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { decrypt } from "../utils/encrypt.js";
 
-// Mutex to serialize process.env mutations across concurrent agent calls
-let envLockQueue: Promise<void> = Promise.resolve();
-function acquireEnvLock(): Promise<() => void> {
-  let release: () => void;
-  const prev = envLockQueue;
-  envLockQueue = new Promise<void>((resolve) => { release = resolve; });
-  return prev.then(() => release!);
-}
-
 // AgavHooks type - defined locally since it's not exported from hooks.js
 interface AgavHooks {
   afterEdit?: string;
@@ -97,54 +88,35 @@ export async function executeNativeAgent(
   const model  = runtimeConfig["model"]  || agent.manifest.model  || deps.config.model;
   const effort = (runtimeConfig["effort"] || agent.manifest.effort || deps.config.effort) as import("../config/config.js").EffortLevel;
 
-  // Narrow lock scope: hold the env lock only during MCP server startup,
-  // then restore env and release before running the agent loop.
+  // Start per-agent MCP servers (credentials passed via subprocess env, not process.env)
   let agentMCPManager: import("../mcp/manager.js").MCPManager | null = null;
-  const releaseEnvLock = await acquireEnvLock();
-  try {
-    const originalEnv: Record<string, string | undefined> = {};
-    for (const [key, value] of Object.entries(runtimeConfig)) {
-      originalEnv[key] = process.env[key];
-      process.env[key] = value;
-    }
-
-    try {
-      const mcpServersDecl = agent.manifest["mcp-servers"] ?? [];
-      if (mcpServersDecl.length > 0) {
-        const { MCPManager } = await import("../mcp/manager.js");
-        agentMCPManager = new MCPManager();
-        for (const srv of mcpServersDecl) {
-          const serverConfig = {
-            command: srv.command,
-            args: srv.args ?? [],
-            env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...runtimeConfig },
-          };
-          try {
-            await agentMCPManager.startServer(srv.key, serverConfig);
-          } catch (err) {
-            console.warn(`[agent:${agent.manifest.name}] Failed to start MCP server "${srv.key}":`, err);
-          }
-        }
-      }
-    } finally {
-      // Restore env vars as soon as MCP servers have spawned (they inherit env at spawn time)
-      for (const [key, value] of Object.entries(originalEnv)) {
-        if (value === undefined) {
-          delete process.env[key];
-        } else {
-          process.env[key] = value;
-        }
+  const mcpServersDecl = agent.manifest["mcp-servers"] ?? [];
+  if (mcpServersDecl.length > 0) {
+    const { MCPManager } = await import("../mcp/manager.js");
+    agentMCPManager = new MCPManager();
+    for (const srv of mcpServersDecl) {
+      const serverConfig = {
+        command: srv.command,
+        args: srv.args ?? [],
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...runtimeConfig },
+      };
+      try {
+        await agentMCPManager.startServer(srv.key, serverConfig);
+      } catch (err) {
+        console.warn(`[agent:${agent.manifest.name}] Failed to start MCP server "${srv.key}":`, err);
       }
     }
-  } finally {
-    releaseEnvLock();
   }
 
-  // Agent loop runs without holding the env lock
   try {
+    // Wrap each tool's execute to inject credentials via context, not process.env.
+    // Tools access credentials via process.env during their execute() call only.
     const childRegistry = new ToolRegistry();
     for (const tool of agent.tools) {
-      childRegistry.register(tool);
+      childRegistry.register({
+        schema: tool.schema,
+        execute: (input) => tool.execute(input, { env: runtimeConfig }),
+      });
     }
 
     if (agentMCPManager) {

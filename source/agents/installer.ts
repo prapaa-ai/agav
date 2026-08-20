@@ -3,7 +3,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { readdir, rm, cp, mkdir, stat } from "node:fs/promises";
+import { readdir, rm, cp, mkdir, stat, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -40,9 +40,9 @@ function validateGitUrl(url: string): void {
   }
 }
 
-function assertPathContained(child: string, parent: string): void {
-  const resolved = resolve(child);
-  const root = resolve(parent);
+async function assertPathContained(child: string, parent: string): Promise<void> {
+  const resolved = await realpath(resolve(child)).catch(() => resolve(child));
+  const root = await realpath(resolve(parent)).catch(() => resolve(parent));
   if (!resolved.startsWith(root + "/") && !resolved.startsWith(root + "\\") && resolved !== root) {
     throw new Error("Agent path escapes the agents directory");
   }
@@ -80,7 +80,11 @@ export async function installAgent(
   }
 
   // Determine if source is a git URL or local path
-  const isGitUrl = source.startsWith("http://") || source.startsWith("https://") || source.startsWith("git@");
+  if (source.startsWith("git@")) {
+    return { success: false, error: "SSH (git@) URLs are not supported. Use HTTPS URLs instead." };
+  }
+
+  const isGitUrl = source.startsWith("http://") || source.startsWith("https://");
 
   let agentPath: string;
 
@@ -148,7 +152,7 @@ export async function installAgent(
       ? join(homedir(), ".agav", "agents")
       : join(cwd, ".agav", "agents");
   const destPath = join(agentsRoot, nameToCheck);
-  assertPathContained(destPath, agentsRoot);
+  await assertPathContained(destPath, agentsRoot);
 
   // Copy agent to destination
   try {
@@ -215,7 +219,7 @@ async function cloneAgent(url: string): Promise<{ success: boolean; path?: strin
 
       // Copy agent out of the clone, then clean up (avoids dragging .git into the install)
       const agentSrc = join(tempDir, subPath!.slice(1));
-      assertPathContained(agentSrc, tempDir);
+      await assertPathContained(agentSrc, tempDir);
       const outDir = join(tmpdir(), `agav-agent-${randomBytes(8).toString("hex")}`);
       await mkdir(outDir, { recursive: true });
       await cp(agentSrc, outDir, {
@@ -281,7 +285,7 @@ export async function uninstallAgent(nameOrAlias: string, destination: "global" 
       ? join(homedir(), ".agav", "agents")
       : join(cwd, ".agav", "agents");
   const agentPath = join(agentsRoot, nameOrAlias);
-  assertPathContained(agentPath, agentsRoot);
+  await assertPathContained(agentPath, agentsRoot);
 
   // Verify the path exists (registry entry is optional — agents can exist on disk
   // without a registry entry if the registry was pruned or manually edited)

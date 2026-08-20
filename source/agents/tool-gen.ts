@@ -92,6 +92,9 @@ export async function implementAgentTools(
   let fixed = 0;
 
   for (const tool of agent.tools) {
+    // Reject tool names containing path separators to prevent directory traversal
+    if (/[\/\\]/.test(tool.schema.name)) continue;
+
     const toolFile = join(toolsDir, `${tool.schema.name.replace(/_/g, "-")}.mjs`);
     let src: string;
     try { src = await readFile(toolFile, "utf-8"); } catch {

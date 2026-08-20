@@ -112,6 +112,8 @@ export async function startA2AAgent(agent: AgentDefinition): Promise<{ success: 
   const args = parts.slice(1);
 
   try {
+    // TODO: start-command is unreviewed execution from a downloaded manifest.
+    // Add user confirmation at install or first run.
     const proc = spawn(command, args, {
       cwd: agent.path,
       stdio: ["ignore", "pipe", "pipe"],

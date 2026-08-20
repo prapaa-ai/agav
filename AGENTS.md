@@ -92,6 +92,29 @@ tags: [jira, project-management]
 tool-permissions:
   jira_create_issue: destructive
   jira_view_issues: safe
+tools:                            # Declare tool schemas (avoids importing tool modules)
+  - name: jira_view_issues
+    description: View Jira issues assigned to the current user
+    inputSchema:
+      type: object
+      properties:
+        max_results:
+          type: number
+          description: Maximum number of results
+      required: []
+  - name: jira_create_issue
+    description: Create a new Jira issue
+    destructive: true
+    inputSchema:
+      type: object
+      properties:
+        project:
+          type: string
+        summary:
+          type: string
+        description:
+          type: string
+      required: [project, summary]
 enabled: true
 ---
 
@@ -99,6 +122,12 @@ enabled: true
 
 You are a Jira assistant with access to Jira REST API...
 ```
+
+### Tool Schema Declaration
+
+Declaring `tools` in AGENT.md provides accurate schemas to the model without importing tool modules. Without this, the model sees a placeholder schema (`{ task: string }`) until the tool's first invocation — which means the first call will use the wrong arguments.
+
+Tool names in the manifest should use underscores (matching the convention for `.mjs` filenames with hyphens: `search-issues.mjs` → `name: search_issues`).
 
 ### Tool Format (.mjs)
 
@@ -164,7 +193,7 @@ Credentials are stored per-agent in encrypted `config.json`:
 }
 ```
 
-At runtime, credentials are injected into `process.env` for the agent's execution scope only.
+At runtime, credentials are injected into `process.env` for the duration of each tool call only. They are not present in the main session's environment.
 
 ### Setting Credentials (Manual)
 
@@ -206,9 +235,11 @@ Your agent must implement:
 
 Agav will:
 1. Start the process via `start-command`
-2. Poll `/health` until ready
+2. Poll `/health` until ready (loopback only — remote endpoints are not supported)
 3. Send tasks to `/execute`
 4. Kill the process on exit
+
+> **Note:** `start-command` executes a binary from the downloaded agent manifest. Review the command before installing agents from untrusted sources.
 
 ## Marketplace
 
@@ -462,8 +493,8 @@ tool-permissions:
 
 - Credentials are per-agent (no cross-contamination)
 - Encrypted at rest using agav's encrypt/decrypt
-- Injected into `process.env` only during agent execution
-- Restored after execution completes
+- Injected into `process.env` only during individual tool calls (not the entire agent run)
+- Never visible to the main session's `run_command`
 
 ### HITL (Human-in-the-Loop)
 

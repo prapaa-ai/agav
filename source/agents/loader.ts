@@ -83,7 +83,11 @@ async function scanAgentTools(
   // Index manifest-declared tool schemas by name for quick lookup
   const manifestSchemaByName = new Map<string, NonNullable<AgentManifest["tools"]>[number]>();
   if (manifestTools) {
-    for (const t of manifestTools) manifestSchemaByName.set(t.name, t);
+    for (const t of manifestTools) {
+      // Normalize hyphens to underscores to match filename-derived toolName
+      const normalized = t.name.replace(/-/g, "_");
+      manifestSchemaByName.set(normalized, t);
+    }
   }
 
   for (const entry of entries) {
@@ -94,6 +98,7 @@ async function scanAgentTools(
 
     // Schema resolution: (1) manifest tools section, (2) .schema.json sidecar, (3) placeholder
     let schema: ToolDefinition["schema"];
+    let hasDeclaredSchema = false;
     const manifestEntry = manifestSchemaByName.get(toolName);
     if (manifestEntry) {
       schema = {
@@ -102,11 +107,18 @@ async function scanAgentTools(
         destructive: manifestEntry.destructive,
         inputSchema: manifestEntry.inputSchema,
       };
+      hasDeclaredSchema = true;
     } else {
       const sidecarPath = toolPath.replace(/\.(mjs|js)$/, ".schema.json");
       try {
         const sidecar = await readFile(sidecarPath, "utf-8");
         schema = JSON.parse(sidecar);
+        // Sanitize schema name to prevent path traversal (e.g. in tool-gen.ts write paths)
+        if (schema.name && /[\/\\]/.test(schema.name)) {
+          console.warn(`[agent] Sidecar schema name "${schema.name}" contains path separators, using filename-derived name`);
+          schema.name = toolName;
+        }
+        hasDeclaredSchema = true;
       } catch {
         console.warn(`[agent] No schema for tool "${toolName}" in ${agentDir} — declare it in AGENT.md tools section or provide a .schema.json sidecar`);
         schema = {
@@ -134,23 +146,37 @@ async function scanAgentTools(
 
     tools.push({
       schema,
-      async execute(input) {
-        if (!loadedExecute) {
-          const mod = await import(pathToFileURL(toolPath).href);
-          const toolDef = mod.default || mod;
-          if (!toolDef.execute) {
-            return { output: `Tool ${schema.name} has no execute function`, isError: true };
+      async execute(input, context?) {
+        // Inject credentials into process.env for this tool call only
+        const envToRestore: Record<string, string | undefined> = {};
+        if (context?.env) {
+          for (const [k, v] of Object.entries(context.env)) {
+            envToRestore[k] = process.env[k];
+            process.env[k] = v;
           }
-          // Update schema with the real one from the module if available
-          if (toolDef.schema) {
-            Object.assign(schema, toolDef.schema);
-            // Re-apply permission override
-            if (permission === "safe") schema.destructive = false;
-            else if (permission === "destructive") schema.destructive = true;
-          }
-          loadedExecute = toolDef.execute;
         }
-        return loadedExecute!(input);
+        try {
+          if (!loadedExecute) {
+            const mod = await import(pathToFileURL(toolPath).href);
+            const toolDef = mod.default || mod;
+            if (!toolDef.execute) {
+              return { output: `Tool ${schema.name} has no execute function`, isError: true };
+            }
+            // Only update schema from the module if no manifest/sidecar schema was declared
+            if (toolDef.schema && !hasDeclaredSchema) {
+              Object.assign(schema, toolDef.schema);
+              if (permission === "safe") schema.destructive = false;
+              else if (permission === "destructive") schema.destructive = true;
+            }
+            loadedExecute = toolDef.execute;
+          }
+          return await loadedExecute!(input);
+        } finally {
+          for (const [k, v] of Object.entries(envToRestore)) {
+            if (v === undefined) delete process.env[k];
+            else process.env[k] = v;
+          }
+        }
       },
     });
   }

@@ -11,6 +11,7 @@ vi.mock("node:fs/promises", () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
   stat: vi.fn(),
   readFile: vi.fn(),
+  realpath: vi.fn((p: string) => Promise.resolve(p)),
 }));
 
 vi.mock("../agents/loader.js", () => ({
