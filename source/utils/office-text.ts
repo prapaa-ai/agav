@@ -31,9 +31,14 @@ function decodeXml(value: string): string {
     if (entity.startsWith("#")) {
       const hex = entity[1] === "x" || entity[1] === "X";
       const code = Number.parseInt(hex ? entity.slice(2) : entity.slice(1), hex ? 16 : 10);
-      // Surrogate halves and out-of-plane values would make fromCodePoint
-      // throw, which is not worth failing a whole document over.
-      if (!Number.isInteger(code) || code < 0 || code > 0x10ffff) return match;
+      // Reject null byte, control chars, surrogates, and 0xFFFE/0xFFFF
+      // per XML spec §2.2 — fromCodePoint would throw on surrogates, and
+      // the rest are illegal in well-formed XML.
+      const xmlLegal = code === 0x9 || code === 0xa || code === 0xd
+        || (code >= 0x20 && code <= 0xd7ff)
+        || (code >= 0xe000 && code <= 0xfffd)
+        || (code >= 0x10000 && code <= 0x10ffff);
+      if (!Number.isInteger(code) || !xmlLegal) return match;
       return String.fromCodePoint(code);
     }
     return XML_ENTITIES[entity] ?? match;
@@ -76,7 +81,7 @@ function partToText(xml: string, grammar: TextGrammar): string {
 }
 
 function unzipParts(archive: Uint8Array, wanted: (name: string) => boolean): Record<string, Uint8Array> {
-  return unzipSync(archive, {
+  const parts = unzipSync(archive, {
     filter: (file) => {
       if (!wanted(file.name)) return false;
       if (file.originalSize > MAX_PART_BYTES) {
@@ -85,6 +90,15 @@ function unzipParts(archive: Uint8Array, wanted: (name: string) => boolean): Rec
       return true;
     },
   });
+
+  // Post-decompression guard: originalSize is attacker-controlled, so verify actual sizes
+  for (const [name, data] of Object.entries(parts)) {
+    if (data.length > MAX_PART_BYTES) {
+      throw new Error(`Office part "${name}" expanded to ${data.length} bytes; refusing to process it.`);
+    }
+  }
+
+  return parts;
 }
 
 const decoder = new TextDecoder("utf-8");

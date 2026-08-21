@@ -64,4 +64,20 @@ describe("utils/office-text", () => {
 
     expect(() => extractDocxText(archive)).toThrow(/refusing to decompress/);
   });
+
+  it("returns empty sections for a pptx with no slides", () => {
+    const { sections } = extractPptxText(zipSync({
+      "ppt/presentation.xml": strToU8("<x/>"),
+    }));
+    expect(sections).toEqual([]);
+  });
+
+  it("strips whitespace-only paragraphs", () => {
+    const { sections } = extractDocxText(docx(
+      `<w:p><w:r><w:t>Hello</w:t></w:r></w:p>` +
+      `<w:p><w:r><w:t>   </w:t></w:r></w:p>` +
+      `<w:p><w:r><w:t>World</w:t></w:r></w:p>`
+    ));
+    expect(sections[0]).toBe("Hello\nWorld");
+  });
 });

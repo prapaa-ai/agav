@@ -128,11 +128,11 @@ jobs:
     if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
@@ -169,7 +169,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$RAW" -gt "$BUDGET" ]; then
-            echo "::warning::agav-linux-x64 is $RAW bytes, over the $BUDGET byte budget."
+            echo "::error::agav-linux-x64 is $RAW bytes, over the $BUDGET byte budget."
+            exit 1
           else
             echo "agav-linux-x64: $RAW bytes (budget $BUDGET), compressed $GZ bytes."
           fi

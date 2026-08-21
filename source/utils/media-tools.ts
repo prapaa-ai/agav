@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -85,6 +85,10 @@ function findPdfRasteriser(): Promise<boolean> {
   return pdfRasterPromise;
 }
 
+export async function hasImageTool(): Promise<boolean> {
+  return (await findImageTool()) !== null;
+}
+
 /** Only for tests: forget which tools were found. */
 export function resetMediaToolCache(): void {
   imageToolPromise = undefined;
@@ -146,6 +150,12 @@ async function withTempDir<T>(prefix: string, run: (directory: string) => Promis
  * sending the original bytes.
  */
 export async function downscaleImage(path: string, longEdge: number, quality: number): Promise<RasterImage | null> {
+  // Guard against command injection: ImageMagick interprets `scheme:` prefixes
+  // (e.g. https://, ephemeral:) as delegates and `[...]` suffixes as frame
+  // selectors. Verifying the path points to an existing local file prevents a
+  // crafted path from triggering remote URL fetching or other delegate abuse.
+  try { await stat(path); } catch { return null; }
+
   const tool = await findImageTool();
   if (!tool) return null;
   const source = await sourceDimensions(tool, path);
@@ -203,6 +213,11 @@ export async function rasterisePdfRange(
   longEdge: number,
   quality: number,
 ): Promise<RasterisedPages | null> {
+  // Guard against command injection: verify the path is an existing local file
+  // before passing it to pdftoppm, which could otherwise interpret crafted
+  // paths as remote resources or special directives.
+  try { await stat(pdfPath); } catch { return null; }
+
   if (!(await findPdfRasteriser())) return null;
   if (!Number.isFinite(longestPoints) || longestPoints <= 0) return null;
   // PDF user space is 72 units to the inch, so this is the DPI that lands the

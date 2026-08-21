@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { ContentBlock } from "../providers/types.js";
-import { downscaleImage, imageToolHint, pdfRasterHint, rasterisePdfRange } from "./media-tools.js";
+import { downscaleImage, hasImageTool, imageToolHint, pdfRasterHint, rasterisePdfRange } from "./media-tools.js";
 import { extractDocxText, extractPptxText } from "./office-text.js";
 import { setEnvHint } from "./shell-hints.js";
 
@@ -288,6 +288,8 @@ async function imagePreview(path: string, size: number): Promise<{ block: Conten
     };
   }
 
+  const toolAvailable = await hasImageTool();
+
   const extension = extname(path).toLowerCase();
   const mediaType = RAW_IMAGE_MEDIA_TYPES[extension];
   if (!mediaType) {
@@ -300,7 +302,9 @@ async function imagePreview(path: string, size: number): Promise<{ block: Conten
   return {
     block: { type: "image", imageData: raw.toString("base64"), imageMediaType: mediaType },
     metadata: `${basename(path)} (raw ${mediaType})`,
-    warnings: [`${basename(path)} was sent at full size. ${imageToolHint()}`],
+    warnings: [toolAvailable
+      ? `${basename(path)} could not be converted and was sent at full size; the installed image tool may not support this format.`
+      : `${basename(path)} was sent at full size. ${imageToolHint()}`],
   };
 }
 
@@ -387,7 +391,7 @@ async function readPdfContext(path: string, size: number, options: FileContextOp
   validateRange(options.startPage, options.endPage, "Page range");
   const pdfjs = await loadPdfjs();
   const bytes = await readFile(path);
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes), verbosity: pdfjs.VerbosityLevel.ERRORS });
+  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes), verbosity: pdfjs.VerbosityLevel.WARNINGS });
   const pdf = await loadingTask.promise;
   const pageCount = pdf.numPages;
   const requestedStart = options.startPage ?? 1;

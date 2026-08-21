@@ -252,10 +252,17 @@ if (Test-Path $FinalPath) {
 }
 
 # --- Resolve download URL ---
+# Normalize: strip a leading v/V so we can re-add it consistently, matching
+# install.sh's normalize_version.  Both `--version=0.3.0` and `--version=v0.3.0`
+# now produce the same URL.
+if ($Version -ne "latest") {
+    $Version = $Version -replace '^[vV]', ''
+}
+
 if ($Version -eq "latest") {
     $DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
 } else {
-    $DownloadUrl = "https://github.com/$Repo/releases/download/$Version/$AssetName"
+    $DownloadUrl = "https://github.com/$Repo/releases/download/v$Version/$AssetName"
 }
 
 Write-Host "agav -> Downloading agav for $Target..." -ForegroundColor Cyan

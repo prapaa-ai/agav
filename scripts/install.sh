@@ -719,8 +719,7 @@ if command -v file >/dev/null 2>&1; then
   case "$file_type" in
     *executable* | *ELF* | *Mach-O*) ;;
     *)
-      err "Downloaded file is not a valid binary: ${file_type:-unknown}"
-      exit 1
+      warn "Downloaded file may not be a valid binary (file reports: ${file_type:-unknown}). The checksum matched, so proceeding anyway."
       ;;
   esac
 fi
