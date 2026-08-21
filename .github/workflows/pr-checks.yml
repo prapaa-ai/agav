@@ -122,6 +122,63 @@ jobs:
       - run: pnpm build
       - run: npx vitest run --passWithNoTests
 
+  binary-size:
+    name: Binary Size
+    needs: changed
+    if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true' || needs.changed.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      # Only pnpm, deliberately: the release workflow no longer runs a separate
+      # `bun install react-devtools-core`, so this is the check that the ink
+      # devtools import still resolves through pnpm's peer layout. A compiled
+      # binary that cannot find it dies at startup, not at build time, which is
+      # exactly the class of break that used to reach a release.
+      - run: pnpm install --frozen-lockfile
+      - name: Compile and measure
+        run: |
+          # Same target and flags the release uses, so the number here is the
+          # number users download. linux-x64 stands in for the matrix: the
+          # difference between targets is the embedded Bun runtime, which no
+          # pull request can change.
+          mkdir -p dist
+          bun build source/cli.tsx --compile --target=bun-linux-x64 --outfile dist/agav-linux-x64
+          gzip -9 -k -n dist/agav-linux-x64
+
+          RAW=$(wc -c < dist/agav-linux-x64)
+          GZ=$(wc -c < dist/agav-linux-x64.gz)
+          # ~99 MiB of this is the embedded Bun runtime and is not ours to
+          # shrink. The budget leaves room for a few MB of growth and trips on
+          # the kind of regression that added 30 MB of native image codecs.
+          BUDGET=$((110 * 1024 * 1024))
+
+          {
+            echo "| Asset | Bytes | MiB |"
+            echo "| --- | ---: | ---: |"
+            echo "| agav-linux-x64 | $RAW | $((RAW / 1048576)) |"
+            echo "| agav-linux-x64.gz | $GZ | $((GZ / 1048576)) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$RAW" -gt "$BUDGET" ]; then
+            echo "::error::agav-linux-x64 is $RAW bytes, over the $BUDGET byte budget."
+            exit 1
+          else
+            echo "agav-linux-x64: $RAW bytes (budget $BUDGET), compressed $GZ bytes."
+          fi
+      - name: Smoke-test the compiled binary
+        # A binary that builds but cannot start is the failure this job exists
+        # to catch, and --version exercises the whole module graph's top level.
+        run: ./dist/agav-linux-x64 --version
+
   # --- Installer scripts ---
   # These ship outside the release pipeline (hand-copied to agav.dev), so
   # nothing else in this workflow would ever look at them.
@@ -415,6 +472,7 @@ jobs:
       - typecheck
       - build
       - test
+      - binary-size
       - installer-sh
       - installer-ps1
       - pr-title
@@ -436,6 +494,7 @@ jobs:
             "${{ needs.typecheck.result }}" \
             "${{ needs.build.result }}" \
             "${{ needs.test.result }}" \
+            "${{ needs.binary-size.result }}" \
             "${{ needs.installer-sh.result }}" \
             "${{ needs.installer-ps1.result }}" \
             "${{ needs.pr-title.result }}" \

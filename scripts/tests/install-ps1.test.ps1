@@ -43,6 +43,21 @@ $StubBody = @'
 function Save-FileWithProgress {
     param([string]$Url, [string]$Destination, [string]$Activity)
     if ($env:FAKE_DL_FAIL -eq "1") { throw "simulated 404 for $Url" }
+    # The installer asks for "<asset>.gz" first and falls back to the raw asset.
+    # FAKE_GZ_FAIL is a release that predates the compressed asset; FAKE_GZ_JUNK
+    # is one where the bytes arrive but are not a gzip stream.
+    if ($Url.EndsWith(".gz")) {
+        if ($env:FAKE_GZ_FAIL -eq "1") { throw "simulated 404 for $Url" }
+        if ($env:FAKE_GZ_JUNK -eq "1") {
+            Copy-Item -LiteralPath $env:FAKE_ASSET -Destination $Destination -Force
+            return
+        }
+        $Raw = [System.IO.File]::ReadAllBytes($env:FAKE_ASSET)
+        $Out = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Create)
+        $Gz = New-Object System.IO.Compression.GZipStream($Out, [System.IO.Compression.CompressionMode]::Compress)
+        try { $Gz.Write($Raw, 0, $Raw.Length) } finally { $Gz.Dispose(); $Out.Dispose() }
+        return
+    }
     Copy-Item -LiteralPath $env:FAKE_ASSET -Destination $Destination -Force
 }
 function Get-RemoteText {
@@ -129,6 +144,8 @@ function Restore-State {
     $env:FAKE_SHA_TEXT = ""
     $env:FAKE_SHA_FAIL = ""
     $env:FAKE_DL_FAIL = ""
+    $env:FAKE_GZ_FAIL = ""
+    $env:FAKE_GZ_JUNK = ""
     if (-not $script:HaveRegistry) { return }
     try {
         $Key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
@@ -157,6 +174,7 @@ Check "--help does not install" (-not (Test-Path "$Root/help"))
 Write-Host "== happy path =="
 $env:FAKE_SHA_TEXT = "$Digest  agav-windows-x64.exe"
 $env:FAKE_SHA_FAIL = "0"; $env:FAKE_DL_FAIL = "0"
+$env:FAKE_GZ_FAIL = "0"; $env:FAKE_GZ_JUNK = "0"
 $d = "$Root/ok"
 $r = Invoke-Install $d
 Check "install exits 0" ($r.Code -eq 0) "code=$($r.Code) out=$($r.Out)"
@@ -165,6 +183,31 @@ Check "content matches asset" ((Get-Content -Raw "$d/agav.exe") -eq (Get-Content
 Check "reports checksum verified" ($r.Out -match "Checksum verified")
 Check "no .tmp left" (@(Get-ChildItem $d -Filter "*.tmp" -EA SilentlyContinue).Count -eq 0)
 Check "no .bak left" (@(Get-ChildItem $d -Filter "*.bak" -EA SilentlyContinue).Count -eq 0)
+Check "no .gz left" (@(Get-ChildItem $d -Filter "*.gz" -EA SilentlyContinue).Count -eq 0)
+# The compressed asset is roughly a third of the download, so preferring it is
+# the whole point; falling back silently would look identical from out here.
+Check "took the compressed asset" ($r.Out -notmatch "falling back to the full binary") "out=$($r.Out)"
+
+Write-Host "== a release with no compressed asset =="
+# Anything published before .gz existed, and any partial upload since.
+$env:FAKE_GZ_FAIL = "1"
+$d = "$Root/nogz"
+$r = Invoke-Install $d
+Check "no-gz install exits 0" ($r.Code -eq 0) "code=$($r.Code) out=$($r.Out)"
+Check "no-gz binary landed" (Test-Path "$d/agav.exe")
+Check "no-gz content matches asset" ((Get-Content -Raw "$d/agav.exe") -eq (Get-Content -Raw $Asset))
+Check "no-gz says it fell back" ($r.Out -match "falling back to the full binary")
+Check "no-gz leaves no .gz" (@(Get-ChildItem $d -Filter "*.gz" -EA SilentlyContinue).Count -eq 0)
+$env:FAKE_GZ_FAIL = "0"
+
+Write-Host "== a .gz that is not actually gzip =="
+$env:FAKE_GZ_JUNK = "1"
+$d = "$Root/junkgz"
+$r = Invoke-Install $d
+Check "junk-gz install exits 0" ($r.Code -eq 0) "code=$($r.Code) out=$($r.Out)"
+Check "junk-gz installs the raw asset instead" ((Get-Content -Raw "$d/agav.exe") -eq (Get-Content -Raw $Asset))
+Check "junk-gz leaves no .gz" (@(Get-ChildItem $d -Filter "*.gz" -EA SilentlyContinue).Count -eq 0)
+$env:FAKE_GZ_JUNK = "0"
 
 Write-Host "== upgrade over an existing install (rename-aside) =="
 Set-Content -LiteralPath "$d/agav.exe" -Value "OLD" -NoNewline
@@ -226,6 +269,7 @@ $d = "$Root/stale"
 New-Item -ItemType Directory -Path $d -Force | Out-Null
 Set-Content "$d/agav.exe.9999999.bak" "dead pid backup" -NoNewline
 Set-Content "$d/agav.exe.9999998.tmp" "dead pid download" -NoNewline
+Set-Content "$d/agav.exe.9999997.tmp.gz" "dead pid compressed download" -NoNewline
 Set-Content "$d/agav.exe.tmp" "legacy download" -NoNewline
 Set-Content "$d/agav.exe.$PID.tmp" "LIVE download" -NoNewline
 Set-Content "$d/notes.txt" "keep me" -NoNewline
@@ -233,6 +277,9 @@ $r = Invoke-Install $d
 Check "sweep exits 0" ($r.Code -eq 0) "code=$($r.Code) out=$($r.Out)"
 Check "dead-pid .bak swept" (-not (Test-Path "$d/agav.exe.9999999.bak"))
 Check "dead-pid .tmp swept" (-not (Test-Path "$d/agav.exe.9999998.tmp"))
+# An interrupted install leaves ~25MB of compressed download behind, which the
+# sweep missed entirely while it only knew about .tmp and .bak.
+Check "dead-pid .tmp.gz swept" (-not (Test-Path "$d/agav.exe.9999997.tmp.gz"))
 Check "legacy .tmp swept" (-not (Test-Path "$d/agav.exe.tmp"))
 Check "LIVE .tmp spared" (Test-Path "$d/agav.exe.$PID.tmp")
 Check "unrelated file spared" (Test-Path "$d/notes.txt")
