@@ -18,6 +18,7 @@ $BinaryName = "agav.exe"
 $Version = if ($env:AGAV_VERSION) { $env:AGAV_VERSION } else { "latest" }
 $InstallDir = if ($env:AGAV_INSTALL_DIR) { $env:AGAV_INSTALL_DIR } else { "$env:LOCALAPPDATA\agav" }
 $SkipChecksum = $env:AGAV_SKIP_CHECKSUM -match '^(1|true|yes)$'
+$Beta = $env:AGAV_BETA -match '^(1|true|yes)$'
 
 # Windows refuses to delete the image of a running process, so an update
 # renames the old exe aside and deletes it later. Sweep whatever earlier runs
@@ -125,6 +126,7 @@ foreach ($arg in $args) {
     if ($arg -match "^--version=(.+)$") { $Version = $Matches[1] }
     if ($arg -match "^--dir=(.+)$") { $InstallDir = $Matches[1] }
     if ($arg -eq "--skip-checksum") { $SkipChecksum = $true }
+    if ($arg -eq "--beta") { $Beta = $true }
     if ($arg -eq "--help" -or $arg -eq "-h") {
         Write-Host "Usage: install.ps1 [OPTIONS]"
         Write-Host ""
@@ -132,6 +134,7 @@ foreach ($arg in $args) {
         Write-Host "  --version=<tag>    Install a specific version (default: latest)"
         Write-Host "  --dir=<path>       Install directory (default: %LOCALAPPDATA%\agav)"
         Write-Host "  --skip-checksum    Install without verifying the SHA-256 checksum"
+        Write-Host "  --beta               Install the latest pre-release (beta) version"
         Write-Host "  --uninstall        Remove agav, keeping your settings and history"
         Write-Host "  --purge            Remove agav and delete %USERPROFILE%\.agav as well"
         Write-Host "  -h, --help         Show this help"
@@ -140,6 +143,7 @@ foreach ($arg in $args) {
         Write-Host "  AGAV_VERSION         Version to install; overridden by --version."
         Write-Host "  AGAV_INSTALL_DIR     Install directory; overridden by --dir."
         Write-Host "  AGAV_SKIP_CHECKSUM   Set to 1/true/yes to skip verification."
+        Write-Host "  AGAV_BETA            Set to 1/true/yes to install pre-release; overridden by --beta."
         exit 0
     }
 }
@@ -260,7 +264,23 @@ if ($Version -ne "latest") {
 }
 
 if ($Version -eq "latest") {
-    $DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
+    if ($Beta) {
+        Write-Host "agav -> Resolving latest pre-release..." -ForegroundColor Cyan
+        # /releases returns all releases (including pre-releases) newest-first.
+        # Pick the first one, which may be a pre-release.
+        try {
+            $ReleasesJson = Get-RemoteText "https://api.github.com/repos/$Repo/releases?per_page=1"
+            $Tag = [regex]::Match($ReleasesJson, '"tag_name"\s*:\s*"v?([^"]+)"').Groups[1].Value
+            if (-not $Tag) { throw "No tag found" }
+            $DownloadUrl = "https://github.com/$Repo/releases/download/v$Tag/$AssetName"
+            Write-Host "agav -> Resolved: v$Tag" -ForegroundColor Cyan
+        } catch {
+            Write-Host "Could not resolve latest pre-release: $($_.Exception.Message)" -ForegroundColor Red
+            exit 1
+        }
+    } else {
+        $DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
+    }
 } else {
     $DownloadUrl = "https://github.com/$Repo/releases/download/v$Version/$AssetName"
 }

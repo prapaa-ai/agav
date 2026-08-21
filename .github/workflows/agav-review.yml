@@ -3,7 +3,7 @@ name: Agav PR Review
 on:
   pull_request:
     types: [opened, synchronize]
-    branches: [main]
+    branches: [main, beta]
 
 permissions:
   contents: read
