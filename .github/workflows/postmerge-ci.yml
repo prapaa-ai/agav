@@ -2,7 +2,7 @@ name: Post-Merge CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, beta]
 
 permissions:
   contents: read
