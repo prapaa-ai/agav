@@ -159,7 +159,22 @@ export function useAgent(
   const [thinkingText, setThinkingText] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [turnStartTime, setTurnStartTime] = useState<number | null>(null);
+  const turnStartTimeRef = useRef<number | null>(null);
   const [lastTurnDurationMs, setLastTurnDurationMs] = useState<number | null>(null);
+  /** Set turn start time in both state (for UI) and ref (for synchronous reads). */
+  const updateTurnStart = useCallback((ts: number | null) => {
+    turnStartTimeRef.current = ts;
+    setTurnStartTime(ts);
+  }, []);
+  /** Finalize the turn timer: compute duration from the ref, then clear both. */
+  const finalizeTurnTimer = useCallback(() => {
+    const start = turnStartTimeRef.current;
+    if (start !== null) {
+      setLastTurnDurationMs(Date.now() - start);
+    }
+    turnStartTimeRef.current = null;
+    setTurnStartTime(null);
+  }, []);
   const [toolCalls, setToolCalls] = useState<ToolCallInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
@@ -405,6 +420,9 @@ export function useAgent(
   /** Resolve the oldest pending tool confirmation with the user's decision. */
   const confirmTool = useCallback((choice: ConfirmResult) => {
     if (choice === "always") sessionPermissionModeRef.current = "auto-accept";
+    // Reset the turn timer so it only counts active agent work, not time
+    // spent waiting for the user to approve/deny a tool call.
+    updateTurnStart(Date.now());
     confirmationQueueRef.current.resolve(choice);
   }, []);
 
@@ -527,7 +545,7 @@ export function useAgent(
       conversationRef.current.addUserMessage(submittedText, submittedBlocks, visibleText, trimmed, invocationReason);
 
       setIsLoading(true);
-      setTurnStartTime(Date.now());
+      updateTurnStart(Date.now());
       setLastTurnDurationMs(null);
       setStreamingText("");
       setToolCalls([]);
@@ -873,10 +891,7 @@ export function useAgent(
 
               case "turn_complete":
                 setIsLoading(false);
-                setTurnStartTime((start) => {
-                  if (start !== null) setLastTurnDurationMs(Date.now() - start);
-                  return null;
-                });
+                finalizeTurnTimer();
                 setSubagentStates([]);
                 setTokenUsage((currentUsage) => {
                   saveSession(
@@ -964,10 +979,7 @@ export function useAgent(
                   },
                 ]);
                 setIsLoading(false);
-                setTurnStartTime((start) => {
-                  if (start !== null) setLastTurnDurationMs(Date.now() - start);
-                  return null;
-                });
+                finalizeTurnTimer();
                 break;
               }
             }
@@ -1000,10 +1012,7 @@ export function useAgent(
             ]);
           }
           setIsLoading(false);
-          setTurnStartTime((start) => {
-            if (start !== null) setLastTurnDurationMs(Date.now() - start);
-            return null;
-          });
+          finalizeTurnTimer();
         }
 
         setStreamingText("");

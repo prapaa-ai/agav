@@ -23,6 +23,7 @@ interface Props {
   turnStartTime?: number | null;
   lastTurnDurationMs?: number | null;
   isLoading?: boolean;
+  isPaused?: boolean;
 }
 
 /** Formats token counts into a compact display string. */
@@ -71,6 +72,7 @@ export default function StatusBar({
   turnStartTime,
   lastTurnDurationMs,
   isLoading,
+  isPaused,
 }: Props) {
   const total = inputTokens + outputTokens;
   const parts = [];
@@ -83,11 +85,21 @@ export default function StatusBar({
     parts.push("0 tokens");
   }
 
-  // Live elapsed timer while the agent is active
+  // Live elapsed timer while the agent is active.
+  // Freezes when paused (HITL confirmation pending) and resumes when the user
+  // responds — at which point turnStartTime is reset so the timer restarts.
   const [elapsed, setElapsed] = useState(0);
+  const frozenElapsedRef = React.useRef(0);
   useEffect(() => {
     if (!turnStartTime) {
       setElapsed(0);
+      frozenElapsedRef.current = 0;
+      return;
+    }
+    if (isPaused) {
+      // Freeze: capture the current value and stop ticking.
+      frozenElapsedRef.current = Date.now() - turnStartTime;
+      setElapsed(frozenElapsedRef.current);
       return;
     }
     setElapsed(Date.now() - turnStartTime);
@@ -95,7 +107,7 @@ export default function StatusBar({
       setElapsed(Date.now() - turnStartTime);
     }, 100);
     return () => clearInterval(timer);
-  }, [turnStartTime]);
+  }, [turnStartTime, isPaused]);
 
   // Build the turn duration segment
   let durationSegment = "";

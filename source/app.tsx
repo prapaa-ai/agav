@@ -123,6 +123,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     sessionId,
     sessionName,
     transcriptRevision,
+    turnStartTime,
+    lastTurnDurationMs,
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
@@ -740,6 +742,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
         sandboxBackend={getSandboxName()}
         branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
+        turnStartTime={turnStartTime}
+        lastTurnDurationMs={lastTurnDurationMs}
+        isLoading={isLoading}
+        isPaused={!!pendingConfirmation}
       />
     </Box>
   );
