@@ -134,7 +134,7 @@ foreach ($arg in $args) {
         Write-Host "  --version=<tag>    Install a specific version (default: latest)"
         Write-Host "  --dir=<path>       Install directory (default: %LOCALAPPDATA%\agav)"
         Write-Host "  --skip-checksum    Install without verifying the SHA-256 checksum"
-        Write-Host "  --beta               Install the latest pre-release (beta) version"
+        Write-Host "  --beta             Install the latest pre-release (beta) version"
         Write-Host "  --uninstall        Remove agav, keeping your settings and history"
         Write-Host "  --purge            Remove agav and delete %USERPROFILE%\.agav as well"
         Write-Host "  -h, --help         Show this help"
@@ -253,6 +253,33 @@ if (Test-Path $FinalPath) {
         Write-Host "agav -> Existing installation found: v$ExistingVer" -ForegroundColor Cyan
         Write-Host "agav -> Upgrading..." -ForegroundColor Cyan
     } catch {}
+}
+
+# This has to stay above the pre-release lookup below, not down with the other
+# helpers. A script is executed top to bottom, and `function` is a statement
+# like any other, so a call placed earlier in the file than the definition hits
+# a "term is not recognized" error rather than resolving late. That is exactly
+# what --beta and AGAV_BETA=1 did on every Windows install.
+function Get-RemoteText {
+    param([Parameter(Mandatory = $true)][string]$Url)
+
+    Add-Type -AssemblyName System.Net.Http
+    $Handler = New-Object System.Net.Http.HttpClientHandler
+    try {
+        $Handler.DefaultProxyCredentials = [System.Net.CredentialCache]::DefaultCredentials
+    } catch {}
+    $Client = New-Object System.Net.Http.HttpClient($Handler)
+    $Client.DefaultRequestHeaders.UserAgent.ParseAdd("agav-installer")
+    $Response = $null
+    try {
+        $Response = $Client.GetAsync($Url).GetAwaiter().GetResult()
+        $Response.EnsureSuccessStatusCode() | Out-Null
+        return $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    } finally {
+        if ($Response) { $Response.Dispose() }
+        $Client.Dispose()
+        $Handler.Dispose()
+    }
 }
 
 # --- Resolve download URL ---
@@ -390,28 +417,6 @@ function Expand-GzipFile {
         if ($Output) { $Output.Dispose() }
         if ($Gzip) { $Gzip.Dispose() }
         if ($Compressed) { $Compressed.Dispose() }
-    }
-}
-
-function Get-RemoteText {
-    param([Parameter(Mandatory = $true)][string]$Url)
-
-    Add-Type -AssemblyName System.Net.Http
-    $Handler = New-Object System.Net.Http.HttpClientHandler
-    try {
-        $Handler.DefaultProxyCredentials = [System.Net.CredentialCache]::DefaultCredentials
-    } catch {}
-    $Client = New-Object System.Net.Http.HttpClient($Handler)
-    $Client.DefaultRequestHeaders.UserAgent.ParseAdd("agav-installer")
-    $Response = $null
-    try {
-        $Response = $Client.GetAsync($Url).GetAwaiter().GetResult()
-        $Response.EnsureSuccessStatusCode() | Out-Null
-        return $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-    } finally {
-        if ($Response) { $Response.Dispose() }
-        $Client.Dispose()
-        $Handler.Dispose()
     }
 }
 

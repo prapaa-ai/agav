@@ -158,6 +158,41 @@ For Windows Command Prompt (`cmd.exe`):
 
 Or download a specific platform binary from [Releases](../../releases).
 
+### Pre-release builds
+
+Betas ship as GitHub pre-releases, and the commands above deliberately skip them. Pass `--beta` to install the newest one instead:
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://agav.dev/install.sh | bash -s -- --beta
+```
+
+**Windows PowerShell:**
+
+```powershell
+& ([scriptblock]::Create((irm https://www.agav.dev/install.ps1))) --beta
+```
+
+> [!NOTE]
+> `irm ... | iex -- --beta` does not work — it fails with a parameter binding
+> error. `Invoke-Expression` takes the script as its positional `-Command`
+> argument, so `--beta` claims that slot and the piped script has nowhere left
+> to bind. PowerShell has no `--` end-of-options convention. The script block
+> form above is how you pass any flag on Windows.
+
+**Windows Command Prompt (`cmd.exe`):**
+
+```bat
+curl -fsSL https://agav.dev/install.cmd -o install.cmd
+install.cmd --beta
+del install.cmd
+```
+
+Setting `AGAV_BETA=1` in the environment does the same thing, which is handy when the flag is awkward to thread through.
+
+Once you're on a pre-release, `agav update` leaves you there: it only ever looks at the latest stable release, and it compares `major.minor.patch` with the suffix stripped. From `0.2.0-beta.1` that means you won't be pulled back to `0.1.9`, but you won't move to `0.2.0` final either — you stay until `0.2.1` ships. To rejoin the stable channel sooner, re-run the installer without `--beta`.
+
 ### Staying up to date
 
 Agav checks for a newer release on startup and updates itself. Run it by hand at any time:
