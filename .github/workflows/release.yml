@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    branches: [main, beta]
 
 jobs:
   check-version:
@@ -11,6 +11,7 @@ jobs:
     outputs:
       changed: ${{ steps.version.outputs.changed }}
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4.2.2
         with:
@@ -29,7 +30,14 @@ jobs:
             fi
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
-            echo "Version changed: $PREV → $CURRENT"
+            # Versions with a hyphen suffix (e.g. 0.2.0-beta.1) are pre-releases.
+            if echo "$CURRENT" | grep -q '-'; then
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+              echo "Version changed: $PREV → $CURRENT (pre-release)"
+            else
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+              echo "Version changed: $PREV → $CURRENT (stable)"
+            fi
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No version change"
@@ -190,6 +198,7 @@ jobs:
         with:
           tag_name: v${{ needs.check-version.outputs.version }}
           name: v${{ needs.check-version.outputs.version }}
+          prerelease: ${{ needs.check-version.outputs.prerelease == 'true' }}
           target_commitish: ${{ github.sha }}
           body: |
             ## Changes
