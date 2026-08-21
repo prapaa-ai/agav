@@ -238,6 +238,7 @@ sed -n '/^replace_symlink() {/,/^}/p' "$SRC" >"$ROOT/replace_symlink.sh"
 
 (
   set -eu
+  # shellcheck source=/dev/null
   . "$ROOT/replace_symlink.sh"
   replace_symlink "$LINKS/current" "$LINKS/releases/1.0.0"   # fresh install
   replace_symlink "$LINKS/current" "$LINKS/releases/2.0.0"   # upgrade
@@ -245,13 +246,15 @@ sed -n '/^replace_symlink() {/,/^}/p' "$SRC" >"$ROOT/replace_symlink.sh"
 check "a fresh install then an upgrade both exit 0" $?
 [ "$(readlink "$LINKS/current")" = "$LINKS/releases/2.0.0" ]
 check "current points at the new release" $? "got=$(readlink "$LINKS/current" 2>/dev/null)"
-[ -z "$(ls -A "$LINKS/releases/1.0.0" | grep -v '^agav$')" ]
-check "no temp link stranded inside the old release" $? "found=$(ls -A "$LINKS/releases/1.0.0")"
+stranded="$(find "$LINKS/releases/1.0.0" -mindepth 1 ! -name agav)"
+[ -z "$stranded" ]
+check "no temp link stranded inside the old release" $? "found=$stranded"
 
 # The visible command is a symlink to a *file*, which never hit the bug. Kept
 # so a fix aimed at the directory case cannot quietly break this one.
 (
   set -eu
+  # shellcheck source=/dev/null
   . "$ROOT/replace_symlink.sh"
   replace_symlink "$LINKS/bin-agav" "$LINKS/releases/1.0.0/agav"
   replace_symlink "$LINKS/bin-agav" "$LINKS/releases/2.0.0/agav"
