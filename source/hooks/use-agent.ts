@@ -140,6 +140,8 @@ interface UseAgentReturn {
   sessionId: string | undefined;
   sessionName: string | undefined;
   transcriptRevision: number;
+  turnStartTime: number | null;
+  lastTurnDurationMs: number | null;
 }
 
 /** Own the agent lifecycle, conversation state, tool events, persistence, and confirmations. */
@@ -156,6 +158,8 @@ export function useAgent(
   const [streamingText, setStreamingText] = useState("");
   const [thinkingText, setThinkingText] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [turnStartTime, setTurnStartTime] = useState<number | null>(null);
+  const [lastTurnDurationMs, setLastTurnDurationMs] = useState<number | null>(null);
   const [toolCalls, setToolCalls] = useState<ToolCallInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
@@ -523,6 +527,8 @@ export function useAgent(
       conversationRef.current.addUserMessage(submittedText, submittedBlocks, visibleText, trimmed, invocationReason);
 
       setIsLoading(true);
+      setTurnStartTime(Date.now());
+      setLastTurnDurationMs(null);
       setStreamingText("");
       setToolCalls([]);
 
@@ -867,6 +873,10 @@ export function useAgent(
 
               case "turn_complete":
                 setIsLoading(false);
+                setTurnStartTime((start) => {
+                  if (start !== null) setLastTurnDurationMs(Date.now() - start);
+                  return null;
+                });
                 setSubagentStates([]);
                 setTokenUsage((currentUsage) => {
                   saveSession(
@@ -954,6 +964,10 @@ export function useAgent(
                   },
                 ]);
                 setIsLoading(false);
+                setTurnStartTime((start) => {
+                  if (start !== null) setLastTurnDurationMs(Date.now() - start);
+                  return null;
+                });
                 break;
               }
             }
@@ -986,6 +1000,10 @@ export function useAgent(
             ]);
           }
           setIsLoading(false);
+          setTurnStartTime((start) => {
+            if (start !== null) setLastTurnDurationMs(Date.now() - start);
+            return null;
+          });
         }
 
         setStreamingText("");
@@ -1043,5 +1061,7 @@ export function useAgent(
     sessionId,
     sessionName,
     transcriptRevision,
+    turnStartTime,
+    lastTurnDurationMs,
   };
 }
