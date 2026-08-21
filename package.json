@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.106.0",
-    "@napi-rs/canvas": "^1.0.2",
+    "@napi-rs/canvas": "^1.0.6",
     "ajv": "^8.20.0",
     "chalk": "^5.4.0",
     "ink": "^7.1.0",
