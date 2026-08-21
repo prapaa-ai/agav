@@ -10,6 +10,7 @@ import { loadSessionState, markCleanExit } from "./config/session-state.js";
 import { loadTheme } from "./config/theme.js";
 import { ConversationState } from "./agent/conversation.js";
 import { runAgentLoop } from "./agent/loop.js";
+import { NO_EDITS_PROMPT, schemaRetryPrompt } from "./agent/internal-prompts.js";
 import { createToolRegistry } from "./tools/registry-factory.js";
 import { getToolLabel } from "./utils/tool-labels.js";
 import { loadKeybindings } from "./config/keybindings.js";
@@ -286,9 +287,7 @@ export async function runPipeMode(
 
       // Re-prompt: agent analyzed but didn't edit
       process.stderr.write(`  ${icons.warning} No edits made — re-prompting (attempt ${attempt + 2}/${maxRetries + 1})...\n`);
-      conversation.addUserMessage(
-        "You analyzed the code but did not make any changes. Now write the actual fix. Use edit_file or write_file to modify the source code. Do not just explain — implement the fix."
-      );
+      conversation.addInternalUserMessage(NO_EDITS_PROMPT);
     }
 
     return { finalText, exitCode, wroteStreamText };
@@ -311,9 +310,7 @@ export async function runPipeMode(
     if (!validation.valid) {
       const details = formatValidationErrors(validation);
       process.stderr.write(`Schema validation failed; retrying once: ${details}\n`);
-      conversation.addUserMessage(
-        `Your previous response was invalid. ${details}\nCorrect it and return ONLY valid JSON matching the required schema, with no markdown fences or commentary.`,
-      );
+      conversation.addInternalUserMessage(schemaRetryPrompt(details));
       result = await runTurn(false);
       if (result.exitCode !== 0) return result.exitCode;
       validation = validateOutput(result.finalText, validate);

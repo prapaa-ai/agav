@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Box, Text, useInput, useStdin } from "ink";
-import { KeybindingResolver, formatKeybinding, formatUsableKeybinding, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
+import { KeybindingResolver, PROMPT_ACTIONS, formatKeybinding, formatUsableKeybinding, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { loadPromptHistory, savePromptHistory } from "../config/prompt-history.js";
 import { readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
@@ -85,10 +85,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
   const valueRef = useRef(value);
   const cursorPosRef = useRef(cursorPos);
-  const keyResolverRef = useRef(new KeybindingResolver(keybindings, [
-    "cancel", "newline", "submit", "historyUp", "historyDown", "clearInput",
-    "deleteWordBackward", "editLastPrompt", "openCommandPalette",
-  ]));
+  const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
   valueRef.current = value;
   cursorPosRef.current = cursorPos;
 

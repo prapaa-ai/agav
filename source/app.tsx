@@ -10,6 +10,7 @@ import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
 import ToolConfirm from "./components/tool-confirm.js";
 import ToolDetailPanel from "./components/tool-detail-panel.js";
+import PlanDetailPanel from "./components/plan-detail-panel.js";
 import SubagentDisplay from "./components/subagent-display.js";
 import Spinner from "ink-spinner";
 import type { AgavConfig } from "./config/config.js";
@@ -17,6 +18,7 @@ import type { LLMProvider } from "./providers/types.js";
 import { createProvider } from "./providers/registry.js";
 import type { ContentBlock, InvocationReason } from "./providers/types.js";
 import { useAgent } from "./hooks/use-agent.js";
+import { isInternalUserMessage } from "./agent/internal-prompts.js";
 import { CommandRegistry } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { saveSession } from "./config/history.js";
@@ -28,7 +30,7 @@ import { getRandomHint } from "./utils/hints.js";
 import { fileLink } from "./utils/hyperlink.js";
 import { getClipboardImage, type ClipboardImage } from "./utils/clipboard-image.js";
 import { useClipboardImageDetector } from "./hooks/use-paste-handler.js";
-import { KeybindingResolver, formatKeybinding, formatKeybindings, normalizeKeyEvent, type Keybindings } from "./config/keybindings.js";
+import { KeybindingResolver, GLOBAL_ACTIONS, formatKeybinding, formatKeybindings, normalizeKeyEvent, type Keybindings } from "./config/keybindings.js";
 import { getLoopStatus, stopActiveLoop } from "./commands/loop.js";
 import { loadScheduledTasks, cronMatches, markTaskRun } from "./config/scheduler.js";
 import { getSandboxName } from "./utils/sandbox.js";
@@ -70,6 +72,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     try { return createProvider(config); } catch { return null; }
   }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const [showToolDetail, setShowToolDetail] = useState(false);
+  const [showPlanDetail, setShowPlanDetail] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
   const [inlineTranscript, setInlineTranscript] = useState(false);
@@ -84,10 +87,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     exitInk();
   }, [exitInk]);
   const commandRegistryRef = useRef(new CommandRegistry());
-  const keyResolverRef = useRef(new KeybindingResolver(keybindings, [
-    "cancel", "interrupt", "cycleSubagents", "toggleToolDetail", "retryLastTurn",
-    "showKeybindings", "clearScreen", "exit",
-  ]));
+  const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
 
   const {
     messages,
@@ -106,6 +106,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     mcpPromptCount,
     subagentStates,
     activePlan,
+    refreshPlan,
     submit,
     addDisplayMessage,
     cancel,
@@ -255,12 +256,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     const texts: string[] = [];
     for (const msg of resumeMessages) {
       if (msg.role !== "user") continue;
+      // Recalling a prompt the agent wrote to itself is never what the arrow
+      // key is for. "Do Step " is the plan runner's own continuation.
+      if (isInternalUserMessage(msg)) continue;
       if (msg.sourceText) {
         if (!msg.sourceText.startsWith("Do Step ")) texts.push(msg.sourceText);
         continue;
       }
       for (const block of msg.content) {
-        if (block.type === "text" && block.text && !block.text.startsWith("[Earlier conversation") && !block.text.startsWith("Do Step ")) {
+        if (block.type === "text" && block.text && !block.text.startsWith("Do Step ")) {
           texts.push(block.text);
         }
       }
@@ -293,6 +297,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [submit]);
 
   const hasSubagents = isLoading && subagentStates.length > 0;
+
+  // Drop the detail view when the plan it was showing is cleared or finished,
+  // so a later plan does not reopen it without being asked.
+  useEffect(() => {
+    if (!activePlan) setShowPlanDetail(false);
+  }, [activePlan]);
 
   useEffect(() => {
     if (!isLoading) {
@@ -340,6 +350,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         return;
       }
     }
+    // Deliberately not gated on `isLoading`: reading the plan mid-run is the
+    // point. It only reads state the panel already renders, so it cannot
+    // interfere with the turn in flight.
+    if (match.action === "togglePlanDetail" && !pendingConfirmation) {
+      if (activePlan) {
+        setShowPlanDetail((prev) => !prev);
+      } else {
+        setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: "No active plan to show." }]);
+      }
+      return;
+    }
     if (match.action === "retryLastTurn" && !isLoading && !pendingConfirmation && input.length === 0) {
       const lastMessage = [...messages].reverse().find((message) => message.role === "user");
       const lastPrompt = lastMessage?.sourceText ?? lastMessage?.content;
@@ -358,6 +379,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       && !messages.some((message) => message.role === "tool")) {
       exit();
     }
+    // These two read the raw stroke rather than a bound action, so a keybinding
+    // that happens to use the same stroke would otherwise fire both. Ignoring
+    // strokes the resolver already claimed keeps the two schemes from overlapping.
+    if (match.action) return;
     if (key.ctrl && char === "o" && !pendingConfirmation) {
       setShowCompactionSummary((prev) => !prev);
     }
@@ -450,6 +475,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             setSystemMessages([]);
             process.stdout.write("\x1Bc");
           },
+          refreshPlan,
           saveSession: saveNow,
           refreshDisplay,
           loadSession,
@@ -514,7 +540,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setPsResponse(undefined);
       setSystemMessages([]);
     },
-    [config, conversation, clearMessages, exit, submit, attachments, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
+    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
   );
 
   const displayError = error;
@@ -591,10 +617,16 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           {(() => {
             const done = activePlan.steps.filter((s) => s.status === "done").length;
             const total = activePlan.steps.length;
-            if (done === total) {
-              return <Text color="green">{`  ✓ All ${total} steps complete`}</Text>;
-            }
-            return <Text dimColor>{`  ${done}/${total} complete`}</Text>;
+            const progress = done === total
+              ? <Text color="green">{`  ✓ All ${total} steps complete`}</Text>
+              : <Text dimColor>{`  ${done}/${total} complete`}</Text>;
+            if (showPlanDetail) return progress;
+            return (
+              <>
+                {progress}
+                <Text dimColor italic>{`  ${formatKeybinding(keybindings, "togglePlanDetail")}: full plan`}</Text>
+              </>
+            );
           })()}
         </Box>
       )}
@@ -652,6 +684,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
       {showToolDetail && toolMessages.length > 0 && (
         <ToolDetailPanel tools={toolMessages} closeKey={formatKeybinding(keybindings, "toggleToolDetail")} />
+      )}
+
+      {showPlanDetail && activePlan && (
+        <PlanDetailPanel plan={activePlan} closeKey={formatKeybinding(keybindings, "togglePlanDetail")} />
       )}
 
       {agentsTUIActive && (

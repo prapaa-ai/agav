@@ -1,4 +1,5 @@
 import type { Message, ContentBlock, InvocationReason } from "../providers/types.js";
+import { COMPACTION_PLACEHOLDER_PREFIX } from "./internal-prompts.js";
 import {
   estimateConversationTokens,
   estimateMessageTokens,
@@ -52,6 +53,14 @@ export class ConversationState {
       ...(sourceText ? { sourceText } : {}),
       ...(invocationReason ? { invocationReason } : {}),
     });
+  }
+
+  /**
+   * A user turn the agent injects to steer itself. Flagged so the transcript
+   * can leave it out — the model needs to see it, the user should not.
+   */
+  addInternalUserMessage(text: string): void {
+    this.messages.push({ role: "user", content: [{ type: "text", text }], internal: true });
   }
 
   /**
@@ -218,7 +227,7 @@ export class ConversationState {
     const droppedMessages = this.messages.slice(0, keepFrom);
     const userMsgCount = droppedMessages.filter((m) => m.role === "user").length;
 
-    const placeholder = `[Earlier conversation (${userMsgCount} exchanges) was compacted to save context. Continue from here.]`;
+    const placeholder = `${COMPACTION_PLACEHOLDER_PREFIX} (${userMsgCount} exchanges) was compacted to save context. Continue from here.]`;
     let summaryText = placeholder;
 
     if (summarize) {
@@ -234,9 +243,13 @@ export class ConversationState {
     // sent after the compaction fails, not just this one.
     if (!summaryText.trim()) summaryText = placeholder;
 
+    // The summary stands in for turns the user did type, but it is written by
+    // the agent — showing it verbatim as a user message is how a resumed
+    // transcript ends up quoting instructions back at the user.
     const summary: Message = {
       role: "user",
       content: [{ type: "text", text: summaryText }],
+      internal: true,
     };
 
     this.messages = this.sanitizeMessages([summary, ...this.messages.slice(keepFrom)]);

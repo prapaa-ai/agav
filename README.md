@@ -22,7 +22,7 @@ Agav reads, searches and edits the repository you run it in, and runs the comman
 - **Five providers** — Anthropic, OpenAI, Gemini, Vertex AI and Ollama, switchable mid-session with `/model`.
 - **Sandboxed commands** — shell tools run under Seatbelt on macOS and Bubblewrap on Linux where either is available.
 - **Non-interactive mode** — `agav run` and `agav --print` make the same agent scriptable from CI, with per-tool permissions and optional JSON Schema output.
-- **Sessions that survive** — resume, branch, name, search and export past conversations; `/compact` reclaims context without starting over.
+- **Sessions that survive** — resume, branch, name, search and export past conversations; `/compact` reclaims context without starting over. Plans are saved per-session and picked back up on resume.
 - **Extensible** — MCP servers, plugins, skills and subagents.
 - **Repository-aware editing** — LSP-backed queries, notebook support, test running, and `/undo` for the last file change.
 
@@ -79,7 +79,7 @@ agav update
 ## Slash commands
 
 <details>
-<summary>26 commands, available in any session</summary>
+<summary>27 commands, available in any session</summary>
 
 | Command | What it does |
 | --- | --- |
@@ -90,7 +90,7 @@ agav update
 | `/effort` | Show or change reasoning effort |
 | `/context` | Show context window usage |
 | `/compact` | Compact conversation history to free up context |
-| `/plan` | Show or manage the active plan |
+| `/plan` | Show, list, or update the active plan (`/plan list`, `/plan <n> <status>`, `/plan clear`) |
 | `/steer` | Add context or direction to guide the agent |
 | `/undo` | Revert the last file change |
 | `/memory` | Manage persistent memories |
@@ -107,6 +107,7 @@ agav update
 | `/loop` | Repeat a prompt on an interval |
 | `/schedule` | Manage persistent scheduled tasks |
 | `/changelog` | Show release notes for the current version |
+| `/ps` | Run a brief side query without interrupting the main task |
 | `/debug` | Show internal state for debugging |
 | `/exit` | Exit Agav |
 
@@ -360,6 +361,33 @@ Either of these recovers a dedicated key:
 For Shift+Enter with no setup at all, use a terminal that implements the protocol: Kitty, Ghostty, WezTerm, foot, Alacritty, or a recent iTerm2.
 
 </details>
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `Esc` | Cancel a streaming response |
+| `Ctrl+D` | Toggle tool detail panel |
+| `Ctrl+G` | Toggle plan detail panel |
+| `Ctrl+J` | Insert newline (works on every terminal) |
+| `Ctrl+V` | Paste an image from clipboard |
+| `Tab` | Cycle subagent focus |
+| `Ctrl+R` | Retry last turn |
+| `Ctrl+C` | Interrupt the agent |
+| `Ctrl+L` | Clear screen |
+| `Ctrl+Q` | Exit |
+
+Shortcuts are customisable in `~/.agav/keybindings.json` or `.agav/keybindings.json`. See the [keybindings reference](https://docs.agav.dev/reference/keybindings) for the full list.
+
+### Copying output
+
+Agav runs inside your terminal, so copying uses your terminal's own selection mechanism:
+
+- **macOS** — select text with the mouse, then `Cmd+C`. In Terminal.app and iTerm2 this works out of the box.
+- **Linux** — select text, then `Ctrl+Shift+C` (or middle-click to paste a selection).
+- **Windows Terminal** — select text, then `Ctrl+C` (when nothing is running) or `Ctrl+Shift+C`.
+
+To save a full conversation to a file instead, use `/export` — it writes the entire session as Markdown.
 
 ## Extending
 

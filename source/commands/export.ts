@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import { stripTerminalLinks } from "../utils/hyperlink.js";
+import { isInternalUserMessage } from "../agent/internal-prompts.js";
 
 /** Handles the /export command. */
 export const exportCommand: SlashCommand = {
@@ -23,6 +24,9 @@ export const exportCommand: SlashCommand = {
 
     for (const msg of messages) {
       if (msg.role === "user") {
+        // Prompts the agent injected to steer itself are not the user speaking,
+        // so exporting them under "You" misattributes them.
+        if (isInternalUserMessage(msg)) continue;
         const text = stripTerminalLinks(msg.displayText ?? msg.content
           .filter((b) => b.type === "text")
           .map((b) => b.text)
