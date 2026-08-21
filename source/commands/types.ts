@@ -31,6 +31,8 @@ export interface CommandContext {
   setProvider: (provider: AgavConfig["provider"]) => void
   setEffort: (effort: import("../config/config.js").EffortLevel) => void
   clearMessages: () => void
+  /** Re-read the plan from disk so the on-screen plan panel matches it. */
+  refreshPlan: () => void
   showStatus: (text: string) => void
   saveSession: () => void
   refreshDisplay: () => void
@@ -46,6 +48,7 @@ export interface CommandContext {
   addTokenUsage: (usage: TokenUsage) => void
   setRunningSkill: (name: string | null) => void
   setPickerActive: (active: boolean) => void
+  showAgentsTUI: (onDone: () => void) => void
 }
 
 /** Represents the result of executing a slash command. */

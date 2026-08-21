@@ -9,7 +9,11 @@ export interface ToolResult {
   contentBlocks?: ContentBlock[];
 }
 
+export interface ToolContext {
+  env?: Record<string, string>;
+}
+
 export interface ToolDefinition {
   schema: ToolSchema;
-  execute(input: Record<string, unknown>): Promise<ToolResult>;
+  execute(input: Record<string, unknown>, context?: ToolContext): Promise<ToolResult>;
 }

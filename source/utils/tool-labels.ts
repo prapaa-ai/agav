@@ -3,6 +3,12 @@ import { projectRelativePath, terminalRelativePaths, toolPathValues } from "./di
 interface ToolMeta {
   label: string;
   formatSummary: (input: Record<string, unknown>) => string;
+  /**
+   * The tool records the agent's own progress rather than doing anything to the
+   * project. Shown without the emphasis real work gets, so it reads as a note
+   * in the margin instead of another action to scan.
+   */
+  bookkeeping?: boolean;
 }
 
 const TOOL_META: Record<string, ToolMeta> = {
@@ -62,8 +68,17 @@ const TOOL_META: Record<string, ToolMeta> = {
     formatSummary: (input) => String(input.url ?? ""),
   },
   update_plan: {
-    label: "Update Plan",
-    formatSummary: (input) => `step ${input.step} → ${input.status}`,
+    // "Update Plan step 3 → in_progress" reads as the agent rewriting its plan
+    // and going off track. All it does is tick a box in .agav/plans, so both
+    // the label and the summary say where it is, not that something changed.
+    label: "Plan Progress",
+    formatSummary: (input) => {
+      const step = `step ${input.step}`;
+      if (input.status === "done") return `${step} complete`;
+      if (input.status === "failed") return `${step} failed`;
+      return `starting ${step}`;
+    },
+    bookkeeping: true,
   },
   image: {
     label: "Image",
@@ -101,13 +116,35 @@ const DEFAULT_META: ToolMeta = {
 };
 
 export function getToolLabel(name: string): string {
-  return (TOOL_META[name] ?? DEFAULT_META).label;
+  if (TOOL_META[name]) return TOOL_META[name].label;
+  // Named agent tools (e.g. "win_cua_agent" → "win-cua agent")
+  if (name.endsWith("_agent")) {
+    const agentName = name.slice(0, -6).replace(/_/g, "-");
+    return `${agentName} agent`;
+  }
+  // Agent sub-tools with namespace prefix (e.g. "wincua_run_powershell" → "Run PowerShell")
+  // Strip the prefix (everything up to and including the first underscore after a namespace)
+  const prefixMatch = name.match(/^[a-z]+_(.+)$/);
+  if (prefixMatch) {
+    const rest = prefixMatch[1].replace(/_/g, " ");
+    return rest.charAt(0).toUpperCase() + rest.slice(1);
+  }
+  return DEFAULT_META.label;
+}
+
+/** See `ToolMeta.bookkeeping`. Unknown tools are treated as real work. */
+export function isBookkeepingTool(name: string): boolean {
+  return TOOL_META[name]?.bookkeeping === true;
 }
 
 export function getToolSummary(
   name: string,
   input: Record<string, unknown>,
 ): string {
+  if (name.endsWith("_agent") && typeof input.task === "string") {
+    const task = input.task as string;
+    return task.length > 60 ? task.slice(0, 60) + "..." : task;
+  }
   const summary = (TOOL_META[name] ?? DEFAULT_META).formatSummary(input);
   return terminalRelativePaths(summary, toolPathValues(input));
 }

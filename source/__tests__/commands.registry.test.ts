@@ -10,6 +10,7 @@ const createContext = (): CommandContext => ({
   setProvider: vi.fn(),
   setEffort: vi.fn(),
   clearMessages: vi.fn(),
+  refreshPlan: vi.fn(),
   showStatus: vi.fn(),
   saveSession: vi.fn(),
   refreshDisplay: vi.fn(),
@@ -24,6 +25,7 @@ const createContext = (): CommandContext => ({
   addTokenUsage: vi.fn(),
   setRunningSkill: vi.fn(),
   setPickerActive: vi.fn(),
+  showAgentsTUI: vi.fn(),
 });
 
 describe("commands/registry", () => {

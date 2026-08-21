@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Static, Text } from "ink";
 import { renderMarkdown } from "./markdown-text.js";
-import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
+import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
 import { getTheme } from "../config/theme.js";
 import { fileLink } from "../utils/hyperlink.js";
 import type { DiffLine } from "../utils/diff.js";
@@ -122,12 +122,16 @@ function ToolResultLine({ message }: { message: DisplayMessage }) {
   const preview = lines[0]?.slice(0, 120) ?? "";
   const lineCount = lines.length;
   const suffix = lineCount > 1 ? ` (${lineCount} lines)` : "";
+  // Progress ticks stay in the scrollback for the rest of the session, so this
+  // is where they most need to read as notes rather than as work. A failed one
+  // still goes red — that one is worth stopping on.
+  const muted = !message.isError && !!message.toolName && isBookkeepingTool(message.toolName);
 
   return (
     <Box flexDirection="column">
       <Text>
         <Text dimColor>{"  └─ "}</Text>
-        <Text bold color={message.isError ? "red" : "yellow"}>{label}</Text>
+        <Text bold={!muted} color={message.isError ? "red" : muted ? undefined : "yellow"} dimColor={muted}>{label}</Text>
         {summary ? <Text dimColor> {summary}</Text> : null}
         <Text dimColor>{suffix}</Text>
       </Text>

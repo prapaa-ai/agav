@@ -6,6 +6,12 @@ import type {
 } from "../providers/types.js";
 import type { ConversationState } from "./conversation.js";
 import type { ToolRegistry } from "../tools/registry.js";
+import {
+  MAX_STEPS_PROMPT,
+  NEEDS_VERIFY_PROMPT,
+  VERIFY_FAILED_PROMPT,
+  testsFailedPrompt,
+} from "./internal-prompts.js";
 
 export type AgentEvent =
   | { type: "planning"; plan: string }
@@ -115,6 +121,12 @@ export async function* runAgentLoop(
   let verifyReprompts = 0;
   const MAX_VERIFY_REPROMPTS = 2;
   const maxIterations = params.maxIterations ?? 100;
+  // Calls the user has already refused, keyed by name + arguments. Scoped to
+  // the full loop invocation (not per-turn) so the model cannot retry a denied
+  // call later in the same session. This is intentionally conservative: if the
+  // user changes their mind, they can say so in a new message and the submit()
+  // call starts a fresh loop with an empty set.
+  const deniedCalls = new Set<string>();
 
   let pendingSummarizeUsage: Record<string, number> | null = null;
 
@@ -177,10 +189,7 @@ export async function* runAgentLoop(
     // Graceful shutdown: on the last step, ask for a summary instead of hard-erroring
     const isLastStep = iteration === maxIterations - 1;
     if (isLastStep) {
-      conversation.addUserMessage(
-        "You have reached the maximum number of steps. Summarize what you have accomplished, " +
-        "list any remaining work, and stop. Do not call any more tools."
-      );
+      conversation.addInternalUserMessage(MAX_STEPS_PROMPT);
     }
 
     let textAccum = "";
@@ -306,13 +315,7 @@ export async function* runAgentLoop(
       const verifyFailed = madeEdits && ranShellAfterEdit && lastShellFailed;
       if ((needsVerify || verifyFailed) && verifyReprompts < MAX_VERIFY_REPROMPTS) {
         verifyReprompts++;
-        const msg = needsVerify
-          ? "You made changes but did not verify they work. Run the program to check your changes produce the correct output. " +
-            "If there are expected output files, compare your output against them. If the task requires compilation, compile and check for errors/warnings. " +
-            "Do not stop until you have verified your solution."
-          : "Your last verification command failed or produced errors/warnings. Read the output carefully, identify the specific issue, fix it, and verify again. " +
-            "Do not stop until verification passes cleanly.";
-        conversation.addUserMessage(msg);
+        conversation.addInternalUserMessage(needsVerify ? NEEDS_VERIFY_PROMPT : VERIFY_FAILED_PROMPT);
         continue;
       }
       yield { type: "assistant_message_complete", text: textAccum };
@@ -344,27 +347,42 @@ export async function* runAgentLoop(
         continue;
       }
 
-      const isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
-      // Escape hatch for headless runs: a destructive command may be run
-      // unattended only when the allowlist names it (`run_command:rm -rf dist`).
-      // --auto-accept and a blanket `run_command` grant deliberately do not
-      // qualify, but without this there was no way to approve one at all and
-      // CI pipelines that legitimately clean a build directory just failed.
+      const tool = params.toolRegistry.list().find((t) => t.schema.name === call.name);
+      const toolDestructiveFlag = tool?.schema.destructive;
+
+      // Only trust destructive:false from builtin tools (SAFE_TOOLS).
+      // Non-builtin tools (agents, MCP) cannot lower their own destructive status.
+      let isDestructive: boolean;
+      if (toolDestructiveFlag === true) {
+        isDestructive = true;
+      } else if (toolDestructiveFlag === false && SAFE_TOOLS.has(call.name)) {
+        isDestructive = false;
+      } else {
+        isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
+      }
+
       const destructiveApproved = isDestructive
         && isAllowed(call.name, input, params.allowedTools, { requirePattern: true });
       const denyWrites = permissionMode === "deny-writes";
+      const trustedSafe = toolDestructiveFlag === false && SAFE_TOOLS.has(call.name);
       const needsConfirm = (isDestructive && !destructiveApproved)
         || (!SAFE_TOOLS.has(call.name)
+          && !trustedSafe
           && permissionMode !== "auto-accept"
           && !isAllowed(call.name, input, params.allowedTools));
-      // --deny-writes outranks the allowlist: the escape hatch must not be able
-      // to punch a destructive command through an explicit "no writes" run.
       if ((denyWrites && isDestructive) || (needsConfirm && (denyWrites || !confirmTool))) {
         const reason = denyWrites
           ? "Write operations are denied (--deny-writes mode)."
           : `Tool '${call.name}' requires confirmation but no confirmation handler is available (headless mode).`;
         toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
         yield { type: "tool_result", toolName: call.name, output: reason, isError: true };
+        continue;
+      }
+      const denialKey = `${call.name}:${JSON.stringify(input)}`;
+      if (needsConfirm && deniedCalls.has(denialKey)) {
+        const reason = `User already denied '${call.name}' with these exact arguments. Do not request it again — take a different approach, or stop and explain what you need.`;
+        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+        yield { type: "tool_result", toolName: call.name, toolCallId: id, output: reason, isError: true };
         continue;
       }
       if (needsConfirm && confirmTool) {
@@ -390,8 +408,10 @@ export async function* runAgentLoop(
           permissionMode = "auto-accept";
         }
         if (choice === "no") {
-          toolResults.push({ type: "tool_result", toolCallId: id, toolResult: "User denied this tool call.", isError: true });
-          yield { type: "tool_result", toolName: call.name, toolCallId: id, output: "User denied this tool call.", isError: true };
+          deniedCalls.add(denialKey);
+          const reason = "User denied this tool call. Do not retry it with the same arguments — take a different approach, or stop and explain what you need.";
+          toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+          yield { type: "tool_result", toolName: call.name, toolCallId: id, output: reason, isError: true };
           continue;
         }
       }
@@ -451,11 +471,7 @@ export async function* runAgentLoop(
     if (hasTestFailure) {
       testRepairAttempts++;
       if (testRepairAttempts <= MAX_REPAIR_ATTEMPTS) {
-        conversation.addUserMessage(
-          `Tests failed (attempt ${testRepairAttempts}/${MAX_REPAIR_ATTEMPTS}). ` +
-          "Analyze the test failures above carefully. Fix the code and run tests again. " +
-          (testRepairAttempts > 1 ? "Try a different approach — your previous fix didn't work." : ""),
-        );
+        conversation.addInternalUserMessage(testsFailedPrompt(testRepairAttempts, MAX_REPAIR_ATTEMPTS));
       }
     } else if (hasTestRun) {
       testRepairAttempts = 0;

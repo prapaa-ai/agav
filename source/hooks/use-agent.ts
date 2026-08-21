@@ -1,10 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import type { DisplayMessage } from "../components/message-list.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
-import type { LLMProvider, ContentBlock, InvocationReason } from "../providers/types.js";
+import type { LLMProvider, ContentBlock, InvocationReason, Message } from "../providers/types.js";
 import type { AgavConfig } from "../config/config.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
+import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { createToolRegistry } from "../tools/registry-factory.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { saveSession, type SessionRecord } from "../config/history.js";
@@ -14,6 +15,10 @@ import {
   savePlan,
   loadPlan,
   clearPlan,
+  isPlanActive,
+  setPlanScope,
+  adoptPlanScope,
+  prunePlans,
   formatPlanForPrompt,
   ensurePlanFile,
   type Plan,
@@ -36,6 +41,51 @@ let messageId = 0;
 function nextId(): string {
   return String(++messageId);
 }
+
+/**
+ * Rebuild the visible transcript from the conversation the model sees — on
+ * resume, and whenever the screen is redrawn. The two are not the same list:
+ * the conversation also carries prompts the agent wrote to steer itself, and
+ * carries the user's turns as they were sent rather than as they were typed.
+ */
+export function messagesToDisplay(msgs: Message[]): DisplayMessage[] {
+  const displayMsgs: DisplayMessage[] = [];
+  for (const msg of msgs) {
+    // Prompts the agent injected to steer itself are user turns to the model
+    // only; rebuilding the transcript from them is what made a resumed session
+    // quote its own instructions back at the user.
+    if (isInternalUserMessage(msg)) continue;
+    // Falling through to the raw blocks would show the text as sent rather
+    // than as typed — @mentions expanded, per-turn context appended.
+    const rendered = msg.displayText ?? msg.sourceText;
+    if (rendered) {
+      displayMsgs.push({
+        id: nextId(),
+        role: msg.role === "user" ? "user" : "assistant",
+        content: rendered,
+        sourceText: msg.sourceText,
+        invocationReason: msg.invocationReason,
+      });
+      continue;
+    }
+    for (const block of msg.content) {
+      if (block.type === "text" && block.text) {
+        displayMsgs.push({
+          id: nextId(),
+          role: msg.role === "user" ? "user" : "assistant",
+          content: block.text,
+        });
+      }
+    }
+  }
+  return displayMsgs;
+}
+
+/**
+ * How many times the plan auto-continue may resubmit a step that has not moved
+ * off `pending`/`in_progress` before it stops and hands control back.
+ */
+const MAX_PLAN_STEP_ATTEMPTS = 3;
 
 import type { ConfirmResult } from "../agent/loop.js";
 import type { DiffLine } from "../utils/diff.js";
@@ -73,6 +123,7 @@ interface UseAgentReturn {
   mcpPromptCount: number;
   subagentStates: SubagentProgress[];
   activePlan: Plan | null;
+  refreshPlan: () => void;
   submit: (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason) => Promise<boolean>;
   addDisplayMessage: (msg: DisplayMessage) => void;
   cancel: () => void;
@@ -126,37 +177,20 @@ export function useAgent(
   const toolInputsRef = useRef(new Map<string, Record<string, unknown>>());
   const turnCountRef = useRef(0);
   const [planContinueMsg, setPlanContinueMsg] = useState<string | null>(null);
+  // Tracks how many times the plan auto-continue has resubmitted the same step
+  // without it completing, so a step that can never finish cannot loop forever.
+  const planContinueRef = useRef<{ stepId: number; attempts: number }>({ stepId: -1, attempts: 0 });
+  // "Always" is a session decision, not a per-turn one; the loop's own
+  // permission mode is rebuilt on every turn, so remember it out here.
+  // Separate concern from plans — fixes the "always approve" choice not
+  // persisting across turns within the same session.
+  const sessionPermissionModeRef = useRef<AgavConfig["permissionMode"] | undefined>(undefined);
+  const resetPlanContinue = () => { planContinueRef.current = { stepId: -1, attempts: 0 }; };
   const resumedRef = useRef(false);
 
   const confirmationQueueRef = useRef(new ConfirmationQueue());
   const conversationRef = useRef(new ConversationState());
   conversationRef.current.setModel(config.model);
-
-  function messagesToDisplay(msgs: import("../providers/types.js").Message[]): DisplayMessage[] {
-    const displayMsgs: DisplayMessage[] = [];
-    for (const msg of msgs) {
-      if (msg.displayText) {
-        displayMsgs.push({
-          id: nextId(),
-          role: msg.role === "user" ? "user" : "assistant",
-          content: msg.displayText,
-          sourceText: msg.sourceText,
-          invocationReason: msg.invocationReason,
-        });
-        continue;
-      }
-      for (const block of msg.content) {
-        if (block.type === "text" && block.text) {
-          displayMsgs.push({
-            id: nextId(),
-            role: msg.role === "user" ? "user" : "assistant",
-            content: block.text,
-          });
-        }
-      }
-    }
-    return displayMsgs;
-  }
 
   const refreshDisplay = useCallback(() => {
     process.stdout.write("\x1Bc");
@@ -235,21 +269,24 @@ export function useAgent(
     mcpManagerRef.current.setOnChange(syncMcpState);
 
     (async () => {
-      // Clear stale/completed plans; only show active plans on resume
-      if (resumeMessages && resumeMessages.length > 0) {
-        await ensurePlanFile();
+      // Restore this session's plan. Resuming a session brings its own plan
+      // back; a brand-new session starts on the draft slot, so any plan left
+      // there by the previous unsaved session is discarded rather than shown.
+      setPlanScope(sessionIdRef.current);
+      await ensurePlanFile();
+      if (!sessionIdRef.current) {
+        await clearPlan();
+      } else {
         const existing = await loadPlan();
         if (existing) {
-          const allDone = existing.steps.every((s) => s.status === "done" || s.status === "failed");
-          if (allDone) {
-            await clearPlan();
-          } else {
+          if (isPlanActive(existing)) {
             setActivePlan(existing);
+          } else {
+            await clearPlan();
           }
         }
-      } else {
-        await clearPlan();
       }
+      prunePlans().catch(() => {});
 
       // Load plugins
       const pluginTools = await loadPlugins();
@@ -296,6 +333,13 @@ export function useAgent(
         .map((s) => createSkillSlashCommand(s));
       setSkillCommands(userSkillCmds);
 
+      // Load agents — do NOT register as tools yet; registration happens lazily per-turn
+      if (provider) {
+        const { loadAgents, setCachedAgents } = await import("../agents/loader.js");
+        const agents = await loadAgents();
+        setCachedAgents(agents);
+      }
+
       // Start MCP servers
       if (config.mcpServers) {
         for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
@@ -333,11 +377,30 @@ export function useAgent(
     setSessionId(undefined);
     sessionNameRef.current = undefined;
     setSessionName(undefined);
+    sessionPermissionModeRef.current = undefined;
+    resetPlanContinue();
+    // Back to the draft slot, and drop whatever the last unsaved session left
+    // there so the new session does not inherit a plan it never made.
+    setPlanScope(null);
+    setActivePlan(null);
+    clearPlan().catch(() => {});
     setTranscriptRevision((revision) => revision + 1);
+  }, []);
+
+  /**
+   * Re-read the plan for the current scope into the panel. Slash commands write
+   * straight to disk, so without this the panel keeps rendering a plan the user
+   * has already cleared or edited.
+   */
+  const refreshPlan = useCallback(() => {
+    loadPlan()
+      .then((plan) => setActivePlan(isPlanActive(plan) ? plan : null))
+      .catch(() => {});
   }, []);
 
   /** Resolve the oldest pending tool confirmation with the user's decision. */
   const confirmTool = useCallback((choice: ConfirmResult) => {
+    if (choice === "always") sessionPermissionModeRef.current = "auto-accept";
     confirmationQueueRef.current.resolve(choice);
   }, []);
 
@@ -368,7 +431,11 @@ export function useAgent(
         merged,
         conversationRef.current.wasCompacted,
         sessionNameRef.current,
-      ).then((id) => { sessionIdRef.current = id; setSessionId(id); }).catch(() => {});
+      ).then((id) => {
+        sessionIdRef.current = id;
+        setSessionId(id);
+        adoptPlanScope(id);
+      }).catch(() => {});
       return merged;
     });
   }, [config.model, config.provider]);
@@ -381,8 +448,14 @@ export function useAgent(
     setSessionName(session.name);
     setTokenUsage(session.tokenUsage ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
     setError(null);
+    // Show the plan belonging to the session being loaded — not whichever plan
+    // happened to be on screen, and without deleting either one.
+    resetPlanContinue();
     setActivePlan(null);
-    clearPlan().catch(() => {});
+    setPlanScope(session.id);
+    loadPlan()
+      .then((plan) => setActivePlan(isPlanActive(plan) ? plan : null))
+      .catch(() => {});
     refreshDisplay();
   }, [refreshDisplay]);
 
@@ -391,6 +464,10 @@ export function useAgent(
     setSessionId(id);
     sessionNameRef.current = name;
     setSessionName(name);
+    setPlanScope(id);
+    loadPlan()
+      .then((plan) => setActivePlan(isPlanActive(plan) ? plan : null))
+      .catch(() => {});
   }, []);
 
   const renameSession = useCallback((name: string) => {
@@ -432,6 +509,9 @@ export function useAgent(
       // If the plan is still active, turn_complete will reload it.
       if (!displayText) {
         setActivePlan(null);
+        // A real message from the user is fresh input for the current step, so
+        // the no-progress budget starts over.
+        resetPlanContinue();
       }
 
       setMessages((prev) => [
@@ -468,14 +548,14 @@ export function useAgent(
         try {
           // Split per-turn context by how often it changes. Stable pieces (AGAV.md,
           // memories, skills, MCP resources) stay in the system prompt; volatile
-          // pieces (git state, steers, plan) are appended to this turn's user
-          // message below. Anything volatile at the front of the request evicts the
-          // tool schemas and the whole conversation from the provider's prefix cache.
+          // pieces (git state, steers, agent catalog) are appended to this turn's
+          // user message below. Anything volatile at the front of the request evicts
+          // the tool schemas and the whole conversation from the provider's prefix cache.
           const { refreshStableContext, refreshVolatileContext, formatTurnContext } =
             await import("../utils/system-prompt.js");
-          const [stableCtx, volatileCtx] = await Promise.all([
+          const [stableCtx, { context: volatileCtx }] = await Promise.all([
             refreshStableContext(mcpManagerRef.current),
-            refreshVolatileContext(),
+            refreshVolatileContext(trimmed),
           ]);
           const effectiveSystemPrompt = stableCtx
             ? (config.systemPrompt ?? "") + "\n\n" + stableCtx
@@ -484,19 +564,57 @@ export function useAgent(
           const turnContextParts: string[] = [];
           if (volatileCtx) turnContextParts.push(volatileCtx);
 
-          const existingPlan = await loadPlan();
-          const hasActivePlan = existingPlan && existingPlan.steps.some((s) => s.status !== "done");
-
-          // Clear stale plan if user is asking for something completely different
-          if (hasActivePlan && shouldAutoPlan(trimmed) && conversationRef.current.length <= 1) {
-            const { clearPlan } = await import("../agent/planner.js");
-            await clearPlan();
+          // Register enabled agents as callable tools. Registration is always-on
+          // regardless of whether the catalog hint was included in the volatile context.
+          if (provider) {
+            const { getCachedAgents } = await import("../agents/loader.js");
+            const { agentToTool } = await import("../agents/registry-factory.js");
+            const agents = getCachedAgents();
+            const enabledAgents = agents.filter((a) => a.manifest.enabled !== false);
+            for (const agent of enabledAgents) {
+              const toolName = `${agent.alias || agent.manifest.name}_agent`;
+              if (!toolRegistryRef.current.getSchemas().find((s) => s.name === toolName)) {
+                const { makeAgentProgressTracker } = await import("../agent/subagent-progress.js");
+                const trackerCache = new Map<string, (event: import("../agent/loop.js").AgentEvent) => void>();
+                toolRegistryRef.current.register(agentToTool(agent, {
+                  provider,
+                  config: configRef.current,
+                  onProgressUpdate: (callId, event) => {
+                    if (!trackerCache.has(callId)) {
+                      trackerCache.set(callId, makeAgentProgressTracker(
+                        callId,
+                        agent.alias || agent.manifest.name,
+                        agent.manifest.description || agent.manifest.name,
+                        setSubagentStates,
+                      ));
+                    }
+                    trackerCache.get(callId)!(event);
+                  },
+                  confirmTool: confirmToolCallback,
+                }));
+              }
+            }
+            // Unregister agent tools that are no longer enabled, using the
+            // full set of known agent names to avoid accidentally removing
+            // unrelated MCP tools that happen to end with "_agent".
+            const allAgentToolNames = new Set(agents.map((a) => `${a.alias || a.manifest.name}_agent`));
+            const enabledNames = new Set(enabledAgents.map((a) => `${a.alias || a.manifest.name}_agent`));
+            for (const schema of toolRegistryRef.current.getSchemas()) {
+              if (allAgentToolNames.has(schema.name) && !enabledNames.has(schema.name)) {
+                toolRegistryRef.current.unregister(schema.name);
+              }
+            }
           }
 
-          const planAfterClear = await loadPlan();
-          const stillHasPlan = planAfterClear && planAfterClear.steps.some((s) => s.status !== "done");
+          const existingPlan = await loadPlan();
+          // A plan-worthy prompt at the start of a fresh conversation supersedes
+          // whatever plan is on disk; anything else carries the existing one
+          // forward. The superseded plan is only deleted once a replacement has
+          // actually been saved, so a failed re-plan does not lose it.
+          const supersedesPlan = shouldAutoPlan(trimmed) && conversationRef.current.length <= 1;
+          const carriedPlan = !supersedesPlan && isPlanActive(existingPlan) ? existingPlan : null;
 
-          if (shouldAutoPlan(trimmed) && !stillHasPlan) {
+          if (shouldAutoPlan(trimmed) && !carriedPlan) {
             setMessages((prev) => [
               ...prev,
               { id: nextId(), role: "system", content: "Creating plan..." },
@@ -536,47 +654,56 @@ export function useAgent(
             try {
               // Extract JSON from response (might be wrapped in markdown)
               const jsonMatch = planJson.match(/\{[\s\S]*\}/);
-              if (jsonMatch) {
-                const parsed = JSON.parse(jsonMatch[0]);
-                const plan: Plan = {
-                  goal: parsed.goal ?? trimmed,
-                  steps: (parsed.steps ?? []).map((s: any, i: number) => ({
-                    id: s.id ?? i + 1,
-                    title: String(s.title ?? ""),
-                    description: String(s.description ?? ""),
-                    status: "pending" as const,
-                    verifyCommand: s.verifyCommand || undefined,
-                  })),
-                  createdAt: new Date().toISOString(),
-                  currentStep: 0,
-                };
+              if (!jsonMatch) throw new Error("no JSON object in planning response");
 
-                await savePlan(plan);
-                setActivePlan(plan);
-                const planText = formatPlanForPrompt(plan);
+              const parsed = JSON.parse(jsonMatch[0]);
+              const plan: Plan = {
+                goal: parsed.goal ?? trimmed,
+                steps: (parsed.steps ?? []).map((s: any, i: number) => ({
+                  id: s.id ?? i + 1,
+                  title: String(s.title ?? ""),
+                  description: String(s.description ?? ""),
+                  status: "pending" as const,
+                  verifyCommand: s.verifyCommand || undefined,
+                })),
+                createdAt: new Date().toISOString(),
+                currentStep: 0,
+              };
+              // A stepless plan is indistinguishable from a finished one, so
+              // treat it as a failed parse rather than saving it over a good plan.
+              if (plan.steps.length === 0) throw new Error("planning response had no steps");
 
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: nextId(),
-                    role: "system",
-                    content: `Plan created: ${plan.goal} (${plan.steps.length} steps)`,
-                  },
-                ]);
+              await savePlan(plan);
+              resetPlanContinue();
+              setActivePlan(plan);
 
-                turnContextParts.push(planText);
-              }
-            } catch {
               setMessages((prev) => [
                 ...prev,
-                { id: nextId(), role: "system", content: "Plan creation failed — proceeding without a plan." },
+                {
+                  id: nextId(),
+                  role: "system",
+                  content: `Plan created: ${plan.goal} (${plan.steps.length} steps)`,
+                },
+              ]);
+
+              turnContextParts.push(formatPlanForPrompt(plan));
+            } catch {
+              // Nothing was saved, so any superseded plan is still on disk.
+              const kept = isPlanActive(existingPlan);
+              if (kept) setActivePlan(existingPlan);
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: nextId(),
+                  role: "system",
+                  content: kept
+                    ? "Plan creation failed — keeping the previous plan. Use /plan to view it."
+                    : "Plan creation failed — proceeding without a plan.",
+                },
               ]);
             }
-          } else {
-            // Inject active plan if one exists
-            if (stillHasPlan && planAfterClear) {
-              turnContextParts.push(formatPlanForPrompt(planAfterClear));
-            }
+          } else if (carriedPlan) {
+            turnContextParts.push(formatPlanForPrompt(carriedPlan));
           }
 
           // Attach volatile context to the tail of this turn's user message. It is
@@ -600,7 +727,7 @@ export function useAgent(
             maxIterations: config.maxIterations,
             signal: abortController.signal,
             confirmTool: confirmToolCallback,
-            permissionMode: config.permissionMode,
+            permissionMode: sessionPermissionModeRef.current ?? config.permissionMode,
             allowedTools: config.allowedTools,
             hooks: config.hooks,
           });
@@ -750,7 +877,13 @@ export function useAgent(
                     currentUsage,
                     conversationRef.current.wasCompacted,
                     sessionNameRef.current,
-                  ).then((id) => { sessionIdRef.current = id; setSessionId(id); }).catch(() => {});
+                  ).then((id) => {
+                    sessionIdRef.current = id;
+                    setSessionId(id);
+                    // Re-key the plan the moment this session gets an identity,
+                    // so it is still findable after the session ends.
+                    adoptPlanScope(id);
+                  }).catch(() => {});
                   return currentUsage;
                 });
                 saveSessionState(
@@ -765,18 +898,47 @@ export function useAgent(
                 }).catch(() => {});
 
                 // Auto-continue if the active plan has pending steps
-                loadPlan().then((latestPlan) => {
+                loadPlan().then(async (latestPlan) => {
                   if (!latestPlan) return;
                   const pendingSteps = latestPlan.steps.filter((s) => s.status === "pending" || s.status === "in_progress");
-                  if (pendingSteps.length > 0) {
-                    setActivePlan(latestPlan);
-                    const next = pendingSteps[0]!;
-                    setPlanContinueMsg(`Do Step ${next.id} only: ${next.title}. Mark it in_progress, do the work, mark it done, then end your response silently — no commentary about stopping or pausing.`);
-                  } else {
+                  if (pendingSteps.length === 0) {
                     // Plan is complete — clear display and delete the file
+                    resetPlanContinue();
                     setActivePlan(null);
-                    import("../agent/planner.js").then((m) => m.clearPlan()).catch(() => {});
+                    await clearPlan().catch(() => {});
+                    return;
                   }
+
+                  const next = pendingSteps[0]!;
+                  // A step only leaves the pending list once the model marks it
+                  // done or failed. If it never can — the user declined the tool
+                  // it needs, say — resubmitting it forever re-asks for the same
+                  // confirmation on every turn. Give up after a few tries.
+                  const tracker = planContinueRef.current;
+                  tracker.attempts = tracker.stepId === next.id ? tracker.attempts + 1 : 1;
+                  tracker.stepId = next.id;
+
+                  if (tracker.attempts > MAX_PLAN_STEP_ATTEMPTS) {
+                    next.status = "failed";
+                    latestPlan.currentStep = latestPlan.steps.findIndex(
+                      (s) => s.status === "pending" || s.status === "in_progress",
+                    );
+                    await savePlan(latestPlan).catch(() => {});
+                    resetPlanContinue();
+                    setActivePlan(latestPlan);
+                    setMessages((prev) => [
+                      ...prev,
+                      {
+                        id: nextId(),
+                        role: "system",
+                        content: `Plan paused: step ${next.id} ("${next.title}") made no progress after ${MAX_PLAN_STEP_ATTEMPTS} attempts and has been marked failed. Send a message to carry on, or use /plan clear to drop the plan.`,
+                      },
+                    ]);
+                    return;
+                  }
+
+                  setActivePlan(latestPlan);
+                  setPlanContinueMsg(`Do Step ${next.id} only: ${next.title}. Mark it in_progress, do the work, mark it done, then end your response silently — no commentary about stopping or pausing.`);
                 }).catch(() => {});
                 break;
 
@@ -864,6 +1026,7 @@ export function useAgent(
     mcpPromptCount,
     subagentStates,
     activePlan,
+    refreshPlan,
     submit,
     addDisplayMessage,
     cancel,

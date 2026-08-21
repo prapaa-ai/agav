@@ -3,6 +3,7 @@ import { join } from "node:path";
 import crypto from "node:crypto";
 import type { Message } from "../providers/types.js";
 import { getAgavDir } from "./config.js";
+import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { ensureDir } from "../utils/fs.js";
 
 export interface SessionTokenUsage {
@@ -37,7 +38,11 @@ function generateId(): string {
 
 /** Derive a short human-readable title from the first user message in a session. */
 function extractTitle(messages: Message[]): string {
-  const firstUser = messages.find((m) => m.role === "user");
+  // A session whose history was compacted starts with the summary the agent
+  // wrote, not with anything the user said — titling it from that names the
+  // session after its own boilerplate.
+  const firstUser = messages.find((m) => m.role === "user" && !isInternalUserMessage(m))
+    ?? messages.find((m) => m.role === "user");
   if (!firstUser) return "Empty session";
   if (firstUser.sourceText) return firstUser.sourceText.slice(0, 80);
   if (firstUser.displayText) return firstUser.displayText.slice(0, 80);

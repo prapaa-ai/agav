@@ -29,6 +29,12 @@ export interface Message {
   displayText?: string;
   sourceText?: string;
   invocationReason?: InvocationReason;
+  /**
+   * A user turn the agent injected to steer itself rather than one the user
+   * typed. The model has to see it as a user turn, so it cannot be told apart
+   * by role alone — but the transcript must never attribute it to the user.
+   */
+  internal?: boolean;
 }
 
 export type StreamEvent =
@@ -46,6 +52,7 @@ export interface ToolSchema {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  destructive?: boolean; // true = always confirm; false = always safe; undefined = current SAFE_TOOLS logic
 }
 
 export interface StreamParams {

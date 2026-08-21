@@ -5,6 +5,7 @@ import { join } from "node:path";
 export type KeybindingAction =
   | "cancel"
   | "toggleToolDetail"
+  | "togglePlanDetail"
   | "cycleSubagents"
   | "newline"
   | "submit"
@@ -25,6 +26,7 @@ export type Keybindings = Record<KeybindingAction, string[]>;
 const ACTIONS: KeybindingAction[] = [
   "cancel",
   "toggleToolDetail",
+  "togglePlanDetail",
   "cycleSubagents",
   "newline",
   "submit",
@@ -41,9 +43,28 @@ const ACTIONS: KeybindingAction[] = [
   "exit",
 ];
 
+/**
+ * Which consumer resolves which action. A resolver only reports actions it was
+ * constructed with, so an action missing from both lists is bound in config yet
+ * dead at the keyboard. Keep them exhaustive over `ACTIONS` — a test enforces it.
+ */
+export const GLOBAL_ACTIONS: KeybindingAction[] = [
+  "cancel", "interrupt", "cycleSubagents", "toggleToolDetail", "togglePlanDetail",
+  "retryLastTurn", "showKeybindings", "clearScreen", "exit",
+];
+
+export const PROMPT_ACTIONS: KeybindingAction[] = [
+  "cancel", "newline", "submit", "historyUp", "historyDown", "clearInput",
+  "deleteWordBackward", "editLastPrompt", "openCommandPalette",
+];
+
 export const DEFAULT_KEYBINDINGS: Keybindings = {
   cancel: ["escape"],
   toggleToolDetail: ["ctrl+d"],
+  // Modified rather than a bare "v": the prompt keeps focus while the agent
+  // works, so an unmodified letter is typed into it instead of reaching a
+  // shortcut. Ctrl+G because Ctrl+V is the clipboard-image paste.
+  togglePlanDetail: ["ctrl+g"],
   cycleSubagents: ["tab"],
   // Shift+Enter only survives an enhanced keyboard protocol; the other two are
   // the fallbacks every terminal can send. See normalizeKeyEvent below.

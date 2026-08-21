@@ -62,6 +62,7 @@ export function getRandomHint(keybindings: Keybindings = DEFAULT_KEYBINDINGS, en
     `${formatUsableKeybinding(keybindings, "newline", enhancedKeyboard)} for multiline input`,
     `${formatKeybinding(keybindings, "historyUp")}/${formatKeybinding(keybindings, "historyDown")} to recall previous messages`,
     `${formatKeybinding(keybindings, "toggleToolDetail")} expands tool output details`,
+    `${formatKeybinding(keybindings, "togglePlanDetail")} shows the full plan while it runs`,
     `${formatKeybinding(keybindings, "cancel")} cancels a streaming response`,
     // Seatbelt and Bubblewrap are POSIX-only, so Windows resolves to "none".
     // Stating the sandbox unconditionally would promise isolation we do not have.

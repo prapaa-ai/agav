@@ -21,7 +21,7 @@ jobs:
       deps: ${{ steps.diff.outputs.deps }}
       scripts: ${{ steps.diff.outputs.scripts }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
           fetch-depth: 0
@@ -59,10 +59,10 @@ jobs:
     if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
@@ -84,10 +84,10 @@ jobs:
     if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
@@ -109,10 +109,10 @@ jobs:
     if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
@@ -187,7 +187,7 @@ jobs:
     if: needs.changed.outputs.scripts == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - name: ShellCheck
@@ -218,7 +218,7 @@ jobs:
     if: needs.changed.outputs.scripts == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - name: Suites under Windows PowerShell 5.1
@@ -273,7 +273,7 @@ jobs:
     name: Secret Leak Detection
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
           fetch-depth: 0
@@ -298,7 +298,7 @@ jobs:
     name: Blob Size Policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
           fetch-depth: 0
@@ -324,7 +324,7 @@ jobs:
     name: Dangerous Pattern Detection
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - name: Scan for dangerous code patterns
@@ -337,7 +337,7 @@ jobs:
             FAIL=1
           fi
           if grep -rn --include='*.ts' --include='*.tsx' \
-            -E 'exec(File|Sync)?\s*\(\s*`' source/ 2>/dev/null | grep -v 'node_modules'; then
+            -E 'exec(File|Sync|Async)?\s*\(\s*`' source/ 2>/dev/null | grep -v 'node_modules'; then
             echo "::error::Shell exec with template literal — command injection risk"
             FAIL=1
           fi
@@ -361,10 +361,10 @@ jobs:
     if: needs.changed.outputs.deps == 'true' || needs.changed.outputs.source == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
@@ -379,7 +379,7 @@ jobs:
     if: needs.changed.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - name: Verify lockfile exists
@@ -388,7 +388,7 @@ jobs:
             echo "::error::pnpm-lock.yaml missing"
             exit 1
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
       - uses: pnpm/action-setup@v4
@@ -404,7 +404,7 @@ jobs:
     container:
       image: semgrep/semgrep:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - run: |
@@ -422,7 +422,7 @@ jobs:
     name: Sensitive File Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - name: Check sensitive files are not tracked
@@ -444,7 +444,7 @@ jobs:
     name: README Badge Freshness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
       - name: Check the version badge is derived, not hardcoded

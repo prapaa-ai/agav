@@ -4,6 +4,37 @@ import { formatMemoriesForPrompt } from "../config/memory.js";
 import type { MCPManager } from "../mcp/manager.js";
 import { getCachedSkills, buildSkillCatalog, loadSkills } from "../skills/loader.js";
 import { formatSteersForPrompt } from "../commands/steer.js";
+import type { AgentDefinition } from "../agents/types.js";
+
+/**
+ * Returns true if the user's message suggests they may want to delegate to a
+ * specialized agent. Used to gate agent catalog injection and tool registration
+ * so they don't add tokens/tools on every unrelated turn.
+ */
+export function shouldIncludeAgentCatalog(userMessage: string, agents: AgentDefinition[]): boolean {
+  if (agents.length === 0) return false;
+  const msg = userMessage.toLowerCase();
+  // Always include if the message explicitly mentions any installed agent by name (word boundary)
+  if (agents.some((a) => {
+    const escaped = a.manifest.name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\b${escaped}\\b`).test(msg);
+  })) return true;
+  // These keywords gate catalog text injection into the system prompt.
+  // Tools are always registered regardless of this check — the catalog
+  // hint only adds context tokens. Custom agents whose names don't match
+  // these keywords are still callable; the LLM just won't see the
+  // "Available specialized agents:" hint for that turn.
+  const keywords = [
+    "jira", "github", "gitlab", "slack", "aws", "gcp", "azure", "argocd",
+    "ticket", "issue", "pull request", "pipeline", "deploy", "deployment",
+    "kubernetes", "k8s", "kubectl", "cluster", "pod",
+    "agent", "use the", "ask the", "delegate to", "check with",
+    "cloud", "ec2", "s3", "bucket", "instance", "vm",
+    "sprint", "backlog", "story", "epic", "workflow",
+  ];
+  const kwRegex = new RegExp(`\\b(?:${keywords.join("|")})\\b`, "i");
+  return kwRegex.test(msg);
+}
 
 const STATIC_BASE = [
   "You are Agav, an AI coding assistant running in the user's terminal.",
@@ -111,7 +142,7 @@ export async function refreshStableContext(mcpManager?: MCPManager): Promise<str
  * append this to the end of the newest user message instead, so the whole
  * prefix ahead of it stays byte-identical from turn to turn.
  */
-export async function refreshVolatileContext(): Promise<string> {
+export async function refreshVolatileContext(userMessage?: string): Promise<{ context: string; includeAgentTools: boolean }> {
   const parts: string[] = [];
 
   const gitCtx = await getGitContext();
@@ -124,7 +155,20 @@ export async function refreshVolatileContext(): Promise<string> {
     parts.push(steers);
   }
 
-  return parts.join("\n\n");
+  // Agent catalog — only inject when the user message suggests agent delegation
+  const { getCachedAgents } = await import("../agents/loader.js");
+  const { buildAgentCatalog } = await import("../agents/catalog.js");
+  const agents = getCachedAgents();
+  const includeAgentTools = !userMessage || shouldIncludeAgentCatalog(userMessage, agents);
+
+  if (includeAgentTools) {
+    const agentCatalog = buildAgentCatalog(agents);
+    if (agentCatalog) {
+      parts.push(agentCatalog);
+    }
+  }
+
+  return { context: parts.join("\n\n"), includeAgentTools };
 }
 
 /**
@@ -146,7 +190,7 @@ export function formatTurnContext(volatileContext: string): string {
 
 /** Rebuild every piece of per-turn context as one block. Prefer the split variants above. */
 export async function refreshDynamicContext(mcpManager?: MCPManager): Promise<string> {
-  const [stable, volatile] = await Promise.all([
+  const [stable, { context: volatile }] = await Promise.all([
     refreshStableContext(mcpManager),
     refreshVolatileContext(),
   ]);
