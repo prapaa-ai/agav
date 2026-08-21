@@ -154,9 +154,22 @@ main (0.1.9)                          ← current stable
   │     └── ...next cycle...
 ```
 
-- **Pre-releases** are visible on the releases page but not served by `install.sh`
+- **Pre-releases** are visible on the releases page but not served by `install.sh` by default
 - **Stable releases** become the Latest release and are served by `install.sh`
 - Hotfixes can go directly to `main` with a patch bump (e.g. `0.2.1`)
+
+**Installing a beta version:**
+
+```bash
+# macOS / Linux
+curl -fsSL https://agav.dev/install.sh | bash -s -- --beta
+
+# Windows
+irm https://www.agav.dev/install.ps1 | iex -- --beta
+
+# Or via environment variable
+AGAV_BETA=1 curl -fsSL https://agav.dev/install.sh | bash
+```
 
 ## Pull requests
 
