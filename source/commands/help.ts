@@ -3,6 +3,7 @@ import type { SlashCommand, CommandResult } from "./types.js";
 const CATEGORIES: Record<string, string[]> = {
   "Chat": ["clear", "new", "model", "effort", "fast", "deep", "compact", "ps", "export"],
   "Sessions": ["history", "search", "branch", "name"],
+  "Agents": ["agents"],
   "Skills": ["skills"],
   "Workflow": ["plan", "steer", "loop", "schedule", "watch"],
   "Memory": ["memory", "remember", "forget"],
