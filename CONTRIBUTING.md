@@ -125,11 +125,51 @@ Agav dogfoods itself in CI:
 
 ### Release
 
-Triggered by version bump in `package.json`:
-1. Builds binaries for 4 platforms (darwin-arm64, darwin-x64, linux-x64, linux-arm64)
+Triggered by version bump in `package.json` on `main` or `beta` branches:
+1. Builds binaries for 5 platforms (darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64)
 2. Signs binaries (macOS codesign, Linux cosign)
-3. Generates SHA256 checksums
+3. Compresses binaries (gzip) and generates SHA256 checksums
 4. Creates GitHub release with assets
+
+**Two-branch release model:**
+
+| Branch | Version format | Release type |
+|---|---|---|
+| `beta` | `x.y.z-beta.N` (e.g. `0.2.0-beta.1`) | GitHub Pre-release |
+| `main` | `x.y.z` (e.g. `0.2.0`) | GitHub Latest release |
+
+**Typical release flow:**
+
+```
+main (0.1.9)                          ← current stable
+  │
+  ├── beta branch (created from main)
+  │     ├── PR → beta, bump to 0.2.0-beta.1  → Pre-release
+  │     ├── PR → beta, bump to 0.2.0-beta.2  → Pre-release
+  │     └── PR → beta, no version bump        → no release
+  │
+  ├── PR: beta → main, bump to 0.2.0         → Stable release
+  │
+  ├── beta branch (reset from main)
+  │     └── ...next cycle...
+```
+
+- **Pre-releases** are visible on the releases page but not served by `install.sh` by default
+- **Stable releases** become the Latest release and are served by `install.sh`
+- Hotfixes can go directly to `main` with a patch bump (e.g. `0.2.1`)
+
+**Installing a beta version:**
+
+```bash
+# macOS / Linux
+curl -fsSL https://agav.dev/install.sh | bash -s -- --beta
+
+# Windows
+irm https://www.agav.dev/install.ps1 | iex -- --beta
+
+# Or via environment variable
+AGAV_BETA=1 curl -fsSL https://agav.dev/install.sh | bash
+```
 
 ## Pull requests
 
