@@ -18,6 +18,7 @@ import { createProvider } from "./providers/registry.js";
 import type { ContentBlock, InvocationReason } from "./providers/types.js";
 import { useAgent } from "./hooks/use-agent.js";
 import { CommandRegistry } from "./commands/registry.js";
+import { AgentsTUI } from "./components/agents-tui.js";
 import { saveSession } from "./config/history.js";
 import {
   type Attachment,
@@ -75,6 +76,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [showCompactionSummary, setShowCompactionSummary] = useState(false);
   const [runningSkillName, setRunningSkillName] = useState<string | null>(null);
   const [pickerActive, setPickerActive] = useState(false);
+  const [agentsTUIActive, setAgentsTUIActive] = useState(false);
+  const agentsTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk } = useApp();
   const exit = useCallback(() => {
     stopActiveLoop();
@@ -171,7 +174,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     insertLabelRef.current?.(text);
   }, []);
 
-  useClipboardImageDetector(handleClipboardImage, !isLoading, handleLargePaste, handleShortPaste);
+  // Disable paste capture while any picker (wizard, model selector, etc.) is active
+  // so paste events don't silently land in the hidden InputPrompt buffer
+  useClipboardImageDetector(handleClipboardImage, !isLoading && !pickerActive, handleLargePaste, handleShortPaste);
 
   /** Run a side query independently so it never delays the active agent turn. */
   const runPsQuery = useCallback(async (query: { text: string; blocks: ContentBlock[] }) => {
@@ -465,6 +470,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           addTokenUsage,
           setRunningSkill: setRunningSkillName,
           setPickerActive,
+          showAgentsTUI: (onDone: () => void) => {
+            agentsTUIResolveRef.current = onDone;
+            setAgentsTUIActive(true);
+          },
         });
 
         setRunningSkillName(null);
@@ -643,6 +652,21 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
       {showToolDetail && toolMessages.length > 0 && (
         <ToolDetailPanel tools={toolMessages} closeKey={formatKeybinding(keybindings, "toggleToolDetail")} />
+      )}
+
+      {agentsTUIActive && (
+        <AgentsTUI
+          onExit={() => {
+            setAgentsTUIActive(false);
+            setPickerActive(false);
+            setInput(""); // clear any paste that leaked into InputPrompt while wizard was active
+            const resolve = agentsTUIResolveRef.current;
+            agentsTUIResolveRef.current = null;
+            resolve?.();
+          }}
+          provider={activeProvider}
+          config={config}
+        />
       )}
 
       {!pendingConfirmation && (

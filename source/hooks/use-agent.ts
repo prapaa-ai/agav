@@ -296,6 +296,13 @@ export function useAgent(
         .map((s) => createSkillSlashCommand(s));
       setSkillCommands(userSkillCmds);
 
+      // Load agents — do NOT register as tools yet; registration happens lazily per-turn
+      if (provider) {
+        const { loadAgents, setCachedAgents } = await import("../agents/loader.js");
+        const agents = await loadAgents();
+        setCachedAgents(agents);
+      }
+
       // Start MCP servers
       if (config.mcpServers) {
         for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
@@ -468,14 +475,14 @@ export function useAgent(
         try {
           // Split per-turn context by how often it changes. Stable pieces (AGAV.md,
           // memories, skills, MCP resources) stay in the system prompt; volatile
-          // pieces (git state, steers, plan) are appended to this turn's user
-          // message below. Anything volatile at the front of the request evicts the
-          // tool schemas and the whole conversation from the provider's prefix cache.
+          // pieces (git state, steers, agent catalog) are appended to this turn's
+          // user message below. Anything volatile at the front of the request evicts
+          // the tool schemas and the whole conversation from the provider's prefix cache.
           const { refreshStableContext, refreshVolatileContext, formatTurnContext } =
             await import("../utils/system-prompt.js");
-          const [stableCtx, volatileCtx] = await Promise.all([
+          const [stableCtx, { context: volatileCtx }] = await Promise.all([
             refreshStableContext(mcpManagerRef.current),
-            refreshVolatileContext(),
+            refreshVolatileContext(trimmed),
           ]);
           const effectiveSystemPrompt = stableCtx
             ? (config.systemPrompt ?? "") + "\n\n" + stableCtx
@@ -483,6 +490,48 @@ export function useAgent(
 
           const turnContextParts: string[] = [];
           if (volatileCtx) turnContextParts.push(volatileCtx);
+
+          // Register enabled agents as callable tools. Registration is always-on
+          // regardless of whether the catalog hint was included in the volatile context.
+          if (provider) {
+            const { getCachedAgents } = await import("../agents/loader.js");
+            const { agentToTool } = await import("../agents/registry-factory.js");
+            const agents = getCachedAgents();
+            const enabledAgents = agents.filter((a) => a.manifest.enabled !== false);
+            for (const agent of enabledAgents) {
+              const toolName = `${agent.alias || agent.manifest.name}_agent`;
+              if (!toolRegistryRef.current.getSchemas().find((s) => s.name === toolName)) {
+                const { makeAgentProgressTracker } = await import("../agent/subagent-progress.js");
+                const trackerCache = new Map<string, (event: import("../agent/loop.js").AgentEvent) => void>();
+                toolRegistryRef.current.register(agentToTool(agent, {
+                  provider,
+                  config: configRef.current,
+                  onProgressUpdate: (callId, event) => {
+                    if (!trackerCache.has(callId)) {
+                      trackerCache.set(callId, makeAgentProgressTracker(
+                        callId,
+                        agent.alias || agent.manifest.name,
+                        agent.manifest.description || agent.manifest.name,
+                        setSubagentStates,
+                      ));
+                    }
+                    trackerCache.get(callId)!(event);
+                  },
+                  confirmTool: confirmToolCallback,
+                }));
+              }
+            }
+            // Unregister agent tools that are no longer enabled, using the
+            // full set of known agent names to avoid accidentally removing
+            // unrelated MCP tools that happen to end with "_agent".
+            const allAgentToolNames = new Set(agents.map((a) => `${a.alias || a.manifest.name}_agent`));
+            const enabledNames = new Set(enabledAgents.map((a) => `${a.alias || a.manifest.name}_agent`));
+            for (const schema of toolRegistryRef.current.getSchemas()) {
+              if (allAgentToolNames.has(schema.name) && !enabledNames.has(schema.name)) {
+                toolRegistryRef.current.unregister(schema.name);
+              }
+            }
+          }
 
           const existingPlan = await loadPlan();
           const hasActivePlan = existingPlan && existingPlan.steps.some((s) => s.status !== "done");

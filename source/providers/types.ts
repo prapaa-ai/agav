@@ -46,6 +46,7 @@ export interface ToolSchema {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  destructive?: boolean; // true = always confirm; false = always safe; undefined = current SAFE_TOOLS logic
 }
 
 export interface StreamParams {

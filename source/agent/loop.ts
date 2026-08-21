@@ -344,21 +344,29 @@ export async function* runAgentLoop(
         continue;
       }
 
-      const isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
-      // Escape hatch for headless runs: a destructive command may be run
-      // unattended only when the allowlist names it (`run_command:rm -rf dist`).
-      // --auto-accept and a blanket `run_command` grant deliberately do not
-      // qualify, but without this there was no way to approve one at all and
-      // CI pipelines that legitimately clean a build directory just failed.
+      const tool = params.toolRegistry.list().find((t) => t.schema.name === call.name);
+      const toolDestructiveFlag = tool?.schema.destructive;
+
+      // Only trust destructive:false from builtin tools (SAFE_TOOLS).
+      // Non-builtin tools (agents, MCP) cannot lower their own destructive status.
+      let isDestructive: boolean;
+      if (toolDestructiveFlag === true) {
+        isDestructive = true;
+      } else if (toolDestructiveFlag === false && SAFE_TOOLS.has(call.name)) {
+        isDestructive = false;
+      } else {
+        isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
+      }
+
       const destructiveApproved = isDestructive
         && isAllowed(call.name, input, params.allowedTools, { requirePattern: true });
       const denyWrites = permissionMode === "deny-writes";
+      const trustedSafe = toolDestructiveFlag === false && SAFE_TOOLS.has(call.name);
       const needsConfirm = (isDestructive && !destructiveApproved)
         || (!SAFE_TOOLS.has(call.name)
+          && !trustedSafe
           && permissionMode !== "auto-accept"
           && !isAllowed(call.name, input, params.allowedTools));
-      // --deny-writes outranks the allowlist: the escape hatch must not be able
-      // to punch a destructive command through an explicit "no writes" run.
       if ((denyWrites && isDestructive) || (needsConfirm && (denyWrites || !confirmTool))) {
         const reason = denyWrites
           ? "Write operations are denied (--deny-writes mode)."

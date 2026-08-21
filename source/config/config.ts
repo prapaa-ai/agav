@@ -9,6 +9,16 @@ export type EffortLevel = "low" | "medium" | "high" | "max";
 
 export const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "max"];
 
+const DEFAULT_MARKETPLACE_FALLBACK = "https://raw.githubusercontent.com/prapaa-ai/agav-marketplace/main";
+
+/** Default marketplace URL — override via AGAV_MARKETPLACE_URL env var or agentMarketplace in config.json */
+export function getDefaultMarketplaceUrl(): string {
+  return process.env.AGAV_MARKETPLACE_URL || DEFAULT_MARKETPLACE_FALLBACK;
+}
+
+/** @deprecated Use getDefaultMarketplaceUrl() instead */
+export const DEFAULT_MARKETPLACE_URL = DEFAULT_MARKETPLACE_FALLBACK;
+
 export function isEffortLevel(value: unknown): value is EffortLevel {
   return typeof value === "string" && EFFORT_LEVELS.includes(value as EffortLevel);
 }
@@ -45,6 +55,7 @@ export interface AgavConfig {
   hooks?: AgavHooks;
   theme?: Partial<AgavTheme>;
   mcpServers?: Record<string, MCPServerConfig>;
+  agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
 }
 
