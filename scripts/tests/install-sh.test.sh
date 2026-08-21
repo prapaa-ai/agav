@@ -221,6 +221,47 @@ check "no temp files in HOME" $? "$(find "$H" -name '*agav-*')"
 [ -z "$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'agav-uninstall.*' -o -maxdepth 1 -name 'agav-profile.*' 2>/dev/null)" ]
 check "no temp files in TMPDIR" $?
 
+echo "== replace_symlink survives an upgrade =="
+# The only case that ever broke: `mv -f` onto a destination that is already a
+# symlink to a directory resolves it and moves the source *inside* that
+# directory, exit 0. `current` stayed on the old release, the installer then
+# verified the old binary and announced it as the new version. Exercised by
+# extracting the function rather than running the installer, so this stays
+# offline like the rest of the suite.
+LINKS="$ROOT/links"
+rm -rf "$LINKS"
+mkdir -p "$LINKS/releases/1.0.0" "$LINKS/releases/2.0.0"
+: >"$LINKS/releases/1.0.0/agav"
+: >"$LINKS/releases/2.0.0/agav"
+sed -n '/^replace_symlink() {/,/^}/p' "$SRC" >"$ROOT/replace_symlink.sh"
+[ -s "$ROOT/replace_symlink.sh" ]; check "extracted replace_symlink from the installer" $?
+
+(
+  set -eu
+  . "$ROOT/replace_symlink.sh"
+  replace_symlink "$LINKS/current" "$LINKS/releases/1.0.0"   # fresh install
+  replace_symlink "$LINKS/current" "$LINKS/releases/2.0.0"   # upgrade
+)
+check "a fresh install then an upgrade both exit 0" $?
+[ "$(readlink "$LINKS/current")" = "$LINKS/releases/2.0.0" ]
+check "current points at the new release" $? "got=$(readlink "$LINKS/current" 2>/dev/null)"
+[ -z "$(ls -A "$LINKS/releases/1.0.0" | grep -v '^agav$')" ]
+check "no temp link stranded inside the old release" $? "found=$(ls -A "$LINKS/releases/1.0.0")"
+
+# The visible command is a symlink to a *file*, which never hit the bug. Kept
+# so a fix aimed at the directory case cannot quietly break this one.
+(
+  set -eu
+  . "$ROOT/replace_symlink.sh"
+  replace_symlink "$LINKS/bin-agav" "$LINKS/releases/1.0.0/agav"
+  replace_symlink "$LINKS/bin-agav" "$LINKS/releases/2.0.0/agav"
+)
+check "swapping a symlink to a file still exits 0" $?
+[ "$(readlink "$LINKS/bin-agav")" = "$LINKS/releases/2.0.0/agav" ]
+check "the command symlink follows the upgrade" $? "got=$(readlink "$LINKS/bin-agav" 2>/dev/null)"
+[ -z "$(find "$LINKS" -name '*.tmp.*')" ]
+check "no .tmp.PID links left anywhere" $? "$(find "$LINKS" -name '*.tmp.*')"
+
 echo "== --help =="
 fresh help
 run --help
