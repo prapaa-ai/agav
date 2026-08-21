@@ -1,6 +1,6 @@
 {
   "name": "agav-cli",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Terminal-native AI coding assistant for real repositories",
   "type": "module",
   "bin": {
