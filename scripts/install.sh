@@ -559,7 +559,7 @@ Usage: install.sh [OPTIONS]
 Options:
   --version=<tag>    Install a specific version (default: latest)
   --dir=<path>       Install directory (default: ~/.local/bin)
-  --beta               Install the latest pre-release (beta) version
+  --beta             Install the latest pre-release (beta) version
   --uninstall        Remove Agav, keeping your settings and history
   --purge            Remove Agav and delete ~/.agav as well
   -h, --help         Show this help

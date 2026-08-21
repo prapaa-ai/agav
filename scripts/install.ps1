@@ -134,7 +134,7 @@ foreach ($arg in $args) {
         Write-Host "  --version=<tag>    Install a specific version (default: latest)"
         Write-Host "  --dir=<path>       Install directory (default: %LOCALAPPDATA%\agav)"
         Write-Host "  --skip-checksum    Install without verifying the SHA-256 checksum"
-        Write-Host "  --beta               Install the latest pre-release (beta) version"
+        Write-Host "  --beta             Install the latest pre-release (beta) version"
         Write-Host "  --uninstall        Remove agav, keeping your settings and history"
         Write-Host "  --purge            Remove agav and delete %USERPROFILE%\.agav as well"
         Write-Host "  -h, --help         Show this help"
