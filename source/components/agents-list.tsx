@@ -146,7 +146,10 @@ function AgentListItem({ agent, isSelected, readiness }: { agent: AgentDefinitio
         {readiness !== undefined && (
           readiness.ready
             ? <Text color="green"> Ready ✓</Text>
-            : <Text color="yellow"> ⚠ Needs config</Text>
+            : <>
+                <Text color="yellow"> ⚠ Needs config</Text>
+                {isSelected && <Text dimColor> (c)</Text>}
+              </>
         )}
       </Box>
       <Box marginLeft={2}>

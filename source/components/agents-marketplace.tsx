@@ -11,10 +11,14 @@ export function MarketplaceTab({
   onReloadAgents,
   onExit,
   installedAgents,
+  onBusyChange,
+  onInstallComplete,
 }: {
   onReloadAgents: () => Promise<void>;
   onExit: () => void;
   installedAgents: Map<string, { origin: string; version: string }>;
+  onBusyChange?: (busy: boolean) => void;
+  onInstallComplete?: (agentName: string) => void;
 }) {
   const [marketplaceAgents, setMarketplaceAgents] = useState<MarketplaceAgent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,6 +31,13 @@ export function MarketplaceTab({
   const [reinstallCandidate, setReinstallCandidate] = useState<{ agent: MarketplaceAgent; destination: "global" | "project" } | null>(null);
   const [resolvedMarketplaceUrl, setResolvedMarketplaceUrl] = useState("");
   const { searchQuery, searching, handleSearchKey } = useSearch();
+
+  useEffect(() => {
+    onBusyChange?.(Boolean(
+      pendingInstallAgent || reinstallCandidate || inspecting || searching || installing
+    ));
+    return () => onBusyChange?.(false);
+  }, [pendingInstallAgent, reinstallCandidate, inspecting, searching, installing]);
 
   useEffect(() => {
     loadMarketplace();
@@ -95,6 +106,10 @@ export function MarketplaceTab({
         : `✓ Installed ${agent.name} (${destination})`;
       setInstallStatus(msg);
       await onReloadAgents();
+      if (onInstallComplete) {
+        onInstallComplete(agent.name);
+        return;
+      }
     } else if (result.error?.startsWith("Agent '") && result.error?.includes("is already installed")) {
       setInstallStatus(null);
       setReinstallCandidate({ agent, destination });

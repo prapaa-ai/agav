@@ -13,7 +13,7 @@ import type { AgentDefinition } from "./types.js";
 
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
-const DEFAULT_ALLOWED_HOSTS = new Set(["github.com", "gitlab.com", "bitbucket.org"]);
+const DEFAULT_ALLOWED_HOSTS = new Set(["github.com", "gitlab.com", "bitbucket.org", "raw.githubusercontent.com"]);
 
 function getAllowedHosts(): Set<string> {
   const extra = process.env.AGAV_ALLOWED_GIT_HOSTS;

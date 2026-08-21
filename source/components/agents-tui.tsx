@@ -39,6 +39,9 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   const [configPickerIndex, setConfigPickerIndex]   = useState(0);
   const [runtimeConfigs, setRuntimeConfigs]       = useState<Record<string, Record<string, string>>>({});
 
+  const [configEntryPoint, setConfigEntryPoint]   = useState<"list" | "inspect">("inspect");
+  const [marketplaceBusy, setMarketplaceBusy]     = useState(false);
+
   const [implementingTools, setImplementingTools] = useState(false);
   const [implementStatus, setImplementStatus]     = useState<string | null>(null);
 
@@ -106,12 +109,32 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     loadAllRuntimeConfigs(loaded);
   };
 
+  const enterConfigView = async (agent: AgentDefinition, from: "list" | "inspect") => {
+    const agentKey = agent.alias || agent.manifest.name;
+    const existingConfig = await loadAgentConfig(resolveConfigDir(agent));
+    setRuntimeConfigs((prev) => ({ ...prev, [agentKey]: existingConfig }));
+    setConfigEditIndex(0);
+    setConfigEditKey("");
+    setConfigEditBuffer("");
+    setConfigEditing(false);
+    setConfigSavedKeys({});
+    setConfigError(null);
+    setConfigEntryPoint(from);
+    setListView("config");
+  };
+
+  const handleInstallComplete = () => {
+    setActiveTab("list");
+    setSelectedIndex(0);
+    setListView("list");
+  };
+
   const { searchQuery: listSearch, searching: listSearching, handleSearchKey: handleListSearch } = useSearch();
   const filteredAgents = filterInstalledAgents(agents, listSearch);
 
   useInput(async (input, key) => {
     const isEditingConfig = listView === "config" && (configEditing || configPickerActive);
-    if (!listSearching && !isEditingConfig && (input === "1" || input === "2")) {
+    if (!listSearching && !isEditingConfig && !marketplaceBusy && (input === "1" || input === "2")) {
       if (input === "1") { setActiveTab("list"); setSelectedIndex(0); setListView("list"); }
       else if (input === "2") { setActiveTab("marketplace"); setSelectedIndex(0); }
       return;
@@ -162,6 +185,8 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           await reloadAgents();
         } else if (input === "i" && filteredAgents[selectedIndex]) {
           setListView("inspect");
+        } else if (input === "c" && filteredAgents[selectedIndex]) {
+          await enterConfigView(filteredAgents[selectedIndex]!, "list");
         } else if (input === "d" && filteredAgents[selectedIndex]) {
           const agent = filteredAgents[selectedIndex]!;
           if (agent.origin === "bundled") {
@@ -179,16 +204,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
         if (input === "f" && agent && provider && config && agent.origin === "global" && hasTODOTools) {
           runImplementTools(agent);
         } else if (input === "e" && agent) {
-          const agentKey = agent.alias || agent.manifest.name;
-          const existingConfig = await loadAgentConfig(resolveConfigDir(agent));
-          setRuntimeConfigs((prev) => ({ ...prev, [agentKey]: existingConfig }));
-          setConfigEditIndex(0);
-          setConfigEditKey("");
-          setConfigEditBuffer("");
-          setConfigEditing(false);
-          setConfigSavedKeys({});
-          setConfigError(null);
-          setListView("config");
+          await enterConfigView(agent, "inspect");
         } else if (key.escape || input === "b") {
           setListView("list");
         }
@@ -241,7 +257,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           }
         } else {
           if (key.escape) {
-            setListView("inspect"); setConfigError(null);
+            setListView(configEntryPoint); setConfigError(null);
           } else if (key.upArrow) {
             setConfigEditIndex((i) => Math.max(0, i - 1)); setConfigError(null);
           } else if (key.downArrow) {
@@ -398,13 +414,15 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           onReloadAgents={reloadAgents}
           onExit={onExit}
           installedAgents={new Map(agents.map((a) => [a.alias || a.manifest.name, { origin: a.origin, version: a.manifest.version }]))}
+          onBusyChange={setMarketplaceBusy}
+          onInstallComplete={handleInstallComplete}
         />
       )}
 
       <Box marginTop={1} borderStyle="single" borderTop paddingTop={1}>
         {activeTab === "list" && listView === "list" && (
           <Text dimColor>
-            ↑↓: Navigate | ENTER: Toggle | i: Inspect | d: Remove | s: Search | ESC: Exit/clear
+            ↑↓: Navigate | ENTER: Toggle | i: Inspect | c: Configure | d: Remove | s: Search | ESC: Exit/clear
           </Text>
         )}
         {activeTab === "list" && listView === "inspect" && (
@@ -422,7 +440,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
               ? "↑↓: Navigate | ENTER: Select | ESC: Cancel"
               : configEditing
               ? "Type value (blank = inherit) | ENTER: Save | ESC: Cancel"
-              : "↑↓: Navigate | ENTER: Edit value | ESC: Back to inspect"}
+              : `↑↓: Navigate | ENTER: Edit value | ESC: Back to ${configEntryPoint}`}
           </Text>
         )}
         {activeTab === "marketplace" && (
