@@ -7,6 +7,7 @@ BINARY_NAME="agav"
 VERSION="${AGAV_VERSION:-latest}"
 NON_INTERACTIVE="${AGAV_NON_INTERACTIVE:-false}"
 SKIP_CHECKSUM="${AGAV_SKIP_CHECKSUM:-0}"
+BETA="${AGAV_BETA:-0}"
 
 BIN_DIR="${AGAV_INSTALL_DIR:-$HOME/.local/bin}"
 BIN_PATH="$BIN_DIR/$BINARY_NAME"
@@ -99,6 +100,13 @@ download_text() {
 
 checksum_bypassed() {
   case "$SKIP_CHECKSUM" in
+    1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss]) return 0 ;;
+  esac
+  return 1
+}
+
+is_beta() {
+  case "$BETA" in
     1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss]) return 0 ;;
   esac
   return 1
@@ -532,6 +540,7 @@ for arg in "$@"; do
     --purge)     do_uninstall=1; do_purge=1 ;;
     --version=*) VERSION="${arg#*=}" ;;
     --dir=*)     BIN_DIR="${arg#*=}"; BIN_PATH="$BIN_DIR/$BINARY_NAME" ;;
+    --beta)      BETA=1 ;;
     --help|-h)
       cat <<EOF
 Agav Installer
@@ -541,6 +550,7 @@ Usage: install.sh [OPTIONS]
 Options:
   --version=<tag>    Install a specific version (default: latest)
   --dir=<path>       Install directory (default: ~/.local/bin)
+  --beta               Install the latest pre-release (beta) version
   --uninstall        Remove Agav, keeping your settings and history
   --purge            Remove Agav and delete ~/.agav as well
   -h, --help         Show this help
@@ -550,6 +560,7 @@ Environment:
   AGAV_INSTALL_DIR      Install directory; overridden by --dir.
   AGAV_NON_INTERACTIVE  Set to 1/true/yes to skip prompts.
   AGAV_SKIP_CHECKSUM    Set to 1/true/yes to install without verifying SHA-256.
+  AGAV_BETA             Set to 1/true/yes to install pre-release; overridden by --beta.
 EOF
       exit 0
       ;;
@@ -623,11 +634,21 @@ step "Agav installer for $platform_label"
 
 # Resolve version
 if [ "$VERSION" = "latest" ]; then
-  step "Resolving latest release..."
-  release_json="$(download_text "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null)" || {
-    err "Could not fetch release info. GitHub API may be unavailable."
-    exit 1
-  }
+  if is_beta; then
+    step "Resolving latest pre-release..."
+    # The /releases endpoint returns all releases (including pre-releases)
+    # sorted newest-first. Pick the first one, which may be a pre-release.
+    release_json="$(download_text "https://api.github.com/repos/${REPO}/releases?per_page=1" 2>/dev/null)" || {
+      err "Could not fetch release info. GitHub API may be unavailable."
+      exit 1
+    }
+  else
+    step "Resolving latest release..."
+    release_json="$(download_text "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null)" || {
+      err "Could not fetch release info. GitHub API may be unavailable."
+      exit 1
+    }
+  fi
   resolved_version="$(printf '%s\n' "$release_json" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/')"
   if [ -z "$resolved_version" ]; then
     err "Could not determine latest version."
