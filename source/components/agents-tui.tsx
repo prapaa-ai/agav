@@ -127,6 +127,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     setActiveTab("list");
     setSelectedIndex(0);
     setListView("list");
+    setRemoveStatus(null);
   };
 
   const { searchQuery: listSearch, searching: listSearching, handleSearchKey: handleListSearch } = useSearch();
@@ -135,6 +136,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   useInput(async (input, key) => {
     const isEditingConfig = listView === "config" && (configEditing || configPickerActive);
     if (!listSearching && !isEditingConfig && !marketplaceBusy && (input === "1" || input === "2")) {
+      setRemoveStatus(null);
       if (input === "1") { setActiveTab("list"); setSelectedIndex(0); setListView("list"); }
       else if (input === "2") { setActiveTab("marketplace"); setSelectedIndex(0); }
       return;
@@ -250,7 +252,9 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           } else if (key.return) {
             await saveConfigValue(configEditBuffer);
             setConfigEditing(false);
-          } else if (key.backspace || key.delete) {
+          } else if (key.delete) {
+            setConfigEditBuffer("");
+          } else if (key.backspace) {
             setConfigEditBuffer((b) => b.slice(0, -1));
           } else if (input && input.length === 1) {
             setConfigEditBuffer((b) => b + input);
@@ -439,7 +443,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
             {configPickerActive
               ? "↑↓: Navigate | ENTER: Select | ESC: Cancel"
               : configEditing
-              ? "Type value (blank = inherit) | ENTER: Save | ESC: Cancel"
+              ? "Type value | DEL: Clear | ENTER: Save | ESC: Cancel"
               : `↑↓: Navigate | ENTER: Edit value | ESC: Back to ${configEntryPoint}`}
           </Text>
         )}

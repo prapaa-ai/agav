@@ -93,13 +93,35 @@ export function MarketplaceTab({
     const marketplaceUrl =
       config.agentMarketplace || getDefaultMarketplaceUrl();
     let agentUrl: string;
+    let httpTempPath: string | undefined;
     if (marketplaceUrl.startsWith("file://")) {
       const basePath = parseFileUrl(marketplaceUrl);
       agentUrl = `${basePath}/${agent.path}`;
     } else {
-      agentUrl = `${marketplaceUrl}/${agent.path}`;
+      if (!agent.files || agent.files.length === 0) {
+        setInstallStatus("✗ Failed: marketplace agent has no file manifest");
+        setInstalling(false);
+        setPendingInstallAgent(null);
+        return;
+      }
+      const { downloadAgentFiles } = await import("../agents/installer.js");
+      const agentBaseUrl = `${marketplaceUrl}/${agent.path}`;
+      setInstallStatus("Downloading agent files...");
+      const downloadResult = await downloadAgentFiles(agentBaseUrl, agent.files);
+      if (!downloadResult.success || !downloadResult.path) {
+        setInstallStatus(`✗ Failed: ${downloadResult.error || "Download failed"}`);
+        setInstalling(false);
+        setPendingInstallAgent(null);
+        return;
+      }
+      agentUrl = downloadResult.path;
+      httpTempPath = downloadResult.path;
     }
     const result = await installAgent(agentUrl, { destination });
+    if (httpTempPath) {
+      const { rm } = await import("node:fs/promises");
+      await rm(httpTempPath, { recursive: true, force: true }).catch(() => {});
+    }
     if (result.success) {
       const msg = result.warning
         ? `✓ Installed ${agent.name} (${destination}) — ⚠ ${result.warning}`
