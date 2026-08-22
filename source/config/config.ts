@@ -57,6 +57,7 @@ export interface AgavConfig {
   mcpServers?: Record<string, MCPServerConfig>;
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
+  showThinking?: boolean;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -350,4 +351,10 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
   if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
   if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
-  await writeFile(CONFIG_PATH, JSON.stringify(o                                                                                                                                                          
+  await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
+}
+
+/** Return the root directory used for Agav's global state files. */
+export function getAgavDir(): string {
+  return AGAV_DIR;
+}

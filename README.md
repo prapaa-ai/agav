@@ -416,6 +416,7 @@ For Shift+Enter with no setup at all, use a terminal that implements the protoco
 | `Esc` | Cancel a streaming response |
 | `Ctrl+D` | Toggle tool detail panel |
 | `Ctrl+G` | Toggle plan detail panel |
+| `Ctrl+T` | Toggle thinking text visibility |
 | `Ctrl+J` | Insert newline (works on every terminal) |
 | `Ctrl+V` | Paste an image from clipboard |
 | `Tab` | Cycle subagent focus |
