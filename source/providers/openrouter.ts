@@ -1,6 +1,7 @@
 import { OpenAIProvider } from "./openai.js";
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const CONTEXT_CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface OpenRouterModel {
   id: string;
@@ -10,7 +11,7 @@ interface OpenRouterModel {
 /** OpenRouter exposes an OpenAI-compatible Chat Completions API. */
 export class OpenRouterProvider extends OpenAIProvider {
   private readonly apiKey: string;
-  private readonly contextWindows = new Map<string, number | undefined>();
+  private readonly contextWindows = new Map<string, { value: number | undefined; expiresAt: number }>();
 
   constructor(apiKey: string) {
     super(apiKey, "chat", {
@@ -29,7 +30,9 @@ export class OpenRouterProvider extends OpenAIProvider {
   }
 
   async getContextWindow(model: string): Promise<number | undefined> {
-    if (this.contextWindows.has(model)) return this.contextWindows.get(model);
+    const cached = this.contextWindows.get(model);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    this.contextWindows.delete(model);
 
     try {
       const response = await fetch(`${OPENROUTER_BASE_URL}/models`, {
@@ -39,11 +42,15 @@ export class OpenRouterProvider extends OpenAIProvider {
       if (!response.ok) return undefined;
 
       const body = await response.json() as { data?: OpenRouterModel[] };
+      const expiresAt = Date.now() + CONTEXT_CACHE_TTL_MS;
       for (const item of body.data ?? []) {
-        this.contextWindows.set(item.id, item.context_length);
+        this.contextWindows.set(item.id, { value: item.context_length, expiresAt });
       }
-      if (!this.contextWindows.has(model)) this.contextWindows.set(model, undefined);
-      return this.contextWindows.get(model);
+      if (!this.contextWindows.has(model)) {
+        // Retry absent models after the TTL in case OpenRouter's catalog changes.
+        this.contextWindows.set(model, { value: undefined, expiresAt });
+      }
+      return this.contextWindows.get(model)?.value;
     } catch {
       return undefined;
     }

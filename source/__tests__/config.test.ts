@@ -85,6 +85,26 @@ describe("config", () => {
     expect(updated.template.provider.enum).not.toContain("legacy-provider");
   });
 
+  it("does not rewrite the project config when its template is current", async () => {
+    let projectContents: string | undefined;
+    readFile.mockImplementation(async (path: any) => {
+      if (/[\\/]\.agav[\\/]config\.json$/.test(String(path)) && projectContents !== undefined) {
+        return projectContents;
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    writeFile.mockImplementation(async (_path: any, contents: any) => {
+      projectContents = String(contents);
+    });
+
+    const mod = await import("../config/config.js");
+    await mod.loadConfig();
+    expect(writeFile).toHaveBeenCalledTimes(1);
+
+    await mod.loadConfig();
+    expect(writeFile).toHaveBeenCalledTimes(1);
+  });
+
   it("loads project-level secrets when env vars are absent", async () => {
     readFile.mockImplementation(async (path: any) => {
       const s = String(path);

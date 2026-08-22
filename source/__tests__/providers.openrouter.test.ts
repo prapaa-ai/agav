@@ -102,7 +102,7 @@ describe("OpenRouterProvider getContextWindow", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("returns undefined for unknown models and caches the miss", async () => {
+  it("returns undefined for unknown models and caches the miss until the TTL expires", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -117,10 +117,19 @@ describe("OpenRouterProvider getContextWindow", () => {
     expect(missingContext).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    // Second call does not re-fetch
+    // Second call does not re-fetch until the negative cache expires.
     const missingAgain = await provider.getContextWindow("unknown/model");
     expect(missingAgain).toBeUndefined();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.useFakeTimers();
+    try {
+      vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+      await provider.getContextWindow("unknown/model");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns undefined when fetch fails or returns non-ok status", async () => {
@@ -168,6 +177,19 @@ describe("OpenRouterProvider streaming chat completions", () => {
     const callArgs = createChatCompletion.mock.calls[0]?.[0];
     expect(callArgs.max_tokens).toBe(16384);
     expect(callArgs.max_completion_tokens).toBeUndefined();
+  });
+
+  it("uses prompt steering instead of reasoning_effort for mixed model families", async () => {
+    mockChatStream([
+      { choices: [{ delta: { content: "hi" }, finish_reason: "stop" }] },
+    ]);
+
+    const provider = new OpenRouterProvider("test-key");
+    await collectEvents(provider, { model: "deepseek/deepseek-chat-v3.1", effort: "high" });
+
+    const callArgs = createChatCompletion.mock.calls[0]?.[0];
+    expect(callArgs.reasoning_effort).toBeUndefined();
+    expect(callArgs.messages[0]?.content).toContain("Think carefully");
   });
 
   it("emits thinking_delta events when delta.reasoning is provided", async () => {

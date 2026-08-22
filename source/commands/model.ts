@@ -141,6 +141,14 @@ function warningSuffix(warnings: string[]): string {
   return warnings.length > 0 ? `\n\n${warnings.join("\n")}` : "";
 }
 
+/** Whether a routed model slug belongs to the provider already in use. */
+function matchesProviderPrefix(model: string, provider: string): boolean {
+  const prefix = model.split("/", 1)[0]?.toLowerCase();
+  if (provider === "anthropic" || provider === "openai") return prefix === provider;
+  if (provider === "gemini" || provider === "vertex-ai") return prefix === "google";
+  return false;
+}
+
 function pickModel(
   models: FetchedModel[],
   currentModel: string,
@@ -309,7 +317,8 @@ export const modelCommand: SlashCommand = {
       }
 
       context.setModel(model);
-      if (match && match.provider !== context.config.provider) {
+      if (match && match.provider !== context.config.provider
+        && !matchesProviderPrefix(model, context.config.provider)) {
         context.setProvider(match.provider as import("../config/config.js").AgavConfig["provider"]);
         return { type: "message", text: `Model changed to: ${model} (switched to ${match.provider})` };
       }
@@ -340,7 +349,10 @@ export const modelCommand: SlashCommand = {
     }
 
     context.setModel(picked.id);
-    context.setProvider(picked.provider as AgavConfig["provider"]);
-    return { type: "message", text: `Model changed to: ${picked.id} (${picked.provider})${warningSuffix(warnings)}` };
+    if (picked.provider !== currentProvider && !matchesProviderPrefix(picked.id, currentProvider)) {
+      context.setProvider(picked.provider as AgavConfig["provider"]);
+      return { type: "message", text: `Model changed to: ${picked.id} (switched to ${picked.provider})${warningSuffix(warnings)}` };
+    }
+    return { type: "message", text: `Model changed to: ${picked.id}${warningSuffix(warnings)}` };
   },
 };
