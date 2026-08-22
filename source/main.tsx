@@ -6,7 +6,7 @@ import { createProvider } from "./providers/registry.js";
 import type { LLMProvider } from "./providers/types.js";
 import { buildSystemPrompt } from "./utils/system-prompt.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
-import { loadSessionState, markCleanExit } from "./config/session-state.js";
+import { loadSessionState, markCleanExit, markCleanExitSync } from "./config/session-state.js";
 import { loadTheme } from "./config/theme.js";
 import { ConversationState } from "./agent/conversation.js";
 import { runAgentLoop } from "./agent/loop.js";
@@ -689,7 +689,7 @@ export async function main() {
 
   // Mark clean exits so crash recovery only offers truly interrupted sessions.
   process.on("exit", () => {
-    markCleanExit();
+    markCleanExitSync();
     stopAllA2AAgents();
   });
   process.on("SIGINT", async () => {

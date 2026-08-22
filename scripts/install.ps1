@@ -242,7 +242,25 @@ if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq 
     Write-Host "agav -> ARM64 detected; installing the x64 build (runs under emulation)." -ForegroundColor Cyan
 }
 
-$Target = "windows-$Arch"
+# Detect AVX2 support.  Bun ships two x64 variants: the default build uses
+# AVX2 instructions, and a baseline build uses SSE4.2 only.  CPUs without
+# AVX2 (and some Intel 12th/13th gen hybrid CPUs whose E-cores lack it)
+# crash or misbehave with the AVX2 build.  PF_AVX2_INSTRUCTIONS_AVAILABLE
+# is feature index 40 in kernel32 IsProcessorFeaturePresent.
+$HasAvx2 = $false
+try {
+    Add-Type -MemberDefinition `
+        '[DllImport("kernel32.dll")] public static extern bool IsProcessorFeaturePresent(int feature);' `
+        -Name AgavCpu -Namespace Win32 -ErrorAction Stop
+    $HasAvx2 = [Win32.AgavCpu]::IsProcessorFeaturePresent(40)
+} catch {}
+
+if ($HasAvx2) {
+    $Target = "windows-$Arch"
+} else {
+    $Target = "windows-$Arch-baseline"
+    Write-Host "agav -> AVX2 not detected; installing the baseline build." -ForegroundColor Cyan
+}
 $AssetName = "agav-$Target.exe"
 
 # --- Check existing install ---

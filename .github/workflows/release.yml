@@ -63,6 +63,12 @@ jobs:
           - target: windows-x64
             os: ubuntu-latest
             ext: .exe
+          # Baseline variant without AVX2 for older CPUs and Intel hybrid
+          # CPUs whose E-cores lack AVX2.  Also sidesteps a class of Bun
+          # segfaults tied to SIMD code paths on Windows.
+          - target: windows-x64-baseline
+            os: ubuntu-latest
+            ext: .exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4.2.2
