@@ -43,6 +43,10 @@ case "$TARGETS" in
     # No windows-arm64: Bun has no such compile target. ARM64 Windows runs
     # the x64 build under emulation.
     build_target "windows-x64" "agav-windows-x64.exe"
+    # Baseline variant without AVX2 for older CPUs and Intel 12th/13th gen
+    # hybrid CPUs whose E-cores lack AVX2.  Also avoids a class of Bun
+    # segfaults tied to SIMD code paths on Windows.
+    build_target "windows-x64-baseline" "agav-windows-x64-baseline.exe"
     ;;
   *)
     build_target "$TARGETS" "agav-$TARGETS"
