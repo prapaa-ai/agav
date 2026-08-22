@@ -24,6 +24,10 @@ export class OpenRouterProvider extends OpenAIProvider {
     this.apiKey = apiKey;
   }
 
+  protected override getMaxTokensParam(maxTokens?: number): Record<string, number> {
+    return { max_tokens: maxTokens ?? 16384 };
+  }
+
   async getContextWindow(model: string): Promise<number | undefined> {
     if (this.contextWindows.has(model)) return this.contextWindows.get(model);
 

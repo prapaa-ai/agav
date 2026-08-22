@@ -142,6 +142,11 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
+  // Subclasses whose APIs predate max_completion_tokens can override this.
+  protected getMaxTokensParam(maxTokens?: number): Record<string, number> {
+    return { max_completion_tokens: maxTokens ?? 16384 };
+  }
+
   private async *streamChat(params: StreamParams): AsyncIterable<StreamEvent> {
     const hasFunctionTools = Boolean(params.tools?.length);
     const normalizedModel = params.model.toLowerCase();
@@ -160,9 +165,7 @@ export class OpenAIProvider implements LLMProvider {
     const createStream = (effort: typeof nativeEffort, prompt: string | undefined) =>
       this.client.chat.completions.create({
         model: params.model,
-        ...(this.name === "openrouter"
-          ? { max_tokens: params.maxTokens ?? 16384 }
-          : { max_completion_tokens: params.maxTokens ?? 16384 }),
+        ...this.getMaxTokensParam(params.maxTokens),
         messages: this.toChatMessages(params.messages, prompt),
         ...(effort ? { reasoning_effort: effort } : {}),
         tools: params.tools?.length ? params.tools.map((t) => this.toChatTool(t)) : undefined,
