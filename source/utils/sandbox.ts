@@ -204,11 +204,24 @@ function runUnsandboxed(
   const isWindows = platform() === "win32";
   const shell = isWindows ? "cmd.exe" : "/bin/sh";
   const shellArgs = isWindows ? ["/c", command] : ["-c", command];
+  const env = filterEnv();
+  if (isWindows) {
+    // On Windows there is no kernel-level sandbox. Apply env-var shaping as a
+    // best-effort mitigation: mark the process as sandboxed so well-behaved
+    // tools can self-restrict, and strip proxy vars to reduce network reach.
+    env["AGAV_SANDBOX_ACTIVE"] = "1";
+    delete env["HTTP_PROXY"];
+    delete env["HTTPS_PROXY"];
+    delete env["ALL_PROXY"];
+    delete env["http_proxy"];
+    delete env["https_proxy"];
+    delete env["all_proxy"];
+  }
   return new Promise((resolve) => {
     execFile(
       shell,
       shellArgs,
-      { timeout, maxBuffer, cwd, env: filterEnv() },
+      { timeout, maxBuffer, cwd, env },
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });
       },
