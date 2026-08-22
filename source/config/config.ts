@@ -128,6 +128,11 @@ const PROJECT_CONFIG_TEMPLATE = {
     type: "boolean",
     eg: false,
   },
+  showThinking: {
+    description: "Whether to display the model's reasoning/thinking text as it streams. Toggle with Ctrl+T at runtime.",
+    type: "boolean",
+    eg: false,
+  },
   anthropicApiKey: {
     description: "Anthropic API key. Prefer the ANTHROPIC_API_KEY environment variable for secrets.",
     type: "string",
@@ -345,10 +350,4 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
   if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
   if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
-  await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
-}
-
-/** Return the root directory used for Agav's global state files. */
-export function getAgavDir(): string {
-  return AGAV_DIR;
-}
+  await writeFile(CONFIG_PATH, JSON.stringify(o                                                                                                                                                          
