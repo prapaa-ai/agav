@@ -3,6 +3,7 @@ import { resolve, dirname } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import { computeDiff } from "../utils/diff.js";
 import { pushUndo } from "../utils/undo.js";
+import { checkPathBoundary } from "../utils/path-guard.js";
 
 export const fileWriteTool: ToolDefinition = {
   schema: {
