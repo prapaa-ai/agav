@@ -235,7 +235,8 @@ async function ensureProjectConfigTemplate(): Promise<void> {
   try {
     const raw = await readFile(projectPath, "utf-8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (parsed.template !== undefined) return;
+    // Refresh shipped metadata on every start so new configuration keys are
+    // documented after an upgrade, while preserving all user-owned settings.
     parsed.template = PROJECT_CONFIG_TEMPLATE;
     await writeFile(projectPath, JSON.stringify(parsed, null, 2) + "\n");
   } catch (error) {

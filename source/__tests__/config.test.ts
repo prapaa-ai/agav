@@ -56,6 +56,35 @@ describe("config", () => {
     expect(result.permissionMode).toBe("ask");
   });
 
+  it("refreshes the project config template without changing user settings", async () => {
+    const userConfig = {
+      provider: "ollama",
+      model: "custom-model",
+      customSetting: { keep: true },
+      template: { provider: { enum: ["legacy-provider"] } },
+    };
+
+    readFile.mockImplementation(async (path: any) => {
+      if (/[\\/]\.agav[\\/]config\.json$/.test(String(path))) {
+        return JSON.stringify(userConfig);
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    await mod.loadConfig();
+
+    expect(writeFile).toHaveBeenCalledTimes(1);
+    const updated = JSON.parse(String(writeFile.mock.calls[0]?.[1]));
+    expect(updated).toMatchObject({
+      provider: "ollama",
+      model: "custom-model",
+      customSetting: { keep: true },
+    });
+    expect(updated.template.provider.enum).toContain("openrouter");
+    expect(updated.template.provider.enum).not.toContain("legacy-provider");
+  });
+
   it("loads project-level secrets when env vars are absent", async () => {
     readFile.mockImplementation(async (path: any) => {
       const s = String(path);
