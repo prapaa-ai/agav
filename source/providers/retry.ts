@@ -49,11 +49,20 @@ export class RetryProvider implements LLMProvider {
   readonly name: string;
   private inner: LLMProvider;
   private maxRetries: number;
+  /**
+   * Optional capabilities must be forwarded explicitly. The agent loop probes
+   * `provider.getContextWindow` on this wrapper, so dropping the method here
+   * would silently disable context-window discovery for wrapped providers.
+   */
+  readonly getContextWindow?: LLMProvider["getContextWindow"];
 
   constructor(inner: LLMProvider, maxRetries = DEFAULT_MAX_RETRIES) {
     this.inner = inner;
     this.name = inner.name;
     this.maxRetries = maxRetries;
+    if (inner.getContextWindow) {
+      this.getContextWindow = inner.getContextWindow.bind(inner);
+    }
   }
 
   async *stream(params: StreamParams): AsyncIterable<StreamEvent> {

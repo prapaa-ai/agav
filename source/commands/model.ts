@@ -44,6 +44,22 @@ async function fetchOpenAIModels(apiKey: string): Promise<FetchedModel[]> {
   }
 }
 
+async function fetchOpenRouterModels(apiKey: string): Promise<FetchedModel[]> {
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { data?: { id: string }[] };
+    return (data.data ?? [])
+      .map((m) => ({ id: m.id, provider: "openrouter" }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  } catch {
+    return [];
+  }
+}
+
 async function fetchOllamaModels(baseUrl: string): Promise<FetchedModel[]> {
   try {
     const res = await fetch(`${baseUrl}/api/tags`, {
@@ -106,6 +122,7 @@ async function fetchAllModels(config: AgavConfig): Promise<FetchAllResult> {
 
   if (config.anthropicApiKey) fetches.push(fetchAnthropicModels(config.anthropicApiKey));
   if (config.openaiApiKey) fetches.push(fetchOpenAIModels(config.openaiApiKey));
+  if (config.openrouterApiKey) fetches.push(fetchOpenRouterModels(config.openrouterApiKey));
   if (config.geminiApiKey) fetches.push(fetchGeminiModels(config.geminiApiKey));
   if (config.vertexAICredentialsPath) {
     fetches.push(fetchVertexModels(config.vertexAICredentialsPath, config.vertexAILocation, warnings));

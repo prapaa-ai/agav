@@ -21,14 +21,25 @@ type ResponseStreamEvent = OpenAI.Responses.ResponseStreamEvent;
 
 export type OpenAIApiMode = "responses" | "chat";
 
+export interface OpenAIProviderOptions {
+  name?: string;
+  baseURL?: string;
+  defaultHeaders?: Record<string, string>;
+}
+
 export class OpenAIProvider implements LLMProvider {
-  readonly name = "openai";
+  readonly name: string;
   private client: OpenAI;
   private apiMode: OpenAIApiMode;
   private toolEffortUnsupportedModels = new Set<string>();
 
-  constructor(apiKey: string, apiMode: OpenAIApiMode = "responses") {
-    this.client = new OpenAI({ apiKey });
+  constructor(apiKey: string, apiMode: OpenAIApiMode = "responses", options: OpenAIProviderOptions = {}) {
+    this.name = options.name ?? "openai";
+    this.client = new OpenAI({
+      apiKey,
+      baseURL: options.baseURL,
+      defaultHeaders: options.defaultHeaders,
+    });
     this.apiMode = apiMode;
   }
 
@@ -149,7 +160,9 @@ export class OpenAIProvider implements LLMProvider {
     const createStream = (effort: typeof nativeEffort, prompt: string | undefined) =>
       this.client.chat.completions.create({
         model: params.model,
-        max_completion_tokens: params.maxTokens ?? 16384,
+        ...(this.name === "openrouter"
+          ? { max_tokens: params.maxTokens ?? 16384 }
+          : { max_completion_tokens: params.maxTokens ?? 16384 }),
         messages: this.toChatMessages(params.messages, prompt),
         ...(effort ? { reasoning_effort: effort } : {}),
         tools: params.tools?.length ? params.tools.map((t) => this.toChatTool(t)) : undefined,
@@ -198,6 +211,11 @@ export class OpenAIProvider implements LLMProvider {
 
       if (delta?.content) {
         yield { type: "text_delta", text: delta.content };
+      }
+
+      const reasoning = (delta as any)?.reasoning;
+      if (typeof reasoning === "string" && reasoning) {
+        yield { type: "thinking_delta", text: reasoning };
       }
 
       if (delta?.tool_calls) {

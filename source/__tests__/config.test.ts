@@ -23,6 +23,7 @@ describe("config", () => {
     writeFile.mockReset();
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENROUTER_API_KEY;
     delete process.env.GEMINI_API_KEY;
     delete process.env.OLLAMA_ENDPOINT;
     delete process.env.OLLAMA_HOST;
@@ -62,6 +63,7 @@ describe("config", () => {
         return JSON.stringify({
           anthropicApiKey: "enc:anthropic-project",
           openaiApiKey: "enc:openai-project",
+          openrouterApiKey: "enc:openrouter-project",
           geminiApiKey: "enc:gemini-project",
           ollamaApiKey: "enc:ollama-project",
         });
@@ -70,6 +72,7 @@ describe("config", () => {
         return JSON.stringify({
           anthropicApiKey: "enc:anthropic-global",
           openaiApiKey: "enc:openai-global",
+          openrouterApiKey: "enc:openrouter-global",
           geminiApiKey: "enc:gemini-global",
           ollamaApiKey: "enc:ollama-global",
         });
@@ -82,6 +85,7 @@ describe("config", () => {
 
     expect(loaded.anthropicApiKey).toBe("anthropic-project");
     expect(loaded.openaiApiKey).toBe("openai-project");
+    expect(loaded.openrouterApiKey).toBe("openrouter-project");
     expect(loaded.geminiApiKey).toBe("gemini-project");
     expect(loaded.ollamaApiKey).toBe("ollama-project");
   });
@@ -125,6 +129,7 @@ describe("config", () => {
   it("applies env overrides and encrypts secrets on save", async () => {
     process.env.ANTHROPIC_API_KEY = "enc:anthropic-env";
     process.env.OPENAI_API_KEY = "enc:openai-env";
+    process.env.OPENROUTER_API_KEY = "enc:openrouter-env";
     process.env.GEMINI_API_KEY = "enc:gemini-env";
     process.env.OLLAMA_ENDPOINT = "http://localhost:11434";
     process.env.OLLAMA_HOST = "127.0.0.1";
@@ -136,7 +141,13 @@ describe("config", () => {
     readFile.mockImplementation(async (path: any) => {
       const s = String(path);
       if (s.includes("/config.json") && !s.includes(".agav/config.json")) {
-        return JSON.stringify({ anthropicApiKey: "enc:anthropic-file", openaiApiKey: "enc:openai-file", geminiApiKey: "enc:gemini-file", ollamaApiKey: "enc:ollama-file" });
+        return JSON.stringify({
+          anthropicApiKey: "enc:anthropic-file",
+          openaiApiKey: "enc:openai-file",
+          openrouterApiKey: "enc:openrouter-file",
+          geminiApiKey: "enc:gemini-file",
+          ollamaApiKey: "enc:ollama-file",
+        });
       }
       if (s.endsWith("/.agav/config.json") || s.includes("/.agav/config.json")) {
         return JSON.stringify({});
@@ -149,6 +160,7 @@ describe("config", () => {
 
     expect(loaded.anthropicApiKey).toBe("anthropic-env");
     expect(loaded.openaiApiKey).toBe("openai-env");
+    expect(loaded.openrouterApiKey).toBe("openrouter-env");
     expect(loaded.geminiApiKey).toBe("gemini-env");
     expect(loaded.ollamaApiKey).toBe("ollama-env");
     expect(loaded.ollamaEndpoint).toBe("http://localhost:11434");
@@ -167,6 +179,7 @@ describe("config", () => {
       permissionMode: "ask",
       anthropicApiKey: "a",
       openaiApiKey: "o",
+      openrouterApiKey: "r",
       geminiApiKey: "g",
       ollamaApiKey: "l",
     });
@@ -174,6 +187,7 @@ describe("config", () => {
     const body = String(writeFile.mock.calls.at(-1)?.[1]);
     expect(body).toContain("enc:a");
     expect(body).toContain("enc:o");
+    expect(body).toContain("enc:r");
     expect(body).toContain("enc:g");
     expect(body).toContain("enc:l");
   });
