@@ -37,7 +37,7 @@ export const editFileTool: ToolDefinition = {
     const oldString = String(input.old_string);
     const newString = String(input.new_string);
 
-    const pathError = checkPathBoundary(filePath, "write");
+    const pathError = await checkPathBoundary(filePath, "write");
     if (pathError) {
       return { output: pathError, isError: true };
     }

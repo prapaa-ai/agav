@@ -67,7 +67,7 @@ interface LoopParams {
 const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_directory", "web_search", "lsp_query", "read_notebook", "fetch_url", "overview", "activate_skill", "save_memory", "update_plan"]);
 
 /** Tools that perform file mutations — always blocked in deny-writes mode. */
-const WRITE_TOOLS = new Set(["edit_file", "write_file", "run_command", "edit_notebook"]);
+const WRITE_TOOLS = new Set(["edit_file", "write_file", "edit_notebook"]);
 
 function isAllowed(
   toolName: string,

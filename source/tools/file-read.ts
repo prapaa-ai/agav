@@ -27,7 +27,7 @@ export const fileReadTool: ToolDefinition = {
   async execute(input): Promise<ToolResult> {
     const filePath = resolve(String(input.path));
 
-    const pathError = checkPathBoundary(filePath, "read");
+    const pathError = await checkPathBoundary(filePath, "read");
     if (pathError) {
       return { output: pathError, isError: true };
     }

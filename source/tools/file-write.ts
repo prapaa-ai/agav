@@ -30,7 +30,7 @@ export const fileWriteTool: ToolDefinition = {
     const filePath = resolve(String(input.path));
     const content = String(input.content);
 
-    const pathError = checkPathBoundary(filePath, "write");
+    const pathError = await checkPathBoundary(filePath, "write");
     if (pathError) {
       return { output: pathError, isError: true };
     }
