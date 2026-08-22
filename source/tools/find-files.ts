@@ -48,7 +48,7 @@ async function nodeFind(searchPath: string, pattern: RegExp): Promise<string[]> 
 }
 
 /** Run native find and return output. Rejects if find is not found or not Unix find. */
-function nativeFind(pattern: string, searchPath: string): Promise<string> {
+function nativeFind(pattern: string, searchPath: string): Promise<{ stdout: string; stderr: string }> {
   const args = [
     searchPath,
     "-name", pattern,
@@ -70,9 +70,9 @@ function nativeFind(pattern: string, searchPath: string): Promise<string> {
         if (stderr && /parameter format/i.test(stderr)) {
           reject(new Error("Windows find.exe is not Unix find"));
         }
-        resolve(stdout || "");
+        resolve({ stdout: stdout || "", stderr: stderr || error.message });
       } else {
-        resolve(stdout || "");
+        resolve({ stdout: stdout || "", stderr: "" });
       }
     });
   });
@@ -108,13 +108,16 @@ export const findFilesTool: ToolDefinition = {
     // On Unix, try native find first for speed, fall back to Node.js if not found.
     if (platform() !== "win32") {
       try {
-        const stdout = await nativeFind(pattern, searchPath);
-        if (stdout) {
-          const lines = stdout.split("\n").filter(Boolean);
+        const result = await nativeFind(pattern, searchPath);
+        if (result.stdout) {
+          const lines = result.stdout.split("\n").filter(Boolean);
           const truncated = lines.length > MAX_RESULTS
             ? lines.slice(0, MAX_RESULTS).join("\n") + `\n... ${lines.length - MAX_RESULTS} more files`
-            : stdout.trimEnd();
+            : result.stdout.trimEnd();
           return { output: truncated, isError: false };
+        }
+        if (result.stderr) {
+          return { output: result.stderr, isError: true };
         }
         return { output: "No files found.", isError: false };
       } catch {

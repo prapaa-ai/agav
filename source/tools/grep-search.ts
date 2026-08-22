@@ -103,7 +103,7 @@ function nativeGrep(
   pattern: string,
   searchPath: string,
   include: string | undefined,
-): Promise<{ stdout: string; code: number | null }> {
+): Promise<{ stdout: string; stderr: string; code: number | null }> {
   const args = ["-rn", "--color=never", "-E"];
   if (include) {
     args.push("--include", include);
@@ -118,11 +118,11 @@ function nativeGrep(
   );
 
   return new Promise((resolve, reject) => {
-    execFile("grep", args, { maxBuffer: 200_000, timeout: 15_000 }, (error, stdout) => {
+    execFile("grep", args, { maxBuffer: 200_000, timeout: 15_000 }, (error, stdout, stderr) => {
       if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
         reject(error);
       } else {
-        resolve({ stdout, code: error ? (error as any).code ?? null : 0 });
+        resolve({ stdout, stderr, code: error ? (error as any).code ?? null : 0 });
       }
     });
   });
@@ -174,7 +174,7 @@ export const grepSearchTool: ToolDefinition = {
         if (result.code === 1) {
           return { output: "No matches found.", isError: false };
         }
-        return { output: "grep failed", isError: true };
+        return { output: result.stderr || "grep failed", isError: true };
       } catch {
         // grep not found — fall through to Node.js implementation
       }
