@@ -518,6 +518,15 @@ replace_symlink() {
 
   rm -f "$tmp_link"
   ln -s "$link_target" "$tmp_link"
+  # `mv -f` resolves a destination that is a symlink to a directory and moves
+  # the source *inside* it — with exit 0, so nothing downstream notices. That is
+  # how an upgrade left `current` aimed at the previous release, dropped the
+  # temp link into that release's directory, and then verified and announced the
+  # old binary as freshly installed. Both BSD and GNU mv do this, and neither
+  # has a portable spelling of `mv -T`, so clear a link destination first.
+  if [ -L "$link_path" ]; then
+    rm -f "$link_path"
+  fi
   mv -f "$tmp_link" "$link_path" 2>/dev/null || {
     rm -f "$link_path"
     mv -f "$tmp_link" "$link_path"
@@ -550,7 +559,7 @@ Usage: install.sh [OPTIONS]
 Options:
   --version=<tag>    Install a specific version (default: latest)
   --dir=<path>       Install directory (default: ~/.local/bin)
-  --beta               Install the latest pre-release (beta) version
+  --beta             Install the latest pre-release (beta) version
   --uninstall        Remove Agav, keeping your settings and history
   --purge            Remove Agav and delete ~/.agav as well
   -h, --help         Show this help
