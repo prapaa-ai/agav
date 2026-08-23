@@ -374,7 +374,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       return;
     }
     if (match.action === "clearScreen" && !pendingConfirmation) {
-      process.stdout.write("\x1Bc\x1b[?25l");
+      process.stdout.write("\x1B[3J\x1Bc\x1b[?25l");
       return;
     }
     if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && input.length === 0
