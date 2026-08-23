@@ -283,7 +283,7 @@ export function detectManagedLayout(binaryPath: string): {
 async function replaceSymlink(linkPath: string, target: string): Promise<void> {
   const tmpLink = `${linkPath}.tmp.${process.pid}`;
   await rm(tmpLink, { force: true });
-  await symlink(target, tmpLink);
+  await symlink(target, tmpLink, process.platform === "win32" ? "junction" : "dir");
   try {
     await rename(tmpLink, linkPath);
   } catch {

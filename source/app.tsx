@@ -67,10 +67,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [config, setConfig] = useState(initialConfig);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const activeSideProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const [showToolDetail, setShowToolDetail] = useState(false);
   const [showPlanDetail, setShowPlanDetail] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);

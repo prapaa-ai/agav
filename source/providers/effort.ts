@@ -32,6 +32,12 @@ export function mapOpenAIEffort(effort: EffortLevel): OpenAIEffortLevel {
 export function supportsNativeEffort(provider: string, model: string): boolean {
   const normalized = model.toLowerCase();
 
+  if (provider === "openrouter") {
+    // OpenRouter spans model families with incompatible effort parameters.
+    // Fall back to prompt steering rather than sending reasoning_effort blindly.
+    return false;
+  }
+
   if (provider === "openai") {
     return /^(?:o[134](?:-|$)|gpt-5(?:[.-]|$))/.test(normalized)
       || normalized.includes("codex");
