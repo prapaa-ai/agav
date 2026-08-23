@@ -63,12 +63,17 @@ async function parseAgentMarkdown(path: string): Promise<{ manifest: AgentManife
 /**
  * Scan tools directory and return lazy ToolDefinitions that defer import() to first invocation.
  * This prevents third-party tool code from running at scan time.
+ *
+ * For non-bundled agents (global / project), tool execution is sandboxed
+ * in a subprocess wrapped by Seatbelt (macOS) or Bubblewrap (Linux).
+ * Bundled agents are trusted and run in-process for performance.
  */
 async function scanAgentTools(
   agentDir: string,
   toolsDir: string,
   toolPermissions: Record<string, "safe" | "destructive"> = {},
-  manifestTools?: AgentManifest["tools"]
+  manifestTools?: AgentManifest["tools"],
+  origin: AgentOrigin = "bundled",
 ): Promise<ToolDefinition[]> {
   const toolsDirPath = resolve(agentDir, toolsDir);
   const tools: ToolDefinition[] = [];
@@ -141,44 +146,56 @@ async function scanAgentTools(
       schema.destructive = true;
     }
 
-    // Lazy-load the actual module on first execute() call
-    let loadedExecute: ((input: Record<string, unknown>) => Promise<any>) | null = null;
+    // Non-bundled agents run in a sandboxed subprocess; bundled agents
+    // are trusted and execute in-process for performance.
+    if (origin !== "bundled") {
+      tools.push({
+        schema,
+        async execute(input, context?) {
+          const { executeSandboxedTool } = await import("./sandboxed-tool.js");
+          return await executeSandboxedTool(toolPath, input, context?.env);
+        },
+      });
+    } else {
+      // Bundled (trusted) path — lazy in-process import
+      let loadedExecute: ((input: Record<string, unknown>) => Promise<any>) | null = null;
 
-    tools.push({
-      schema,
-      async execute(input, context?) {
-        // Inject credentials into process.env for this tool call only
-        const envToRestore: Record<string, string | undefined> = {};
-        if (context?.env) {
-          for (const [k, v] of Object.entries(context.env)) {
-            envToRestore[k] = process.env[k];
-            process.env[k] = v;
-          }
-        }
-        try {
-          if (!loadedExecute) {
-            const mod = await import(pathToFileURL(toolPath).href);
-            const toolDef = mod.default || mod;
-            if (!toolDef.execute) {
-              return { output: `Tool ${schema.name} has no execute function`, isError: true };
+      tools.push({
+        schema,
+        async execute(input, context?) {
+          // Inject credentials into process.env for this tool call only
+          const envToRestore: Record<string, string | undefined> = {};
+          if (context?.env) {
+            for (const [k, v] of Object.entries(context.env)) {
+              envToRestore[k] = process.env[k];
+              process.env[k] = v;
             }
-            // Only update schema from the module if no manifest/sidecar schema was declared
-            if (toolDef.schema && !hasDeclaredSchema) {
-              Object.assign(schema, toolDef.schema);
-              if (permission === "safe") schema.destructive = false;
-              else if (permission === "destructive") schema.destructive = true;
+          }
+          try {
+            if (!loadedExecute) {
+              const mod = await import(pathToFileURL(toolPath).href);
+              const toolDef = mod.default || mod;
+              if (!toolDef.execute) {
+                return { output: `Tool ${schema.name} has no execute function`, isError: true };
+              }
+              // Only update schema from the module if no manifest/sidecar schema was declared
+              if (toolDef.schema && !hasDeclaredSchema) {
+                Object.assign(schema, toolDef.schema);
+                if (permission === "safe") schema.destructive = false;
+                else if (permission === "destructive") schema.destructive = true;
+              }
+              loadedExecute = toolDef.execute;
             }
-            loadedExecute = toolDef.execute;
+            return await loadedExecute!(input);
+          } finally {
+            for (const [k, v] of Object.entries(envToRestore)) {
+              if (v === undefined) delete process.env[k];
+              else process.env[k] = v;
+            }
           }
-          return await loadedExecute!(input);
-        } finally {
-          for (const [k, v] of Object.entries(envToRestore)) {
-            if (v === undefined) delete process.env[k];
-            else process.env[k] = v;
-          }
-        }
-      },
-    });
+        },
+      });
+    }
   }
 
   return tools;
@@ -226,7 +243,7 @@ export async function loadAgent(agentDir: string, origin: AgentOrigin, alias?: s
   try {
     const { manifest, systemPrompt } = await parseAgentMarkdown(manifestPath);
     const toolsDir = manifest["tools-dir"] || "./tools";
-    const tools = await scanAgentTools(agentDir, toolsDir, manifest["tool-permissions"], manifest.tools);
+    const tools = await scanAgentTools(agentDir, toolsDir, manifest["tool-permissions"], manifest.tools, origin);
 
     return {
       manifest: { ...manifest, enabled: manifest.enabled ?? true },
