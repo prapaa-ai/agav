@@ -14,15 +14,22 @@ import type { AgavConfig } from "../config/config.js";
 const originalFetch = globalThis.fetch;
 
 /**
- * Answer only the Anthropic listing; every other endpoint (Ollama in
+ * Answer Anthropic and OpenRouter listings; every other endpoint (Ollama in
  * particular) is treated as unreachable so the tests never touch the network.
  */
-function stubFetch(anthropicModels: string[]): void {
+function stubFetch(anthropicModels: string[] = [], openrouterModels: string[] = []): void {
   globalThis.fetch = vi.fn(async (input: any) => {
-    if (String(input).includes("api.anthropic.com")) {
+    const url = String(input);
+    if (url.includes("api.anthropic.com")) {
       return {
         ok: true,
         json: async () => ({ data: anthropicModels.map((id) => ({ id })) }),
+      } as any;
+    }
+    if (url.includes("openrouter.ai/api/v1/models")) {
+      return {
+        ok: true,
+        json: async () => ({ data: openrouterModels.map((id) => ({ id })) }),
       } as any;
     }
     throw new Error("unreachable");
@@ -123,5 +130,47 @@ describe("commands/model", () => {
 
     expect(fetchVertexAIModelsMock).not.toHaveBeenCalled();
     expect(messageText(result)).not.toContain("Vertex AI models unavailable");
+  });
+
+  it("lists OpenRouter models and auto-switches provider when an OpenRouter model is selected", async () => {
+    stubFetch([], ["anthropic/claude-sonnet-4.5", "deepseek/deepseek-chat-v3.1"]);
+
+    const context = createContext({
+      provider: "anthropic",
+      openrouterApiKey: "sk-or-v1-test",
+    });
+    const result = await modelCommand.execute("deepseek/deepseek-chat-v3.1", context);
+
+    expect(context.setModel).toHaveBeenCalledWith("deepseek/deepseek-chat-v3.1");
+    expect(context.setProvider).toHaveBeenCalledWith("openrouter");
+    expect(messageText(result)).toContain("Model changed to: deepseek/deepseek-chat-v3.1 (switched to openrouter)");
+  });
+
+  it("keeps the direct provider for an OpenRouter slug with the same provider prefix", async () => {
+    stubFetch([], ["anthropic/claude-sonnet-4.5"]);
+
+    const context = createContext({
+      provider: "anthropic",
+      openrouterApiKey: "sk-or-v1-test",
+    });
+    const result = await modelCommand.execute("anthropic/claude-sonnet-4.5", context);
+
+    expect(context.setModel).toHaveBeenCalledWith("anthropic/claude-sonnet-4.5");
+    expect(context.setProvider).not.toHaveBeenCalled();
+    expect(messageText(result)).toBe("Model changed to: anthropic/claude-sonnet-4.5");
+  });
+
+  it("swallows OpenRouter API errors gracefully when fetching models", async () => {
+    globalThis.fetch = vi.fn(async (input: any) => {
+      if (String(input).includes("openrouter.ai")) {
+        return { ok: false, status: 500 } as any;
+      }
+      throw new Error("unreachable");
+    }) as any;
+
+    const context = createContext({ openrouterApiKey: "sk-or-v1-test" });
+    const result = await modelCommand.execute("", context);
+
+    expect(messageText(result)).toContain("No providers reachable");
   });
 });

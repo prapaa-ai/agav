@@ -361,7 +361,7 @@ export async function main() {
     $ cat file | agav -P "explain this"
 
   Options
-    --provider, -p       LLM provider: anthropic, openai, gemini, vertex-ai, or ollama (default: anthropic)
+    --provider, -p       LLM provider: anthropic, openai, openrouter, gemini, vertex-ai, or ollama (default: anthropic)
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
     --effort             Reasoning effort: low, medium, high, or max (default: high)
     --ollama-host        Ollama host (default: localhost)
@@ -457,7 +457,7 @@ export async function main() {
   if (typeof flags.provider === "string") {
     const p = flags.provider;
     if (!isProviderName(p)) {
-      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "gemini", "vertex-ai", or "ollama".`);
+      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "openrouter", "gemini", "vertex-ai", or "ollama".`);
       process.exit(1);
     }
     cliProvider = p;
