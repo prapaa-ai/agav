@@ -374,7 +374,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       return;
     }
     if (match.action === "clearScreen" && !pendingConfirmation) {
-      process.stdout.write("\x1Bc");
+      process.stdout.write("\x1Bc\x1b[?25l");
       return;
     }
     if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && input.length === 0
@@ -475,7 +475,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           clearMessages: () => {
             clearMessages();
             setSystemMessages([]);
-            process.stdout.write("\x1Bc");
+            process.stdout.write("\x1Bc\x1b[?25l");
           },
           refreshPlan,
           saveSession: saveNow,

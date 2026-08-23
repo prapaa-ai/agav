@@ -212,7 +212,10 @@ export function useAgent(
   conversationRef.current.setModel(config.model);
 
   const refreshDisplay = useCallback(() => {
-    process.stdout.write("\x1Bc");
+    // RIS (\x1Bc) resets terminal state including cursor visibility.
+    // Re-hide the hardware cursor because Ink's log-update will not
+    // re-issue the hide after a full reset (it thinks it is still hidden).
+    process.stdout.write("\x1Bc\x1b[?25l");
     const displayMsgs = messagesToDisplay(conversationRef.current.getMessages());
     setMessages(displayMsgs);
     setTranscriptRevision((revision) => revision + 1);
