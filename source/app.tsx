@@ -475,7 +475,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           clearMessages: () => {
             clearMessages();
             setSystemMessages([]);
-            process.stdout.write("\x1Bc\x1b[?25l");
+            process.stdout.write("\x1B[3J\x1Bc\x1b[?25l");
           },
           refreshPlan,
           saveSession: saveNow,

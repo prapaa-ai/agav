@@ -215,7 +215,10 @@ export function useAgent(
     // RIS (\x1Bc) resets terminal state including cursor visibility.
     // Re-hide the hardware cursor because Ink's log-update will not
     // re-issue the hide after a full reset (it thinks it is still hidden).
-    process.stdout.write("\x1Bc\x1b[?25l");
+    // \x1B[3J clears the scrollback buffer so that the banner (and other
+    // Static items) are not duplicated when the user scrolls up after the
+    // Ink <Static> component remounts and re-renders all items.
+    process.stdout.write("\x1B[3J\x1Bc\x1b[?25l");
     const displayMsgs = messagesToDisplay(conversationRef.current.getMessages());
     setMessages(displayMsgs);
     setTranscriptRevision((revision) => revision + 1);
