@@ -7,8 +7,12 @@ export async function runHook(hook: string, vars: Record<string, string>): Promi
     command = command.replaceAll(`$${key}`, value);
   }
 
+  const isWindows = process.platform === "win32";
+  const shell = isWindows ? "cmd.exe" : "/bin/sh";
+  const shellArgs = isWindows ? ["/c", command] : ["-c", command];
+
   return new Promise((resolve) => {
-    execFile("/bin/sh", ["-c", command], { timeout: 5000 }, (err, stdout) => {
+    execFile(shell, shellArgs, { timeout: 5000 }, (err, stdout) => {
       if (err) {
         resolve(null);
       } else {

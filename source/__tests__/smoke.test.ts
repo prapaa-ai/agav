@@ -47,6 +47,7 @@ describe("CLI boot", () => {
     const result = await runCli(["-P", "hello"], {
       ANTHROPIC_API_KEY: "",
       OPENAI_API_KEY: "",
+      OPENROUTER_API_KEY: "",
       GEMINI_API_KEY: "",
       VERTEX_AI_CREDENTIALS_PATH: "",
     });

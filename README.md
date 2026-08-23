@@ -19,7 +19,7 @@
 
 Agav reads, searches and edits the repository you run it in, and runs the commands you'd otherwise run yourself.
 
-- **Five providers** — Anthropic, OpenAI, Gemini, Vertex AI and Ollama, switchable mid-session with `/model`.
+- **Six providers** — Anthropic, OpenAI, OpenRouter, Gemini, Vertex AI and Ollama, switchable mid-session with `/model`.
 - **Sandboxed commands** — shell tools run under Seatbelt on macOS and Bubblewrap on Linux where either is available.
 - **Non-interactive mode** — `agav run` and `agav --print` make the same agent scriptable from CI, with per-tool permissions and optional JSON Schema output.
 - **Sessions that survive** — resume, branch, name, search and export past conversations; `/compact` reclaims context without starting over. Plans are saved per-session and picked back up on resume.
@@ -38,6 +38,7 @@ Pick a provider and model, or take the defaults:
 
 ```bash
 agav --provider openai --model gpt-4o
+agav --provider openrouter --model openrouter/auto
 agav --provider vertex-ai --model vertex/gemini-3.5-flash
 agav -r                                  # resume a session (lists them if no id)
 ```
@@ -62,7 +63,7 @@ agav update
 
 | Flag | Meaning |
 | --- | --- |
-| `--provider`, `-p` | `anthropic`, `openai`, `gemini`, `vertex-ai` or `ollama` (default: `anthropic`) |
+| `--provider`, `-p` | `anthropic`, `openai`, `openrouter`, `gemini`, `vertex-ai` or `ollama` (default: `anthropic`) |
 | `--model`, `-m` | Model name |
 | `--effort` | Reasoning effort: `low`, `medium`, `high` or `max` (default: `high`) |
 | `--print`, `-P` | Run the prompt, print the result, exit |
@@ -291,7 +292,34 @@ Agav says which tool is missing when it hits one of these limits, so there is no
 
 ## Provider setup
 
-Anthropic, OpenAI, and Gemini need nothing more than their API key in the environment — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` — and Ollama just needs a local server running. Vertex AI takes a little more.
+Anthropic, OpenAI, and Gemini need nothing more than their API key in the environment — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` — and Ollama just needs a local server running. OpenRouter needs one key for every model on its platform; Vertex AI takes a little more.
+
+### OpenRouter
+
+OpenRouter fronts hundreds of models from Anthropic, OpenAI, Google, Meta, DeepSeek, Qwen and others behind a single API — one key, one bill, no vendor lock-in. Agav talks to it through its OpenAI-compatible Chat Completions endpoint, so tool calling works as usual.
+
+Create a key at [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) (they start with `sk-or-v1-`) and export it:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-...
+agav --provider openrouter --model openrouter/auto
+```
+
+The default model is `openrouter/auto`, which lets OpenRouter pick a suitable model per request. Any slug from the [model catalog](https://openrouter.ai/models) can be passed with `--model` or `/model`:
+
+```bash
+agav -p openrouter -m anthropic/claude-sonnet-4.5
+agav -p openrouter -m deepseek/deepseek-chat-v3.1
+```
+
+IDs ending in `-latest` prefixed with a tilde (`~anthropic/claude-sonnet-latest`) are OpenRouter aliases that always resolve to the newest version of a family — that's what `/fast` and `/deep` select:
+
+| Command | Model |
+| --- | --- |
+| `/fast` | `~google/gemini-flash-latest` |
+| `/deep` | `~anthropic/claude-sonnet-latest` |
+
+Like the other providers' keys, an `openrouterApiKey` field in `.agav/config.json` or `~/.agav/config.json` is accepted and encrypted at rest — prefer the environment variable. `/model` lists live models straight from your account, and context-window sizes are looked up from OpenRouter so `/context` stays accurate across the whole catalog.
 
 ### Ollama
 
@@ -351,6 +379,7 @@ Drop an `AGAV.md` (or `.agavrc`) in a repository to add project-specific instruc
 | Variable | Effect |
 | --- | --- |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | Provider credentials |
+| `OPENROUTER_API_KEY` | OpenRouter credential (`sk-or-v1-...`) |
 | `VERTEX_AI_CREDENTIALS_PATH` / `VERTEX_AI_LOCATION` | Vertex AI service account and region |
 | `OLLAMA_HOST` / `OLLAMA_PORT` / `OLLAMA_ENDPOINT` / `OLLAMA_API_KEY` | Ollama connection |
 | `AGAV_OLLAMA_NUM_CTX` | Override the per-model Ollama context cap |
