@@ -5,6 +5,7 @@ import type { SubagentProgress } from "../agent/subagent-types.js";
 import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
 import { terminalRelativePaths, terminalToolValue } from "../utils/display-path.js";
 import type { DiffLine } from "../utils/diff.js";
+import { renderMarkdown } from "./markdown-text.js";
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -106,9 +107,9 @@ function DetailView({ progress, elapsed }: {
       {progress.thinkingText ? (
         <Box flexDirection="column" paddingLeft={2} marginTop={1}>
           <Text dimColor>Reasoning summary</Text>
-          <Text dimColor>{terminalRelativePaths(progress.thinkingText.length > 200
+          <Text dimColor>{renderMarkdown(terminalRelativePaths(progress.thinkingText.length > 200
             ? progress.thinkingText.slice(-200).trimStart()
-            : progress.thinkingText)}</Text>
+            : progress.thinkingText))}</Text>
         </Box>
       ) : recentTools.length === 0 && progress.status === "running" ? (
         <Text dimColor>{"  Waiting for model activity..."}</Text>
