@@ -58,6 +58,7 @@ export interface AgavConfig {
   mcpServers?: Record<string, MCPServerConfig>;
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
+  showThinking?: boolean;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -126,6 +127,11 @@ const PROJECT_CONFIG_TEMPLATE = {
   },
   hideAbsolutePath: {
     description: "Whether to hide absolute paths in terminal outputs, replacing them with relative ones.",
+    type: "boolean",
+    eg: false,
+  },
+  showThinking: {
+    description: "Whether to display the model's reasoning/thinking text as it streams. Toggle with Ctrl+T at runtime.",
     type: "boolean",
     eg: false,
   },

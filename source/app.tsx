@@ -73,6 +73,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const [showToolDetail, setShowToolDetail] = useState(false);
   const [showPlanDetail, setShowPlanDetail] = useState(false);
+  const [showThinking, setShowThinking] = useState(initialConfig.showThinking ?? false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
   const [inlineTranscript, setInlineTranscript] = useState(false);
@@ -361,6 +362,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       } else {
         setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: "No active plan to show." }]);
       }
+      return;
+    }
+    if (match.action === "toggleThinking") {
+      setShowThinking((prev) => !prev);
       return;
     }
     if (match.action === "retryLastTurn" && !isLoading && !pendingConfirmation && input.length === 0) {
@@ -665,7 +670,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             {subagentStates.map((sa, i) => (
               <SubagentDisplay key={sa.id} progress={sa} mode="compact" index={i} />
             ))}
-            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} />
+            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} />
             {hasSubagents && (
               <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cycleSubagents")}: cycle subagents · {formatKeybinding(keybindings, "cancel")}: cancel</Text>
             )}
