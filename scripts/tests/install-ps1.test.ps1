@@ -50,15 +50,16 @@ function Save-FileWithProgress {
         if ($env:FAKE_GZ_FAIL -eq "1") { throw "simulated 404 for $Url" }
         if ($env:FAKE_GZ_JUNK -eq "1") {
             Copy-Item -LiteralPath $env:FAKE_ASSET -Destination $Destination -Force
-            return
+            return (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
         }
         $Raw = [System.IO.File]::ReadAllBytes($env:FAKE_ASSET)
         $Out = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Create)
         $Gz = New-Object System.IO.Compression.GZipStream($Out, [System.IO.Compression.CompressionMode]::Compress)
         try { $Gz.Write($Raw, 0, $Raw.Length) } finally { $Gz.Dispose(); $Out.Dispose() }
-        return
+        return (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
     }
     Copy-Item -LiteralPath $env:FAKE_ASSET -Destination $Destination -Force
+    return (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
 }
 function Get-RemoteText {
     param([string]$Url)
