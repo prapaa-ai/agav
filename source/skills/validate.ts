@@ -4,12 +4,13 @@ const DANGER_PATTERNS = [
   /ignore\s+(all\s+)?previous\s+instructions/i,
   /ignore\s+all\s+prior/i,
   /disregard\s+(all\s+)?previous/i,
-  /curl\s+.*\|\s*sh/,
-  /wget\s+.*\|\s*(bash|sh)/,
+  /curl\s+.*\|\s*(bash|sh|zsh)/,
+  /wget\s+.*\|\s*(bash|sh|zsh)/,
   /\beval\s*\(/,
   /rm\s+-rf\s+\//,
   /chmod\s+777/,
-  /base64\s+.*\|\s*(bash|sh)/,
+  /base64\s+.*\|\s*(bash|sh|zsh)/,
+  /\|\s*sudo\s/,
 ];
 
 const VALID_INVOCATIONS = new Set(["user", "agav", "both"]);
