@@ -4,6 +4,7 @@ import { loadSkills, getSkill } from "./loader.js";
 import { executeSkill } from "./executor.js";
 import { installFromUrl, installFromPath, removeSkill, fetchMarketplaceIndex } from "./marketplace.js";
 import { getSkillTraces } from "./improvement.js";
+import { agavHomePath } from "../utils/shell-hints.js";
 
 export function createSkillSlashCommand(skill: SkillDefinition): SlashCommand {
   return {
@@ -45,7 +46,9 @@ export function createSkillSlashCommand(skill: SkillDefinition): SlashCommand {
 export const skillsCommand: SlashCommand = {
   name: "skills",
   description: "Manage skills",
-  usage: "Usage: /skills [action]\n\n  /skills              List installed skills\n  /skills list         Same as above\n  /skills add <path>   Install a skill from a local SKILL.md file\n  /skills remove <name> Uninstall a skill\n  /skills info <name>  Show details about a skill\n  /skills marketplace  Browse available skills\n\nSkills are SKILL.md files with YAML frontmatter. The agent can\nactivate them automatically or you can invoke them as slash commands.",
+  // agavHomePath rather than a literal "~/.agav/skills": on PowerShell and cmd
+  // that spelling is neither typeable nor recognisable.
+  usage: `Usage: /skills [action]\n\n  /skills                 List installed skills\n  /skills list            Same as above\n  /skills add <url|path>  Install from a URL or a local skill directory\n  /skills remove <name>   Uninstall a skill\n  /skills info <name>     Show details about a skill\n  /skills marketplace     Browse available skills\n\nA skill is a directory holding a SKILL.md with YAML frontmatter, plus\noptional scripts/, references/ and assets/. The agent can activate one\nautomatically or you can invoke it as a slash command.\n\nInstalls are written to ${agavHomePath("skills")} and take effect after a\nrestart. Point a path at the skill directory to install all of it, or at a\nlone SKILL.md to take just that file and any scripts/, references/ or\nassets/ beside it. GitHub URLs install the whole directory; other hosts\noffer no listing, so only the SKILL.md itself is fetched.`,
   async execute(args: string, _context: CommandContext): Promise<CommandResult> {
     const parts = args.trim().split(/\s+/);
     const action = parts[0]?.toLowerCase() || "list";
@@ -98,18 +101,28 @@ export const skillsCommand: SlashCommand = {
       const successRate = traces.length > 0
         ? Math.round(traces.filter((t) => t.success !== false).length / traces.length * 100)
         : 0;
+      const fm = skill.frontmatter;
       const lines = [
         `Name: ${skill.name}`,
         `Description: ${skill.description}`,
-        `Version: ${skill.frontmatter.version ?? "unversioned"}`,
-        `Invocation: ${skill.frontmatter.invocation ?? "both"}`,
+        `Version: ${fm.version ?? "unversioned"}`,
+        `Invocation: ${fm.invocation ?? "both"}`,
         `Origin: ${skill.origin}`,
-        `Tags: ${skill.frontmatter.tags?.join(", ") ?? "none"}`,
-        `Allowed tools: ${skill.frontmatter["allowed-tools"]?.join(", ") ?? "all"}`,
-        `Disallowed tools: ${skill.frontmatter["disallowed-tools"]?.join(", ") ?? "none"}`,
+        `Tags: ${fm.tags?.join(", ") ?? "none"}`,
+        `Allowed tools: ${fm["allowed-tools"]?.join(", ") ?? "all"}`,
+        `Disallowed tools: ${fm["disallowed-tools"]?.join(", ") ?? "none"}`,
+      ];
+      // Spec fields, shown only when the author set them — most skills do not.
+      if (fm.license) lines.push(`License: ${fm.license}`);
+      if (fm.compatibility) lines.push(`Compatibility: ${fm.compatibility}`);
+      if (fm.metadata) {
+        const extra = Object.entries(fm.metadata).map(([k, v]) => `${k}=${v}`);
+        if (extra.length > 0) lines.push(`Metadata: ${extra.join(", ")}`);
+      }
+      lines.push(
         `Usage: ${traces.length} runs · ${avgTokens} avg tokens · ${successRate}% success`,
         `Path: ${skill.filePath}`,
-      ];
+      );
       return { type: "message", text: lines.join("\n") };
     }
 

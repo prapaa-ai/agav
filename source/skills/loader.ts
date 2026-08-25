@@ -3,11 +3,140 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgavDir } from "../config/config.js";
 import { BUNDLED_SKILL_FILES } from "./bundled-manifest.js";
+import { validateSkill } from "./validate.js";
 import type { SkillFrontmatter, SkillDefinition } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let cachedSkills: SkillDefinition[] | null = null;
+
+function unquote(val: string): string {
+  if (val.length >= 2 && ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'")))) {
+    return val.slice(1, -1);
+  }
+  return val;
+}
+
+function parseScalar(raw: string): string | boolean | string[] {
+  const val = raw.trim();
+  if (val === "true") return true;
+  if (val === "false") return false;
+  if (val.startsWith("[") && val.endsWith("]")) {
+    return val.slice(1, -1).split(",").map((s) => unquote(s.trim())).filter(Boolean);
+  }
+  return unquote(val);
+}
+
+/**
+ * Indentation-aware YAML subset: scalars, block/flow sequences, and nested maps.
+ *
+ * The nesting matters for spec conformance. agentskills.io puts client-specific
+ * fields under a `metadata:` map, and a flat line-by-line parse hoists those
+ * children to the top level — where a skill's `metadata.version` would quietly
+ * take over agav's own `version` field.
+ */
+function parseYamlBlock(lines: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i]!;
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("- ")) {
+      i++;
+      continue;
+    }
+
+    const colonIdx = line.indexOf(":");
+    if (colonIdx < 0) {
+      i++;
+      continue;
+    }
+
+    const indent = line.length - line.trimStart().length;
+    const key = line.slice(0, colonIdx).trim();
+    const inline = line.slice(colonIdx + 1).trim();
+    i++;
+
+    if (inline !== "") {
+      out[key] = parseScalar(inline);
+      continue;
+    }
+
+    // Bare `key:` — everything indented further than it belongs to this key.
+    const block: string[] = [];
+    while (i < lines.length) {
+      const next = lines[i]!;
+      if (next.trim()) {
+        const nextIndent = next.length - next.trimStart().length;
+        if (nextIndent <= indent) break;
+      }
+      block.push(next);
+      i++;
+    }
+
+    const items = block.filter((l) => l.trim().startsWith("- "));
+    if (items.length > 0) {
+      out[key] = items.map((l) => unquote(l.trim().slice(2).trim()));
+    } else if (block.some((l) => l.trim())) {
+      out[key] = parseYamlBlock(block);
+    } else {
+      out[key] = [];
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Splits a space-separated tool list without breaking up parenthesised
+ * qualifiers, so `Bash(npm run test:*) Read` yields two entries rather than four.
+ */
+function splitToolList(val: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let cur = "";
+  for (const ch of val) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (ch === " " || ch === "\t" || ch === ",")) {
+      if (cur.trim()) out.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+/**
+ * The spec spells tool permissions as one space-separated string; agav's own
+ * skills spell them as a YAML list. Everything downstream treats the field as an
+ * array — `/skills info` joins it — so normalise here rather than at each caller.
+ */
+function toStringList(val: unknown): string[] | undefined {
+  if (Array.isArray(val)) {
+    const items = val.map((v) => String(v).trim()).filter(Boolean);
+    return items.length > 0 ? items : undefined;
+  }
+  if (typeof val === "string") {
+    const items = splitToolList(val);
+    return items.length > 0 ? items : undefined;
+  }
+  return undefined;
+}
+
+/** A `metadata:` map, per the spec: string keys to string values. */
+function toStringMap(val: unknown): Record<string, string> | undefined {
+  if (!val || typeof val !== "object" || Array.isArray(val)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+    if (v === null || typeof v === "object") continue;
+    out[k] = String(v);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 export function parseSkillMarkdown(text: string): { frontmatter: SkillFrontmatter; body: string } {
   const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/);
@@ -15,57 +144,33 @@ export function parseSkillMarkdown(text: string): { frontmatter: SkillFrontmatte
     return { frontmatter: { name: "unknown", description: "" }, body: text };
   }
 
-  const yamlBlock = match[1]!;
+  const fm = parseYamlBlock(match[1]!.split("\n"));
   const body = match[2]!.trim();
 
-  const fm: Record<string, unknown> = {};
-  const lines = yamlBlock.split("\n");
-  let currentKey = "";
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    const listItem = line.match(/^\s+-\s+(.+)$/);
-
-    if (listItem) {
-      if (currentKey && fm[currentKey]) {
-        (fm[currentKey] as string[]).push(listItem[1]!.trim().replace(/^["']|["']$/g, ""));
-      }
-      continue;
-    }
-
-    const colonIdx = line.indexOf(":");
-    if (colonIdx < 0) continue;
-    const key = line.slice(0, colonIdx).trim();
-    let val: unknown = line.slice(colonIdx + 1).trim();
-
-    if (val === "") {
-      fm[key] = [] as string[];
-      currentKey = key;
-      continue;
-    }
-
-    currentKey = "";
-    if (val === "true") val = true;
-    else if (val === "false") val = false;
-    else if (typeof val === "string" && val.startsWith("[") && val.endsWith("]")) {
-      val = val.slice(1, -1).split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
-    } else if (typeof val === "string" && (val.startsWith('"') || val.startsWith("'"))) {
-      val = val.slice(1, -1);
-    }
-    fm[key] = val;
-  }
+  // agav's extensions sit at the top level, but the spec tells authors to put
+  // anything it doesn't define under `metadata`. Accept both spellings, with the
+  // top level winning so an author can override what a shared metadata block says.
+  const metadata = toStringMap(fm.metadata);
+  const pick = (key: string): unknown => fm[key] ?? metadata?.[key];
+  const str = (key: string): string | undefined => {
+    const v = pick(key);
+    return v === undefined || v === "" ? undefined : String(v);
+  };
 
   return {
     frontmatter: {
       name: String(fm.name ?? "unknown"),
       description: String(fm.description ?? ""),
-      version: fm.version ? String(fm.version) : undefined,
-      invocation: (fm.invocation as SkillFrontmatter["invocation"]) ?? "both",
-      "allowed-tools": fm["allowed-tools"] as string[] | undefined,
-      "disallowed-tools": fm["disallowed-tools"] as string[] | undefined,
-      model: fm.model ? String(fm.model) : undefined,
-      effort: fm.effort as SkillFrontmatter["effort"],
-      tags: fm.tags as string[] | undefined,
+      license: str("license"),
+      compatibility: str("compatibility"),
+      metadata,
+      "allowed-tools": toStringList(pick("allowed-tools")),
+      version: str("version"),
+      invocation: (str("invocation") as SkillFrontmatter["invocation"]) ?? "both",
+      "disallowed-tools": toStringList(pick("disallowed-tools")),
+      model: str("model"),
+      effort: str("effort") as SkillFrontmatter["effort"],
+      tags: toStringList(pick("tags")),
     },
     body,
   };
@@ -108,6 +213,16 @@ async function scanDir(dir: string, origin: SkillDefinition["origin"]): Promise<
       const skillPath = join(dir, entry.name, "SKILL.md");
       try {
         const text = await readFile(skillPath, "utf-8");
+        const { passed, warnings } = validateSkill(text, { dirName: entry.name });
+        if (!passed) {
+          if (warnings.length > 0) {
+            console.error(`[skills] skipping ${skillPath}: ${warnings.join("; ")}`);
+          }
+          continue;
+        }
+        if (warnings.length > 0) {
+          console.warn(`[skills] ${skillPath}: ${warnings.join("; ")}`);
+        }
         const { frontmatter, body } = parseSkillMarkdown(text);
         skills.push({
           name: frontmatter.name,

@@ -25,15 +25,26 @@ interface SkillExecDeps {
   signal?: AbortSignal;
 }
 
+/**
+ * agentskills.io lets an entry narrow a tool to particular invocations —
+ * `Bash(git:*)`. agav gates whole tools, so match on the name before the
+ * qualifier; `Bash(git:*)` and `Bash` both name the same tool here.
+ */
+function baseToolName(entry: string): string {
+  const paren = entry.indexOf("(");
+  return (paren < 0 ? entry : entry.slice(0, paren)).trim();
+}
+
 function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolRegistry {
   const child = new ToolRegistryClass();
-  const allowed = skill.frontmatter["allowed-tools"];
-  const disallowed = skill.frontmatter["disallowed-tools"];
+  const allowedList = skill.frontmatter["allowed-tools"];
+  const allowed = allowedList ? new Set(allowedList.map(baseToolName)) : undefined;
+  const disallowed = new Set((skill.frontmatter["disallowed-tools"] ?? []).map(baseToolName));
 
   for (const tool of parent.list()) {
     if (tool.schema.name === "subagent" || tool.schema.name === "activate_skill") continue;
-    if (disallowed?.includes(tool.schema.name)) continue;
-    if (allowed && !allowed.includes(tool.schema.name)) continue;
+    if (disallowed.has(tool.schema.name)) continue;
+    if (allowed && !allowed.has(tool.schema.name)) continue;
     child.register(tool);
   }
   return child;

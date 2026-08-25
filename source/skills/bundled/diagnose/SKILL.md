@@ -3,15 +3,7 @@ name: diagnose
 description: Diagnose and fix errors and bugs
 version: 1.0.0
 invocation: both
-allowed-tools:
-  - read_file
-  - edit_file
-  - grep_search
-  - find_files
-  - list_directory
-  - run_command
-  - run_tests
-  - lsp_query
+allowed-tools: read_file edit_file grep_search find_files list_directory run_command run_tests lsp_query
 tags:
   - debugging
   - errors
