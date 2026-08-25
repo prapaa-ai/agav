@@ -256,7 +256,12 @@ export async function loadSkills(): Promise<SkillDefinition[]> {
   for (const s of await scanDir(projectDir, "project")) {
     if (seen.has(s.slug)) {
       const idx = skills.findIndex((x) => x.slug === s.slug);
-      if (idx >= 0) skills[idx] = s;
+      if (idx >= 0) {
+        const overridden = skills[idx]!;
+        s.overriddenOrigin = overridden.origin as "bundled" | "global";
+        console.warn(`[skills] project skill "${s.slug}" overrides ${overridden.origin} skill`);
+        skills[idx] = s;
+      }
     } else {
       seen.add(s.slug);
       skills.push(s);

@@ -37,4 +37,6 @@ export interface SkillDefinition {
   frontmatter: SkillFrontmatter;
   filePath: string;
   origin: "bundled" | "global" | "project";
+  /** When a project/global skill overrides one from a higher-trust tier. */
+  overriddenOrigin?: "bundled" | "global";
 }

@@ -61,7 +61,8 @@ export const skillsCommand: SlashCommand = {
       const lines = skills.map((s) => {
         const inv = s.frontmatter.invocation ?? "both";
         const label = inv === "both" ? "auto+manual" : inv === "agav" ? "auto" : "manual";
-        const origin = s.origin === "bundled" ? " (bundled)" : s.origin === "project" ? " (project)" : "";
+        let origin = s.origin === "bundled" ? " (bundled)" : s.origin === "project" ? " (project)" : "";
+        if (s.overriddenOrigin) origin = ` (project, overrides ${s.overriddenOrigin})`;
         return `  /${s.slug.padEnd(18)} ${s.description.slice(0, 50).padEnd(50)} [${label}]${origin}`;
       });
       return { type: "message", text: "Installed skills:\n" + lines.join("\n") };
@@ -107,7 +108,7 @@ export const skillsCommand: SlashCommand = {
         `Description: ${skill.description}`,
         `Version: ${fm.version ?? "unversioned"}`,
         `Invocation: ${fm.invocation ?? "both"}`,
-        `Origin: ${skill.origin}`,
+        `Origin: ${skill.origin}${skill.overriddenOrigin ? ` (overrides ${skill.overriddenOrigin})` : ""}`,
         `Tags: ${fm.tags?.join(", ") ?? "none"}`,
         `Allowed tools: ${fm["allowed-tools"]?.join(", ") ?? "all"}`,
         `Disallowed tools: ${fm["disallowed-tools"]?.join(", ") ?? "none"}`,
