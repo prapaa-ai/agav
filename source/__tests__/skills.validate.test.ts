@@ -102,4 +102,28 @@ describe("skills/validate", () => {
     // Body warnings have no "(in ...)" suffix.
     expect(result.warnings.some((w) => w === "Dangerous pattern detected: \\beval\\s*\\(")).toBe(true);
   });
+
+  it("warns on unknown tool names in allowed-tools", () => {
+    const result = validateSkill(skill("name: ok\ndescription: x\nallowed-tools: [read_file, bash]"));
+    expect(result.passed).toBe(true);
+    expect(result.warnings).toEqual(['Unknown tool "bash" in allowed-tools']);
+  });
+
+  it("warns on unknown tool names in disallowed-tools", () => {
+    const result = validateSkill(skill("name: ok\ndescription: x\ndisallowed-tools: [shell, web_search]"));
+    expect(result.passed).toBe(true);
+    expect(result.warnings).toEqual(['Unknown tool "shell" in disallowed-tools']);
+  });
+
+  it("does not warn on valid tool names", () => {
+    const result = validateSkill(skill("name: ok\ndescription: x\nallowed-tools: [read_file, run_command, web_search]"));
+    expect(result.passed).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("strips spec qualifiers before checking tool names", () => {
+    const result = validateSkill(`---\nname: ok\ndescription: x\nallowed-tools: run_command(git:*) read_file\n---\nBody.\n`);
+    expect(result.passed).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
 });

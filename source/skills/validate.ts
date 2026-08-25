@@ -1,4 +1,5 @@
 import { parseSkillMarkdown } from "./loader.js";
+import { KNOWN_TOOL_NAMES } from "../tools/registry-factory.js";
 
 const DANGER_PATTERNS = [
   /ignore\s+(all\s+)?previous\s+instructions/i,
@@ -81,6 +82,20 @@ export function validateSkill(markdown: string, options: ValidateOptions = {}): 
     warnings.push(`Skill file exceeds 64KB (${Math.round(markdown.length / 1024)}KB)`);
   }
 
+  // Warn on tool names that don't match any known agav tool. A typo in
+  // disallowed-tools silently fails to restrict; a typo in allowed-tools
+  // silently drops tools the author expected.
+  for (const field of ["allowed-tools", "disallowed-tools"] as const) {
+    const list = frontmatter[field];
+    if (!list) continue;
+    for (const entry of list) {
+      const base = baseToolName(entry);
+      if (!KNOWN_TOOL_NAMES.has(base)) {
+        warnings.push(`Unknown tool "${base}" in ${field}`);
+      }
+    }
+  }
+
   // Scan both the body and frontmatter fields that are injected into prompts
   // (description flows into the system prompt via buildSkillCatalog and
   // executeSkill; tags and compatibility are also surfaced to the model).
@@ -106,6 +121,12 @@ export function validateSkill(markdown: string, options: ValidateOptions = {}): 
     (w) => w.startsWith("Missing required") || w.startsWith("Dangerous") || w.startsWith("Invalid name") || w.startsWith("Invalid description"),
   );
   return { passed, warnings };
+}
+
+/** Strip the spec qualifier: `Bash(git:*)` → `Bash`. */
+function baseToolName(entry: string): string {
+  const paren = entry.indexOf("(");
+  return (paren < 0 ? entry : entry.slice(0, paren)).trim();
 }
 
 function slugify(name: string): string {
