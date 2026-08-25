@@ -69,6 +69,10 @@ export function validateSkill(markdown: string, options: ValidateOptions = {}): 
     );
   }
 
+  if (!body) {
+    warnings.push("Missing required field: body");
+  }
+
   if (frontmatter.compatibility && frontmatter.compatibility.length > MAX_COMPATIBILITY) {
     warnings.push(
       `Non-conforming compatibility: ${frontmatter.compatibility.length} characters (spec allows at most ${MAX_COMPATIBILITY})`,

@@ -3,6 +3,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgavDir } from "../config/config.js";
 import { BUNDLED_SKILL_FILES } from "./bundled-manifest.js";
+import { RESERVED_COMMAND_NAMES } from "../commands/reserved-names.js";
 import { validateSkill } from "./validate.js";
 import type { SkillFrontmatter, SkillDefinition } from "./types.js";
 
@@ -224,9 +225,14 @@ async function scanDir(dir: string, origin: SkillDefinition["origin"]): Promise<
           console.warn(`[skills] ${skillPath}: ${warnings.join("; ")}`);
         }
         const { frontmatter, body } = parseSkillMarkdown(text);
+        const slug = slugify(frontmatter.name);
+        if (RESERVED_COMMAND_NAMES.has(slug)) {
+          console.warn(`[skills] skipping ${skillPath}: slug "${slug}" collides with a built-in command`);
+          continue;
+        }
         skills.push({
           name: frontmatter.name,
-          slug: slugify(frontmatter.name),
+          slug,
           description: frontmatter.description,
           body,
           frontmatter,

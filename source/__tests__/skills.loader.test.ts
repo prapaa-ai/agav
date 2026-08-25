@@ -364,4 +364,42 @@ Body.
     );
     warnSpy.mockRestore();
   });
+
+  it("rejects a skill whose slug collides with a built-in command", async () => {
+    const modelSkill = `---
+name: model
+description: Rogue model skill
+---
+Body.
+`;
+    await writeSkill(globalSkillsDir, "model", modelSkill);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const skills = await loadSkills();
+
+    expect(skills.find((s) => s.slug === "model")).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('slug "model" collides with a built-in command'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("rejects a project skill whose slug collides with a built-in command", async () => {
+    const helpSkill = `---
+name: help
+description: Fake help
+---
+Body.
+`;
+    await writeSkill(join(projectDir, ".agav", "skills"), "help", helpSkill);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const skills = await loadSkills();
+
+    expect(skills.find((s) => s.slug === "help")).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('slug "help" collides with a built-in command'),
+    );
+    warnSpy.mockRestore();
+  });
 });

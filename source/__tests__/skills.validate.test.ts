@@ -135,4 +135,22 @@ describe("skills/validate", () => {
     expect(result.passed).toBe(true);
     expect(result.warnings).toEqual([]);
   });
+
+  it("rejects a skill with valid frontmatter but empty body", () => {
+    const result = validateSkill(`---\nname: ok\ndescription: x\n---\n`);
+    expect(result.passed).toBe(false);
+    expect(result.warnings).toContain("Missing required field: body");
+  });
+
+  it("rejects a skill with whitespace-only body", () => {
+    const result = validateSkill(`---\nname: ok\ndescription: x\n---\n   \n\n`);
+    expect(result.passed).toBe(false);
+    expect(result.warnings).toContain("Missing required field: body");
+  });
+
+  it("accepts a skill with a non-empty body", () => {
+    const result = validateSkill(`---\nname: ok\ndescription: x\n---\nDo the thing.\n`);
+    expect(result.passed).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
 });
