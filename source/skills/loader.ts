@@ -2,6 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgavDir } from "../config/config.js";
+import { BUNDLED_SKILL_FILES } from "./bundled-manifest.js";
 import type { SkillFrontmatter, SkillDefinition } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -74,6 +75,30 @@ function slugify(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
+/**
+ * The bundled tier comes from strings compiled into the program, not from disk.
+ * A compiled binary resolves `import.meta.url` to `file:///$bunfs/root/…`, so a
+ * path built from it finds nothing however the .md files were copied.
+ */
+function loadBundled(): SkillDefinition[] {
+  const skills: SkillDefinition[] = [];
+  for (const [dir, text] of Object.entries(BUNDLED_SKILL_FILES)) {
+    const { frontmatter, body } = parseSkillMarkdown(text);
+    skills.push({
+      name: frontmatter.name,
+      slug: slugify(frontmatter.name),
+      description: frontmatter.description,
+      body,
+      frontmatter,
+      // Where the skill came from, for `/skills info`. Only resolves in a
+      // source checkout — the contents above are what actually gets used.
+      filePath: join(__dirname, "bundled", dir, "SKILL.md"),
+      origin: "bundled",
+    });
+  }
+  return skills;
+}
+
 async function scanDir(dir: string, origin: SkillDefinition["origin"]): Promise<SkillDefinition[]> {
   const skills: SkillDefinition[] = [];
   try {
@@ -103,8 +128,7 @@ export async function loadSkills(): Promise<SkillDefinition[]> {
   const skills: SkillDefinition[] = [];
   const seen = new Set<string>();
 
-  const bundledDir = join(__dirname, "bundled");
-  for (const s of await scanDir(bundledDir, "bundled")) {
+  for (const s of loadBundled()) {
     if (!seen.has(s.slug)) { seen.add(s.slug); skills.push(s); }
   }
 
