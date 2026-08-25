@@ -81,9 +81,24 @@ export function validateSkill(markdown: string, options: ValidateOptions = {}): 
     warnings.push(`Skill file exceeds 64KB (${Math.round(markdown.length / 1024)}KB)`);
   }
 
-  for (const pattern of DANGER_PATTERNS) {
-    if (pattern.test(body)) {
-      warnings.push(`Dangerous pattern detected: ${pattern.source}`);
+  // Scan both the body and frontmatter fields that are injected into prompts
+  // (description flows into the system prompt via buildSkillCatalog and
+  // executeSkill; tags and compatibility are also surfaced to the model).
+  const scanTargets: { label: string; text: string }[] = [
+    { label: "body", text: body },
+    { label: "description", text: frontmatter.description ?? "" },
+    { label: "name", text: name },
+    { label: "compatibility", text: frontmatter.compatibility ?? "" },
+    ...(frontmatter.tags ?? []).map((t) => ({ label: "tags", text: t })),
+  ];
+
+  for (const { label, text } of scanTargets) {
+    if (!text) continue;
+    for (const pattern of DANGER_PATTERNS) {
+      if (pattern.test(text)) {
+        const where = label === "body" ? "" : ` (in ${label})`;
+        warnings.push(`Dangerous pattern detected${where}: ${pattern.source}`);
+      }
     }
   }
 
