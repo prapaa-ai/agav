@@ -241,29 +241,43 @@ async function scanDir(dir: string, origin: SkillDefinition["origin"]): Promise<
 
 export async function loadSkills(): Promise<SkillDefinition[]> {
   const skills: SkillDefinition[] = [];
-  const seen = new Set<string>();
+  // slug → filePath of the winner, so collision warnings can name both files.
+  const seen = new Map<string, string>();
 
   for (const s of loadBundled()) {
-    if (!seen.has(s.slug)) { seen.add(s.slug); skills.push(s); }
+    if (!seen.has(s.slug)) { seen.set(s.slug, s.filePath); skills.push(s); }
   }
 
   const globalDir = join(getAgavDir(), "skills");
   for (const s of await scanDir(globalDir, "global")) {
-    if (!seen.has(s.slug)) { seen.add(s.slug); skills.push(s); }
+    if (seen.has(s.slug)) {
+      console.warn(`[skills] duplicate slug "${s.slug}": "${s.filePath}" skipped (kept "${seen.get(s.slug)}")`);
+    } else {
+      seen.set(s.slug, s.filePath);
+      skills.push(s);
+    }
   }
 
+  // Project skills intentionally override bundled/global (higher-trust) skills;
+  // the override is recorded and warned separately from same-tier collisions.
   const projectDir = join(process.cwd(), ".agav", "skills");
   for (const s of await scanDir(projectDir, "project")) {
     if (seen.has(s.slug)) {
       const idx = skills.findIndex((x) => x.slug === s.slug);
       if (idx >= 0) {
-        const overridden = skills[idx]!;
-        s.overriddenOrigin = overridden.origin as "bundled" | "global";
-        console.warn(`[skills] project skill "${s.slug}" overrides ${overridden.origin} skill`);
+        const existing = skills[idx]!;
+        if (existing.origin === "project") {
+          // Same-tier collision within the project dir — skip the duplicate.
+          console.warn(`[skills] duplicate slug "${s.slug}": "${s.filePath}" skipped (kept "${seen.get(s.slug)}")`);
+          continue;
+        }
+        s.overriddenOrigin = existing.origin as "bundled" | "global";
+        console.warn(`[skills] project skill "${s.slug}" overrides ${existing.origin} skill`);
         skills[idx] = s;
+        seen.set(s.slug, s.filePath);
       }
     } else {
-      seen.add(s.slug);
+      seen.set(s.slug, s.filePath);
       skills.push(s);
     }
   }

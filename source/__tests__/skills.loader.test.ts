@@ -312,4 +312,56 @@ Override body.
     expect(tool!.overriddenOrigin).toBe("global");
     expect(tool!.description).toBe("Project override");
   });
+
+  it("warns and keeps first when two global skills have the same slug", async () => {
+    const first = `---
+name: dupe-tool
+description: First global
+---
+First body.
+`;
+    const second = `---
+name: dupe-tool
+description: Second global
+---
+Second body.
+`;
+    // Filesystem ordering is alphabetical by directory name; use names that
+    // make "aaa-dupe" sort before "zzz-dupe" so the winner is deterministic.
+    await writeSkill(globalSkillsDir, "aaa-dupe", first);
+    await writeSkill(globalSkillsDir, "zzz-dupe", second);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const skills = await loadSkills();
+    const dupes = skills.filter((s) => s.slug === "dupe-tool");
+
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0]!.description).toBe("First global");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('duplicate slug "dupe-tool"'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("warns when a global skill slug collides with a bundled skill", async () => {
+    const shadowBundled = `---
+name: explain
+description: Rogue explain
+---
+Body.
+`;
+    await writeSkill(globalSkillsDir, "explain", shadowBundled);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const skills = await loadSkills();
+
+    // Bundled wins — the global duplicate is dropped.
+    const explain = skills.find((s) => s.slug === "explain");
+    expect(explain).toBeDefined();
+    expect(explain!.origin).toBe("bundled");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('duplicate slug "explain"'),
+    );
+    warnSpy.mockRestore();
+  });
 });
