@@ -50,25 +50,53 @@ function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolR
   return child;
 }
 
-function processShellBlocks(text: string): Promise<string> {
+interface ShellBlockOpts {
+  permissionMode: PermissionMode;
+  confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
+}
+
+async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<string> {
   const shellBlockRegex = /```sh\n([\s\S]*?)```/g;
   const blocks: { match: string; command: string }[] = [];
   let m;
   while ((m = shellBlockRegex.exec(text)) !== null) {
     blocks.push({ match: m[0], command: m[1]!.trim() });
   }
-  if (blocks.length === 0) return Promise.resolve(text);
+  if (blocks.length === 0) return text;
 
-  return blocks.reduce<Promise<string>>(async (textPromise, block) => {
-    let result = await textPromise;
+  let result = text;
+  for (const block of blocks) {
+    // deny-writes: never execute shell blocks.
+    if (opts.permissionMode === "deny-writes") {
+      result = result.replace(block.match, "[shell block skipped — write operations denied]");
+      continue;
+    }
+
+    // ask: require explicit confirmation for each block.
+    if (opts.permissionMode === "ask") {
+      if (!opts.confirmTool) {
+        result = result.replace(block.match, "[shell block skipped — no confirmation handler available]");
+        continue;
+      }
+      const choice = await opts.confirmTool("skill_shell_block", { command: block.command });
+      if (choice === "no") {
+        result = result.replace(block.match, "[shell block skipped — denied by user]");
+        continue;
+      }
+      if (choice === "always") {
+        opts.permissionMode = "auto-accept";
+      }
+    }
+
+    // auto-accept (or confirmed): execute.
     const output = await new Promise<string>((resolve) => {
       execFile("/bin/sh", ["-c", block.command], { timeout: 10_000 }, (_err, stdout) => {
         resolve((stdout ?? "").trim());
       });
     });
     result = result.replace(block.match, output);
-    return result;
-  }, Promise.resolve(text));
+  }
+  return result;
 }
 
 function processDynamicContext(body: string, args: string): string {
@@ -88,7 +116,10 @@ export async function executeSkill(
   deps: SkillExecDeps,
 ): Promise<SkillExecResult> {
   let prompt = processDynamicContext(skill.body, args);
-  prompt = await processShellBlocks(prompt);
+  prompt = await processShellBlocks(prompt, {
+    permissionMode: deps.permissionMode,
+    confirmTool: deps.confirmTool,
+  });
 
   const registry = buildSkillRegistry(deps.parentRegistry, skill);
   const conversation = new ConversationState();
