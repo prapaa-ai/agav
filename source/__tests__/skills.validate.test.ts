@@ -19,11 +19,16 @@ function skill(frontmatter: string): string {
 }
 
 describe("skills/validate", () => {
-  it("accepts a skill that follows the agentskills.io spec", () => {
-    expect(validateSkill(conforming, { dirName: "pdf-processing" })).toEqual({
-      passed: true,
-      warnings: [],
-    });
+  it("accepts a skill that follows the agentskills.io spec (with tool-name warnings)", () => {
+    // The spec uses its own tool names (Bash, Read) which don't match agav's
+    // internal names (run_command, read_file). The skill still passes — these
+    // are non-blocking warnings so authors know the names won't resolve.
+    const result = validateSkill(conforming, { dirName: "pdf-processing" });
+    expect(result.passed).toBe(true);
+    expect(result.warnings).toEqual([
+      'Unknown tool "Bash" in allowed-tools',
+      'Unknown tool "Read" in allowed-tools',
+    ]);
   });
 
   // Hard limits leave the skill unusable, so they block the install.
@@ -50,13 +55,17 @@ describe("skills/validate", () => {
   it("warns when the name does not match its parent directory", () => {
     const result = validateSkill(conforming, { dirName: "pdfs" });
     expect(result.passed).toBe(true);
-    expect(result.warnings).toEqual([
+    expect(result.warnings).toContain(
       'Non-conforming name: "pdf-processing" does not match its directory "pdfs".',
-    ]);
+    );
   });
 
   it("skips the directory check when the caller cannot know the directory", () => {
-    expect(validateSkill(conforming).warnings).toEqual([]);
+    // The conforming fixture uses spec-style tool names (Bash, Read) which
+    // produce non-blocking warnings; the directory check itself is absent.
+    const result = validateSkill(conforming);
+    expect(result.passed).toBe(true);
+    expect(result.warnings.some((w) => w.includes("directory"))).toBe(false);
   });
 
   it("warns on an over-long compatibility string", () => {
