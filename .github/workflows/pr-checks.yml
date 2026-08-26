@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
           fetch-depth: 0
       - name: Compute changed paths
         id: diff
@@ -61,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
@@ -86,7 +86,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
@@ -111,7 +111,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
@@ -130,7 +130,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - uses: oven-sh/setup-bun@v2
       - uses: actions/setup-node@v4.4.0
         with:
@@ -190,7 +190,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - name: ShellCheck
         run: |
           shellcheck -s sh \
@@ -221,7 +221,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - name: Suites under Windows PowerShell 5.1
         # This is the host install.cmd actually launches, and the only place the
         # registry half of the PATH handling runs for real. The suite captures
@@ -257,7 +257,7 @@ jobs:
     steps:
       - uses: amannn/action-semantic-pull-request@v6
         env:
-          GITHUB_TOKEN: ${{ secrets.TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.TOKEN || github.token }}
         with:
           types: |
             feat
@@ -276,7 +276,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
           fetch-depth: 0
       - name: Scan for leaked secrets
         run: |
@@ -301,7 +301,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
           fetch-depth: 0
       - name: Check for oversized files
         run: |
@@ -327,7 +327,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - name: Scan for dangerous code patterns
         run: |
           echo "Scanning for dangerous patterns in source..."
@@ -364,7 +364,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
@@ -382,7 +382,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - name: Verify lockfile exists
         run: |
           if [ ! -f pnpm-lock.yaml ]; then
@@ -407,7 +407,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - run: |
           semgrep scan \
             --config "p/javascript" \
@@ -425,7 +425,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - name: Check sensitive files are not tracked
         run: |
           FAIL=0
@@ -447,7 +447,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
         with:
-          token: ${{ secrets.TOKEN }}
+          token: ${{ secrets.TOKEN || github.token }}
       - name: Check the version badge is derived, not hardcoded
         run: |
           # A literal shields.io/badge/version-x.y.z badge has to be rewritten
