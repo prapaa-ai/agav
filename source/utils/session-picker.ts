@@ -96,27 +96,43 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
   render();
 
   return new Promise((resolve) => {
+    function restoreRawMode() {
+      stdin.setRawMode(wasRaw ?? false);
+    }
+
     function drainTrailingNewline() {
       // Some terminals send \r\n for Enter. After handling \r we need to
       // swallow the trailing \n so it doesn't leak into the next input handler
       // (e.g. Ink), which would cause a phantom empty submission.
+      // Raw mode must stay active while draining so the \n arrives immediately
+      // instead of being line-buffered in cooked mode.
+      const timer = setTimeout(() => {
+        stdin.removeListener("data", onDrain);
+        restoreRawMode();
+      }, 50);
       const onDrain = (chunk: Buffer) => {
+        clearTimeout(timer);
         const s = chunk.toString();
         if (s !== "\n") {
-          // Not a trailing newline — put it back by re-emitting
+          // Not a trailing newline — put it back by re-emitting after
+          // restoring raw mode so downstream handlers see the right state.
+          restoreRawMode();
           stdin.emit("data", chunk);
+        } else {
+          restoreRawMode();
         }
-        stdin.removeListener("data", onDrain);
       };
       stdin.once("data", onDrain);
-      // If nothing arrives within 50ms, stop waiting
-      setTimeout(() => stdin.removeListener("data", onDrain), 50);
     }
 
     function cleanup(drainLF = false) {
       stdin.removeListener("data", onData);
-      if (drainLF) drainTrailingNewline();
-      stdin.setRawMode(wasRaw ?? false);
+      if (drainLF) {
+        // Defer raw mode restoration until the trailing \n is drained
+        drainTrailingNewline();
+      } else {
+        restoreRawMode();
+      }
       // Restore main screen buffer and show cursor
       process.stdout.write("\x1b[?1049l\x1b[?25h");
     }
@@ -130,7 +146,8 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
         return;
       }
 
-      if (key === "\r") {
+      // Handle Enter: \r, \n, or \r\n as a single chunk
+      if (key === "\r" || key === "\r\n") {
         cleanup(true);
         resolve(items[selected]!);
         return;
