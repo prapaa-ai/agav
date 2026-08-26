@@ -84,7 +84,8 @@ describe("hooks", () => {
     expect(getHookForTool("edit_file", { path: "a" }, { afterEdit: "echo $path" })).toMatchObject({ hook: "echo $path" });
     expect(getHookForTool("run_command", { command: "git commit -m hi" }, { preCommit: "echo pre" })).toMatchObject({ hook: "echo pre" });
     expect(getHookForTool("run_command", { command: "ls" }, { afterShell: "echo shell" })).toMatchObject({ hook: "echo shell" });
-    expect(await runHook("printf hello", {})).toBe("hello");
+    const hookCmd = process.platform === "win32" ? "echo hello" : "printf hello";
+    expect(await runHook(hookCmd, {})).toBe("hello");
   });
 });
 

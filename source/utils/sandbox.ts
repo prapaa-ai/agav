@@ -26,6 +26,15 @@ export function detectSandboxBackend(): SandboxBackend {
 
   if (detectedBackend !== null) return detectedBackend;
 
+  // Windows has no sandbox-exec or bwrap.  Attempting the `/bin/sh` probes
+  // there just spawns two doomed child processes, adding to the child-process
+  // count that triggers Bun's non-deterministic JSC heap-corruption segfault
+  // on Windows (oven-sh/bun#23177, oven-sh/bun#30745).
+  if (platform() === "win32") {
+    detectedBackend = "none";
+    return detectedBackend;
+  }
+
   // Check what's actually available at runtime
   if (canExec("sandbox-exec")) {
     detectedBackend = "seatbelt";

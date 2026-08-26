@@ -6,7 +6,7 @@ import { createProvider } from "./providers/registry.js";
 import type { LLMProvider } from "./providers/types.js";
 import { buildSystemPrompt } from "./utils/system-prompt.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
-import { loadSessionState, markCleanExit } from "./config/session-state.js";
+import { loadSessionState, markCleanExit, markCleanExitSync } from "./config/session-state.js";
 import { loadTheme } from "./config/theme.js";
 import { ConversationState } from "./agent/conversation.js";
 import { runAgentLoop } from "./agent/loop.js";
@@ -358,7 +358,7 @@ export async function main() {
     $ cat file | agav -P "explain this"
 
   Options
-    --provider, -p       LLM provider: anthropic, openai, gemini, vertex-ai, or ollama (default: anthropic)
+    --provider, -p       LLM provider: anthropic, openai, openrouter, gemini, vertex-ai, or ollama (default: anthropic)
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
     --effort             Reasoning effort: low, medium, high, or max (default: high)
     --ollama-host        Ollama host (default: localhost)
@@ -453,7 +453,7 @@ export async function main() {
   if (typeof flags.provider === "string") {
     const p = flags.provider;
     if (!isProviderName(p)) {
-      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "gemini", "vertex-ai", or "ollama".`);
+      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "openrouter", "gemini", "vertex-ai", or "ollama".`);
       process.exit(1);
     }
     cliProvider = p;
@@ -689,7 +689,7 @@ export async function main() {
 
   // Mark clean exits so crash recovery only offers truly interrupted sessions.
   process.on("exit", () => {
-    markCleanExit();
+    markCleanExitSync();
     stopAllA2AAgents();
   });
   process.on("SIGINT", async () => {
