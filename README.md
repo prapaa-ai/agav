@@ -7,6 +7,7 @@
 <p>
   <img alt="Version" src="https://img.shields.io/github/package-json/v/prapaa-ai/agav?style=for-the-badge&amp;label=version&amp;color=111">
   <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-111?style=for-the-badge">
+  <a href="https://github.com/harbor-framework/terminal-bench-2-1/pull/225"><img alt="Terminal-Bench 2.1" src="https://img.shields.io/badge/Terminal--Bench_2.1-84.7%25_%7C_top_of_the_board-111?style=for-the-badge"></a>
 </p>
 
 </div>
@@ -17,13 +18,14 @@
 
 ## What it does
 
-Agav reads, searches and edits the repository you run it in, and runs the commands you'd otherwise run yourself.
+Agav reads, searches and edits the repository you run it in, and runs the commands you'd otherwise run yourself. On [Terminal-Bench 2.1](https://www.tbench.ai/leaderboard/terminal-bench/2.1) — all 89 tasks, five trials each, judge-audited trajectories — Agav scored [**84.7%**](https://github.com/harbor-framework/terminal-bench-2-1/pull/225) (377 of 445 trials, ± 0.84%), ahead of every entry on the current public board (submission in review).
 
 - **Six providers** — Anthropic, OpenAI, OpenRouter, Gemini, Vertex AI and Ollama, switchable mid-session with `/model`.
 - **Sandboxed commands** — shell tools run under Seatbelt on macOS and Bubblewrap on Linux where either is available.
 - **Non-interactive mode** — `agav run` and `agav --print` make the same agent scriptable from CI, with per-tool permissions and optional JSON Schema output.
 - **Sessions that survive** — resume, branch, name, search and export past conversations; `/compact` reclaims context without starting over. Plans are saved per-session and picked back up on resume.
-- **Extensible** — MCP servers, plugins, skills and subagents.
+- **Extensible** — MCP servers, plugins, a skill marketplace and installable agents; delegate scoped work to fresh-context subagents.
+- **Lights-off operation** — schedule tasks (`/schedule`), loop prompts (`/loop`) and watch files (`/watch`); specs go in, verified work comes out.
 - **Repository-aware editing** — LSP-backed queries, notebook support, test running, and `/undo` for the last file change.
 
 ## Quickstart
