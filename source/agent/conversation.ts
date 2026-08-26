@@ -76,6 +76,49 @@ export class ConversationState {
     last.content.push({ type: "text", text });
   }
 
+  /**
+   * Insert a mid-turn user message (e.g. a /steer directive) into the running
+   * conversation. Placement is protocol-constrained: providers such as
+   * Anthropic reject any user message that lands between an assistant tool_use
+   * and its matching tool_result, so the message is inserted after the last
+   * complete tool cycle. When no tool results are pending — including an empty
+   * history, which would otherwise start with two user turns in a row — it is
+   * appended to the end instead.
+   */
+  injectUserMessage(text: string): void {
+    if (!text.trim()) return;
+
+    const answeredToolIds = new Set<string>();
+    for (const msg of this.messages) {
+      if (msg.role !== "user") continue;
+      for (const block of msg.content) {
+        if (block.type === "tool_result" && block.toolCallId) {
+          answeredToolIds.add(block.toolCallId);
+        }
+      }
+    }
+
+    // Walk back past trailing assistant tool_use blocks whose answers have not
+    // been added yet; insertion must land after their tool_results do.
+    let insertAt = this.messages.length;
+    while (insertAt > 0) {
+      const msg = this.messages[insertAt - 1]!;
+      if (msg.role !== "assistant") break;
+      const hasPendingToolUse = msg.content.some(
+        (block) => block.type === "tool_use" && block.toolCallId && !answeredToolIds.has(block.toolCallId),
+      );
+      if (!hasPendingToolUse) break;
+      insertAt--;
+    }
+
+    const injected: Message = {
+      role: "user",
+      content: [{ type: "text", text }],
+      internal: true,
+    };
+    this.messages.splice(insertAt, 0, injected);
+  }
+
   addAssistantMessage(content: ContentBlock[]): void {
     this.messages.push({ role: "assistant", content });
   }

@@ -49,4 +49,24 @@ describe("commands/steer", () => {
       text: "Invalid number. Use 1-1.",
     });
   });
+
+  it("queues added directives for delivery and reports mid-turn status via isLoading", async () => {
+    const { drainSteers } = await import("../commands/steer.js");
+
+    const runningResult = await steerCommand.execute("mid-turn directive", { isLoading: true } as any);
+    expect(runningResult).toEqual({
+      type: "message",
+      text: 'Steer added: "mid-turn directive"\nWill be delivered to the running agent before it continues.',
+    });
+
+    const idleResult = await steerCommand.execute("idle directive", {} as any);
+    expect(idleResult).toEqual({
+      type: "message",
+      text: 'Steer added: "idle directive"\n2 active steer(s). Use /steer list to see all.',
+    });
+
+    // Both directives are queued in arrival order for the running loop.
+    expect(drainSteers()).toEqual(["mid-turn directive", "idle directive"]);
+    expect(drainSteers()).toEqual([]);
+  });
 });

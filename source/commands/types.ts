@@ -41,6 +41,8 @@ export interface CommandContext {
   renameSession: (name: string) => void
   currentSessionId?: string
   exit: () => void
+  /** Whether an agent turn is currently in flight. */
+  isLoading?: boolean
   getDebugState: () => DebugState
   submit: (text: string) => void
   handleSubmit: (text: string, invocationReason?: InvocationReason) => void

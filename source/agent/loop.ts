@@ -10,6 +10,7 @@ import {
   MAX_STEPS_PROMPT,
   NEEDS_VERIFY_PROMPT,
   VERIFY_FAILED_PROMPT,
+  STEER_DIRECTIVE_PREFIX,
   testsFailedPrompt,
 } from "./internal-prompts.js";
 
@@ -24,6 +25,7 @@ export type AgentEvent =
   | { type: "tool_result"; toolName: string; toolCallId?: string; output: string; isError: boolean; diffLines?: import("../utils/diff.js").DiffLine[] }
   | { type: "assistant_message_complete"; text: string }
   | { type: "turn_complete" }
+  | { type: "steer_applied"; directives: string[] }
   | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
   | { type: "error"; error: Error };
 
@@ -58,6 +60,13 @@ interface LoopParams {
   maxIterations?: number;
   allowedTools?: string[];
   hooks?: import("../config/config.js").AgavHooks;
+  /**
+   * Drains /steer directives queued mid-turn. Only the main conversation's
+   * loop supplies this: subagents, skills, and agents run their own loops and
+   * must never consume directives addressed to the primary agent. When unset,
+   * the loop simply never receives mid-turn steers.
+   */
+  drainSteers?: () => string[];
 }
 
 // Tools that never need confirmation because they cannot modify the working
@@ -127,6 +136,10 @@ export async function* runAgentLoop(
   // user changes their mind, they can say so in a new message and the submit()
   // call starts a fresh loop with an empty set.
   const deniedCalls = new Set<string>();
+  // Mid-turn /steer directives — see LoopParams.drainSteers. Undefined for
+  // subagent/skill/agent loops, which never receive them.
+  const drainSteers = params.drainSteers;
+  const collectSteers = () => (drainSteers ? drainSteers() : []);
 
   let pendingSummarizeUsage: Record<string, number> | null = null;
 
@@ -318,7 +331,18 @@ export async function* runAgentLoop(
         conversation.addInternalUserMessage(needsVerify ? NEEDS_VERIFY_PROMPT : VERIFY_FAILED_PROMPT);
         continue;
       }
+      // A directive queued after the final tool round would otherwise sit in the
+      // queue forever — this is the loop's last exit before max-iterations.
+      // Deliver it as a fresh user turn so it still reaches the model (and the
+      // next submit() call starts a new loop on top of it).
+      const lateSteers = collectSteers();
+      for (const steer of lateSteers) {
+        conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
+      }
       yield { type: "assistant_message_complete", text: textAccum };
+      if (lateSteers.length > 0) {
+        yield { type: "steer_applied", directives: lateSteers };
+      }
       yield { type: "turn_complete" };
       return;
     }
@@ -468,6 +492,19 @@ export async function* runAgentLoop(
 
     conversation.addToolResults(toolResults);
 
+    // Deliver /steer directives typed while this turn was running. This is the
+    // safe point: tool results have just been appended, so a user message here
+    // never splits an assistant tool_use from its tool_result (which providers
+    // reject). Draining before the next provider call means the model sees the
+    // directive within the same turn.
+    const steers = collectSteers();
+    for (const steer of steers) {
+      conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
+    }
+    if (steers.length > 0) {
+      yield { type: "steer_applied", directives: steers };
+    }
+
     if (hasTestFailure) {
       testRepairAttempts++;
       if (testRepairAttempts <= MAX_REPAIR_ATTEMPTS) {
@@ -478,9 +515,17 @@ export async function* runAgentLoop(
     }
   }
 
+  // Deliver any /steer directives queued during the final iteration, then stop.
+  const finalSteers = collectSteers();
+  for (const steer of finalSteers) {
+    conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
+  }
   yield {
     type: "assistant_message_complete",
     text: "[Agent reached maximum iterations]",
   };
+  if (finalSteers.length > 0) {
+    yield { type: "steer_applied", directives: finalSteers };
+  }
   yield { type: "turn_complete" };
 }
