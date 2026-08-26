@@ -14,7 +14,11 @@ export const resumeCommand: SlashCommand = {
       return { type: "message", text: "No saved sessions." };
     }
 
+    context.setPickerActive(true);
     const session = await pickSession(sessions);
+    context.setPickerActive(false);
+    context.refreshDisplay();
+
     if (!session) {
       return { type: "message", text: "Cancelled." };
     }

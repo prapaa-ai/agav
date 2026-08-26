@@ -96,10 +96,27 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
   render();
 
   return new Promise((resolve) => {
-    function cleanup() {
-      stdin.setRawMode(wasRaw ?? false);
+    function drainTrailingNewline() {
+      // Some terminals send \r\n for Enter. After handling \r we need to
+      // swallow the trailing \n so it doesn't leak into the next input handler
+      // (e.g. Ink), which would cause a phantom empty submission.
+      const onDrain = (chunk: Buffer) => {
+        const s = chunk.toString();
+        if (s !== "\n") {
+          // Not a trailing newline — put it back by re-emitting
+          stdin.emit("data", chunk);
+        }
+        stdin.removeListener("data", onDrain);
+      };
+      stdin.once("data", onDrain);
+      // If nothing arrives within 50ms, stop waiting
+      setTimeout(() => stdin.removeListener("data", onDrain), 50);
+    }
+
+    function cleanup(drainLF = false) {
       stdin.removeListener("data", onData);
-      stdin.pause();
+      if (drainLF) drainTrailingNewline();
+      stdin.setRawMode(wasRaw ?? false);
       // Restore main screen buffer and show cursor
       process.stdout.write("\x1b[?1049l\x1b[?25h");
     }
@@ -113,7 +130,13 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
         return;
       }
 
-      if (key === "\r" || key === "\n") {
+      if (key === "\r") {
+        cleanup(true);
+        resolve(items[selected]!);
+        return;
+      }
+
+      if (key === "\n") {
         cleanup();
         resolve(items[selected]!);
         return;
