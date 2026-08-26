@@ -146,14 +146,16 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
         return;
       }
 
-      // Handle Enter: \r, \n, or \r\n as a single chunk
-      if (key === "\r" || key === "\r\n") {
+      // Handle Enter: \r, \n, or \r\n as a single chunk.
+      // Only drain a trailing \n when we got a bare \r — if the terminal
+      // delivered \r\n together the newline is already consumed.
+      if (key === "\r") {
         cleanup(true);
         resolve(items[selected]!);
         return;
       }
 
-      if (key === "\n") {
+      if (key === "\n" || key === "\r\n") {
         cleanup();
         resolve(items[selected]!);
         return;
