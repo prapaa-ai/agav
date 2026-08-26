@@ -4,6 +4,7 @@ import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
 const FAST_MODELS: Record<string, string> = {
   anthropic: "claude-haiku-4-5-20251001",
   openai: "gpt-4o-mini",
+  openrouter: "~google/gemini-flash-latest",
   gemini: "gemini-3.5-flash-lite",
   "vertex-ai": "vertex/gemini-3.5-flash-lite",
 }
@@ -12,6 +13,7 @@ const FAST_MODELS: Record<string, string> = {
 const DEEP_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-20250514",
   openai: "gpt-4o",
+  openrouter: "~anthropic/claude-sonnet-latest",
   gemini: "gemini-3.5-pro",
   "vertex-ai": "vertex/gemini-3.5-pro",
 }

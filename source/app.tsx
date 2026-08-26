@@ -67,12 +67,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [config, setConfig] = useState(initialConfig);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const activeSideProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const [showToolDetail, setShowToolDetail] = useState(false);
   const [showPlanDetail, setShowPlanDetail] = useState(false);
+  const [showThinking, setShowThinking] = useState(initialConfig.showThinking ?? false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
   const [inlineTranscript, setInlineTranscript] = useState(false);
@@ -123,6 +124,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     sessionId,
     sessionName,
     transcriptRevision,
+    turnStartTime,
+    lastTurnDurationMs,
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
@@ -359,6 +362,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       } else {
         setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: "No active plan to show." }]);
       }
+      return;
+    }
+    if (match.action === "toggleThinking") {
+      setShowThinking((prev) => !prev);
       return;
     }
     if (match.action === "retryLastTurn" && !isLoading && !pendingConfirmation && input.length === 0) {
@@ -663,7 +670,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             {subagentStates.map((sa, i) => (
               <SubagentDisplay key={sa.id} progress={sa} mode="compact" index={i} />
             ))}
-            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} />
+            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} />
             {hasSubagents && (
               <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cycleSubagents")}: cycle subagents · {formatKeybinding(keybindings, "cancel")}: cancel</Text>
             )}
@@ -740,6 +747,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
         sandboxBackend={getSandboxName()}
         branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
+        turnStartTime={turnStartTime}
+        lastTurnDurationMs={lastTurnDurationMs}
+        isLoading={isLoading}
+        isPaused={!!pendingConfirmation}
       />
     </Box>
   );

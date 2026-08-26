@@ -9,10 +9,11 @@ interface Props {
   text: string;
   thinkingText: string;
   isLoading: boolean;
+  showThinking?: boolean;
 }
 
 /** Displays streaming output, including thinking and typing states. */
-export default function StreamingResponse({ text, thinkingText, isLoading }: Props) {
+export default function StreamingResponse({ text, thinkingText, isLoading, showThinking }: Props) {
   if (!isLoading && !text && !thinkingText) {
     return null;
   }
@@ -21,6 +22,14 @@ export default function StreamingResponse({ text, thinkingText, isLoading }: Pro
     if (!text) return "";
     return renderMarkdown(terminalRelativePaths(text));
   }, [text]);
+
+  const renderedThinking = useMemo(() => {
+    if (!thinkingText) return "";
+    const truncated = thinkingText.length > 500
+      ? thinkingText.slice(-500).trimStart()
+      : thinkingText;
+    return renderMarkdown(terminalRelativePaths(truncated));
+  }, [thinkingText]);
 
   const isThinking = isLoading && thinkingText && !text;
 
@@ -36,12 +45,21 @@ export default function StreamingResponse({ text, thinkingText, isLoading }: Pro
         </Box>
       ) : null}
       {isThinking ? (
-        <Box>
-          <Text dimColor>{"  "}</Text>
-          <Text color="cyan">
-            <Spinner type="dots" />
-          </Text>
-          <Text dimColor> Thinking ({thinkingText.length} chars)...</Text>
+        <Box flexDirection="column">
+          <Box>
+            <Text dimColor>{"  "}</Text>
+            <Text color="cyan">
+              <Spinner type="dots" />
+            </Text>
+            <Text dimColor> Thinking ({thinkingText.length} chars)...</Text>
+          </Box>
+          {showThinking ? (
+            <Box paddingLeft={2} marginTop={1}>
+              <Text dimColor wrap="wrap">
+                {renderedThinking}
+              </Text>
+            </Box>
+          ) : null}
         </Box>
       ) : null}
       {rendered ? <Text>{"  "}{rendered}</Text> : null}

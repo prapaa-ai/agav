@@ -25,8 +25,34 @@ function Check([string]$Name, [bool]$Cond, [string]$Detail = "") {
 Write-Host "== it parses =="
 $Errors = $null
 $Tokens = $null
-[System.Management.Automation.Language.Parser]::ParseFile($Installer, [ref]$Tokens, [ref]$Errors) | Out-Null
+$Ast = [System.Management.Automation.Language.Parser]::ParseFile($Installer, [ref]$Tokens, [ref]$Errors)
 Check "no parse errors" (-not $Errors -or $Errors.Count -eq 0) ($Errors | Out-String)
+
+Write-Host "== every function is defined above its first top-level call =="
+# A script runs top to bottom and `function` is a statement like any other, so a
+# call written above the definition fails with "term is not recognized" instead
+# of resolving late. --beta shipped broken on Windows for exactly this: the
+# pre-release lookup called Get-RemoteText 130 lines before it existed, and
+# nothing here noticed because the failure needs a flag and a network call to
+# reach. A call from inside another function body is fine - that one resolves
+# when the enclosing function is invoked, not where it is written.
+$Defs = @{}
+foreach ($Fn in $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    if (-not $Defs.ContainsKey($Fn.Name)) { $Defs[$Fn.Name] = $Fn.Extent.EndOffset }
+}
+$Early = @()
+foreach ($Cmd in $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+    $Name = $Cmd.GetCommandName()
+    if (-not $Name -or -not $Defs.ContainsKey($Name)) { continue }
+    $Enclosing = $Cmd.Parent
+    while ($Enclosing -and -not ($Enclosing -is [System.Management.Automation.Language.FunctionDefinitionAst])) {
+        $Enclosing = $Enclosing.Parent
+    }
+    if (-not $Enclosing -and $Cmd.Extent.StartOffset -lt $Defs[$Name]) {
+        $Early += "$Name called at line $($Cmd.Extent.StartLineNumber) but defined below it"
+    }
+}
+Check "no function is called before it is defined" ($Early.Count -eq 0) ($Early -join "; ")
 
 Write-Host "== it is pure ASCII =="
 # install.cmd fetches this with Invoke-WebRequest, which writes raw bytes, and

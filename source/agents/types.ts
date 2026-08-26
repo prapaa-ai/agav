@@ -103,6 +103,7 @@ export interface MarketplaceAgent {
   tags: string[];
   version: string;
   path: string; // relative path in marketplace repo
+  files?: string[]; // file list for HTTP download (relative to path)
   "tool-count": number;
   "has-destructive-tools": boolean;
 }

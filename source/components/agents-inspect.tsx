@@ -27,6 +27,7 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
   const providerMatchesModel = (model: string, provider: string): boolean => {
     if (provider === "anthropic" && model.startsWith("claude-")) return true;
     if (provider === "openai" && (model.startsWith("gpt-") || model.startsWith("o1-") || model.startsWith("o3-") || model.startsWith("o4-"))) return true;
+    if (provider === "openrouter") return true;
     if (provider === "gemini" && model.startsWith("gemini-")) return true;
     if (provider === "ollama") return true;
     return false;
@@ -299,6 +300,7 @@ export function MarketplaceInspectView({ marketplaceAgent, marketplaceUrl, isIns
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cleanupPath: string | undefined;
     const load = async () => {
       try {
         const { loadAgent } = await import("../agents/loader.js");
@@ -306,6 +308,16 @@ export function MarketplaceInspectView({ marketplaceAgent, marketplaceUrl, isIns
         if (marketplaceUrl.startsWith("file://")) {
           const basePath = parseFileUrl(marketplaceUrl);
           agentPath = `${basePath}/${marketplaceAgent.path}`;
+        } else if (marketplaceAgent.files && marketplaceAgent.files.length > 0) {
+          const { downloadAgentFiles } = await import("../agents/installer.js");
+          const agentBaseUrl = `${marketplaceUrl}/${marketplaceAgent.path}`;
+          const downloadResult = await downloadAgentFiles(agentBaseUrl, marketplaceAgent.files);
+          if (!downloadResult.success || !downloadResult.path) {
+            setLoadError("placeholder");
+            return;
+          }
+          agentPath = downloadResult.path;
+          cleanupPath = downloadResult.path;
         } else {
           setLoadError("placeholder");
           return;
@@ -318,6 +330,11 @@ export function MarketplaceInspectView({ marketplaceAgent, marketplaceUrl, isIns
         }
       } catch {
         setLoadError("placeholder");
+      } finally {
+        if (cleanupPath) {
+          const { rm } = await import("node:fs/promises");
+          await rm(cleanupPath, { recursive: true, force: true }).catch(() => {});
+        }
       }
     };
     load();
