@@ -41,6 +41,7 @@ export class MCPClient {
     const proc = spawn(this.config.command, this.config.args ?? [], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...this.config.env },
+      shell: process.platform === "win32",
     });
 
     this.process = proc;

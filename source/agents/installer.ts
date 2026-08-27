@@ -169,7 +169,7 @@ export async function installAgent(
       name: agent.manifest.name,
       alias,
       enabled: true,
-      sourceUrl: isGitUrl ? source : undefined,
+      sourceUrl: isGitUrl || source.startsWith("file://") ? source : undefined,
       installedAt: new Date().toISOString(),
       version: agent.manifest.version,
     });
