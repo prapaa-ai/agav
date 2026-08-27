@@ -36,6 +36,13 @@ function parseScalar(raw: string): string | boolean | string[] {
  * fields under a `metadata:` map, and a flat line-by-line parse hoists those
  * children to the top level — where a skill's `metadata.version` would quietly
  * take over agav's own `version` field.
+ *
+ * Unsupported YAML features (not needed by the SKILL.md spec):
+ * - Multi-line scalars (`|`, `>`, `|+`, `>-`)
+ * - Anchors and aliases (`&anchor`, `*alias`)
+ * - Flow mappings (`{ key: value }`)
+ * - Complex keys and merge keys (`<<:`)
+ * - Tags (`!!str`, `!!int`)
  */
 function parseYamlBlock(lines: string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
