@@ -19,6 +19,8 @@ interface Props {
   onRemoveAttachment?: () => void;
   onClearAttachments?: () => void;
   onRegisterInsert?: (fn: (label: string) => void) => void;
+  /** Registers a callback that re-syncs the caret with the current buffer. */
+  onCursorReset?: (fn: () => void) => void;
   disabled?: boolean;
   commands?: CommandInfo[];
   keybindings: Keybindings;
@@ -75,7 +77,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
 }
 
 /** Renders the interactive prompt with history, completion, and paste handling. */
-export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, disabled, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
+export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, onCursorReset, disabled, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
   const { isRawModeSupported } = useStdin();
   const [cursorPos, setCursorPos] = useState(0);
   const historyRef = useRef<string[]>([]);
@@ -116,6 +118,27 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
       });
     }
   }, [onRegisterInsert, onChange]);
+
+  // Re-sync the caret with the buffer whenever the parent rewrites the value
+  // programmatically (e.g. clearing it after a slash command). Without this the
+  // stored cursor position can point past the end of the new text, so the next
+  // keystroke inserts at a stale offset and typed characters appear out of
+  // order — the "cursor jumps to position 0" symptom.
+  //
+  // The request is handled on the render where the rewritten value actually
+  // arrives: calling setCursorPos synchronously would read the old buffer,
+  // because the parent's state update has not propagated to props yet.
+  const syncCursorOnNextValueRef = useRef(false);
+
+  useEffect(() => {
+    if (onCursorReset) onCursorReset(() => { syncCursorOnNextValueRef.current = true; });
+  }, [onCursorReset]);
+
+  useEffect(() => {
+    if (!syncCursorOnNextValueRef.current) return;
+    syncCursorOnNextValueRef.current = false;
+    setCursorPos(value.length);
+  }, [value]);
 
   const activeFileToken = getActiveFileToken(value, cursorPos);
   const showSuggestions = !activeFileToken && value.startsWith("/") && !value.includes(" ") && value.length >= 1;
