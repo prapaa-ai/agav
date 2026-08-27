@@ -49,7 +49,7 @@ export const skillsCommand: SlashCommand = {
   // agavHomePath rather than a literal "~/.agav/skills": on PowerShell and cmd
   // that spelling is neither typeable nor recognisable.
   usage: `Usage: /skills [action]\n\n  /skills                 List installed skills\n  /skills list            Same as above\n  /skills add <url|path>  Install from a URL or a local skill directory\n  /skills remove <name>   Uninstall a skill\n  /skills info <name>     Show details about a skill\n  /skills marketplace     Browse available skills\n\nA skill is a directory holding a SKILL.md with YAML frontmatter, plus\noptional scripts/, references/ and assets/. The agent can activate one\nautomatically or you can invoke it as a slash command.\n\nInstalls are written to ${agavHomePath("skills")} and take effect after a\nrestart. Point a path at the skill directory to install all of it, or at a\nlone SKILL.md to take just that file and any scripts/, references/ or\nassets/ beside it. GitHub URLs install the whole directory; other hosts\noffer no listing, so only the SKILL.md itself is fetched.`,
-  async execute(args: string, _context: CommandContext): Promise<CommandResult> {
+  async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const parts = args.trim().split(/\s+/);
     const action = parts[0]?.toLowerCase() || "list";
 
@@ -73,6 +73,7 @@ export const skillsCommand: SlashCommand = {
       if (!source) {
         return { type: "message", text: "Usage: /skills add <url|path>" };
       }
+      context.showStatus(`Installing skill from ${source.startsWith("http") ? "URL" : "path"}…`);
       const result = source.startsWith("http")
         ? await installFromUrl(source)
         : await installFromPath(source);
@@ -129,14 +130,17 @@ export const skillsCommand: SlashCommand = {
 
     if (action === "marketplace") {
       const num = parts[1] ? parseInt(parts[1], 10) : NaN;
+      context.showStatus("Fetching skill marketplace…");
       const index = await fetchMarketplaceIndex();
 
       if (!isNaN(num) && num >= 1 && num <= index.length) {
         const pick = index[num - 1]!;
         if (!pick.url) return { type: "message", text: `No install URL for "${pick.name}".` };
+        context.showStatus(`Installing "${pick.name}" from marketplace…`);
         const result = await installFromUrl(pick.url);
         if ("error" in result) return { type: "message", text: result.error };
-        return { type: "message", text: `Installed skill: ${result.name}. Restart to activate.` };
+        const warns = result.warnings.length > 0 ? `\nWarnings:\n${result.warnings.join("\n")}` : "";
+        return { type: "message", text: `Installed skill: ${result.name}${warns}\nRestart to activate.` };
       }
 
       const lines = index.map((s, i) =>

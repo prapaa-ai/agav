@@ -27,6 +27,17 @@ const MAX_ASSET_FILES = 200;
 const MAX_ASSET_BYTES = 10 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "__pycache__"]);
 
+/** Turns AbortError / TypeError / generic errors into something the user can act on. */
+function describeNetworkError(err: unknown): string {
+  if (err instanceof DOMException || (err instanceof Error && err.name === "AbortError")) {
+    return "request timed out — check your network connection and try again";
+  }
+  if (err instanceof TypeError) {
+    return `network error — ${err.message}`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
 export async function fetchMarketplaceIndex(): Promise<MarketplaceSkill[]> {
   try {
     const res = await fetch(GITHUB_API, {
@@ -95,6 +106,10 @@ function normaliseSkillUrl(url: string): string {
   const tree = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/tree\/(.+?)\/?$/);
   if (tree) return `https://raw.githubusercontent.com/${tree[1]}/${tree[2]}/${tree[3]}/SKILL.md`;
 
+  // Bare repo URL: https://github.com/owner/repo or https://github.com/owner/repo/
+  const repo = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/?$/);
+  if (repo) return `https://raw.githubusercontent.com/${repo[1]}/${repo[2]}/HEAD/SKILL.md`;
+
   if (/^https:\/\/raw\.githubusercontent\.com\/.+/.test(url) && !/\.md$/.test(url)) {
     return `${url.replace(/\/$/, "")}/SKILL.md`;
   }
@@ -122,10 +137,16 @@ async function fetchGitHubAssets(
   const walk = async (apiPath: string, localDir: string): Promise<void> => {
     if (truncated) return;
     const api = `https://api.github.com/repos/${src.owner}/${src.repo}/contents/${apiPath}?ref=${encodeURIComponent(src.ref)}`;
-    const res = await fetch(api, {
-      signal: AbortSignal.timeout(15_000),
-      headers: { Accept: "application/vnd.github.v3+json" },
-    });
+    let res: Response;
+    try {
+      res = await fetch(api, {
+        signal: AbortSignal.timeout(30_000),
+        headers: { Accept: "application/vnd.github.v3+json" },
+      });
+    } catch (err) {
+      warnings.push(`Could not list ${apiPath} (${describeNetworkError(err)}) — its files were not installed.`);
+      return;
+    }
     if (!res.ok) {
       warnings.push(`Could not list ${apiPath} (HTTP ${res.status}) — its files were not installed.`);
       return;
@@ -153,7 +174,13 @@ async function fetchGitHubAssets(
         return;
       }
 
-      const fileRes = await fetch(entry.download_url, { signal: AbortSignal.timeout(15_000) });
+      let fileRes: Response;
+      try {
+        fileRes = await fetch(entry.download_url, { signal: AbortSignal.timeout(30_000) });
+      } catch (err) {
+        warnings.push(`Could not download ${entry.path} (${describeNetworkError(err)}).`);
+        continue;
+      }
       if (!fileRes.ok) {
         warnings.push(`Could not download ${entry.path} (HTTP ${fileRes.status}).`);
         continue;
@@ -213,9 +240,21 @@ async function copyTree(srcDir: string, destDir: string): Promise<number> {
 export async function installFromUrl(url: string): Promise<{ name: string; warnings: string[] } | { error: string }> {
   try {
     const target = normaliseSkillUrl(url);
-    const res = await fetch(target, { signal: AbortSignal.timeout(15_000) });
-    if (!res.ok) return { error: `Failed to fetch: ${res.status}` };
+
+    let res: Response;
+    try {
+      res = await fetch(target, { signal: AbortSignal.timeout(30_000) });
+    } catch (err) {
+      return { error: `Failed to fetch SKILL.md: ${describeNetworkError(err)}` };
+    }
+    if (!res.ok) return { error: `Failed to fetch SKILL.md: HTTP ${res.status}` };
     const markdown = await res.text();
+
+    // Catch HTML pages served by browser-facing URLs that slipped past normalisation.
+    const trimmed = markdown.trimStart().slice(0, 50).toLowerCase();
+    if (trimmed.startsWith("<!doctype") || trimmed.startsWith("<html") || trimmed.includes("<head>")) {
+      return { error: `The URL returned an HTML page, not a SKILL.md file. Use a raw/direct link to the SKILL.md file (e.g. a raw.githubusercontent.com URL).` };
+    }
 
     const github = parseGitHubSkillUrl(target);
     const { passed, warnings } = validateSkill(markdown, {
@@ -272,6 +311,26 @@ export async function installFromPath(sourcePath: string): Promise<{ name: strin
     const destDir = join(getAgavDir(), "skills", slugify(name));
 
     if (isDir) {
+      // Refuse to copy a directory that contains nested skills — the user
+      // probably pointed at a parent folder instead of a specific skill dir.
+      const nestedSkills: string[] = [];
+      const topEntries = await readdir(srcDir, { withFileTypes: true });
+      for (const entry of topEntries) {
+        if (!entry.isDirectory() || SKIP_DIRS.has(entry.name)) continue;
+        try {
+          await stat(join(srcDir, entry.name, "SKILL.md"));
+          nestedSkills.push(entry.name);
+        } catch { /* no SKILL.md in this subdir — fine */ }
+      }
+      if (nestedSkills.length > 0) {
+        return {
+          error:
+            `The directory contains ${nestedSkills.length} nested skill${nestedSkills.length === 1 ? "" : "s"} ` +
+            `(${nestedSkills.join(", ")}). Point at a specific skill directory instead, ` +
+            `e.g. /skills add ${join(sourcePath, nestedSkills[0]!)}`,
+        };
+      }
+
       const size = await measureTree(srcDir);
       if (!size) {
         return {
