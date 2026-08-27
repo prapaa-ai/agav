@@ -7,6 +7,7 @@ import type { ToolDefinition } from "../tools/types.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { AgavConfig } from "../config/config.js";
 import { executeNativeAgent, executeA2AAgent } from "./executor.js";
+import { agavHomePath, setEnvHint } from "../utils/shell-hints.js";
 
 // AgavHooks type - defined locally since it's not exported from hooks.js
 interface AgavHooks {
@@ -66,9 +67,9 @@ export function agentToTool(
               `Cannot run the ${agentName} agent — missing required configuration: ${missing.join(", ")}.`,
               ``,
               `To configure, set the following environment variables before starting agav:`,
-              ...missing.map((k) => `  export ${k}=<your-value>`),
+              ...missing.map((k) => `  ${setEnvHint(k, "<your-value>")}`),
               ``,
-              `Or store them permanently in ~/.agav/agents/${agentName}/config.json`,
+              `Or store them permanently in ${agavHomePath(`agents/${agentName}/config.json`)}`,
             ];
             return { output: lines.join("\n"), isError: true };
           }

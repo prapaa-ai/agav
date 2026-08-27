@@ -3,6 +3,7 @@ import { Box, Text, useInput } from "ink";
 import type { MarketplaceAgent } from "../agents/types.js";
 import { installAgent, uninstallAgent } from "../agents/installer.js";
 import { getDefaultMarketplaceUrl } from "../config/config.js";
+import { agavHomePath } from "../utils/shell-hints.js";
 import { parseFileUrl } from "./agents-types.js";
 import { useSearch, filterMarketplaceAgents, SearchBar } from "./agents-search.js";
 import { MarketplaceInspectView } from "./agents-inspect.js";
@@ -315,7 +316,7 @@ export function MarketplaceTab({
           <Text dimColor>Press 'r' to retry</Text>
         </Box>
         <Box marginTop={1}>
-          <Text dimColor>Configure marketplace URL in ~/.agav/config.json:</Text>
+          <Text dimColor>Configure marketplace URL in {agavHomePath("config.json")}:</Text>
         </Box>
         <Text dimColor>  "agentMarketplace": "https://your-repo-url"</Text>
       </Box>

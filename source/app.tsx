@@ -67,12 +67,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [config, setConfig] = useState(initialConfig);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const activeSideProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const [showToolDetail, setShowToolDetail] = useState(false);
   const [showPlanDetail, setShowPlanDetail] = useState(false);
+  const [showThinking, setShowThinking] = useState(initialConfig.showThinking ?? false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
   const [inlineTranscript, setInlineTranscript] = useState(false);
@@ -88,6 +89,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [exitInk]);
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
+  /** Lets handleSubmit re-sync InputPrompt's caret after rewriting its buffer. */
+  const inputPromptCursorResetRef = useRef<(() => void) | null>(null);
 
   const {
     messages,
@@ -123,6 +126,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     sessionId,
     sessionName,
     transcriptRevision,
+    turnStartTime,
+    lastTurnDurationMs,
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
@@ -361,6 +366,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
       return;
     }
+    if (match.action === "toggleThinking") {
+      setShowThinking((prev) => !prev);
+      return;
+    }
     if (match.action === "retryLastTurn" && !isLoading && !pendingConfirmation && input.length === 0) {
       const lastMessage = [...messages].reverse().find((message) => message.role === "user");
       const lastPrompt = lastMessage?.sourceText ?? lastMessage?.content;
@@ -446,11 +455,16 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
       if (!trimmed && attachments.length === 0) return;
 
-      // Block non-btw submissions while agent is working
-      if (isLoading) return;
+      const commandName = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
+      const midTurnSafe = new Set(["steer", "help", "loop"]);
+      const isSlashCommand = trimmed.startsWith("/")
+        && attachments.length === 0
+        && (!isLoading || midTurnSafe.has(commandName));
+      if (!isSlashCommand && isLoading) return;
 
-      if (trimmed.startsWith("/") && attachments.length === 0) {
+      if (isSlashCommand) {
         setInput("");
+        inputPromptCursorResetRef.current?.();
         setShowToolDetail(false);
         setPsResponse(undefined);
         setSystemMessages([]);
@@ -483,6 +497,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           renameSession,
           currentSessionId: sessionId,
           exit,
+          isLoading,
           getDebugState: () => ({
             tokenUsage,
             loadedPlugins,
@@ -540,7 +555,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setPsResponse(undefined);
       setSystemMessages([]);
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
+    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, isLoading, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
   );
 
   const displayError = error;
@@ -663,7 +678,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             {subagentStates.map((sa, i) => (
               <SubagentDisplay key={sa.id} progress={sa} mode="compact" index={i} />
             ))}
-            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} />
+            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} />
             {hasSubagents && (
               <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cycleSubagents")}: cycle subagents · {formatKeybinding(keybindings, "cancel")}: cancel</Text>
             )}
@@ -714,6 +729,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           onRemoveAttachment={() => setAttachments((prev) => prev.slice(0, -1))}
           onClearAttachments={() => setAttachments([])}
           onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
+          onCursorReset={(fn) => { inputPromptCursorResetRef.current = fn; }}
           disabled={pickerActive}
           commands={[
             { name: "ps", description: "Side query while agent is working" },
@@ -740,6 +756,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
         sandboxBackend={getSandboxName()}
         branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
+        turnStartTime={turnStartTime}
+        lastTurnDurationMs={lastTurnDurationMs}
+        isLoading={isLoading}
+        isPaused={!!pendingConfirmation}
       />
     </Box>
   );

@@ -33,10 +33,12 @@ export interface AgavHooks {
 }
 
 export interface AgavConfig {
-  provider: "anthropic" | "openai" | "ollama" | "gemini" | "vertex-ai";
+  provider: "anthropic" | "openai" | "openrouter" | "nvidia" | "ollama" | "gemini" | "vertex-ai";
   model: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
+  openrouterApiKey?: string;
+  nvidiaApiKey?: string;
   openaiApi?: "chat" | "responses";
   geminiApiKey?: string;
   vertexAICredentialsPath?: string;
@@ -57,6 +59,7 @@ export interface AgavConfig {
   mcpServers?: Record<string, MCPServerConfig>;
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
+  showThinking?: boolean;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -77,7 +80,7 @@ export function expandHome(path: string): string {
 const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
-    enum: ["openai", "ollama", "anthropic", "gemini", "vertex-ai"],
+    enum: ["openai", "openrouter", "nvidia", "ollama", "anthropic", "gemini", "vertex-ai"],
     type: "string",
     eg: "openai",
   },
@@ -128,6 +131,11 @@ const PROJECT_CONFIG_TEMPLATE = {
     type: "boolean",
     eg: false,
   },
+  showThinking: {
+    description: "Whether to display the model's reasoning/thinking text as it streams. Toggle with Ctrl+T at runtime.",
+    type: "boolean",
+    eg: false,
+  },
   anthropicApiKey: {
     description: "Anthropic API key. Prefer the ANTHROPIC_API_KEY environment variable for secrets.",
     type: "string",
@@ -137,6 +145,16 @@ const PROJECT_CONFIG_TEMPLATE = {
     description: "OpenAI API key. Prefer the OPENAI_API_KEY environment variable for secrets.",
     type: "string",
     eg: "set-via-OPENAI_API_KEY",
+  },
+  openrouterApiKey: {
+    description: "OpenRouter API key. Prefer the OPENROUTER_API_KEY environment variable for secrets.",
+    type: "string",
+    eg: "set-via-OPENROUTER_API_KEY",
+  },
+  nvidiaApiKey: {
+    description: "NVIDIA NIM API key. Prefer the NVIDIA_API_KEY environment variable for secrets.",
+    type: "string",
+    eg: "set-via-NVIDIA_API_KEY",
   },
   geminiApiKey: {
     description: "Google Gemini API key. Prefer the GEMINI_API_KEY environment variable for secrets.",
@@ -229,7 +247,9 @@ async function ensureProjectConfigTemplate(): Promise<void> {
   try {
     const raw = await readFile(projectPath, "utf-8");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (parsed.template !== undefined) return;
+    // Refresh shipped metadata after upgrades while preserving user settings,
+    // but avoid rewriting committed config files when nothing changed.
+    if (JSON.stringify(parsed.template) === JSON.stringify(PROJECT_CONFIG_TEMPLATE)) return;
     parsed.template = PROJECT_CONFIG_TEMPLATE;
     await writeFile(projectPath, JSON.stringify(parsed, null, 2) + "\n");
   } catch (error) {
@@ -294,6 +314,18 @@ export async function loadConfig(): Promise<AgavConfig> {
     globalConfig.openaiApiKey ??
     DEFAULT_CONFIG.openaiApiKey ?? "",
   ) || undefined;
+  merged.openrouterApiKey = decrypt(
+    process.env["OPENROUTER_API_KEY"] ??
+    projectConfig.openrouterApiKey ??
+    globalConfig.openrouterApiKey ??
+    DEFAULT_CONFIG.openrouterApiKey ?? "",
+  ) || undefined;
+  merged.nvidiaApiKey = decrypt(
+    process.env["NVIDIA_API_KEY"] ??
+    projectConfig.nvidiaApiKey ??
+    globalConfig.nvidiaApiKey ??
+    DEFAULT_CONFIG.nvidiaApiKey ?? "",
+  ) || undefined;
   merged.geminiApiKey = decrypt(
     process.env["GEMINI_API_KEY"] ??
     projectConfig.geminiApiKey ??
@@ -339,10 +371,12 @@ export async function loadConfig(): Promise<AgavConfig> {
 /** Persist config to the global config file, encrypting any API keys present. */
 export async function saveConfig(config: AgavConfig): Promise<void> {
   await ensureDir(AGAV_DIR);
-  const { anthropicApiKey, openaiApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
+  const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
   const out: Record<string, unknown> = { ...safe };
   if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
   if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
+  if (openrouterApiKey) out.openrouterApiKey = encrypt(openrouterApiKey);
+  if (nvidiaApiKey) out.nvidiaApiKey = encrypt(nvidiaApiKey);
   if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
   if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
   await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");

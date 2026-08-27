@@ -17,12 +17,17 @@ describe("keybindings", () => {
   });
 
   it("loads defaults and overrides from global and project files", async () => {
+    const { homedir } = await import("node:os");
+    const { join } = await import("node:path");
+    const globalPath = join(homedir(), ".agav", "keybindings.json");
+    const projectPath = join(process.cwd(), ".agav", "keybindings.json");
+
     readFile.mockImplementation(async (path: any) => {
-      if (String(path).includes("/keybindings.json") && String(path).includes(".agav")) {
-        return JSON.stringify({ submit: ["return"], exit: "ctrl+x" });
+      if (String(path) === globalPath) {
+        return JSON.stringify({ exit: "ctrl+x" });
       }
-      if (String(path).includes(".agav/keybindings.json")) {
-        return JSON.stringify({ submit: ["shift+enter"], cancel: "esc" });
+      if (String(path) === projectPath) {
+        return JSON.stringify({ submit: ["return"], cancel: "esc" });
       }
       throw new Error("missing");
     });

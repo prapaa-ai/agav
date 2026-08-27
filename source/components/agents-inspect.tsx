@@ -28,6 +28,7 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
   const providerMatchesModel = (model: string, provider: string): boolean => {
     if (provider === "anthropic" && model.startsWith("claude-")) return true;
     if (provider === "openai" && (model.startsWith("gpt-") || model.startsWith("o1-") || model.startsWith("o3-") || model.startsWith("o4-"))) return true;
+    if (provider === "openrouter") return true;
     if (provider === "gemini" && model.startsWith("gemini-")) return true;
     if (provider === "ollama") return true;
     return false;

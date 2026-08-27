@@ -44,6 +44,38 @@ async function fetchOpenAIModels(apiKey: string): Promise<FetchedModel[]> {
   }
 }
 
+async function fetchOpenRouterModels(apiKey: string): Promise<FetchedModel[]> {
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { data?: { id: string }[] };
+    return (data.data ?? [])
+      .map((m) => ({ id: m.id, provider: "openrouter" }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  } catch {
+    return [];
+  }
+}
+
+async function fetchNvidiaModels(apiKey: string): Promise<FetchedModel[]> {
+  try {
+    const res = await fetch("https://integrate.api.nvidia.com/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { data?: { id: string }[] };
+    return (data.data ?? [])
+      .map((m) => ({ id: m.id, provider: "nvidia" }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  } catch {
+    return [];
+  }
+}
+
 async function fetchOllamaModels(baseUrl: string): Promise<FetchedModel[]> {
   try {
     const res = await fetch(`${baseUrl}/api/tags`, {
@@ -106,6 +138,8 @@ async function fetchAllModels(config: AgavConfig): Promise<FetchAllResult> {
 
   if (config.anthropicApiKey) fetches.push(fetchAnthropicModels(config.anthropicApiKey));
   if (config.openaiApiKey) fetches.push(fetchOpenAIModels(config.openaiApiKey));
+  if (config.openrouterApiKey) fetches.push(fetchOpenRouterModels(config.openrouterApiKey));
+  if (config.nvidiaApiKey) fetches.push(fetchNvidiaModels(config.nvidiaApiKey));
   if (config.geminiApiKey) fetches.push(fetchGeminiModels(config.geminiApiKey));
   if (config.vertexAICredentialsPath) {
     fetches.push(fetchVertexModels(config.vertexAICredentialsPath, config.vertexAILocation, warnings));
@@ -122,6 +156,14 @@ async function fetchAllModels(config: AgavConfig): Promise<FetchAllResult> {
 /** Render warnings as a trailing block, or nothing at all when there are none. */
 function warningSuffix(warnings: string[]): string {
   return warnings.length > 0 ? `\n\n${warnings.join("\n")}` : "";
+}
+
+/** Whether a routed model slug belongs to the provider already in use. */
+function matchesProviderPrefix(model: string, provider: string): boolean {
+  const prefix = model.split("/", 1)[0]?.toLowerCase();
+  if (provider === "anthropic" || provider === "openai") return prefix === provider;
+  if (provider === "gemini" || provider === "vertex-ai") return prefix === "google";
+  return false;
 }
 
 function pickModel(
@@ -292,7 +334,8 @@ export const modelCommand: SlashCommand = {
       }
 
       context.setModel(model);
-      if (match && match.provider !== context.config.provider) {
+      if (match && match.provider !== context.config.provider
+        && !matchesProviderPrefix(model, context.config.provider)) {
         context.setProvider(match.provider as import("../config/config.js").AgavConfig["provider"]);
         return { type: "message", text: `Model changed to: ${model} (switched to ${match.provider})` };
       }
@@ -323,7 +366,10 @@ export const modelCommand: SlashCommand = {
     }
 
     context.setModel(picked.id);
-    context.setProvider(picked.provider as AgavConfig["provider"]);
-    return { type: "message", text: `Model changed to: ${picked.id} (${picked.provider})${warningSuffix(warnings)}` };
+    if (picked.provider !== currentProvider && !matchesProviderPrefix(picked.id, currentProvider)) {
+      context.setProvider(picked.provider as AgavConfig["provider"]);
+      return { type: "message", text: `Model changed to: ${picked.id} (switched to ${picked.provider})${warningSuffix(warnings)}` };
+    }
+    return { type: "message", text: `Model changed to: ${picked.id}${warningSuffix(warnings)}` };
   },
 };
