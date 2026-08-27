@@ -8,6 +8,12 @@
 // form that survives tsx, `node build/cli.js` and `./dist/agav` alike.
 //
 // Run via `pnpm gen:skills`; `build` and `build:binary` both do this first.
+//
+// NOTE: Bundled SKILL.md files use the agentskills.io spec format for
+// allowed-tools (space-separated string, e.g. `allowed-tools: read_file grep_search`)
+// rather than a YAML list. Both formats are accepted by the parser. If you
+// edit a bundled skill, you can use either format — just keep it consistent
+// within the same file.
 
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
