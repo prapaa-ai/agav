@@ -2,6 +2,28 @@ import { parseSkillMarkdown } from "./loader.js";
 import { KNOWN_TOOL_NAMES } from "../tools/registry-factory.js";
 import { slugify, baseToolName } from "./skill-utils.js";
 
+/**
+ * Common agentskills.io spec tool names and their agav equivalents. Used to
+ * produce actionable warnings when a skill uses spec-style names that won't
+ * resolve at runtime.
+ */
+const SPEC_TOOL_ALIASES: Readonly<Record<string, string>> = {
+  Bash: "run_command",
+  Read: "read_file",
+  Write: "write_file",
+  Edit: "edit_file",
+  MultiEdit: "edit_file",
+  Grep: "grep_search",
+  Glob: "find_files",
+  LS: "list_directory",
+  WebSearch: "web_search",
+  WebFetch: "fetch_url",
+  NotebookRead: "read_notebook",
+  NotebookEdit: "edit_notebook",
+  TodoRead: "update_plan",
+  TodoWrite: "update_plan",
+};
+
 const DANGER_PATTERNS = [
   /ignore\s+(all\s+)?previous\s+instructions/i,
   /ignore\s+all\s+prior/i,
@@ -96,7 +118,8 @@ export function validateSkill(markdown: string, options: ValidateOptions = {}): 
     for (const entry of list) {
       const base = baseToolName(entry);
       if (!KNOWN_TOOL_NAMES.has(base)) {
-        warnings.push(`Unknown tool "${base}" in ${field}`);
+        const hint = SPEC_TOOL_ALIASES[base];
+        warnings.push(`Unknown tool "${base}" in ${field}${hint ? ` (did you mean "${hint}"?)` : ""}`);
       }
     }
   }

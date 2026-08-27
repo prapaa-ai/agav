@@ -26,8 +26,8 @@ describe("skills/validate", () => {
     const result = validateSkill(conforming, { dirName: "pdf-processing" });
     expect(result.passed).toBe(true);
     expect(result.warnings).toEqual([
-      'Unknown tool "Bash" in allowed-tools',
-      'Unknown tool "Read" in allowed-tools',
+      'Unknown tool "Bash" in allowed-tools (did you mean "run_command"?)',
+      'Unknown tool "Read" in allowed-tools (did you mean "read_file"?)',
     ]);
   });
 
