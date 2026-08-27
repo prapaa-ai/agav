@@ -2,6 +2,7 @@ import { cp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { getAgavDir } from "../config/config.js";
 import { validateSkill } from "./validate.js";
+import { slugify } from "./skill-utils.js";
 import { ensureDir } from "../utils/fs.js";
 
 interface MarketplaceSkill {
@@ -77,10 +78,6 @@ function getFallbackSkills(): MarketplaceSkill[] {
 function skillNameFrom(markdown: string): string {
   const frontmatterMatch = markdown.match(/^---\r?\n[\s\S]*?name:\s*(.+)/m);
   return frontmatterMatch?.[1]?.trim().replace(/^["']|["']$/g, "") || "imported-skill";
-}
-
-function slugify(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
 /**

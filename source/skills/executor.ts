@@ -9,6 +9,7 @@ import type { ConfirmResult } from "../agent/loop.js";
 import type { PermissionMode, EffortLevel } from "../config/config.js";
 import { recordSkillTrace } from "./improvement.js";
 import { formatSteersForPrompt } from "../commands/steer.js";
+import { baseToolName } from "./skill-utils.js";
 
 interface SkillExecDeps {
   provider: LLMProvider;
@@ -23,16 +24,6 @@ interface SkillExecDeps {
   // returned command result, while activate_skill uses this to merge usage into the parent turn.
   onTokenUsage?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   signal?: AbortSignal;
-}
-
-/**
- * agentskills.io lets an entry narrow a tool to particular invocations —
- * `Bash(git:*)`. agav gates whole tools, so match on the name before the
- * qualifier; `Bash(git:*)` and `Bash` both name the same tool here.
- */
-function baseToolName(entry: string): string {
-  const paren = entry.indexOf("(");
-  return (paren < 0 ? entry : entry.slice(0, paren)).trim();
 }
 
 function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolRegistry {

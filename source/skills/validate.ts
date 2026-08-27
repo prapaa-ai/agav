@@ -1,5 +1,6 @@
 import { parseSkillMarkdown } from "./loader.js";
 import { KNOWN_TOOL_NAMES } from "../tools/registry-factory.js";
+import { slugify, baseToolName } from "./skill-utils.js";
 
 const DANGER_PATTERNS = [
   /ignore\s+(all\s+)?previous\s+instructions/i,
@@ -127,12 +128,4 @@ export function validateSkill(markdown: string, options: ValidateOptions = {}): 
   return { passed, warnings };
 }
 
-/** Strip the spec qualifier: `Bash(git:*)` → `Bash`. */
-function baseToolName(entry: string): string {
-  const paren = entry.indexOf("(");
-  return (paren < 0 ? entry : entry.slice(0, paren)).trim();
-}
 
-function slugify(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-}
