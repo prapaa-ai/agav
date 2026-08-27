@@ -515,6 +515,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             agentsTUIResolveRef.current = onDone;
             setAgentsTUIActive(true);
           },
+          showSkillsTUI: (onDone: () => void) => {
+            skillsTUIResolveRef.current = onDone;
+            setSkillsTUIActive(true);
+          },
         });
 
         setRunningSkillName(null);

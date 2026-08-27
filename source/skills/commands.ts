@@ -2,7 +2,7 @@ import type { SlashCommand, CommandResult, CommandContext } from "../commands/ty
 import type { SkillDefinition } from "./types.js";
 import { loadSkills, getSkill } from "./loader.js";
 import { executeSkill } from "./executor.js";
-import { installFromUrl, installFromPath, removeSkill, fetchMarketplaceIndex } from "./marketplace.js";
+import { installFromUrl, installFromPath, removeSkill } from "./marketplace.js";
 import { getSkillTraces } from "./improvement.js";
 import { agavHomePath } from "../utils/shell-hints.js";
 
@@ -129,28 +129,12 @@ export const skillsCommand: SlashCommand = {
     }
 
     if (action === "marketplace") {
-      const num = parts[1] ? parseInt(parts[1], 10) : NaN;
-      context.showStatus("Fetching skill marketplace…");
-      const index = await fetchMarketplaceIndex();
-
-      if (!isNaN(num) && num >= 1 && num <= index.length) {
-        const pick = index[num - 1]!;
-        if (!pick.url) return { type: "message", text: `No install URL for "${pick.name}".` };
-        context.showStatus(`Installing "${pick.name}" from marketplace…`);
-        const result = await installFromUrl(pick.url);
-        if ("error" in result) return { type: "message", text: result.error };
-        const warns = result.warnings.length > 0 ? `\nWarnings:\n${result.warnings.join("\n")}` : "";
-        return { type: "message", text: `Installed skill: ${result.name}${warns}\nRestart to activate.` };
-      }
-
-      const lines = index.map((s, i) =>
-        `  ${String(i + 1).padStart(2)}. ${s.name}`,
-      );
-      return {
-        type: "message",
-        text: "Skill Marketplace (anthropics/skills):\n" + lines.join("\n") +
-          "\n\nInstall: /skills marketplace <number>",
-      };
+      context.setPickerActive(true);
+      return new Promise<CommandResult>((resolve) => {
+        context.showSkillsTUI(() => {
+          resolve({ type: "none" });
+        });
+      });
     }
 
     return { type: "message", text: "Unknown action. Usage: /skills [list|add|remove|info|marketplace]" };
