@@ -104,6 +104,8 @@ function normaliseSkillUrl(url: string): string {
   if (tree) return `https://raw.githubusercontent.com/${tree[1]}/${tree[2]}/${tree[3]}/SKILL.md`;
 
   // Bare repo URL: https://github.com/owner/repo or https://github.com/owner/repo/
+  // HEAD is the git symbolic ref for the default branch — more reliable than
+  // hardcoding "main" since repos may use "master" or another default.
   const repo = url.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/?$/);
   if (repo) return `https://raw.githubusercontent.com/${repo[1]}/${repo[2]}/HEAD/SKILL.md`;
 
