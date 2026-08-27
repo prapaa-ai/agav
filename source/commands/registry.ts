@@ -4,7 +4,7 @@ import { clearCommand, newCommand } from "./clear.js"
 import { nameCommand } from "./name.js"
 import { modelCommand } from "./model.js"
 import { exitCommand } from "./exit.js"
-import { historyCommand } from "./history.js"
+import { resumeCommand } from "./history.js"
 import { exportCommand } from "./export.js"
 import { watchCommand } from "./watch.js"
 import { branchCommand } from "./branch.js"
@@ -38,7 +38,7 @@ export class CommandRegistry {
     this.register(modelCommand)
     this.register(effortCommand)
     this.register(exitCommand)
-    this.register(historyCommand)
+    this.register(resumeCommand)
     this.register(exportCommand)
     this.register(watchCommand)
     this.register(branchCommand)
