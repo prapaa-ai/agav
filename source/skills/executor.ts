@@ -58,22 +58,30 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
   // Local copy so "always" escalation does not leak back into the caller's deps.
   let mode = opts.permissionMode;
   let result = text;
+  // Replace exactly one occurrence starting from a specific position.
+  // String.replace with a string argument always takes the first match,
+  // which fails silently when the same shell block appears twice.
+  const replaceOnce = (haystack: string, needle: string, replacement: string): string => {
+    const idx = haystack.indexOf(needle);
+    if (idx < 0) return haystack;
+    return haystack.slice(0, idx) + replacement + haystack.slice(idx + needle.length);
+  };
   for (const block of blocks) {
     // deny-writes: never execute shell blocks.
     if (mode === "deny-writes") {
-      result = result.replace(block.match, "[shell block skipped — write operations denied]");
+      result = replaceOnce(result, block.match, "[shell block skipped — write operations denied]");
       continue;
     }
 
     // ask: require explicit confirmation for each block.
     if (mode === "ask") {
       if (!opts.confirmTool) {
-        result = result.replace(block.match, "[shell block skipped — no confirmation handler available]");
+        result = replaceOnce(result, block.match, "[shell block skipped — no confirmation handler available]");
         continue;
       }
       const choice = await opts.confirmTool("skill_shell_block", { command: block.command });
       if (choice === "no") {
-        result = result.replace(block.match, "[shell block skipped — denied by user]");
+        result = replaceOnce(result, block.match, "[shell block skipped — denied by user]");
         continue;
       }
       if (choice === "always") {
@@ -87,7 +95,7 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
         resolve((stdout ?? "").trim());
       });
     });
-    result = result.replace(block.match, output);
+    result = replaceOnce(result, block.match, output);
   }
   return result;
 }
