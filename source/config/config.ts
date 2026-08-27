@@ -33,11 +33,12 @@ export interface AgavHooks {
 }
 
 export interface AgavConfig {
-  provider: "anthropic" | "openai" | "openrouter" | "ollama" | "gemini" | "vertex-ai";
+  provider: "anthropic" | "openai" | "openrouter" | "nvidia" | "ollama" | "gemini" | "vertex-ai";
   model: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
   openrouterApiKey?: string;
+  nvidiaApiKey?: string;
   openaiApi?: "chat" | "responses";
   geminiApiKey?: string;
   vertexAICredentialsPath?: string;
@@ -79,7 +80,7 @@ export function expandHome(path: string): string {
 const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
-    enum: ["openai", "openrouter", "ollama", "anthropic", "gemini", "vertex-ai"],
+    enum: ["openai", "openrouter", "nvidia", "ollama", "anthropic", "gemini", "vertex-ai"],
     type: "string",
     eg: "openai",
   },
@@ -149,6 +150,11 @@ const PROJECT_CONFIG_TEMPLATE = {
     description: "OpenRouter API key. Prefer the OPENROUTER_API_KEY environment variable for secrets.",
     type: "string",
     eg: "set-via-OPENROUTER_API_KEY",
+  },
+  nvidiaApiKey: {
+    description: "NVIDIA NIM API key. Prefer the NVIDIA_API_KEY environment variable for secrets.",
+    type: "string",
+    eg: "set-via-NVIDIA_API_KEY",
   },
   geminiApiKey: {
     description: "Google Gemini API key. Prefer the GEMINI_API_KEY environment variable for secrets.",
@@ -314,6 +320,12 @@ export async function loadConfig(): Promise<AgavConfig> {
     globalConfig.openrouterApiKey ??
     DEFAULT_CONFIG.openrouterApiKey ?? "",
   ) || undefined;
+  merged.nvidiaApiKey = decrypt(
+    process.env["NVIDIA_API_KEY"] ??
+    projectConfig.nvidiaApiKey ??
+    globalConfig.nvidiaApiKey ??
+    DEFAULT_CONFIG.nvidiaApiKey ?? "",
+  ) || undefined;
   merged.geminiApiKey = decrypt(
     process.env["GEMINI_API_KEY"] ??
     projectConfig.geminiApiKey ??
@@ -359,11 +371,12 @@ export async function loadConfig(): Promise<AgavConfig> {
 /** Persist config to the global config file, encrypting any API keys present. */
 export async function saveConfig(config: AgavConfig): Promise<void> {
   await ensureDir(AGAV_DIR);
-  const { anthropicApiKey, openaiApiKey, openrouterApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
+  const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
   const out: Record<string, unknown> = { ...safe };
   if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
   if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
   if (openrouterApiKey) out.openrouterApiKey = encrypt(openrouterApiKey);
+  if (nvidiaApiKey) out.nvidiaApiKey = encrypt(nvidiaApiKey);
   if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
   if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
   await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");

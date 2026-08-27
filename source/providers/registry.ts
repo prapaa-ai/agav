@@ -3,6 +3,7 @@ import type { AgavConfig } from "../config/config.js";
 import { AnthropicProvider } from "./anthropic.js";
 import { OpenAIProvider } from "./openai.js";
 import { OpenRouterProvider } from "./openrouter.js";
+import { NvidiaProvider } from "./nvidia.js";
 import { OllamaProvider } from "./ollama.js";
 import { GeminiProvider } from "./gemini.js";
 import { VertexAIProvider } from "./vertex-ai.js";
@@ -40,6 +41,11 @@ export function createProvider(config: AgavConfig): LLMProvider {
     case "openrouter": {
       const key = required(config.openrouterApiKey, "OpenRouter API key");
       provider = new OpenRouterProvider(key);
+      break;
+    }
+    case "nvidia": {
+      const key = required(config.nvidiaApiKey, "NVIDIA API key");
+      provider = new NvidiaProvider(key);
       break;
     }
     case "ollama": {
