@@ -11,7 +11,7 @@ const HINTS = [
   "/watch auto-runs commands on file changes",
   "/compact frees up context space",
   "/remember saves notes across sessions",
-  "/history loads a previous session",
+  "/resume loads a previous session",
   "Tab auto-completes slash commands",
   "--auto-accept skips all confirmations",
   "--deny-writes blocks file changes",

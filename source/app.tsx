@@ -89,6 +89,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [exitInk]);
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
+  /** Lets handleSubmit re-sync InputPrompt's caret after rewriting its buffer. */
+  const inputPromptCursorResetRef = useRef<(() => void) | null>(null);
 
   const {
     messages,
@@ -453,11 +455,16 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
       if (!trimmed && attachments.length === 0) return;
 
-      // Block non-btw submissions while agent is working
-      if (isLoading) return;
+      const commandName = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
+      const midTurnSafe = new Set(["steer", "help", "loop"]);
+      const isSlashCommand = trimmed.startsWith("/")
+        && attachments.length === 0
+        && (!isLoading || midTurnSafe.has(commandName));
+      if (!isSlashCommand && isLoading) return;
 
-      if (trimmed.startsWith("/") && attachments.length === 0) {
+      if (isSlashCommand) {
         setInput("");
+        inputPromptCursorResetRef.current?.();
         setShowToolDetail(false);
         setPsResponse(undefined);
         setSystemMessages([]);
@@ -490,6 +497,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           renameSession,
           currentSessionId: sessionId,
           exit,
+          isLoading,
           getDebugState: () => ({
             tokenUsage,
             loadedPlugins,
@@ -547,7 +555,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setPsResponse(undefined);
       setSystemMessages([]);
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
+    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, isLoading, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
   );
 
   const displayError = error;
@@ -721,6 +729,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           onRemoveAttachment={() => setAttachments((prev) => prev.slice(0, -1))}
           onClearAttachments={() => setAttachments([])}
           onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
+          onCursorReset={(fn) => { inputPromptCursorResetRef.current = fn; }}
           disabled={pickerActive}
           commands={[
             { name: "ps", description: "Side query while agent is working" },
