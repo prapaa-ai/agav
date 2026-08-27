@@ -55,16 +55,18 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
   }
   if (blocks.length === 0) return text;
 
+  // Local copy so "always" escalation does not leak back into the caller's deps.
+  let mode = opts.permissionMode;
   let result = text;
   for (const block of blocks) {
     // deny-writes: never execute shell blocks.
-    if (opts.permissionMode === "deny-writes") {
+    if (mode === "deny-writes") {
       result = result.replace(block.match, "[shell block skipped — write operations denied]");
       continue;
     }
 
     // ask: require explicit confirmation for each block.
-    if (opts.permissionMode === "ask") {
+    if (mode === "ask") {
       if (!opts.confirmTool) {
         result = result.replace(block.match, "[shell block skipped — no confirmation handler available]");
         continue;
@@ -75,7 +77,7 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
         continue;
       }
       if (choice === "always") {
-        opts.permissionMode = "auto-accept";
+        mode = "auto-accept";
       }
     }
 
