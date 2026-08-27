@@ -21,6 +21,7 @@ import { useAgent } from "./hooks/use-agent.js";
 import { isInternalUserMessage } from "./agent/internal-prompts.js";
 import { CommandRegistry } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
+import { SkillsTUI } from "./components/skills-tui.js";
 import { saveSession } from "./config/history.js";
 import {
   type Attachment,
@@ -82,6 +83,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [pickerActive, setPickerActive] = useState(false);
   const [agentsTUIActive, setAgentsTUIActive] = useState(false);
   const agentsTUIResolveRef = useRef<(() => void) | null>(null);
+  const [skillsTUIActive, setSkillsTUIActive] = useState(false);
+  const skillsTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk } = useApp();
   const exit = useCallback(() => {
     stopActiveLoop();
@@ -721,6 +724,18 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           }}
           provider={activeProvider}
           config={config}
+        />
+      )}
+      {skillsTUIActive && (
+        <SkillsTUI
+          onExit={() => {
+            setSkillsTUIActive(false);
+            setPickerActive(false);
+            setInput("");
+            const resolve = skillsTUIResolveRef.current;
+            skillsTUIResolveRef.current = null;
+            resolve?.();
+          }}
         />
       )}
 
