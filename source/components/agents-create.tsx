@@ -10,7 +10,7 @@ import type { AgentDefinition, AgentRegistryEntry } from "../agents/types.js";
 import type { MCPServerConfig } from "../mcp/types.js";
 import { loadAgent } from "../agents/loader.js";
 import { registerAgent } from "../agents/agent-registry.js";
-import { uninstallAgent } from "../agents/installer.js";
+import { uninstallAgent, assertPathContained } from "../agents/installer.js";
 import { loadTemplates, saveTemplate, removeTemplate, type AgentTemplate } from "../agents/templates.js";
 
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
@@ -208,6 +208,8 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
 
     try {
       setSaveStatus("Creating agent directory...");
+      const agentsRoot = join(homedir(), ".agav", "agents");
+      await assertPathContained(agentDir, agentsRoot);
       await mkdir(agentDir, { recursive: true });
       await mkdir(toolsDir, { recursive: true });
 

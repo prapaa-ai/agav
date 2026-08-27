@@ -38,10 +38,12 @@ export class MCPClient {
 
   // Starts the MCP subprocess, completes the handshake, and caches its tools.
   async start(): Promise<void> {
+    const useShell = process.platform === "win32";
+    if (useShell) validateMCPCommand(this.config.command, this.config.args ?? []);
     const proc = spawn(this.config.command, this.config.args ?? [], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...this.config.env },
-      shell: process.platform === "win32",
+      shell: useShell,
     });
 
     this.process = proc;
@@ -297,5 +299,18 @@ export class MCPClient {
       throw new Error(`MCP server ${this.serverName} is not running`);
     }
     this.process.stdin.write(JSON.stringify(msg) + "\n");
+  }
+}
+
+const SHELL_METACHAR = /[&|<>^;`$(){}[\]!%"'\n\r]/;
+
+function validateMCPCommand(command: string, args: string[]): void {
+  if (SHELL_METACHAR.test(command)) {
+    throw new Error(`MCP server command contains unsafe characters: ${command}`);
+  }
+  for (const arg of args) {
+    if (SHELL_METACHAR.test(arg)) {
+      throw new Error(`MCP server argument contains unsafe characters: ${arg}`);
+    }
   }
 }

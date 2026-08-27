@@ -40,7 +40,7 @@ function validateGitUrl(url: string): void {
   }
 }
 
-async function assertPathContained(child: string, parent: string): Promise<void> {
+export async function assertPathContained(child: string, parent: string): Promise<void> {
   const resolved = await realpath(resolve(child)).catch(() => resolve(child));
   const root = await realpath(resolve(parent)).catch(() => resolve(parent));
   if (!resolved.startsWith(root + "/") && !resolved.startsWith(root + "\\") && resolved !== root) {
