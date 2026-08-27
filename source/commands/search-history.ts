@@ -77,7 +77,7 @@ export const searchCommand: SlashCommand = {
 
     return {
       type: "message",
-      text: `${summary}\n\n${lines.join("\n\n")}\n\n  Tip: /history N to load a session`,
+      text: `${summary}\n\n${lines.join("\n\n")}\n\n  Tip: /resume to load a session`,
     }
   },
 }

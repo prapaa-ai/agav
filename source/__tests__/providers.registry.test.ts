@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createProvider } from "../providers/registry.js";
 import { OpenRouterProvider } from "../providers/openrouter.js";
+import { NvidiaProvider } from "../providers/nvidia.js";
 import { OpenAIProvider } from "../providers/openai.js";
 import { AnthropicProvider } from "../providers/anthropic.js";
 import { GeminiProvider } from "../providers/gemini.js";
@@ -41,6 +42,29 @@ describe("createProvider registry", () => {
     };
 
     expect(() => createProvider(config)).toThrow(/OpenRouter API key not found/);
+  });
+
+  it("creates NvidiaProvider wrapped in RetryProvider for nvidia", () => {
+    const config: AgavConfig = {
+      ...baseConfig,
+      provider: "nvidia",
+      nvidiaApiKey: "nvapi-test",
+    };
+
+    const provider = createProvider(config);
+    expect(provider).toBeInstanceOf(RetryProvider);
+    expect(provider.name).toBe("nvidia");
+    expect(provider.getContextWindow).toBeTypeOf("function");
+  });
+
+  it("throws when NVIDIA credentials are missing", () => {
+    const config: AgavConfig = {
+      ...baseConfig,
+      provider: "nvidia",
+      nvidiaApiKey: undefined,
+    };
+
+    expect(() => createProvider(config)).toThrow(/NVIDIA API key not found/);
   });
 
   it("creates OpenAIProvider for openai", () => {
