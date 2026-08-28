@@ -304,7 +304,7 @@ export class MCPClient {
 
 const SHELL_METACHAR = /[&|<>^;`$(){}[\]!%"'\n\r]/;
 
-function validateMCPCommand(command: string, args: string[]): void {
+export function validateMCPCommand(command: string, args: string[]): void {
   if (SHELL_METACHAR.test(command)) {
     throw new Error(`MCP server command contains unsafe characters: ${command}`);
   }
