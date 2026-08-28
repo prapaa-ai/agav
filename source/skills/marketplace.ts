@@ -1,5 +1,5 @@
 import { cp, readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { getAgavDir } from "../config/config.js";
 import { validateSkill } from "./validate.js";
 import { slugify } from "./skill-utils.js";
@@ -250,7 +250,19 @@ export async function installFromUrl(url: string): Promise<{ name: string; warni
     } catch (err) {
       return { error: `Failed to fetch SKILL.md: ${describeNetworkError(err)}` };
     }
-    if (!res.ok) return { error: `Failed to fetch SKILL.md: HTTP ${res.status}` };
+    if (!res.ok) {
+      // When a GitHub raw URL 404s, the user may have pointed at a directory
+      // that contains multiple skill subdirectories rather than a single skill.
+      // Detect this and return a helpful message listing the available skills.
+      if (res.status === 404) {
+        const github = parseGitHubSkillUrl(target);
+        if (github) {
+          const listing = await tryListGitHubSkillDirectory(github, url);
+          if (listing) return { error: listing };
+        }
+      }
+      return { error: `Failed to fetch SKILL.md: HTTP ${res.status}` };
+    }
     const markdown = await res.text();
 
     // Catch HTML pages served by browser-facing URLs that slipped past normalisation.
@@ -298,14 +310,22 @@ export async function installFromPath(sourcePath: string): Promise<{ name: strin
     // file may well be sitting in a downloads folder full of unrelated things.
     const isDir = info.isDirectory();
     const srcDir = isDir ? sourcePath : dirname(sourcePath);
+    const resolvedSrcDir = resolve(srcDir);
     const mdPath = isDir ? join(sourcePath, "SKILL.md") : sourcePath;
+
+    // When the .md file is a bare filename (e.g. "subagent.md"), dirname
+    // returns "." which resolves to the CWD.  The file is standalone — not
+    // inside a dedicated skill directory — so we must NOT scan the CWD for
+    // sibling asset directories (scripts/, references/, assets/) that would
+    // be completely unrelated.
+    const isBareFile = !isDir && resolvedSrcDir === resolve(process.cwd());
 
     const markdown = await readFile(mdPath, "utf-8").catch(() => undefined);
     if (markdown === undefined) {
       return { error: isDir ? `No SKILL.md in ${sourcePath}` : `Could not read ${sourcePath}` };
     }
 
-    const { passed, warnings } = validateSkill(markdown, { dirName: basename(srcDir) });
+    const { passed, warnings } = validateSkill(markdown, { dirName: isBareFile ? undefined : basename(srcDir) });
     if (!passed) {
       return { error: `Validation failed:\n${warnings.join("\n")}` };
     }
