@@ -29,12 +29,13 @@ const entries = readdirSync(bundledDir, { withFileTypes: true })
   .sort();
 
 const records = [];
+const failed = [];
 for (const name of entries) {
   let text;
   try {
     text = readFileSync(join(bundledDir, name, "SKILL.md"), "utf-8");
   } catch {
-    console.warn(`gen:skills — skipping ${name}: no SKILL.md`);
+    failed.push(name);
     continue;
   }
   // Normalise line endings so the generated file is byte-identical whether it
@@ -51,6 +52,17 @@ export const BUNDLED_SKILL_FILES: Record<string, string> = {
 ${records.join("\n")}
 };
 `;
+
+if (failed.length > 0) {
+  console.error(`gen:skills — FATAL: missing SKILL.md in bundled directories: ${failed.join(", ")}`);
+  console.error("Every directory under source/skills/bundled/ must contain a SKILL.md file.");
+  process.exit(1);
+}
+
+if (records.length === 0) {
+  console.error("gen:skills — FATAL: no bundled skills found. The binary would ship with zero built-in skills.");
+  process.exit(1);
+}
 
 writeFileSync(outFile, out);
 console.log(`gen:skills — wrote ${records.length} skills to source/skills/bundled-manifest.ts`);

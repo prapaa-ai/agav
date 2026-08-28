@@ -1,28 +1,6 @@
 import { parseSkillMarkdown } from "./loader.js";
 import { KNOWN_TOOL_NAMES } from "../tools/registry-factory.js";
-import { slugify, baseToolName } from "./skill-utils.js";
-
-/**
- * Common agentskills.io spec tool names and their agav equivalents. Used to
- * produce actionable warnings when a skill uses spec-style names that won't
- * resolve at runtime.
- */
-const SPEC_TOOL_ALIASES: Readonly<Record<string, string>> = {
-  Bash: "run_command",
-  Read: "read_file",
-  Write: "write_file",
-  Edit: "edit_file",
-  MultiEdit: "edit_file",
-  Grep: "grep_search",
-  Glob: "find_files",
-  LS: "list_directory",
-  WebSearch: "web_search",
-  WebFetch: "fetch_url",
-  NotebookRead: "read_notebook",
-  NotebookEdit: "edit_notebook",
-  TodoRead: "update_plan",
-  TodoWrite: "update_plan",
-};
+import { slugify, baseToolName, SPEC_TOOL_ALIASES } from "./skill-utils.js";
 
 const DANGER_PATTERNS = [
   /ignore\s+(all\s+)?previous\s+instructions/i,
@@ -116,10 +94,13 @@ export function validateSkill(markdown: string, options: ValidateOptions = {}): 
     const list = frontmatter[field];
     if (!list) continue;
     for (const entry of list) {
-      const base = baseToolName(entry);
-      if (!KNOWN_TOOL_NAMES.has(base)) {
-        const hint = SPEC_TOOL_ALIASES[base];
-        warnings.push(`Unknown tool "${base}" in ${field}${hint ? ` (did you mean "${hint}"?)` : ""}`);
+      // Strip qualifier but do NOT resolve aliases — we want to warn about
+      // spec-style names even though the runtime now maps them correctly.
+      const paren = entry.indexOf("(");
+      const raw = (paren < 0 ? entry : entry.slice(0, paren)).trim();
+      if (!KNOWN_TOOL_NAMES.has(raw)) {
+        const hint = SPEC_TOOL_ALIASES[raw];
+        warnings.push(`Unknown tool "${raw}" in ${field}${hint ? ` (did you mean "${hint}"?)` : ""}`);
       }
     }
   }

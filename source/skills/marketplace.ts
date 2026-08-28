@@ -86,8 +86,12 @@ function skillNameFrom(markdown: string): string {
  * an arbitrary host offers no way to discover the sibling files.
  */
 function parseGitHubSkillUrl(url: string): { owner: string; repo: string; ref: string; dir: string } | undefined {
-  const raw = url.match(/^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)\/SKILL\.md$/);
-  if (raw) return { owner: raw[1]!, repo: raw[2]!, ref: raw[3]!, dir: raw[4]! };
+  // Skill inside a subdirectory: owner/repo/ref/path/to/skill/SKILL.md
+  const nested = url.match(/^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)\/SKILL\.md$/);
+  if (nested) return { owner: nested[1]!, repo: nested[2]!, ref: nested[3]!, dir: nested[4]! };
+  // Root-level skill: owner/repo/ref/SKILL.md (no subdirectory)
+  const root = url.match(/^https:\/\/raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/SKILL\.md$/);
+  if (root) return { owner: root[1]!, repo: root[2]!, ref: root[3]!, dir: "" };
   return undefined;
 }
 
@@ -257,7 +261,7 @@ export async function installFromUrl(url: string): Promise<{ name: string; warni
 
     const github = parseGitHubSkillUrl(target);
     const { passed, warnings } = validateSkill(markdown, {
-      dirName: github ? basename(github.dir) : undefined,
+      dirName: github?.dir ? basename(github.dir) : undefined,
     });
     if (!passed) {
       return { error: `Validation failed:\n${warnings.join("\n")}` };

@@ -1,6 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as parseYAML } from "yaml";
 import { getAgavDir } from "../config/config.js";
 import { BUNDLED_SKILL_FILES } from "./bundled-manifest.js";
 import { RESERVED_COMMAND_NAMES } from "../commands/reserved-names.js";
@@ -11,91 +12,6 @@ import type { SkillFrontmatter, SkillDefinition } from "./types.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let cachedSkills: SkillDefinition[] | null = null;
-
-function unquote(val: string): string {
-  if (val.length >= 2 && ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'")))) {
-    return val.slice(1, -1);
-  }
-  return val;
-}
-
-function parseScalar(raw: string): string | boolean | string[] {
-  const val = raw.trim();
-  if (val === "true") return true;
-  if (val === "false") return false;
-  if (val.startsWith("[") && val.endsWith("]")) {
-    return val.slice(1, -1).split(",").map((s) => unquote(s.trim())).filter(Boolean);
-  }
-  return unquote(val);
-}
-
-/**
- * Indentation-aware YAML subset: scalars, block/flow sequences, and nested maps.
- *
- * The nesting matters for spec conformance. agentskills.io puts client-specific
- * fields under a `metadata:` map, and a flat line-by-line parse hoists those
- * children to the top level — where a skill's `metadata.version` would quietly
- * take over agav's own `version` field.
- *
- * Unsupported YAML features (not needed by the SKILL.md spec):
- * - Multi-line scalars (`|`, `>`, `|+`, `>-`)
- * - Anchors and aliases (`&anchor`, `*alias`)
- * - Flow mappings (`{ key: value }`)
- * - Complex keys and merge keys (`<<:`)
- * - Tags (`!!str`, `!!int`)
- */
-function parseYamlBlock(lines: string[]): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i]!;
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("- ")) {
-      i++;
-      continue;
-    }
-
-    const colonIdx = line.indexOf(":");
-    if (colonIdx < 0) {
-      i++;
-      continue;
-    }
-
-    const indent = line.length - line.trimStart().length;
-    const key = line.slice(0, colonIdx).trim();
-    const inline = line.slice(colonIdx + 1).trim();
-    i++;
-
-    if (inline !== "") {
-      out[key] = parseScalar(inline);
-      continue;
-    }
-
-    // Bare `key:` — everything indented further than it belongs to this key.
-    const block: string[] = [];
-    while (i < lines.length) {
-      const next = lines[i]!;
-      if (next.trim()) {
-        const nextIndent = next.length - next.trimStart().length;
-        if (nextIndent <= indent) break;
-      }
-      block.push(next);
-      i++;
-    }
-
-    const items = block.filter((l) => l.trim().startsWith("- "));
-    if (items.length > 0) {
-      out[key] = items.map((l) => unquote(l.trim().slice(2).trim()));
-    } else if (block.some((l) => l.trim())) {
-      out[key] = parseYamlBlock(block);
-    } else {
-      out[key] = [];
-    }
-  }
-
-  return out;
-}
 
 /**
  * Splits a space-separated tool list without breaking up parenthesised
@@ -153,7 +69,7 @@ export function parseSkillMarkdown(text: string): { frontmatter: SkillFrontmatte
     return { frontmatter: { name: "unknown", description: "" }, body: text };
   }
 
-  const fm = parseYamlBlock(match[1]!.split("\n"));
+  const fm = (parseYAML(match[1]!) ?? {}) as Record<string, unknown>;
   const body = match[2]!.trim();
 
   // agav's extensions sit at the top level, but the spec tells authors to put

@@ -8,7 +8,7 @@ vi.mock("../config/config.js", () => ({
   getAgavDir: () => agavDir,
 }));
 
-import { installFromPath } from "../skills/marketplace.js";
+import { installFromPath, installFromUrl } from "../skills/marketplace.js";
 
 const SKILL_MD = `---
 name: pdf-processing
@@ -136,5 +136,305 @@ describe("skills/marketplace installFromPath", () => {
     await expect(stat(join(dest, "random.txt"))).rejects.toThrow();
     // __pycache__ should be skipped
     await expect(stat(join(dest, "scripts", "__pycache__"))).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// installFromUrl
+// ---------------------------------------------------------------------------
+
+const VALID_SKILL_MD = `---
+name: test-skill
+description: A test skill for URL installation.
+---
+Do the thing.
+`;
+
+describe("skills/marketplace installFromUrl", () => {
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    agavDir = await mkdtemp(join(tmpdir(), "agav-home-"));
+    fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  // ---- success: raw GitHub URL -------------------------------------------
+
+  it("installs a valid skill from a raw GitHub URL", async () => {
+    // First fetch: SKILL.md content
+    fetchSpy.mockResolvedValueOnce(
+      new Response(VALID_SKILL_MD, { status: 200 }),
+    );
+    // Second fetch: GitHub API contents listing (fetchGitHubAssets)
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    const url = "https://raw.githubusercontent.com/owner/repo/main/skills/test-skill/SKILL.md";
+    const result = await installFromUrl(url);
+
+    expect(result).toMatchObject({ name: "test-skill" });
+    expect("error" in result).toBe(false);
+    const dest = join(agavDir, "skills", "test-skill", "SKILL.md");
+    await expect(readFile(dest, "utf-8")).resolves.toBe(VALID_SKILL_MD);
+  });
+
+  // ---- success: non-GitHub URL -------------------------------------------
+
+  it("installs from a non-GitHub URL and warns about missing assets", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(VALID_SKILL_MD, { status: 200 }),
+    );
+
+    const url = "https://example.com/skills/test-skill/SKILL.md";
+    const result = await installFromUrl(url);
+
+    expect(result).toMatchObject({ name: "test-skill" });
+    const { warnings } = result as { name: string; warnings: string[] };
+    expect(warnings.some((w) => w.includes("Only SKILL.md was fetched"))).toBe(true);
+  });
+
+  // ---- HTML response detection -------------------------------------------
+
+  it("returns an error when the response is an HTML page", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response("<!DOCTYPE html><html><head></head><body>GitHub page</body></html>", { status: 200 }),
+    );
+
+    const url = "https://raw.githubusercontent.com/owner/repo/main/SKILL.md";
+    const result = await installFromUrl(url);
+
+    expect(result).toHaveProperty("error");
+    expect((result as { error: string }).error).toContain("HTML page");
+  });
+
+  it("detects <html tag without doctype", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response("<html><head><title>Not a skill</title></head></html>", { status: 200 }),
+    );
+
+    const result = await installFromUrl("https://example.com/SKILL.md");
+
+    expect(result).toHaveProperty("error");
+    expect((result as { error: string }).error).toContain("HTML page");
+  });
+
+  // ---- HTTP error --------------------------------------------------------
+
+  it("returns an error on HTTP 404", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response("Not Found", { status: 404 }),
+    );
+
+    const result = await installFromUrl("https://raw.githubusercontent.com/owner/repo/main/SKILL.md");
+
+    expect(result).toHaveProperty("error");
+    expect((result as { error: string }).error).toContain("HTTP 404");
+  });
+
+  it("returns an error on HTTP 500", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response("Internal Server Error", { status: 500 }),
+    );
+
+    const result = await installFromUrl("https://example.com/SKILL.md");
+
+    expect(result).toHaveProperty("error");
+    expect((result as { error: string }).error).toContain("HTTP 500");
+  });
+
+  // ---- network timeout (AbortError) --------------------------------------
+
+  it("returns a timeout error on AbortError", async () => {
+    fetchSpy.mockRejectedValueOnce(new DOMException("The operation was aborted", "AbortError"));
+
+    const result = await installFromUrl("https://example.com/SKILL.md");
+
+    expect(result).toHaveProperty("error");
+    expect((result as { error: string }).error).toContain("timed out");
+  });
+
+  // ---- validation failure ------------------------------------------------
+
+  it("returns an error when the skill content fails validation", async () => {
+    const invalidSkill = `---
+description: Missing the name field.
+---
+Body text here.
+`;
+    fetchSpy.mockResolvedValueOnce(
+      new Response(invalidSkill, { status: 200 }),
+    );
+
+    const result = await installFromUrl("https://example.com/SKILL.md");
+
+    expect(result).toHaveProperty("error");
+    expect((result as { error: string }).error).toContain("Validation failed");
+  });
+
+  it("returns an error when the skill is missing a body", async () => {
+    const noBody = `---
+name: no-body
+description: Skill with no body.
+---
+`;
+    fetchSpy.mockResolvedValueOnce(
+      new Response(noBody, { status: 200 }),
+    );
+
+    const result = await installFromUrl("https://example.com/SKILL.md");
+
+    expect(result).toHaveProperty("error");
+    expect((result as { error: string }).error).toContain("Validation failed");
+  });
+
+  // ---- normaliseSkillUrl (tested indirectly) -----------------------------
+
+  it("converts a GitHub blob URL to a raw URL", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(VALID_SKILL_MD, { status: 200 }),
+    );
+    // GitHub API listing for fetchGitHubAssets
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    const blobUrl = "https://github.com/owner/repo/blob/main/skills/test-skill/SKILL.md";
+    await installFromUrl(blobUrl);
+
+    // The first fetch should be to the raw URL, not the blob URL
+    expect(fetchSpy.mock.calls[0]![0]).toBe(
+      "https://raw.githubusercontent.com/owner/repo/main/skills/test-skill/SKILL.md",
+    );
+  });
+
+  it("converts a GitHub tree URL to a raw SKILL.md URL", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(VALID_SKILL_MD, { status: 200 }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    const treeUrl = "https://github.com/owner/repo/tree/main/skills/test-skill";
+    await installFromUrl(treeUrl);
+
+    expect(fetchSpy.mock.calls[0]![0]).toBe(
+      "https://raw.githubusercontent.com/owner/repo/main/skills/test-skill/SKILL.md",
+    );
+  });
+
+  it("converts a bare GitHub repo URL to a raw SKILL.md URL at HEAD", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(VALID_SKILL_MD, { status: 200 }),
+    );
+
+    const repoUrl = "https://github.com/owner/repo";
+    await installFromUrl(repoUrl);
+
+    expect(fetchSpy.mock.calls[0]![0]).toBe(
+      "https://raw.githubusercontent.com/owner/repo/HEAD/SKILL.md",
+    );
+  });
+
+  it("converts a bare GitHub repo URL with trailing slash", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(VALID_SKILL_MD, { status: 200 }),
+    );
+
+    const repoUrl = "https://github.com/owner/repo/";
+    await installFromUrl(repoUrl);
+
+    expect(fetchSpy.mock.calls[0]![0]).toBe(
+      "https://raw.githubusercontent.com/owner/repo/HEAD/SKILL.md",
+    );
+  });
+
+  it("appends SKILL.md to a raw GitHub URL that does not end in .md", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(VALID_SKILL_MD, { status: 200 }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    const rawDirUrl = "https://raw.githubusercontent.com/owner/repo/main/skills/test-skill";
+    await installFromUrl(rawDirUrl);
+
+    expect(fetchSpy.mock.calls[0]![0]).toBe(
+      "https://raw.githubusercontent.com/owner/repo/main/skills/test-skill/SKILL.md",
+    );
+  });
+
+  it("leaves a raw GitHub SKILL.md URL unchanged", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      new Response(VALID_SKILL_MD, { status: 200 }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    const rawUrl = "https://raw.githubusercontent.com/owner/repo/main/skills/test-skill/SKILL.md";
+    await installFromUrl(rawUrl);
+
+    expect(fetchSpy.mock.calls[0]![0]).toBe(rawUrl);
+  });
+
+  // ---- fetchGitHubAssets integration ------------------------------------
+
+  it("downloads sibling files from GitHub alongside SKILL.md", async () => {
+    // First fetch: SKILL.md
+    fetchSpy.mockResolvedValueOnce(
+      new Response(VALID_SKILL_MD, { status: 200 }),
+    );
+    // Second fetch: GitHub API directory listing
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify([
+          { name: "SKILL.md", type: "file", path: "skills/test-skill/SKILL.md", download_url: "https://raw.githubusercontent.com/owner/repo/main/skills/test-skill/SKILL.md" },
+          { name: "helper.py", type: "file", path: "skills/test-skill/helper.py", size: 42, download_url: "https://raw.githubusercontent.com/owner/repo/main/skills/test-skill/helper.py" },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    // Third fetch: download helper.py
+    fetchSpy.mockResolvedValueOnce(
+      new Response("print('helper')\n", { status: 200 }),
+    );
+
+    const url = "https://raw.githubusercontent.com/owner/repo/main/skills/test-skill/SKILL.md";
+    const result = await installFromUrl(url);
+
+    expect(result).toMatchObject({ name: "test-skill" });
+    const dest = join(agavDir, "skills", "test-skill");
+    await expect(readFile(join(dest, "SKILL.md"), "utf-8")).resolves.toBe(VALID_SKILL_MD);
+    await expect(readFile(join(dest, "helper.py"), "utf-8")).resolves.toBe("print('helper')\n");
+  });
+
+  it("handles GitHub API failure gracefully with a warning", async () => {
+    // First fetch: SKILL.md
+    fetchSpy.mockResolvedValueOnce(
+      new Response(VALID_SKILL_MD, { status: 200 }),
+    );
+    // Second fetch: GitHub API returns 403
+    fetchSpy.mockResolvedValueOnce(
+      new Response("Rate limited", { status: 403 }),
+    );
+
+    const url = "https://raw.githubusercontent.com/owner/repo/main/skills/test-skill/SKILL.md";
+    const result = await installFromUrl(url);
+
+    expect(result).toMatchObject({ name: "test-skill" });
+    const { warnings } = result as { name: string; warnings: string[] };
+    expect(warnings.some((w) => w.includes("HTTP 403"))).toBe(true);
+    // SKILL.md should still be installed
+    const dest = join(agavDir, "skills", "test-skill", "SKILL.md");
+    await expect(readFile(dest, "utf-8")).resolves.toBe(VALID_SKILL_MD);
   });
 });

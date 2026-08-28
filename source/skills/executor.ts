@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { platform } from "node:os";
 import type { SkillDefinition } from "./types.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -90,8 +91,11 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
     }
 
     // auto-accept (or confirmed): execute.
+    const isWindows = platform() === "win32";
+    const shell = isWindows ? "cmd.exe" : "/bin/sh";
+    const shellArgs = isWindows ? ["/c", block.command] : ["-c", block.command];
     const output = await new Promise<string>((resolve) => {
-      execFile("/bin/sh", ["-c", block.command], { timeout: 10_000 }, (_err, stdout) => {
+      execFile(shell, shellArgs, { timeout: 10_000 }, (_err, stdout) => {
         resolve((stdout ?? "").trim());
       });
     });
