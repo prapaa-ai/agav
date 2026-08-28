@@ -1,0 +1,53 @@
+{
+  "name": "agav-docs",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "tsx scripts/generate-search-index.ts && next build",
+    "start": "next start",
+    "lint": "eslint",
+    "prebuild": "tsx scripts/generate-search-index.ts",
+    "docker:build": "docker build -t docs-platform .",
+    "docker:run": "docker run -p 3000:3000 docs-platform"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-dropdown-menu": "^2.1.16",
+    "@shikijs/rehype": "^4.1.0",
+    "@tailwindcss/typography": "^0.5.19",
+    "clsx": "^2.1.1",
+    "flexsearch": "^0.8.212",
+    "gray-matter": "^4.0.3",
+    "lucide-react": "^1.16.0",
+    "mermaid": "^11.15.0",
+    "next": "^16.3.1",
+    "next-themes": "^0.4.6",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "rehype-autolink-headings": "^7.1.0",
+    "rehype-slug": "^6.0.0",
+    "rehype-stringify": "^10.0.1",
+    "remark": "^15.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
+    "remark-rehype": "^11.1.2",
+    "sharp": "^0.35.3",
+    "shiki": "^4.1.0",
+    "tailwind-merge": "^3.6.0",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/hast": "^3.0.4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.6",
+    "tailwindcss": "^4",
+    "tsx": "^4.22.3",
+    "typescript": "^5"
+  }
+}

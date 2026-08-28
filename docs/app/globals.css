@@ -1,0 +1,529 @@
+@import "tailwindcss";
+
+:root {
+  --background: #fafafa;
+  --foreground: #18181b;
+  --border: #e5e5e5;
+  --muted: #f0f0f0;
+  --muted-foreground: #71717a;
+  --accent: #0891b2;
+  --accent-foreground: #ffffff;
+  --primary: #0891b2;
+  --primary-foreground: #ffffff;
+  --card: #fafafa;
+  --code: rgba(0, 0, 0, 0.04);
+  --selection: rgba(8, 145, 178, 0.16);
+  --scrollbar: #d4d4d8;
+  --glow-1: transparent;
+  --glow-2: transparent;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --font-sans: var(--font-google-sans-code);
+  --font-mono: var(--font-google-sans-code);
+  --font-fallback-sans: Arial, Helvetica, sans-serif;
+}
+
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  --border: #1c1c1c;
+  --muted: #080808;
+  --muted-foreground: #71717a;
+  --accent: #22d3ee;
+  --accent-foreground: #0a0a0a;
+  --primary: #22d3ee;
+  --primary-foreground: #0a0a0a;
+  --card: #0a0a0a;
+  --code: rgba(0, 0, 0, 0.3);
+  --selection: rgba(34, 211, 238, 0.24);
+  --scrollbar: #222;
+  --glow-1: rgba(34, 211, 238, 0.28);
+  --glow-2: rgba(34, 211, 238, 0.08);
+}
+
+html,
+body {
+  min-height: 100%;
+  background: var(--muted);
+  color: var(--foreground);
+  font-family: var(--font-google-sans-code), var(--font-fallback-sans);
+}
+
+body,
+button,
+input,
+select,
+textarea,
+nav,
+aside,
+main,
+article,
+section,
+div,
+span,
+a,
+p,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+li,
+ul,
+ol,
+label {
+  color: var(--foreground);
+  font-family: var(--font-google-sans-code), var(--font-fallback-sans);
+}
+
+body {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+::selection {
+  background: var(--selection);
+}
+
+.bg-primary {
+  background-color: var(--primary);
+}
+
+.text-primary {
+  color: var(--primary);
+}
+
+.bg-primary\/10 {
+  background-color: rgb(from var(--primary) r g b / 0.1);
+}
+
+.bg-accent\/10 {
+  background-color: rgb(from var(--accent) r g b / 0.1);
+}
+
+.border-accent\/20 {
+  border-color: rgb(from var(--accent) r g b / 0.2);
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 3px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
+
+.overflow-y-auto:not(.scrollbar-thin)::-webkit-scrollbar {
+  display: none;
+}
+
+.crt-glow {
+  text-shadow: 0 0 8px var(--glow-1), 0 0 20px var(--glow-2);
+}
+
+.prose {
+  color: var(--foreground);
+  max-width: none;
+  line-height: 1.8;
+}
+
+.prose :where(p):not(:where([class~="not-prose"] *)) {
+  margin-top: 1.1em;
+  margin-bottom: 1.1em;
+  line-height: 1.8;
+  color: var(--foreground);
+}
+
+.prose :where(h2):not(:where([class~="not-prose"] *)) {
+  font-size: 1.7rem;
+  font-weight: 650;
+  margin-top: 2.75rem;
+  margin-bottom: 0.9rem;
+  line-height: 1.25;
+  color: var(--foreground);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.55rem;
+  scroll-margin-top: 1rem;
+}
+
+.prose :where(h3):not(:where([class~="not-prose"] *)) {
+  font-size: 1.3rem;
+  font-weight: 620;
+  margin-top: 2rem;
+  margin-bottom: 0.7rem;
+  line-height: 1.35;
+  color: var(--foreground);
+  scroll-margin-top: 1rem;
+}
+
+.prose :where(h4):not(:where([class~="not-prose"] *)) {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.45rem;
+  color: var(--foreground);
+  scroll-margin-top: 1rem;
+}
+
+.prose :where(a):not(:where([class~="not-prose"] *)) {
+  color: var(--primary);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.prose :where(a.external-link):not(:where([class~="not-prose"] *)) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.prose :where(.external-link-icon):not(:where([class~="not-prose"] *)) {
+  font-size: 0.8em;
+  line-height: 1;
+  opacity: 0.8;
+}
+
+.dark .prose :where(a):not(:where([class~="not-prose"] *)) {
+  color: var(--primary);
+}
+
+.prose :where(a):not(:where([class~="not-prose"] *)):hover {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.prose :where(strong):not(:where([class~="not-prose"] *)) {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.prose :where(code):not(:where([class~="not-prose"] *)) {
+  background: var(--code);
+  color: var(--foreground);
+  padding: 0.18em 0.42em;
+  border-radius: 0.375rem;
+  font-size: 0.875em;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+}
+
+.prose :where(pre):not(:where([class~="not-prose"] *)) {
+  background: var(--background) !important;
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  padding: 1.1rem;
+  overflow-x: auto;
+  margin: 1.5rem 0;
+  font-size: 0.9rem;
+  line-height: 1.7;
+  box-shadow: 0 20px 40px -24px rgba(0, 0, 0, 0.35);
+  white-space: pre;
+  word-wrap: normal;
+}
+
+.dark .prose :where(pre):not(:where([class~="not-prose"] *)) {
+  box-shadow: 0 20px 40px -24px rgba(0, 0, 0, 0.6);
+}
+
+.prose :where(pre code):not(:where([class~="not-prose"] *)) {
+  background: transparent !important;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  color: inherit !important;
+  border: none;
+  font-weight: normal;
+  white-space: pre;
+  word-wrap: normal;
+  display: block;
+  font-family: var(--font-mono);
+}
+
+.prose pre code {
+  display: block;
+  color: var(--foreground);
+}
+
+.dark .prose pre code span[style*="color"] {
+  filter: brightness(1.15) contrast(1);
+}
+
+.dark .prose pre code span:not([style]) {
+  color: var(--foreground);
+}
+
+.prose pre code,
+.prose pre code span {
+  white-space: pre;
+  word-break: keep-all;
+  overflow-wrap: normal;
+}
+
+.prose :where(.anchor):not(:where([class~="not-prose"] *)) {
+  float: left;
+  margin-left: -1.25em;
+  padding-right: 0.25em;
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.2s;
+  color: var(--muted-foreground);
+}
+
+.prose :where(h1, h2, h3, h4, h5, h6):hover .anchor {
+  opacity: 1;
+}
+
+.prose :where(table):not(:where([class~="not-prose"] *)) {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  overflow: hidden;
+  margin: 2rem 0;
+  font-size: 0.92rem;
+  background: var(--background);
+  box-shadow: 0 20px 40px -30px rgba(0, 0, 0, 0.3);
+}
+
+.prose :where(thead):not(:where([class~="not-prose"] *)) {
+  background: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.prose :where(tbody):not(:where([class~="not-prose"] *)),
+.prose :where(tbody tr):not(:where([class~="not-prose"] *)) {
+  background: var(--background);
+}
+
+.prose :where(th):not(:where([class~="not-prose"] *)) {
+  padding: 0.875rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--foreground);
+  background: var(--muted);
+}
+
+.prose :where(td):not(:where([class~="not-prose"] *)) {
+  padding: 0.875rem 1rem;
+  border-top: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.prose :where(tbody tr):not(:where([class~="not-prose"] *)):hover,
+.prose :where(tbody tr):not(:where([class~="not-prose"] *)):hover td {
+  background: var(--muted);
+}
+
+/* Keep Markdown tables legible when the surrounding dark surface is near-black. */
+.dark .prose :where(table):not(:where([class~="not-prose"] *)) {
+  border-color: #303030;
+  background: #0a0a0a;
+}
+
+.dark .prose :where(thead, th):not(:where([class~="not-prose"] *)) {
+  background: #181818;
+  border-color: #303030;
+}
+
+.dark .prose :where(td):not(:where([class~="not-prose"] *)) {
+  border-color: #252525;
+  background: #0a0a0a;
+}
+
+.dark .prose :where(tbody tr):not(:where([class~="not-prose"] *)):hover,
+.dark .prose :where(tbody tr):not(:where([class~="not-prose"] *)):hover td {
+  background: #141414;
+}
+
+.dark .prose :where(:not(pre) > code):not(:where([class~="not-prose"] *)) {
+  background: #181818;
+  border-color: #363636;
+  color: #f4f4f5;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.prose :where(blockquote):not(:where([class~="not-prose"] *)) {
+  border-left: 3px solid var(--primary);
+  padding: 0.9rem 1.2rem;
+  background: rgb(from var(--primary) r g b / 0.08);
+  border-radius: 0.5rem;
+  margin: 1.5rem 0;
+  font-style: normal;
+  color: var(--foreground);
+}
+
+.prose :where(blockquote p):not(:where([class~="not-prose"] *)) {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.prose :where(ul):not(:where([class~="not-prose"] *)) {
+  list-style-type: disc;
+  padding-left: 1.5rem;
+  margin-top: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.prose :where(ol):not(:where([class~="not-prose"] *)) {
+  list-style-type: decimal;
+  padding-left: 1.5rem;
+  margin-top: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.prose :where(li):not(:where([class~="not-prose"] *)) {
+  margin-top: 0.45rem;
+  margin-bottom: 0.45rem;
+  line-height: 1.75;
+}
+
+.prose :where(li > p):not(:where([class~="not-prose"] *)) {
+  margin-top: 0.45rem;
+  margin-bottom: 0.45rem;
+}
+
+.prose :where(ul ul, ul ol, ol ul, ol ol):not(:where([class~="not-prose"] *)) {
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.prose :where(hr):not(:where([class~="not-prose"] *)) {
+  border-color: var(--border);
+  margin: 3rem 0;
+  border-top-width: 1px;
+}
+
+.code-wrapper {
+  position: relative;
+  margin: 1.5rem 0;
+}
+
+.code-wrapper pre {
+  margin: 0 !important;
+}
+
+.mermaid-diagram {
+  margin: 1.75rem 0;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--background);
+  padding: 1rem;
+  overflow-x: auto;
+}
+
+.mermaid-output {
+  min-height: 8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mermaid-output svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-source {
+  margin: 0 !important;
+}
+
+.mermaid-source[hidden] {
+  display: none !important;
+}
+
+.mermaid-diagram.is-rendering .mermaid-output::before {
+  content: "Rendering diagram...";
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+}
+
+.mermaid-error {
+  margin: 0;
+  color: #dc2626;
+  font-size: 0.875rem;
+}
+
+.dark .mermaid-error {
+  color: #f87171;
+}
+
+.doc-content > * + * {
+  margin-top: 0;
+}
+
+.doc-content > h2 {
+  margin-top: 3rem;
+}
+
+.doc-content > h3 {
+  margin-top: 2.5rem;
+}
+
+.doc-content > h4 {
+  margin-top: 2rem;
+}
+
+.prose :where(h1 code, h2 code, h3 code, h4 code):not(:where([class~="not-prose"] *)) {
+  font-size: 0.9em;
+}
+
+.prose :where(kbd):not(:where([class~="not-prose"] *)) {
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0.15em 0.4em;
+  font-size: 0.875em;
+  font-family: var(--font-mono);
+  box-shadow: 0 1px 0 1px rgba(0, 0, 0, 0.08);
+}
+
+.dark .prose :where(kbd):not(:where([class~="not-prose"] *)) {
+  box-shadow: 0 1px 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.dark .prose pre code {
+  text-shadow: none !important;
+}
+
+.prose pre::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.prose pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.prose pre::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 4px;
+}
+
+.prose pre::-webkit-scrollbar-thumb:hover {
+  background: var(--muted-foreground);
+}
