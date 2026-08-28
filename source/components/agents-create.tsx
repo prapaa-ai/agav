@@ -229,7 +229,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       const mcpServerEntries: Array<{ key: string; command: string; args?: string[]; env?: Record<string, string> }> = [];
       for (const key of mcpSelectedKeys) {
         const serverConfig = config?.mcpServers?.[key];
-        if (serverConfig) {
+        if (serverConfig?.command) {
           const entry: typeof mcpServerEntries[number] = { key, command: serverConfig.command, args: serverConfig.args };
           if (serverConfig.env && Object.keys(serverConfig.env).length > 0) {
             entry.env = serverConfig.env;
