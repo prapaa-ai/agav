@@ -13,7 +13,7 @@
 </div>
 
 <div align="center">
-  <img src="https://agav.dev/preview.gif" alt="Agav preview" width="100%" style="border-radius: 16px;" />
+  <img src="https://www.agav.dev/preview.gif" alt="Agav preview" width="100%" style="border-radius: 16px;" />
 </div>
 
 ## What it does
@@ -49,7 +49,10 @@ Non-interactive, for scripts and CI:
 
 ```bash
 agav run "review the code in src/"
-agav run --permission '{"bash":"deny"}' "check for security issues"
+# Read-only audit: block every tool that isn't explicitly allowed
+agav run --permission '{"*":"deny","read_file":"allow","grep_search":"allow"}' "audit dependencies"
+# Deny one tool; the rest still run without confirmation
+agav run --permission '{"write_file":"deny"}' "check for security issues"
 agav -P "what does this project do?"
 agav -P --stream "explain this repository"
 cat error.log | agav -P "explain this error"
@@ -72,6 +75,7 @@ agav update
 | `--stream` | Stream text to stdout in real time, with `--print` |
 | `--output-schema` | Require pipe-mode output to match an inline JSON Schema, or `@file` |
 | `--permission` | JSON tool permissions for run mode |
+| `--max-turns` | Cap agent/tool iterations in run mode — a safety limit for unattended CI work |
 | `--resume`, `-r [id]` | Resume a session; prefix match if an id is given |
 | `--auto-accept`, `-y` | Skip tool confirmations |
 | `--deny-writes` | Block all write operations |
@@ -82,7 +86,7 @@ agav update
 ## Slash commands
 
 <details>
-<summary>27 commands, available in any session</summary>
+<summary>29 commands, available in any session</summary>
 
 | Command | What it does |
 | --- | --- |
@@ -110,6 +114,8 @@ agav update
 | `/loop` | Repeat a prompt on an interval |
 | `/schedule` | Manage persistent scheduled tasks |
 | `/changelog` | Show release notes for the current version |
+| `/skills` | Manage skills: list, install, remove, or browse the marketplace |
+| `/agents` | Manage service agents (list, install, create) |
 | `/ps` | Run a brief side query without interrupting the main task |
 | `/debug` | Show internal state for debugging |
 | `/exit` | Exit Agav |
@@ -389,6 +395,7 @@ Drop an `AGAV.md` (or `.agavrc`) in a repository to add project-specific instruc
 | `AGAV_NO_UPDATE=1` | Disable the startup update check |
 | `AGAV_NO_SANDBOX=1` | Run shell commands unsandboxed |
 | `AGAV_KITTY_KEYBOARD` | Force the Kitty keyboard protocol on (`1`) or off (`0`) |
+| `AGAV_MARKETPLACE_URL` | Override the agent marketplace URL (normally set via `agentMarketplace` in config) |
 | `AGAV_DEBUG_GEMINI` | Verbose Gemini request logging |
 | `LIBREOFFICE_PATH` | Path to LibreOffice, for document conversion |
 | `NO_COLOR` | Disable coloured output |
@@ -397,7 +404,7 @@ Drop an `AGAV.md` (or `.agavrc`) in a repository to add project-specific instruc
 
 ### Sandboxing
 
-Shell commands run inside a sandbox when one is available: `sandbox-exec` (Seatbelt) on macOS, `bwrap` (Bubblewrap) on Linux. Agav detects the backend at runtime and falls back to running unsandboxed when neither is present. Set `AGAV_NO_SANDBOX=1` to opt out deliberately.
+Shell commands run inside a sandbox when one is available: `sandbox-exec` (Seatbelt) on macOS, `bwrap` (Bubblewrap) on Linux, or a restricted Docker container (`--network=none`, capped CPU/memory) as a fallback. Agav detects the backend at runtime and falls back to running unsandboxed when none is present; across all backends, environment variables whose names look like credentials (`KEY`, `TOKEN`, `SECRET`, …) are stripped before child processes spawn. Set `AGAV_NO_SANDBOX=1` to opt out deliberately.
 
 ## Multi-line input
 
@@ -477,7 +484,7 @@ To save a full conversation to a file instead, use `/export` — it writes the e
 
 ## Documentation
 
-Detailed CLI documentation can be found [here](https://docs.agav.dev).
+Detailed CLI documentation can be found in the [CLI reference](https://docs.agav.dev/reference/cli).
 
 ## Contributing
 
