@@ -1,6 +1,7 @@
 import { appendFile, readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { getAgavDir } from "../config/config.js";
+import { slugify } from "./skill-utils.js";
 import type { SkillDefinition } from "./types.js";
 
 interface SkillTrace {
@@ -17,9 +18,6 @@ interface TriggerPhrases {
   generatedAt: string;
 }
 
-function slugify(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-}
 
 function getSkillMetaDir(skillName: string): string {
   return join(getAgavDir(), "skills", slugify(skillName), ".agav");

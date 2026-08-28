@@ -3,9 +3,7 @@ name: git-commit
 description: Generate a commit message from staged changes
 version: 1.0.0
 invocation: both
-allowed-tools:
-  - run_command
-  - read_file
+allowed-tools: run_command read_file
 tags:
   - git
   - workflow

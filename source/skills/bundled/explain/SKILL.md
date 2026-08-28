@@ -3,11 +3,7 @@ name: explain
 description: Explain code in plain language
 version: 1.0.0
 invocation: both
-allowed-tools:
-  - read_file
-  - grep_search
-  - find_files
-  - list_directory
+allowed-tools: read_file grep_search find_files list_directory
 tags:
   - understanding
   - documentation

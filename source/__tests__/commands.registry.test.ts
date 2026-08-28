@@ -26,6 +26,7 @@ const createContext = (): CommandContext => ({
   setRunningSkill: vi.fn(),
   setPickerActive: vi.fn(),
   showAgentsTUI: vi.fn(),
+  showSkillsTUI: vi.fn(),
 });
 
 describe("commands/registry", () => {

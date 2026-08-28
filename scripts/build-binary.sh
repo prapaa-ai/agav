@@ -6,6 +6,12 @@ OUTDIR="dist"
 
 mkdir -p "$OUTDIR"
 
+# Bundled skills are inlined into a generated TS module — a compiled binary
+# resolves import.meta.url into Bun's virtual filesystem, so it cannot read them
+# off disk. Refresh it here as well as in `pnpm build`, or editing a SKILL.md and
+# going straight to a release ships the previous text on every platform.
+node "$(dirname "$0")/gen-bundled-skills.mjs"
+
 if ! command -v bun &>/dev/null; then
   echo "Installing bun..."
   curl -fsSL https://bun.sh/install | bash

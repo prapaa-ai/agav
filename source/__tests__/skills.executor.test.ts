@@ -3,6 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SkillDefinition } from "../skills/types.js";
 import { ToolRegistry } from "../tools/registry.js";
 
+vi.mock("node:child_process", () => ({
+  execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+    cb(null, "shell output", "");
+  }),
+}));
+
+import { execFile } from "node:child_process";
+
 vi.mock("../agent/loop.js", () => ({
   runAgentLoop: vi.fn(() => (async function* () {
     yield { type: "usage", inputTokens: 11, outputTokens: 7, cacheReadTokens: 3, cacheWriteTokens: 2 };
@@ -96,5 +104,92 @@ describe("skills/executor", () => {
       cacheWriteTokens: 0,
     });
     expect(recordSkillTrace).toHaveBeenCalledWith("Demo Skill", "do it", 9, false);
+  });
+
+  describe("shell block permission gating", () => {
+    const shellSkill: SkillDefinition = {
+      name: "Shell Skill",
+      slug: "shell-skill",
+      description: "Skill with shell blocks",
+      body: "Before\n```sh\necho hello\n```\nAfter",
+      frontmatter: { name: "Shell Skill", description: "Skill with shell blocks" },
+      filePath: "/tmp/shell/SKILL.md",
+      origin: "project",
+    };
+
+    it("does not execute shell blocks in deny-writes mode", async () => {
+      const result = await executeSkill(shellSkill, "test", {
+        ...baseDeps,
+        permissionMode: "deny-writes",
+      });
+
+      expect(execFile).not.toHaveBeenCalled();
+      expect(result.output).toBe("skill done");
+    });
+
+    it("does not execute shell blocks in ask mode without confirmation handler", async () => {
+      const result = await executeSkill(shellSkill, "test", {
+        ...baseDeps,
+        permissionMode: "ask",
+        confirmTool: undefined,
+      });
+
+      expect(execFile).not.toHaveBeenCalled();
+      expect(result.output).toBe("skill done");
+    });
+
+    it("does not execute shell blocks when user denies confirmation", async () => {
+      const confirmTool = vi.fn().mockResolvedValue("no");
+
+      const result = await executeSkill(shellSkill, "test", {
+        ...baseDeps,
+        permissionMode: "ask",
+        confirmTool,
+      });
+
+      expect(confirmTool).toHaveBeenCalledWith("skill_shell_block", { command: "echo hello" });
+      expect(execFile).not.toHaveBeenCalled();
+      expect(result.output).toBe("skill done");
+    });
+
+    it("executes shell blocks when user confirms", async () => {
+      const confirmTool = vi.fn().mockResolvedValue("yes");
+
+      await executeSkill(shellSkill, "test", {
+        ...baseDeps,
+        permissionMode: "ask",
+        confirmTool,
+      });
+
+      expect(confirmTool).toHaveBeenCalledWith("skill_shell_block", { command: "echo hello" });
+      expect(execFile).toHaveBeenCalled();
+    });
+
+    it("executes shell blocks in auto-accept mode without confirmation", async () => {
+      await executeSkill(shellSkill, "test", {
+        ...baseDeps,
+        permissionMode: "auto-accept",
+      });
+
+      expect(execFile).toHaveBeenCalled();
+    });
+
+    it("skips remaining confirmations after user chooses 'always'", async () => {
+      const multiShellSkill: SkillDefinition = {
+        ...shellSkill,
+        body: "A\n```sh\necho one\n```\nB\n```sh\necho two\n```\nC",
+      };
+      const confirmTool = vi.fn().mockResolvedValueOnce("always");
+
+      await executeSkill(multiShellSkill, "test", {
+        ...baseDeps,
+        permissionMode: "ask",
+        confirmTool,
+      });
+
+      // Only the first block should trigger confirmation; the second auto-accepts.
+      expect(confirmTool).toHaveBeenCalledTimes(1);
+      expect(execFile).toHaveBeenCalledTimes(2);
+    });
   });
 });

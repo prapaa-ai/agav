@@ -28,6 +28,7 @@ const createContext = (provider: AgavConfig["provider"]): CommandContext => ({
   setRunningSkill: vi.fn(),
   setPickerActive: vi.fn(),
   showAgentsTUI: vi.fn(),
+  showSkillsTUI: vi.fn(),
 });
 
 const route = async (command: typeof fastCommand, provider: AgavConfig["provider"]) => {

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { platform } from "node:os";
 import type { SkillDefinition } from "./types.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -9,6 +10,7 @@ import type { ConfirmResult } from "../agent/loop.js";
 import type { PermissionMode, EffortLevel } from "../config/config.js";
 import { recordSkillTrace } from "./improvement.js";
 import { formatSteersForPrompt } from "../commands/steer.js";
+import { baseToolName } from "./skill-utils.js";
 
 interface SkillExecDeps {
   provider: LLMProvider;
@@ -27,37 +29,79 @@ interface SkillExecDeps {
 
 function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolRegistry {
   const child = new ToolRegistryClass();
-  const allowed = skill.frontmatter["allowed-tools"];
-  const disallowed = skill.frontmatter["disallowed-tools"];
+  const allowedList = skill.frontmatter["allowed-tools"];
+  const allowed = allowedList ? new Set(allowedList.map(baseToolName)) : undefined;
+  const disallowed = new Set((skill.frontmatter["disallowed-tools"] ?? []).map(baseToolName));
 
   for (const tool of parent.list()) {
     if (tool.schema.name === "subagent" || tool.schema.name === "activate_skill") continue;
-    if (disallowed?.includes(tool.schema.name)) continue;
-    if (allowed && !allowed.includes(tool.schema.name)) continue;
+    if (disallowed.has(tool.schema.name)) continue;
+    if (allowed && !allowed.has(tool.schema.name)) continue;
     child.register(tool);
   }
   return child;
 }
 
-function processShellBlocks(text: string): Promise<string> {
+interface ShellBlockOpts {
+  permissionMode: PermissionMode;
+  confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
+}
+
+async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<string> {
   const shellBlockRegex = /```sh\n([\s\S]*?)```/g;
   const blocks: { match: string; command: string }[] = [];
   let m;
   while ((m = shellBlockRegex.exec(text)) !== null) {
     blocks.push({ match: m[0], command: m[1]!.trim() });
   }
-  if (blocks.length === 0) return Promise.resolve(text);
+  if (blocks.length === 0) return text;
 
-  return blocks.reduce<Promise<string>>(async (textPromise, block) => {
-    let result = await textPromise;
+  // Local copy so "always" escalation does not leak back into the caller's deps.
+  let mode = opts.permissionMode;
+  let result = text;
+  // Replace exactly one occurrence starting from a specific position.
+  // String.replace with a string argument always takes the first match,
+  // which fails silently when the same shell block appears twice.
+  const replaceOnce = (haystack: string, needle: string, replacement: string): string => {
+    const idx = haystack.indexOf(needle);
+    if (idx < 0) return haystack;
+    return haystack.slice(0, idx) + replacement + haystack.slice(idx + needle.length);
+  };
+  for (const block of blocks) {
+    // deny-writes: never execute shell blocks.
+    if (mode === "deny-writes") {
+      result = replaceOnce(result, block.match, "[shell block skipped — write operations denied]");
+      continue;
+    }
+
+    // ask: require explicit confirmation for each block.
+    if (mode === "ask") {
+      if (!opts.confirmTool) {
+        result = replaceOnce(result, block.match, "[shell block skipped — no confirmation handler available]");
+        continue;
+      }
+      const choice = await opts.confirmTool("skill_shell_block", { command: block.command });
+      if (choice === "no") {
+        result = replaceOnce(result, block.match, "[shell block skipped — denied by user]");
+        continue;
+      }
+      if (choice === "always") {
+        mode = "auto-accept";
+      }
+    }
+
+    // auto-accept (or confirmed): execute.
+    const isWindows = platform() === "win32";
+    const shell = isWindows ? "cmd.exe" : "/bin/sh";
+    const shellArgs = isWindows ? ["/c", block.command] : ["-c", block.command];
     const output = await new Promise<string>((resolve) => {
-      execFile("/bin/sh", ["-c", block.command], { timeout: 10_000 }, (_err, stdout) => {
+      execFile(shell, shellArgs, { timeout: 10_000 }, (_err, stdout) => {
         resolve((stdout ?? "").trim());
       });
     });
-    result = result.replace(block.match, output);
-    return result;
-  }, Promise.resolve(text));
+    result = replaceOnce(result, block.match, output);
+  }
+  return result;
 }
 
 function processDynamicContext(body: string, args: string): string {
@@ -77,7 +121,10 @@ export async function executeSkill(
   deps: SkillExecDeps,
 ): Promise<SkillExecResult> {
   let prompt = processDynamicContext(skill.body, args);
-  prompt = await processShellBlocks(prompt);
+  prompt = await processShellBlocks(prompt, {
+    permissionMode: deps.permissionMode,
+    confirmTool: deps.confirmTool,
+  });
 
   const registry = buildSkillRegistry(deps.parentRegistry, skill);
   const conversation = new ConversationState();
