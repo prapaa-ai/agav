@@ -363,11 +363,14 @@ export function useAgent(
       // Start MCP servers
       if (config.mcpServers) {
         for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
+          if (name === "description" || name === "type" || name === "eg" || typeof serverConfig !== "object" || serverConfig === null) {
+            continue;
+          }
           try {
             await mcpManagerRef.current.startServer(name, serverConfig);
             syncMcpState();
-          } catch {
-            // MCP server failed to start — non-fatal
+          } catch (err) {
+            process.stderr.write(`[mcp:${name}] failed to start: ${err instanceof Error ? err.message : String(err)}\n`);
           }
         }
       }
