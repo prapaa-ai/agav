@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
 import { homedir } from "node:os";
 import { join } from "node:path";

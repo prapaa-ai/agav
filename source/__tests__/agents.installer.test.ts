@@ -126,24 +126,22 @@ describe("agents/installer", () => {
 
     it("sets sourceUrl for file:// marketplace installs", async () => {
       const result = await installAgent("file:///C:/marketplace/agents/test-agent");
-      if (result.success) {
-        expect(vi.mocked(registerAgent)).toHaveBeenCalledWith(
-          expect.objectContaining({
-            sourceUrl: "file:///C:/marketplace/agents/test-agent",
-          }),
-        );
-      }
+      expect(result.success).toBe(true);
+      expect(vi.mocked(registerAgent)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceUrl: "file:///C:/marketplace/agents/test-agent",
+        }),
+      );
     });
 
     it("does not set sourceUrl for local path installs", async () => {
       const result = await installAgent("/local/path/test-agent");
-      if (result.success) {
-        expect(vi.mocked(registerAgent)).toHaveBeenCalledWith(
-          expect.objectContaining({
-            sourceUrl: undefined,
-          }),
-        );
-      }
+      expect(result.success).toBe(true);
+      expect(vi.mocked(registerAgent)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceUrl: undefined,
+        }),
+      );
     });
   });
 

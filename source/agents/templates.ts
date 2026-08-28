@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 
@@ -12,7 +12,9 @@ export interface AgentTemplate {
   savedAt: string;
 }
 
-const TEMPLATES_PATH = join(homedir(), ".agav", "agents", "templates.json");
+function templatesPath(): string {
+  return join(homedir(), ".agav", "agents", "templates.json");
+}
 
 let lockQueue: Promise<void> = Promise.resolve();
 function acquireLock(): Promise<() => void> {
@@ -24,7 +26,7 @@ function acquireLock(): Promise<() => void> {
 
 async function readTemplates(): Promise<AgentTemplate[]> {
   try {
-    const data = await readFile(TEMPLATES_PATH, "utf-8");
+    const data = await readFile(templatesPath(), "utf-8");
     const parsed = JSON.parse(data);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -33,10 +35,11 @@ async function readTemplates(): Promise<AgentTemplate[]> {
 }
 
 async function writeTemplates(templates: AgentTemplate[]): Promise<void> {
-  await mkdir(join(homedir(), ".agav", "agents"), { recursive: true });
-  const tmpPath = TEMPLATES_PATH + "." + randomBytes(4).toString("hex") + ".tmp";
+  const path = templatesPath();
+  await mkdir(dirname(path), { recursive: true });
+  const tmpPath = path + "." + randomBytes(4).toString("hex") + ".tmp";
   await writeFile(tmpPath, JSON.stringify(templates, null, 2), "utf-8");
-  await rename(tmpPath, TEMPLATES_PATH);
+  await rename(tmpPath, path);
 }
 
 export async function loadTemplates(): Promise<AgentTemplate[]> {
