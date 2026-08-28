@@ -3,11 +3,7 @@ name: deep-research
 description: Multi-source research on a topic with citations
 version: 1.0.0
 invocation: user
-allowed-tools:
-  - web_search
-  - fetch_url
-  - read_file
-  - write_file
+allowed-tools: web_search fetch_url read_file write_file
 tags:
   - research
   - analysis

@@ -3,14 +3,7 @@ name: test-writer
 description: Generate unit tests for existing code
 version: 1.0.0
 invocation: both
-allowed-tools:
-  - read_file
-  - write_file
-  - grep_search
-  - find_files
-  - list_directory
-  - run_command
-  - run_tests
+allowed-tools: read_file write_file grep_search find_files list_directory run_command run_tests
 tags:
   - testing
   - quality

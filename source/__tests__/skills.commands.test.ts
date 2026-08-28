@@ -65,6 +65,7 @@ describe("skills/commands", () => {
       setRunningSkill: vi.fn(),
       setPickerActive: vi.fn(),
       showAgentsTUI: vi.fn(),
+      showSkillsTUI: vi.fn(),
     });
 
     const [, passedArgs, deps] = vi.mocked(executeSkill).mock.calls[0]!;

@@ -14,6 +14,8 @@ export function useClipboardImageDetector(
       getClipboardImage().then((img) => {
         if (img) onImage(img);
       });
+    } else if (!text.includes("\n") && /^https?:\/\//.test(text) && onInsertRaw) {
+      onInsertRaw(text);
     } else if (text.length >= PASTE_THRESHOLD && onText) {
       onText(text);
     } else if (onInsertRaw) {

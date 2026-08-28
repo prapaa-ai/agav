@@ -51,6 +51,7 @@ export interface CommandContext {
   setRunningSkill: (name: string | null) => void
   setPickerActive: (active: boolean) => void
   showAgentsTUI: (onDone: () => void) => void
+  showSkillsTUI: (onDone: () => void) => void
 }
 
 /** Represents the result of executing a slash command. */
