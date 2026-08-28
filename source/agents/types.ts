@@ -55,6 +55,7 @@ export interface AgentManifest {
     key: string;     // identifier for this MCP connection
     command: string; // "npx" | "uvx" | "docker" | "http"
     args?: string[]; // e.g. ["-y", "@scope/pkg"] or ["https://endpoint"]
+    env?: Record<string, string>; // environment variables for this server
   }>;
 
   // A2A-specific fields

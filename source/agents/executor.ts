@@ -98,7 +98,7 @@ export async function executeNativeAgent(
       const serverConfig = {
         command: srv.command,
         args: srv.args ?? [],
-        env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...runtimeConfig },
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...srv.env, ...runtimeConfig },
       };
       try {
         await agentMCPManager.startServer(srv.key, serverConfig);

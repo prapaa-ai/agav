@@ -4,8 +4,7 @@ import { mkdir } from "node:fs/promises";
 import { loadAgents } from "../agents/loader.js";
 import { setAgentEnabled, loadRegistry } from "../agents/agent-registry.js";
 import type { AgentRegistryEntry } from "../agents/types.js";
-import { uninstallAgent } from "../agents/installer.js";
-import { saveTemplate } from "../agents/templates.js";
+import { deleteAgentWithTemplate } from "../agents/agent-lifecycle.js";
 import { loadAgentConfig, saveAgentConfig } from "../agents/credentials.js";
 import { implementAgentTools } from "../agents/tool-gen.js";
 import type { AgentDefinition } from "../agents/types.js";
@@ -164,21 +163,10 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
             const agent = filteredAgents[selectedIndex];
             if (agent) {
               const agentKey = agent.alias || agent.manifest.name;
-              const destination = agent.origin === "project" ? "project" : "global";
               const entry = registryEntries[agentKey];
-              if (!entry?.sourceUrl && agent.origin === "global") {
-                await saveTemplate({
-                  name: agent.manifest.name,
-                  description: agent.manifest.description,
-                  systemPrompt: agent.systemPrompt,
-                  mcpServers: agent.manifest["mcp-servers"],
-                  tags: agent.manifest.tags,
-                  savedAt: new Date().toISOString(),
-                });
-              }
-              const result = await uninstallAgent(agentKey, destination);
+              const result = await deleteAgentWithTemplate(agent, { sourceUrl: entry?.sourceUrl });
               if (result.success) {
-                setRemoveStatus(`Removed ${agentKey}${!entry?.sourceUrl ? " (saved as template)" : ""}`);
+                setRemoveStatus(`Removed ${agentKey}${result.savedTemplate ? " (saved as template)" : ""}`);
                 setSelectedIndex(Math.max(0, selectedIndex - 1));
                 const { getCachedAgents, setCachedAgents } = await import("../agents/loader.js");
                 setCachedAgents(getCachedAgents().filter((a) => (a.alias || a.manifest.name) !== agentKey));

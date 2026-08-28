@@ -10,8 +10,9 @@ import type { AgentDefinition, AgentRegistryEntry } from "../agents/types.js";
 import type { MCPServerConfig } from "../mcp/types.js";
 import { loadAgent } from "../agents/loader.js";
 import { registerAgent } from "../agents/agent-registry.js";
-import { uninstallAgent, assertPathContained } from "../agents/installer.js";
+import { assertPathContained } from "../agents/installer.js";
 import { loadTemplates, saveTemplate, removeTemplate, type AgentTemplate } from "../agents/templates.js";
+import { deleteAgentWithTemplate } from "../agents/agent-lifecycle.js";
 
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
@@ -75,6 +76,8 @@ export function CreateTab({
 
   const workspaceMcpEntries = Object.entries(config?.mcpServers ?? {});
 
+  const abortRef = useRef<AbortController | null>(null);
+
   // Build list entries: my agents + templates + [New Agent]
   const myAgents = agents.filter((a) => {
     if (a.origin !== "global") return false;
@@ -92,13 +95,12 @@ export function CreateTab({
 
   // Load templates on mount
   useEffect(() => {
-    loadTemplates().then(setTemplates);
+    loadTemplates().then(setTemplates).catch(() => {});
   }, []);
 
   // Notify parent about busy state
   useEffect(() => {
-    const hasWork = mode === "wizard" && (agentName.length > 0 || agentDescription.length > 0 || wizardStep > 1);
-    onBusyChange?.(hasWork);
+    onBusyChange?.(mode === "wizard");
   }, [mode, agentName, agentDescription, wizardStep]);
 
   useEffect(() => {
@@ -108,6 +110,9 @@ export function CreateTab({
   // --- System prompt generation ---
   const generateSystemPrompt = useCallback(async () => {
     if (!provider || !config) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setPromptGenerating(true);
     setSystemPrompt("");
     setPromptError(null);
@@ -132,16 +137,24 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
         systemPrompt:
           "You are an expert at designing AI agent system prompts. Generate clear, focused system prompts.",
         tools: [],
+        signal: controller.signal,
       })) {
+        if (controller.signal.aborted) break;
         if (event.type === "text_delta") {
           setSystemPrompt((prev) => prev + event.text);
         }
       }
-      setPromptGenerated(true);
+      if (!controller.signal.aborted) {
+        setPromptGenerated(true);
+      }
     } catch (err) {
-      setPromptError(err instanceof Error ? err.message : String(err));
+      if (!controller.signal.aborted) {
+        setPromptError(err instanceof Error ? err.message : String(err));
+      }
     }
-    setPromptGenerating(false);
+    if (!controller.signal.aborted) {
+      setPromptGenerating(false);
+    }
   }, [provider, config, agentName, agentDescription]);
 
   // Trigger generation when entering step 2 for the first time
@@ -196,7 +209,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
   function exitWizard() {
     setMode("list");
     setEditingAgent(null);
-    loadTemplates().then(setTemplates);
+    loadTemplates().then(setTemplates).catch(() => {});
   }
 
   // --- Save agent ---
@@ -213,11 +226,15 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       await mkdir(agentDir, { recursive: true });
       await mkdir(toolsDir, { recursive: true });
 
-      const mcpServerEntries: Array<{ key: string; command: string; args?: string[] }> = [];
+      const mcpServerEntries: Array<{ key: string; command: string; args?: string[]; env?: Record<string, string> }> = [];
       for (const key of mcpSelectedKeys) {
         const serverConfig = config?.mcpServers?.[key];
         if (serverConfig) {
-          mcpServerEntries.push({ key, command: serverConfig.command, args: serverConfig.args });
+          const entry: typeof mcpServerEntries[number] = { key, command: serverConfig.command, args: serverConfig.args };
+          if (serverConfig.env && Object.keys(serverConfig.env).length > 0) {
+            entry.env = serverConfig.env;
+          }
+          mcpServerEntries.push(entry);
         }
       }
 
@@ -241,12 +258,16 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       await writeFile(join(agentDir, "AGENT.md"), agentMd, "utf-8");
 
       setSaveStatus("Registering agent...");
-      await registerAgent({
+      const registryOpts: Record<string, unknown> = {
         name: agentName,
         enabled: true,
         installedAt: new Date().toISOString(),
         version: "1.0.0",
-      });
+      };
+      if (editingAgent?.alias) {
+        registryOpts.alias = editingAgent.alias;
+      }
+      await registerAgent(registryOpts as any);
 
       setSaveStatus("Validating...");
       const loaded = await loadAgent(agentDir, "global");
@@ -268,7 +289,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       setSaveError(err instanceof Error ? err.message : String(err));
       setSaving(false);
     }
-  }, [agentName, agentDescription, systemPrompt, mcpSelectedKeys, config, onReloadAgents, onCreateComplete]);
+  }, [agentName, agentDescription, systemPrompt, mcpSelectedKeys, config, onReloadAgents, onCreateComplete, editingAgent]);
 
   // --- Delete agent ---
   const doRemove = useCallback(async () => {
@@ -278,17 +299,9 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
     if (entry.type === "agent") {
       const agent = entry.agent;
       const name = agent.alias || agent.manifest.name;
-      await saveTemplate({
-        name: agent.manifest.name,
-        description: agent.manifest.description,
-        systemPrompt: agent.systemPrompt,
-        mcpServers: agent.manifest["mcp-servers"],
-        tags: agent.manifest.tags,
-        savedAt: new Date().toISOString(),
-      });
-      const result = await uninstallAgent(name, "global");
+      const result = await deleteAgentWithTemplate(agent);
       if (result.success) {
-        setRemoveStatus(`Removed "${name}" (saved as template)`);
+        setRemoveStatus(`Removed "${name}"${result.savedTemplate ? " (saved as template)" : ""}`);
         await onReloadAgents();
         await loadTemplates().then(setTemplates);
       } else {
@@ -374,7 +387,6 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
         return;
       }
       if (input && !key.ctrl && !key.meta) {
-        if ((input === "1" || input === "2" || input === "3") && !agentName && !agentDescription) return;
         if (activeField === "name" && !editingAgent) setAgentName((v) => v + input);
         else if (activeField === "description") setAgentDescription((v) => v + input);
         setNameError(null);
@@ -385,7 +397,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
 
     // Step 2: System Prompt
     if (wizardStep === 2) {
-      if (promptGenerating) { if (key.escape) { setWizardStep(1); setPromptGenerating(false); } return; }
+      if (promptGenerating) { if (key.escape) { abortRef.current?.abort(); setWizardStep(1); setPromptGenerating(false); } return; }
       if (key.escape || input === "b") { setWizardStep(1); return; }
       if (key.return && promptGenerated) { setWizardStep(3); return; }
       if (input === "r") {
