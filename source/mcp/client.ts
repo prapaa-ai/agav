@@ -136,11 +136,18 @@ export class MCPClient {
       });
 
       sseParser.then(() => {
-        // The SSE stream closed cleanly (server sent done: true). Once
-        // this happens, no further server→client messages can arrive on
-        // this connection — any pending requests will hang forever.
-        // Reject them immediately so callers get an actionable error
-        // instead of a silent timeout.
+        // The SSE stream closed cleanly (server sent done: true). If
+        // we never received the endpoint event, reject immediately
+        // instead of waiting for the 10-second timeout.
+        if (!this.postUrl) {
+          clearTimeout(timeout);
+          reject(new Error(`SSE stream to ${this.serverName} closed before receiving endpoint event`));
+          return;
+        }
+        // Once the stream closes, no further server→client messages
+        // can arrive — any pending requests will hang forever. Reject
+        // them immediately so callers get an actionable error instead
+        // of a silent timeout.
         if (!signal.aborted && this.pending.size > 0) {
           const err = new Error(`SSE stream to ${this.serverName} closed unexpectedly`);
           process.stderr.write(`[mcp:${this.serverName}] SSE stream closed by server, rejecting ${this.pending.size} pending request(s)\n`);
@@ -592,7 +599,7 @@ export class MCPClient {
             return;
           }
         }
-        process.stderr.write(`[mcp:${this.serverName}] failed to send message: ${err.message}\n`);
+        process.stderr.write(`[mcp:${this.serverName}] failed to send message: ${err instanceof Error ? err.message : String(err)}\n`);
       });
     } else {
       if (!this.process?.stdin?.writable) {
