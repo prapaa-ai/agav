@@ -477,7 +477,25 @@ To save a full conversation to a file instead, use `/export` — it writes the e
 
 ## Documentation
 
-Detailed CLI documentation can be found [here](https://docs.agav.dev).
+Full documentation is available at **[docs.agav.dev](https://docs.agav.dev)**.
+
+The source lives in the [`docs/`](docs/) directory — a Next.js app with Markdown content, full-text search, and dark mode. To run it locally:
+
+```bash
+cd docs
+npm install
+npm run dev
+```
+
+Then open [localhost:3000](http://localhost:3000).
+
+Documentation is organised into:
+
+- **[Getting Started](https://docs.agav.dev/docs/getting-started)** — installation, providers, quick start
+- **[Features](https://docs.agav.dev/docs/features)** — tools, skills, agents, MCP, plugins
+- **[Workflows](https://docs.agav.dev/docs/workflows)** — sessions, planning, automation, non-interactive mode
+- **[Guides](https://docs.agav.dev/docs/guides)** — step-by-step recipes for common tasks
+- **[Reference](https://docs.agav.dev/docs/reference)** — CLI flags, slash commands, configuration, keybindings
 
 ## Contributing
 
