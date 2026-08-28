@@ -103,7 +103,7 @@ agav update
 | `/memory` | Manage persistent memories |
 | `/remember` | Save a memory |
 | `/forget` | Delete a memory by name |
-| `/history` | List saved sessions or load one by index |
+| `/resume` | Resume a previous session |
 | `/search` | Search past sessions by keyword |
 | `/branch` | Fork a new session or list branches |
 | `/name` | Name the current session |

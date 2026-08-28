@@ -22,6 +22,12 @@ export const MAX_STEPS_PROMPT =
   "You have reached the maximum number of steps. Summarize what you have accomplished, " +
   "list any remaining work, and stop. Do not call any more tools.";
 
+// Prepended to /steer directives injected into the conversation mid-turn, so
+// the model can tell them apart from ordinary user turns and knows they apply
+// to the work already in progress.
+export const STEER_DIRECTIVE_PREFIX =
+  "[STEER — mid-turn directive from the user. Apply this to the work in progress.]\n";
+
 // Extracted as a constant so LEGACY_PREFIXES (below) can match this dynamic
 // prompt by its fixed opening — the full string varies per attempt number.
 export const TESTS_FAILED_PREFIX = "Tests failed (attempt ";

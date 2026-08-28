@@ -3,6 +3,7 @@ import { resolve, dirname } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import { computeDiff } from "../utils/diff.js";
 import { pushUndo } from "../utils/undo.js";
+import { checkPathBoundary } from "../utils/path-guard.js";
 
 export const fileWriteTool: ToolDefinition = {
   schema: {
@@ -28,6 +29,11 @@ export const fileWriteTool: ToolDefinition = {
   async execute(input): Promise<ToolResult> {
     const filePath = resolve(String(input.path));
     const content = String(input.content);
+
+    const pathError = await checkPathBoundary(filePath, "write");
+    if (pathError) {
+      return { output: pathError, isError: true };
+    }
 
     try {
       let oldContent: string | null = null;

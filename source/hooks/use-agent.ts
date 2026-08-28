@@ -35,6 +35,7 @@ import { loadSkills, getCachedSkills } from "../skills/loader.js";
 import { createSkillTool } from "../skills/tool.js";
 import { createSkillSlashCommand } from "../skills/commands.js";
 import { maybeRunBackgroundImprovement } from "../skills/improvement.js";
+import { drainSteers } from "../commands/steer.js";
 
 let messageId = 0;
 /** Generate incremental display ids so transient UI rows have stable React keys. */
@@ -212,7 +213,13 @@ export function useAgent(
   conversationRef.current.setModel(config.model);
 
   const refreshDisplay = useCallback(() => {
-    process.stdout.write("\x1Bc");
+    // RIS (\x1Bc) resets terminal state including cursor visibility.
+    // Re-hide the hardware cursor because Ink's log-update will not
+    // re-issue the hide after a full reset (it thinks it is still hidden).
+    // \x1B[3J clears the scrollback buffer so that the banner (and other
+    // Static items) are not duplicated when the user scrolls up after the
+    // Ink <Static> component remounts and re-renders all items.
+    process.stdout.write("\x1B[3J\x1Bc\x1b[?25l");
     const displayMsgs = messagesToDisplay(conversationRef.current.getMessages());
     setMessages(displayMsgs);
     setTranscriptRevision((revision) => revision + 1);
@@ -505,7 +512,7 @@ export function useAgent(
         setError("No LLM provider configured. Check your API key.");
         return false;
       }
-      if (isLoading || submitPendingRef.current) return false;
+      if (submitPendingRef.current) return false;
 
       const trimmed = input.trim();
       if (!trimmed) return false;
@@ -754,6 +761,9 @@ export function useAgent(
             permissionMode: sessionPermissionModeRef.current ?? config.permissionMode,
             allowedTools: config.allowedTools,
             hooks: config.hooks,
+            // Only the main conversation's loop drains mid-turn /steer
+            // directives — subagent/skill/agent loops must not consume them.
+            drainSteers,
           });
 
           for await (const event of loop) {
@@ -966,6 +976,19 @@ export function useAgent(
                   setPlanContinueMsg(`Do Step ${next.id} only: ${next.title}. Mark it in_progress, do the work, mark it done, then end your response silently — no commentary about stopping or pausing.`);
                 }).catch(() => {});
                 break;
+
+              case "steer_applied": {
+                const count = event.directives.length;
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: nextId(),
+                    role: "system",
+                    content: `\x1b[2mDelivered ${count} steer${count === 1 ? "" : "s"} to the running agent.\x1b[0m`,
+                  },
+                ]);
+                break;
+              }
 
               case "error": {
                 const errorMsg = event.error.message || "Unknown error";
