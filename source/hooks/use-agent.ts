@@ -369,7 +369,11 @@ export function useAgent(
       // Start MCP servers
       if (config.mcpServers) {
         for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
-          if (name === "description" || name === "type" || name === "eg" || typeof serverConfig !== "object" || serverConfig === null) {
+          // Skip non-server entries: schema metadata keys (description, eg, etc.)
+          // and malformed values. A valid server config must have either `command`
+          // (stdio) or `url` (remote) — anything else is not a real server entry.
+          if (typeof serverConfig !== "object" || serverConfig === null
+            || !("command" in serverConfig || "url" in serverConfig)) {
             continue;
           }
           try {
