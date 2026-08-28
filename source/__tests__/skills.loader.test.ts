@@ -10,6 +10,7 @@ vi.mock("../config/config.js", () => ({
 
 import { buildSkillCatalog, getCachedSkills, getSkill, loadSkills, parseSkillMarkdown } from "../skills/loader.js";
 import type { SkillDefinition } from "../skills/types.js";
+import { BUNDLED_SKILL_FILES } from "../skills/bundled-manifest.js";
 
 describe("skills/loader", () => {
   it("parses frontmatter with lists, booleans, quoted values, and body text", () => {
@@ -401,5 +402,89 @@ Body.
       expect.stringContaining('slug "help" collides with a built-in command'),
     );
     warnSpy.mockRestore();
+  });
+});
+
+describe("skills/loader — loadBundled", () => {
+  let tmpBase: string;
+
+  beforeEach(async () => {
+    tmpBase = await mkdtemp(join(tmpdir(), "agav-bundled-test-"));
+    await mkdir(join(tmpBase, "global", "skills"), { recursive: true });
+    await mkdir(join(tmpBase, "project", ".agav", "skills"), { recursive: true });
+
+    mockAgavDir = join(tmpBase, "global");
+    vi.spyOn(process, "cwd").mockReturnValue(join(tmpBase, "project"));
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(tmpBase, { recursive: true, force: true });
+  });
+
+  it("bundled manifest is non-empty", () => {
+    expect(Object.keys(BUNDLED_SKILL_FILES).length).toBeGreaterThan(0);
+  });
+
+  it("every bundled entry parses into a valid SkillDefinition via loadSkills", async () => {
+    const skills = await loadSkills();
+    const bundled = skills.filter((s) => s.origin === "bundled");
+
+    expect(bundled.length).toBeGreaterThan(0);
+    for (const s of bundled) {
+      expect(s.name).toBeTruthy();
+      expect(s.slug).toBeTruthy();
+      expect(s.description).toBeTruthy();
+      expect(s.body).toBeTruthy();
+      expect(s.origin).toBe("bundled");
+    }
+  });
+
+  it("all bundled skills have unique slugs", async () => {
+    const skills = await loadSkills();
+    const bundled = skills.filter((s) => s.origin === "bundled");
+    const slugs = bundled.map((s) => s.slug);
+
+    expect(new Set(slugs).size).toBe(slugs.length);
+  });
+
+  it("all bundled skills pass validation (have name and description, no dangerous patterns)", () => {
+    for (const [dir, text] of Object.entries(BUNDLED_SKILL_FILES)) {
+      const { frontmatter, body } = parseSkillMarkdown(text);
+
+      expect(frontmatter.name).toBeTruthy();
+      expect(frontmatter.name).not.toBe("unknown");
+      expect(frontmatter.description).toBeTruthy();
+      // Ensure no dangerous patterns slipped into bundled skill bodies
+      expect(body).not.toMatch(/rm\s+-rf\s+\//);
+      expect(body).not.toMatch(/ignore all previous instructions/i);
+    }
+  });
+
+  it("every bundled SKILL.md has the required name and description frontmatter", () => {
+    for (const [dir, text] of Object.entries(BUNDLED_SKILL_FILES)) {
+      const { frontmatter } = parseSkillMarkdown(text);
+
+      expect(frontmatter.name, `${dir} is missing name`).toBeTruthy();
+      expect(frontmatter.name, `${dir} has placeholder name`).not.toBe("unknown");
+      expect(frontmatter.description, `${dir} is missing description`).toBeTruthy();
+    }
+  });
+
+  it("bundled skills load from inlined strings, not from disk", async () => {
+    // Point both global and project dirs to nonexistent paths — bundled skills
+    // come from the compiled-in BUNDLED_SKILL_FILES constant, not from disk.
+    mockAgavDir = join(tmpBase, "nonexistent-global");
+    vi.spyOn(process, "cwd").mockReturnValue(join(tmpBase, "nonexistent-project"));
+
+    const skills = await loadSkills();
+    const bundled = skills.filter((s) => s.origin === "bundled");
+
+    // All manifest entries should still load despite no disk dirs existing.
+    expect(bundled.length).toBe(Object.keys(BUNDLED_SKILL_FILES).length);
+    for (const s of bundled) {
+      expect(s.name).toBeTruthy();
+      expect(s.origin).toBe("bundled");
+    }
   });
 });
