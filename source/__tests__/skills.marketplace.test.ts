@@ -8,7 +8,7 @@ vi.mock("../config/config.js", () => ({
   getAgavDir: () => agavDir,
 }));
 
-import { installFromPath, installFromUrl } from "../skills/marketplace.js";
+import { installFromPath, installFromUrl, clearSkills } from "../skills/marketplace.js";
 
 const SKILL_MD = `---
 name: pdf-processing
@@ -100,20 +100,66 @@ describe("skills/marketplace installFromPath", () => {
     await expect(stat(join(dest, "node_modules"))).rejects.toThrow();
   });
 
-  it("rejects a directory that contains nested skills", async () => {
-    // Create a parent directory that contains two skill subdirectories
+  it("installs a single skill when its directory also contains nested skill subdirs", async () => {
+    // A parent directory with its own SKILL.md AND a child skill subdirectory.
+    // Because the parent has a SKILL.md, it's treated as a single skill install.
     const parentDir = join(workDir, "skills-collection");
     await mkdir(parentDir, { recursive: true });
     await writeFile(join(parentDir, "SKILL.md"), SKILL_MD);
-    // Add a nested skill subdirectory
     const nested = join(parentDir, "child-skill");
     await mkdir(nested, { recursive: true });
     await writeFile(join(nested, "SKILL.md"), `---\nname: child-skill\ndescription: A child\n---\nBody.\n`);
 
     const result = await installFromPath(parentDir);
 
-    expect(result).toHaveProperty("error");
-    expect((result as { error: string }).error).toContain("nested skill");
+    expect(result).toMatchObject({ name: "pdf-processing" });
+  });
+
+  it("batch-installs all nested skills from a parent directory without its own SKILL.md", async () => {
+    const parentDir = join(workDir, "skills-collection");
+    await mkdir(parentDir, { recursive: true });
+    // No SKILL.md at the parent level
+
+    const skillA = join(parentDir, "skill-a");
+    await mkdir(skillA, { recursive: true });
+    await writeFile(join(skillA, "SKILL.md"), `---\nname: skill-a\ndescription: Skill A\n---\nBody A.\n`);
+
+    const skillB = join(parentDir, "skill-b");
+    await mkdir(skillB, { recursive: true });
+    await writeFile(join(skillB, "SKILL.md"), `---\nname: skill-b\ndescription: Skill B\n---\nBody B.\n`);
+
+    const result = await installFromPath(parentDir);
+
+    expect(result).not.toHaveProperty("error");
+    const batch = result as { names: string[]; warnings: string[]; failed: string[] };
+    expect(batch.names).toContain("skill-a");
+    expect(batch.names).toContain("skill-b");
+    expect(batch.failed).toEqual([]);
+    // Both should be installed on disk
+    const dest = join(agavDir, "skills");
+    await expect(readFile(join(dest, "skill-a", "SKILL.md"), "utf-8")).resolves.toContain("Skill A");
+    await expect(readFile(join(dest, "skill-b", "SKILL.md"), "utf-8")).resolves.toContain("Skill B");
+  });
+
+  it("batch-install reports failures without blocking other skills", async () => {
+    const parentDir = join(workDir, "mixed-collection");
+    await mkdir(parentDir, { recursive: true });
+
+    const good = join(parentDir, "good-skill");
+    await mkdir(good, { recursive: true });
+    await writeFile(join(good, "SKILL.md"), `---\nname: good-skill\ndescription: Works fine\n---\nBody.\n`);
+
+    // A broken skill with no description (validation failure)
+    const bad = join(parentDir, "bad-skill");
+    await mkdir(bad, { recursive: true });
+    await writeFile(join(bad, "SKILL.md"), `---\nname: bad-skill\n---\nBody.\n`);
+
+    const result = await installFromPath(parentDir);
+
+    expect(result).not.toHaveProperty("error");
+    const batch = result as { names: string[]; warnings: string[]; failed: string[] };
+    expect(batch.names).toContain("good-skill");
+    expect(batch.failed).toContain("bad-skill");
   });
 
   it("installs spec asset directories when given a bare SKILL.md but skips unrelated files", async () => {
@@ -136,6 +182,34 @@ describe("skills/marketplace installFromPath", () => {
     await expect(stat(join(dest, "random.txt"))).rejects.toThrow();
     // __pycache__ should be skipped
     await expect(stat(join(dest, "scripts", "__pycache__"))).rejects.toThrow();
+  });
+
+  it("does not copy CWD sibling directories when installing a bare .md file", async () => {
+    // Simulate: user runs `/skills add myskill.md` from a directory that
+    // happens to contain scripts/ and assets/ unrelated to the skill.
+    const cwdLike = join(workDir, "cwd-sim");
+    await mkdir(join(cwdLike, "scripts"), { recursive: true });
+    await mkdir(join(cwdLike, "assets"), { recursive: true });
+    await writeFile(join(cwdLike, "scripts", "unrelated.sh"), "#!/bin/sh\necho oops\n");
+    await writeFile(join(cwdLike, "assets", "logo.png"), "fakepng");
+    await writeFile(join(cwdLike, "myskill.md"), SKILL_MD);
+
+    // Mock CWD to cwdLike so the bare-file detection triggers
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwdLike);
+    try {
+      const result = await installFromPath(join(cwdLike, "myskill.md"));
+
+      expect(result).toMatchObject({ name: "pdf-processing" });
+      const dest = join(agavDir, "skills", "pdf-processing");
+      // SKILL.md should be installed
+      await expect(readFile(join(dest, "SKILL.md"), "utf-8")).resolves.toBe(SKILL_MD);
+      // Unrelated CWD sibling directories should NOT be copied
+      const { stat: fsStat } = await import("node:fs/promises");
+      await expect(fsStat(join(dest, "scripts"))).rejects.toThrow();
+      await expect(fsStat(join(dest, "assets"))).rejects.toThrow();
+    } finally {
+      cwdSpy.mockRestore();
+    }
   });
 });
 
@@ -436,5 +510,149 @@ description: Skill with no body.
     // SKILL.md should still be installed
     const dest = join(agavDir, "skills", "test-skill", "SKILL.md");
     await expect(readFile(dest, "utf-8")).resolves.toBe(VALID_SKILL_MD);
+  });
+
+  // ---- multi-skill directory detection -----------------------------------
+
+  it("batch-installs all skills when a GitHub URL points to a multi-skill directory", async () => {
+    const SKILL_A = `---\nname: algorithmic-art\ndescription: Generate algorithmic art\n---\nDo art.\n`;
+    const SKILL_B = `---\nname: brand-guidelines\ndescription: Create brand guidelines\n---\nDo brand.\n`;
+
+    // First fetch: top-level SKILL.md 404
+    fetchSpy.mockResolvedValueOnce(
+      new Response("Not Found", { status: 404 }),
+    );
+    // Second fetch: GitHub Contents API lists subdirectories
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify([
+          { name: "algorithmic-art", type: "dir", path: "skills/algorithmic-art" },
+          { name: "brand-guidelines", type: "dir", path: "skills/brand-guidelines" },
+          { name: "README.md", type: "file", path: "skills/README.md" },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    // Third fetch: SKILL.md for algorithmic-art
+    fetchSpy.mockResolvedValueOnce(new Response(SKILL_A, { status: 200 }));
+    // Fourth fetch: GitHub API assets listing for algorithmic-art
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    // Fifth fetch: SKILL.md for brand-guidelines
+    fetchSpy.mockResolvedValueOnce(new Response(SKILL_B, { status: 200 }));
+    // Sixth fetch: GitHub API assets listing for brand-guidelines
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    const url = "https://github.com/anthropics/skills/tree/main/skills";
+    const result = await installFromUrl(url);
+
+    expect(result).not.toHaveProperty("error");
+    const batch = result as { names: string[]; warnings: string[]; failed: string[] };
+    expect(batch.names).toContain("algorithmic-art");
+    expect(batch.names).toContain("brand-guidelines");
+    expect(batch.failed).toEqual([]);
+    // Both should be installed on disk
+    await expect(readFile(join(agavDir, "skills", "algorithmic-art", "SKILL.md"), "utf-8")).resolves.toContain("algorithmic art");
+    await expect(readFile(join(agavDir, "skills", "brand-guidelines", "SKILL.md"), "utf-8")).resolves.toContain("brand guidelines");
+  });
+
+  it("reports rate-limiting when GitHub API returns 403 on directory listing", async () => {
+    // First fetch: SKILL.md 404
+    fetchSpy.mockResolvedValueOnce(
+      new Response("Not Found", { status: 404 }),
+    );
+    // Second fetch: API rate-limited
+    fetchSpy.mockResolvedValueOnce(
+      new Response("Rate limited", { status: 403 }),
+    );
+
+    const url = "https://github.com/owner/repo/tree/main/skills";
+    const result = await installFromUrl(url);
+
+    expect(result).toHaveProperty("error");
+    const error = (result as { error: string }).error;
+    expect(error).toContain("rate-limited");
+    expect(error).toContain("403");
+  });
+
+  it("falls back to generic 404 when network fails on directory listing", async () => {
+    // First fetch: SKILL.md 404
+    fetchSpy.mockResolvedValueOnce(
+      new Response("Not Found", { status: 404 }),
+    );
+    // Second fetch: network error
+    fetchSpy.mockRejectedValueOnce(new Error("ECONNRESET"));
+
+    const url = "https://github.com/owner/repo/tree/main/skills";
+    const result = await installFromUrl(url);
+
+    expect(result).toHaveProperty("error");
+    expect((result as { error: string }).error).toContain("HTTP 404");
+  });
+
+  it("falls back to generic 404 when directory has no subdirectories", async () => {
+    // First fetch: SKILL.md 404
+    fetchSpy.mockResolvedValueOnce(
+      new Response("Not Found", { status: 404 }),
+    );
+    // Second fetch: API returns only files, no dirs
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify([
+          { name: "README.md", type: "file", path: "skills/README.md" },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    const url = "https://github.com/owner/repo/tree/main/skills";
+    const result = await installFromUrl(url);
+
+    expect(result).toHaveProperty("error");
+    expect((result as { error: string }).error).toContain("HTTP 404");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// clearSkills
+// ---------------------------------------------------------------------------
+
+describe("skills/marketplace clearSkills", () => {
+  beforeEach(async () => {
+    agavDir = await mkdtemp(join(tmpdir(), "agav-home-"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("removes all skill directories from the global skills dir", async () => {
+    const skillsDir = join(agavDir, "skills");
+    await mkdir(join(skillsDir, "skill-a"), { recursive: true });
+    await writeFile(join(skillsDir, "skill-a", "SKILL.md"), "---\nname: skill-a\ndescription: A\n---\nBody.\n");
+    await mkdir(join(skillsDir, "skill-b"), { recursive: true });
+    await writeFile(join(skillsDir, "skill-b", "SKILL.md"), "---\nname: skill-b\ndescription: B\n---\nBody.\n");
+
+    const removed = await clearSkills();
+
+    expect(removed.sort()).toEqual(["skill-a", "skill-b"]);
+    const { readdir: rd } = await import("node:fs/promises");
+    const remaining = await rd(skillsDir);
+    expect(remaining).toEqual([]);
+  });
+
+  it("returns empty array when no skills directory exists", async () => {
+    // agavDir exists but has no skills/ subdirectory
+    const removed = await clearSkills();
+    expect(removed).toEqual([]);
+  });
+
+  it("returns empty array when skills directory is empty", async () => {
+    await mkdir(join(agavDir, "skills"), { recursive: true });
+    const removed = await clearSkills();
+    expect(removed).toEqual([]);
   });
 });

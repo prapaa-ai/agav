@@ -108,7 +108,10 @@ export function SkillsTUI({ onExit }: SkillsTUIProps) {
         const warns = result.warnings.length > 0
           ? `\n${result.warnings.join("\n")}`
           : "";
-        setInstallStatus(`✓ Installed ${result.name}. Restart to activate.${warns}`);
+        const label = "names" in result
+          ? `${result.names.length} skills: ${result.names.join(", ")}`
+          : result.name;
+        setInstallStatus(`✓ Installed ${label}. Restart to activate.${warns}`);
         setInstalledSlugs((prev) => new Set([...prev, slug]));
       }
       setInstalling(false);

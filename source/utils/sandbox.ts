@@ -262,3 +262,18 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
 
   return { ...result, backend };
 }
+
+/**
+ * Throw if no OS-level sandbox backend is available. Used when
+ * `sandboxRequired` is enabled in config or via `--sandbox-required`.
+ */
+export function requireSandbox(): void {
+  const backend = detectSandboxBackend();
+  if (backend === "none") {
+    throw new Error(
+      "Sandbox required but no sandbox backend is available. " +
+      "Install sandbox-exec (macOS) or bubblewrap (Linux), use --sandbox docker, " +
+      "or remove the sandboxRequired setting to run without a sandbox.",
+    );
+  }
+}

@@ -2,7 +2,7 @@ import type { SlashCommand, CommandResult, CommandContext } from "../commands/ty
 import type { SkillDefinition } from "./types.js";
 import { loadSkills, getSkill } from "./loader.js";
 import { executeSkill } from "./executor.js";
-import { installFromUrl, installFromPath, removeSkill } from "./marketplace.js";
+import { installFromUrl, installFromPath, removeSkill, clearSkills } from "./marketplace.js";
 import { getSkillTraces } from "./improvement.js";
 import { agavHomePath } from "../utils/shell-hints.js";
 
@@ -48,7 +48,7 @@ export const skillsCommand: SlashCommand = {
   description: "Manage skills",
   // agavHomePath rather than a literal "~/.agav/skills": on PowerShell and cmd
   // that spelling is neither typeable nor recognisable.
-  usage: `Usage: /skills [action]\n\n  /skills                 List installed skills\n  /skills list            Same as above\n  /skills add <url|path>  Install from a URL or a local skill directory\n  /skills remove <name>   Uninstall a skill\n  /skills info <name>     Show details about a skill\n  /skills marketplace     Browse available skills\n\nA skill is a directory holding a SKILL.md with YAML frontmatter, plus\noptional scripts/, references/ and assets/. The agent can activate one\nautomatically or you can invoke it as a slash command.\n\nInstalls are written to ${agavHomePath("skills")} and take effect after a\nrestart. Point a path at the skill directory to install all of it, or at a\nlone SKILL.md to take just that file and any scripts/, references/ or\nassets/ beside it. GitHub URLs install the whole directory; other hosts\noffer no listing, so only the SKILL.md itself is fetched.`,
+  usage: `Usage: /skills [action]\n\n  /skills                 List installed skills\n  /skills list            Same as above\n  /skills add <url|path>  Install from a URL or a local skill directory\n  /skills remove <name>   Uninstall a skill\n  /skills clear           Remove all user-installed skills\n  /skills info <name>     Show details about a skill\n  /skills marketplace     Browse available skills\n\nA skill is a directory holding a SKILL.md with YAML frontmatter, plus\noptional scripts/, references/ and assets/. The agent can activate one\nautomatically or you can invoke it as a slash command.\n\nInstalls are written to ${agavHomePath("skills")} and take effect after a\nrestart. Point a path at the skill directory to install all of it, or at a\nlone SKILL.md to take just that file and any scripts/, references/ or\nassets/ beside it. GitHub URLs install the whole directory; other hosts\noffer no listing, so only the SKILL.md itself is fetched.`,
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const parts = args.trim().split(/\s+/);
     const action = parts[0]?.toLowerCase() || "list";
@@ -82,6 +82,12 @@ export const skillsCommand: SlashCommand = {
         return { type: "message", text: result.error };
       }
       const warns = result.warnings.length > 0 ? `\nWarnings:\n${result.warnings.join("\n")}` : "";
+      if ("names" in result) {
+        const failedNote = result.failed.length > 0
+          ? `\nFailed (${result.failed.length}): ${result.failed.join(", ")}`
+          : "";
+        return { type: "message", text: `Installed ${result.names.length} skills: ${result.names.join(", ")}${failedNote}${warns}\nRestart to activate.` };
+      }
       return { type: "message", text: `Installed skill: ${result.name}${warns}\nRestart to activate.` };
     }
 
@@ -90,6 +96,14 @@ export const skillsCommand: SlashCommand = {
       if (!name) return { type: "message", text: "Usage: /skills remove <name>" };
       const removed = await removeSkill(name);
       return { type: "message", text: removed ? `Removed skill: ${name}. Restart to take effect.` : `Skill "${name}" not found.` };
+    }
+
+    if (action === "clear") {
+      const removed = await clearSkills();
+      if (removed.length === 0) {
+        return { type: "message", text: "No user-installed skills to remove." };
+      }
+      return { type: "message", text: `Removed ${removed.length} skill${removed.length === 1 ? "" : "s"}: ${removed.join(", ")}.\nBundled skills are unaffected. Restart to take effect.` };
     }
 
     if (action === "info") {

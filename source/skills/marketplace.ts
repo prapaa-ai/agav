@@ -127,6 +127,46 @@ interface GitHubEntry {
   download_url?: string | null;
 }
 
+/**
+ * When a raw GitHub URL 404s, check whether the path is actually a directory
+ * containing multiple skill subdirectories. Returns the list of subdirectory
+ * names if found, or undefined to fall through to the generic error.
+ */
+async function listGitHubSkillSubdirs(
+  github: { owner: string; repo: string; ref: string; dir: string },
+): Promise<{ subdirs: string[] } | { apiError: number } | undefined> {
+  const apiPath = github.dir || ".";
+  const api = `https://api.github.com/repos/${github.owner}/${github.repo}/contents/${apiPath}?ref=${encodeURIComponent(github.ref)}`;
+  let res: Response;
+  try {
+    res = await fetch(api, {
+      headers: { Accept: "application/vnd.github.v3+json", "User-Agent": "agav-cli" },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    return undefined;
+  }
+  if (!res) return undefined;
+  if (!res.ok) return { apiError: res.status };
+
+  let entries: GitHubEntry[];
+  try {
+    entries = (await res.json()) as GitHubEntry[];
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(entries)) return undefined;
+
+  const subdirs = entries.filter((e) => e.type === "dir").map((e) => e.name);
+  return subdirs.length > 0 ? { subdirs } : undefined;
+}
+
+/** Result type for single-skill installs. */
+export type InstallResult =
+  | { name: string; warnings: string[] }
+  | { names: string[]; warnings: string[]; failed: string[] }
+  | { error: string };
+
 /** Downloads everything alongside SKILL.md, one directory level at a time. */
 async function fetchGitHubAssets(
   src: { owner: string; repo: string; ref: string; dir: string },
@@ -240,7 +280,7 @@ async function copyTree(srcDir: string, destDir: string): Promise<number> {
   return copied;
 }
 
-export async function installFromUrl(url: string): Promise<{ name: string; warnings: string[] } | { error: string }> {
+export async function installFromUrl(url: string): Promise<InstallResult> {
   try {
     const target = normaliseSkillUrl(url);
 
@@ -252,13 +292,23 @@ export async function installFromUrl(url: string): Promise<{ name: string; warni
     }
     if (!res.ok) {
       // When a GitHub raw URL 404s, the user may have pointed at a directory
-      // that contains multiple skill subdirectories rather than a single skill.
-      // Detect this and return a helpful message listing the available skills.
+      // containing multiple skill subdirectories. Detect this and install
+      // all of them in one go.
       if (res.status === 404) {
         const github = parseGitHubSkillUrl(target);
         if (github) {
-          const listing = await tryListGitHubSkillDirectory(github, url);
-          if (listing) return { error: listing };
+          const listing = await listGitHubSkillSubdirs(github);
+          if (listing && "subdirs" in listing) {
+            return await installMultipleFromGitHub(github, listing.subdirs);
+          }
+          if (listing && "apiError" in listing) {
+            return {
+              error:
+                `No SKILL.md found at this URL. It may be a directory containing multiple skills, ` +
+                `but the GitHub API returned HTTP ${listing.apiError} (${listing.apiError === 403 ? "rate-limited — try again later or use a GitHub token" : "error"}) ` +
+                `when listing its contents.`,
+            };
+          }
         }
       }
       return { error: `Failed to fetch SKILL.md: HTTP ${res.status}` };
@@ -300,7 +350,46 @@ export async function installFromUrl(url: string): Promise<{ name: string; warni
   }
 }
 
-export async function installFromPath(sourcePath: string): Promise<{ name: string; warnings: string[] } | { error: string }> {
+/**
+ * Install every skill subdirectory from a GitHub parent directory.
+ * Each subdirectory is installed independently — failures in one skill
+ * do not block the others.
+ */
+async function installMultipleFromGitHub(
+  parent: { owner: string; repo: string; ref: string; dir: string },
+  subdirs: string[],
+): Promise<InstallResult> {
+  const names: string[] = [];
+  const failed: string[] = [];
+  const warnings: string[] = [];
+
+  for (const subdir of subdirs) {
+    const skillDir = parent.dir ? `${parent.dir}/${subdir}` : subdir;
+    const rawUrl = `https://raw.githubusercontent.com/${parent.owner}/${parent.repo}/${parent.ref}/${skillDir}/SKILL.md`;
+
+    const result = await installFromUrl(rawUrl);
+    if ("error" in result) {
+      failed.push(subdir);
+      warnings.push(`${subdir}: ${result.error}`);
+    } else if ("names" in result) {
+      // Shouldn't happen (nested batch), but handle gracefully
+      names.push(...result.names);
+      failed.push(...result.failed);
+      warnings.push(...result.warnings);
+    } else {
+      names.push(result.name);
+      warnings.push(...result.warnings);
+    }
+  }
+
+  if (names.length === 0) {
+    return { error: `None of the ${subdirs.length} skills could be installed:\n${warnings.join("\n")}` };
+  }
+
+  return { names, warnings, failed };
+}
+
+export async function installFromPath(sourcePath: string): Promise<InstallResult> {
   try {
     const info = await stat(sourcePath).catch(() => undefined);
     if (!info) return { error: `No such file or directory: ${sourcePath}` };
@@ -320,6 +409,29 @@ export async function installFromPath(sourcePath: string): Promise<{ name: strin
     // be completely unrelated.
     const isBareFile = !isDir && resolvedSrcDir === resolve(process.cwd());
 
+    // For directories: check if this is a parent containing multiple skills.
+    // If so, install all of them instead of refusing.
+    if (isDir) {
+      const nestedSkills: string[] = [];
+      const topEntries = await readdir(srcDir, { withFileTypes: true });
+      for (const entry of topEntries) {
+        if (!entry.isDirectory() || SKIP_DIRS.has(entry.name)) continue;
+        try {
+          await stat(join(srcDir, entry.name, "SKILL.md"));
+          nestedSkills.push(entry.name);
+        } catch { /* no SKILL.md in this subdir — fine */ }
+      }
+      if (nestedSkills.length > 0) {
+        // Check whether the parent itself also has a SKILL.md. If it does,
+        // it's a single skill whose subdirectories happen to contain their
+        // own SKILL.md — don't treat it as a batch install.
+        const parentHasSkill = await readFile(join(srcDir, "SKILL.md"), "utf-8").catch(() => undefined);
+        if (!parentHasSkill) {
+          return await installMultipleFromPath(sourcePath, nestedSkills);
+        }
+      }
+    }
+
     const markdown = await readFile(mdPath, "utf-8").catch(() => undefined);
     if (markdown === undefined) {
       return { error: isDir ? `No SKILL.md in ${sourcePath}` : `Could not read ${sourcePath}` };
@@ -334,26 +446,6 @@ export async function installFromPath(sourcePath: string): Promise<{ name: strin
     const destDir = join(getAgavDir(), "skills", slugify(name));
 
     if (isDir) {
-      // Refuse to copy a directory that contains nested skills — the user
-      // probably pointed at a parent folder instead of a specific skill dir.
-      const nestedSkills: string[] = [];
-      const topEntries = await readdir(srcDir, { withFileTypes: true });
-      for (const entry of topEntries) {
-        if (!entry.isDirectory() || SKIP_DIRS.has(entry.name)) continue;
-        try {
-          await stat(join(srcDir, entry.name, "SKILL.md"));
-          nestedSkills.push(entry.name);
-        } catch { /* no SKILL.md in this subdir — fine */ }
-      }
-      if (nestedSkills.length > 0) {
-        return {
-          error:
-            `The directory contains ${nestedSkills.length} nested skill${nestedSkills.length === 1 ? "" : "s"} ` +
-            `(${nestedSkills.join(", ")}). Point at a specific skill directory instead, ` +
-            `e.g. /skills add ${join(sourcePath, nestedSkills[0]!)}`,
-        };
-      }
-
       const size = await measureTree(srcDir);
       if (!size) {
         return {
@@ -366,24 +458,64 @@ export async function installFromPath(sourcePath: string): Promise<{ name: strin
     } else {
       await ensureDir(destDir);
       await writeFile(join(destDir, "SKILL.md"), markdown);
-      const found: string[] = [];
-      for (const assetDir of SPEC_ASSET_DIRS) {
-        const src = join(srcDir, assetDir);
-        if (!(await stat(src).then((s) => s.isDirectory()).catch(() => false))) continue;
-        if (!(await measureTree(src))) {
-          warnings.push(`Skipped ${assetDir}/ — it exceeds the install limit.`);
-          continue;
+      // Only scan for sibling asset directories when the .md file lives
+      // inside a proper skill directory.  A bare file in the CWD should
+      // not cause unrelated directories to be copied.
+      if (!isBareFile) {
+        const found: string[] = [];
+        for (const assetDir of SPEC_ASSET_DIRS) {
+          const src = join(srcDir, assetDir);
+          if (!(await stat(src).then((s) => s.isDirectory()).catch(() => false))) continue;
+          if (!(await measureTree(src))) {
+            warnings.push(`Skipped ${assetDir}/ — it exceeds the install limit.`);
+            continue;
+          }
+          await copyTree(src, join(destDir, assetDir));
+          found.push(assetDir);
         }
-        await copyTree(src, join(destDir, assetDir));
-        found.push(assetDir);
+        if (found.length > 0) warnings.push(`Also installed: ${found.map((d) => `${d}/`).join(", ")}`);
       }
-      if (found.length > 0) warnings.push(`Also installed: ${found.map((d) => `${d}/`).join(", ")}`);
     }
 
     return { name, warnings };
   } catch (err) {
     return { error: `Install failed: ${err instanceof Error ? err.message : String(err)}` };
   }
+}
+
+/**
+ * Install every skill subdirectory from a local parent directory.
+ * Each subdirectory is installed independently — failures in one skill
+ * do not block the others.
+ */
+async function installMultipleFromPath(
+  parentPath: string,
+  subdirs: string[],
+): Promise<InstallResult> {
+  const names: string[] = [];
+  const failed: string[] = [];
+  const warnings: string[] = [];
+
+  for (const subdir of subdirs) {
+    const result = await installFromPath(join(parentPath, subdir));
+    if ("error" in result) {
+      failed.push(subdir);
+      warnings.push(`${subdir}: ${result.error}`);
+    } else if ("names" in result) {
+      names.push(...result.names);
+      failed.push(...result.failed);
+      warnings.push(...result.warnings);
+    } else {
+      names.push(result.name);
+      warnings.push(...result.warnings);
+    }
+  }
+
+  if (names.length === 0) {
+    return { error: `None of the ${subdirs.length} skills could be installed:\n${warnings.join("\n")}` };
+  }
+
+  return { names, warnings, failed };
 }
 
 export async function removeSkill(name: string): Promise<boolean> {
@@ -397,4 +529,35 @@ export async function removeSkill(name: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Remove all user-installed (non-bundled) skills from the global skills
+ * directory. Bundled skills are compiled into the binary and are unaffected.
+ * Project-local skills (under .agav/skills/) are also left alone — they
+ * belong to the project, not the user's global config.
+ *
+ * @returns Names of the skills that were removed.
+ */
+export async function clearSkills(): Promise<string[]> {
+  const skillsDir = join(getAgavDir(), "skills");
+  let entries: string[];
+  try {
+    entries = await readdir(skillsDir);
+  } catch {
+    return []; // Directory doesn't exist or isn't readable — nothing to clear
+  }
+
+  const removed: string[] = [];
+  const { rm } = await import("node:fs/promises");
+  for (const entry of entries) {
+    const full = join(skillsDir, entry);
+    const info = await stat(full).catch(() => null);
+    if (!info?.isDirectory()) continue;
+    try {
+      await rm(full, { recursive: true, force: true });
+      removed.push(entry);
+    } catch { /* best effort */ }
+  }
+  return removed;
 }
