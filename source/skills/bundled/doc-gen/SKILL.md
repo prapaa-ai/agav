@@ -3,13 +3,7 @@ name: doc-gen
 description: Generate documentation for code
 version: 1.0.0
 invocation: both
-allowed-tools:
-  - read_file
-  - write_file
-  - grep_search
-  - find_files
-  - list_directory
-  - overview
+allowed-tools: read_file write_file grep_search find_files list_directory overview
 tags:
   - documentation
 ---

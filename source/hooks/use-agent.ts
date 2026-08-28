@@ -213,7 +213,13 @@ export function useAgent(
   conversationRef.current.setModel(config.model);
 
   const refreshDisplay = useCallback(() => {
-    process.stdout.write("\x1Bc");
+    // RIS (\x1Bc) resets terminal state including cursor visibility.
+    // Re-hide the hardware cursor because Ink's log-update will not
+    // re-issue the hide after a full reset (it thinks it is still hidden).
+    // \x1B[3J clears the scrollback buffer so that the banner (and other
+    // Static items) are not duplicated when the user scrolls up after the
+    // Ink <Static> component remounts and re-renders all items.
+    process.stdout.write("\x1B[3J\x1Bc\x1b[?25l");
     const displayMsgs = messagesToDisplay(conversationRef.current.getMessages());
     setMessages(displayMsgs);
     setTranscriptRevision((revision) => revision + 1);
@@ -363,11 +369,18 @@ export function useAgent(
       // Start MCP servers
       if (config.mcpServers) {
         for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
+          // Skip non-server entries: schema metadata keys (description, eg, etc.)
+          // and malformed values. A valid server config must have either `command`
+          // (stdio) or `url` (remote) — anything else is not a real server entry.
+          if (typeof serverConfig !== "object" || serverConfig === null
+            || !("command" in serverConfig || "url" in serverConfig)) {
+            continue;
+          }
           try {
             await mcpManagerRef.current.startServer(name, serverConfig);
             syncMcpState();
-          } catch {
-            // MCP server failed to start — non-fatal
+          } catch (err) {
+            process.stderr.write(`[mcp:${name}] failed to start: ${err instanceof Error ? err.message : String(err)}\n`);
           }
         }
       }

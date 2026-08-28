@@ -3,12 +3,7 @@ name: simplify
 description: Reduce complexity and simplify code
 version: 1.0.0
 invocation: both
-allowed-tools:
-  - read_file
-  - edit_file
-  - grep_search
-  - find_files
-  - run_tests
+allowed-tools: read_file edit_file grep_search find_files run_tests
 tags:
   - simplification
   - quality

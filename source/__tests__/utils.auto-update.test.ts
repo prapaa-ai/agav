@@ -105,7 +105,7 @@ describe("installer docs and scripts", () => {
     // Nothing may skip verification except the documented opt-out.
     expect(installSh).toContain("checksum_abort");
     expect(installSh).toContain("AGAV_SKIP_CHECKSUM");
-    expect(installPs1).toContain("Get-FileHash");
+    expect(installPs1).toContain("SHA256");
     expect(installPs1).toContain("$DownloadUrl.sha256");
     expect(installPs1).toContain("Checksum verification failed");
   });

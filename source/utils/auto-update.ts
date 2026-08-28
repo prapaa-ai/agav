@@ -2,7 +2,7 @@ import { join, sep } from "node:path";
 import { homedir, platform, arch } from "node:os";
 import { readFile, writeFile, rename, chmod, copyFile, unlink, mkdir, readdir, stat, symlink, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { createWriteStream, createReadStream } from "node:fs";
+import { createWriteStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -92,13 +92,18 @@ function getBinaryName(): string {
  * unusable, so the caller can fall back to another URL. The partial file is
  * removed on failure; a truncated ~100 MB download must not be left behind for
  * the stale sweep to find a day later.
+ *
+ * Returns the SHA-256 hex digest of the bytes written to disk (i.e. after
+ * decompression when applicable), or null on failure. Computing the hash
+ * inline avoids a second full read of a ~100 MB binary just for checksum
+ * verification — the bottleneck that made "Verifying checksum" feel slow.
  */
 async function streamAssetToFile(
   url: string,
   destPath: string,
   activity: string,
   decompress: boolean,
-): Promise<boolean> {
+): Promise<string | null> {
   // A fixed deadline on the whole transfer would kill a healthy download on a
   // slow link, because the signal stays live while the body streams. Abort on
   // inactivity instead, re-arming the timer each time a chunk arrives.
@@ -117,7 +122,7 @@ async function streamAssetToFile(
       redirect: "follow",
       signal: controller.signal,
     });
-    if (!res.ok || !res.body) return false;
+    if (!res.ok || !res.body) return null;
 
     const totalBytes = Number(res.headers.get("content-length")) || 0;
     let downloadedBytes = 0;
@@ -153,17 +158,28 @@ async function streamAssetToFile(
         callback(null, chunk);
       },
     });
+
+    // Hash the decompressed bytes as they stream to disk, so checksum
+    // verification doesn't require a second full read of the file.
+    const hash = createHash("sha256");
+    const hashStream = new Transform({
+      transform(chunk, _encoding, callback) {
+        hash.update(chunk);
+        callback(null, chunk);
+      },
+    });
+
     const fileStream = createWriteStream(destPath);
     if (decompress) {
-      await pipeline(res.body as any, progressStream, createGunzip(), fileStream);
+      await pipeline(res.body as any, progressStream, createGunzip(), hashStream, fileStream);
     } else {
-      await pipeline(res.body as any, progressStream, fileStream);
+      await pipeline(res.body as any, progressStream, hashStream, fileStream);
     }
     renderProgress(true);
-    return true;
+    return hash.digest("hex");
   } catch {
     await rm(destPath, { force: true }).catch(() => {});
-    return false;
+    return null;
   } finally {
     if (stallTimer) clearTimeout(stallTimer);
   }
@@ -188,15 +204,20 @@ async function downloadBinary(version: string, label?: string): Promise<string |
     // to the full binary. Either way the digest below is the one published for
     // the *raw* asset, checked against the decompressed file, so the compressed
     // path is not a second thing to trust.
-    let ok = await streamAssetToFile(`${url}.gz`, tmpPath, activity, true);
-    if (!ok) ok = await streamAssetToFile(url, tmpPath, activity, false);
-    if (!ok) return null;
+    //
+    // streamAssetToFile returns the SHA-256 of the decompressed bytes written
+    // to disk, computed inline during the download. This eliminates the ~100 MB
+    // re-read that used to make the post-download checksum step noticeably slow
+    // on macOS.
+    let fileHash = await streamAssetToFile(`${url}.gz`, tmpPath, activity, true);
+    if (!fileHash) fileHash = await streamAssetToFile(url, tmpPath, activity, false);
+    if (!fileHash) return null;
 
     // Verify against the published checksum before this ever becomes
     // executable. We are about to replace our own binary and re-exec it, so an
     // unverified download is a code-execution primitive. Fail closed: if the
     // .sha256 asset is missing or doesn't match, abandon the update.
-    if (!(await verifyChecksum(tmpPath, `${url}.sha256`))) {
+    if (!(await verifyChecksum(fileHash, `${url}.sha256`))) {
       await rm(tmpPath, { force: true });
       return null;
     }
@@ -209,8 +230,15 @@ async function downloadBinary(version: string, label?: string): Promise<string |
   }
 }
 
-/** Compare a downloaded file against the release's published .sha256 asset. */
-async function verifyChecksum(filePath: string, checksumUrl: string): Promise<boolean> {
+/**
+ * Compare a pre-computed hash against the release's published .sha256 asset.
+ *
+ * Accepts the hex digest directly (computed inline during the download stream)
+ * instead of re-reading the file from disk. The previous implementation ran
+ * sha256File() on the ~100 MB decompressed binary, which was the main source
+ * of the delay users saw after the download progress bar completed.
+ */
+async function verifyChecksum(actualHex: string, checksumUrl: string): Promise<boolean> {
   try {
     const res = await fetch(checksumUrl, {
       redirect: "follow",
@@ -220,8 +248,7 @@ async function verifyChecksum(filePath: string, checksumUrl: string): Promise<bo
     // Format is `<hex>  <filename>` (sha256sum output).
     const expected = (await res.text()).trim().split(/\s+/)[0]?.toLowerCase();
     if (!expected || !/^[a-f0-9]{64}$/.test(expected)) return false;
-    const actual = (await sha256File(filePath)).toLowerCase();
-    return actual === expected;
+    return actualHex.toLowerCase() === expected;
   } catch {
     return false;
   }
@@ -412,12 +439,6 @@ export async function cleanupStaleBackups(binaryPath: string): Promise<void> {
 function relaunchPath(binaryPath: string): string {
   const layout = detectManagedLayout(binaryPath);
   return layout ? join(layout.currentLink, layout.binaryName) : binaryPath;
-}
-
-async function sha256File(path: string): Promise<string> {
-  const hash = createHash("sha256");
-  await pipeline(createReadStream(path), hash);
-  return hash.digest("hex");
 }
 
 function extractBullets(body: string): string[] {

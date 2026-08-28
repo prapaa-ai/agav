@@ -10,14 +10,15 @@
     "build"
   ],
   "scripts": {
-    "build": "tsc && node -e \"require('fs').copyFileSync('source/cli.tsx','build/cli.js')\" && node -e \"require('fs').cpSync('source/agents/bundled','build/agents/bundled',{recursive:true})\"",
+    "gen:skills": "node scripts/gen-bundled-skills.mjs",
+    "build": "pnpm gen:skills && tsc && node -e \"require('fs').copyFileSync('source/cli.tsx','build/cli.js')\" && node -e \"require('fs').cpSync('source/agents/bundled','build/agents/bundled',{recursive:true})\" && node -e \"require('fs').cpSync('source/skills/bundled','build/skills/bundled',{recursive:true})\" && node -e \"require('fs').copyFileSync('source/agents/sandbox-exec.mjs','build/agents/sandbox-exec.mjs')\"",
     "dev": "tsx --watch source/cli.tsx",
     "start": "tsx source/cli.tsx",
     "typecheck": "tsc --noEmit",
     "test": "vitest run source",
     "test:coverage": "vitest run --coverage",
     "test:installer": "sh scripts/tests/run-installer-tests.sh",
-    "build:binary": "bun build source/cli.tsx --compile --outfile dist/agav",
+    "build:binary": "pnpm gen:skills && bun build source/cli.tsx --compile --outfile dist/agav",
     "build:binary:all": "bash scripts/build-binary.sh all",
     "prepare": "husky"
   },

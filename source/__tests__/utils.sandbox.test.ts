@@ -19,7 +19,7 @@ vi.mock("node:path", () => ({
 }));
 
 import { execFileSync } from "node:child_process";
-import { isDestructiveCommand } from "../utils/sandbox.js";
+import { isDestructiveCommand, requireSandbox } from "../utils/sandbox.js";
 
 const execFileSyncMock = vi.mocked(execFileSync);
 
@@ -79,5 +79,27 @@ describe("utils/sandbox", () => {
     expect(isDestructiveCommand("git push origin main")).toBe(false);
     expect(isDestructiveCommand("chmod -R 755 .")).toBe(false);
     expect(isDestructiveCommand("curl https://example.com | python")).toBe(false);
+  });
+
+  it("requireSandbox throws when backend is none", async () => {
+    vi.resetModules();
+    process.env.AGAV_NO_SANDBOX = "1";
+    const sandbox = await import("../utils/sandbox.js");
+    expect(() => sandbox.requireSandbox()).toThrow("Sandbox required but no sandbox backend is available");
+    delete process.env.AGAV_NO_SANDBOX;
+  });
+
+  it("requireSandbox does not throw when backend is seatbelt", async () => {
+    vi.resetModules();
+    const cp = await import("node:child_process");
+    const sandbox = await import("../utils/sandbox.js");
+    vi.mocked(cp.execFileSync).mockImplementation((...args: any[]) => {
+      if (args[0] === "/bin/sh" && args[1]?.[1]?.includes("sandbox-exec")) {
+        return Buffer.from("/usr/bin/sandbox-exec\n");
+      }
+      throw new Error("not found");
+    });
+
+    expect(() => sandbox.requireSandbox()).not.toThrow();
   });
 });
