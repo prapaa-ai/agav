@@ -38,7 +38,6 @@ const KNOWN_FLAGS = [
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
   "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns",
-  "--sandbox-required",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -103,8 +102,6 @@ export function parseArgs(argv: string[]) {
       flags.outputSchema = arg.slice("--output-schema=".length);
     } else if (arg === "--deny-writes") {
       flags.denyWrites = true;
-    } else if (arg === "--sandbox-required") {
-      flags.sandboxRequired = true;
     } else if (arg === "--resume" || arg === "-r") {
       flags.resume = argv[i + 1] && !argv[i + 1]!.startsWith("-") ? argv[++i]! : true;
     } else if (arg === "--ollama-host") {
@@ -376,7 +373,6 @@ export async function main() {
     --resume, -r [id]    Resume a session (list if no id, prefix match if given)
     --auto-accept, -y    Skip tool confirmations
     --deny-writes        Block all write operations
-    --sandbox-required   Refuse to start without an OS-level sandbox
     --help, -h           Show this help
     --version, -v        Show version
 
@@ -496,15 +492,6 @@ export async function main() {
     config.permissionMode = "auto-accept";
   } else if (flags.denyWrites) {
     config.permissionMode = "deny-writes";
-  }
-
-  if (flags.sandboxRequired) {
-    config.sandboxRequired = true;
-  }
-
-  if (config.sandboxRequired) {
-    const { requireSandbox } = await import("./utils/sandbox.js");
-    requireSandbox();
   }
 
   loadTheme(config.theme);

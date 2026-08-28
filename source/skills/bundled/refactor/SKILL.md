@@ -3,15 +3,7 @@ name: refactor
 description: Suggest and apply code refactoring
 version: 1.0.0
 invocation: both
-allowed-tools:
-  - read_file
-  - edit_file
-  - write_file
-  - grep_search
-  - find_files
-  - list_directory
-  - run_command
-  - run_tests
+allowed-tools: read_file edit_file write_file grep_search find_files list_directory run_command run_tests
 tags:
   - refactoring
   - quality

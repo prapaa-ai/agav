@@ -3,12 +3,7 @@ name: code-review
 description: Review code changes for bugs, security issues, and improvements
 version: 1.0.0
 invocation: both
-allowed-tools:
-  - read_file
-  - grep_search
-  - find_files
-  - list_directory
-  - run_command
+allowed-tools: read_file grep_search find_files list_directory run_command
 tags:
   - review
   - quality
