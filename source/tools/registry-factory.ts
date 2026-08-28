@@ -16,6 +16,33 @@ import { overviewTool } from "./overview.js";
 import { testRunnerTool } from "./test-runner.js";
 import { memoryTool } from "./memory.js";
 
+/**
+ * The set of tool names that ship with agav. Exported so that skill validation
+ * can warn about typos in allowed-tools / disallowed-tools without needing
+ * a live registry instance.
+ */
+export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "read_file",
+  "write_file",
+  "edit_file",
+  "run_command",
+  "grep_search",
+  "find_files",
+  "list_directory",
+  "web_search",
+  "lsp_query",
+  "read_notebook",
+  "edit_notebook",
+  "fetch_url",
+  "update_plan",
+  "github",
+  "overview",
+  "run_tests",
+  "save_memory",
+  "subagent",
+  "activate_skill",
+]);
+
 /** Register the default built-in tool set used by interactive and print-mode sessions. */
 export function createToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();

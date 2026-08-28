@@ -3,12 +3,7 @@ name: security-scan
 description: Check code for security vulnerabilities
 version: 1.0.0
 invocation: user
-allowed-tools:
-  - read_file
-  - grep_search
-  - find_files
-  - list_directory
-  - run_command
+allowed-tools: read_file grep_search find_files list_directory run_command
 tags:
   - security
   - audit
