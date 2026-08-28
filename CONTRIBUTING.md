@@ -34,6 +34,24 @@ source/
 
 ## Development workflow
 
+### Fork and clone
+
+Non-maintainers don't have push access to this repository, so you'll need to fork it first:
+
+1. Click **Fork** on the [GitHub repo page](https://github.com/prapaa-ai/agav)
+2. Clone your fork locally:
+   ```bash
+   git clone https://github.com/<your-username>/agav && cd agav
+   pnpm install --frozen-lockfile
+   ```
+3. Create a branch for your change:
+   ```bash
+   git checkout -b feat/my-change
+   ```
+4. When you're ready, push to your fork and open a PR against `beta`
+
+> **Note:** The `main` branch is protected — only maintainers merge `beta → main` to cut stable releases or push hotfixes directly. All external contributions go through `beta`.
+
 ### Local checks before opening a PR
 
 ```bash
@@ -156,6 +174,7 @@ main (0.1.9)                          ← current stable
 
 - **Pre-releases** are visible on the releases page but not served by `install.sh` by default
 - **Stable releases** become the Latest release and are served by `install.sh`
+- The `beta → main` merge and hotfixes to `main` are **maintainer-only** operations
 - Hotfixes can go directly to `main` with a patch bump (e.g. `0.2.1`)
 
 **Installing a beta version:**
@@ -220,6 +239,7 @@ Every contribution matters — code is just one of many ways to make Agav better
 - Fix typos, unclear wording, or outdated instructions in README.md or CONTRIBUTING.md
 - Add examples for commands or workflows you found confusing
 - Translate docs into other languages
+- Contribute to the **[documentation website](https://docs.agav.dev)** — the source is in the [`docs/`](docs/) directory (a Next.js app with Markdown content). Guides, reference pages, and workflow examples are all welcome
 
 ### Test and give feedback
 - Try Agav with different providers (Anthropic, OpenAI, Gemini, Vertex AI, Ollama) and report issues
