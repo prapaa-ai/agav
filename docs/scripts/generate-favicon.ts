@@ -3,8 +3,7 @@ import path from 'node:path'
 import sharp from 'sharp'
 
 const root = process.cwd()
-const logoSourcePath = path.join(root, 'public', 'logo_whiteBackground.svg')
-const logoPath = path.join(root, 'public', 'logo.png')
+const logoSourcePath = path.join(root, 'public', 'logo.png')
 const svgPath = path.join(root, 'public', 'favicon.svg')
 const pngPath = path.join(root, 'app', 'icon.png')
 const applePath = path.join(root, 'app', 'apple-icon.png')
@@ -56,7 +55,6 @@ async function main() {
 `
 
   await fs.mkdir(path.dirname(svgPath), { recursive: true })
-  await fs.writeFile(logoPath, logoBuffer)
   await fs.writeFile(svgPath, faviconSvg)
   await fs.writeFile(pngPath, await renderLogo(96, 96, { top: 2, bottom: 2, left: 2, right: 2 }))
   await fs.writeFile(applePath, await renderLogo(180, 180, { top: 4, bottom: 6, left: 4, right: 4 }))
