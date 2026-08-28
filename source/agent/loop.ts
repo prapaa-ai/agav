@@ -75,6 +75,9 @@ interface LoopParams {
 // constantly, so prompting for it would make every turn unusable.
 const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_directory", "web_search", "lsp_query", "read_notebook", "fetch_url", "overview", "activate_skill", "save_memory", "update_plan"]);
 
+/** Tools that perform file mutations — always blocked in deny-writes mode. */
+const WRITE_TOOLS = new Set(["edit_file", "write_file", "edit_notebook"]);
+
 function isAllowed(
   toolName: string,
   input: Record<string, unknown>,
@@ -394,7 +397,7 @@ export async function* runAgentLoop(
           && !trustedSafe
           && permissionMode !== "auto-accept"
           && !isAllowed(call.name, input, params.allowedTools));
-      if ((denyWrites && isDestructive) || (needsConfirm && (denyWrites || !confirmTool))) {
+      if ((denyWrites && (isDestructive || WRITE_TOOLS.has(call.name))) || (needsConfirm && (denyWrites || !confirmTool))) {
         const reason = denyWrites
           ? "Write operations are denied (--deny-writes mode)."
           : `Tool '${call.name}' requires confirmation but no confirmation handler is available (headless mode).`;

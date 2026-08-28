@@ -69,15 +69,39 @@ function filterEnv(): Record<string, string> {
 
 const SEATBELT_PROFILE = `
 (version 1)
-(allow default)
+(deny default)
+
+;; --- process execution ---
+(allow process-exec)
+(deny process-exec (subpath "/System/Library/CoreServices"))
+(allow process-fork)
+(allow signal (target self))
+
+;; --- filesystem reads ---
+(allow file-read*)
+(deny file-read* (subpath (param "HOME_SSH")))
+(deny file-read* (subpath (param "HOME_AWS")))
+(deny file-read* (subpath (param "HOME_GPG")))
+
+;; --- filesystem writes: only CWD and temp ---
+(allow file-write* (subpath (param "CWD")))
+(allow file-write* (subpath (param "TMPDIR")))
+(allow file-write* (literal "/dev/null"))
+(allow file-write* (literal "/dev/dtracehelper"))
 (deny file-write* (subpath "/System"))
 (deny file-write* (subpath "/usr"))
 (deny file-write* (subpath "/Library"))
 (deny file-write* (subpath "/Applications"))
-(deny file-read* (subpath (param "HOME_SSH")))
-(deny file-read* (subpath (param "HOME_AWS")))
-(deny file-read* (subpath (param "HOME_GPG")))
-(deny process-exec (subpath "/System/Library/CoreServices"))
+
+;; --- network: blocked ---
+(deny network*)
+
+;; --- IPC / mach / sysctl (required for basic process operation) ---
+(allow sysctl-read)
+(allow mach-lookup)
+(allow ipc-posix-shm-read-data)
+(allow ipc-posix-shm-write-data)
+(allow ipc-posix-shm-write-create)
 `;
 
 function runSeatbelt(
@@ -98,6 +122,8 @@ function runSeatbelt(
         "-D", `HOME_SSH=${home}/.ssh`,
         "-D", `HOME_AWS=${home}/.aws`,
         "-D", `HOME_GPG=${home}/.gnupg`,
+        "-D", `CWD=${cwd}`,
+        "-D", `TMPDIR=${tmpdir()}`,
         "/bin/sh", "-c", command,
       ],
       { timeout, maxBuffer, cwd, env: filterEnv() },
@@ -129,6 +155,7 @@ function runBubblewrap(
         "--tmpfs", home + "/.aws",
         "--tmpfs", home + "/.gnupg",
         "--tmpfs", home + "/.config",
+        "--unshare-net",
         "--die-with-parent",
         "--chdir", cwd,
         "/bin/sh", "-c", command,
@@ -177,11 +204,24 @@ function runUnsandboxed(
   const isWindows = platform() === "win32";
   const shell = isWindows ? "cmd.exe" : "/bin/sh";
   const shellArgs = isWindows ? ["/c", command] : ["-c", command];
+  const env = filterEnv();
+  if (isWindows) {
+    // On Windows there is no kernel-level sandbox. Apply env-var shaping as a
+    // best-effort mitigation: mark the process as sandboxed so well-behaved
+    // tools can self-restrict, and strip proxy vars to reduce network reach.
+    env["AGAV_SANDBOX_ACTIVE"] = "1";
+    delete env["HTTP_PROXY"];
+    delete env["HTTPS_PROXY"];
+    delete env["ALL_PROXY"];
+    delete env["http_proxy"];
+    delete env["https_proxy"];
+    delete env["all_proxy"];
+  }
   return new Promise((resolve) => {
     execFile(
       shell,
       shellArgs,
-      { timeout, maxBuffer, cwd, env: filterEnv() },
+      { timeout, maxBuffer, cwd, env },
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });
       },
@@ -261,4 +301,19 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
   }
 
   return { ...result, backend };
+}
+
+/**
+ * Throw if no OS-level sandbox backend is available. Used when
+ * `sandboxRequired` is enabled in config or via `--sandbox-required`.
+ */
+export function requireSandbox(): void {
+  const backend = detectSandboxBackend();
+  if (backend === "none") {
+    throw new Error(
+      "Sandbox required but no sandbox backend is available. " +
+      "Install sandbox-exec (macOS) or bubblewrap (Linux), use --sandbox docker, " +
+      "or remove the sandboxRequired setting to run without a sandbox.",
+    );
+  }
 }

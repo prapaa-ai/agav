@@ -53,6 +53,7 @@ export interface AgavConfig {
   maxIterations: number;
   errorRetries: number;
   permissionMode: PermissionMode;
+  sandboxRequired?: boolean;
   allowedTools?: string[];
   hooks?: AgavHooks;
   theme?: Partial<AgavTheme>;
@@ -115,6 +116,11 @@ const PROJECT_CONFIG_TEMPLATE = {
     enum: ["ask", "auto-accept", "deny-writes"],
     type: "string",
     eg: "ask",
+  },
+  sandboxRequired: {
+    description: "When true, Agav refuses to start if no OS-level sandbox (Seatbelt, Bubblewrap, or Docker) is available.",
+    type: "boolean",
+    eg: false,
   },
   allowedTools: {
     description: "Optional tool names or scoped tool patterns that may run without confirmation.",
