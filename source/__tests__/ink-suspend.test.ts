@@ -142,10 +142,10 @@ describe("ink terminal suspension", () => {
 		resume();
 
 		const written = stdout.text();
-		expect(written).toContain("[2J");
+		expect(written).toContain("\x1b[2J");
 		expect(written).toContain("first");
 		// Never by dropping back to the main buffer.
-		expect(written).not.toContain("[?1049l");
+		expect(written).not.toContain("\x1b[?1049l");
 
 		instance.unmount();
 	});
