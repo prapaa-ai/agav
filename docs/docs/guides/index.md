@@ -23,6 +23,7 @@ The examples use [quora/model-deprecation-tracker](https://github.com/quora/mode
 | Repeat work on an interval, file change, or schedule | [Automate with Loops, Watch, and Schedules](/guides/scheduler) |
 | Carry durable knowledge across conversations | [Use Memory Across Sessions](/guides/leverage-memory) |
 | Connect an external tool or data source | [Connect an MCP Server](/guides/mcp) |
+| Create a custom agent with the wizard | [Create an Agent with the Wizard](/guides/build-agent-from-template) |
 | Add a local JavaScript tool | [Create a Local Plugin](/guides/plugins) |
 | Operate a multi-phase task with checkpoints | [Operate a Long-Running Task](/guides/long-running-agent) |
 

@@ -75,6 +75,14 @@ Windows has no kernel-level sandbox. As a best-effort mitigation, Agav:
 - Sets `AGAV_SANDBOX_ACTIVE=1` so well-behaved child tools can self-restrict
 - Strips `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (and lowercase variants) to reduce network reach
 
+### MCP command validation
+
+On Windows, MCP server subprocesses use `shell: true` for `.cmd` shim compatibility. Before spawning, Agav validates both the command and all arguments against a set of blocked shell metacharacters: `` & | < > ^ ; \` $ ( ) { } [ ] ! % " \n \r ``. If any metacharacter is found, the server startup is rejected immediately — preventing shell injection attacks through crafted MCP server configurations.
+
+Single quotes (`'`) are explicitly allowed since they are not dangerous in `cmd.exe`.
+
+On macOS and Linux, `shell: false` is used, so arguments are passed directly to the process without shell interpretation and no validation is needed.
+
 ### Credential filtering
 
 Across **all** sandbox backends (including unsandboxed), environment variables whose names match `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL`, or `AUTH` are stripped before spawning child processes.

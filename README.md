@@ -477,10 +477,11 @@ To save a full conversation to a file instead, use `/export` — it writes the e
 
 ## Extending
 
-- **MCP servers** — declare them under `mcpServers` in `config.json`; their tools and prompts join the session.
+- **MCP servers** — declare them under `mcpServers` in `config.json`; local stdio servers and remote HTTP/SSE endpoints expose their tools and prompts to the session.
 - **Skills** — reusable instruction bundles, loadable from a marketplace or written yourself.
 - **Plugins** — loaded from `~/.agav/plugins/`.
 - **Subagents** — the agent can delegate a scoped task to a fresh context and keep the noise out of yours.
+- **Agent creation** — `/agents → [3] Create` opens a wizard to build custom agents with LLM-generated system prompts and workspace MCP server selection.
 
 ## Documentation
 
