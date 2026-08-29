@@ -22,6 +22,9 @@ interface Props {
   /** Registers a callback that re-syncs the caret with the current buffer. */
   onCursorReset?: (fn: () => void) => void;
   disabled?: boolean;
+  /** When true, arrow keys do not cycle through prompt history (prevents
+   *  mouse-wheel-as-arrow-key from triggering re-renders during agent turns). */
+  suppressHistory?: boolean;
   commands?: CommandInfo[];
   keybindings: Keybindings;
   /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
@@ -77,7 +80,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
 }
 
 /** Renders the interactive prompt with history, completion, and paste handling. */
-export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, onCursorReset, disabled, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
+export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, onCursorReset, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
   const { isRawModeSupported } = useStdin();
   const [cursorPos, setCursorPos] = useState(0);
   const historyRef = useRef<string[]>([]);
@@ -299,8 +302,9 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
         }
       }
 
-      // Up arrow — message history
-      if (match.action === "historyUp" && !value.includes("\n")) {
+      // Up arrow — message history (suppressed during agent runs to prevent
+      // mouse-wheel-as-arrow-key from triggering costly re-renders).
+      if (match.action === "historyUp" && !value.includes("\n") && !suppressHistory) {
         const history = historyRef.current;
         if (history.length === 0) return;
         const nextIdx = Math.min(historyIndexRef.current + 1, history.length - 1);
@@ -312,7 +316,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
       }
 
       // Down arrow — newer history
-      if (match.action === "historyDown" && !value.includes("\n")) {
+      if (match.action === "historyDown" && !value.includes("\n") && !suppressHistory) {
         const history = historyRef.current;
         if (historyIndexRef.current <= 0) {
           historyIndexRef.current = -1;
@@ -383,7 +387,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
       }
 
       // Character input — pastes are handled by usePaste in use-paste-handler
-      if (input && !key.ctrl && !key.meta) {
+      if (input && !key.ctrl && !key.meta && input.length <= 2 && !input.startsWith('[')) {
         const before = value.slice(0, cursorPos);
         const after = value.slice(cursorPos);
         onChange(before + input + after);

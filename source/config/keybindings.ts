@@ -151,6 +151,13 @@ interface InkKey {
 /** `CSI 27 ; modifiers ; codepoint ~` — xterm's `modifyOtherKeys=2` encoding. */
 const XTERM_OTHER_KEY_RE = /^\x1b?\[27;(\d+);(\d+)~$/;
 
+// SGR mouse events: \x1b[<params;params;paramsM or \x1b[<params;params;paramsm
+// Legacy mouse events: \x1b[M followed by encoded bytes
+// These arrive when the terminal has mouse reporting enabled or in alternate
+// scroll mode on some emulators. Swallow them so they don't leak as text.
+const SGR_MOUSE_RE = /^\x1b\[<\d+;\d+;\d+[Mm]$/;
+const LEGACY_MOUSE_RE = /^\x1b\[M/;
+
 /** Overlay `patch` on an Ink key event without losing fields Ink adds beyond InkKey. */
 function patchKey<K extends InkKey>(key: K, patch: Partial<InkKey>): K {
   return { ...key, ...patch } as K;
@@ -175,7 +182,12 @@ export function normalizeKeyEvent<K extends InkKey>(input: string, key: K): { in
   if (input === "\n") return { input: "j", key: patchKey(key, { ctrl: true }) };
 
   const otherKey = XTERM_OTHER_KEY_RE.exec(input);
-  if (!otherKey) return { input, key };
+  if (!otherKey) {
+    if (SGR_MOUSE_RE.test(input) || LEGACY_MOUSE_RE.test(input)) {
+      return { input: '', key };
+    }
+    return { input, key };
+  }
 
   // The protocol sends modifiers biased by one; bits are shift/alt/ctrl.
   const modifiers = Math.max(0, Number(otherKey[1]) - 1);
