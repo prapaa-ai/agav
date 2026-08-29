@@ -38,7 +38,7 @@ Agav merges defaults, `~/.agav/config.json`, and `./.agav/config.json` in that o
 
 | Field | Values or behavior |
 | --- | --- |
-| `provider` | `anthropic`, `openai`, `gemini`, `vertex-ai`, or `ollama` |
+| `provider` | `anthropic`, `openai`, `openrouter`, `nvidia`, `gemini`, `vertex-ai`, or `ollama` |
 | `model` | Provider-specific model identifier |
 | `vertexAICredentialsPath` | Path to a Google Cloud service-account JSON file used by Vertex AI; setting it enables the provider. Supports a leading `~`. Prefer `VERTEX_AI_CREDENTIALS_PATH`. |
 | `vertexAILocation` | Vertex AI region, or `global` for the multi-region endpoint (default `global`). Can also be set with `VERTEX_AI_LOCATION`. |
@@ -52,7 +52,26 @@ Agav merges defaults, `~/.agav/config.json`, and `./.agav/config.json` in that o
 | `systemPrompt` | Additional project instructions |
 | `hooks` | Optional commands for `afterEdit`, `afterShell`, and `preCommit` |
 | `theme` | Partial terminal color overrides |
-| `mcpServers` | Named stdio MCP server definitions |
+| `mcpServers` | Named MCP server definitions (stdio and remote) |
 | `agentMarketplace` | URL of the agent marketplace (supports `https://` and `file://`). Defaults to the official marketplace. Set `AGAV_MARKETPLACE_URL` to override without editing the config file. |
+
+### MCP server fields
+
+**Stdio servers** (local subprocess):
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `command` | string | Executable to run (e.g. `npx`, `uvx`, `docker`) |
+| `args` | string[] | Arguments passed to the command |
+| `env` | Record<string, string> | Environment variables for the subprocess |
+
+**Remote servers** (HTTP/SSE):
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `url` | string | HTTP/SSE endpoint URL |
+| `type` | `"remote"` | Marks the entry as a remote server; inferred when `url` is present |
+| `transport` | `"http"` \| `"sse"` | Force a specific transport; omit to auto-detect (tries HTTP first, falls back to SSE) |
+| `headers` | Record<string, string> | Extra headers sent with every request (e.g. `Authorization`) |
 
 Project `allowedTools` entries are added to global entries rather than replacing them. The generated top-level `template` object in project configuration is documentation metadata and is removed before runtime merging.

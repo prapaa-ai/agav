@@ -87,4 +87,4 @@ This separates external research from local changes: GitHub remains read-only, w
 | Too many unrelated tools appear | Keep `GITHUB_TOOLSETS` limited to the task, such as `repos,issues`; GitHub documents the available toolsets and individual-tool options. |
 | You need to create or update GitHub content | Remove read-only mode only after reviewing the required token permissions and the task's intended write scope. |
 
-Agav currently accepts stdio subprocess MCP configuration. GitHub also offers other transports, but those do not use Agav's `mcpServers` configuration shape. For server options such as toolsets and read-only mode, see the [GitHub MCP server documentation](https://github.com/github/github-mcp-server#read-only-mode).
+Agav supports both stdio subprocess and remote HTTP/SSE MCP transports. GitHub's local MCP server uses the stdio transport shown above. For servers that expose an HTTP or SSE endpoint instead, see [Model Context Protocol — Remote servers](/features/mcp#remote-servers-http--sse). For server options such as toolsets and read-only mode, see the [GitHub MCP server documentation](https://github.com/github/github-mcp-server#read-only-mode).

@@ -20,7 +20,7 @@
 
 Agav reads, searches and edits the repository you run it in, and runs the commands you'd otherwise run yourself. On [Terminal-Bench 2.1](https://www.tbench.ai/leaderboard/terminal-bench/2.1) — all 89 tasks, five trials each, judge-audited trajectories — Agav scored [**84.7%**](https://github.com/harbor-framework/terminal-bench-2-1/pull/225) (377 of 445 trials, ± 0.84%), ahead of every entry on the current public board (submission in review).
 
-- **Six providers** — Anthropic, OpenAI, OpenRouter, Gemini, Vertex AI and Ollama, switchable mid-session with `/model`.
+- **Seven providers** — Anthropic, OpenAI, OpenRouter, NVIDIA NIM, Gemini, Vertex AI and Ollama, switchable mid-session with `/model`.
 - **Sandboxed commands** — shell tools run under Seatbelt on macOS and Bubblewrap on Linux where either is available.
 - **Non-interactive mode** — `agav run` and `agav --print` make the same agent scriptable from CI, with per-tool permissions and optional JSON Schema output.
 - **Sessions that survive** — resume, branch, name, search and export past conversations; `/compact` reclaims context without starting over. Plans are saved per-session and picked back up on resume.
@@ -68,7 +68,7 @@ agav update
 
 | Flag | Meaning |
 | --- | --- |
-| `--provider`, `-p` | `anthropic`, `openai`, `openrouter`, `gemini`, `vertex-ai` or `ollama` (default: `anthropic`) |
+| `--provider`, `-p` | `anthropic`, `openai`, `openrouter`, `nvidia`, `gemini`, `vertex-ai` or `ollama` (default: `anthropic`) |
 | `--model`, `-m` | Model name |
 | `--effort` | Reasoning effort: `low`, `medium`, `high` or `max` (default: `high`) |
 | `--print`, `-P` | Run the prompt, print the result, exit |
@@ -329,6 +329,25 @@ IDs ending in `-latest` prefixed with a tilde (`~anthropic/claude-sonnet-latest`
 
 Like the other providers' keys, an `openrouterApiKey` field in `.agav/config.json` or `~/.agav/config.json` is accepted and encrypted at rest — prefer the environment variable. `/model` lists live models straight from your account, and context-window sizes are looked up from OpenRouter so `/context` stays accurate across the whole catalog.
 
+### NVIDIA NIM
+
+```bash
+export NVIDIA_API_KEY="nvapi-..."
+agav --provider nvidia
+agav --provider nvidia --model nvidia/nemotron-3.5-lightning-30b-a3b
+```
+
+Or in config:
+
+```json
+{
+  "provider": "nvidia",
+  "model": "nvidia/nemotron-3.5-lightning-30b-a3b"
+}
+```
+
+All NVIDIA models use the `nvidia/` prefix. Context window sizes are detected automatically.
+
 ### Ollama
 
 A local server on `localhost:11434` is picked up with no configuration. Point Agav elsewhere with flags or environment variables:
@@ -388,6 +407,7 @@ Drop an `AGAV.md` (or `.agavrc`) in a repository to add project-specific instruc
 | --- | --- |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | Provider credentials |
 | `OPENROUTER_API_KEY` | OpenRouter credential (`sk-or-v1-...`) |
+| `NVIDIA_API_KEY` | NVIDIA NIM credential (`nvapi-...`) |
 | `VERTEX_AI_CREDENTIALS_PATH` / `VERTEX_AI_LOCATION` | Vertex AI service account and region |
 | `OLLAMA_HOST` / `OLLAMA_PORT` / `OLLAMA_ENDPOINT` / `OLLAMA_API_KEY` | Ollama connection |
 | `AGAV_OLLAMA_NUM_CTX` | Override the per-model Ollama context cap |
@@ -477,10 +497,11 @@ To save a full conversation to a file instead, use `/export` — it writes the e
 
 ## Extending
 
-- **MCP servers** — declare them under `mcpServers` in `config.json`; their tools and prompts join the session.
+- **MCP servers** — declare them under `mcpServers` in `config.json`; local stdio servers and remote HTTP/SSE endpoints expose their tools and prompts to the session.
 - **Skills** — reusable instruction bundles, loadable from a marketplace or written yourself.
 - **Plugins** — loaded from `~/.agav/plugins/`.
 - **Subagents** — the agent can delegate a scoped task to a fresh context and keep the noise out of yours.
+- **Agent creation** — `/agents → [3] Create` opens a wizard to build custom agents with LLM-generated system prompts and workspace MCP server selection.
 
 ## Documentation
 

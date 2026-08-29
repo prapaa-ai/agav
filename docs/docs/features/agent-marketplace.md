@@ -94,6 +94,12 @@ my-marketplace/
 
 See the [official marketplace repository](https://github.com/prapaa-ai/agav-marketplace) for a complete example.
 
+## Deleting agents
+
+When a user-created agent (one without a marketplace `sourceUrl`) is deleted from the List or Create tab, Agav automatically saves it as a template before removal. The template preserves the agent's name, description, system prompt, MCP server selections, and tags. You can restore it later from the Create tab (`[3] Create`).
+
+Marketplace agents (those installed from a URL) are deleted without creating a template — they can be reinstalled from the marketplace at any time.
+
 ## Related
 
 - [Agents](/features/agents) — how agents work
