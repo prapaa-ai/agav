@@ -1,6 +1,6 @@
 ---
 title: Connect a Provider
-description: Connect Agav to OpenAI, Anthropic, Gemini, Vertex AI, or Ollama
+description: Connect Agav to OpenAI, OpenRouter, NVIDIA NIM, Anthropic, Gemini, Vertex AI, or Ollama
 order: 3
 ---
 
@@ -13,7 +13,7 @@ Agav needs one model provider. The easiest path is:
 3. launch Agav with that provider and model
 4. ask one read-only question to confirm it works
 
-If you are not sure which provider to pick, use OpenAI, Anthropic, or Gemini if you already have an API key. Use Ollama if you want to run locally. Use Vertex AI if you already run on Google Cloud and want Gemini or Claude billed through that project.
+If you are not sure which provider to pick, use OpenAI, Anthropic, or Gemini if you already have an API key. Use OpenRouter if you want access to multiple providers behind a single key. Use NVIDIA NIM for NVIDIA-hosted models. Use Ollama if you want to run locally. Use Vertex AI if you already run on Google Cloud and want Gemini or Claude billed through that project.
 
 ## Fastest path
 
@@ -36,6 +36,71 @@ What files are in this repository? Do not change anything.
 export OPENAI_API_KEY="your-key"
 agav --provider openai --model gpt-5.4-mini
 ```
+
+## OpenRouter
+
+[OpenRouter](https://openrouter.ai) aggregates multiple model providers behind a single API key. Set the key as an environment variable:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-v1-..."
+```
+
+Start Agav with OpenRouter:
+
+```bash
+agav --provider openrouter
+agav --provider openrouter --model openrouter/auto
+```
+
+The default model is `openrouter/auto`, which lets OpenRouter choose the best model for each request. You can also specify any model available on OpenRouter:
+
+```bash
+agav --provider openrouter --model anthropic/claude-sonnet-4-20250514
+agav --provider openrouter --model openai/gpt-5.4-mini
+```
+
+Or set it in `~/.agav/config.json`:
+
+```json
+{
+  "provider": "openrouter",
+  "model": "openrouter/auto"
+}
+```
+
+`/fast` switches to a lightweight model and `/deep` to the most capable one available through OpenRouter.
+
+## NVIDIA NIM
+
+[NVIDIA NIM](https://build.nvidia.com) provides access to NVIDIA-hosted models through an OpenAI-compatible API. Set the API key:
+
+```bash
+export NVIDIA_API_KEY="nvapi-..."
+```
+
+Start Agav with NVIDIA NIM:
+
+```bash
+agav --provider nvidia
+agav --provider nvidia --model nvidia/nemotron-3.5-lightning-30b-a3b
+```
+
+The default model is `nvidia/nemotron-3.5-lightning-30b-a3b`. All models use the `nvidia/` prefix:
+
+```bash
+agav --provider nvidia --model nvidia/llama-3.3-nemotron-super-49b-v1
+```
+
+Or set it in `~/.agav/config.json`:
+
+```json
+{
+  "provider": "nvidia",
+  "model": "nvidia/nemotron-3.5-lightning-30b-a3b"
+}
+```
+
+Context window sizes are detected automatically from the NVIDIA API. The API base URL is `https://integrate.api.nvidia.com/v1`.
 
 ## Anthropic
 
@@ -127,6 +192,8 @@ If the key is set but Agav still cannot connect:
 
 - open a fresh terminal and set the variable again
 - confirm the variable name matches the provider exactly
+- for OpenRouter, confirm `OPENROUTER_API_KEY` is set and starts with `sk-or-v1-`
+- for NVIDIA NIM, confirm `NVIDIA_API_KEY` is set and starts with `nvapi-`
 - for Ollama, confirm the server is running and reachable
 - for remote Ollama, confirm `OLLAMA_ENDPOINT`, or `OLLAMA_HOST` plus `OLLAMA_PORT`
 - for Vertex AI, confirm `VERTEX_AI_CREDENTIALS_PATH` points at a readable service-account JSON file, and check `VERTEX_AI_LOCATION` if a Claude model requires a specific region

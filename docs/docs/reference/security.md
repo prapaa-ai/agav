@@ -45,6 +45,8 @@ Agav auto-detects the best available OS-level sandbox at startup:
 
 If no backend is available, commands run unsandboxed. Set `AGAV_NO_SANDBOX=1` to intentionally disable sandbox detection.
 
+The same sandbox backends also protect agent tool execution. When an agent runs a `.mjs` tool file, the tool process inherits the sandbox restrictions of the active backend. Bundled agents are trusted and run unsandboxed; global and project agent tools are sandboxed.
+
 ### Seatbelt (macOS)
 
 The Seatbelt profile uses **deny-default** with targeted allows:
@@ -75,16 +77,24 @@ Windows has no kernel-level sandbox. As a best-effort mitigation, Agav:
 - Sets `AGAV_SANDBOX_ACTIVE=1` so well-behaved child tools can self-restrict
 - Strips `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (and lowercase variants) to reduce network reach
 
+### MCP command validation
+
+On Windows, MCP server subprocesses use `shell: true` for `.cmd` shim compatibility. Before spawning, Agav validates both the command and all arguments against a set of blocked shell metacharacters: `` & | < > ^ ; \` $ ( ) { } [ ] ! % " \n \r ``. If any metacharacter is found, the server startup is rejected immediately — preventing shell injection attacks through crafted MCP server configurations.
+
+Single quotes (`'`) are explicitly allowed since they are not dangerous in `cmd.exe`.
+
+On macOS and Linux, `shell: false` is used, so arguments are passed directly to the process without shell interpretation and no validation is needed.
+
 ### Credential filtering
 
 Across **all** sandbox backends (including unsandboxed), environment variables whose names match `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL`, or `AUTH` are stripped before spawning child processes.
 
 ### Requiring a sandbox
 
-Use `--sandbox-required` or set `sandboxRequired: true` in configuration to make Agav refuse to start if no OS-level sandbox backend is available. This is recommended for CI, automation, and shared environments.
+Set `sandboxRequired: true` in `~/.agav/config.json` or `.agav/config.json` to make Agav refuse to start if no OS-level sandbox backend is available. This is recommended for CI, automation, and shared environments.
 
-```bash
-agav --sandbox-required run "deploy to staging"
+```json
+{ "sandboxRequired": true }
 ```
 
 ## File tool path boundaries

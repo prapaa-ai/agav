@@ -32,6 +32,8 @@ mcp-servers:
   - key: my-mcp
     command: npx
     args: [-y, "@scope/my-mcp-server"]
+    env:
+      MY_API_KEY: "${MY_API_KEY}"
 ---
 
 # My Agent
@@ -82,12 +84,14 @@ System prompt content here.
 
 ```yaml
 mcp-servers:
-  - key: my-mcp          # identifier for this connection
-    command: npx          # runtime: npx, uvx, docker, or http
-    args: [-y, "@scope/pkg"]  # arguments passed to the runtime
+  - key: my-mcp
+    command: npx
+    args: [-y, "@scope/my-mcp-server"]
+    env:
+      MY_API_KEY: "${MY_API_KEY}"
 ```
 
-MCP servers declared here are started when the agent runs and stopped when it finishes. They are scoped to the agent — other agents and the parent session cannot access them. Credentials from `required-config` are injected into the MCP server process as environment variables.
+MCP servers declared here are started when the agent runs and stopped when it finishes. They are scoped to the agent — other agents and the parent session cannot access them. `env` provides per-server environment variables that are layered on top of the process environment and agent credentials from `required-config`.
 
 ### A2A fields (experimental)
 

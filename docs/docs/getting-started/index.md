@@ -14,7 +14,7 @@ You need:
 
 - a terminal
 - a local Git repository to explore
-- an API key for OpenAI, Anthropic, or Gemini; a Google Cloud service-account JSON file for Vertex AI; or a running Ollama installation
+- an API key for OpenAI, Anthropic, Gemini, OpenRouter, or NVIDIA NIM; a Google Cloud service-account JSON file for Vertex AI; or a running Ollama installation
 
 The prebuilt Agav release does not require Node.js. Node.js and pnpm are only needed when developing Agav itself.
 

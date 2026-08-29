@@ -26,7 +26,7 @@ Type `/` in an interactive session to autocomplete commands. Run `/help` to see 
 
 | Command | Purpose |
 | --- | --- |
-| `/history [index]` | List saved sessions or load one by its displayed index. |
+| `/resume [id]` | List saved sessions or resume one by ID or prefix match. |
 | `/search <query>` | Search saved session messages by keyword. |
 | `/name <title>` | Give the current session a descriptive name. |
 | `/branch [name]` | List branches in the current session lineage, or fork the current conversation into a named branch. |
@@ -55,13 +55,14 @@ Type `/` in an interactive session to autocomplete commands. Run `/help` to see 
 | `/skills add <path\|url>` | Validate and install a skill from a local `SKILL.md` or trusted URL. Restart Agav to activate it. |
 | `/skills marketplace [number]` | List available marketplace skills or install a numbered entry. |
 | `/skills remove <name>`, `/skills rm <name>` | Remove an installed global skill. Restart Agav to apply the change. |
+| `/skills clear` | Remove all user-installed (global) skills. Bundled and project skills are unaffected. Restart Agav to apply. |
 | `/<skill-name> [arguments]` | Invoke an installed user-callable skill. The exact command name comes from the skill's slug. |
 
 ## Agents
 
 | Command | Purpose |
 | --- | --- |
-| `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor. `[2]` Marketplace tab browses, searches, and installs community agents. |
+| `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor. `[2]` Marketplace tab browses, searches, and installs community agents. `[3]` Create tab lists user-created agents and templates, and opens a 4-step wizard to create or edit agents. |
 
 ## Diagnostics and exit
 
