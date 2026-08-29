@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ink/index.js";
 import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
 import type { DisplayMessage } from "./message-list.js";
 import { terminalRelativePaths, terminalToolValue, toolPathValues } from "../utils/display-path.js";

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Box, Text, useInput, useStdin } from "ink";
+import { Box, Text, useInput, useStdin } from "../ink/index.js";
 import { KeybindingResolver, PROMPT_ACTIONS, formatKeybinding, formatUsableKeybinding, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { loadPromptHistory, savePromptHistory } from "../config/prompt-history.js";
 import { readdir, realpath } from "node:fs/promises";

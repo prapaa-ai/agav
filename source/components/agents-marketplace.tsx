@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput } from "../ink/index.js";
 import type { MarketplaceAgent } from "../agents/types.js";
 import { installAgent, uninstallAgent } from "../agents/installer.js";
 import { getDefaultMarketplaceUrl } from "../config/config.js";

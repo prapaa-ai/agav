@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Static, Text } from "ink";
+import { Box, ScrollBox, Text } from "../ink/index.js";
 import { renderMarkdown } from "./markdown-text.js";
 import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
 import { getTheme } from "../config/theme.js";
@@ -27,7 +27,11 @@ export interface DisplayMessage {
 interface Props {
   messages: DisplayMessage[];
   toolDetailKey: string;
-  static?: boolean;
+  /** Visible height (rows) of the scrollable conversation viewport. */
+  height: number;
+  /** Controlled scroll offset (lines from bottom; 0 = newest). */
+  scrollOffset?: number;
+  onScrollChange?: (offset: number) => void;
 }
 
 /** Renders a compact preview of diff output. */
@@ -245,21 +249,21 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
   return null;
 }
 
-/** Renders the scrolling list of conversation messages. */
-export default function MessageList({ messages, toolDetailKey, static: isStatic = true }: Props) {
+/** Renders the scrolling list of conversation messages inside a viewport. */
+export default function MessageList({ messages, toolDetailKey, height, scrollOffset, onScrollChange }: Props) {
   const renderMessage = (message: DisplayMessage, index: number) => (
     <Box key={message.id} flexDirection="column">
       <MessageBubble message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} />
     </Box>
   );
 
-  if (!isStatic) {
-    return <Box flexDirection="column">{messages.map(renderMessage)}</Box>;
-  }
-
   return (
-    <Static items={messages}>
-      {renderMessage}
-    </Static>
+    <ScrollBox
+      height={height}
+      scrollOffset={scrollOffset}
+      onScrollChange={onScrollChange}
+    >
+      {messages.map(renderMessage)}
+    </ScrollBox>
   );
 }

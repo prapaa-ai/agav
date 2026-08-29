@@ -1,6 +1,5 @@
 import React, { useMemo } from "react";
-import { Box, Text } from "ink";
-import Spinner from "ink-spinner";
+import { Box, Text, Spinner } from "../ink/index.js";
 import { renderMarkdown } from "./markdown-text.js";
 import { terminalRelativePaths } from "../utils/display-path.js";
 
@@ -41,7 +40,7 @@ export default function StreamingResponse({ text, thinkingText, isLoading, showT
         <Box>
           <Text dimColor>{"  "}</Text>
           <Text color="cyan">
-            <Spinner type="dots" />
+            <Spinner />
           </Text>
           <Text dimColor> Thinking...</Text>
         </Box>
@@ -51,7 +50,7 @@ export default function StreamingResponse({ text, thinkingText, isLoading, showT
           <Box>
             <Text dimColor>{"  "}</Text>
             <Text color="cyan">
-              <Spinner type="dots" />
+              <Spinner />
             </Text>
             <Text dimColor> Thinking ({thinkingText.length} chars)...</Text>
           </Box>

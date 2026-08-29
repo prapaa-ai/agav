@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput } from "../ink/index.js";
 import { fetchMarketplaceIndex, installFromUrl } from "../skills/marketplace.js";
 import { loadSkills } from "../skills/loader.js";
 import { slugify } from "../skills/skill-utils.js";

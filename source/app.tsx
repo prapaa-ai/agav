@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { basename } from "node:path";
-import { Box, Text, Static, useInput, useApp } from "ink";
+import { Box, Text, Spinner, useInput, useApp, measureElement } from "./ink/index.js";
+import type { DOMElement, WheelEventData } from "./ink/index.js";
 import MessageList from "./components/message-list.js";
 import type { DisplayMessage } from "./components/message-list.js";
 import StreamingResponse from "./components/streaming-response.js";
@@ -12,7 +13,6 @@ import ToolConfirm from "./components/tool-confirm.js";
 import ToolDetailPanel from "./components/tool-detail-panel.js";
 import PlanDetailPanel from "./components/plan-detail-panel.js";
 import SubagentDisplay from "./components/subagent-display.js";
-import Spinner from "ink-spinner";
 import type { AgavConfig } from "./config/config.js";
 import type { LLMProvider } from "./providers/types.js";
 import { createProvider } from "./providers/registry.js";
@@ -77,10 +77,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [showThinking, setShowThinking] = useState(initialConfig.showThinking ?? false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
-  // Focusing a subagent forces the transcript out of <Static> so it can be
-  // redrawn in place. Going back to <Static> would reprint every message into
-  // the scrollback, so the flag only clears alongside a screen wipe.
-  const [inlineTranscript, setInlineTranscript] = useState(false);
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const [termRows, setTermRows] = useState(process.stdout.rows || 24);
+  useEffect(() => {
+    const onResize = () => setTermRows(process.stdout.rows || 24);
+    process.stdout.on("resize", onResize);
+    return () => { process.stdout.off("resize", onResize); };
+  }, []);
   const [showCompactionSummary, setShowCompactionSummary] = useState(false);
   const [runningSkillName, setRunningSkillName] = useState<string | null>(null);
   const [pickerActive, setPickerActive] = useState(false);
@@ -88,7 +91,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const agentsTUIResolveRef = useRef<(() => void) | null>(null);
   const [skillsTUIActive, setSkillsTUIActive] = useState(false);
   const skillsTUIResolveRef = useRef<(() => void) | null>(null);
-  const { exit: exitInk } = useApp();
+  const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const exit = useCallback(() => {
     stopActiveLoop();
     exitInk();
@@ -131,7 +134,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     renameSession,
     sessionId,
     sessionName,
-    transcriptRevision,
     turnStartTime,
     lastTurnDurationMs,
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
@@ -317,7 +319,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   useEffect(() => {
     if (!isLoading) {
-      if (focusedSubagentId) setInlineTranscript(true);
       setFocusedSubagentId(null);
     }
   }, [focusedSubagentId, isLoading]);
@@ -333,7 +334,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     }
     if (match.action === "cancel" && isLoading && !pendingConfirmation) {
       if (focusedSubagentId) {
-        setInlineTranscript(true);
         setFocusedSubagentId(null);
       } else {
         cancel();
@@ -341,12 +341,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       return;
     }
     if (match.action === "cycleSubagents" && hasSubagents && !pendingConfirmation) {
-      const focusedIndex = focusedSubagentId
-        ? subagentStates.findIndex((subagent) => subagent.id === focusedSubagentId)
-        : -1;
-      if (focusedSubagentId && (focusedIndex < 0 || focusedIndex >= subagentStates.length - 1)) {
-        setInlineTranscript(true);
-      }
       setFocusedSubagentId((prev) => {
         if (!prev) return subagentStates[0]?.id ?? null;
         const idx = subagentStates.findIndex((s) => s.id === prev);
@@ -387,9 +381,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       return;
     }
     if (match.action === "clearScreen" && !pendingConfirmation) {
-      process.stdout.write("\x1B[3J\x1Bc\x1b[?25l");
+      resetDisplay();
       return;
     }
+    if (match.action === "scrollUp") { setScrollOffset((prev) => prev + 5); return; }
+    if (match.action === "scrollDown") { setScrollOffset((prev) => Math.max(0, prev - 5)); return; }
+    if (match.action === "scrollTop") { setScrollOffset(Infinity); return; }
+    if (match.action === "scrollBottom") { setScrollOffset(0); return; }
     if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && input.length === 0
       && !messages.some((message) => message.role === "tool")) {
       exit();
@@ -493,15 +491,11 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           clearMessages: () => {
             clearMessages();
             setSystemMessages([]);
-            setInlineTranscript(false);
-            process.stdout.write("\x1B[3J\x1Bc\x1b[?25l");
+            resetDisplay();
           },
           refreshPlan,
           saveSession: saveNow,
-          // Both of these wipe the screen and remount the transcript, so it is
-          // safe to hand rendering back to <Static> without duplicating output.
           refreshDisplay: () => {
-            setInlineTranscript(false);
             refreshDisplay();
           },
           loadSession,
@@ -523,6 +517,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           addTokenUsage,
           setRunningSkill: setRunningSkillName,
           setPickerActive,
+          suspendTerminal: suspendTerminalSync,
           showAgentsTUI: (onDone: () => void) => {
             agentsTUIResolveRef.current = onDone;
             setAgentsTUIActive(true);
@@ -581,18 +576,54 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     }, ...messages];
   }, [config.model, config.provider, messages, repoBranch, sessionId, sessionName]);
 
+  // Snap the viewport back to the newest message whenever the transcript grows.
+  useEffect(() => { setScrollOffset(0); }, [allMessages.length]);
+
   const toolMessages = messages.filter((m) => m.role === "tool");
 
+  // Everything that isn't the transcript — the error line above it, and the
+  // system messages / plan panel / tool output / input prompt / status bar
+  // below it — is measured rather than guessed. It used to be a flat
+  // `termRows - 8`, but that chrome is unbounded: a plan panel, a keybindings
+  // dump or a multi-line prompt pushes the frame taller than the terminal, the
+  // terminal scrolls, and log-update can no longer reach the lines it needs to
+  // erase. That's what shredded the UI as a session grew.
+  const errorRef = useRef<DOMElement | null>(null);
+  const chromeRef = useRef<DOMElement | null>(null);
+  const [chromeHeight, setChromeHeight] = useState(8);
+
+  useEffect(() => {
+    const measured =
+      measureElement(errorRef.current).height +
+      measureElement(chromeRef.current).height;
+    // Zero means we're being measured before the first layout.
+    if (measured > 0 && measured !== chromeHeight) setChromeHeight(measured);
+  });
+
+  const messageViewportHeight = Math.max(3, termRows - chromeHeight);
+
+  // Scroll the transcript wherever the pointer happens to be. ScrollBox has its
+  // own onWheel, but it only ever sees events that hit-test into it — with the
+  // pointer over the prompt or the status bar the event bubbles to this root
+  // instead, and terminal-side scrolling is off while mouse tracking is on.
+  const handleWheel = useCallback((event: WheelEventData) => {
+    const step = event.ctrl ? Math.max(1, Math.floor(messageViewportHeight / 2)) : 3;
+    setScrollOffset((prev) => Math.max(0, event.direction === "up" ? prev + step : prev - step));
+  }, [messageViewportHeight]);
+
   return (
-    <Box flexDirection="column">
+    // Pinned to the terminal height so the frame can never grow past the screen
+    // even while a measurement is still settling.
+    <Box flexDirection="column" height={termRows} onWheel={handleWheel}>
       {displayError && (
-        <Box marginBottom={1}>
+        <Box marginBottom={1} flexShrink={0} ref={errorRef}>
           <Text color="red">Error: {terminalRelativePaths(displayError)}</Text>
         </Box>
       )}
 
-      <MessageList key={inlineTranscript ? "inline" : transcriptRevision} messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} static={!inlineTranscript} />
+      <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} height={messageViewportHeight} scrollOffset={scrollOffset} onScrollChange={setScrollOffset} />
 
+      <Box flexDirection="column" flexShrink={0} ref={chromeRef}>
       {systemMessages.length > 0 && (
         <Box marginBottom={1} flexDirection="column">
           {systemMessages.map((msg) => {
@@ -622,7 +653,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       {runningSkillName && (
         <Box marginBottom={1}>
           <Text dimColor>{"  "}</Text>
-          <Text color="cyan"><Spinner type="dots" /></Text>
+          <Text color="cyan"><Spinner /></Text>
           <Text dimColor> Running skill: {runningSkillName}...</Text>
         </Box>
       )}
@@ -790,6 +821,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         isLoading={isLoading}
         isPaused={!!pendingConfirmation}
       />
+      </Box>
     </Box>
   );
 }

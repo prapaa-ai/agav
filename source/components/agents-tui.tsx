@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text, useInput, usePaste } from "ink";
+import { Box, Text, useInput, usePaste } from "../ink/index.js";
 import { mkdir } from "node:fs/promises";
 import { loadAgents } from "../agents/loader.js";
 import { setAgentEnabled, loadRegistry } from "../agents/agent-registry.js";

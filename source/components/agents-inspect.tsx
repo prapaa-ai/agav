@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ink/index.js";
 import type { AgentDefinition, MarketplaceAgent } from "../agents/types.js";
 import type { AgentReadiness, ConfigItem } from "./agents-types.js";
 import { resolveConfigPath, parseFileUrl } from "./agents-types.js";
