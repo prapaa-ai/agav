@@ -613,7 +613,7 @@ export class MCPClient {
   }
 }
 
-const SHELL_METACHAR = /[&|<>^;`$(){}[\]!%"'\n\r]/;
+const SHELL_METACHAR = /[&|<>^;`$(){}[\]!%"\n\r]/;
 
 export function validateMCPCommand(command: string, args: string[]): void {
   if (SHELL_METACHAR.test(command)) {

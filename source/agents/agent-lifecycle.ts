@@ -18,15 +18,19 @@ export async function deleteAgentWithTemplate(
   let savedTemplate = false;
 
   if (!opts?.sourceUrl && agent.origin === "global") {
-    await saveTemplate({
-      name: agent.manifest.name,
-      description: agent.manifest.description,
-      systemPrompt: agent.systemPrompt,
-      mcpServers: agent.manifest["mcp-servers"],
-      tags: agent.manifest.tags,
-      savedAt: new Date().toISOString(),
-    });
-    savedTemplate = true;
+    try {
+      await saveTemplate({
+        name: agent.manifest.name,
+        description: agent.manifest.description,
+        systemPrompt: agent.systemPrompt,
+        mcpServers: agent.manifest["mcp-servers"],
+        tags: agent.manifest.tags,
+        savedAt: new Date().toISOString(),
+      });
+      savedTemplate = true;
+    } catch {
+      // Template save failed — proceed with deletion anyway
+    }
   }
 
   const result = await uninstallAgent(agentKey, destination);

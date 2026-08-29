@@ -26,11 +26,16 @@ describe("validateMCPCommand", () => {
   });
 
   it("rejects each individual metacharacter", () => {
-    const metachars = ["&", "|", "<", ">", "^", ";", "`", "$", "(", ")", "{", "}", "[", "]", "!", "%", '"', "'", "\n", "\r"];
+    const metachars = ["&", "|", "<", ">", "^", ";", "`", "$", "(", ")", "{", "}", "[", "]", "!", "%", '"', "\n", "\r"];
     for (const char of metachars) {
       expect(() => validateMCPCommand(`cmd${char}bad`, []), `command with '${char}'`).toThrow("unsafe characters");
       expect(() => validateMCPCommand("cmd", [`arg${char}bad`]), `arg with '${char}'`).toThrow("unsafe characters");
     }
+  });
+
+  it("allows single quotes in paths (not a cmd.exe metacharacter)", () => {
+    expect(() => validateMCPCommand("C:\\Users\\O'Brien\\node.exe", [])).not.toThrow();
+    expect(() => validateMCPCommand("node", ["--name=O'Reilly"])).not.toThrow();
   });
 
   it("allows args with spaces, dots, slashes, and hyphens", () => {

@@ -43,7 +43,12 @@ async function writeTemplates(templates: AgentTemplate[]): Promise<void> {
 }
 
 export async function loadTemplates(): Promise<AgentTemplate[]> {
-  return readTemplates();
+  const release = await acquireLock();
+  try {
+    return await readTemplates();
+  } finally {
+    release();
+  }
 }
 
 export async function saveTemplate(template: AgentTemplate): Promise<void> {
