@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, ScrollBox, Text } from "../ink/index.js";
+import { Box, Text } from "../ink/index.js";
 import { renderMarkdown } from "./markdown-text.js";
 import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
 import { getTheme } from "../config/theme.js";
@@ -27,11 +27,6 @@ export interface DisplayMessage {
 interface Props {
   messages: DisplayMessage[];
   toolDetailKey: string;
-  /** Visible height (rows) of the scrollable conversation viewport. */
-  height: number;
-  /** Controlled scroll offset (lines from bottom; 0 = newest). */
-  scrollOffset?: number;
-  onScrollChange?: (offset: number) => void;
 }
 
 /** Renders a compact preview of diff output. */
@@ -249,21 +244,22 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
   return null;
 }
 
-/** Renders the scrolling list of conversation messages inside a viewport. */
-export default function MessageList({ messages, toolDetailKey, height, scrollOffset, onScrollChange }: Props) {
-  const renderMessage = (message: DisplayMessage, index: number) => (
-    <Box key={message.id} flexDirection="column">
-      <MessageBubble message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} />
-    </Box>
-  );
-
+/**
+ * Renders the conversation transcript at its natural height.
+ *
+ * There is no viewport here on purpose. The transcript is one section of a
+ * single scrolling document owned by `App`; giving it its own would freeze it
+ * to a fixed band of the screen while everything below — a streaming reply, a
+ * plan, a detail panel — slid around inside bands of their own.
+ */
+export default function MessageList({ messages, toolDetailKey }: Props) {
   return (
-    <ScrollBox
-      height={height}
-      scrollOffset={scrollOffset}
-      onScrollChange={onScrollChange}
-    >
-      {messages.map(renderMessage)}
-    </ScrollBox>
+    <Box flexDirection="column" flexShrink={0}>
+      {messages.map((message, index) => (
+        <Box key={message.id} flexDirection="column">
+          <MessageBubble message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} />
+        </Box>
+      ))}
+    </Box>
   );
 }

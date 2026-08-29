@@ -12,7 +12,7 @@ export {default as Newline} from "./components/Newline.js";
 export {default as Spacer} from "./components/Spacer.js";
 export {default as Spinner} from "./components/Spinner.js";
 export {default as ScrollBox} from "./components/ScrollBox.js";
-export type {ScrollBoxProps} from "./components/ScrollBox.js";
+export type {ScrollBoxControls, ScrollBoxProps} from "./components/ScrollBox.js";
 
 // Hooks
 export {default as useInput} from "./hooks/use-input.js";

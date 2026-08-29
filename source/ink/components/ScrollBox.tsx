@@ -4,6 +4,21 @@ import {type DOMElement} from "../dom.js";
 import {measureElement} from "../measure-element.js";
 import Box from "./Box.js";
 
+/**
+ * Imperative handle onto an uncontrolled `<ScrollBox>`, for parents that need
+ * to drive it from outside — a keybinding, or a wheel event that landed on a
+ * sibling. Controlled mode can't serve those callers: the parent would have to
+ * know `maxScroll`, which only the box can measure.
+ */
+export type ScrollBoxControls = {
+	/** Move by `lines`, positive towards older content. Clamped both ends. */
+	scrollBy: (lines: number) => void;
+	/** Jump to the oldest content. */
+	scrollToTop: () => void;
+	/** Jump to the newest content. */
+	scrollToBottom: () => void;
+};
+
 export type ScrollBoxProps = {
 	/** Number of visible rows in the viewport. */
 	readonly height: number;
@@ -19,6 +34,11 @@ export type ScrollBoxProps = {
 	readonly onScrollChange?: (offset: number) => void;
 	/** When true and the viewport is at the bottom, stay pinned as new children arrive. */
 	readonly stickToBottom?: boolean;
+	/**
+	 * Populated with a {@link ScrollBoxControls} while mounted, and nulled on
+	 * unmount. Uncontrolled mode only.
+	 */
+	readonly controls?: React.MutableRefObject<ScrollBoxControls | null>;
 };
 
 /** Number of lines to move per wheel tick. */
@@ -40,6 +60,7 @@ export default function ScrollBox({
 	scrollOffset,
 	onScrollChange,
 	stickToBottom = true,
+	controls,
 }: ScrollBoxProps): React.ReactNode {
 	const isControlled =
 		scrollOffset !== undefined && onScrollChange !== undefined;
@@ -105,18 +126,46 @@ export default function ScrollBox({
 		[isControlled, maxScroll, onScrollChange],
 	);
 
-	// A controlled parent that also handles the wheel (so the pointer can be
-	// anywhere on screen, not just over the viewport) would otherwise scroll a
-	// second time when the event bubbles up out of here.
+	useEffect(() => {
+		if (!controls) return;
+		controls.current = {
+			scrollBy: (lines: number) => {
+				setOffset(offsetRef.current + lines);
+			},
+			// Clamped by `setOffset`, so the caller doesn't need `maxScroll`.
+			scrollToTop: () => {
+				setOffset(Number.POSITIVE_INFINITY);
+			},
+			scrollToBottom: () => {
+				setOffset(0);
+			},
+		};
+		return () => {
+			controls.current = null;
+		};
+	}, [controls, setOffset]);
+
+	// Consume the event only when this viewport can actually act on it, the way
+	// a browser chains an over-scroll out to the nearest scrollable ancestor.
+	// Swallowing it unconditionally makes an unscrollable box — one whose content
+	// already fits — a dead zone: the pointer sits over a short panel in the
+	// chrome and the transcript underneath never moves. Stopping propagation when
+	// we *do* scroll still matters, or a controlled parent that also handles the
+	// wheel scrolls a second time on the way up.
 	const handleWheel = useCallback(
 		(event: WheelEventData) => {
-			event.stopPropagation?.();
 			const step = event.ctrl
 				? Math.max(1, Math.floor(viewport / 2))
 				: WHEEL_STEP;
-			setOffset(offsetRef.current + (event.direction === "up" ? step : -step));
+			const next = Math.min(
+				Math.max(0, offsetRef.current + (event.direction === "up" ? step : -step)),
+				maxScroll,
+			);
+			if (next === offsetRef.current) return;
+			event.stopPropagation?.();
+			setOffset(next);
 		},
-		[viewport, setOffset],
+		[viewport, maxScroll, setOffset],
 	);
 
 	// In controlled mode the parent can hand us an offset past the end of the

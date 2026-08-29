@@ -1,5 +1,8 @@
 import {useEffect, useEffectEvent} from "react";
-import parseKeypress, {nonAlphanumericKeys} from "../parse-keypress.js";
+import parseKeypress, {
+	nonAlphanumericKeys,
+	splitCoalescedKeys,
+} from "../parse-keypress.js";
 import reconciler from "../reconciler.js";
 import {useStdinContext} from "./use-stdin.js";
 
@@ -71,6 +74,8 @@ export type Key = {
 	eventType?: "press" | "repeat" | "release";
 };
 
+const textDecoder = new TextDecoder();
+
 type Handler = (input: string, key: Key) => void;
 
 type Options = {
@@ -110,7 +115,7 @@ const useInput = (inputHandler: Handler, options: Options = {}): void => {
 		};
 	}, [options.isActive, setRawMode]);
 
-	const handleData = useEffectEvent((data: Uint8Array | string) => {
+	const handleKey = useEffectEvent((data: Uint8Array | string) => {
 		const keypress = parseKeypress(data);
 
 		const key: Key = {
@@ -192,6 +197,25 @@ const useInput = (inputHandler: Handler, options: Options = {}): void => {
 		reconciler.discreteUpdates(() => {
 			inputHandler(input, key);
 		});
+	});
+
+	const handleData = useEffectEvent((data: Uint8Array | string) => {
+		// One read can carry several keypresses — holding a key down is enough
+		// to produce them. Deliver each one separately, or all but the last are
+		// lost, and a run of DELs is lost by being inserted as text.
+		const text =
+			typeof data === "string" ? data : textDecoder.decode(data);
+		const keys = splitCoalescedKeys(text);
+
+		if (keys) {
+			for (const key of keys) {
+				handleKey(key);
+			}
+
+			return;
+		}
+
+		handleKey(data);
 	});
 
 	useEffect(() => {

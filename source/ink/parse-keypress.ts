@@ -95,6 +95,56 @@ const keyName: Record<string, string> = {
 
 export const nonAlphanumericKeys = [...Object.values(keyName), "backspace"];
 
+/**
+ * Matches one escape sequence at the head of a string: a CSI (`ESC [`,
+ * parameter bytes, intermediate bytes, final byte — the ranges are ECMA-48's),
+ * an SS3 (`ESC O`, final byte), or the `ESC DEL` some terminals send for
+ * Alt+Backspace.
+ */
+const ESCAPE_SEQUENCE_RE =
+	/^\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e]|\x7f)/;
+
+/**
+ * Splits a read that carries more than one keypress, or returns `null` if it
+ * carries a single key or any text.
+ *
+ * A read is not a keypress. Hold a key down and autorepeat delivers several of
+ * them before the event loop comes back around — the busier the app, the more
+ * pile up — and `parseKeypress` reads a whole chunk as one key. The surplus is
+ * not merely dropped: a chunk of DELs matches no key name, so it arrives at the
+ * app as ordinary text and gets *inserted*, leaving invisible delete characters
+ * exactly where a deletion was meant to happen.
+ *
+ * Only chunks made up entirely of non-text keys are taken apart. Anything
+ * containing text is left whole: on a terminal without bracketed paste a pasted
+ * block arrives here as one chunk and must stay one chunk, or every paste turns
+ * into a storm of keypresses.
+ */
+export function splitCoalescedKeys(data: string): string[] | null {
+	const keys: string[] = [];
+	let index = 0;
+
+	while (index < data.length) {
+		const escape = ESCAPE_SEQUENCE_RE.exec(data.slice(index));
+		if (escape) {
+			keys.push(escape[0]);
+			index += escape[0].length;
+			continue;
+		}
+
+		const code = data.charCodeAt(index);
+		// A bare ESC is a sequence this function could not resolve, and anything
+		// printable is text. Either way, do not guess at the boundaries.
+		if (code === 0x1b) return null;
+		if (code >= 0x20 && code !== 0x7f) return null;
+
+		keys.push(data[index]!);
+		index += 1;
+	}
+
+	return keys.length > 1 ? keys : null;
+}
+
 const isShiftKey = (code: string): boolean => {
 	return [
 		"[a",

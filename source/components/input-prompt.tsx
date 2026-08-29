@@ -19,8 +19,6 @@ interface Props {
   onRemoveAttachment?: () => void;
   onClearAttachments?: () => void;
   onRegisterInsert?: (fn: (label: string) => void) => void;
-  /** Registers a callback that re-syncs the caret with the current buffer. */
-  onCursorReset?: (fn: () => void) => void;
   disabled?: boolean;
   /**
    * When true, arrow keys do not cycle through prompt history.
@@ -101,19 +99,62 @@ function isWithinRoot(root: string, candidate: string): boolean {
 }
 
 /** Renders the interactive prompt with history, completion, and paste handling. */
-export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, onCursorReset, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
+export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
   const { isRawModeSupported } = useStdin();
-  const [cursorPos, setCursorPos] = useState(0);
+  const [, bumpCursor] = useState(0);
+
+  // The live buffer: the text and caret as of the last key we handled.
+  //
+  // The parent owns `value`, so every edit is a round trip — we call
+  // `onChange`, the parent sets state, React re-renders, and only then does the
+  // prop catch up. Keystrokes do not wait for that. With a long transcript
+  // above us a commit takes longer than a keypress, so a burst of them all read
+  // the same pre-burst prop and each computes the same answer from it: four
+  // backspaces splice one character off `value` four times over and delete one
+  // character between them. That is why this only ever bit on a resumed
+  // session — an empty transcript commits faster than anyone can type.
+  //
+  // So the key handler reads and writes this ref, synchronously, and treats it
+  // as the truth. `onChange` still fires, but only to tell the parent; the prop
+  // coming back is an echo, not the source.
+  const liveRef = useRef({ value, cursor: 0 });
+  const lastEmittedRef = useRef(value);
+
+  // The parent also rewrites the buffer on its own — clearing it after a
+  // submit, after a `!` shell command, when a wizard exits. A `value` we did
+  // not emit is one of those, and the parent wins: adopt it, and put the caret
+  // at its end, the only position that is meaningful in text the user did not
+  // place it in. A caret left beyond the end would be invisible (no wrapped
+  // line claims an out-of-range offset) and would make backspace splice out
+  // characters that are not there.
+  if (value !== lastEmittedRef.current) {
+    liveRef.current = { value, cursor: value.length };
+    lastEmittedRef.current = value;
+  }
+
+  const text = liveRef.current.value;
+  const cursorPos = Math.min(liveRef.current.cursor, text.length);
+
+  /** Replaces the buffer and places the caret, live and for the parent both. */
+  const applyEdit = (nextValue: string, nextCursor: number) => {
+    liveRef.current = { value: nextValue, cursor: nextCursor };
+    lastEmittedRef.current = nextValue;
+    emitValue(nextValue);
+    bumpCursor((n) => n + 1);
+  };
+
+  /** Moves the caret without touching the text. */
+  const moveCaret = (nextCursor: number) => {
+    liveRef.current.cursor = nextCursor;
+    bumpCursor((n) => n + 1);
+  };
+
   const historyRef = useRef<string[]>([]);
   const historyLoadedRef = useRef(false);
   const historyIndexRef = useRef(-1);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
-  const valueRef = useRef(value);
-  const cursorPosRef = useRef(cursorPos);
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
-  valueRef.current = value;
-  cursorPosRef.current = cursorPos;
 
   useEffect(() => {
     if (historyLoadedRef.current) return;
@@ -133,40 +174,19 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
   useEffect(() => {
     if (onRegisterInsert) {
       onRegisterInsert((label: string) => {
-        const cur = cursorPosRef.current;
-        const val = valueRef.current;
+        // Off the live buffer, like every other edit: the parent may fire this
+        // between a keystroke and the render that would have reported it.
+        const { value: val, cursor: cur } = liveRef.current;
         const before = val.slice(0, cur);
         const after = val.slice(cur);
-        onChange(before + label + " " + after);
-        setCursorPos(cur + label.length + 1);
+        applyEdit(before + label + " " + after, cur + label.length + 1);
       });
     }
-  }, [onRegisterInsert, onChange]);
+  }, [onRegisterInsert]);
 
-  // Re-sync the caret with the buffer whenever the parent rewrites the value
-  // programmatically (e.g. clearing it after a slash command). Without this the
-  // stored cursor position can point past the end of the new text, so the next
-  // keystroke inserts at a stale offset and typed characters appear out of
-  // order — the "cursor jumps to position 0" symptom.
-  //
-  // The request is handled on the render where the rewritten value actually
-  // arrives: calling setCursorPos synchronously would read the old buffer,
-  // because the parent's state update has not propagated to props yet.
-  const syncCursorOnNextValueRef = useRef(false);
-
-  useEffect(() => {
-    if (onCursorReset) onCursorReset(() => { syncCursorOnNextValueRef.current = true; });
-  }, [onCursorReset]);
-
-  useEffect(() => {
-    if (!syncCursorOnNextValueRef.current) return;
-    syncCursorOnNextValueRef.current = false;
-    setCursorPos(value.length);
-  }, [value]);
-
-  const activeFileToken = getActiveFileToken(value, cursorPos);
-  const showSuggestions = !activeFileToken && value.startsWith("/") && !value.includes(" ") && value.length >= 1;
-  const partial = value.slice(1).toLowerCase();
+  const activeFileToken = getActiveFileToken(text, cursorPos);
+  const showSuggestions = !activeFileToken && text.startsWith("/") && !text.includes(" ") && text.length >= 1;
+  const partial = text.slice(1).toLowerCase();
   const matchingCommands = showSuggestions
     ? commands.filter((c) => c.name.startsWith(partial))
     : [];
@@ -182,8 +202,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
       : `@${completedPath}`;
     const suffix = selected.isDirectory ? "" : " ";
     const nextValue = value.slice(0, token.start) + mention + suffix + value.slice(token.end);
-    onChange(nextValue);
-    setCursorPos(token.start + mention.length + suffix.length);
+    applyEdit(nextValue, token.start + mention.length + suffix.length);
     setSelectedSuggestion(0);
   };
 
@@ -229,14 +248,18 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
   useInput(
     (rawInput, rawKey) => {
       if (disabled) return;
+      // Shadow the render-scope text and caret with the live ones. The render
+      // scope is a snapshot from the last commit, and the whole point is that
+      // this key may have arrived before that commit caught up.
+      const value = liveRef.current.value;
+      const cursorPos = Math.min(liveRef.current.cursor, value.length);
       const { input, key } = normalizeKeyEvent(rawInput, rawKey);
       const match = keyResolverRef.current.feed(input, key);
       if (match.pending) return;
 
       if (match.action === "clearInput") {
-        onChange("");
+        applyEdit("", 0);
         onClearAttachments?.();
-        setCursorPos(0);
         historyIndexRef.current = -1;
         return;
       }
@@ -244,21 +267,18 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
         const before = value.slice(0, cursorPos);
         const wordStart = before.search(/\s*\S+\s*$/);
         const start = wordStart < 0 ? 0 : wordStart;
-        onChange(value.slice(0, start) + value.slice(cursorPos));
-        setCursorPos(start);
+        applyEdit(value.slice(0, start) + value.slice(cursorPos), start);
         return;
       }
       if (match.action === "editLastPrompt") {
         const previous = historyRef.current.at(-1);
         if (previous) {
-          onChange(previous);
-          setCursorPos(previous.length);
+          applyEdit(previous, previous.length);
         }
         return;
       }
       if (match.action === "openCommandPalette") {
-        onChange("/");
-        setCursorPos(1);
+        applyEdit("/", 1);
         setSelectedSuggestion(0);
         return;
       }
@@ -299,8 +319,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
           const selected = matchingCommands[selectedSuggestion];
           if (selected) {
             const completed = `/${selected.name} `;
-            onChange(completed);
-            setCursorPos(completed.length);
+            applyEdit(completed, completed.length);
             setSelectedSuggestion(0);
           }
           return;
@@ -309,15 +328,13 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
           const selected = matchingCommands[selectedSuggestion];
           if (selected && partial !== selected.name) {
             const completed = `/${selected.name} `;
-            onChange(completed);
-            setCursorPos(completed.length);
+            applyEdit(completed, completed.length);
             setSelectedSuggestion(0);
             return;
           }
         }
         if (match.action === "cancel") {
-          onChange("");
-          setCursorPos(0);
+          applyEdit("", 0);
           setSelectedSuggestion(0);
           return;
         }
@@ -331,8 +348,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
         const nextIdx = Math.min(historyIndexRef.current + 1, history.length - 1);
         historyIndexRef.current = nextIdx;
         const msg = history[history.length - 1 - nextIdx]!;
-        onChange(msg);
-        setCursorPos(msg.length);
+        applyEdit(msg, msg.length);
         return;
       }
 
@@ -341,14 +357,12 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
         const history = historyRef.current;
         if (historyIndexRef.current <= 0) {
           historyIndexRef.current = -1;
-          onChange("");
-          setCursorPos(0);
+          applyEdit("", 0);
           return;
         }
         historyIndexRef.current--;
         const msg = history[history.length - 1 - historyIndexRef.current]!;
-        onChange(msg);
-        setCursorPos(msg.length);
+        applyEdit(msg, msg.length);
         return;
       }
 
@@ -356,8 +370,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
         if (match.action === "newline") {
           const before = value.slice(0, cursorPos);
           const after = value.slice(cursorPos);
-          onChange(before + "\n" + after);
-          setCursorPos(cursorPos + 1);
+          applyEdit(before + "\n" + after, cursorPos + 1);
         } else {
           if (value.trim()) {
             const deduped = historyRef.current.filter((h) => h !== value);
@@ -365,8 +378,12 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
             historyRef.current = deduped;
             historyIndexRef.current = -1;
             savePromptHistory(deduped);
+            // No caret reset here. The parent clears the buffer only once it
+            // has accepted the message, and the clamp above follows it down to
+            // zero when it does. Resetting optimistically stranded the caret at
+            // the start of text the parent had decided to keep — where
+            // backspace has nothing before it and does nothing at all.
             onSubmit(value);
-            setCursorPos(0);
           }
         }
         return;
@@ -382,12 +399,10 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
           const labelMatch = textBefore.match(/<<(?:\(.*?\) )?(?:Pasted|Image)(?:\s*#\d+)?:.+?>> ?$/);
           if (labelMatch && onRemoveAttachment) {
             const labelStart = cursorPos - labelMatch[0].length;
-            onChange(value.slice(0, labelStart) + value.slice(cursorPos));
-            setCursorPos(labelStart);
+            applyEdit(value.slice(0, labelStart) + value.slice(cursorPos), labelStart);
             onRemoveAttachment();
           } else {
-            onChange(value.slice(0, cursorPos - 1) + value.slice(cursorPos));
-            setCursorPos(cursorPos - 1);
+            applyEdit(value.slice(0, cursorPos - 1) + value.slice(cursorPos), cursorPos - 1);
           }
           setSelectedSuggestion(0);
         }
@@ -395,11 +410,11 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
       }
 
       if (key.leftArrow) {
-        setCursorPos(Math.max(0, cursorPos - 1));
+        moveCaret(Math.max(0, cursorPos - 1));
         return;
       }
       if (key.rightArrow) {
-        setCursorPos(Math.min(value.length, cursorPos + 1));
+        moveCaret(Math.min(value.length, cursorPos + 1));
         return;
       }
 
@@ -413,8 +428,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
       if (input && !key.ctrl && !key.meta && !isEscapeResidue(input)) {
         const before = value.slice(0, cursorPos);
         const after = value.slice(cursorPos);
-        onChange(before + input + after);
-        setCursorPos(cursorPos + input.length);
+        applyEdit(before + input + after, cursorPos + input.length);
         setSelectedSuggestion(0);
       }
     },
@@ -436,7 +450,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
 
   interface WrappedLine { text: string; offset: number; isFirst: boolean }
   const wrappedLines: WrappedLine[] = [];
-  const rawLines = value.split("\n");
+  const rawLines = text.split("\n");
   let globalOffset = 0;
   for (let li = 0; li < rawLines.length; li++) {
     const raw = rawLines[li]!;
@@ -465,7 +479,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
         const lineEnd = lineStart + wl.text.length;
         const cursorInLine = cursorPos >= lineStart && cursorPos <= lineEnd;
 
-        if (!value && wl.isFirst) {
+        if (!text && wl.isFirst) {
           return (
             <Box key={i}>
               <Text bold color="green">{prefix}</Text>

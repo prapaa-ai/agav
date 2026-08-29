@@ -4,10 +4,11 @@ import { describe, it, expect } from "vitest";
 import render from "../ink/render.js";
 import Box from "../ink/components/Box.js";
 import Text from "../ink/components/Text.js";
+import ScrollBox from "../ink/components/ScrollBox.js";
 import { measureElement } from "../ink/measure-element.js";
 import MessageList from "../components/message-list.js";
 import type { DisplayMessage } from "../components/message-list.js";
-import type { DOMElement, WheelEventData } from "../ink/index.js";
+import type { DOMElement, ScrollBoxControls, WheelEventData } from "../ink/index.js";
 
 // The earlier viewport test drove ScrollBox with bare <Box>/<Text> children,
 // which is not what the app does: every row goes through <MessageBubble>, a
@@ -62,18 +63,21 @@ const messages: DisplayMessage[] = [
   ]).flat(),
 ];
 
-/** app.tsx's shape: frame pinned to the terminal, chrome measured, real list. */
+/**
+ * app.tsx's shape: frame pinned to the terminal, one scrolling document holding
+ * the real list, and a measured footer that never moves.
+ */
 const AppShape = ({ onRootWheel }: { onRootWheel?: () => void }) => {
-  const chromeRef = useRef<DOMElement | null>(null);
-  const [chromeHeight, setChromeHeight] = useState(8);
-  const [scrollOffset, setScrollOffset] = useState(0);
+  const footerRef = useRef<DOMElement | null>(null);
+  const [footerHeight, setFooterHeight] = useState(8);
+  const docControls = useRef<ScrollBoxControls | null>(null);
 
   useEffect(() => {
-    const measured = measureElement(chromeRef.current).height;
-    if (measured > 0 && measured !== chromeHeight) setChromeHeight(measured);
+    const measured = measureElement(footerRef.current).height;
+    if (measured > 0 && measured !== footerHeight) setFooterHeight(measured);
   });
 
-  const viewport = Math.max(3, ROWS - chromeHeight);
+  const viewport = Math.max(3, ROWS - footerHeight);
 
   return h(
     Box,
@@ -82,21 +86,18 @@ const AppShape = ({ onRootWheel }: { onRootWheel?: () => void }) => {
       height: ROWS,
       onWheel(event: WheelEventData) {
         onRootWheel?.();
-        setScrollOffset((prev) =>
-          Math.max(0, event.direction === "up" ? prev + 3 : prev - 3),
-        );
+        docControls.current?.scrollBy(event.direction === "up" ? 3 : -3);
       },
     },
-    h(MessageList, {
-      messages,
-      toolDetailKey: "ctrl+o",
+    h(ScrollBox, {
       height: viewport,
-      scrollOffset,
-      onScrollChange: setScrollOffset,
+      stickToBottom: false,
+      controls: docControls,
+      children: h(MessageList, { messages, toolDetailKey: "ctrl+o" }),
     }),
     h(
       Box,
-      { flexDirection: "column", flexShrink: 0, ref: chromeRef },
+      { flexDirection: "column", flexShrink: 0, ref: footerRef },
       h(Text, { key: "prompt" }, "> type a message"),
       h(Text, { key: "status" }, "model - 0 tokens"),
       h(Text, { key: "hint" }, "hint line"),

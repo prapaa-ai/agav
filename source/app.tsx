@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { basename } from "node:path";
-import { Box, Text, Spinner, useInput, useApp, measureElement } from "./ink/index.js";
-import type { DOMElement, WheelEventData } from "./ink/index.js";
+import { Box, Text, ScrollBox, Spinner, useInput, useApp, measureElement } from "./ink/index.js";
+import type { DOMElement, ScrollBoxControls, WheelEventData } from "./ink/index.js";
 import MessageList from "./components/message-list.js";
 import type { DisplayMessage } from "./components/message-list.js";
 import StreamingResponse from "./components/streaming-response.js";
@@ -77,7 +77,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [showThinking, setShowThinking] = useState(initialConfig.showThinking ?? false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
-  const [scrollOffset, setScrollOffset] = useState(0);
+  // Everything above the input prompt is one scrolling document, driven from
+  // here by the scroll keybindings and by wheel events that landed on the
+  // footer. It stays uncontrolled: holding the offset in React state would mean
+  // this component deciding where the end of the content is, which only the
+  // box can measure — and would cost a re-render of the whole app per tick.
+  const docControls = useRef<ScrollBoxControls | null>(null);
   const [termRows, setTermRows] = useState(process.stdout.rows || 24);
   useEffect(() => {
     const onResize = () => setTermRows(process.stdout.rows || 24);
@@ -99,7 +104,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
   /** Lets handleSubmit re-sync InputPrompt's caret after rewriting its buffer. */
-  const inputPromptCursorResetRef = useRef<(() => void) | null>(null);
 
   const {
     messages,
@@ -384,10 +388,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       resetDisplay();
       return;
     }
-    if (match.action === "scrollUp") { setScrollOffset((prev) => prev + 5); return; }
-    if (match.action === "scrollDown") { setScrollOffset((prev) => Math.max(0, prev - 5)); return; }
-    if (match.action === "scrollTop") { setScrollOffset(Infinity); return; }
-    if (match.action === "scrollBottom") { setScrollOffset(0); return; }
+    if (match.action === "scrollUp") { docControls.current?.scrollBy(5); return; }
+    if (match.action === "scrollDown") { docControls.current?.scrollBy(-5); return; }
+    if (match.action === "scrollTop") { docControls.current?.scrollToTop(); return; }
+    if (match.action === "scrollBottom") { docControls.current?.scrollToBottom(); return; }
     if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && input.length === 0
       && !messages.some((message) => message.role === "tool")) {
       exit();
@@ -468,7 +472,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
       if (isSlashCommand) {
         setInput("");
-        inputPromptCursorResetRef.current?.();
         setShowToolDetail(false);
         setPsResponse(undefined);
         setSystemMessages([]);
@@ -577,53 +580,60 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [config.model, config.provider, messages, repoBranch, sessionId, sessionName]);
 
   // Snap the viewport back to the newest message whenever the transcript grows.
-  useEffect(() => { setScrollOffset(0); }, [allMessages.length]);
+  useEffect(() => { docControls.current?.scrollToBottom(); }, [allMessages.length]);
 
   const toolMessages = messages.filter((m) => m.role === "tool");
 
-  // Everything that isn't the transcript — the error line above it, and the
-  // system messages / plan panel / tool output / input prompt / status bar
-  // below it — is measured rather than guessed. It used to be a flat
-  // `termRows - 8`, but that chrome is unbounded: a plan panel, a keybindings
-  // dump or a multi-line prompt pushes the frame taller than the terminal, the
-  // terminal scrolls, and log-update can no longer reach the lines it needs to
-  // erase. That's what shredded the UI as a session grew.
-  const errorRef = useRef<DOMElement | null>(null);
-  const chromeRef = useRef<DOMElement | null>(null);
-  const [chromeHeight, setChromeHeight] = useState(8);
+  // The footer — the prompt or its confirmation dialog, a modal TUI, and the
+  // status bar — is measured rather than guessed. It used to be a flat
+  // `termRows - 8`, but the footer is unbounded: a keybindings dump or a
+  // multi-line prompt pushes the frame taller than the terminal, the terminal
+  // scrolls, and log-update can no longer reach the lines it needs to erase.
+  // That's what shredded the UI as a session grew.
+  const footerRef = useRef<DOMElement | null>(null);
+  const [footerHeight, setFooterHeight] = useState(8);
 
   useEffect(() => {
-    const measured =
-      measureElement(errorRef.current).height +
-      measureElement(chromeRef.current).height;
+    const measured = measureElement(footerRef.current).height;
     // Zero means we're being measured before the first layout.
-    if (measured > 0 && measured !== chromeHeight) setChromeHeight(measured);
+    if (measured > 0 && measured !== footerHeight) setFooterHeight(measured);
   });
 
-  const messageViewportHeight = Math.max(3, termRows - chromeHeight);
+  const documentHeight = Math.max(3, termRows - footerHeight);
 
-  // Scroll the transcript wherever the pointer happens to be. ScrollBox has its
+  // Scroll the document wherever the pointer happens to be. ScrollBox has its
   // own onWheel, but it only ever sees events that hit-test into it — with the
   // pointer over the prompt or the status bar the event bubbles to this root
   // instead, and terminal-side scrolling is off while mouse tracking is on.
   const handleWheel = useCallback((event: WheelEventData) => {
-    const step = event.ctrl ? Math.max(1, Math.floor(messageViewportHeight / 2)) : 3;
-    setScrollOffset((prev) => Math.max(0, event.direction === "up" ? prev + step : prev - step));
-  }, [messageViewportHeight]);
+    const step = event.ctrl ? Math.max(1, Math.floor(documentHeight / 2)) : 3;
+    docControls.current?.scrollBy(event.direction === "up" ? step : -step);
+  }, [documentHeight]);
 
   return (
     // Pinned to the terminal height so the frame can never grow past the screen
     // even while a measurement is still settling.
     <Box flexDirection="column" height={termRows} onWheel={handleWheel}>
+      {/*
+        One scrolling document, not a stack of viewports. Everything the user
+        reads lives in here at its natural height and moves together; giving
+        each section its own scrollable band pinned it to a fixed row range, so
+        a streaming reply sat frozen mid-screen while text crawled inside it.
+
+        `stickToBottom={false}` is what keeps that readable while it grows:
+        parked at the bottom the view still follows the tail, but once the user
+        scrolls up the offset moves with the incoming lines so their place stays
+        put instead of drifting.
+      */}
+      <ScrollBox height={documentHeight} stickToBottom={false} controls={docControls}>
       {displayError && (
-        <Box marginBottom={1} flexShrink={0} ref={errorRef}>
+        <Box marginBottom={1} flexShrink={0}>
           <Text color="red">Error: {terminalRelativePaths(displayError)}</Text>
         </Box>
       )}
 
-      <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} height={messageViewportHeight} scrollOffset={scrollOffset} onScrollChange={setScrollOffset} />
+      <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} />
 
-      <Box flexDirection="column" flexShrink={0} ref={chromeRef}>
       {systemMessages.length > 0 && (
         <Box marginBottom={1} flexDirection="column">
           {systemMessages.map((msg) => {
@@ -733,6 +743,28 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         );
       })()}
 
+      {showToolDetail && toolMessages.length > 0 && (
+        <ToolDetailPanel
+          tools={toolMessages}
+          closeKey={formatKeybinding(keybindings, "toggleToolDetail")}
+        />
+      )}
+
+      {showPlanDetail && activePlan && (
+        <PlanDetailPanel
+          plan={activePlan}
+          closeKey={formatKeybinding(keybindings, "togglePlanDetail")}
+        />
+      )}
+      </ScrollBox>
+
+      {/*
+        The only part of the screen that holds still. Modal TUIs belong here
+        rather than in the document: they own the keyboard while they're up, so
+        scrolling them out of sight would leave the user typing at something
+        they can't see.
+      */}
+      <Box flexDirection="column" flexShrink={0} ref={footerRef}>
       {pendingConfirmation && (
         <ToolConfirm
           toolName={pendingConfirmation.toolName}
@@ -742,14 +774,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           subagentTask={pendingConfirmation.subagentTask}
           keybindings={keybindings}
         />
-      )}
-
-      {showToolDetail && toolMessages.length > 0 && (
-        <ToolDetailPanel tools={toolMessages} closeKey={formatKeybinding(keybindings, "toggleToolDetail")} />
-      )}
-
-      {showPlanDetail && activePlan && (
-        <PlanDetailPanel plan={activePlan} closeKey={formatKeybinding(keybindings, "togglePlanDetail")} />
       )}
 
       {agentsTUIActive && (
@@ -788,7 +812,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           onRemoveAttachment={() => setAttachments((prev) => prev.slice(0, -1))}
           onClearAttachments={() => setAttachments([])}
           onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
-          onCursorReset={(fn) => { inputPromptCursorResetRef.current = fn; }}
           disabled={pickerActive}
           suppressHistory={isLoading}
           commands={[

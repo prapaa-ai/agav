@@ -7,6 +7,7 @@ import type { AgentRegistryEntry } from "../agents/types.js";
 import { deleteAgentWithTemplate } from "../agents/agent-lifecycle.js";
 import { loadAgentConfig, saveAgentConfig } from "../agents/credentials.js";
 import { implementAgentTools } from "../agents/tool-gen.js";
+import { wheelSelect, stepIndex } from "./wheel-select.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type {
   Tab, ListView, AgentsTUIProps, ReadinessMap,
@@ -361,6 +362,12 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
 
   const selectedAgent = filteredAgents[selectedIndex];
 
+  const handleListWheel = wheelSelect((delta) => {
+    if (confirmingRemove) return;
+    setSelectedIndex((i) => stepIndex(i, delta, filteredAgents.length));
+    setRemoveStatus(null);
+  });
+
   return (
     <Box flexDirection="column" padding={1}>
       <Box marginBottom={1}>
@@ -382,16 +389,20 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
       </Box>
 
       {activeTab === "list" && listView === "list" && (
-        <ListTab
-          agents={filteredAgents}
-          allAgents={agents}
-          selectedIndex={selectedIndex}
-          searchQuery={listSearch}
-          searching={listSearching}
-          confirmingRemove={confirmingRemove}
-          removeStatus={removeStatus}
-          readinessMap={readinessMap}
-        />
+        // Scoped to the list rather than the whole hub: the Create wizard and
+        // the Marketplace tab own their own wheel behaviour.
+        <Box flexDirection="column" onWheel={handleListWheel}>
+          <ListTab
+            agents={filteredAgents}
+            allAgents={agents}
+            selectedIndex={selectedIndex}
+            searchQuery={listSearch}
+            searching={listSearching}
+            confirmingRemove={confirmingRemove}
+            removeStatus={removeStatus}
+            readinessMap={readinessMap}
+          />
+        </Box>
       )}
       {activeTab === "list" && listView === "inspect" && selectedAgent && (
         <Box flexDirection="column">
