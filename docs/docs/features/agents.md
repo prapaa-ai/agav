@@ -87,6 +87,8 @@ Every tool in an agent is classified as either `safe` (read-only) or `modifies` 
 
 The classification is declared in the agent manifest (`tool-permissions`) and is visible in the inspect view.
 
+Agent tools also run inside the OS-level sandbox when one is available (Seatbelt on macOS, Bubblewrap on Linux). This applies the same filesystem, network, and credential isolation described in [Security — Shell sandbox](/reference/security#shell-sandbox) to every agent tool execution, not just shell commands. Bundled agent tools are excluded from sandboxing since they ship with Agav.
+
 ## Model and effort overrides
 
 Agents inherit the session's model and effort by default. You can override them per-agent in the config editor (`/agents → inspect → e`). The override is stored in the agent's `config.json` and shown as `<model> (agent override)` in the inspect view. Clear the value to revert to inheriting from the session.

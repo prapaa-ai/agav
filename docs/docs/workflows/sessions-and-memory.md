@@ -12,7 +12,7 @@ order: 3
 | --- | --- |
 | `agav --resume` | Open an interactive picker for a saved session at startup. |
 | `agav --resume <id>` | Resume the saved session whose ID starts with `<id>`. |
-| `/history [number]` | List saved sessions, or load the session at the selected number. |
+| `/resume [id]` | List saved sessions, or resume one by ID or prefix match. |
 | `/search <query>` | Find saved sessions that match `<query>`. |
 | `/name <name>` | Give the active session a recognizable name. |
 | `/clear` or `/new` | Start a clean chat while keeping saved sessions. |
@@ -23,7 +23,7 @@ Agav auto-saves interactive conversations after each completed turn under `~/.ag
 
 `agav --resume` opens a picker with up to 20 recent sessions. You can navigate with `↑/↓` or `j/k`, press `Enter` to resume, `D` to delete, `M` or `R` to rename, and `Esc` or `q` to cancel.
 
-`/history` lists the 10 most recent sessions in newest-first order. `/search` performs a case-insensitive substring search across saved message text and string tool results, returns up to 10 matching sessions, and shows up to 3 snippets per session. To reopen a result directly, use its ID prefix with `agav --resume <id-prefix>`.
+`/resume` lists the 10 most recent sessions in newest-first order. `/search` performs a case-insensitive substring search across saved message text and string tool results, returns up to 10 matching sessions, and shows up to 3 snippets per session. To reopen a result directly, use its ID prefix with `agav --resume <id-prefix>`.
 
 ## Fork a conversation with `/branch`
 
@@ -38,7 +38,7 @@ Use a branch when you want to explore a different solution without losing the cu
 /branch try-postgres
 ```
 
-`/branch <name>` saves a fork from the active conversation and switches to it. Run bare `/branch` to list branches in the current conversation lineage. Unrelated saved sessions are not included; use `/history` for those.
+`/branch <name>` saves a fork from the active conversation and switches to it. Run bare `/branch` to list branches in the current conversation lineage. Unrelated saved sessions are not included; use `/resume` for those.
 
 A practical pattern is to branch before a risky refactor, compare the result with the original approach, and resume whichever conversation you want to continue.
 

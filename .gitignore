@@ -47,3 +47,4 @@ bun.lockb
 jobs/
 terminal-bench-2-1/
 benchmarks/agav-agent/bin/
+.agav-worktrees/

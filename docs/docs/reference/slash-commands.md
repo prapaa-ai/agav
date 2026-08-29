@@ -26,7 +26,7 @@ Type `/` in an interactive session to autocomplete commands. Run `/help` to see 
 
 | Command | Purpose |
 | --- | --- |
-| `/history [index]` | List saved sessions or load one by its displayed index. |
+| `/resume [id]` | List saved sessions or resume one by ID or prefix match. |
 | `/search <query>` | Search saved session messages by keyword. |
 | `/name <title>` | Give the current session a descriptive name. |
 | `/branch [name]` | List branches in the current session lineage, or fork the current conversation into a named branch. |

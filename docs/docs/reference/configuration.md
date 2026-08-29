@@ -38,7 +38,7 @@ Agav merges defaults, `~/.agav/config.json`, and `./.agav/config.json` in that o
 
 | Field | Values or behavior |
 | --- | --- |
-| `provider` | `anthropic`, `openai`, `gemini`, `vertex-ai`, or `ollama` |
+| `provider` | `anthropic`, `openai`, `openrouter`, `nvidia`, `gemini`, `vertex-ai`, or `ollama` |
 | `model` | Provider-specific model identifier |
 | `vertexAICredentialsPath` | Path to a Google Cloud service-account JSON file used by Vertex AI; setting it enables the provider. Supports a leading `~`. Prefer `VERTEX_AI_CREDENTIALS_PATH`. |
 | `vertexAILocation` | Vertex AI region, or `global` for the multi-region endpoint (default `global`). Can also be set with `VERTEX_AI_LOCATION`. |

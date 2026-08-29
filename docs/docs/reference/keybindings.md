@@ -13,6 +13,8 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Cancel | `Esc` |
 | Expand tool detail | `Ctrl+D` |
 | Plan detail panel | `Ctrl+G` |
+| Toggle thinking text | `Ctrl+T` |
+| Toggle compaction summary | `Ctrl+O` |
 | Cycle subagents | `Tab` |
 | Insert newline | `Shift+Enter`, or `Option+Return` on macOS terminals that support it |
 | Submit | `Enter` |
