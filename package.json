@@ -32,13 +32,13 @@
     "fflate": "^0.8.3",
     "ink": "^7.1.0",
     "ink-spinner": "^5.0.0",
-    "ink-text-input": "^6.0.0",
     "marked": "^15.0.0",
     "marked-terminal": "^7.3.0",
     "ollama": "^0.6.3",
     "openai": "^6.46.0",
     "pdfjs-dist": "^6.1.200",
     "react": "^19.2.0",
+    "string-width": "^8.2.2",
     "yaml": "^2.3.4"
   },
   "devDependencies": {
