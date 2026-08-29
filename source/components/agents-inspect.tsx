@@ -17,6 +17,7 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
   const manifest = agent.manifest;
   const hasRequiredConfig = (manifest["required-config"] ?? []).length > 0;
   const isMarketplace = statusLabel === "marketplace";
+  const mcpServers = manifest["mcp-servers"] ?? [];
 
   const agentModelOverride  = runtimeConfig?.["model"];
   const agentEffortOverride = runtimeConfig?.["effort"];
@@ -120,6 +121,18 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
               </Box>
             );
           })}
+        </Box>
+      )}
+
+      {mcpServers.length > 0 && (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text bold>MCP Servers ({mcpServers.length}):</Text>
+          {mcpServers.map((srv) => (
+            <Box key={srv.key} marginLeft={2} marginTop={1}>
+              <Text color="cyan">{srv.key}</Text>
+              <Text dimColor> — {srv.command} {(srv.args ?? []).join(" ")}</Text>
+            </Box>
+          ))}
         </Box>
       )}
 
