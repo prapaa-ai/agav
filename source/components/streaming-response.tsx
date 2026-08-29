@@ -14,10 +14,8 @@ interface Props {
 
 /** Displays streaming output, including thinking and typing states. */
 export default function StreamingResponse({ text, thinkingText, isLoading, showThinking }: Props) {
-  if (!isLoading && !text && !thinkingText) {
-    return null;
-  }
-
+  // Hooks run before any early return — bailing out first would change the hook
+  // count between renders and crash the reconciler.
   const rendered = useMemo(() => {
     if (!text) return "";
     return renderMarkdown(terminalRelativePaths(text));
@@ -30,6 +28,10 @@ export default function StreamingResponse({ text, thinkingText, isLoading, showT
       : thinkingText;
     return renderMarkdown(terminalRelativePaths(truncated));
   }, [thinkingText]);
+
+  if (!isLoading && !text && !thinkingText) {
+    return null;
+  }
 
   const isThinking = isLoading && thinkingText && !text;
 

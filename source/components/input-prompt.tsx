@@ -22,8 +22,14 @@ interface Props {
   /** Registers a callback that re-syncs the caret with the current buffer. */
   onCursorReset?: (fn: () => void) => void;
   disabled?: boolean;
-  /** When true, arrow keys do not cycle through prompt history (prevents
-   *  mouse-wheel-as-arrow-key from triggering re-renders during agent turns). */
+  /**
+   * When true, arrow keys do not cycle through prompt history.
+   *
+   * `normalizeKeyEvent` drops mouse reports, but terminals in alternate-scroll
+   * mode send the wheel as genuine arrow keys, which are indistinguishable from
+   * a keypress. Gating history during an agent turn is the only defence left,
+   * at the cost of history recall while the agent works.
+   */
   suppressHistory?: boolean;
   commands?: CommandInfo[];
   keybindings: Keybindings;
@@ -71,6 +77,21 @@ function getActiveFileToken(value: string, cursorPos: number): ActiveFileToken |
   const prefixLength = (match[1] ?? "").length;
   const start = before.length - match[0].length + prefixLength;
   return { start, end: cursorPos, query: match[2] ?? match[3] ?? "", quoted: match[2] !== undefined };
+}
+
+/**
+ * Residue of an escape sequence neither Ink nor `normalizeKeyEvent` resolved.
+ *
+ * Ink drops the leading ESC off a chunk it could not parse, so what reaches us
+ * is a bare CSI (`[` + parameter + intermediate + final byte, per ECMA-48) or
+ * SS3 (`O` + final byte). Both need at least two characters, which keeps a
+ * plain `[` or `O` keystroke typeable.
+ */
+const ESCAPE_RESIDUE_RE = /^(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e])$/;
+
+/** Whether `input` is terminal noise rather than something the user typed. */
+export function isEscapeResidue(input: string): boolean {
+  return input.includes("\x1b") || ESCAPE_RESIDUE_RE.test(input);
 }
 
 /** Checks whether a resolved path stays within the current project root. */
@@ -386,8 +407,10 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
         return;
       }
 
-      // Character input — pastes are handled by usePaste in use-paste-handler
-      if (input && !key.ctrl && !key.meta && input.length <= 2 && !input.startsWith('[')) {
+      // Character input — pastes are handled by usePaste in use-paste-handler,
+      // except on terminals without bracketed paste, where the whole chunk
+      // arrives here and must still be inserted verbatim.
+      if (input && !key.ctrl && !key.meta && !isEscapeResidue(input)) {
         const before = value.slice(0, cursorPos);
         const after = value.slice(cursorPos);
         onChange(before + input + after);

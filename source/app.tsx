@@ -77,6 +77,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [showThinking, setShowThinking] = useState(initialConfig.showThinking ?? false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
+  // Focusing a subagent forces the transcript out of <Static> so it can be
+  // redrawn in place. Going back to <Static> would reprint every message into
+  // the scrollback, so the flag only clears alongside a screen wipe.
   const [inlineTranscript, setInlineTranscript] = useState(false);
   const [showCompactionSummary, setShowCompactionSummary] = useState(false);
   const [runningSkillName, setRunningSkillName] = useState<string | null>(null);
@@ -490,11 +493,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           clearMessages: () => {
             clearMessages();
             setSystemMessages([]);
+            setInlineTranscript(false);
             process.stdout.write("\x1B[3J\x1Bc\x1b[?25l");
           },
           refreshPlan,
           saveSession: saveNow,
-          refreshDisplay,
+          // Both of these wipe the screen and remount the transcript, so it is
+          // safe to hand rendering back to <Static> without duplicating output.
+          refreshDisplay: () => {
+            setInlineTranscript(false);
+            refreshDisplay();
+          },
           loadSession,
           activateSession,
           renameSession,
