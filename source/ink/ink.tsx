@@ -512,12 +512,37 @@ export default class Ink {
 		return hitTest(root, clampedX, clampedY);
 	};
 
+	/**
+	 * How far the frame has scrolled off the top of the terminal.
+	 *
+	 * A mouse report names a terminal row; layout names a frame row. The two
+	 * agree only while the whole frame is on screen. A frame is written as
+	 * `output + "\n"`, so once it is within one row of filling the terminal that
+	 * trailing newline pushes the top of it into scrollback, and every laid-out
+	 * row from then on sits that many rows higher than its number says.
+	 * Hit-testing a raw mouse row against those rectangles then picks the wrong
+	 * element, or none at all down where the last rows are.
+	 */
+	private get frameScrollOffset(): number {
+		const height = this.rootNode.internal_height ?? 0;
+		const rows = this.options.stdout.rows ?? 0;
+
+		if (height === 0 || rows === 0) {
+			return 0;
+		}
+
+		return Math.max(0, height + 1 - rows);
+	}
+
 	private readonly handleMouseEvent = (ev: ParsedMouse): void => {
-		const target = hitTest(this.rootNode, ev.x, ev.y);
+		// Everything downstream — hit-testing, and the coordinates handlers
+		// compare against `internal_x` / `internal_y` — works in frame rows.
+		const y = ev.y + this.frameScrollOffset;
+		const target = hitTest(this.rootNode, ev.x, y);
 
 		const base: MouseEventData = {
 			x: ev.x,
-			y: ev.y,
+			y,
 			button: ev.button,
 			ctrl: ev.ctrl,
 			alt: ev.alt,
@@ -532,7 +557,7 @@ export default class Ink {
 		// help: bubbling walks *up* from the target, and every handler in the
 		// app is below the root.
 		if (ev.wheel) {
-			const wheelTarget = target ?? this.hitTestClamped(ev.x, ev.y);
+			const wheelTarget = target ?? this.hitTestClamped(ev.x, y);
 
 			if (!wheelTarget) {
 				return;
@@ -540,7 +565,7 @@ export default class Ink {
 
 			dispatchWheel(wheelTarget, {
 				x: ev.x,
-				y: ev.y,
+				y,
 				direction: ev.wheel,
 				ctrl: ev.ctrl,
 				alt: ev.alt,

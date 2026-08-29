@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Box, Text, useInput, useStdin } from "../ink/index.js";
+import { Box, Text, useInput, useStdin, useStdout, type DOMElement, type MouseEventData } from "../ink/index.js";
 import { KeybindingResolver, PROMPT_ACTIONS, formatKeybinding, formatUsableKeybinding, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { loadPromptHistory, savePromptHistory } from "../config/prompt-history.js";
 import { readdir, realpath } from "node:fs/promises";
@@ -92,6 +92,50 @@ export function isEscapeResidue(input: string): boolean {
   return input.includes("\x1b") || ESCAPE_RESIDUE_RE.test(input);
 }
 
+/**
+ * Matches an attachment placeholder: the `<<...>>` stand-in the prompt shows
+ * for a pasted block or an image.
+ *
+ * Written once because two things depend on its exact shape — backspace, which
+ * takes a whole one out at a stroke, and click, which refuses to put the caret
+ * inside one.
+ */
+const ATTACHMENT_LABEL = String.raw`<<(?:\(.*?\) )?(?:Pasted|Image)(?:\s*#\d+)?:.+?>>`;
+
+/** The same placeholder, immediately before the cursor, with its trailing space. */
+const ATTACHMENT_BEFORE_CURSOR_RE = new RegExp(`${ATTACHMENT_LABEL} ?$`);
+
+/** Every character cell the prompt prints before the text: `"❯ "` or `"  "`. */
+const PREFIX_WIDTH = 2;
+
+/**
+ * Moves an offset that landed inside an attachment placeholder out to its
+ * nearer edge.
+ *
+ * The placeholder stands in for content the buffer does not hold — a pasted
+ * block kept aside, an image's bytes — so to the user it is one thing, however
+ * many characters it is to us. A caret dropped inside it would let the next
+ * keystroke cut it into two strings that match nothing, orphaning the
+ * attachment with no sign on screen that anything happened. Both of its edges
+ * are positions the user can sensibly mean, so pick the closer one.
+ */
+export function snapOutOfAttachment(text: string, offset: number): number {
+  const pattern = new RegExp(ATTACHMENT_LABEL, "g");
+
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    const start = match.index;
+    const end = start + match[0].length;
+
+    if (offset > start && offset < end) {
+      return offset - start <= end - offset ? start : end;
+    }
+
+    if (start > offset) break;
+  }
+
+  return offset;
+}
+
 /** Checks whether a resolved path stays within the current project root. */
 function isWithinRoot(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -101,6 +145,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
 /** Renders the interactive prompt with history, completion, and paste handling. */
 export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
   const { isRawModeSupported } = useStdin();
+  const { stdout } = useStdout();
   const [, bumpCursor] = useState(0);
 
   // The live buffer: the text and caret as of the last key we handled.
@@ -155,6 +200,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
+  /** The box holding the text rows, for turning a click into a buffer offset. */
+  const linesRef = useRef<DOMElement | null>(null);
 
   useEffect(() => {
     if (historyLoadedRef.current) return;
@@ -396,7 +443,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         if (cursorPos > 0) {
           // Check if cursor is right after an attachment label like "<<Pasted #1: ...>>"
           const textBefore = value.slice(0, cursorPos);
-          const labelMatch = textBefore.match(/<<(?:\(.*?\) )?(?:Pasted|Image)(?:\s*#\d+)?:.+?>> ?$/);
+          const labelMatch = textBefore.match(ATTACHMENT_BEFORE_CURSOR_RE);
           if (labelMatch && onRemoveAttachment) {
             const labelStart = cursorPos - labelMatch[0].length;
             applyEdit(value.slice(0, labelStart) + value.slice(cursorPos), labelStart);
@@ -445,8 +492,12 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     );
   }
 
-  const cols = process.stdout.columns || 80;
-  const usable = cols - 2;
+  // Ink's stdout, not the process's: this is the surface the renderer lays the
+  // rows out into, and a click is turned back into a buffer offset through this
+  // same wrap table. Measuring against a different width would put the caret
+  // somewhere other than where the user aimed.
+  const cols = stdout?.columns || 80;
+  const usable = cols - PREFIX_WIDTH;
 
   interface WrappedLine { text: string; offset: number; isFirst: boolean }
   const wrappedLines: WrappedLine[] = [];
@@ -471,8 +522,40 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
   const isMultiline = rawLines.length > 1 || wrappedLines.length > 1;
 
+  /**
+   * Puts the caret where the user clicked on one wrapped row.
+   *
+   * Which row it was comes from the handler being bound to that row, not from
+   * the mouse's `y`. The two do not agree: a frame taller than the terminal has
+   * scrolled by the time it is on screen, so a row's laid-out `y` is not the
+   * terminal row it is printed on, and subtracting one from the other is off by
+   * however far the frame scrolled. Nothing scrolls sideways, so `x` is sound.
+   *
+   * The wrapped line already knows the buffer offset it starts at — the same
+   * table the caret is drawn from, so what the user aims at and what they get
+   * are the same thing by construction, wrapping and all.
+   */
+  const handleRowClick = (line: WrappedLine) => (event: MouseEventData) => {
+    const rows = linesRef.current;
+    if (!rows || rows.internal_x === undefined) return;
+
+    // Past the end of a line means the end of that line, not the next one:
+    // clicking into the empty space right of the text is how anyone asks for
+    // the caret to go last.
+    const column = event.x - rows.internal_x - PREFIX_WIDTH;
+    const offset = line.offset + Math.max(0, Math.min(column, line.text.length));
+
+    moveCaret(snapOutOfAttachment(text, offset));
+    event.stopPropagation?.();
+  };
+
   return (
-    <Box flexDirection="column">
+    // `flexGrow` so the rows span the full width they are drawn across rather
+    // than shrink-wrapping the text: the blank space to the right of a line is
+    // where anyone clicks to put the caret at its end, and a box that stops at
+    // the last character is not there to be clicked.
+    <Box flexDirection="column" flexGrow={1}>
+      <Box flexDirection="column" ref={linesRef}>
       {wrappedLines.map((wl, i) => {
         const prefix = wl.isFirst ? "❯ " : "  ";
         const lineStart = wl.offset;
@@ -481,7 +564,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
         if (!text && wl.isFirst) {
           return (
-            <Box key={i}>
+            <Box key={i} onClick={handleRowClick(wl)}>
               <Text bold color="green">{prefix}</Text>
               <Text inverse> </Text>
               <Text dimColor>Type a message...</Text>
@@ -495,7 +578,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           const ch = col < wl.text.length ? wl.text[col]! : " ";
           const after = col < wl.text.length ? wl.text.slice(col + 1) : "";
           return (
-            <Box key={i}>
+            <Box key={i} onClick={handleRowClick(wl)}>
               {wl.isFirst ? <Text bold color="green">{prefix}</Text> : <Text dimColor>{prefix}</Text>}
               <Text>{before}</Text>
               <Text inverse>{ch}</Text>
@@ -505,12 +588,13 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         }
 
         return (
-          <Box key={i}>
+          <Box key={i} onClick={handleRowClick(wl)}>
             {wl.isFirst ? <Text bold color="green">{prefix}</Text> : <Text dimColor>{prefix}</Text>}
             <Text>{wl.text || " "}</Text>
           </Box>
         );
       })}
+      </Box>
       {hasCommandSuggestions && (() => {
         const maxVisible = 8;
         const total = matchingCommands.length;
