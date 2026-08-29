@@ -7,6 +7,7 @@ import { readdir, rm, cp, mkdir, stat, realpath, writeFile } from "node:fs/promi
 import { join, resolve, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { loadAgent } from "./loader.js";
 import { registerAgent, isAgentRegistered } from "./agent-registry.js";
 import type { AgentDefinition } from "./types.js";
@@ -40,7 +41,7 @@ function validateGitUrl(url: string): void {
   }
 }
 
-async function assertPathContained(child: string, parent: string): Promise<void> {
+export async function assertPathContained(child: string, parent: string): Promise<void> {
   const resolved = await realpath(resolve(child)).catch(() => resolve(child));
   const root = await realpath(resolve(parent)).catch(() => resolve(parent));
   if (!resolved.startsWith(root + "/") && !resolved.startsWith(root + "\\") && resolved !== root) {
@@ -95,6 +96,13 @@ export async function installAgent(
       return { success: false, error: cloneResult.error || "Clone failed" };
     }
     agentPath = cloneResult.path;
+  } else if (source.startsWith("file://")) {
+    // file:// URL — convert to filesystem path
+    try {
+      agentPath = fileURLToPath(source);
+    } catch {
+      return { success: false, error: `Invalid file:// URL: ${source}` };
+    }
   } else {
     // Local path
     agentPath = source;
@@ -169,7 +177,7 @@ export async function installAgent(
       name: agent.manifest.name,
       alias,
       enabled: true,
-      sourceUrl: isGitUrl ? source : undefined,
+      sourceUrl: isGitUrl || source.startsWith("file://") ? source : undefined,
       installedAt: new Date().toISOString(),
       version: agent.manifest.version,
     });

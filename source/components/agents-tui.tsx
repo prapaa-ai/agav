@@ -2,8 +2,9 @@ import React, { useState, useEffect } from "react";
 import { Box, Text, useInput, usePaste } from "ink";
 import { mkdir } from "node:fs/promises";
 import { loadAgents } from "../agents/loader.js";
-import { setAgentEnabled } from "../agents/agent-registry.js";
-import { uninstallAgent } from "../agents/installer.js";
+import { setAgentEnabled, loadRegistry } from "../agents/agent-registry.js";
+import type { AgentRegistryEntry } from "../agents/types.js";
+import { deleteAgentWithTemplate } from "../agents/agent-lifecycle.js";
 import { loadAgentConfig, saveAgentConfig } from "../agents/credentials.js";
 import { implementAgentTools } from "../agents/tool-gen.js";
 import type { AgentDefinition } from "../agents/types.js";
@@ -17,6 +18,7 @@ import { useSearch, filterInstalledAgents } from "./agents-search.js";
 import { ListTab } from "./agents-list.js";
 import { InspectView, ConfigEditView } from "./agents-inspect.js";
 import { MarketplaceTab } from "./agents-marketplace.js";
+import { CreateTab } from "./agents-create.js";
 
 export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   const [activeTab, setActiveTab] = useState<Tab>("list");
@@ -41,6 +43,9 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
 
   const [configEntryPoint, setConfigEntryPoint]   = useState<"list" | "inspect">("inspect");
   const [marketplaceBusy, setMarketplaceBusy]     = useState(false);
+  const [createBusy, setCreateBusy]               = useState(false);
+
+  const [registryEntries, setRegistryEntries]     = useState<Record<string, AgentRegistryEntry>>({});
 
   const [implementingTools, setImplementingTools] = useState(false);
   const [implementStatus, setImplementStatus]     = useState<string | null>(null);
@@ -96,6 +101,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
       .catch(() => {
         setLoading(false);
       });
+    loadRegistry().then((reg) => setRegistryEntries(reg.agents));
   }, []);
 
   const reloadAgents = async () => {
@@ -107,6 +113,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     setLoading(false);
     computeReadiness(loaded);
     loadAllRuntimeConfigs(loaded);
+    loadRegistry().then((reg) => setRegistryEntries(reg.agents));
   };
 
   const enterConfigView = async (agent: AgentDefinition, from: "list" | "inspect") => {
@@ -130,15 +137,22 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     setRemoveStatus(null);
   };
 
+  const handleCreateComplete = () => {
+    setActiveTab("list");
+    setSelectedIndex(0);
+    setListView("list");
+  };
+
   const { searchQuery: listSearch, searching: listSearching, handleSearchKey: handleListSearch } = useSearch();
   const filteredAgents = filterInstalledAgents(agents, listSearch);
 
   useInput(async (input, key) => {
     const isEditingConfig = listView === "config" && (configEditing || configPickerActive);
-    if (!listSearching && !isEditingConfig && !marketplaceBusy && (input === "1" || input === "2")) {
+    if (!listSearching && !isEditingConfig && !marketplaceBusy && !createBusy && (input === "1" || input === "2" || input === "3")) {
       setRemoveStatus(null);
       if (input === "1") { setActiveTab("list"); setSelectedIndex(0); setListView("list"); }
       else if (input === "2") { setActiveTab("marketplace"); setSelectedIndex(0); }
+      else if (input === "3") { setActiveTab("create"); }
       return;
     }
 
@@ -149,10 +163,10 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
             const agent = filteredAgents[selectedIndex];
             if (agent) {
               const agentKey = agent.alias || agent.manifest.name;
-              const destination = agent.origin === "project" ? "project" : "global";
-              const result = await uninstallAgent(agentKey, destination);
+              const entry = registryEntries[agentKey];
+              const result = await deleteAgentWithTemplate(agent, { sourceUrl: entry?.sourceUrl });
               if (result.success) {
-                setRemoveStatus(`Removed ${agentKey}`);
+                setRemoveStatus(`Removed ${agentKey}${result.savedTemplate ? " (saved as template)" : ""}`);
                 setSelectedIndex(Math.max(0, selectedIndex - 1));
                 const { getCachedAgents, setCachedAgents } = await import("../agents/loader.js");
                 setCachedAgents(getCachedAgents().filter((a) => (a.alias || a.manifest.name) !== agentKey));
@@ -362,6 +376,9 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           [2] Marketplace
         </Text>
         <Text> </Text>
+        <Text color={activeTab === "create" ? "cyan" : "gray"}>
+          [3] Create
+        </Text>
       </Box>
 
       {activeTab === "list" && listView === "list" && (
@@ -422,6 +439,19 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           onInstallComplete={handleInstallComplete}
         />
       )}
+      {activeTab === "create" && (
+        <CreateTab
+          onReloadAgents={reloadAgents}
+          onExit={onExit}
+          onBusyChange={setCreateBusy}
+          onCreateComplete={handleCreateComplete}
+          provider={provider}
+          config={config}
+          agents={agents}
+          registryEntries={registryEntries}
+          installedAgents={new Map(agents.map((a) => [a.alias || a.manifest.name, { origin: a.origin, version: a.manifest.version }]))}
+        />
+      )}
 
       <Box marginTop={1} borderStyle="single" borderTop paddingTop={1}>
         {activeTab === "list" && listView === "list" && (
@@ -449,6 +479,9 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
         )}
         {activeTab === "marketplace" && (
           <Text dimColor>↑↓: Navigate | ←→: Page | ENTER: Install | u: Update | i: Inspect | s: Search | r: Refresh | ESC: Exit/clear</Text>
+        )}
+        {activeTab === "create" && (
+          <Text dimColor>Create wizard — follow the step prompts above</Text>
         )}
       </Box>
     </Box>

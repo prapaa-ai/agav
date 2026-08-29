@@ -26,6 +26,9 @@ vi.mock("../agents/agent-registry.js", () => ({
 }));
 
 import { execFile } from "node:child_process";
+import { stat, readFile, cp, mkdir } from "node:fs/promises";
+import { registerAgent } from "../agents/agent-registry.js";
+import { loadAgent } from "../agents/loader.js";
 import { installAgent, uninstallAgent } from "../agents/installer.js";
 
 describe("agents/installer", () => {
@@ -104,6 +107,41 @@ describe("agents/installer", () => {
       const result = await installAgent("https://evil.com/$(whoami)/repo");
       expect(result.success).toBe(false);
       expect(result.error).toContain("Untrusted git host");
+    });
+  });
+
+  describe("sourceUrl tracking", () => {
+    const fakeAgent = {
+      manifest: { name: "test-agent", version: "1.0.0", description: "test" },
+      systemPrompt: "test",
+      tools: [],
+      origin: "global" as const,
+      path: "/tmp/test-agent",
+    };
+
+    beforeEach(() => {
+      vi.mocked(loadAgent).mockResolvedValue(fakeAgent as any);
+      vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as any);
+    });
+
+    it("sets sourceUrl for file:// marketplace installs", async () => {
+      const result = await installAgent("file:///C:/marketplace/agents/test-agent");
+      expect(result.success).toBe(true);
+      expect(vi.mocked(registerAgent)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceUrl: "file:///C:/marketplace/agents/test-agent",
+        }),
+      );
+    });
+
+    it("does not set sourceUrl for local path installs", async () => {
+      const result = await installAgent("/local/path/test-agent");
+      expect(result.success).toBe(true);
+      expect(vi.mocked(registerAgent)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourceUrl: undefined,
+        }),
+      );
     });
   });
 

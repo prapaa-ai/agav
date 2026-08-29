@@ -325,9 +325,12 @@ export class MCPClient {
     if (!this.config.command) {
       throw new Error(`Stdio MCP server ${this.serverName} is missing 'command' config`);
     }
+    const useShell = process.platform === "win32";
+    if (useShell) validateMCPCommand(this.config.command, this.config.args ?? []);
     const proc = spawn(this.config.command, this.config.args ?? [], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...this.config.env },
+      shell: useShell,
     });
 
     this.process = proc;
@@ -386,7 +389,7 @@ export class MCPClient {
     this.serverCapabilities = initResult.capabilities ?? {};
 
     // Notify the server that initialization has completed before asking for tools.
-    this.send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} } as any);
+    this.send({ jsonrpc: "2.0", method: "notifications/initialized", params: {} });
 
     // Discover tools
     this.tools = await this.fetchTools();
@@ -606,6 +609,19 @@ export class MCPClient {
         throw new Error(`MCP server ${this.serverName} is not running`);
       }
       this.process.stdin.write(JSON.stringify(msg) + "\n");
+    }
+  }
+}
+
+const SHELL_METACHAR = /[&|<>^;`$(){}[\]!%"\n\r]/;
+
+export function validateMCPCommand(command: string, args: string[]): void {
+  if (SHELL_METACHAR.test(command)) {
+    throw new Error(`MCP server command contains unsafe characters: ${command}`);
+  }
+  for (const arg of args) {
+    if (SHELL_METACHAR.test(arg)) {
+      throw new Error(`MCP server argument contains unsafe characters: ${arg}`);
     }
   }
 }
