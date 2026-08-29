@@ -369,11 +369,18 @@ export function useAgent(
       // Start MCP servers
       if (config.mcpServers) {
         for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
+          // Skip non-server entries: schema metadata keys (description, eg, etc.)
+          // and malformed values. A valid server config must have either `command`
+          // (stdio) or `url` (remote) — anything else is not a real server entry.
+          if (typeof serverConfig !== "object" || serverConfig === null
+            || !("command" in serverConfig || "url" in serverConfig)) {
+            continue;
+          }
           try {
             await mcpManagerRef.current.startServer(name, serverConfig);
             syncMcpState();
-          } catch {
-            // MCP server failed to start — non-fatal
+          } catch (err) {
+            process.stderr.write(`[mcp:${name}] failed to start: ${err instanceof Error ? err.message : String(err)}\n`);
           }
         }
       }

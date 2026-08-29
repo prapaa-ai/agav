@@ -1,8 +1,16 @@
 // Launch configuration for an MCP server process.
 export interface MCPServerConfig {
-  command: string;
+  command?: string;
   args?: string[];
   env?: Record<string, string>;
+  type?: "stdio" | "remote";
+  url?: string;
+  // Remote transport selection. "http" = Streamable HTTP (POST /mcp, current spec);
+  // "sse" = legacy HTTP+SSE (GET stream + 'endpoint' event). Omitted = auto-detect
+  // (try Streamable HTTP first, fall back to SSE).
+  transport?: "http" | "sse";
+  // Extra headers sent with every remote request (e.g. Authorization).
+  headers?: Record<string, string>;
 }
 
 // Tool metadata normalized from an MCP server's tools/list response.
