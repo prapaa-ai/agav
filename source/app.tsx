@@ -30,6 +30,7 @@ import {
 import { getRandomHint } from "./utils/hints.js";
 import { fileLink } from "./utils/hyperlink.js";
 import { getClipboardImage, type ClipboardImage } from "./utils/clipboard-image.js";
+import { getClipboardText } from "./utils/clipboard-text.js";
 import { useClipboardImageDetector } from "./hooks/use-paste-handler.js";
 import { KeybindingResolver, GLOBAL_ACTIONS, formatKeybinding, formatKeybindings, normalizeKeyEvent, type Keybindings } from "./config/keybindings.js";
 import { getLoopStatus, stopActiveLoop } from "./commands/loop.js";
@@ -404,8 +405,24 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setShowCompactionSummary((prev) => !prev);
     }
     if (key.ctrl && char === "v" && !pendingConfirmation) {
-      getClipboardImage().then((img) => {
-        if (img) handleClipboardImage(img);
+      // Try clipboard image first, then fall back to clipboard text.
+      // This covers terminals (e.g. native PowerShell/cmd) that don't
+      // support bracketed paste mode, where Ctrl+V arrives as a raw
+      // keystroke instead of a paste event.
+      getClipboardImage().then(async (img) => {
+        if (img) {
+          handleClipboardImage(img);
+          return;
+        }
+        const text = await getClipboardText();
+        if (!text) return;
+        if (!text.includes("\n") && /^https?:\/\//.test(text)) {
+          handleShortPaste(text);
+        } else if (text.length >= 50) {
+          handleLargePaste(text);
+        } else {
+          handleShortPaste(text);
+        }
       });
     }
   });
