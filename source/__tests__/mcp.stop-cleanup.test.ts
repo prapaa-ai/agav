@@ -78,20 +78,26 @@ describe("MCPClient.stop() cleanup", () => {
     await client.start();
 
     // Issue a tool call that will never get a response.
-    // The fetch mock will accept the POST but no SSE reply will come.
-    const callPromise = client.callTool("slow_tool", {});
+    // The mock SSE stream will close (reader returns done:true) after 10ms,
+    // which rejects pending requests.  Capture the rejection immediately so
+    // Node doesn't flag an unhandled rejection before we reach our assertion.
+    let rejected: Error | undefined;
+    const callPromise = client.callTool("slow_tool", {}).catch((err: Error) => {
+      rejected = err;
+    });
 
-    // Give the POST a moment to be sent.
+    // Give the POST a moment to be sent and the SSE stream to close.
     await new Promise((r) => setTimeout(r, 50));
 
-    // Now stop the client — this should reject the pending request immediately.
+    // Now stop the client.
     client.stop();
 
-    // The request should be rejected immediately — either by stop()'s own
-    // pending-drain ("stopped") or by the SSE stream-close handler that fires
-    // when the abort controller tears down the connection.  Either path is
-    // correct: the important thing is the promise settles right away instead
-    // of hanging for 30 seconds.
-    await expect(callPromise).rejects.toThrow();
+    // Wait for the promise chain to settle.
+    await callPromise;
+
+    // The request should have been rejected — either by the SSE stream-close
+    // handler or by stop()'s own pending-drain.  The important thing is the
+    // promise settled promptly instead of hanging for 30 seconds.
+    expect(rejected).toBeInstanceOf(Error);
   });
 });
