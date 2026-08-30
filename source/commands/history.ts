@@ -45,8 +45,16 @@ export const resumeCommand: SlashCommand = {
     }
 
     context.setPickerActive(true);
-    const session = await pickSession(sessions);
-    context.setPickerActive(false);
+    // pickSession draws straight to stdout, so Ink has to stop repainting
+    // before its first write rather than after the next await.
+    const resumeTerminal = context.suspendTerminal();
+    let session: Awaited<ReturnType<typeof pickSession>>;
+    try {
+      session = await pickSession(sessions);
+    } finally {
+      resumeTerminal();
+      context.setPickerActive(false);
+    }
     context.refreshDisplay();
 
     if (!session) {

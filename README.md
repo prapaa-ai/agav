@@ -28,6 +28,92 @@ Agav reads, searches and edits the repository you run it in, and runs the comman
 - **Lights-off operation** — schedule tasks (`/schedule`), loop prompts (`/loop`) and watch files (`/watch`); specs go in, verified work comes out.
 - **Repository-aware editing** — LSP-backed queries, notebook support, test running, and `/undo` for the last file change.
 
+## Tools
+
+Agav ships with 19 built-in tools the agent calls on your behalf — reading, writing, searching, running commands, and talking to external services.
+
+| Tool | What it does |
+| --- | --- |
+| `read_file` | Read files — text with line ranges, PDF/Office with page ranges, images as compressed visual previews |
+| `write_file` | Create or overwrite files; creates parent directories as needed |
+| `edit_file` | Surgical string replacement — find an exact string, replace its first occurrence |
+| `run_command` | Execute shell commands, sandboxed via Seatbelt, Bubblewrap or Docker |
+| `grep_search` | Recursive regex search across files, with optional file-glob filters |
+| `find_files` | Glob-based file discovery |
+| `list_directory` | List a directory's contents with file types and sizes |
+| `web_search` | Search the web; returns titles, URLs and snippets |
+| `fetch_url` | HTTP requests (GET/POST/PUT/DELETE/PATCH) with custom headers |
+| `lsp_query` | Language Server Protocol queries — diagnostics, definitions, references, hover |
+| `read_notebook` | Read Jupyter notebook cells with their outputs |
+| `edit_notebook` | Edit Jupyter notebook cells by index |
+| `github` | GitHub CLI integration — create and view PRs and issues |
+| `overview` | Codebase structure map showing the file tree and key symbols per file |
+| `run_tests` | Auto-detecting test runner (pytest, vitest, jest, go test, cargo test) with structured pass/fail results |
+| `update_plan` | Mark plan steps as in-progress, done or failed |
+| `save_memory` | Persist cross-session memories (user, feedback, project, reference) |
+| `subagent` | Spawn independent parallel subagents, each with their own context and tools |
+| `activate_skill` | Run a registered skill by name |
+
+## Skills
+
+Agav ships with a set of built-in skills — reusable instruction bundles the agent can activate on its own or that you can trigger manually. Skills load in order from bundled → global (`~/.agav/skills/`) → project (`.agav/skills/`), with later entries overriding earlier ones.
+
+| Skill | What it does | Trigger |
+| --- | --- | --- |
+| `code-review` | Review code changes for bugs, security issues, and improvements | auto + manual |
+| `deep-research` | Multi-source research on a topic with citations | manual |
+| `diagnose` | Diagnose and fix errors and bugs | auto + manual |
+| `doc-gen` | Generate documentation for code | auto + manual |
+| `explain` | Explain code in plain language | auto + manual |
+| `git-commit` | Generate a commit message from staged changes | auto + manual |
+| `refactor` | Suggest and apply code refactoring | auto + manual |
+| `security-scan` | Check code for security vulnerabilities | manual |
+| `simplify` | Reduce complexity and simplify code | auto + manual |
+| `test-writer` | Generate unit tests for existing code | auto + manual |
+
+Browse and install additional skills from the marketplace with `/skills`, or drop your own into the skills directory.
+
+## Agents
+
+Agav can delegate work to standalone agents — in-process or external — that carry their own tools, model preferences, and permissions.
+
+- **Native agents** — JS/TS agents defined by an `AGENT.md` file with YAML frontmatter, running in-process with custom tools, model/effort overrides, MCP servers, and tool permissions.
+- **A2A agents** — external processes that communicate over HTTP via the Agent-to-Agent protocol.
+- **Marketplace** — install agents from git repos with `/agents`; repos are sparse-cloned, validated, and sandboxed.
+- **Origins** — agents load from bundled → global (`~/.agav/agents/`) → project-local, the same cascade as skills.
+- **Creation** — `/agents → Create` opens a wizard that builds an agent definition with an LLM-generated system prompt, workspace MCP server selection, and credential management.
+
+## Memory
+
+Agav remembers things across sessions. Memories are scoped per project (identified by the git root hash) and stored as markdown files.
+
+Four memory types:
+
+| Type | What it holds | Examples |
+| --- | --- | --- |
+| `user` | Role, preferences, expertise | "I'm a data scientist", "prefer tabs" |
+| `feedback` | Corrections and confirmations | "don't do X", "yes, that approach works" |
+| `project` | Project decisions, deadlines, context | "we use PostgreSQL", "deadline is Friday" |
+| `reference` | Pointers to external resources | Linear boards, Slack channels, dashboards |
+
+The agent saves memories proactively when it detects relevant information during a session. Manage them yourself with:
+
+- `/memory` — list and manage saved memories
+- `/remember` — save a memory manually
+- `/forget` — delete a memory by name
+
+Memories are automatically loaded into future sessions for the same project.
+
+## Planning
+
+Agav creates multi-step plans for complex tasks and tracks progress visually. Plans are saved per-session and picked back up on resume.
+
+- The agent creates plans automatically when a task has enough moving parts to warrant one.
+- Each step carries a status: `in_progress`, `done`, or `failed`.
+- `/plan` shows the active plan; `/plan list`, `/plan <n> <status>`, and `/plan clear` manage it.
+- `Ctrl+G` toggles the plan detail panel.
+- Plans survive `/compact` operations and session resumes — context gets reclaimed, the plan stays.
+
 ## Quickstart
 
 Run it inside a repository:

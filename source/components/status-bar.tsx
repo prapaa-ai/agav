@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text } from "ink";
-import Spinner from "ink-spinner";
+import { Box, Text, Spinner } from "../ink/index.js";
 import { getRandomHint } from "../utils/hints.js";
 import { terminalRelativePaths } from "../utils/display-path.js";
 
@@ -128,7 +127,7 @@ export default function StatusBar({
         <Text color="yellow" dimColor>{loopStatus}</Text>
       )}
       {psLoading ? (
-        <Text color="cyan" dimColor><Spinner type="dots" />{" ps: thinking..."}</Text>
+        <Text color="cyan" dimColor><Spinner />{" ps: thinking..."}</Text>
       ) : psResponse ? (
         <Text color="cyan" dimColor>{"↪ ps: "}{terminalRelativePaths(psResponse)}</Text>
       ) : (

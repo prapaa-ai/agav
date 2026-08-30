@@ -1,6 +1,6 @@
 import React, { useState } from "react";
-import { Box, Text } from "ink";
-import type { Key } from "ink";
+import { Box, Text } from "../ink/index.js";
+import type { Key } from "../ink/index.js";
 import type { AgentDefinition, MarketplaceAgent } from "../agents/types.js";
 
 export function matchesQuery(query: string, ...fields: (string | string[])[]): boolean {
