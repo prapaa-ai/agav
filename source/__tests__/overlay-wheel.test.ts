@@ -103,6 +103,11 @@ describe("stepIndex", () => {
 		expect(stepIndex(2, -1, 5)).toBe(1);
 		expect(stepIndex(3, 1, 0)).toBe(0);
 	});
+
+	it("returns 0 for a single-item list (both directions are no-ops)", () => {
+		expect(stepIndex(0, "up", 1)).toBe(0);
+		expect(stepIndex(0, "down", 1)).toBe(0);
+	});
 });
 
 describe("overlay wheel", () => {
