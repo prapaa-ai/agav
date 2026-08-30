@@ -14,8 +14,12 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
   stdin.setRawMode(true);
   stdin.resume();
 
-  // Switch to alternate screen buffer and hide cursor
-  process.stdout.write("\x1b[?1049h\x1b[?25l\x1b[H");
+  // Clear the current buffer and hide the cursor. Deliberately not DECSET 1049:
+  // the app is already on the alternate screen, and 1049 is not nestable — the
+  // matching 1049l on the way out would drop the whole app back to the main
+  // buffer, restoring the terminal's native scrollbar for the rest of the
+  // session. The caller suspends Ink around this, so the screen is ours.
+  process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
 
   let totalLinesRendered = 0;
 
@@ -133,8 +137,8 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       } else {
         restoreRawMode();
       }
-      // Restore main screen buffer and show cursor
-      process.stdout.write("\x1b[?1049l\x1b[?25h");
+      // Leave the screen blank; whoever suspended Ink repaints on resume.
+      process.stdout.write("\x1b[2J\x1b[H");
     }
 
     function onData(data: Buffer) {

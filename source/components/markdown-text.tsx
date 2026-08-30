@@ -1,5 +1,5 @@
 import React from "react";
-import { Text } from "ink";
+import { Text } from "../ink/index.js";
 import { Marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 import chalk from "chalk";

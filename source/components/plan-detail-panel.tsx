@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ink/index.js";
 import type { Plan } from "../agent/planner.js";
 import { terminalRelativePaths } from "../utils/display-path.js";
 

@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput } from "../ink/index.js";
 import { fetchMarketplaceIndex, installFromUrl } from "../skills/marketplace.js";
 import { loadSkills } from "../skills/loader.js";
 import { slugify } from "../skills/skill-utils.js";
 import { useSearch, SearchBar } from "./agents-search.js";
+import { wheelSelect, stepIndex } from "./wheel-select.js";
 
 interface MarketplaceSkill {
   name: string;
@@ -152,8 +153,14 @@ export function SkillsTUI({ onExit }: SkillsTUIProps) {
     );
   }
 
+  const handleWheel = wheelSelect((delta) => {
+    if (installing) return;
+    setSelectedIndex((i) => stepIndex(i, delta, filtered.length));
+    setInstallStatus(null);
+  });
+
   return (
-    <Box flexDirection="column" padding={1}>
+    <Box flexDirection="column" padding={1} onWheel={handleWheel}>
       <Box marginBottom={1}>
         <Text bold>Skills Marketplace</Text>
         <Text dimColor>  (anthropics/skills)</Text>

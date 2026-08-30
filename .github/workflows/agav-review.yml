@@ -39,7 +39,11 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          gh pr diff ${{ github.event.pull_request.number }} > /tmp/pr-diff.txt
+          # `gh pr diff` refuses a diff carrying raw terminal escapes unless
+          # asked, since printing one to a terminal is an injection vector.
+          # This is a terminal app: escapes turn up in its sources and tests as
+          # a matter of course, and the diff goes to a file, not a terminal.
+          gh pr diff --allow-escape-sequences ${{ github.event.pull_request.number }} > /tmp/pr-diff.txt
 
       - name: Review with Agav
         timeout-minutes: 3

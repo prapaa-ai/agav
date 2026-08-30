@@ -357,8 +357,16 @@ export const modelCommand: SlashCommand = {
     }
 
     context.setPickerActive(true);
-    const picked = await pickModel(allModels, currentModel, currentProvider);
-    context.setPickerActive(false);
+    // Take the terminal before pickModel() writes its first line: it draws to
+    // stdout directly, and an Ink frame committed on top would erase it.
+    const resumeTerminal = context.suspendTerminal();
+    let picked: FetchedModel | null;
+    try {
+      picked = await pickModel(allModels, currentModel, currentProvider);
+    } finally {
+      resumeTerminal();
+      context.setPickerActive(false);
+    }
     context.refreshDisplay();
 
     if (!picked) {

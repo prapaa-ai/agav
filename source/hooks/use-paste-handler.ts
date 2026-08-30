@@ -1,4 +1,4 @@
-import { usePaste } from "ink";
+import { usePaste } from "../ink/index.js";
 import { getClipboardImage, type ClipboardImage } from "../utils/clipboard-image.js";
 
 const PASTE_THRESHOLD = 50;

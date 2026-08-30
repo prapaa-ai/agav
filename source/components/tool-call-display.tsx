@@ -1,6 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
-import Spinner from "ink-spinner";
+import { Box, Text, Spinner } from "../ink/index.js";
 import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
 import type { DiffLine } from "../utils/diff.js";
 
@@ -32,7 +31,7 @@ export default function ToolCallDisplay({ toolCall }: Props) {
       <Text dimColor>{"  └─ "}</Text>
       {toolCall.status === "running" ? (
         <Text color="yellow">
-          <Spinner type="dots" />
+          <Spinner />
           {" "}
         </Text>
       ) : toolCall.status === "error" ? (
