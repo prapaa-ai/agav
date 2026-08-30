@@ -105,8 +105,8 @@ describe("stepIndex", () => {
 	});
 
 	it("returns 0 for a single-item list (both directions are no-ops)", () => {
-		expect(stepIndex(0, "up", 1)).toBe(0);
-		expect(stepIndex(0, "down", 1)).toBe(0);
+		expect(stepIndex(0, -1, 1)).toBe(0);
+		expect(stepIndex(0, 1, 1)).toBe(0);
 	});
 });
 

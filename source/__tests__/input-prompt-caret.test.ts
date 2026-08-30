@@ -293,3 +293,50 @@ describe("InputPrompt keys arriving faster than a render commit", () => {
     instance.unmount();
   });
 });
+
+const FORWARD_DELETE = Buffer.from("\x1b[3~");
+
+describe("InputPrompt forward delete", () => {
+  it("deletes the character after the cursor", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "abcd");
+    // Move cursor left twice: cursor is now before 'c'
+    await press(instance, stdin, LEFT, 2);
+    // Forward Delete should remove 'c'
+    await press(instance, stdin, FORWARD_DELETE, 1);
+    expect(currentValue).toBe("abd");
+    instance.unmount();
+  });
+
+  it("does nothing at the end of the text", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "abc");
+    // Cursor is at the end — Forward Delete should be a no-op
+    await press(instance, stdin, FORWARD_DELETE, 1);
+    expect(currentValue).toBe("abc");
+    instance.unmount();
+  });
+});
+
+describe("InputPrompt Home/End keys", () => {
+  it("Home key does not corrupt the input", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "hello");
+    // Home key (xterm: \x1b[H) — currently not handled, should be a no-op
+    await press(instance, stdin, Buffer.from("\x1b[H"), 1);
+    // Value should be unchanged
+    expect(currentValue).toBe("hello");
+    instance.unmount();
+  });
+
+  it("End key does not corrupt the input", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "hello");
+    await press(instance, stdin, LEFT, 3);
+    // End key (xterm: \x1b[F) — currently not handled, should be a no-op
+    await press(instance, stdin, Buffer.from("\x1b[F"), 1);
+    // Value should be unchanged
+    expect(currentValue).toBe("hello");
+    instance.unmount();
+  });
+});
