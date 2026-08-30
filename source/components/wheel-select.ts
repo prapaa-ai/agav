@@ -13,8 +13,13 @@ export function wheelSelect(
   step: (delta: -1 | 1) => void,
 ): (event: WheelEventData) => void {
   return (event) => {
-    event.stopPropagation?.();
-    step(event.direction === "up" ? -1 : 1);
+    if (event.direction === "up") {
+      event.stopPropagation?.();
+      step(-1);
+    } else if (event.direction === "down") {
+      event.stopPropagation?.();
+      step(1);
+    }
   };
 }
 

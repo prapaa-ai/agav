@@ -36,20 +36,6 @@ interface Props {
   resumeUserMessages?: string[];
 }
 
-/** Returns the line and column for a cursor index in multiline input. */
-function getCursorPosition(value: string, cursorPos: number): { line: number; col: number } {
-  let pos = 0;
-  const lines = value.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const lineLen = lines[i]!.length;
-    if (pos + lineLen >= cursorPos) {
-      return { line: i, col: cursorPos - pos };
-    }
-    pos += lineLen + 1;
-  }
-  return { line: lines.length - 1, col: lines[lines.length - 1]!.length };
-}
-
 const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules", "build", "dist"]);
 
 /** Describes the active @file token under the cursor. */
@@ -248,7 +234,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       ? `@"${completedPath}${selected.isDirectory ? "" : "\""}`
       : `@${completedPath}`;
     const suffix = selected.isDirectory ? "" : " ";
-    const nextValue = value.slice(0, token.start) + mention + suffix + value.slice(token.end);
+    const buf = liveRef.current.value;
+    const nextValue = buf.slice(0, token.start) + mention + suffix + buf.slice(token.end);
     applyEdit(nextValue, token.start + mention.length + suffix.length);
     setSelectedSuggestion(0);
   };
@@ -439,7 +426,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       // Bound special keys should not become literal input when their defaults are replaced.
       if (key.return || key.escape || key.upArrow || key.downArrow) return;
 
-      if (key.backspace || key.delete) {
+      if (key.backspace) {
         if (cursorPos > 0) {
           // Check if cursor is right after an attachment label like "<<Pasted #1: ...>>"
           const textBefore = value.slice(0, cursorPos);
@@ -451,6 +438,14 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           } else {
             applyEdit(value.slice(0, cursorPos - 1) + value.slice(cursorPos), cursorPos - 1);
           }
+          setSelectedSuggestion(0);
+        }
+        return;
+      }
+
+      if (key.delete) {
+        if (cursorPos < value.length) {
+          applyEdit(value.slice(0, cursorPos) + value.slice(cursorPos + 1), cursorPos);
           setSelectedSuggestion(0);
         }
         return;
@@ -497,7 +492,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   // same wrap table. Measuring against a different width would put the caret
   // somewhere other than where the user aimed.
   const cols = stdout?.columns || 80;
-  const usable = cols - PREFIX_WIDTH;
+  const usable = Math.max(1, cols - PREFIX_WIDTH);
 
   interface WrappedLine { text: string; offset: number; isFirst: boolean }
   const wrappedLines: WrappedLine[] = [];
@@ -560,7 +555,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         const prefix = wl.isFirst ? "❯ " : "  ";
         const lineStart = wl.offset;
         const lineEnd = lineStart + wl.text.length;
-        const cursorInLine = cursorPos >= lineStart && cursorPos <= lineEnd;
+        const isLastLine = i === wrappedLines.length - 1;
+        const cursorInLine = cursorPos >= lineStart && (isLastLine ? cursorPos <= lineEnd : cursorPos < lineEnd);
 
         if (!text && wl.isFirst) {
           return (

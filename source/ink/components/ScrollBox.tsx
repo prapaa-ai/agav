@@ -32,7 +32,12 @@ export type ScrollBoxProps = {
 	readonly scrollOffset?: number;
 	/** Called with the next offset when the user scrolls (controlled mode). */
 	readonly onScrollChange?: (offset: number) => void;
-	/** When true and the viewport is at the bottom, stay pinned as new children arrive. */
+	/**
+	 * When false, the viewport position is anchored during content growth:
+	 * if the user has scrolled up, new lines at the bottom shift the offset
+	 * so the same content stays on screen. When true (default), the offset
+	 * is left unchanged and the viewport follows the newest content.
+	 */
 	readonly stickToBottom?: boolean;
 	/**
 	 * Populated with a {@link ScrollBoxControls} while mounted, and nulled on
@@ -172,8 +177,9 @@ export default function ScrollBox({
 	// content — it has no way to know `maxScroll`. Report the clamped value back
 	// so repeated scroll-ups don't build a debt of downs to undo.
 	useEffect(() => {
-		if (isControlled && offset > maxScroll) {
-			onScrollChange(maxScroll);
+		if (isControlled) {
+			if (offset > maxScroll) onScrollChange(maxScroll);
+			else if (offset < 0) onScrollChange(0);
 		}
 	}, [isControlled, offset, maxScroll, onScrollChange]);
 
