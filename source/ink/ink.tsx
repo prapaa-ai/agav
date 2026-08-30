@@ -720,6 +720,11 @@ export default class Ink {
 			stdin.setRawMode(false);
 		}
 
+		// Pause stdin so it no longer keeps the Node.js event loop alive.
+		// mount() called stdin.resume() via setRawMode(true); without a
+		// matching pause() the process hangs after waitUntilExit() resolves.
+		stdin.pause();
+
 		// Disable bracketed paste mode if it was left enabled.
 		this.bracketedPasteEnabledCount = 0;
 		if (this.isBracketedPasteEnabled) {

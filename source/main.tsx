@@ -721,5 +721,12 @@ export async function main() {
   });
 
   await waitUntilExit();
+  stopAllA2AAgents();
   await showResumeHint();
+
+  // Ensure the process exits even if stray handles (timers, sockets, etc.)
+  // are still referenced.  The "exit" event handler above will run
+  // synchronously when process.exit() is called, so markCleanExitSync()
+  // and stopAllA2AAgents() still fire.
+  process.exit(0);
 }
