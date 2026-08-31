@@ -44,10 +44,48 @@ export function makeAgentProgressTracker(
     setState((prev) => [...prev, entry]);
   }
 
-  function update(updater: (entry: SubagentProgress) => SubagentProgress) {
+  // Throttle state updates to ~15 fps.  High-frequency events like
+  // streaming_text accumulate updaters that are flushed on a timer;
+  // terminal events (turn_complete, error, assistant_message_complete)
+  // flush immediately so the UI reflects completion without delay.
+  const THROTTLE_MS = 66; // ~15 fps
+  let pendingUpdaters: Array<(entry: SubagentProgress) => SubagentProgress> = [];
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleFlush() {
+    if (flushTimer !== null) return;
+    flushTimer = setTimeout(flushUpdates, THROTTLE_MS);
+  }
+
+  function flushUpdates() {
+    flushTimer = null;
+    if (pendingUpdaters.length === 0) return;
+    const updaters = pendingUpdaters;
+    pendingUpdaters = [];
     setState((prev) =>
-      prev.map((e) => (e.id === id ? updater(e) : e))
+      prev.map((e) => {
+        if (e.id !== id) return e;
+        let result = e;
+        for (const fn of updaters) result = fn(result);
+        return result;
+      })
     );
+  }
+
+  /** Queue an update — flushed on the next throttle tick. */
+  function update(updater: (entry: SubagentProgress) => SubagentProgress) {
+    pendingUpdaters.push(updater);
+    scheduleFlush();
+  }
+
+  /** Queue an update and flush everything immediately. */
+  function updateNow(updater: (entry: SubagentProgress) => SubagentProgress) {
+    pendingUpdaters.push(updater);
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    flushUpdates();
   }
 
   return (event: AgentEvent) => {
@@ -78,17 +116,15 @@ export function makeAgentProgressTracker(
         break;
 
       case "assistant_message_complete":
-        update((e) => ({ ...e, streamingText: "", toolCalls: [] }));
+        updateNow((e) => ({ ...e, streamingText: "", toolCalls: [] }));
         break;
 
       case "turn_complete":
-        // Mark done but keep visible — the next turn's setSubagentStates([]) handles cleanup.
-        // This lets the user see which sub-tools were called after the agent finishes.
-        update((e) => ({ ...e, status: "done", streamingText: "" }));
+        updateNow((e) => ({ ...e, status: "done", streamingText: "" }));
         break;
 
       case "error":
-        update((e) => ({ ...e, status: "error", error: event.error.message, streamingText: "" }));
+        updateNow((e) => ({ ...e, status: "error", error: event.error.message, streamingText: "" }));
         break;
 
       case "usage":

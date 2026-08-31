@@ -56,4 +56,24 @@ describe("splitCoalescedKeys", () => {
     expect(splitCoalescedKeys("\x1b\x1b")).toBeNull();
     expect(splitCoalescedKeys("\x7f\x1b")).toBeNull();
   });
+
+  it("splits a run of Kitty CSI-u sequences", () => {
+    // \x1b[127u  = Backspace in Kitty protocol
+    // \x1b[13;2u = Shift+Enter
+    // \x1b[97u   = 'a' (codepoint 97)
+    const run = "\x1b[127u\x1b[13;2u\x1b[97u";
+    expect(splitCoalescedKeys(run)).toEqual([
+      "\x1b[127u",
+      "\x1b[13;2u",
+      "\x1b[97u",
+    ]);
+  });
+
+  it("leaves pasted emoji text alone", () => {
+    // Emoji strings should be treated as a single paste, not split.
+    // The flag emoji 🇺🇸 is 4 code units; the family emoji 👨‍👩‍👧‍👦 is 11.
+    expect(splitCoalescedKeys("hello 🇺🇸 world")).toBeNull();
+    expect(splitCoalescedKeys("👨‍👩‍👧‍👦")).toBeNull();
+    expect(splitCoalescedKeys("abc🎉def")).toBeNull();
+  });
 });

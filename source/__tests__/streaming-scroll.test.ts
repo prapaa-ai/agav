@@ -110,6 +110,35 @@ describe("document while streaming", () => {
 		instance.unmount();
 	});
 
+	it("survives a terminal resize while scrolled up during active streaming", async () => {
+		const {instance, stdout, stdin} = await mount(30);
+
+		// Scroll up a few ticks so we're no longer at the tail.
+		stdin.emit("data", Buffer.from(wheelUp(2)));
+		stdin.emit("data", Buffer.from(wheelUp(2)));
+		await settle(instance);
+
+		const beforeResize = visibleRows(stdout.chunks);
+		expect(beforeResize.length).toBe(VIEWPORT);
+
+		// Simulate a terminal resize: shrink rows and widen columns.
+		stdout.rows = 16;
+		stdout.columns = 120;
+		stdout.emit("resize");
+		await settle(instance);
+
+		const afterResize = visibleRows(stdout.chunks);
+		// The viewport should still render exactly VIEWPORT rows (height is
+		// fixed by the ScrollBox, not by the terminal), and the content should
+		// consist of valid "line N" entries — i.e. it didn't crash or garble.
+		expect(afterResize.length).toBe(VIEWPORT);
+		for (const row of afterResize) {
+			expect(row).toMatch(/^line \d+$/);
+		}
+
+		instance.unmount();
+	});
+
 	it("holds its place when new lines arrive after the user scrolls up", async () => {
 		const {instance, stdout, stdin} = await mount(20);
 
