@@ -828,7 +828,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           onClearAttachments={() => setAttachments([])}
           onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
           disabled={pickerActive}
-          suppressHistory={isLoading}
+
           commands={[
             { name: "ps", description: "Side query while agent is working" },
             ...commandRegistryRef.current.list().map((c) => ({ name: c.name, description: c.description })),
