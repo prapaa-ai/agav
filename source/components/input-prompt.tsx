@@ -248,11 +248,14 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     historyLoadedRef.current = true;
     loadPromptHistory().then((saved) => {
       const isAutoContinue = (s: string) => s.startsWith("Do Step ");
-      const resumed = resumeUserMessages ?? [];
-      const merged = saved.filter((s) => !isAutoContinue(s));
-      for (const msg of resumed) {
-        if (msg && !isAutoContinue(msg) && !merged.includes(msg)) merged.push(msg);
-      }
+      const resumed = (resumeUserMessages ?? []).filter((s) => s && !isAutoContinue(s));
+      // Resumed session messages go at the end (most recent) so the first
+      // Up-arrow recall shows the last message from *this* session, not
+      // whatever was typed last in a different session. Remove duplicates
+      // from their earlier position so they are not shown twice.
+      const resumedSet = new Set(resumed);
+      const merged = saved.filter((s) => !isAutoContinue(s) && !resumedSet.has(s));
+      merged.push(...resumed);
       historyRef.current = merged;
     });
   }, []);
