@@ -70,8 +70,12 @@ function getActiveFileToken(value: string, cursorPos: number): ActiveFileToken |
  * is a bare CSI (`[` + parameter + intermediate + final byte, per ECMA-48) or
  * SS3 (`O` + final byte). Both need at least two characters, which keeps a
  * plain `[` or `O` keystroke typeable.
+ *
+ * The `+` quantifier handles multiple sequences batched in one read — fast
+ * scrolling can produce several mouse reports per chunk, all arriving with
+ * their ESC prefix already stripped.
  */
-const ESCAPE_RESIDUE_RE = /^(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e])$/;
+const ESCAPE_RESIDUE_RE = /^(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e])+$/;
 
 /** Whether `input` is terminal noise rather than something the user typed. */
 export function isEscapeResidue(input: string): boolean {

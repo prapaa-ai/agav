@@ -503,6 +503,30 @@ export default class Ink {
 				continue;
 			}
 
+			// A trailing ESC is almost always the start of an escape sequence
+			// (arrow key, mouse report, function key) that got split across
+			// reads. Buffer it so the next read can complete the sequence.
+			// Without this, the ESC goes through as input while the rest of
+			// the sequence arrives next and leaks as literal text (e.g. the
+			// SGR mouse body `[<65;44;18M` appears in the prompt).
+			if (chunk.length === 1 && chunk[0] === "\x1b") {
+				flushInput();
+				this.mouseBuffer = "\x1b";
+				chunk = "";
+				break;
+			}
+
+			// Orphaned CSI body: a `[` followed by parameter bytes and a
+			// final byte, matching the shape of an escape sequence whose
+			// leading ESC was already consumed (split across reads, or
+			// stripped upstream). Drop it silently — it is never real input.
+			const orphanedLen = matchOrphanedCSI(chunk);
+			if (orphanedLen > 0) {
+				flushInput();
+				chunk = chunk.slice(orphanedLen);
+				continue;
+			}
+
 			pendingInput += chunk[0];
 			chunk = chunk.slice(1);
 		}
@@ -862,6 +886,27 @@ const matchMouseAt = (
  */
 const SGR_MOUSE_PARTIAL_RE = /^\x1b\[<[\d;]*$/;
 const X10_MOUSE_PARTIAL_RE = /^\x1b\[M[\s\S]{0,2}$/;
+
+/**
+ * Matches an orphaned SGR mouse report at the start of `chunk` — one whose
+ * leading ESC was consumed by a previous read. Shape: `[<` + digits/semicolons
+ * + `M` or `m`. Returns the length of the matched sequence, or 0.
+ *
+ * Only SGR mouse reports are matched (they start with `[<`, which is not a
+ * sequence any real keystroke produces without an ESC in front). Generic CSI
+ * sequences are NOT matched here because a bare `[` is a normal typeable
+ * character and stripping `[t`, `[A`, etc. would eat real input.
+ */
+const ORPHANED_SGR_MOUSE_RE = /^\[<\d+;\d+;\d+[Mm]/;
+
+const matchOrphanedCSI = (chunk: string): number => {
+	if (chunk.length < 6 || chunk[0] !== "[" || chunk[1] !== "<") {
+		return 0;
+	}
+
+	const m = ORPHANED_SGR_MOUSE_RE.exec(chunk);
+	return m ? m[0].length : 0;
+};
 
 const mouseSequencePrefixLength = (chunk: string): number => {
 	// Must start with the unambiguous mouse discriminator: \x1b[< or \x1b[M

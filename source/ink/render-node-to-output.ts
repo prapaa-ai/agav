@@ -242,14 +242,53 @@ const renderNodeToOutput = (
 		}
 
 		if (node.nodeName === "ink-root" || node.nodeName === "ink-box") {
-			for (const childNode of node.childNodes) {
-				renderNodeToOutput(childNode as DOMElement, output, {
-					offsetX: x,
-					offsetY: y,
-					transformers: newTransformers,
-					skipStaticElements,
-					clipY: childClipY,
-				});
+			const children = node.childNodes;
+			if (childClipY && children.length > 8) {
+				// Fast path: when a vertical clip is active and there are many
+				// children (typical for the message list inside ScrollBox),
+				// pre-check each child's position against the clip bounds and
+				// skip off-screen ones without the overhead of a recursive call.
+				// This turns the per-frame child iteration from O(n) recursive
+				// calls into O(n) cheap comparisons + O(visible) recursive calls.
+				for (let ci = 0; ci < children.length; ci++) {
+					const child = children[ci] as DOMElement;
+					const childYoga = child.yogaNode;
+					if (childYoga) {
+						const childTop = y + childYoga.getComputedTop();
+						const childHeight = childYoga.getComputedHeight();
+						// Store layout coordinates so mouse hit-testing still
+						// works for off-screen nodes.
+						child.internal_x = x + childYoga.getComputedLeft();
+						child.internal_y = childTop;
+						child.internal_width = childYoga.getComputedWidth();
+						child.internal_height = childHeight;
+
+						if (childHeight > 0) {
+							const childBottom = childTop + childHeight;
+							if (childBottom <= childClipY.y1 || childTop >= childClipY.y2) {
+								continue;
+							}
+						}
+					}
+
+					renderNodeToOutput(child, output, {
+						offsetX: x,
+						offsetY: y,
+						transformers: newTransformers,
+						skipStaticElements,
+						clipY: childClipY,
+					});
+				}
+			} else {
+				for (const childNode of node.childNodes) {
+					renderNodeToOutput(childNode as DOMElement, output, {
+						offsetX: x,
+						offsetY: y,
+						transformers: newTransformers,
+						skipStaticElements,
+						clipY: childClipY,
+					});
+				}
 			}
 
 			if (clipped) {

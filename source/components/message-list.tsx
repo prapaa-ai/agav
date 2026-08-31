@@ -256,9 +256,7 @@ const MessageList = React.memo(function MessageList({ messages, toolDetailKey }:
   return (
     <Box flexDirection="column" flexShrink={0}>
       {messages.map((message, index) => (
-        <Box key={message.id} flexDirection="column">
-          <MessageBubble message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} />
-        </Box>
+        <MessageBubble key={message.id} message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} />
       ))}
     </Box>
   );
