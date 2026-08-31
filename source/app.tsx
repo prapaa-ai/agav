@@ -591,15 +591,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   const displayError = error;
   const allMessages = useMemo(() => {
-    return [{
-      ...BANNER,
-    }, ...messages];
-  }, [config.model, config.provider, messages, repoBranch, sessionId, sessionName]);
+    return [BANNER, ...messages];
+  }, [messages]);
 
   // Snap the viewport back to the newest message whenever the transcript grows.
   useEffect(() => { docControls.current?.scrollToBottom(); }, [allMessages.length]);
 
-  const toolMessages = messages.filter((m) => m.role === "tool");
+  const toolMessages = useMemo(() => messages.filter((m) => m.role === "tool"), [messages]);
 
   // The footer — the prompt or its confirmation dialog, a modal TUI, and the
   // status bar — is measured rather than guessed. It used to be a flat

@@ -30,7 +30,7 @@ interface Props {
 }
 
 /** Renders a compact preview of diff output. */
-function DiffView({ diffLines }: { diffLines: DiffLine[] }) {
+const DiffView = React.memo(function DiffView({ diffLines }: { diffLines: DiffLine[] }) {
   const theme = getTheme();
   const maxLines = 40;
   const truncated = diffLines.length > maxLines;
@@ -80,10 +80,10 @@ function DiffView({ diffLines }: { diffLines: DiffLine[] }) {
       )}
     </Box>
   );
-}
+});
 
 /** Renders a single summarized tool result entry. */
-function ToolResultLine({ message }: { message: DisplayMessage }) {
+const ToolResultLine = React.memo(function ToolResultLine({ message }: { message: DisplayMessage }) {
   const label = message.toolDisplayName ?? (message.toolName ? getToolLabel(message.toolName) : "Tool");
   const summary = message.toolName && message.toolInput ? getToolSummary(message.toolName, message.toolInput) : "";
   const displayContent = terminalRelativePaths(message.content, toolPathValues(message.toolInput));
@@ -144,10 +144,10 @@ function ToolResultLine({ message }: { message: DisplayMessage }) {
       ) : null}
     </Box>
   );
-}
+});
 
 /** Renders the appropriate terminal bubble for a message role. */
-function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayMessage; prevRole?: string; toolDetailKey: string }) {
+const MessageBubble = React.memo(function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayMessage; prevRole?: string; toolDetailKey: string }) {
   if (message.role === "banner") {
     return (
       <Box flexDirection="column" marginBottom={1}>
@@ -242,7 +242,7 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
   }
 
   return null;
-}
+});
 
 /**
  * Renders the conversation transcript at its natural height.
@@ -252,7 +252,7 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
  * to a fixed band of the screen while everything below — a streaming reply, a
  * plan, a detail panel — slid around inside bands of their own.
  */
-export default function MessageList({ messages, toolDetailKey }: Props) {
+const MessageList = React.memo(function MessageList({ messages, toolDetailKey }: Props) {
   return (
     <Box flexDirection="column" flexShrink={0}>
       {messages.map((message, index) => (
@@ -262,4 +262,6 @@ export default function MessageList({ messages, toolDetailKey }: Props) {
       ))}
     </Box>
   );
-}
+});
+
+export default MessageList;

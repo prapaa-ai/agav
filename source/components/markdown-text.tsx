@@ -288,8 +288,14 @@ function getMarked(): Marked {
 // Box-drawing characters used by the table renderer that must survive post-processing.
 const BOX_DRAWING_RE = /[┌┐└┘├┤┬┴┼─│╔╗╚╝╠╣╦╩╬═║]/;
 
+const _markdownCache = new Map<string, string>();
+const MARKDOWN_CACHE_MAX = 300;
+
 /** Renders markdown into terminal-friendly styled text. */
 export function renderMarkdown(text: string): string {
+  const cached = _markdownCache.get(text);
+  if (cached !== undefined) return cached;
+
   try {
     const result = getMarked().parse(text);
     if (typeof result !== "string") return text;
@@ -310,7 +316,14 @@ export function renderMarkdown(text: string): string {
         .replace(/\*([^*]+)\*/g, (_match, em) => chalk.italic(em))
         .replace(/`([^`]+)`/g, (_match, code) => chalk.bold.yellow(code));
     });
-    return lines.join("\n");
+    const output = lines.join("\n");
+    if (_markdownCache.size >= MARKDOWN_CACHE_MAX) {
+      // Evict oldest entry
+      const firstKey = _markdownCache.keys().next().value;
+      if (firstKey !== undefined) _markdownCache.delete(firstKey);
+    }
+    _markdownCache.set(text, output);
+    return output;
   } catch {
     return text;
   }

@@ -21,6 +21,7 @@ output stream (e.g. stdout)
 type Options = {
 	width: number;
 	height: number;
+	caches?: OutputCaches;
 };
 
 type Clip = {
@@ -46,7 +47,7 @@ type Operation =
 			type: "unclip";
 	  };
 
-class OutputCaches {
+export class OutputCaches {
 	private readonly widths = new Map<string, number>();
 	private readonly blockWidths = new Map<string, number>();
 	private readonly styledChars = new Map<string, StyledChar[]>();
@@ -96,13 +97,14 @@ export default class Output {
 	height: number;
 
 	private readonly operations: Operation[] = [];
-	private readonly caches = new OutputCaches();
+	private readonly caches: OutputCaches;
 
 	constructor(options: Options) {
 		const {width, height} = options;
 
 		this.width = width;
 		this.height = height;
+		this.caches = options.caches ?? new OutputCaches();
 	}
 
 	write(
