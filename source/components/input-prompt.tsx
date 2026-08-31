@@ -237,6 +237,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const historyRef = useRef<string[]>([]);
   const historyLoadedRef = useRef(false);
   const historyIndexRef = useRef(-1);
+  /** Saves the in-progress input when the user first presses Up, so Down can restore it. */
+  const draftRef = useRef<string | null>(null);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
@@ -352,6 +354,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         applyEdit("", 0);
         onClearAttachments?.();
         historyIndexRef.current = -1;
+        draftRef.current = null;
         return;
       }
       if (match.action === "deleteWordBackward") {
@@ -436,6 +439,11 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       if (match.action === "historyUp" && !value.includes("\n") && !suppressHistory) {
         const history = historyRef.current;
         if (history.length === 0) return;
+        // Save the in-progress input the first time the user enters history,
+        // so pressing Down all the way back restores it instead of clearing.
+        if (historyIndexRef.current === -1) {
+          draftRef.current = value;
+        }
         const nextIdx = Math.min(historyIndexRef.current + 1, history.length - 1);
         historyIndexRef.current = nextIdx;
         const msg = history[history.length - 1 - nextIdx]!;
@@ -448,7 +456,10 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         const history = historyRef.current;
         if (historyIndexRef.current <= 0) {
           historyIndexRef.current = -1;
-          applyEdit("", 0);
+          // Restore the draft the user was typing before they entered history.
+          const draft = draftRef.current ?? "";
+          draftRef.current = null;
+          applyEdit(draft, draft.length);
           return;
         }
         historyIndexRef.current--;
@@ -468,6 +479,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
             deduped.push(value);
             historyRef.current = deduped;
             historyIndexRef.current = -1;
+            draftRef.current = null;
             savePromptHistory(deduped);
             // No caret reset here. The parent clears the buffer only once it
             // has accepted the message, and the clamp above follows it down to
