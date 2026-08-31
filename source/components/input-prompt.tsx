@@ -122,6 +122,56 @@ export function snapOutOfAttachment(text: string, offset: number): number {
   return offset;
 }
 
+// ---------------------------------------------------------------------------
+// Grapheme-cluster helpers.  All cursor movement and character deletion must
+// step by grapheme cluster, not by UTF-16 code unit, so that emoji, flags,
+// skin-tone modifiers, and ZWJ sequences are treated as single characters.
+// ---------------------------------------------------------------------------
+
+const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * Return the code-unit offset one grapheme cluster to the left of `pos`.
+ * If `pos` is already at 0, returns 0.
+ */
+function prevGraphemeOffset(text: string, pos: number): number {
+  if (pos <= 0) return 0;
+  // Segment the text up to `pos` and take the last segment's start.
+  const before = text.slice(0, pos);
+  let lastStart = 0;
+  for (const { index } of segmenter.segment(before)) {
+    lastStart = index;
+  }
+  return lastStart;
+}
+
+/**
+ * Return the code-unit offset one grapheme cluster to the right of `pos`.
+ * If `pos` is at or past the end, returns `text.length`.
+ */
+function nextGraphemeOffset(text: string, pos: number): number {
+  if (pos >= text.length) return text.length;
+  for (const { segment, index } of segmenter.segment(text)) {
+    if (index >= pos) {
+      return index + segment.length;
+    }
+  }
+  return text.length;
+}
+
+/**
+ * Extract the full grapheme cluster at code-unit offset `pos`.
+ * Returns the grapheme string and its code-unit length.
+ */
+function graphemeAt(text: string, pos: number): { grapheme: string; length: number } {
+  for (const { segment, index } of segmenter.segment(text)) {
+    if (index >= pos) {
+      return { grapheme: segment, length: segment.length };
+    }
+  }
+  return { grapheme: " ", length: 1 };
+}
+
 /** Checks whether a resolved path stays within the current project root. */
 function isWithinRoot(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -436,7 +486,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
             applyEdit(value.slice(0, labelStart) + value.slice(cursorPos), labelStart);
             onRemoveAttachment();
           } else {
-            applyEdit(value.slice(0, cursorPos - 1) + value.slice(cursorPos), cursorPos - 1);
+            const prev = prevGraphemeOffset(value, cursorPos);
+            applyEdit(value.slice(0, prev) + value.slice(cursorPos), prev);
           }
           setSelectedSuggestion(0);
         }
@@ -445,18 +496,19 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
       if (key.delete) {
         if (cursorPos < value.length) {
-          applyEdit(value.slice(0, cursorPos) + value.slice(cursorPos + 1), cursorPos);
+          const next = nextGraphemeOffset(value, cursorPos);
+          applyEdit(value.slice(0, cursorPos) + value.slice(next), cursorPos);
           setSelectedSuggestion(0);
         }
         return;
       }
 
       if (key.leftArrow) {
-        moveCaret(Math.max(0, cursorPos - 1));
+        moveCaret(prevGraphemeOffset(value, cursorPos));
         return;
       }
       if (key.rightArrow) {
-        moveCaret(Math.min(value.length, cursorPos + 1));
+        moveCaret(nextGraphemeOffset(value, cursorPos));
         return;
       }
 
@@ -571,8 +623,10 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         if (cursorInLine) {
           const col = cursorPos - lineStart;
           const before = wl.text.slice(0, col);
-          const ch = col < wl.text.length ? wl.text[col]! : " ";
-          const after = col < wl.text.length ? wl.text.slice(col + 1) : "";
+          const { grapheme: ch, length: chLen } = col < wl.text.length
+            ? graphemeAt(wl.text, col)
+            : { grapheme: " ", length: 1 };
+          const after = col < wl.text.length ? wl.text.slice(col + chLen) : "";
           return (
             <Box key={i} onClick={handleRowClick(wl)}>
               {wl.isFirst ? <Text bold color="green">{prefix}</Text> : <Text dimColor>{prefix}</Text>}

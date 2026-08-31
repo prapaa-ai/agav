@@ -570,6 +570,17 @@ export class MCPClient {
       this.process?.kill();
       this.process = null;
     }
+
+    // Reject any in-flight requests so their promises settle immediately
+    // and their 30-second timeout timers become no-ops (they check
+    // this.pending before rejecting, so clearing after reject is safe).
+    if (this.pending.size > 0) {
+      const err = new Error(`MCP server ${this.serverName} stopped`);
+      for (const [, p] of this.pending) {
+        p.reject(err);
+      }
+      this.pending.clear();
+    }
   }
 
   // Sends a JSON-RPC request and resolves when the matching response arrives.
@@ -579,12 +590,14 @@ export class MCPClient {
       this.pending.set(id, { resolve, reject });
       this.send({ jsonrpc: "2.0", id, method, params });
 
-      setTimeout(() => {
+      // unref() so the timer doesn't keep the process alive during shutdown.
+      const timer = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
           reject(new Error(`MCP request ${method} timed out`));
         }
       }, 30000);
+      if (typeof timer === "object" && "unref" in timer) timer.unref();
     });
   }
 

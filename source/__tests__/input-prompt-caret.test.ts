@@ -293,3 +293,123 @@ describe("InputPrompt keys arriving faster than a render commit", () => {
     instance.unmount();
   });
 });
+
+const FORWARD_DELETE = Buffer.from("\x1b[3~");
+
+describe("InputPrompt forward delete", () => {
+  it("deletes the character after the cursor", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "abcd");
+    // Move cursor left twice: cursor is now before 'c'
+    await press(instance, stdin, LEFT, 2);
+    // Forward Delete should remove 'c'
+    await press(instance, stdin, FORWARD_DELETE, 1);
+    expect(currentValue).toBe("abd");
+    instance.unmount();
+  });
+
+  it("does nothing at the end of the text", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "abc");
+    // Cursor is at the end — Forward Delete should be a no-op
+    await press(instance, stdin, FORWARD_DELETE, 1);
+    expect(currentValue).toBe("abc");
+    instance.unmount();
+  });
+});
+
+describe("InputPrompt Home/End keys", () => {
+  it("Home key does not corrupt the input", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "hello");
+    // Home key (xterm: \x1b[H) — currently not handled, should be a no-op
+    await press(instance, stdin, Buffer.from("\x1b[H"), 1);
+    // Value should be unchanged
+    expect(currentValue).toBe("hello");
+    instance.unmount();
+  });
+
+  it("End key does not corrupt the input", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "hello");
+    await press(instance, stdin, LEFT, 3);
+    // End key (xterm: \x1b[F) — currently not handled, should be a no-op
+    await press(instance, stdin, Buffer.from("\x1b[F"), 1);
+    // Value should be unchanged
+    expect(currentValue).toBe("hello");
+    instance.unmount();
+  });
+});
+
+describe("InputPrompt grapheme-cluster-aware editing", () => {
+  const FORWARD_DELETE = Buffer.from("\x1b[3~");
+  const RIGHT = Buffer.from("\x1b[C");
+
+  /** Insert a string as a single stdin chunk (like a paste or IME commit). */
+  const insert = async (
+    instance: { waitUntilRenderFlush: () => Promise<void> },
+    stdin: NodeJS.ReadStream,
+    text: string,
+  ) => {
+    stdin.emit("data", Buffer.from(text));
+    await settle(instance);
+  };
+
+  it("backspace deletes a full emoji, not a single code unit", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "ab");
+    await insert(instance, stdin, "🎉");
+    await type(instance, stdin, "cd");
+    // Value is "ab🎉cd", cursor at end
+    expect(currentValue).toBe("ab🎉cd");
+
+    // Move left twice to get past "cd"
+    await press(instance, stdin, LEFT, 2);
+    // Backspace should delete the entire 🎉, not one code unit
+    await press(instance, stdin, BACKSPACE, 1);
+    expect(currentValue).toBe("abcd");
+    instance.unmount();
+  });
+
+  it("forward delete removes a full emoji", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "ab");
+    await insert(instance, stdin, "🎉");
+    await type(instance, stdin, "cd");
+    expect(currentValue).toBe("ab🎉cd");
+
+    // Move left 3 times: past "cd" and past "🎉" to just after "ab"
+    await press(instance, stdin, LEFT, 3);
+    // Forward Delete should remove the entire 🎉
+    await press(instance, stdin, FORWARD_DELETE, 1);
+    expect(currentValue).toBe("abcd");
+    instance.unmount();
+  });
+
+  it("left/right arrow skips over a multi-code-unit emoji", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "a");
+    await insert(instance, stdin, "🇺🇸");
+    await type(instance, stdin, "b");
+    expect(currentValue).toBe("a🇺🇸b");
+
+    // Move left once → should skip the "b", land after 🇺🇸
+    // Move left once more → should skip the entire flag, land after "a"
+    // Type "X" → should insert between "a" and 🇺🇸
+    await press(instance, stdin, LEFT, 2);
+    await type(instance, stdin, "X");
+    expect(currentValue).toBe("aX🇺🇸b");
+    instance.unmount();
+  });
+
+  it("backspace handles ZWJ sequences as a single grapheme", async () => {
+    const { instance, stdin } = await mount();
+    await insert(instance, stdin, "👨‍👩‍👧‍👦");
+    expect(currentValue).toBe("👨‍👩‍👧‍👦");
+
+    // One backspace should delete the entire ZWJ family emoji
+    await press(instance, stdin, BACKSPACE, 1);
+    expect(currentValue).toBe("");
+    instance.unmount();
+  });
+});

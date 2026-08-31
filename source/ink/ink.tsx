@@ -161,6 +161,9 @@ export default class Ink {
 	// Buffer holding an in-progress paste whose start marker arrived without its
 	// matching end marker (paste spanning multiple chunks).
 	private pasteBuffer: string | undefined;
+	// Buffer holding the prefix of a mouse report that was split across reads.
+	// Prepended to the next stdin chunk so the sequence can be matched whole.
+	private mouseBuffer: string | undefined;
 	private lastOutput = "";
 	private fullStaticOutput = "";
 
@@ -433,6 +436,13 @@ export default class Ink {
 			chunk = chunk.slice(endIndex + PASTE_END.length);
 		}
 
+		// If we buffered a partial mouse sequence from the previous read,
+		// prepend it so the full sequence can be matched.
+		if (this.mouseBuffer !== undefined) {
+			chunk = this.mouseBuffer + chunk;
+			this.mouseBuffer = undefined;
+		}
+
 		// Ctrl+C handling.
 		if (this.exitOnCtrlC && chunk.includes("\x03")) {
 			this.unmount();
@@ -471,19 +481,26 @@ export default class Ink {
 				continue;
 			}
 
-			if (isMouseSequence(chunk)) {
-				const match = matchMouseAt(chunk);
-
-				if (match) {
-					flushInput();
-					const parsed = parseMouseEvent(match.sequence);
-					if (parsed) {
-						this.handleMouseEvent(parsed);
-					}
-
-					chunk = chunk.slice(match.length);
-					continue;
+			const match = matchMouseAt(chunk);
+			if (match) {
+				flushInput();
+				const parsed = parseMouseEvent(match.sequence);
+				if (parsed) {
+					this.handleMouseEvent(parsed);
 				}
+
+				chunk = chunk.slice(match.length);
+				continue;
+			}
+
+			// Check if the remaining chunk is a partial mouse sequence prefix
+			// that was split across reads.  Buffer it for the next read.
+			const partialLen = mouseSequencePrefixLength(chunk);
+			if (partialLen > 0) {
+				flushInput();
+				this.mouseBuffer = chunk.slice(0, partialLen);
+				chunk = chunk.slice(partialLen);
+				continue;
 			}
 
 			pendingInput += chunk[0];
@@ -720,6 +737,11 @@ export default class Ink {
 			stdin.setRawMode(false);
 		}
 
+		// Pause stdin so it no longer keeps the Node.js event loop alive.
+		// mount() called stdin.resume() via setRawMode(true); without a
+		// matching pause() the process hangs after waitUntilExit() resolves.
+		stdin.pause();
+
 		// Disable bracketed paste mode if it was left enabled.
 		this.bracketedPasteEnabledCount = 0;
 		if (this.isBracketedPasteEnabled) {
@@ -822,4 +844,49 @@ const matchMouseAt = (
 	}
 
 	return null;
+};
+
+/**
+ * If `chunk` starts with an incomplete mouse report prefix, return its length.
+ * Returns 0 when the chunk is not a recognizable mouse prefix.
+ *
+ * This lets us buffer the partial sequence instead of leaking its bytes into
+ * the input emitter as typed text.
+ *
+ * We only buffer when the prefix is **unambiguously** a mouse sequence:
+ *   SGR: \x1b[< followed by digits/semicolons (waiting for M or m)
+ *   X10: \x1b[M followed by 0–2 of the 3 required raw bytes
+ *
+ * A bare \x1b or \x1b[ is NOT buffered — those are shared CSI prefixes used
+ * by arrow keys, function keys, and many other sequences.
+ */
+const SGR_MOUSE_PARTIAL_RE = /^\x1b\[<[\d;]*$/;
+const X10_MOUSE_PARTIAL_RE = /^\x1b\[M[\s\S]{0,2}$/;
+
+const mouseSequencePrefixLength = (chunk: string): number => {
+	// Must start with the unambiguous mouse discriminator: \x1b[< or \x1b[M
+	if (chunk.length < 3 || chunk[0] !== "\x1b" || chunk[1] !== "[") {
+		return 0;
+	}
+
+	// Check SGR partial: \x1b[< followed by digits/semicolons, no final M/m yet.
+	// A complete SGR match would have been consumed by matchMouseAt() already.
+	const end = Math.min(chunk.length, 20);
+	for (let len = end; len >= 3; len--) {
+		const prefix = chunk.slice(0, len);
+		if (SGR_MOUSE_PARTIAL_RE.test(prefix)) {
+			return len;
+		}
+	}
+
+	// Check X10 partial: \x1b[M with 0–2 trailing bytes (3 needed for a full match).
+	if (chunk[2] === "M" && chunk.length < 6) {
+		const len = Math.min(chunk.length, 5);
+		const prefix = chunk.slice(0, len);
+		if (X10_MOUSE_PARTIAL_RE.test(prefix)) {
+			return len;
+		}
+	}
+
+	return 0;
 };
