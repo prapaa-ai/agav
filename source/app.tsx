@@ -85,8 +85,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   // box can measure — and would cost a re-render of the whole app per tick.
   const docControls = useRef<ScrollBoxControls | null>(null);
   const [termRows, setTermRows] = useState(process.stdout.rows || 24);
+  const [termCols, setTermCols] = useState(process.stdout.columns || 80);
   useEffect(() => {
-    const onResize = () => setTermRows(process.stdout.rows || 24);
+    const onResize = () => {
+      setTermRows(process.stdout.rows || 24);
+      setTermCols(process.stdout.columns || 80);
+    };
     process.stdout.on("resize", onResize);
     return () => { process.stdout.off("resize", onResize); };
   }, []);
@@ -591,15 +595,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   const displayError = error;
   const allMessages = useMemo(() => {
-    return [{
-      ...BANNER,
-    }, ...messages];
-  }, [config.model, config.provider, messages, repoBranch, sessionId, sessionName]);
+    return [BANNER, ...messages];
+  }, [messages]);
 
   // Snap the viewport back to the newest message whenever the transcript grows.
   useEffect(() => { docControls.current?.scrollToBottom(); }, [allMessages.length]);
 
-  const toolMessages = messages.filter((m) => m.role === "tool");
+  const toolMessages = useMemo(() => messages.filter((m) => m.role === "tool"), [messages]);
 
   // The footer — the prompt or its confirmation dialog, a modal TUI, and the
   // status bar — is measured rather than guessed. It used to be a flat
@@ -649,7 +651,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         </Box>
       )}
 
-      <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} />
+      <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} columns={termCols} />
 
       {systemMessages.length > 0 && (
         <Box marginBottom={1} flexDirection="column">

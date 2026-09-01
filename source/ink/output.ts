@@ -21,6 +21,7 @@ output stream (e.g. stdout)
 type Options = {
 	width: number;
 	height: number;
+	caches?: OutputCaches;
 };
 
 type Clip = {
@@ -46,10 +47,26 @@ type Operation =
 			type: "unclip";
 	  };
 
-class OutputCaches {
+export class OutputCaches {
 	private readonly widths = new Map<string, number>();
 	private readonly blockWidths = new Map<string, number>();
 	private readonly styledChars = new Map<string, StyledChar[]>();
+
+	// Eviction thresholds. styledChars entries are heavier (object per char),
+	// so its budget is tighter. The widths maps store a single number per key.
+	private static readonly MAX_STYLED = 2000;
+	private static readonly MAX_WIDTHS = 4000;
+
+	/** Evict oldest entries when a map exceeds `limit`. */
+	private static evict<V>(map: Map<string, V>, limit: number): void {
+		if (map.size <= limit) return;
+		const excess = map.size - limit;
+		const iter = map.keys();
+		for (let i = 0; i < excess; i++) {
+			const key = iter.next().value;
+			if (key !== undefined) map.delete(key);
+		}
+	}
 
 	getStyledChars(line: string): StyledChar[] {
 		let cached = this.styledChars.get(line);
@@ -57,6 +74,7 @@ class OutputCaches {
 		if (cached === undefined) {
 			cached = styledCharsFromTokens(tokenize(line));
 			this.styledChars.set(line, cached);
+			OutputCaches.evict(this.styledChars, OutputCaches.MAX_STYLED);
 		}
 
 		return cached;
@@ -68,6 +86,7 @@ class OutputCaches {
 		if (cached === undefined) {
 			cached = stringWidth(text);
 			this.widths.set(text, cached);
+			OutputCaches.evict(this.widths, OutputCaches.MAX_WIDTHS);
 		}
 
 		return cached;
@@ -85,6 +104,7 @@ class OutputCaches {
 
 			cached = lineWidth;
 			this.blockWidths.set(text, cached);
+			OutputCaches.evict(this.blockWidths, OutputCaches.MAX_WIDTHS);
 		}
 
 		return cached;
@@ -96,13 +116,14 @@ export default class Output {
 	height: number;
 
 	private readonly operations: Operation[] = [];
-	private readonly caches = new OutputCaches();
+	private readonly caches: OutputCaches;
 
 	constructor(options: Options) {
 		const {width, height} = options;
 
 		this.width = width;
 		this.height = height;
+		this.caches = options.caches ?? new OutputCaches();
 	}
 
 	write(

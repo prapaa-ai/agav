@@ -70,8 +70,12 @@ function getActiveFileToken(value: string, cursorPos: number): ActiveFileToken |
  * is a bare CSI (`[` + parameter + intermediate + final byte, per ECMA-48) or
  * SS3 (`O` + final byte). Both need at least two characters, which keeps a
  * plain `[` or `O` keystroke typeable.
+ *
+ * The `+` quantifier handles multiple sequences batched in one read — fast
+ * scrolling can produce several mouse reports per chunk, all arriving with
+ * their ESC prefix already stripped.
  */
-const ESCAPE_RESIDUE_RE = /^(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e])$/;
+const ESCAPE_RESIDUE_RE = /^(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e])+$/;
 
 /** Whether `input` is terminal noise rather than something the user typed. */
 export function isEscapeResidue(input: string): boolean {
@@ -233,6 +237,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const historyRef = useRef<string[]>([]);
   const historyLoadedRef = useRef(false);
   const historyIndexRef = useRef(-1);
+  /** Saves the in-progress input when the user first presses Up, so Down can restore it. */
+  const draftRef = useRef<string | null>(null);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
@@ -244,11 +250,14 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     historyLoadedRef.current = true;
     loadPromptHistory().then((saved) => {
       const isAutoContinue = (s: string) => s.startsWith("Do Step ");
-      const resumed = resumeUserMessages ?? [];
-      const merged = saved.filter((s) => !isAutoContinue(s));
-      for (const msg of resumed) {
-        if (msg && !isAutoContinue(msg) && !merged.includes(msg)) merged.push(msg);
-      }
+      const resumed = (resumeUserMessages ?? []).filter((s) => s && !isAutoContinue(s));
+      // Resumed session messages go at the end (most recent) so the first
+      // Up-arrow recall shows the last message from *this* session, not
+      // whatever was typed last in a different session. Remove duplicates
+      // from their earlier position so they are not shown twice.
+      const resumedSet = new Set(resumed);
+      const merged = saved.filter((s) => !isAutoContinue(s) && !resumedSet.has(s));
+      merged.push(...resumed);
       historyRef.current = merged;
     });
   }, []);
@@ -345,6 +354,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         applyEdit("", 0);
         onClearAttachments?.();
         historyIndexRef.current = -1;
+        draftRef.current = null;
         return;
       }
       if (match.action === "deleteWordBackward") {
@@ -429,6 +439,11 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       if (match.action === "historyUp" && !value.includes("\n") && !suppressHistory) {
         const history = historyRef.current;
         if (history.length === 0) return;
+        // Save the in-progress input the first time the user enters history,
+        // so pressing Down all the way back restores it instead of clearing.
+        if (historyIndexRef.current === -1) {
+          draftRef.current = value;
+        }
         const nextIdx = Math.min(historyIndexRef.current + 1, history.length - 1);
         historyIndexRef.current = nextIdx;
         const msg = history[history.length - 1 - nextIdx]!;
@@ -441,7 +456,10 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         const history = historyRef.current;
         if (historyIndexRef.current <= 0) {
           historyIndexRef.current = -1;
-          applyEdit("", 0);
+          // Restore the draft the user was typing before they entered history.
+          const draft = draftRef.current ?? "";
+          draftRef.current = null;
+          applyEdit(draft, draft.length);
           return;
         }
         historyIndexRef.current--;
@@ -461,6 +479,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
             deduped.push(value);
             historyRef.current = deduped;
             historyIndexRef.current = -1;
+            draftRef.current = null;
             savePromptHistory(deduped);
             // No caret reset here. The parent clears the buffer only once it
             // has accepted the message, and the clamp above follows it down to

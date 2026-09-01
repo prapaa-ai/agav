@@ -2,7 +2,9 @@ import {type DOMElement} from "./dom.js";
 import renderNodeToOutput, {
 	renderNodeToScreenReaderOutput,
 } from "./render-node-to-output.js";
-import Output from "./output.js";
+import Output, {OutputCaches} from "./output.js";
+
+const sharedCaches = new OutputCaches();
 
 type Result = {
 	output: string;
@@ -40,6 +42,7 @@ const renderer = (
 		const output = new Output({
 			width: node.yogaNode.getComputedWidth(),
 			height: node.yogaNode.getComputedHeight(),
+			caches: sharedCaches,
 		});
 
 		renderNodeToOutput(node, output, {
@@ -52,6 +55,7 @@ const renderer = (
 			staticOutput = new Output({
 				width: node.staticNode.yogaNode.getComputedWidth(),
 				height: node.staticNode.yogaNode.getComputedHeight(),
+				caches: sharedCaches,
 			});
 
 			renderNodeToOutput(node.staticNode, staticOutput, {

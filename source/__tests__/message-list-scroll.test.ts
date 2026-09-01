@@ -93,7 +93,7 @@ const AppShape = ({ onRootWheel }: { onRootWheel?: () => void }) => {
       height: viewport,
       stickToBottom: false,
       controls: docControls,
-      children: h(MessageList, { messages, toolDetailKey: "ctrl+o" }),
+      children: h(MessageList, { messages, toolDetailKey: "ctrl+o", columns: 80 }),
     }),
     h(
       Box,
