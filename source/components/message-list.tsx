@@ -27,6 +27,7 @@ export interface DisplayMessage {
 interface Props {
   messages: DisplayMessage[];
   toolDetailKey: string;
+  columns: number;
 }
 
 /** Renders a compact preview of diff output. */
@@ -147,7 +148,7 @@ const ToolResultLine = React.memo(function ToolResultLine({ message }: { message
 });
 
 /** Renders the appropriate terminal bubble for a message role. */
-const MessageBubble = React.memo(function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayMessage; prevRole?: string; toolDetailKey: string }) {
+const MessageBubble = React.memo(function MessageBubble({ message, prevRole, toolDetailKey, columns }: { message: DisplayMessage; prevRole?: string; toolDetailKey: string; columns: number }) {
   if (message.role === "banner") {
     return (
       <Box flexDirection="column" marginBottom={1}>
@@ -181,7 +182,7 @@ const MessageBubble = React.memo(function MessageBubble({ message, prevRole, too
   }
 
   if (message.role === "user") {
-    const cols = process.stdout.columns || 80;
+    const cols = columns;
     // Every line is padded out to the full width below, which only paints a clean
     // band while each one fits on a single row. `wrapToWidth` guarantees that.
     const lines = wrapToWidth(message.content, cols - 2);
@@ -252,11 +253,11 @@ const MessageBubble = React.memo(function MessageBubble({ message, prevRole, too
  * to a fixed band of the screen while everything below — a streaming reply, a
  * plan, a detail panel — slid around inside bands of their own.
  */
-const MessageList = React.memo(function MessageList({ messages, toolDetailKey }: Props) {
+const MessageList = React.memo(function MessageList({ messages, toolDetailKey, columns }: Props) {
   return (
     <Box flexDirection="column" flexShrink={0}>
       {messages.map((message, index) => (
-        <MessageBubble key={message.id} message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} />
+        <MessageBubble key={message.id} message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} columns={columns} />
       ))}
     </Box>
   );

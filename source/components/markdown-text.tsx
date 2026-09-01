@@ -293,7 +293,9 @@ const MARKDOWN_CACHE_MAX = 300;
 
 /** Renders markdown into terminal-friendly styled text. */
 export function renderMarkdown(text: string): string {
-  const cached = _markdownCache.get(text);
+  const width = process.stdout.columns || 80;
+  const cacheKey = `${width}:${text}`;
+  const cached = _markdownCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
   try {
@@ -322,7 +324,7 @@ export function renderMarkdown(text: string): string {
       const firstKey = _markdownCache.keys().next().value;
       if (firstKey !== undefined) _markdownCache.delete(firstKey);
     }
-    _markdownCache.set(text, output);
+    _markdownCache.set(cacheKey, output);
     return output;
   } catch {
     return text;

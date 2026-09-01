@@ -164,6 +164,7 @@ export default class Ink {
 	// Buffer holding the prefix of a mouse report that was split across reads.
 	// Prepended to the next stdin chunk so the sequence can be matched whole.
 	private mouseBuffer: string | undefined;
+	private escapeTimer: NodeJS.Timeout | undefined;
 	private lastOutput = "";
 	private fullStaticOutput = "";
 
@@ -441,6 +442,7 @@ export default class Ink {
 		if (this.mouseBuffer !== undefined) {
 			chunk = this.mouseBuffer + chunk;
 			this.mouseBuffer = undefined;
+			clearTimeout(this.escapeTimer);
 		}
 
 		// Ctrl+C handling.
@@ -512,6 +514,15 @@ export default class Ink {
 			if (chunk.length === 1 && chunk[0] === "\x1b") {
 				flushInput();
 				this.mouseBuffer = "\x1b";
+				// If no follow-up bytes arrive within 50ms, this is a real Escape
+				// keypress — flush it as input rather than holding it indefinitely.
+				clearTimeout(this.escapeTimer);
+				this.escapeTimer = setTimeout(() => {
+					if (this.mouseBuffer === "\x1b") {
+						this.mouseBuffer = undefined;
+						this.internalEventEmitter.emit("input", "\x1b");
+					}
+				}, 50);
 				chunk = "";
 				break;
 			}
@@ -744,6 +755,7 @@ export default class Ink {
 		}
 
 		this.isUnmounted = true;
+		clearTimeout(this.escapeTimer);
 		this.throttledOnRender.cancel();
 
 		const {stdout, stdin} = this.options;
