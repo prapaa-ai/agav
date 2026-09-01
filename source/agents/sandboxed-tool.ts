@@ -11,7 +11,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { writeFileSync, unlinkSync, existsSync, lstatSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir, platform } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -129,12 +129,27 @@ function runSeatbelted(
 
 // ── Bubblewrap (Linux) ───────────────────────────────────────────
 
+function canMountTmpfs(path: string): boolean {
+  try {
+    return lstatSync(path).isDirectory();
+  } catch {
+    try {
+      return lstatSync(dirname(path)).isDirectory();
+    } catch {
+      return false;
+    }
+  }
+}
+
 function runBubblewrapped(
   scriptPath: string,
   stdinPayload: string,
   env: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const home = process.env.HOME ?? "/tmp";
+  const privateHomePaths = [".ssh", ".aws", ".gnupg", ".config"]
+    .map((name) => join(home, name))
+    .filter(canMountTmpfs);
   return new Promise((resolve) => {
     const child = execFile(
       "bwrap",
@@ -144,10 +159,7 @@ function runBubblewrapped(
         "--bind", "/tmp", "/tmp",
         "--dev", "/dev",
         "--proc", "/proc",
-        "--tmpfs", home + "/.ssh",
-        "--tmpfs", home + "/.aws",
-        "--tmpfs", home + "/.gnupg",
-        "--tmpfs", home + "/.config",
+        ...privateHomePaths.flatMap((path) => ["--tmpfs", path]),
         "--unshare-net",
         "--die-with-parent",
         "--chdir", process.cwd(),

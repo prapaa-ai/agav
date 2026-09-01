@@ -56,12 +56,24 @@ describe("startup provider and model resolution", () => {
     })).toMatchObject({ provider: "anthropic", model: "claude-session-model" });
   });
 
-  it("lets an explicit model override every default and saved model", () => {
+  it("keeps an explicit provider/model pair authoritative", () => {
     expect(resolveStartupSelection(base, {
       cliProvider: "openai",
       cliModel: "custom-openai-model",
       session: { provider: "anthropic", model: "claude-session-model" },
     })).toMatchObject({ provider: "openai", model: "custom-openai-model" });
+  });
+
+  it("preserves an unqualified CLI model until catalog resolution selects its provider", () => {
+    expect(resolveStartupSelection({ ...base, provider: "openai", model: "gpt-5.4-mini" }, {
+      cliModel: "sonnet-5",
+    })).toMatchObject({ provider: "openai", model: "sonnet-5" });
+  });
+
+  it("retains an unmatched CLI model when provider catalog lookup cannot resolve it", () => {
+    expect(resolveStartupSelection({ ...base, provider: "openai", model: "gpt-5.4-mini" }, {
+      cliModel: "private-model",
+    })).toMatchObject({ provider: "openai", model: "private-model" });
   });
 
   it("rejects an unsupported saved provider unless the CLI replaces it", () => {
