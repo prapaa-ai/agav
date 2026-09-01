@@ -35,7 +35,22 @@ jobs:
           gh release download --repo ${{ github.repository }} --pattern 'agav-linux-x64' --dir /tmp
           install -m 755 /tmp/agav-linux-x64 /usr/local/bin/agav
 
+      - name: Check diff size
+        id: diff-size
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          FILE_COUNT=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files --paginate --jq 'length' | paste -sd+ - | bc)
+          echo "files=$FILE_COUNT" >> "$GITHUB_OUTPUT"
+          if [ "$FILE_COUNT" -gt 300 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping AI review — PR has $FILE_COUNT files (limit: 300)"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Get PR diff
+        if: steps.diff-size.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -46,6 +61,7 @@ jobs:
           gh pr diff --allow-escape-sequences ${{ github.event.pull_request.number }} > /tmp/pr-diff.txt
 
       - name: Review with Agav
+        if: steps.diff-size.outputs.skip != 'true'
         timeout-minutes: 3
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
