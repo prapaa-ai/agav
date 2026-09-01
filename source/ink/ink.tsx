@@ -164,6 +164,7 @@ export default class Ink {
 	// Buffer holding the prefix of a mouse report that was split across reads.
 	// Prepended to the next stdin chunk so the sequence can be matched whole.
 	private mouseBuffer: string | undefined;
+	private escapeTimer: NodeJS.Timeout | undefined;
 	private lastOutput = "";
 	private fullStaticOutput = "";
 
@@ -441,6 +442,7 @@ export default class Ink {
 		if (this.mouseBuffer !== undefined) {
 			chunk = this.mouseBuffer + chunk;
 			this.mouseBuffer = undefined;
+			clearTimeout(this.escapeTimer);
 		}
 
 		// Ctrl+C handling.
@@ -500,6 +502,39 @@ export default class Ink {
 				flushInput();
 				this.mouseBuffer = chunk.slice(0, partialLen);
 				chunk = chunk.slice(partialLen);
+				continue;
+			}
+
+			// A trailing ESC is almost always the start of an escape sequence
+			// (arrow key, mouse report, function key) that got split across
+			// reads. Buffer it so the next read can complete the sequence.
+			// Without this, the ESC goes through as input while the rest of
+			// the sequence arrives next and leaks as literal text (e.g. the
+			// SGR mouse body `[<65;44;18M` appears in the prompt).
+			if (chunk.length === 1 && chunk[0] === "\x1b") {
+				flushInput();
+				this.mouseBuffer = "\x1b";
+				// If no follow-up bytes arrive within 50ms, this is a real Escape
+				// keypress — flush it as input rather than holding it indefinitely.
+				clearTimeout(this.escapeTimer);
+				this.escapeTimer = setTimeout(() => {
+					if (this.mouseBuffer === "\x1b") {
+						this.mouseBuffer = undefined;
+						this.internalEventEmitter.emit("input", "\x1b");
+					}
+				}, 50);
+				chunk = "";
+				break;
+			}
+
+			// Orphaned CSI body: a `[` followed by parameter bytes and a
+			// final byte, matching the shape of an escape sequence whose
+			// leading ESC was already consumed (split across reads, or
+			// stripped upstream). Drop it silently — it is never real input.
+			const orphanedLen = matchOrphanedCSI(chunk);
+			if (orphanedLen > 0) {
+				flushInput();
+				chunk = chunk.slice(orphanedLen);
 				continue;
 			}
 
@@ -720,6 +755,7 @@ export default class Ink {
 		}
 
 		this.isUnmounted = true;
+		clearTimeout(this.escapeTimer);
 		this.throttledOnRender.cancel();
 
 		const {stdout, stdin} = this.options;
@@ -862,6 +898,27 @@ const matchMouseAt = (
  */
 const SGR_MOUSE_PARTIAL_RE = /^\x1b\[<[\d;]*$/;
 const X10_MOUSE_PARTIAL_RE = /^\x1b\[M[\s\S]{0,2}$/;
+
+/**
+ * Matches an orphaned SGR mouse report at the start of `chunk` — one whose
+ * leading ESC was consumed by a previous read. Shape: `[<` + digits/semicolons
+ * + `M` or `m`. Returns the length of the matched sequence, or 0.
+ *
+ * Only SGR mouse reports are matched (they start with `[<`, which is not a
+ * sequence any real keystroke produces without an ESC in front). Generic CSI
+ * sequences are NOT matched here because a bare `[` is a normal typeable
+ * character and stripping `[t`, `[A`, etc. would eat real input.
+ */
+const ORPHANED_SGR_MOUSE_RE = /^\[<\d+;\d+;\d+[Mm]/;
+
+const matchOrphanedCSI = (chunk: string): number => {
+	if (chunk.length < 6 || chunk[0] !== "[" || chunk[1] !== "<") {
+		return 0;
+	}
+
+	const m = ORPHANED_SGR_MOUSE_RE.exec(chunk);
+	return m ? m[0].length : 0;
+};
 
 const mouseSequencePrefixLength = (chunk: string): number => {
 	// Must start with the unambiguous mouse discriminator: \x1b[< or \x1b[M
