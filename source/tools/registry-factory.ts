@@ -15,6 +15,7 @@ import { githubTool } from "./github.js";
 import { overviewTool } from "./overview.js";
 import { testRunnerTool } from "./test-runner.js";
 import { memoryTool } from "./memory.js";
+import { processTool } from "./process.js";
 
 /**
  * The set of tool names that ship with agav. Exported so that skill validation
@@ -39,6 +40,7 @@ export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
   "overview",
   "run_tests",
   "save_memory",
+  "process",
   "subagent",
   "activate_skill",
 ]);
@@ -63,5 +65,6 @@ export function createToolRegistry(): ToolRegistry {
   registry.register(overviewTool);
   registry.register(testRunnerTool);
   registry.register(memoryTool);
+  registry.register(processTool);
   return registry;
 }

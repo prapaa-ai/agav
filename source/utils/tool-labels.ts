@@ -31,6 +31,15 @@ const TOOL_META: Record<string, ToolMeta> = {
       return cmd.length > 60 ? cmd.slice(0, 60) + "..." : cmd;
     },
   },
+  process: {
+    label: "Process",
+    formatSummary: (input) => {
+      const action = String(input.action ?? "");
+      const id = input.id ? ` ${input.id}` : "";
+      const cmd = input.command ? ` ${String(input.command).slice(0, 60)}` : "";
+      return `${action}${id}${cmd}`.trim();
+    },
+  },
   grep_search: {
     label: "Search",
     formatSummary: (input) => {

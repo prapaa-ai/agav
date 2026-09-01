@@ -12,6 +12,9 @@ export interface ScheduledTask {
   enabled: boolean;
   createdAt: string;
   lastRunAt?: string;
+  kind?: "prompt" | "process";
+  command?: string;
+  cwd?: string;
 }
 
 function getSchedulerPath(): string {
@@ -44,6 +47,30 @@ export async function addScheduledTask(
     cron,
     enabled: true,
     createdAt: new Date().toISOString(),
+    kind: "prompt",
+  };
+  tasks.push(task);
+  await saveTasks(tasks);
+  return task;
+}
+
+export async function addScheduledProcessTask(
+  name: string,
+  cron: string,
+  command: string,
+  cwd?: string,
+): Promise<ScheduledTask> {
+  const tasks = await loadScheduledTasks();
+  const task: ScheduledTask = {
+    id: crypto.randomUUID().slice(0, 8),
+    name,
+    prompt: command,
+    command,
+    cwd,
+    cron,
+    enabled: true,
+    createdAt: new Date().toISOString(),
+    kind: "process",
   };
   tasks.push(task);
   await saveTasks(tasks);

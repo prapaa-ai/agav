@@ -75,6 +75,15 @@ interface LoopParams {
 // constantly, so prompting for it would make every turn unusable.
 const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_directory", "web_search", "lsp_query", "read_notebook", "fetch_url", "overview", "activate_skill", "save_memory", "update_plan"]);
 
+function isSafeToolCall(toolName: string, input: Record<string, unknown>): boolean {
+  if (SAFE_TOOLS.has(toolName)) return true;
+  if (toolName === "process") {
+    const action = String(input.action ?? "").toLowerCase();
+    return action === "list" || action === "poll" || action === "log" || action === "wait";
+  }
+  return false;
+}
+
 /** Tools that perform file mutations — always blocked in deny-writes mode. */
 const WRITE_TOOLS = new Set(["edit_file", "write_file", "edit_notebook"]);
 
@@ -92,7 +101,7 @@ function isAllowed(
   if (!allowedTools || allowedTools.length === 0) return false;
 
   const primaryInput =
-    toolName === "run_command" ? String(input.command ?? "")
+    toolName === "run_command" || toolName === "process" ? String(input.command ?? input.id ?? input.action ?? "")
     : toolName === "edit_file" || toolName === "write_file" || toolName === "read_file"
       ? String(input.path ?? "")
       : "";
@@ -367,7 +376,7 @@ export async function* runAgentLoop(
 
       // Hard block: if an explicit allowlist is set, reject tools not on it
       if (params.allowedTools && params.allowedTools.length > 0
-        && !SAFE_TOOLS.has(call.name)
+        && !isSafeToolCall(call.name, input)
         && !isAllowed(call.name, input, params.allowedTools)) {
         toolResults.push({ type: "tool_result", toolCallId: id, toolResult: `Tool '${call.name}' is not permitted in this mode.`, isError: true });
         yield { type: "tool_result", toolName: call.name, output: `Tool '${call.name}' is not permitted in this mode.`, isError: true };
@@ -382,7 +391,7 @@ export async function* runAgentLoop(
       let isDestructive: boolean;
       if (toolDestructiveFlag === true) {
         isDestructive = true;
-      } else if (toolDestructiveFlag === false && SAFE_TOOLS.has(call.name)) {
+      } else if (toolDestructiveFlag === false && isSafeToolCall(call.name, input)) {
         isDestructive = false;
       } else {
         isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
@@ -391,9 +400,9 @@ export async function* runAgentLoop(
       const destructiveApproved = isDestructive
         && isAllowed(call.name, input, params.allowedTools, { requirePattern: true });
       const denyWrites = permissionMode === "deny-writes";
-      const trustedSafe = toolDestructiveFlag === false && SAFE_TOOLS.has(call.name);
+      const trustedSafe = toolDestructiveFlag === false && isSafeToolCall(call.name, input);
       const needsConfirm = (isDestructive && !destructiveApproved)
-        || (!SAFE_TOOLS.has(call.name)
+        || (!isSafeToolCall(call.name, input)
           && !trustedSafe
           && permissionMode !== "auto-accept"
           && !isAllowed(call.name, input, params.allowedTools));

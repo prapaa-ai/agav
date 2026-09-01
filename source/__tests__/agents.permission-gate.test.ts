@@ -141,4 +141,40 @@ describe("permission gate: destructive flag trust", () => {
     const result = toolResults[0] as any;
     expect(result.isError).toBe(true);
   });
+
+  it("allows process introspection without confirmation but prompts before process start", async () => {
+    const processTool: ToolDefinition = {
+      schema: {
+        name: "process",
+        description: "process tool",
+        inputSchema: { type: "object", properties: {} },
+      },
+      execute: vi.fn().mockResolvedValue({ output: "ok", isError: false }),
+    };
+
+    const registry = new ToolRegistry();
+    registry.register(processTool);
+    const confirmTool = vi.fn().mockResolvedValue("yes");
+
+    const conversation = new ConversationState();
+    conversation.addUserMessage("manage process");
+    const provider = new MockProvider([
+      makeToolCallStream("process", { action: "list" }),
+      makeToolCallStream("process", { action: "start", command: "npm run dev" }),
+    ]);
+
+    await collectEvents(runAgentLoop({
+      provider,
+      conversation,
+      toolRegistry: registry,
+      model: "mock",
+      confirmTool,
+      permissionMode: "ask",
+      maxIterations: 2,
+    }));
+
+    expect(processTool.execute).toHaveBeenCalledTimes(2);
+    expect(confirmTool).toHaveBeenCalledTimes(1);
+    expect(confirmTool).toHaveBeenCalledWith("process", { action: "start", command: "npm run dev" }, undefined);
+  });
 });
