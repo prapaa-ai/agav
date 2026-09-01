@@ -20,6 +20,10 @@ export type KeybindingAction =
   | "openCommandPalette"
   | "showKeybindings"
   | "clearScreen"
+  | "scrollUp"
+  | "scrollDown"
+  | "scrollTop"
+  | "scrollBottom"
   | "exit";
 
 export type Keybindings = Record<KeybindingAction, string[]>;
@@ -42,6 +46,10 @@ const ACTIONS: KeybindingAction[] = [
   "openCommandPalette",
   "showKeybindings",
   "clearScreen",
+  "scrollUp",
+  "scrollDown",
+  "scrollTop",
+  "scrollBottom",
   "exit",
 ];
 
@@ -52,7 +60,8 @@ const ACTIONS: KeybindingAction[] = [
  */
 export const GLOBAL_ACTIONS: KeybindingAction[] = [
   "cancel", "interrupt", "cycleSubagents", "toggleToolDetail", "togglePlanDetail",
-  "toggleThinking", "retryLastTurn", "showKeybindings", "clearScreen", "exit",
+  "toggleThinking", "retryLastTurn", "showKeybindings", "clearScreen",
+  "scrollUp", "scrollDown", "scrollTop", "scrollBottom", "exit",
 ];
 
 export const PROMPT_ACTIONS: KeybindingAction[] = [
@@ -83,6 +92,10 @@ export const DEFAULT_KEYBINDINGS: Keybindings = {
   openCommandPalette: ["ctrl+k ctrl+p"],
   showKeybindings: ["ctrl+k ctrl+s"],
   clearScreen: ["ctrl+l"],
+  scrollUp: ["ctrl+up", "shift+up"],
+  scrollDown: ["ctrl+down", "shift+down"],
+  scrollTop: ["shift+meta+up"],
+  scrollBottom: ["shift+meta+down"],
   exit: ["ctrl+q"],
 };
 

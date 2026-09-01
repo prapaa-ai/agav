@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ink/index.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type { AgentReadiness, ReadinessMap } from "./agents-types.js";
 import { SearchBar } from "./agents-search.js";

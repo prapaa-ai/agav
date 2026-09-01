@@ -33,9 +33,35 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
   let counter = 0;
   const active = new Map<string, SubagentProgress>();
 
+  // Throttle UI updates to ~15 fps so concurrent subagents don't flood
+  // React with state updates on every streaming_text delta.
+  let broadcastDirty = false;
+  let broadcastTimer: ReturnType<typeof setTimeout> | null = null;
+  const BROADCAST_INTERVAL_MS = 66; // ~15 fps
+
   /** Push the latest active subagent snapshot to the UI layer. */
   function broadcast(): void {
+    broadcastDirty = true;
+    if (broadcastTimer !== null) return; // flush is already scheduled
+    broadcastTimer = setTimeout(flushBroadcast, BROADCAST_INTERVAL_MS);
+  }
+
+  /** Flush immediately — for terminal events that must appear right away. */
+  function broadcastNow(): void {
+    if (broadcastTimer !== null) {
+      clearTimeout(broadcastTimer);
+      broadcastTimer = null;
+    }
+    broadcastDirty = false;
     deps.onProgressUpdate(Array.from(active.values()));
+  }
+
+  function flushBroadcast(): void {
+    broadcastTimer = null;
+    if (broadcastDirty) {
+      broadcastDirty = false;
+      deps.onProgressUpdate(Array.from(active.values()));
+    }
   }
 
   return {
@@ -236,7 +262,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
               finalText = event.text;
               progress.streamingText = "";
               startNewReasoningSummary = true;
-              broadcast();
+              broadcastNow();
               break;
 
             case "usage":
@@ -255,7 +281,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
               progress.status = "error";
               progress.error = event.error.message;
               active.set(id, { ...progress });
-              broadcast();
+              broadcastNow();
               if (worktreePath) {
                 process.chdir(originalCwd);
                 await removeWorktree(worktreePath, branchName).catch(() => {});
@@ -281,11 +307,11 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
         progress.result = finalText;
         progress.streamingText = "";
         active.set(id, { ...progress });
-        broadcast();
+        broadcastNow();
 
         setTimeout(() => {
           active.delete(id);
-          broadcast();
+          broadcastNow();
         }, 100);
 
         return {
@@ -297,7 +323,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
         progress.status = "error";
         progress.error = errMsg;
         active.set(id, { ...progress });
-        broadcast();
+        broadcastNow();
 
         if (worktreePath) {
           process.chdir(originalCwd);
@@ -306,7 +332,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
 
         setTimeout(() => {
           active.delete(id);
-          broadcast();
+          broadcastNow();
         }, 100);
 
         return { output: `Subagent error: ${errMsg}`, isError: true };

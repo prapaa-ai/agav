@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput } from "../ink/index.js";
 import type { MarketplaceAgent } from "../agents/types.js";
 import { installAgent, uninstallAgent } from "../agents/installer.js";
 import { getDefaultMarketplaceUrl } from "../config/config.js";
@@ -7,6 +7,7 @@ import { agavHomePath } from "../utils/shell-hints.js";
 import { parseFileUrl } from "./agents-types.js";
 import { useSearch, filterMarketplaceAgents, SearchBar } from "./agents-search.js";
 import { MarketplaceInspectView } from "./agents-inspect.js";
+import { wheelSelect, stepIndex } from "./wheel-select.js";
 
 export function MarketplaceTab({
   onReloadAgents,
@@ -340,8 +341,14 @@ export function MarketplaceTab({
   const totalPages = Math.ceil(filteredAgents.length / PAGE_SIZE);
   const pageAgents = filteredAgents.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
 
+  const handleWheel = wheelSelect((delta) => {
+    if (installing || pendingInstallAgent || reinstallCandidate) return;
+    setSelectedIndex((i) => stepIndex(i, delta, filteredAgents.length));
+    setInstallStatus(null);
+  });
+
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" onWheel={handleWheel}>
       <SearchBar
         query={searchQuery}
         searching={searching}

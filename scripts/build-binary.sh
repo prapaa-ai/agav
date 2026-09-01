@@ -19,11 +19,6 @@ if ! command -v bun &>/dev/null; then
   export PATH="$BUN_INSTALL/bin:$PATH"
 fi
 
-# Ensure react-devtools-core is available (Ink optional dependency)
-if [ ! -d "node_modules/react-devtools-core" ]; then
-  bun install react-devtools-core 2>/dev/null || true
-fi
-
 build_target() {
   local target="$1"
   local outname="$2"

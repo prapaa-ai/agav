@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Box, Text, useInput, useStdin } from "ink";
+import { Box, Text, useInput, useStdin, useStdout, type DOMElement, type MouseEventData } from "../ink/index.js";
 import { KeybindingResolver, PROMPT_ACTIONS, formatKeybinding, formatUsableKeybinding, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { loadPromptHistory, savePromptHistory } from "../config/prompt-history.js";
 import { readdir, realpath } from "node:fs/promises";
@@ -19,8 +19,6 @@ interface Props {
   onRemoveAttachment?: () => void;
   onClearAttachments?: () => void;
   onRegisterInsert?: (fn: (label: string) => void) => void;
-  /** Registers a callback that re-syncs the caret with the current buffer. */
-  onCursorReset?: (fn: () => void) => void;
   disabled?: boolean;
   /**
    * When true, arrow keys do not cycle through prompt history.
@@ -36,20 +34,6 @@ interface Props {
   /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
   enhancedKeyboard?: boolean;
   resumeUserMessages?: string[];
-}
-
-/** Returns the line and column for a cursor index in multiline input. */
-function getCursorPosition(value: string, cursorPos: number): { line: number; col: number } {
-  let pos = 0;
-  const lines = value.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const lineLen = lines[i]!.length;
-    if (pos + lineLen >= cursorPos) {
-      return { line: i, col: cursorPos - pos };
-    }
-    pos += lineLen + 1;
-  }
-  return { line: lines.length - 1, col: lines[lines.length - 1]!.length };
 }
 
 const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules", "build", "dist"]);
@@ -86,12 +70,110 @@ function getActiveFileToken(value: string, cursorPos: number): ActiveFileToken |
  * is a bare CSI (`[` + parameter + intermediate + final byte, per ECMA-48) or
  * SS3 (`O` + final byte). Both need at least two characters, which keeps a
  * plain `[` or `O` keystroke typeable.
+ *
+ * The `+` quantifier handles multiple sequences batched in one read — fast
+ * scrolling can produce several mouse reports per chunk, all arriving with
+ * their ESC prefix already stripped.
  */
-const ESCAPE_RESIDUE_RE = /^(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e])$/;
+const ESCAPE_RESIDUE_RE = /^(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e])+$/;
 
 /** Whether `input` is terminal noise rather than something the user typed. */
 export function isEscapeResidue(input: string): boolean {
   return input.includes("\x1b") || ESCAPE_RESIDUE_RE.test(input);
+}
+
+/**
+ * Matches an attachment placeholder: the `<<...>>` stand-in the prompt shows
+ * for a pasted block or an image.
+ *
+ * Written once because two things depend on its exact shape — backspace, which
+ * takes a whole one out at a stroke, and click, which refuses to put the caret
+ * inside one.
+ */
+const ATTACHMENT_LABEL = String.raw`<<(?:\(.*?\) )?(?:Pasted|Image)(?:\s*#\d+)?:.+?>>`;
+
+/** The same placeholder, immediately before the cursor, with its trailing space. */
+const ATTACHMENT_BEFORE_CURSOR_RE = new RegExp(`${ATTACHMENT_LABEL} ?$`);
+
+/** Every character cell the prompt prints before the text: `"❯ "` or `"  "`. */
+const PREFIX_WIDTH = 2;
+
+/**
+ * Moves an offset that landed inside an attachment placeholder out to its
+ * nearer edge.
+ *
+ * The placeholder stands in for content the buffer does not hold — a pasted
+ * block kept aside, an image's bytes — so to the user it is one thing, however
+ * many characters it is to us. A caret dropped inside it would let the next
+ * keystroke cut it into two strings that match nothing, orphaning the
+ * attachment with no sign on screen that anything happened. Both of its edges
+ * are positions the user can sensibly mean, so pick the closer one.
+ */
+export function snapOutOfAttachment(text: string, offset: number): number {
+  const pattern = new RegExp(ATTACHMENT_LABEL, "g");
+
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    const start = match.index;
+    const end = start + match[0].length;
+
+    if (offset > start && offset < end) {
+      return offset - start <= end - offset ? start : end;
+    }
+
+    if (start > offset) break;
+  }
+
+  return offset;
+}
+
+// ---------------------------------------------------------------------------
+// Grapheme-cluster helpers.  All cursor movement and character deletion must
+// step by grapheme cluster, not by UTF-16 code unit, so that emoji, flags,
+// skin-tone modifiers, and ZWJ sequences are treated as single characters.
+// ---------------------------------------------------------------------------
+
+const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/**
+ * Return the code-unit offset one grapheme cluster to the left of `pos`.
+ * If `pos` is already at 0, returns 0.
+ */
+function prevGraphemeOffset(text: string, pos: number): number {
+  if (pos <= 0) return 0;
+  // Segment the text up to `pos` and take the last segment's start.
+  const before = text.slice(0, pos);
+  let lastStart = 0;
+  for (const { index } of segmenter.segment(before)) {
+    lastStart = index;
+  }
+  return lastStart;
+}
+
+/**
+ * Return the code-unit offset one grapheme cluster to the right of `pos`.
+ * If `pos` is at or past the end, returns `text.length`.
+ */
+function nextGraphemeOffset(text: string, pos: number): number {
+  if (pos >= text.length) return text.length;
+  for (const { segment, index } of segmenter.segment(text)) {
+    if (index >= pos) {
+      return index + segment.length;
+    }
+  }
+  return text.length;
+}
+
+/**
+ * Extract the full grapheme cluster at code-unit offset `pos`.
+ * Returns the grapheme string and its code-unit length.
+ */
+function graphemeAt(text: string, pos: number): { grapheme: string; length: number } {
+  for (const { segment, index } of segmenter.segment(text)) {
+    if (index >= pos) {
+      return { grapheme: segment, length: segment.length };
+    }
+  }
+  return { grapheme: " ", length: 1 };
 }
 
 /** Checks whether a resolved path stays within the current project root. */
@@ -101,30 +183,81 @@ function isWithinRoot(root: string, candidate: string): boolean {
 }
 
 /** Renders the interactive prompt with history, completion, and paste handling. */
-export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, onCursorReset, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
+export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
   const { isRawModeSupported } = useStdin();
-  const [cursorPos, setCursorPos] = useState(0);
+  const { stdout } = useStdout();
+  const [, bumpCursor] = useState(0);
+
+  // The live buffer: the text and caret as of the last key we handled.
+  //
+  // The parent owns `value`, so every edit is a round trip — we call
+  // `onChange`, the parent sets state, React re-renders, and only then does the
+  // prop catch up. Keystrokes do not wait for that. With a long transcript
+  // above us a commit takes longer than a keypress, so a burst of them all read
+  // the same pre-burst prop and each computes the same answer from it: four
+  // backspaces splice one character off `value` four times over and delete one
+  // character between them. That is why this only ever bit on a resumed
+  // session — an empty transcript commits faster than anyone can type.
+  //
+  // So the key handler reads and writes this ref, synchronously, and treats it
+  // as the truth. `onChange` still fires, but only to tell the parent; the prop
+  // coming back is an echo, not the source.
+  const liveRef = useRef({ value, cursor: 0 });
+  const lastEmittedRef = useRef(value);
+
+  // The parent also rewrites the buffer on its own — clearing it after a
+  // submit, after a `!` shell command, when a wizard exits. A `value` we did
+  // not emit is one of those, and the parent wins: adopt it, and put the caret
+  // at its end, the only position that is meaningful in text the user did not
+  // place it in. A caret left beyond the end would be invisible (no wrapped
+  // line claims an out-of-range offset) and would make backspace splice out
+  // characters that are not there.
+  if (value !== lastEmittedRef.current) {
+    liveRef.current = { value, cursor: value.length };
+    lastEmittedRef.current = value;
+  }
+
+  const text = liveRef.current.value;
+  const cursorPos = Math.min(liveRef.current.cursor, text.length);
+
+  /** Replaces the buffer and places the caret, live and for the parent both. */
+  const applyEdit = (nextValue: string, nextCursor: number) => {
+    liveRef.current = { value: nextValue, cursor: nextCursor };
+    lastEmittedRef.current = nextValue;
+    emitValue(nextValue);
+    bumpCursor((n) => n + 1);
+  };
+
+  /** Moves the caret without touching the text. */
+  const moveCaret = (nextCursor: number) => {
+    liveRef.current.cursor = nextCursor;
+    bumpCursor((n) => n + 1);
+  };
+
   const historyRef = useRef<string[]>([]);
   const historyLoadedRef = useRef(false);
   const historyIndexRef = useRef(-1);
+  /** Saves the in-progress input when the user first presses Up, so Down can restore it. */
+  const draftRef = useRef<string | null>(null);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
-  const valueRef = useRef(value);
-  const cursorPosRef = useRef(cursorPos);
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
-  valueRef.current = value;
-  cursorPosRef.current = cursorPos;
+  /** The box holding the text rows, for turning a click into a buffer offset. */
+  const linesRef = useRef<DOMElement | null>(null);
 
   useEffect(() => {
     if (historyLoadedRef.current) return;
     historyLoadedRef.current = true;
     loadPromptHistory().then((saved) => {
       const isAutoContinue = (s: string) => s.startsWith("Do Step ");
-      const resumed = resumeUserMessages ?? [];
-      const merged = saved.filter((s) => !isAutoContinue(s));
-      for (const msg of resumed) {
-        if (msg && !isAutoContinue(msg) && !merged.includes(msg)) merged.push(msg);
-      }
+      const resumed = (resumeUserMessages ?? []).filter((s) => s && !isAutoContinue(s));
+      // Resumed session messages go at the end (most recent) so the first
+      // Up-arrow recall shows the last message from *this* session, not
+      // whatever was typed last in a different session. Remove duplicates
+      // from their earlier position so they are not shown twice.
+      const resumedSet = new Set(resumed);
+      const merged = saved.filter((s) => !isAutoContinue(s) && !resumedSet.has(s));
+      merged.push(...resumed);
       historyRef.current = merged;
     });
   }, []);
@@ -133,40 +266,19 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
   useEffect(() => {
     if (onRegisterInsert) {
       onRegisterInsert((label: string) => {
-        const cur = cursorPosRef.current;
-        const val = valueRef.current;
+        // Off the live buffer, like every other edit: the parent may fire this
+        // between a keystroke and the render that would have reported it.
+        const { value: val, cursor: cur } = liveRef.current;
         const before = val.slice(0, cur);
         const after = val.slice(cur);
-        onChange(before + label + " " + after);
-        setCursorPos(cur + label.length + 1);
+        applyEdit(before + label + " " + after, cur + label.length + 1);
       });
     }
-  }, [onRegisterInsert, onChange]);
+  }, [onRegisterInsert]);
 
-  // Re-sync the caret with the buffer whenever the parent rewrites the value
-  // programmatically (e.g. clearing it after a slash command). Without this the
-  // stored cursor position can point past the end of the new text, so the next
-  // keystroke inserts at a stale offset and typed characters appear out of
-  // order — the "cursor jumps to position 0" symptom.
-  //
-  // The request is handled on the render where the rewritten value actually
-  // arrives: calling setCursorPos synchronously would read the old buffer,
-  // because the parent's state update has not propagated to props yet.
-  const syncCursorOnNextValueRef = useRef(false);
-
-  useEffect(() => {
-    if (onCursorReset) onCursorReset(() => { syncCursorOnNextValueRef.current = true; });
-  }, [onCursorReset]);
-
-  useEffect(() => {
-    if (!syncCursorOnNextValueRef.current) return;
-    syncCursorOnNextValueRef.current = false;
-    setCursorPos(value.length);
-  }, [value]);
-
-  const activeFileToken = getActiveFileToken(value, cursorPos);
-  const showSuggestions = !activeFileToken && value.startsWith("/") && !value.includes(" ") && value.length >= 1;
-  const partial = value.slice(1).toLowerCase();
+  const activeFileToken = getActiveFileToken(text, cursorPos);
+  const showSuggestions = !activeFileToken && text.startsWith("/") && !text.includes(" ") && text.length >= 1;
+  const partial = text.slice(1).toLowerCase();
   const matchingCommands = showSuggestions
     ? commands.filter((c) => c.name.startsWith(partial))
     : [];
@@ -181,9 +293,9 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
       ? `@"${completedPath}${selected.isDirectory ? "" : "\""}`
       : `@${completedPath}`;
     const suffix = selected.isDirectory ? "" : " ";
-    const nextValue = value.slice(0, token.start) + mention + suffix + value.slice(token.end);
-    onChange(nextValue);
-    setCursorPos(token.start + mention.length + suffix.length);
+    const buf = liveRef.current.value;
+    const nextValue = buf.slice(0, token.start) + mention + suffix + buf.slice(token.end);
+    applyEdit(nextValue, token.start + mention.length + suffix.length);
     setSelectedSuggestion(0);
   };
 
@@ -229,36 +341,38 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
   useInput(
     (rawInput, rawKey) => {
       if (disabled) return;
+      // Shadow the render-scope text and caret with the live ones. The render
+      // scope is a snapshot from the last commit, and the whole point is that
+      // this key may have arrived before that commit caught up.
+      const value = liveRef.current.value;
+      const cursorPos = Math.min(liveRef.current.cursor, value.length);
       const { input, key } = normalizeKeyEvent(rawInput, rawKey);
       const match = keyResolverRef.current.feed(input, key);
       if (match.pending) return;
 
       if (match.action === "clearInput") {
-        onChange("");
+        applyEdit("", 0);
         onClearAttachments?.();
-        setCursorPos(0);
         historyIndexRef.current = -1;
+        draftRef.current = null;
         return;
       }
       if (match.action === "deleteWordBackward") {
         const before = value.slice(0, cursorPos);
         const wordStart = before.search(/\s*\S+\s*$/);
         const start = wordStart < 0 ? 0 : wordStart;
-        onChange(value.slice(0, start) + value.slice(cursorPos));
-        setCursorPos(start);
+        applyEdit(value.slice(0, start) + value.slice(cursorPos), start);
         return;
       }
       if (match.action === "editLastPrompt") {
         const previous = historyRef.current.at(-1);
         if (previous) {
-          onChange(previous);
-          setCursorPos(previous.length);
+          applyEdit(previous, previous.length);
         }
         return;
       }
       if (match.action === "openCommandPalette") {
-        onChange("/");
-        setCursorPos(1);
+        applyEdit("/", 1);
         setSelectedSuggestion(0);
         return;
       }
@@ -299,8 +413,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
           const selected = matchingCommands[selectedSuggestion];
           if (selected) {
             const completed = `/${selected.name} `;
-            onChange(completed);
-            setCursorPos(completed.length);
+            applyEdit(completed, completed.length);
             setSelectedSuggestion(0);
           }
           return;
@@ -309,15 +422,13 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
           const selected = matchingCommands[selectedSuggestion];
           if (selected && partial !== selected.name) {
             const completed = `/${selected.name} `;
-            onChange(completed);
-            setCursorPos(completed.length);
+            applyEdit(completed, completed.length);
             setSelectedSuggestion(0);
             return;
           }
         }
         if (match.action === "cancel") {
-          onChange("");
-          setCursorPos(0);
+          applyEdit("", 0);
           setSelectedSuggestion(0);
           return;
         }
@@ -328,11 +439,15 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
       if (match.action === "historyUp" && !value.includes("\n") && !suppressHistory) {
         const history = historyRef.current;
         if (history.length === 0) return;
+        // Save the in-progress input the first time the user enters history,
+        // so pressing Down all the way back restores it instead of clearing.
+        if (historyIndexRef.current === -1) {
+          draftRef.current = value;
+        }
         const nextIdx = Math.min(historyIndexRef.current + 1, history.length - 1);
         historyIndexRef.current = nextIdx;
         const msg = history[history.length - 1 - nextIdx]!;
-        onChange(msg);
-        setCursorPos(msg.length);
+        applyEdit(msg, msg.length);
         return;
       }
 
@@ -341,14 +456,15 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
         const history = historyRef.current;
         if (historyIndexRef.current <= 0) {
           historyIndexRef.current = -1;
-          onChange("");
-          setCursorPos(0);
+          // Restore the draft the user was typing before they entered history.
+          const draft = draftRef.current ?? "";
+          draftRef.current = null;
+          applyEdit(draft, draft.length);
           return;
         }
         historyIndexRef.current--;
         const msg = history[history.length - 1 - historyIndexRef.current]!;
-        onChange(msg);
-        setCursorPos(msg.length);
+        applyEdit(msg, msg.length);
         return;
       }
 
@@ -356,17 +472,21 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
         if (match.action === "newline") {
           const before = value.slice(0, cursorPos);
           const after = value.slice(cursorPos);
-          onChange(before + "\n" + after);
-          setCursorPos(cursorPos + 1);
+          applyEdit(before + "\n" + after, cursorPos + 1);
         } else {
           if (value.trim()) {
             const deduped = historyRef.current.filter((h) => h !== value);
             deduped.push(value);
             historyRef.current = deduped;
             historyIndexRef.current = -1;
+            draftRef.current = null;
             savePromptHistory(deduped);
+            // No caret reset here. The parent clears the buffer only once it
+            // has accepted the message, and the clamp above follows it down to
+            // zero when it does. Resetting optimistically stranded the caret at
+            // the start of text the parent had decided to keep — where
+            // backspace has nothing before it and does nothing at all.
             onSubmit(value);
-            setCursorPos(0);
           }
         }
         return;
@@ -375,31 +495,39 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
       // Bound special keys should not become literal input when their defaults are replaced.
       if (key.return || key.escape || key.upArrow || key.downArrow) return;
 
-      if (key.backspace || key.delete) {
+      if (key.backspace) {
         if (cursorPos > 0) {
           // Check if cursor is right after an attachment label like "<<Pasted #1: ...>>"
           const textBefore = value.slice(0, cursorPos);
-          const labelMatch = textBefore.match(/<<(?:\(.*?\) )?(?:Pasted|Image)(?:\s*#\d+)?:.+?>> ?$/);
+          const labelMatch = textBefore.match(ATTACHMENT_BEFORE_CURSOR_RE);
           if (labelMatch && onRemoveAttachment) {
             const labelStart = cursorPos - labelMatch[0].length;
-            onChange(value.slice(0, labelStart) + value.slice(cursorPos));
-            setCursorPos(labelStart);
+            applyEdit(value.slice(0, labelStart) + value.slice(cursorPos), labelStart);
             onRemoveAttachment();
           } else {
-            onChange(value.slice(0, cursorPos - 1) + value.slice(cursorPos));
-            setCursorPos(cursorPos - 1);
+            const prev = prevGraphemeOffset(value, cursorPos);
+            applyEdit(value.slice(0, prev) + value.slice(cursorPos), prev);
           }
           setSelectedSuggestion(0);
         }
         return;
       }
 
+      if (key.delete) {
+        if (cursorPos < value.length) {
+          const next = nextGraphemeOffset(value, cursorPos);
+          applyEdit(value.slice(0, cursorPos) + value.slice(next), cursorPos);
+          setSelectedSuggestion(0);
+        }
+        return;
+      }
+
       if (key.leftArrow) {
-        setCursorPos(Math.max(0, cursorPos - 1));
+        moveCaret(prevGraphemeOffset(value, cursorPos));
         return;
       }
       if (key.rightArrow) {
-        setCursorPos(Math.min(value.length, cursorPos + 1));
+        moveCaret(nextGraphemeOffset(value, cursorPos));
         return;
       }
 
@@ -413,8 +541,7 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
       if (input && !key.ctrl && !key.meta && !isEscapeResidue(input)) {
         const before = value.slice(0, cursorPos);
         const after = value.slice(cursorPos);
-        onChange(before + input + after);
-        setCursorPos(cursorPos + input.length);
+        applyEdit(before + input + after, cursorPos + input.length);
         setSelectedSuggestion(0);
       }
     },
@@ -431,12 +558,16 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
     );
   }
 
-  const cols = process.stdout.columns || 80;
-  const usable = cols - 2;
+  // Ink's stdout, not the process's: this is the surface the renderer lays the
+  // rows out into, and a click is turned back into a buffer offset through this
+  // same wrap table. Measuring against a different width would put the caret
+  // somewhere other than where the user aimed.
+  const cols = stdout?.columns || 80;
+  const usable = Math.max(1, cols - PREFIX_WIDTH);
 
   interface WrappedLine { text: string; offset: number; isFirst: boolean }
   const wrappedLines: WrappedLine[] = [];
-  const rawLines = value.split("\n");
+  const rawLines = text.split("\n");
   let globalOffset = 0;
   for (let li = 0; li < rawLines.length; li++) {
     const raw = rawLines[li]!;
@@ -457,17 +588,50 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
 
   const isMultiline = rawLines.length > 1 || wrappedLines.length > 1;
 
+  /**
+   * Puts the caret where the user clicked on one wrapped row.
+   *
+   * Which row it was comes from the handler being bound to that row, not from
+   * the mouse's `y`. The two do not agree: a frame taller than the terminal has
+   * scrolled by the time it is on screen, so a row's laid-out `y` is not the
+   * terminal row it is printed on, and subtracting one from the other is off by
+   * however far the frame scrolled. Nothing scrolls sideways, so `x` is sound.
+   *
+   * The wrapped line already knows the buffer offset it starts at — the same
+   * table the caret is drawn from, so what the user aims at and what they get
+   * are the same thing by construction, wrapping and all.
+   */
+  const handleRowClick = (line: WrappedLine) => (event: MouseEventData) => {
+    const rows = linesRef.current;
+    if (!rows || rows.internal_x === undefined) return;
+
+    // Past the end of a line means the end of that line, not the next one:
+    // clicking into the empty space right of the text is how anyone asks for
+    // the caret to go last.
+    const column = event.x - rows.internal_x - PREFIX_WIDTH;
+    const offset = line.offset + Math.max(0, Math.min(column, line.text.length));
+
+    moveCaret(snapOutOfAttachment(text, offset));
+    event.stopPropagation?.();
+  };
+
   return (
-    <Box flexDirection="column">
+    // `flexGrow` so the rows span the full width they are drawn across rather
+    // than shrink-wrapping the text: the blank space to the right of a line is
+    // where anyone clicks to put the caret at its end, and a box that stops at
+    // the last character is not there to be clicked.
+    <Box flexDirection="column" flexGrow={1}>
+      <Box flexDirection="column" ref={linesRef}>
       {wrappedLines.map((wl, i) => {
         const prefix = wl.isFirst ? "❯ " : "  ";
         const lineStart = wl.offset;
         const lineEnd = lineStart + wl.text.length;
-        const cursorInLine = cursorPos >= lineStart && cursorPos <= lineEnd;
+        const isLastLine = i === wrappedLines.length - 1;
+        const cursorInLine = cursorPos >= lineStart && (isLastLine ? cursorPos <= lineEnd : cursorPos < lineEnd);
 
-        if (!value && wl.isFirst) {
+        if (!text && wl.isFirst) {
           return (
-            <Box key={i}>
+            <Box key={i} onClick={handleRowClick(wl)}>
               <Text bold color="green">{prefix}</Text>
               <Text inverse> </Text>
               <Text dimColor>Type a message...</Text>
@@ -478,10 +642,12 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
         if (cursorInLine) {
           const col = cursorPos - lineStart;
           const before = wl.text.slice(0, col);
-          const ch = col < wl.text.length ? wl.text[col]! : " ";
-          const after = col < wl.text.length ? wl.text.slice(col + 1) : "";
+          const { grapheme: ch, length: chLen } = col < wl.text.length
+            ? graphemeAt(wl.text, col)
+            : { grapheme: " ", length: 1 };
+          const after = col < wl.text.length ? wl.text.slice(col + chLen) : "";
           return (
-            <Box key={i}>
+            <Box key={i} onClick={handleRowClick(wl)}>
               {wl.isFirst ? <Text bold color="green">{prefix}</Text> : <Text dimColor>{prefix}</Text>}
               <Text>{before}</Text>
               <Text inverse>{ch}</Text>
@@ -491,12 +657,13 @@ export default function InputPrompt({ value, onChange, onSubmit, onPaste, onRemo
         }
 
         return (
-          <Box key={i}>
+          <Box key={i} onClick={handleRowClick(wl)}>
             {wl.isFirst ? <Text bold color="green">{prefix}</Text> : <Text dimColor>{prefix}</Text>}
             <Text>{wl.text || " "}</Text>
           </Box>
         );
       })}
+      </Box>
       {hasCommandSuggestions && (() => {
         const maxVisible = 8;
         const total = matchingCommands.length;

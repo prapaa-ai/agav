@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { useApp } from "../ink/index.js";
 import type { DisplayMessage } from "../components/message-list.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
 import type { LLMProvider, ContentBlock, InvocationReason, Message } from "../providers/types.js";
@@ -155,6 +156,7 @@ export function useAgent(
   resumeCompacted?: boolean,
   resumeSessionName?: string,
 ): UseAgentReturn {
+  const { resetDisplay } = useApp();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [streamingText, setStreamingText] = useState("");
   const [thinkingText, setThinkingText] = useState("");
@@ -213,17 +215,16 @@ export function useAgent(
   conversationRef.current.setModel(config.model);
 
   const refreshDisplay = useCallback(() => {
-    // RIS (\x1Bc) resets terminal state including cursor visibility.
-    // Re-hide the hardware cursor because Ink's log-update will not
-    // re-issue the hide after a full reset (it thinks it is still hidden).
-    // \x1B[3J clears the scrollback buffer so that the banner (and other
-    // Static items) are not duplicated when the user scrolls up after the
-    // Ink <Static> component remounts and re-renders all items.
-    process.stdout.write("\x1B[3J\x1Bc\x1b[?25l");
+    // Erase the screen through Ink rather than writing RIS ourselves.
+    // A hard reset drops the alternate screen buffer, mouse tracking and
+    // bracketed paste, and Ink only arms those on mount — so the app fell back
+    // to the terminal's native scrollback and lost its own wheel scrolling the
+    // first time anything called refreshDisplay().
+    resetDisplay();
     const displayMsgs = messagesToDisplay(conversationRef.current.getMessages());
     setMessages(displayMsgs);
     setTranscriptRevision((revision) => revision + 1);
-  }, []);
+  }, [resetDisplay]);
 
   // Rehydrate both the LLM conversation and visible transcript when resuming a saved session.
   useEffect(() => {

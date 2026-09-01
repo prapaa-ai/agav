@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Static, Text } from "ink";
+import { Box, Text } from "../ink/index.js";
 import { renderMarkdown } from "./markdown-text.js";
 import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
 import { getTheme } from "../config/theme.js";
@@ -27,11 +27,11 @@ export interface DisplayMessage {
 interface Props {
   messages: DisplayMessage[];
   toolDetailKey: string;
-  static?: boolean;
+  columns: number;
 }
 
 /** Renders a compact preview of diff output. */
-function DiffView({ diffLines }: { diffLines: DiffLine[] }) {
+const DiffView = React.memo(function DiffView({ diffLines }: { diffLines: DiffLine[] }) {
   const theme = getTheme();
   const maxLines = 40;
   const truncated = diffLines.length > maxLines;
@@ -81,10 +81,10 @@ function DiffView({ diffLines }: { diffLines: DiffLine[] }) {
       )}
     </Box>
   );
-}
+});
 
 /** Renders a single summarized tool result entry. */
-function ToolResultLine({ message }: { message: DisplayMessage }) {
+const ToolResultLine = React.memo(function ToolResultLine({ message }: { message: DisplayMessage }) {
   const label = message.toolDisplayName ?? (message.toolName ? getToolLabel(message.toolName) : "Tool");
   const summary = message.toolName && message.toolInput ? getToolSummary(message.toolName, message.toolInput) : "";
   const displayContent = terminalRelativePaths(message.content, toolPathValues(message.toolInput));
@@ -145,10 +145,10 @@ function ToolResultLine({ message }: { message: DisplayMessage }) {
       ) : null}
     </Box>
   );
-}
+});
 
 /** Renders the appropriate terminal bubble for a message role. */
-function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayMessage; prevRole?: string; toolDetailKey: string }) {
+const MessageBubble = React.memo(function MessageBubble({ message, prevRole, toolDetailKey, columns }: { message: DisplayMessage; prevRole?: string; toolDetailKey: string; columns: number }) {
   if (message.role === "banner") {
     return (
       <Box flexDirection="column" marginBottom={1}>
@@ -182,7 +182,7 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
   }
 
   if (message.role === "user") {
-    const cols = process.stdout.columns || 80;
+    const cols = columns;
     // Every line is padded out to the full width below, which only paints a clean
     // band while each one fits on a single row. `wrapToWidth` guarantees that.
     const lines = wrapToWidth(message.content, cols - 2);
@@ -243,23 +243,24 @@ function MessageBubble({ message, prevRole, toolDetailKey }: { message: DisplayM
   }
 
   return null;
-}
+});
 
-/** Renders the scrolling list of conversation messages. */
-export default function MessageList({ messages, toolDetailKey, static: isStatic = true }: Props) {
-  const renderMessage = (message: DisplayMessage, index: number) => (
-    <Box key={message.id} flexDirection="column">
-      <MessageBubble message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} />
+/**
+ * Renders the conversation transcript at its natural height.
+ *
+ * There is no viewport here on purpose. The transcript is one section of a
+ * single scrolling document owned by `App`; giving it its own would freeze it
+ * to a fixed band of the screen while everything below — a streaming reply, a
+ * plan, a detail panel — slid around inside bands of their own.
+ */
+const MessageList = React.memo(function MessageList({ messages, toolDetailKey, columns }: Props) {
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      {messages.map((message, index) => (
+        <MessageBubble key={message.id} message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} columns={columns} />
+      ))}
     </Box>
   );
+});
 
-  if (!isStatic) {
-    return <Box flexDirection="column">{messages.map(renderMessage)}</Box>;
-  }
-
-  return (
-    <Static items={messages}>
-      {renderMessage}
-    </Static>
-  );
-}
+export default MessageList;

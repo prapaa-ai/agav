@@ -1,5 +1,5 @@
 import React from "react";
-import { render } from "ink";
+import { render } from "./ink/index.js";
 import App from "./app.js";
 import { isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
 import { createProvider } from "./providers/registry.js";
@@ -713,13 +713,20 @@ export async function main() {
 
   const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={resumeSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} />, {
     exitOnCtrlC: true,
-    // Detection already happened, so pin the mode instead of letting Ink query a
-    // second time. `disambiguateEscapeCodes` alone is deliberate: it is what makes
-    // Shift+Enter distinguishable, and it avoids the key-release events that the
-    // reportEventTypes flag would deliver as phantom presses.
+    // Alt-screen keeps the UI self-contained (no scrollback pollution, no
+    // flicker on terminals without DEC 2026). In-app scrolling is handled by
+    // the ScrollBox viewport + mouse wheel, so native scrollback isn't needed.
+    alternateScreen: true,
     kittyKeyboard: { mode: enhancedKeyboard ? "enabled" : "disabled", flags: ["disambiguateEscapeCodes"] },
   });
 
   await waitUntilExit();
+  stopAllA2AAgents();
   await showResumeHint();
+
+  // Ensure the process exits even if stray handles (timers, sockets, etc.)
+  // are still referenced.  The "exit" event handler above will run
+  // synchronously when process.exit() is called, so markCleanExitSync()
+  // and stopAllA2AAgents() still fire.
+  process.exit(0);
 }
