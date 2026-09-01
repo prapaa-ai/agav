@@ -369,11 +369,11 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
       // File path suggestions take precedence while the cursor is in an @ token.
       if (hasFileSuggestions && activeFileToken) {
-        if (match.action === "historyDown") {
+        if (key.downArrow || match.action === "historyDown") {
           setSelectedSuggestion((prev) => Math.min(prev + 1, fileSuggestions.length - 1));
           return;
         }
-        if (match.action === "historyUp") {
+        if (key.upArrow || match.action === "historyUp") {
           setSelectedSuggestion((prev) => Math.max(prev - 1, 0));
           return;
         }
@@ -391,11 +391,11 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
       // Command suggestions navigation
       if (hasCommandSuggestions) {
-        if (match.action === "historyDown") {
+        if (key.downArrow || match.action === "historyDown") {
           setSelectedSuggestion((prev) => Math.min(prev + 1, matchingCommands.length - 1));
           return;
         }
-        if (match.action === "historyUp") {
+        if (key.upArrow || match.action === "historyUp") {
           setSelectedSuggestion((prev) => Math.max(prev - 1, 0));
           return;
         }
