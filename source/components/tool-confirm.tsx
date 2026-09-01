@@ -5,6 +5,7 @@ import type { DiffLine } from "../utils/diff.js";
 import { getTheme } from "../config/theme.js";
 import { KeybindingResolver, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { terminalToolValue } from "../utils/display-path.js";
+import { getToolConfirmationWarning } from "../utils/tool-confirmation.js";
 
 /** Represents the user's approval decision for a tool request. */
 export type ConfirmChoice = "yes" | "no" | "always";
@@ -35,6 +36,7 @@ export default function ToolConfirm({ toolName, input, diffLines, onConfirm, sub
 
   const label = getToolLabel(toolName);
   const summary = getToolSummary(toolName, input);
+  const warning = getToolConfirmationWarning(toolName, input);
   const theme = getTheme();
 
   /** Formats non-edit arguments into a compact confirmation preview. */
@@ -61,6 +63,7 @@ export default function ToolConfirm({ toolName, input, diffLines, onConfirm, sub
         Allow {label}?
       </Text>
       {summary ? <Text dimColor>  {summary}</Text> : null}
+      {warning ? <Text color="yellow">  ⚠ {warning}</Text> : null}
       {details ? <Text dimColor>{details}</Text> : null}
 
       {visibleDiff && visibleDiff.length > 0 && (
