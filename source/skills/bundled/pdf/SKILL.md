@@ -3,7 +3,7 @@ name: pdf
 description: Extract text from, merge, split, and fill PDF files
 version: 1.0.0
 invocation: both
-allowed-tools: read_file write_file edit_file run_command find_files list_directory
+allowed-tools: read_file write_file run_command find_files list_directory
 tags:
   - documents
   - pdf

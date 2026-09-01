@@ -3,7 +3,7 @@ name: pptx
 description: Create and edit PowerPoint .pptx presentations
 version: 1.0.0
 invocation: both
-allowed-tools: read_file write_file edit_file run_command find_files list_directory
+allowed-tools: read_file write_file run_command find_files list_directory
 tags:
   - presentations
   - office

@@ -3,7 +3,7 @@ name: email-draft
 description: Draft emails and replies with the right tone — never sends them
 version: 1.0.0
 invocation: both
-allowed-tools: read_file find_files write_file
+allowed-tools: read_file write_file find_files
 tags:
   - email
   - writing

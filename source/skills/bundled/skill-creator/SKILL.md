@@ -21,7 +21,7 @@ Create a new skill for agav: a directory containing a SKILL.md file with YAML fr
    - **What tools** does the task need: reading files, writing files, running commands, web access?
 2. Ask the user for an example of the task done well (a past output, an email they like) — real examples make skills far better than abstract descriptions.
 3. Create the skill as `<slug>/SKILL.md` where `<slug>` is lowercase-with-hyphens and matches the `name` field. Location:
-   - Personal skills: `~/.agav/skills/<slug>/SKILL.md` (the agav directory shown by the user's config).
+   - Personal skills: inside the agav config directory's `skills` folder — run `/skills` in a session to see the exact path for your platform.
    - Project skills: `.agav/skills/<slug>/SKILL.md` in the repo root — these override bundled/global skills of the same name.
 4. Use this frontmatter format (all fields shown; minimum is name + description):
 

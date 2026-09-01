@@ -3,7 +3,7 @@ name: xlsx
 description: Create, read, and edit Excel .xlsx spreadsheets and CSV files
 version: 1.0.0
 invocation: both
-allowed-tools: read_file write_file edit_file run_command find_files list_directory
+allowed-tools: read_file write_file run_command find_files list_directory
 tags:
   - spreadsheets
   - data
