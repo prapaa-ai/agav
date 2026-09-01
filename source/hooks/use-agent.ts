@@ -412,6 +412,7 @@ export function useAgent(
     sessionNameRef.current = undefined;
     setSessionName(undefined);
     sessionPermissionModeRef.current = undefined;
+    setTokenUsage({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
     resetPlanContinue();
     // Back to the draft slot, and drop whatever the last unsaved session left
     // there so the new session does not inherit a plan it never made.
