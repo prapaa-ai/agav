@@ -38,7 +38,6 @@ const mouseHandlerKeys = new Set([
 	"onClick",
 	"onMouseDown",
 	"onMouseUp",
-	"onMouseMove",
 	"onMouseEnter",
 	"onMouseLeave",
 	"onWheel",
@@ -48,7 +47,6 @@ type MouseHandlerKey =
 	| "onClick"
 	| "onMouseDown"
 	| "onMouseUp"
-	| "onMouseMove"
 	| "onMouseEnter"
 	| "onMouseLeave";
 
@@ -57,7 +55,6 @@ const isMouseHandlerKey = (key: string): key is MouseHandlerKey => {
 		key === "onClick" ||
 		key === "onMouseDown" ||
 		key === "onMouseUp" ||
-		key === "onMouseMove" ||
 		key === "onMouseEnter" ||
 		key === "onMouseLeave"
 	);

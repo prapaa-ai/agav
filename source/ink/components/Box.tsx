@@ -14,8 +14,6 @@ export type MouseHandlers = {
 	readonly onMouseDown?: (event: MouseEventData) => void;
 	/** Fired when a mouse button is released over the element. */
 	readonly onMouseUp?: (event: MouseEventData) => void;
-	/** Fired when the mouse moves/drags over the element. */
-	readonly onMouseMove?: (event: MouseEventData) => void;
 	/** Fired when the pointer enters the element. */
 	readonly onMouseEnter?: (event: MouseEventData) => void;
 	/** Fired when the pointer leaves the element. */
@@ -39,7 +37,6 @@ const Box = forwardRef<DOMElement, Props>(function Box(
 		onClick,
 		onMouseDown,
 		onMouseUp,
-		onMouseMove,
 		onMouseEnter,
 		onMouseLeave,
 		onWheel,
@@ -65,7 +62,6 @@ const Box = forwardRef<DOMElement, Props>(function Box(
 			onClick,
 			onMouseDown,
 			onMouseUp,
-			onMouseMove,
 			onMouseEnter,
 			onMouseLeave,
 			onWheel,

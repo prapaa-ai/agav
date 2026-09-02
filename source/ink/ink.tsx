@@ -21,7 +21,6 @@ import {
 	dispatchWheel,
 	dispatchMouseDown,
 	dispatchMouseUp,
-	dispatchMouseMove,
 	dispatchHover,
 } from "./events/dispatcher.js";
 import {
@@ -45,14 +44,6 @@ import {
 } from "./components/contexts.js";
 import {type MouseEventData} from "./types.js";
 import {resolveFlags, type KittyFlagName} from "./kitty-keyboard.js";
-import {writeClipboard} from "./termio/clipboard.js";
-import {
-	type SelectionRange,
-	normalizeSelection,
-	selectWordAt,
-	selectLineAt,
-	getSelectedText,
-} from "./selection.js";
 
 // Begin/end synchronized-update markers (DEC private mode 2026). Wrapping a
 // frame in these tells the terminal to hold rendering until the whole frame is
@@ -66,113 +57,6 @@ const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 
 const noop = (): void => {};
-
-// ---------------------------------------------------------------------------
-// Global text selection helpers.
-// ---------------------------------------------------------------------------
-
-/** Strip ANSI escape sequences from a string. */
-const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?(?:\x07|\x1b\\)/g;
-const stripAnsi = (s: string): string => {
-	ANSI_RE.lastIndex = 0;
-	return s.replace(ANSI_RE, "");
-};
-
-/** ANSI codes for inverse (highlighted) and reset-inverse. */
-const INVERSE_ON = "\x1b[7m";
-const INVERSE_OFF = "\x1b[27m";
-const SEL_COLOR_ON = "\x1b[36m"; // cyan foreground for selection
-const SEL_COLOR_OFF = "\x1b[39m";
-
-/**
- * Apply inverse highlighting to a range of rows in an ANSI-encoded frame.
- *
- * Coordinates in `selection` are in frame-space (matching `lastOutput` line
- * indices directly — line 0 of the output IS frame row 0).
- *
- * Walks each affected line tracking the visible column (skipping ANSI
- * escapes) and inserts inverse-on / inverse-off markers at the selection
- * boundaries.
- */
-function applySelectionHighlight(
-	output: string,
-	selection: SelectionRange,
-): string {
-	const lines = output.split("\n");
-
-	const startRow = Math.max(0, selection.startY);
-	const endRow = Math.min(lines.length - 1, selection.endY);
-	if (startRow > endRow || startRow >= lines.length) return output;
-
-	for (let row = startRow; row <= endRow; row++) {
-
-		const line = lines[row]!;
-		const selStartCol = row === selection.startY ? selection.startX : 0;
-		const selEndCol = row === selection.endY ? selection.endX : Infinity;
-
-		// Walk the line character by character, tracking visible column.
-		let result = "";
-		let visCol = 0;
-		let inSelection = false;
-		let i = 0;
-
-		while (i < line.length) {
-			// Check for ANSI escape sequence.
-			if (line[i] === "\x1b") {
-				// CSI sequences: \x1b[ ... <letter>
-				// OSC sequences: \x1b] ... (\x07 | \x1b\\)
-				let end = i + 1;
-				if (line[end] === "[") {
-					end++;
-					while (end < line.length) {
-						const c = line.charCodeAt(end);
-						if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) break;
-						end++;
-					}
-					end++; // include the final letter
-				} else if (line[end] === "]") {
-					end++;
-					while (end < line.length) {
-						if (line[end] === "\x07") { end++; break; }
-						if (line[end] === "\x1b" && line[end + 1] === "\\") { end += 2; break; }
-						end++;
-					}
-				} else {
-					end++; // single-char escape like \x1bO...
-				}
-				result += line.slice(i, end);
-				i = end;
-				continue;
-			}
-
-			// Visible character.
-			if (visCol >= selStartCol && visCol < selEndCol && !inSelection) {
-				result += SEL_COLOR_ON + INVERSE_ON;
-				inSelection = true;
-			} else if (visCol >= selEndCol && inSelection) {
-				result += INVERSE_OFF + SEL_COLOR_OFF;
-				inSelection = false;
-			}
-
-			result += line[i];
-			visCol++;
-			i++;
-		}
-
-		if (inSelection) {
-			// If the selection extends past the end of the text, highlight
-			// trailing space to make it visible.
-			if (row < selection.endY) {
-				result += " ";
-			}
-			result += INVERSE_OFF + SEL_COLOR_OFF;
-		}
-
-		lines[row] = result;
-	}
-
-	return lines.join("\n");
-}
 
 export type InkOptions = {
 	stdout: NodeJS.WriteStream;
@@ -287,19 +171,6 @@ export default class Ink {
 	// Mouse interaction state.
 	private mouseDownTarget: DOMElement | null = null;
 	private prevHoverTarget: DOMElement | null = null;
-
-	// Global text selection state. Operates on screen coordinates (after scroll
-	// offset is applied). Active when a mouse-down on an area with no component
-	// onMouseDown handler initiates a drag.
-	private selectionAnchor: {x: number; y: number} | null = null;
-	private selectionRange: SelectionRange | null = null;
-	private selectionDragging = false;
-	/** Timestamp of the last mouse-down, for double/triple-click detection. */
-	private selectionLastClickTime = 0;
-	/** Click count for multi-click detection. */
-	private selectionClickCount = 0;
-	/** Whether the engine consumed the mouse-down for selection (component didn't handle it). */
-	private selectionOwned = false;
 
 	private readonly exitPromise: Promise<void>;
 	private resolveExitPromise: () => void = noop;
@@ -535,12 +406,7 @@ export default class Ink {
 			this.fullStaticOutput += staticOutput;
 		}
 
-		// Apply selection highlighting if there's an active global selection.
-		const displayOutput = this.selectionRange
-			? applySelectionHighlight(output, this.selectionRange)
-			: output;
-
-		this.log(displayOutput + "\n");
+		this.log(output + "\n");
 		this.lastOutput = output;
 
 		stdout.write(END_SYNC);
@@ -592,8 +458,6 @@ export default class Ink {
 
 		const flushInput = (): void => {
 			if (pendingInput.length > 0) {
-				// Any keyboard input clears the global selection.
-				this.clearGlobalSelection();
 				this.internalEventEmitter.emit("input", pendingInput);
 				pendingInput = "";
 			}
@@ -745,10 +609,6 @@ export default class Ink {
 		// help: bubbling walks *up* from the target, and every handler in the
 		// app is below the root.
 		if (ev.wheel) {
-			// Scrolling invalidates the selection — the text under the highlight
-			// shifts, so the range no longer matches what is on screen.
-			this.clearGlobalSelection();
-
 			const wheelTarget = target ?? this.hitTestClamped(ev.x, y);
 
 			if (!wheelTarget) {
@@ -769,16 +629,8 @@ export default class Ink {
 
 		if (ev.action === "press" && ev.button === 0) {
 			this.mouseDownTarget = target;
-
-			// Dispatch to components first.
-			const consumed = target ? dispatchMouseDown(target, base) : false;
-
-			if (!consumed) {
-				// No component claimed this press — start global text selection.
-				this.beginGlobalSelection(ev.x, y);
-			} else {
-				// A component owns this press — clear any stale global selection.
-				this.clearGlobalSelection();
+			if (target) {
+				dispatchMouseDown(target, base);
 			}
 
 			return;
@@ -794,146 +646,15 @@ export default class Ink {
 				}
 			}
 
-			// Finalise global selection: copy to clipboard on mouse-up.
-			if (this.selectionOwned) {
-				this.finaliseGlobalSelection();
-			}
-
 			this.mouseDownTarget = null;
 			return;
 		}
 
 		if (ev.action === "move" || ev.action === "drag") {
-			if (ev.action === "drag") {
-				if (this.selectionOwned) {
-					// Extend global selection.
-					this.extendGlobalSelection(ev.x, y);
-				} else if (this.mouseDownTarget) {
-					dispatchMouseMove(this.mouseDownTarget, base);
-				}
-			}
-
 			dispatchHover(this.rootNode, this.prevHoverTarget, target, base);
 			this.prevHoverTarget = target;
 		}
 	};
-
-	// -----------------------------------------------------------------------
-	// Global text selection — select and copy text anywhere on the screen.
-	// -----------------------------------------------------------------------
-
-	/** Get the plain-text lines of the last rendered frame. */
-	private getPlainLines(): string[] {
-		return stripAnsi(this.lastOutput).split("\n");
-	}
-
-	/**
-	 * Lightweight repaint: re-write `lastOutput` with (or without) the
-	 * selection overlay. Does NOT trigger a layout or React render — just
-	 * re-paints the existing frame. This eliminates the flicker that a full
-	 * onRender() cycle would cause during a mouse drag.
-	 */
-	private repaintWithSelection(): void {
-		if (!this.interactive || !this.lastOutput) return;
-
-		const displayOutput = this.selectionRange
-			? applySelectionHighlight(this.lastOutput, this.selectionRange)
-			: this.lastOutput;
-
-		const stdout = this.options.stdout;
-		stdout.write(BEGIN_SYNC);
-		this.log(displayOutput + "\n");
-		stdout.write(END_SYNC);
-	}
-
-	/** Begin a potential global text selection at the given frame coordinate. */
-	private beginGlobalSelection(x: number, y: number): void {
-		const MULTI_CLICK_MS = 400;
-		const now = Date.now();
-
-		if (now - this.selectionLastClickTime < MULTI_CLICK_MS) {
-			this.selectionClickCount = (this.selectionClickCount % 3) + 1;
-		} else {
-			this.selectionClickCount = 1;
-		}
-		this.selectionLastClickTime = now;
-
-		const lines = this.getPlainLines();
-
-		if (this.selectionClickCount === 2) {
-			// Double-click: select word.
-			const range = selectWordAt(lines, x, y);
-			if (range) {
-				this.selectionRange = range;
-				this.selectionAnchor = {x, y};
-				this.selectionOwned = true;
-				this.selectionDragging = false;
-				this.repaintWithSelection();
-			}
-		} else if (this.selectionClickCount === 3) {
-			// Triple-click: select line.
-			this.selectionRange = selectLineAt(lines, y);
-			this.selectionAnchor = {x, y};
-			this.selectionOwned = true;
-			this.selectionDragging = false;
-			this.repaintWithSelection();
-		} else {
-			// Single click: start a potential drag.
-			this.selectionAnchor = {x, y};
-			this.selectionRange = null;
-			this.selectionOwned = true;
-			this.selectionDragging = false;
-		}
-	}
-
-	/** Extend the global selection as the mouse drags. */
-	private extendGlobalSelection(x: number, y: number): void {
-		if (!this.selectionAnchor) return;
-
-		this.selectionDragging = true;
-		this.selectionRange = normalizeSelection(this.selectionAnchor, {x, y});
-
-		// Lightweight repaint — no layout, no React render, no flicker.
-		this.repaintWithSelection();
-	}
-
-	/** Finalise the global selection: copy to clipboard and keep highlight. */
-	private finaliseGlobalSelection(): void {
-		if (this.selectionRange) {
-			const lines = this.getPlainLines();
-			const text = getSelectedText(lines, this.selectionRange);
-
-			if (text.trim()) {
-				writeClipboard(this.options.stdout, text);
-			}
-
-			if (!this.selectionDragging && this.selectionClickCount >= 2) {
-				// Double/triple-click — copy and keep highlight briefly.
-				// The highlight will clear on the next click.
-			} else if (!this.selectionDragging) {
-				// Single click, no drag — just clear.
-				this.clearGlobalSelection();
-			}
-			// Drag selection: keep the highlight until next click.
-		} else {
-			this.clearGlobalSelection();
-		}
-
-		this.selectionOwned = false;
-	}
-
-	/** Clear any active global selection and repaint. */
-	private clearGlobalSelection(): void {
-		const hadSelection = this.selectionRange !== null;
-		this.selectionAnchor = null;
-		this.selectionRange = null;
-		this.selectionDragging = false;
-		this.selectionOwned = false;
-
-		if (hadSelection) {
-			this.repaintWithSelection();
-		}
-	}
 
 	/** Flush any frame held by the FPS throttle and let the write drain. */
 	readonly waitUntilRenderFlush = async (): Promise<void> => {

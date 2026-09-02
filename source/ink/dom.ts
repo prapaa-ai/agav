@@ -91,7 +91,6 @@ export type DOMElement = {
 	onClick?: (event: MouseEventData) => void;
 	onMouseDown?: (event: MouseEventData) => void;
 	onMouseUp?: (event: MouseEventData) => void;
-	onMouseMove?: (event: MouseEventData) => void;
 	onMouseEnter?: (event: MouseEventData) => void;
 	onMouseLeave?: (event: MouseEventData) => void;
 	onWheel?: (event: WheelEventData) => void;
