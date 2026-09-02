@@ -133,11 +133,7 @@ function canMountTmpfs(path: string): boolean {
   try {
     return lstatSync(path).isDirectory();
   } catch {
-    try {
-      return lstatSync(dirname(path)).isDirectory();
-    } catch {
-      return false;
-    }
+    return false;
   }
 }
 
