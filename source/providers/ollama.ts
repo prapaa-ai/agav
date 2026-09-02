@@ -80,6 +80,7 @@ export class OllamaProvider implements LLMProvider {
         messages,
         tools,
         stream: true,
+        think: true,
         options: {
           num_predict: params.maxTokens ?? 16384,
           num_ctx: await this.resolveContextSize(params.model),

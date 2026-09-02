@@ -145,12 +145,15 @@ checksum_abort() {
 verify_checksum() {
   archive_path="$1"
   expected="$2"
+  precomputed="${3:-}"   # optional: pre-computed SHA-256 hex digest
 
   if [ -z "$expected" ]; then
     checksum_abort "No published checksum to verify against." "$archive_path"
   fi
 
-  if ! actual="$(file_sha256 "$archive_path")" || [ -z "$actual" ]; then
+  if [ -n "$precomputed" ]; then
+    actual="$precomputed"
+  elif ! actual="$(file_sha256 "$archive_path")" || [ -z "$actual" ]; then
     checksum_abort \
       "Cannot verify the download: none of sha256sum, shasum, or openssl is installed." \
       "$archive_path"
@@ -189,12 +192,45 @@ have_gunzip() {
 gunzip_to() {
   src="$1"
   dest="$2"
+  hash_file="${3:-}"   # optional: file path to write the SHA-256 hex digest into
 
   if command -v gzip >/dev/null 2>&1; then
-    gzip -dc "$src" >"$dest" && return 0
+    decompress_cmd="gzip -dc"
   elif command -v gunzip >/dev/null 2>&1; then
-    gunzip -c "$src" >"$dest" && return 0
+    decompress_cmd="gunzip -c"
+  else
+    rm -f "$dest"
+    return 1
   fi
+
+  # When a hash output path is given, compute the SHA-256 digest of the
+  # decompressed stream inline — avoiding a second full read of the ~100 MB
+  # binary after it has been written to disk.
+  if [ -n "$hash_file" ]; then
+    hash_cmd=""
+    if command -v sha256sum >/dev/null 2>&1; then
+      hash_cmd="sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then
+      hash_cmd="shasum -a 256"
+    elif command -v openssl >/dev/null 2>&1; then
+      hash_cmd="openssl dgst -sha256 -r"
+    fi
+
+    if [ -n "$hash_cmd" ]; then
+      # Decompress, tee to the destination file, and pipe to the hash tool.
+      # The hash is written to $hash_file. If the decompressor fails mid-stream
+      # the output will be truncated and the hash will be wrong, which is fine:
+      # the caller already treats a gunzip_to failure as "fall back to
+      # uncompressed download", and a mismatched hash is caught by
+      # verify_checksum.
+      $decompress_cmd "$src" | tee "$dest" | $hash_cmd | awk '{print $1}' >"$hash_file" && return 0
+      rm -f "$dest" "$hash_file"
+      return 1
+    fi
+  fi
+
+  # No hash requested, or no hash tool available — just decompress.
+  $decompress_cmd "$src" >"$dest" && return 0
 
   rm -f "$dest"
   return 1
@@ -518,6 +554,15 @@ replace_symlink() {
 
   rm -f "$tmp_link"
   ln -s "$link_target" "$tmp_link"
+  # `mv -f` resolves a destination that is a symlink to a directory and moves
+  # the source *inside* it — with exit 0, so nothing downstream notices. That is
+  # how an upgrade left `current` aimed at the previous release, dropped the
+  # temp link into that release's directory, and then verified and announced the
+  # old binary as freshly installed. Both BSD and GNU mv do this, and neither
+  # has a portable spelling of `mv -T`, so clear a link destination first.
+  if [ -L "$link_path" ]; then
+    rm -f "$link_path"
+  fi
   mv -f "$tmp_link" "$link_path" 2>/dev/null || {
     rm -f "$link_path"
     mv -f "$tmp_link" "$link_path"
@@ -550,7 +595,7 @@ Usage: install.sh [OPTIONS]
 Options:
   --version=<tag>    Install a specific version (default: latest)
   --dir=<path>       Install directory (default: ~/.local/bin)
-  --beta               Install the latest pre-release (beta) version
+  --beta             Install the latest pre-release (beta) version
   --uninstall        Remove Agav, keeping your settings and history
   --purge            Remove Agav and delete ~/.agav as well
   -h, --help         Show this help
@@ -694,12 +739,19 @@ archive_path="$tmp_dir/$asset_name"
 compressed_path="$tmp_dir/${asset_name}.gz"
 
 downloaded=""
+precomputed_hash=""
+hash_file="$tmp_dir/.sha256"
 if have_gunzip; then
   step "Downloading ${asset_name}.gz..."
-  if download_file "${download_url}.gz" "$compressed_path" && gunzip_to "$compressed_path" "$archive_path"; then
+  if download_file "${download_url}.gz" "$compressed_path" && gunzip_to "$compressed_path" "$archive_path" "$hash_file"; then
     downloaded=1
+    # Capture the hash computed inline during decompression (avoids re-reading
+    # the ~100 MB decompressed binary from disk).
+    if [ -s "$hash_file" ]; then
+      precomputed_hash="$(cat "$hash_file")"
+    fi
   else
-    rm -f "$compressed_path" "$archive_path"
+    rm -f "$compressed_path" "$archive_path" "$hash_file"
     warn "Compressed download unavailable — falling back to the full binary."
   fi
 fi
@@ -727,7 +779,7 @@ else
   if [ -z "$expected_checksum" ]; then
     checksum_abort "SHA256SUMS has no entry for $asset_name." "$archive_path"
   fi
-  verify_checksum "$archive_path" "$expected_checksum"
+  verify_checksum "$archive_path" "$expected_checksum" "$precomputed_hash"
   step "Checksum verified."
 fi
 

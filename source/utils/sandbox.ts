@@ -26,6 +26,15 @@ export function detectSandboxBackend(): SandboxBackend {
 
   if (detectedBackend !== null) return detectedBackend;
 
+  // Windows has no sandbox-exec or bwrap.  Attempting the `/bin/sh` probes
+  // there just spawns two doomed child processes, adding to the child-process
+  // count that triggers Bun's non-deterministic JSC heap-corruption segfault
+  // on Windows (oven-sh/bun#23177, oven-sh/bun#30745).
+  if (platform() === "win32") {
+    detectedBackend = "none";
+    return detectedBackend;
+  }
+
   // Check what's actually available at runtime
   if (canExec("sandbox-exec")) {
     detectedBackend = "seatbelt";
@@ -252,4 +261,19 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
   }
 
   return { ...result, backend };
+}
+
+/**
+ * Throw if no OS-level sandbox backend is available. Used when
+ * `sandboxRequired` is enabled in config or via `--sandbox-required`.
+ */
+export function requireSandbox(): void {
+  const backend = detectSandboxBackend();
+  if (backend === "none") {
+    throw new Error(
+      "Sandbox required but no sandbox backend is available. " +
+      "Install sandbox-exec (macOS) or bubblewrap (Linux), use --sandbox docker, " +
+      "or remove the sandboxRequired setting to run without a sandbox.",
+    );
+  }
 }

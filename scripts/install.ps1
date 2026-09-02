@@ -134,7 +134,7 @@ foreach ($arg in $args) {
         Write-Host "  --version=<tag>    Install a specific version (default: latest)"
         Write-Host "  --dir=<path>       Install directory (default: %LOCALAPPDATA%\agav)"
         Write-Host "  --skip-checksum    Install without verifying the SHA-256 checksum"
-        Write-Host "  --beta               Install the latest pre-release (beta) version"
+        Write-Host "  --beta             Install the latest pre-release (beta) version"
         Write-Host "  --uninstall        Remove agav, keeping your settings and history"
         Write-Host "  --purge            Remove agav and delete %USERPROFILE%\.agav as well"
         Write-Host "  -h, --help         Show this help"
@@ -242,7 +242,25 @@ if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq 
     Write-Host "agav -> ARM64 detected; installing the x64 build (runs under emulation)." -ForegroundColor Cyan
 }
 
-$Target = "windows-$Arch"
+# Detect AVX2 support.  Bun ships two x64 variants: the default build uses
+# AVX2 instructions, and a baseline build uses SSE4.2 only.  CPUs without
+# AVX2 (and some Intel 12th/13th gen hybrid CPUs whose E-cores lack it)
+# crash or misbehave with the AVX2 build.  PF_AVX2_INSTRUCTIONS_AVAILABLE
+# is feature index 40 in kernel32 IsProcessorFeaturePresent.
+$HasAvx2 = $false
+try {
+    Add-Type -MemberDefinition `
+        '[DllImport("kernel32.dll")] public static extern bool IsProcessorFeaturePresent(int feature);' `
+        -Name AgavCpu -Namespace Win32 -ErrorAction Stop
+    $HasAvx2 = [Win32.AgavCpu]::IsProcessorFeaturePresent(40)
+} catch {}
+
+if ($HasAvx2) {
+    $Target = "windows-$Arch"
+} else {
+    $Target = "windows-$Arch-baseline"
+    Write-Host "agav -> AVX2 not detected; installing the baseline build." -ForegroundColor Cyan
+}
 $AssetName = "agav-$Target.exe"
 
 # --- Check existing install ---
@@ -253,6 +271,33 @@ if (Test-Path $FinalPath) {
         Write-Host "agav -> Existing installation found: v$ExistingVer" -ForegroundColor Cyan
         Write-Host "agav -> Upgrading..." -ForegroundColor Cyan
     } catch {}
+}
+
+# This has to stay above the pre-release lookup below, not down with the other
+# helpers. A script is executed top to bottom, and `function` is a statement
+# like any other, so a call placed earlier in the file than the definition hits
+# a "term is not recognized" error rather than resolving late. That is exactly
+# what --beta and AGAV_BETA=1 did on every Windows install.
+function Get-RemoteText {
+    param([Parameter(Mandatory = $true)][string]$Url)
+
+    Add-Type -AssemblyName System.Net.Http
+    $Handler = New-Object System.Net.Http.HttpClientHandler
+    try {
+        $Handler.DefaultProxyCredentials = [System.Net.CredentialCache]::DefaultCredentials
+    } catch {}
+    $Client = New-Object System.Net.Http.HttpClient($Handler)
+    $Client.DefaultRequestHeaders.UserAgent.ParseAdd("agav-installer")
+    $Response = $null
+    try {
+        $Response = $Client.GetAsync($Url).GetAwaiter().GetResult()
+        $Response.EnsureSuccessStatusCode() | Out-Null
+        return $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    } finally {
+        if ($Response) { $Response.Dispose() }
+        $Client.Dispose()
+        $Handler.Dispose()
+    }
 }
 
 # --- Resolve download URL ---
@@ -311,6 +356,7 @@ function Save-FileWithProgress {
     $Response = $null
     $InputStream = $null
     $OutputStream = $null
+    $Hasher = $null
 
     try {
         $Response = $Client.GetAsync($Url, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
@@ -319,6 +365,7 @@ function Save-FileWithProgress {
         $TotalBytes = $Response.Content.Headers.ContentLength
         $InputStream = $Response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
         $OutputStream = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Create)
+        $Hasher = [System.Security.Cryptography.SHA256]::Create()
         $Buffer = New-Object byte[] (64KB)
         $Downloaded = [int64]0
         $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
@@ -330,6 +377,7 @@ function Save-FileWithProgress {
 
         while (($Read = $InputStream.Read($Buffer, 0, $Buffer.Length)) -gt 0) {
             $OutputStream.Write($Buffer, 0, $Read)
+            [void]$Hasher.TransformBlock($Buffer, 0, $Read, $null, 0)
             $Downloaded += $Read
 
             $ElapsedMs = $Stopwatch.ElapsedMilliseconds
@@ -354,8 +402,11 @@ function Save-FileWithProgress {
                 Write-Progress -Activity $Activity -Status $Status
             }
         }
+        [void]$Hasher.TransformFinalBlock([byte[]]::new(0), 0, 0)
+        return [BitConverter]::ToString($Hasher.Hash).Replace("-", "")
     } finally {
         Write-Progress -Activity $Activity -Completed
+        if ($Hasher) { $Hasher.Dispose() }
         if ($OutputStream) { $OutputStream.Dispose() }
         if ($InputStream) { $InputStream.Dispose() }
         if ($Response) { $Response.Dispose() }
@@ -378,40 +429,24 @@ function Expand-GzipFile {
     $Compressed = $null
     $Gzip = $null
     $Output = $null
+    $Hasher = $null
     try {
         $Compressed = [System.IO.File]::OpenRead($Source)
         $Gzip = New-Object System.IO.Compression.GZipStream($Compressed, [System.IO.Compression.CompressionMode]::Decompress)
         $Output = [System.IO.File]::Open($Destination, [System.IO.FileMode]::Create)
+        $Hasher = [System.Security.Cryptography.SHA256]::Create()
         $Buffer = New-Object byte[] (1MB)
         while (($Read = $Gzip.Read($Buffer, 0, $Buffer.Length)) -gt 0) {
             $Output.Write($Buffer, 0, $Read)
+            [void]$Hasher.TransformBlock($Buffer, 0, $Read, $null, 0)
         }
+        [void]$Hasher.TransformFinalBlock([byte[]]::new(0), 0, 0)
+        return [BitConverter]::ToString($Hasher.Hash).Replace("-", "")
     } finally {
+        if ($Hasher) { $Hasher.Dispose() }
         if ($Output) { $Output.Dispose() }
         if ($Gzip) { $Gzip.Dispose() }
         if ($Compressed) { $Compressed.Dispose() }
-    }
-}
-
-function Get-RemoteText {
-    param([Parameter(Mandatory = $true)][string]$Url)
-
-    Add-Type -AssemblyName System.Net.Http
-    $Handler = New-Object System.Net.Http.HttpClientHandler
-    try {
-        $Handler.DefaultProxyCredentials = [System.Net.CredentialCache]::DefaultCredentials
-    } catch {}
-    $Client = New-Object System.Net.Http.HttpClient($Handler)
-    $Client.DefaultRequestHeaders.UserAgent.ParseAdd("agav-installer")
-    $Response = $null
-    try {
-        $Response = $Client.GetAsync($Url).GetAwaiter().GetResult()
-        $Response.EnsureSuccessStatusCode() | Out-Null
-        return $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-    } finally {
-        if ($Response) { $Response.Dispose() }
-        $Client.Dispose()
-        $Handler.Dispose()
     }
 }
 
@@ -428,7 +463,7 @@ $TmpGzFile = "$TmpFile.gz"
 $GotCompressed = $false
 try {
     Save-FileWithProgress -Url "$DownloadUrl.gz" -Destination $TmpGzFile -Activity "Downloading $AssetName.gz"
-    Expand-GzipFile -Source $TmpGzFile -Destination $TmpFile
+    $InlineHash = Expand-GzipFile -Source $TmpGzFile -Destination $TmpFile
     $GotCompressed = $true
 } catch {
     Write-Host "agav -> Compressed download unavailable, falling back to the full binary." -ForegroundColor Yellow
@@ -438,7 +473,7 @@ try {
 
 if (-not $GotCompressed) {
     try {
-        Save-FileWithProgress -Url $DownloadUrl -Destination $TmpFile -Activity "Downloading $AssetName"
+        $InlineHash = Save-FileWithProgress -Url $DownloadUrl -Destination $TmpFile -Activity "Downloading $AssetName"
     } catch {
         # Write-Host, not Write-Error: $ErrorActionPreference is Stop, so a
         # Write-Error here would abort the handler before the cleanup below runs.
@@ -472,7 +507,7 @@ if ($SkipChecksum) {
         exit 1
     }
 
-    $Actual = (Get-FileHash -LiteralPath $TmpFile -Algorithm SHA256).Hash
+    $Actual = $InlineHash
     if ($Actual -ne $Expected.ToUpperInvariant()) {
         Write-Host "Checksum verification failed - refusing to install." -ForegroundColor Red
         Write-Host "Expected: $($Expected.ToUpperInvariant())" -ForegroundColor Red

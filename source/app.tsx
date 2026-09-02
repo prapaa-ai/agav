@@ -1,6 +1,7 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { basename } from "node:path";
-import { Box, Text, Static, useInput, useApp } from "ink";
+import { Box, Text, ScrollBox, Spinner, useInput, useApp, measureElement } from "./ink/index.js";
+import type { DOMElement, ScrollBoxControls, WheelEventData } from "./ink/index.js";
 import MessageList from "./components/message-list.js";
 import type { DisplayMessage } from "./components/message-list.js";
 import StreamingResponse from "./components/streaming-response.js";
@@ -12,7 +13,6 @@ import ToolConfirm from "./components/tool-confirm.js";
 import ToolDetailPanel from "./components/tool-detail-panel.js";
 import PlanDetailPanel from "./components/plan-detail-panel.js";
 import SubagentDisplay from "./components/subagent-display.js";
-import Spinner from "ink-spinner";
 import type { AgavConfig } from "./config/config.js";
 import type { LLMProvider } from "./providers/types.js";
 import { createProvider } from "./providers/registry.js";
@@ -21,6 +21,7 @@ import { useAgent } from "./hooks/use-agent.js";
 import { isInternalUserMessage } from "./agent/internal-prompts.js";
 import { CommandRegistry } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
+import { SkillsTUI } from "./components/skills-tui.js";
 import { saveSession } from "./config/history.js";
 import {
   type Attachment,
@@ -29,6 +30,7 @@ import {
 import { getRandomHint } from "./utils/hints.js";
 import { fileLink } from "./utils/hyperlink.js";
 import { getClipboardImage, type ClipboardImage } from "./utils/clipboard-image.js";
+import { getClipboardText } from "./utils/clipboard-text.js";
 import { useClipboardImageDetector } from "./hooks/use-paste-handler.js";
 import { KeybindingResolver, GLOBAL_ACTIONS, formatKeybinding, formatKeybindings, normalizeKeyEvent, type Keybindings } from "./config/keybindings.js";
 import { getLoopStatus, stopActiveLoop } from "./commands/loop.js";
@@ -67,27 +69,46 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [config, setConfig] = useState(initialConfig);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const activeSideProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
-  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
+  }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const [showToolDetail, setShowToolDetail] = useState(false);
   const [showPlanDetail, setShowPlanDetail] = useState(false);
+  const [showThinking, setShowThinking] = useState(initialConfig.showThinking ?? false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
-  const [inlineTranscript, setInlineTranscript] = useState(false);
+  // Everything above the input prompt is one scrolling document, driven from
+  // here by the scroll keybindings and by wheel events that landed on the
+  // footer. It stays uncontrolled: holding the offset in React state would mean
+  // this component deciding where the end of the content is, which only the
+  // box can measure — and would cost a re-render of the whole app per tick.
+  const docControls = useRef<ScrollBoxControls | null>(null);
+  const [termRows, setTermRows] = useState(process.stdout.rows || 24);
+  const [termCols, setTermCols] = useState(process.stdout.columns || 80);
+  useEffect(() => {
+    const onResize = () => {
+      setTermRows(process.stdout.rows || 24);
+      setTermCols(process.stdout.columns || 80);
+    };
+    process.stdout.on("resize", onResize);
+    return () => { process.stdout.off("resize", onResize); };
+  }, []);
   const [showCompactionSummary, setShowCompactionSummary] = useState(false);
   const [runningSkillName, setRunningSkillName] = useState<string | null>(null);
   const [pickerActive, setPickerActive] = useState(false);
   const [agentsTUIActive, setAgentsTUIActive] = useState(false);
   const agentsTUIResolveRef = useRef<(() => void) | null>(null);
-  const { exit: exitInk } = useApp();
+  const [skillsTUIActive, setSkillsTUIActive] = useState(false);
+  const skillsTUIResolveRef = useRef<(() => void) | null>(null);
+  const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const exit = useCallback(() => {
     stopActiveLoop();
     exitInk();
   }, [exitInk]);
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
+  /** Lets handleSubmit re-sync InputPrompt's caret after rewriting its buffer. */
 
   const {
     messages,
@@ -122,7 +143,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     renameSession,
     sessionId,
     sessionName,
-    transcriptRevision,
+    turnStartTime,
+    lastTurnDurationMs,
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
@@ -306,7 +328,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   useEffect(() => {
     if (!isLoading) {
-      if (focusedSubagentId) setInlineTranscript(true);
       setFocusedSubagentId(null);
     }
   }, [focusedSubagentId, isLoading]);
@@ -322,7 +343,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     }
     if (match.action === "cancel" && isLoading && !pendingConfirmation) {
       if (focusedSubagentId) {
-        setInlineTranscript(true);
         setFocusedSubagentId(null);
       } else {
         cancel();
@@ -330,12 +350,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       return;
     }
     if (match.action === "cycleSubagents" && hasSubagents && !pendingConfirmation) {
-      const focusedIndex = focusedSubagentId
-        ? subagentStates.findIndex((subagent) => subagent.id === focusedSubagentId)
-        : -1;
-      if (focusedSubagentId && (focusedIndex < 0 || focusedIndex >= subagentStates.length - 1)) {
-        setInlineTranscript(true);
-      }
       setFocusedSubagentId((prev) => {
         if (!prev) return subagentStates[0]?.id ?? null;
         const idx = subagentStates.findIndex((s) => s.id === prev);
@@ -361,6 +375,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
       return;
     }
+    if (match.action === "toggleThinking") {
+      setShowThinking((prev) => !prev);
+      return;
+    }
     if (match.action === "retryLastTurn" && !isLoading && !pendingConfirmation && input.length === 0) {
       const lastMessage = [...messages].reverse().find((message) => message.role === "user");
       const lastPrompt = lastMessage?.sourceText ?? lastMessage?.content;
@@ -372,9 +390,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       return;
     }
     if (match.action === "clearScreen" && !pendingConfirmation) {
-      process.stdout.write("\x1Bc");
+      resetDisplay();
       return;
     }
+    if (match.action === "scrollUp") { docControls.current?.scrollBy(5); return; }
+    if (match.action === "scrollDown") { docControls.current?.scrollBy(-5); return; }
+    if (match.action === "scrollTop") { docControls.current?.scrollToTop(); return; }
+    if (match.action === "scrollBottom") { docControls.current?.scrollToBottom(); return; }
     if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && input.length === 0
       && !messages.some((message) => message.role === "tool")) {
       exit();
@@ -387,8 +409,24 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setShowCompactionSummary((prev) => !prev);
     }
     if (key.ctrl && char === "v" && !pendingConfirmation) {
-      getClipboardImage().then((img) => {
-        if (img) handleClipboardImage(img);
+      // Try clipboard image first, then fall back to clipboard text.
+      // This covers terminals (e.g. native PowerShell/cmd) that don't
+      // support bracketed paste mode, where Ctrl+V arrives as a raw
+      // keystroke instead of a paste event.
+      getClipboardImage().then(async (img) => {
+        if (img) {
+          handleClipboardImage(img);
+          return;
+        }
+        const text = await getClipboardText();
+        if (!text) return;
+        if (!text.includes("\n") && /^https?:\/\//.test(text)) {
+          handleShortPaste(text);
+        } else if (text.length >= 50) {
+          handleLargePaste(text);
+        } else {
+          handleShortPaste(text);
+        }
       });
     }
   });
@@ -446,10 +484,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
       if (!trimmed && attachments.length === 0) return;
 
-      // Block non-btw submissions while agent is working
-      if (isLoading) return;
+      const commandName = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
+      const midTurnSafe = new Set(["steer", "help", "loop"]);
+      const isSlashCommand = trimmed.startsWith("/")
+        && attachments.length === 0
+        && (!isLoading || midTurnSafe.has(commandName));
+      if (!isSlashCommand && isLoading) return;
 
-      if (trimmed.startsWith("/") && attachments.length === 0) {
+      if (isSlashCommand) {
         setInput("");
         setShowToolDetail(false);
         setPsResponse(undefined);
@@ -473,16 +515,19 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           clearMessages: () => {
             clearMessages();
             setSystemMessages([]);
-            process.stdout.write("\x1Bc");
+            resetDisplay();
           },
           refreshPlan,
           saveSession: saveNow,
-          refreshDisplay,
+          refreshDisplay: () => {
+            refreshDisplay();
+          },
           loadSession,
           activateSession,
           renameSession,
           currentSessionId: sessionId,
           exit,
+          isLoading,
           getDebugState: () => ({
             tokenUsage,
             loadedPlugins,
@@ -496,9 +541,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           addTokenUsage,
           setRunningSkill: setRunningSkillName,
           setPickerActive,
+          suspendTerminal: suspendTerminalSync,
           showAgentsTUI: (onDone: () => void) => {
             agentsTUIResolveRef.current = onDone;
             setAgentsTUIActive(true);
+          },
+          showSkillsTUI: (onDone: () => void) => {
+            skillsTUIResolveRef.current = onDone;
+            setSkillsTUIActive(true);
           },
         });
 
@@ -540,27 +590,68 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setPsResponse(undefined);
       setSystemMessages([]);
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
+    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, isLoading, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
   );
 
   const displayError = error;
   const allMessages = useMemo(() => {
-    return [{
-      ...BANNER,
-    }, ...messages];
-  }, [config.model, config.provider, messages, repoBranch, sessionId, sessionName]);
+    return [BANNER, ...messages];
+  }, [messages]);
 
-  const toolMessages = messages.filter((m) => m.role === "tool");
+  // Snap the viewport back to the newest message whenever the transcript grows.
+  useEffect(() => { docControls.current?.scrollToBottom(); }, [allMessages.length]);
+
+  const toolMessages = useMemo(() => messages.filter((m) => m.role === "tool"), [messages]);
+
+  // The footer — the prompt or its confirmation dialog, a modal TUI, and the
+  // status bar — is measured rather than guessed. It used to be a flat
+  // `termRows - 8`, but the footer is unbounded: a keybindings dump or a
+  // multi-line prompt pushes the frame taller than the terminal, the terminal
+  // scrolls, and log-update can no longer reach the lines it needs to erase.
+  // That's what shredded the UI as a session grew.
+  const footerRef = useRef<DOMElement | null>(null);
+  const [footerHeight, setFooterHeight] = useState(8);
+
+  useEffect(() => {
+    const measured = measureElement(footerRef.current).height;
+    // Zero means we're being measured before the first layout.
+    if (measured > 0 && measured !== footerHeight) setFooterHeight(measured);
+  });
+
+  const documentHeight = Math.max(3, termRows - footerHeight);
+
+  // Scroll the document wherever the pointer happens to be. ScrollBox has its
+  // own onWheel, but it only ever sees events that hit-test into it — with the
+  // pointer over the prompt or the status bar the event bubbles to this root
+  // instead, and terminal-side scrolling is off while mouse tracking is on.
+  const handleWheel = useCallback((event: WheelEventData) => {
+    const step = event.ctrl ? Math.max(1, Math.floor(documentHeight / 2)) : 3;
+    docControls.current?.scrollBy(event.direction === "up" ? step : -step);
+  }, [documentHeight]);
 
   return (
-    <Box flexDirection="column">
+    // Pinned to the terminal height so the frame can never grow past the screen
+    // even while a measurement is still settling.
+    <Box flexDirection="column" height={termRows} onWheel={handleWheel}>
+      {/*
+        One scrolling document, not a stack of viewports. Everything the user
+        reads lives in here at its natural height and moves together; giving
+        each section its own scrollable band pinned it to a fixed row range, so
+        a streaming reply sat frozen mid-screen while text crawled inside it.
+
+        `stickToBottom={false}` is what keeps that readable while it grows:
+        parked at the bottom the view still follows the tail, but once the user
+        scrolls up the offset moves with the incoming lines so their place stays
+        put instead of drifting.
+      */}
+      <ScrollBox height={documentHeight} stickToBottom={false} controls={docControls}>
       {displayError && (
-        <Box marginBottom={1}>
+        <Box marginBottom={1} flexShrink={0}>
           <Text color="red">Error: {terminalRelativePaths(displayError)}</Text>
         </Box>
       )}
 
-      <MessageList key={inlineTranscript ? "inline" : transcriptRevision} messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} static={!inlineTranscript} />
+      <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} columns={termCols} />
 
       {systemMessages.length > 0 && (
         <Box marginBottom={1} flexDirection="column">
@@ -591,7 +682,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       {runningSkillName && (
         <Box marginBottom={1}>
           <Text dimColor>{"  "}</Text>
-          <Text color="cyan"><Spinner type="dots" /></Text>
+          <Text color="cyan"><Spinner /></Text>
           <Text dimColor> Running skill: {runningSkillName}...</Text>
         </Box>
       )}
@@ -663,7 +754,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             {subagentStates.map((sa, i) => (
               <SubagentDisplay key={sa.id} progress={sa} mode="compact" index={i} />
             ))}
-            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} />
+            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} />
             {hasSubagents && (
               <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cycleSubagents")}: cycle subagents · {formatKeybinding(keybindings, "cancel")}: cancel</Text>
             )}
@@ -671,6 +762,28 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         );
       })()}
 
+      {showToolDetail && toolMessages.length > 0 && (
+        <ToolDetailPanel
+          tools={toolMessages}
+          closeKey={formatKeybinding(keybindings, "toggleToolDetail")}
+        />
+      )}
+
+      {showPlanDetail && activePlan && (
+        <PlanDetailPanel
+          plan={activePlan}
+          closeKey={formatKeybinding(keybindings, "togglePlanDetail")}
+        />
+      )}
+      </ScrollBox>
+
+      {/*
+        The only part of the screen that holds still. Modal TUIs belong here
+        rather than in the document: they own the keyboard while they're up, so
+        scrolling them out of sight would leave the user typing at something
+        they can't see.
+      */}
+      <Box flexDirection="column" flexShrink={0} ref={footerRef}>
       {pendingConfirmation && (
         <ToolConfirm
           toolName={pendingConfirmation.toolName}
@@ -680,14 +793,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           subagentTask={pendingConfirmation.subagentTask}
           keybindings={keybindings}
         />
-      )}
-
-      {showToolDetail && toolMessages.length > 0 && (
-        <ToolDetailPanel tools={toolMessages} closeKey={formatKeybinding(keybindings, "toggleToolDetail")} />
-      )}
-
-      {showPlanDetail && activePlan && (
-        <PlanDetailPanel plan={activePlan} closeKey={formatKeybinding(keybindings, "togglePlanDetail")} />
       )}
 
       {agentsTUIActive && (
@@ -704,6 +809,18 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           config={config}
         />
       )}
+      {skillsTUIActive && (
+        <SkillsTUI
+          onExit={() => {
+            setSkillsTUIActive(false);
+            setPickerActive(false);
+            setInput("");
+            const resolve = skillsTUIResolveRef.current;
+            skillsTUIResolveRef.current = null;
+            resolve?.();
+          }}
+        />
+      )}
 
       {!pendingConfirmation && (
         <Box marginTop={1}><InputPrompt
@@ -715,6 +832,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           onClearAttachments={() => setAttachments([])}
           onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
           disabled={pickerActive}
+          suppressHistory={isLoading}
           commands={[
             { name: "ps", description: "Side query while agent is working" },
             ...commandRegistryRef.current.list().map((c) => ({ name: c.name, description: c.description })),
@@ -740,7 +858,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
         sandboxBackend={getSandboxName()}
         branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
+        turnStartTime={turnStartTime}
+        lastTurnDurationMs={lastTurnDurationMs}
+        isLoading={isLoading}
+        isPaused={!!pendingConfirmation}
       />
+      </Box>
     </Box>
   );
 }

@@ -63,6 +63,12 @@ jobs:
           - target: windows-x64
             os: ubuntu-latest
             ext: .exe
+          # Baseline variant without AVX2 for older CPUs and Intel hybrid
+          # CPUs whose E-cores lack AVX2.  Also sidesteps a class of Bun
+          # segfaults tied to SIMD code paths on Windows.
+          - target: windows-x64-baseline
+            os: ubuntu-latest
+            ext: .exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4.2.2
@@ -80,6 +86,14 @@ jobs:
       # separate `bun install` this used to run wrote an extra entry into
       # package.json mid-release for no gain.
       - run: pnpm install --frozen-lockfile
+      # The bundled skills are Markdown, so `bun build` cannot carry them along
+      # and a compiled binary cannot read them off disk either — it resolves
+      # import.meta.url into Bun's virtual filesystem. They are inlined into a
+      # generated module instead. This job compiles from source directly rather
+      # than through `pnpm build` or build-binary.sh, so it has to regenerate
+      # here too, or every published binary ships whatever text was committed.
+      - name: Generate bundled skills manifest
+        run: node scripts/gen-bundled-skills.mjs
       - name: Build binary
         run: |
           mkdir -p dist

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ink/index.js";
 import type { AgentDefinition, MarketplaceAgent } from "../agents/types.js";
 import type { AgentReadiness, ConfigItem } from "./agents-types.js";
 import { resolveConfigPath, parseFileUrl } from "./agents-types.js";
@@ -17,6 +17,7 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
   const manifest = agent.manifest;
   const hasRequiredConfig = (manifest["required-config"] ?? []).length > 0;
   const isMarketplace = statusLabel === "marketplace";
+  const mcpServers = manifest["mcp-servers"] ?? [];
 
   const agentModelOverride  = runtimeConfig?.["model"];
   const agentEffortOverride = runtimeConfig?.["effort"];
@@ -27,6 +28,7 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
   const providerMatchesModel = (model: string, provider: string): boolean => {
     if (provider === "anthropic" && model.startsWith("claude-")) return true;
     if (provider === "openai" && (model.startsWith("gpt-") || model.startsWith("o1-") || model.startsWith("o3-") || model.startsWith("o4-"))) return true;
+    if (provider === "openrouter") return true;
     if (provider === "gemini" && model.startsWith("gemini-")) return true;
     if (provider === "ollama") return true;
     return false;
@@ -119,6 +121,18 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
               </Box>
             );
           })}
+        </Box>
+      )}
+
+      {mcpServers.length > 0 && (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text bold>MCP Servers ({mcpServers.length}):</Text>
+          {mcpServers.map((srv) => (
+            <Box key={srv.key} marginLeft={2} marginTop={1}>
+              <Text color="cyan">{srv.key}</Text>
+              <Text dimColor> — {srv.command} {(srv.args ?? []).join(" ")}</Text>
+            </Box>
+          ))}
         </Box>
       )}
 
@@ -299,6 +313,7 @@ export function MarketplaceInspectView({ marketplaceAgent, marketplaceUrl, isIns
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cleanupPath: string | undefined;
     const load = async () => {
       try {
         const { loadAgent } = await import("../agents/loader.js");
@@ -306,6 +321,16 @@ export function MarketplaceInspectView({ marketplaceAgent, marketplaceUrl, isIns
         if (marketplaceUrl.startsWith("file://")) {
           const basePath = parseFileUrl(marketplaceUrl);
           agentPath = `${basePath}/${marketplaceAgent.path}`;
+        } else if (marketplaceAgent.files && marketplaceAgent.files.length > 0) {
+          const { downloadAgentFiles } = await import("../agents/installer.js");
+          const agentBaseUrl = `${marketplaceUrl}/${marketplaceAgent.path}`;
+          const downloadResult = await downloadAgentFiles(agentBaseUrl, marketplaceAgent.files);
+          if (!downloadResult.success || !downloadResult.path) {
+            setLoadError("placeholder");
+            return;
+          }
+          agentPath = downloadResult.path;
+          cleanupPath = downloadResult.path;
         } else {
           setLoadError("placeholder");
           return;
@@ -318,6 +343,11 @@ export function MarketplaceInspectView({ marketplaceAgent, marketplaceUrl, isIns
         }
       } catch {
         setLoadError("placeholder");
+      } finally {
+        if (cleanupPath) {
+          const { rm } = await import("node:fs/promises");
+          await rm(cleanupPath, { recursive: true, force: true }).catch(() => {});
+        }
       }
     };
     load();

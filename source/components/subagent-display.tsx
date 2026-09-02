@@ -1,10 +1,10 @@
 import React from "react";
-import { Box, Text } from "ink";
-import Spinner from "ink-spinner";
+import { Box, Text, Spinner } from "../ink/index.js";
 import type { SubagentProgress } from "../agent/subagent-types.js";
 import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
 import { terminalRelativePaths, terminalToolValue } from "../utils/display-path.js";
 import type { DiffLine } from "../utils/diff.js";
+import { renderMarkdown } from "./markdown-text.js";
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -70,7 +70,7 @@ function CompactView({ progress, elapsed, totalTools, prefix }: {
   return (
     <Box>
       <Text dimColor>{"  "}{prefix}</Text>
-      <Text color="cyan"><Spinner type="dots" />{" "}</Text>
+      <Text color="cyan"><Spinner />{" "}</Text>
       <Text bold color="cyan">{progress.title}</Text>
       <Text dimColor> ({elapsed}s{totalTools > 0 ? ` · ${totalTools} tool${totalTools !== 1 ? "s" : ""}` : ""}{tokenSummary})</Text>
     </Box>
@@ -88,7 +88,7 @@ function DetailView({ progress, elapsed }: {
     <Box flexDirection="column">
       <Box>
         {progress.status === "running" ? (
-          <Text color="cyan"><Spinner type="dots" />{" "}</Text>
+          <Text color="cyan"><Spinner />{" "}</Text>
         ) : progress.status === "done" ? (
           <Text color="green">{"✓ "}</Text>
         ) : (
@@ -106,9 +106,9 @@ function DetailView({ progress, elapsed }: {
       {progress.thinkingText ? (
         <Box flexDirection="column" paddingLeft={2} marginTop={1}>
           <Text dimColor>Reasoning summary</Text>
-          <Text dimColor>{terminalRelativePaths(progress.thinkingText.length > 200
+          <Text dimColor>{renderMarkdown(terminalRelativePaths(progress.thinkingText.length > 200
             ? progress.thinkingText.slice(-200).trimStart()
-            : progress.thinkingText)}</Text>
+            : progress.thinkingText))}</Text>
         </Box>
       ) : recentTools.length === 0 && progress.status === "running" ? (
         <Text dimColor>{"  Waiting for model activity..."}</Text>
@@ -130,7 +130,7 @@ function DetailView({ progress, elapsed }: {
             <Box>
               <Text dimColor>{"  "}{branch} </Text>
               {tc.status === "running" ? (
-                <Text color="cyan"><Spinner type="dots" />{" "}</Text>
+                <Text color="cyan"><Spinner />{" "}</Text>
               ) : tc.status === "error" ? (
                 <Text color="red">{"✗ "}</Text>
               ) : (

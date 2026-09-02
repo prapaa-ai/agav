@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { useApp } from "../ink/index.js";
 import type { DisplayMessage } from "../components/message-list.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
 import type { LLMProvider, ContentBlock, InvocationReason, Message } from "../providers/types.js";
@@ -35,6 +36,7 @@ import { loadSkills, getCachedSkills } from "../skills/loader.js";
 import { createSkillTool } from "../skills/tool.js";
 import { createSkillSlashCommand } from "../skills/commands.js";
 import { maybeRunBackgroundImprovement } from "../skills/improvement.js";
+import { drainSteers } from "../commands/steer.js";
 
 let messageId = 0;
 /** Generate incremental display ids so transient UI rows have stable React keys. */
@@ -140,6 +142,8 @@ interface UseAgentReturn {
   sessionId: string | undefined;
   sessionName: string | undefined;
   transcriptRevision: number;
+  turnStartTime: number | null;
+  lastTurnDurationMs: number | null;
 }
 
 /** Own the agent lifecycle, conversation state, tool events, persistence, and confirmations. */
@@ -152,10 +156,28 @@ export function useAgent(
   resumeCompacted?: boolean,
   resumeSessionName?: string,
 ): UseAgentReturn {
+  const { resetDisplay } = useApp();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [streamingText, setStreamingText] = useState("");
   const [thinkingText, setThinkingText] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [turnStartTime, setTurnStartTime] = useState<number | null>(null);
+  const turnStartTimeRef = useRef<number | null>(null);
+  const [lastTurnDurationMs, setLastTurnDurationMs] = useState<number | null>(null);
+  /** Set turn start time in both state (for UI) and ref (for synchronous reads). */
+  const updateTurnStart = useCallback((ts: number | null) => {
+    turnStartTimeRef.current = ts;
+    setTurnStartTime(ts);
+  }, []);
+  /** Finalize the turn timer: compute duration from the ref, then clear both. */
+  const finalizeTurnTimer = useCallback(() => {
+    const start = turnStartTimeRef.current;
+    if (start !== null) {
+      setLastTurnDurationMs(Date.now() - start);
+    }
+    turnStartTimeRef.current = null;
+    setTurnStartTime(null);
+  }, []);
   const [toolCalls, setToolCalls] = useState<ToolCallInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
@@ -193,11 +215,16 @@ export function useAgent(
   conversationRef.current.setModel(config.model);
 
   const refreshDisplay = useCallback(() => {
-    process.stdout.write("\x1Bc");
+    // Erase the screen through Ink rather than writing RIS ourselves.
+    // A hard reset drops the alternate screen buffer, mouse tracking and
+    // bracketed paste, and Ink only arms those on mount — so the app fell back
+    // to the terminal's native scrollback and lost its own wheel scrolling the
+    // first time anything called refreshDisplay().
+    resetDisplay();
     const displayMsgs = messagesToDisplay(conversationRef.current.getMessages());
     setMessages(displayMsgs);
     setTranscriptRevision((revision) => revision + 1);
-  }, []);
+  }, [resetDisplay]);
 
   // Rehydrate both the LLM conversation and visible transcript when resuming a saved session.
   useEffect(() => {
@@ -343,11 +370,18 @@ export function useAgent(
       // Start MCP servers
       if (config.mcpServers) {
         for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
+          // Skip non-server entries: schema metadata keys (description, eg, etc.)
+          // and malformed values. A valid server config must have either `command`
+          // (stdio) or `url` (remote) — anything else is not a real server entry.
+          if (typeof serverConfig !== "object" || serverConfig === null
+            || !("command" in serverConfig || "url" in serverConfig)) {
+            continue;
+          }
           try {
             await mcpManagerRef.current.startServer(name, serverConfig);
             syncMcpState();
-          } catch {
-            // MCP server failed to start — non-fatal
+          } catch (err) {
+            process.stderr.write(`[mcp:${name}] failed to start: ${err instanceof Error ? err.message : String(err)}\n`);
           }
         }
       }
@@ -401,6 +435,9 @@ export function useAgent(
   /** Resolve the oldest pending tool confirmation with the user's decision. */
   const confirmTool = useCallback((choice: ConfirmResult) => {
     if (choice === "always") sessionPermissionModeRef.current = "auto-accept";
+    // Reset the turn timer so it only counts active agent work, not time
+    // spent waiting for the user to approve/deny a tool call.
+    updateTurnStart(Date.now());
     confirmationQueueRef.current.resolve(choice);
   }, []);
 
@@ -483,7 +520,7 @@ export function useAgent(
         setError("No LLM provider configured. Check your API key.");
         return false;
       }
-      if (isLoading || submitPendingRef.current) return false;
+      if (submitPendingRef.current) return false;
 
       const trimmed = input.trim();
       if (!trimmed) return false;
@@ -523,6 +560,8 @@ export function useAgent(
       conversationRef.current.addUserMessage(submittedText, submittedBlocks, visibleText, trimmed, invocationReason);
 
       setIsLoading(true);
+      updateTurnStart(Date.now());
+      setLastTurnDurationMs(null);
       setStreamingText("");
       setToolCalls([]);
 
@@ -730,6 +769,9 @@ export function useAgent(
             permissionMode: sessionPermissionModeRef.current ?? config.permissionMode,
             allowedTools: config.allowedTools,
             hooks: config.hooks,
+            // Only the main conversation's loop drains mid-turn /steer
+            // directives — subagent/skill/agent loops must not consume them.
+            drainSteers,
           });
 
           for await (const event of loop) {
@@ -867,6 +909,7 @@ export function useAgent(
 
               case "turn_complete":
                 setIsLoading(false);
+                finalizeTurnTimer();
                 setSubagentStates([]);
                 setTokenUsage((currentUsage) => {
                   saveSession(
@@ -942,6 +985,19 @@ export function useAgent(
                 }).catch(() => {});
                 break;
 
+              case "steer_applied": {
+                const count = event.directives.length;
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: nextId(),
+                    role: "system",
+                    content: `\x1b[2mDelivered ${count} steer${count === 1 ? "" : "s"} to the running agent.\x1b[0m`,
+                  },
+                ]);
+                break;
+              }
+
               case "error": {
                 const errorMsg = event.error.message || "Unknown error";
                 setMessages((prev) => [
@@ -954,6 +1010,7 @@ export function useAgent(
                   },
                 ]);
                 setIsLoading(false);
+                finalizeTurnTimer();
                 break;
               }
             }
@@ -986,6 +1043,7 @@ export function useAgent(
             ]);
           }
           setIsLoading(false);
+          finalizeTurnTimer();
         }
 
         setStreamingText("");
@@ -1043,5 +1101,7 @@ export function useAgent(
     sessionId,
     sessionName,
     transcriptRevision,
+    turnStartTime,
+    lastTurnDurationMs,
   };
 }

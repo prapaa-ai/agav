@@ -1,6 +1,82 @@
 import { execFile } from "node:child_process";
-import { resolve } from "node:path";
+import { readdir } from "node:fs/promises";
+import { resolve, join } from "node:path";
+import { platform } from "node:os";
 import type { ToolDefinition, ToolResult } from "./types.js";
+
+const SKIP_DIRS = new Set(["node_modules", ".git", "build", "dist", ".next", ".venv", "__pycache__", "coverage"]);
+const MAX_RESULTS = 200;
+
+/** Convert a simple glob pattern like "*.tsx" or "config*" to a RegExp. */
+function globToRegex(glob: string): RegExp {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  return new RegExp(`^${escaped}$`, "i");
+}
+
+/** Pure Node.js recursive find implementation for platforms without find. */
+async function nodeFind(searchPath: string, pattern: RegExp): Promise<string[]> {
+  const results: string[] = [];
+
+  async function walkDir(dir: string): Promise<void> {
+    if (results.length >= MAX_RESULTS) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (results.length >= MAX_RESULTS) return;
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) {
+          await walkDir(fullPath);
+        }
+      } else if (entry.isFile()) {
+        if (pattern.test(entry.name)) {
+          results.push(fullPath);
+        }
+      }
+    }
+  }
+
+  await walkDir(searchPath);
+  return results;
+}
+
+/** Run native find and return output. Rejects if find is not found or not Unix find. */
+function nativeFind(pattern: string, searchPath: string): Promise<{ stdout: string; stderr: string }> {
+  const args = [
+    searchPath,
+    "-name", pattern,
+    "-not", "-path", "*/node_modules/*",
+    "-not", "-path", "*/.git/*",
+    "-not", "-path", "*/build/*",
+    "-not", "-path", "*/dist/*",
+    "-type", "f",
+  ];
+
+  return new Promise((resolve, reject) => {
+    execFile("find", args, { maxBuffer: 200_000, timeout: 15_000 }, (error, stdout, stderr) => {
+      if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        reject(error);
+      } else if (error) {
+        // On Windows, `find` exists but is a completely different command
+        // (string search, not file search). It will error with unexpected args.
+        // Detect this and reject so we fall through to the Node.js impl.
+        if (stderr && /parameter format/i.test(stderr)) {
+          reject(new Error("Windows find.exe is not Unix find"));
+        }
+        resolve({ stdout: stdout || "", stderr: stderr || error.message });
+      } else {
+        resolve({ stdout: stdout || "", stderr: "" });
+      }
+    });
+  });
+}
 
 export const findFilesTool: ToolDefinition = {
   schema: {
@@ -28,28 +104,40 @@ export const findFilesTool: ToolDefinition = {
     const pattern = String(input.pattern);
     const searchPath = resolve(String(input.path ?? "."));
 
-    const args = [
-      searchPath,
-      "-name", pattern,
-      "-not", "-path", "*/node_modules/*",
-      "-not", "-path", "*/.git/*",
-      "-not", "-path", "*/build/*",
-      "-not", "-path", "*/dist/*",
-      "-type", "f",
-    ];
-
-    return new Promise((res) => {
-      execFile("find", args, { maxBuffer: 200_000, timeout: 15_000 }, (error, stdout, stderr) => {
-        if (stdout) {
-          const lines = stdout.split("\n").filter(Boolean);
-          const truncated = lines.length > 200 ? lines.slice(0, 200).join("\n") + `\n... ${lines.length - 200} more files` : stdout.trimEnd();
-          res({ output: truncated, isError: false });
-        } else if (!error) {
-          res({ output: "No files found.", isError: false });
-        } else {
-          res({ output: stderr || error.message, isError: true });
+    // On Windows, always use the Node.js fallback since Unix find is not available.
+    // On Unix, try native find first for speed, fall back to Node.js if not found.
+    if (platform() !== "win32") {
+      try {
+        const result = await nativeFind(pattern, searchPath);
+        if (result.stdout) {
+          const lines = result.stdout.split("\n").filter(Boolean);
+          const truncated = lines.length > MAX_RESULTS
+            ? lines.slice(0, MAX_RESULTS).join("\n") + `\n... ${lines.length - MAX_RESULTS} more files`
+            : result.stdout.trimEnd();
+          return { output: truncated, isError: false };
         }
-      });
-    });
+        if (result.stderr) {
+          return { output: result.stderr, isError: true };
+        }
+        return { output: "No files found.", isError: false };
+      } catch {
+        // find not found — fall through to Node.js implementation
+      }
+    }
+
+    // Node.js fallback (always used on Windows)
+    try {
+      const regex = globToRegex(pattern);
+      const results = await nodeFind(searchPath, regex);
+      if (results.length === 0) {
+        return { output: "No files found.", isError: false };
+      }
+      const output = results.length >= MAX_RESULTS
+        ? results.join("\n") + `\n... ${results.length - MAX_RESULTS} more files`
+        : results.join("\n");
+      return { output, isError: false };
+    } catch (err) {
+      return { output: `Search failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
+    }
   },
 };

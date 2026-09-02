@@ -55,6 +55,7 @@ export interface AgentManifest {
     key: string;     // identifier for this MCP connection
     command: string; // "npx" | "uvx" | "docker" | "http"
     args?: string[]; // e.g. ["-y", "@scope/pkg"] or ["https://endpoint"]
+    env?: Record<string, string>; // environment variables for this server
   }>;
 
   // A2A-specific fields
@@ -103,6 +104,7 @@ export interface MarketplaceAgent {
   tags: string[];
   version: string;
   path: string; // relative path in marketplace repo
+  files?: string[]; // file list for HTTP download (relative to path)
   "tool-count": number;
   "has-destructive-tools": boolean;
 }

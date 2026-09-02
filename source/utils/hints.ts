@@ -11,7 +11,7 @@ const HINTS = [
   "/watch auto-runs commands on file changes",
   "/compact frees up context space",
   "/remember saves notes across sessions",
-  "/history loads a previous session",
+  "/resume loads a previous session",
   "Tab auto-completes slash commands",
   "--auto-accept skips all confirmations",
   "--deny-writes blocks file changes",
@@ -64,6 +64,7 @@ export function getRandomHint(keybindings: Keybindings = DEFAULT_KEYBINDINGS, en
     `${formatKeybinding(keybindings, "toggleToolDetail")} expands tool output details`,
     `${formatKeybinding(keybindings, "togglePlanDetail")} shows the full plan while it runs`,
     `${formatKeybinding(keybindings, "cancel")} cancels a streaming response`,
+    `${formatKeybinding(keybindings, "toggleThinking")} toggles thinking text visibility`,
     // Seatbelt and Bubblewrap are POSIX-only, so Windows resolves to "none".
     // Stating the sandbox unconditionally would promise isolation we do not have.
     detectSandboxBackend() === "none"

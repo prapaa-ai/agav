@@ -14,8 +14,12 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
   stdin.setRawMode(true);
   stdin.resume();
 
-  // Switch to alternate screen buffer and hide cursor
-  process.stdout.write("\x1b[?1049h\x1b[?25l\x1b[H");
+  // Clear the current buffer and hide the cursor. Deliberately not DECSET 1049:
+  // the app is already on the alternate screen, and 1049 is not nestable — the
+  // matching 1049l on the way out would drop the whole app back to the main
+  // buffer, restoring the terminal's native scrollbar for the rest of the
+  // session. The caller suspends Ink around this, so the screen is ours.
+  process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
 
   let totalLinesRendered = 0;
 
@@ -96,12 +100,45 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
   render();
 
   return new Promise((resolve) => {
-    function cleanup() {
+    function restoreRawMode() {
       stdin.setRawMode(wasRaw ?? false);
+    }
+
+    function drainTrailingNewline() {
+      // Some terminals send \r\n for Enter. After handling \r we need to
+      // swallow the trailing \n so it doesn't leak into the next input handler
+      // (e.g. Ink), which would cause a phantom empty submission.
+      // Raw mode must stay active while draining so the \n arrives immediately
+      // instead of being line-buffered in cooked mode.
+      const timer = setTimeout(() => {
+        stdin.removeListener("data", onDrain);
+        restoreRawMode();
+      }, 50);
+      const onDrain = (chunk: Buffer) => {
+        clearTimeout(timer);
+        const s = chunk.toString();
+        if (s !== "\n") {
+          // Not a trailing newline — put it back by re-emitting after
+          // restoring raw mode so downstream handlers see the right state.
+          restoreRawMode();
+          stdin.emit("data", chunk);
+        } else {
+          restoreRawMode();
+        }
+      };
+      stdin.once("data", onDrain);
+    }
+
+    function cleanup(drainLF = false) {
       stdin.removeListener("data", onData);
-      stdin.pause();
-      // Restore main screen buffer and show cursor
-      process.stdout.write("\x1b[?1049l\x1b[?25h");
+      if (drainLF) {
+        // Defer raw mode restoration until the trailing \n is drained
+        drainTrailingNewline();
+      } else {
+        restoreRawMode();
+      }
+      // Leave the screen blank; whoever suspended Ink repaints on resume.
+      process.stdout.write("\x1b[2J\x1b[H");
     }
 
     function onData(data: Buffer) {
@@ -113,7 +150,16 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
         return;
       }
 
-      if (key === "\r" || key === "\n") {
+      // Handle Enter: \r, \n, or \r\n as a single chunk.
+      // Only drain a trailing \n when we got a bare \r — if the terminal
+      // delivered \r\n together the newline is already consumed.
+      if (key === "\r") {
+        cleanup(true);
+        resolve(items[selected]!);
+        return;
+      }
+
+      if (key === "\n" || key === "\r\n") {
         cleanup();
         resolve(items[selected]!);
         return;

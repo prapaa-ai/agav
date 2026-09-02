@@ -64,7 +64,9 @@ describe("skills/commands", () => {
       addTokenUsage: vi.fn(),
       setRunningSkill: vi.fn(),
       setPickerActive: vi.fn(),
+      suspendTerminal: vi.fn(() => vi.fn()),
       showAgentsTUI: vi.fn(),
+      showSkillsTUI: vi.fn(),
     });
 
     const [, passedArgs, deps] = vi.mocked(executeSkill).mock.calls[0]!;

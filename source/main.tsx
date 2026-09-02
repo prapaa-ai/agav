@@ -1,12 +1,12 @@
 import React from "react";
-import { render } from "ink";
+import { render } from "./ink/index.js";
 import App from "./app.js";
 import { isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
 import { createProvider } from "./providers/registry.js";
 import type { LLMProvider } from "./providers/types.js";
 import { buildSystemPrompt } from "./utils/system-prompt.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
-import { loadSessionState, markCleanExit } from "./config/session-state.js";
+import { loadSessionState, markCleanExit, markCleanExitSync } from "./config/session-state.js";
 import { loadTheme } from "./config/theme.js";
 import { ConversationState } from "./agent/conversation.js";
 import { runAgentLoop } from "./agent/loop.js";
@@ -358,7 +358,7 @@ export async function main() {
     $ cat file | agav -P "explain this"
 
   Options
-    --provider, -p       LLM provider: anthropic, openai, gemini, vertex-ai, or ollama (default: anthropic)
+    --provider, -p       LLM provider: anthropic, openai, openrouter, gemini, vertex-ai, or ollama (default: anthropic)
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
     --effort             Reasoning effort: low, medium, high, or max (default: high)
     --ollama-host        Ollama host (default: localhost)
@@ -453,7 +453,7 @@ export async function main() {
   if (typeof flags.provider === "string") {
     const p = flags.provider;
     if (!isProviderName(p)) {
-      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "gemini", "vertex-ai", or "ollama".`);
+      console.error(`Unknown provider: ${p}. Use "anthropic", "openai", "openrouter", "gemini", "vertex-ai", or "ollama".`);
       process.exit(1);
     }
     cliProvider = p;
@@ -689,7 +689,7 @@ export async function main() {
 
   // Mark clean exits so crash recovery only offers truly interrupted sessions.
   process.on("exit", () => {
-    markCleanExit();
+    markCleanExitSync();
     stopAllA2AAgents();
   });
   process.on("SIGINT", async () => {
@@ -713,13 +713,20 @@ export async function main() {
 
   const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={resumeSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} />, {
     exitOnCtrlC: true,
-    // Detection already happened, so pin the mode instead of letting Ink query a
-    // second time. `disambiguateEscapeCodes` alone is deliberate: it is what makes
-    // Shift+Enter distinguishable, and it avoids the key-release events that the
-    // reportEventTypes flag would deliver as phantom presses.
+    // Alt-screen keeps the UI self-contained (no scrollback pollution, no
+    // flicker on terminals without DEC 2026). In-app scrolling is handled by
+    // the ScrollBox viewport + mouse wheel, so native scrollback isn't needed.
+    alternateScreen: true,
     kittyKeyboard: { mode: enhancedKeyboard ? "enabled" : "disabled", flags: ["disambiguateEscapeCodes"] },
   });
 
   await waitUntilExit();
+  stopAllA2AAgents();
   await showResumeHint();
+
+  // Ensure the process exits even if stray handles (timers, sockets, etc.)
+  // are still referenced.  The "exit" event handler above will run
+  // synchronously when process.exit() is called, so markCleanExitSync()
+  // and stopAllA2AAgents() still fire.
+  process.exit(0);
 }

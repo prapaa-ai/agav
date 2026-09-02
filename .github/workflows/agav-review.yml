@@ -12,6 +12,7 @@ permissions:
 jobs:
   review:
     name: AI Code Review
+    if: github.event.pull_request.head.repo.full_name == github.event.pull_request.base.repo.full_name
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -34,13 +35,39 @@ jobs:
           gh release download --repo ${{ github.repository }} --pattern 'agav-linux-x64' --dir /tmp
           install -m 755 /tmp/agav-linux-x64 /usr/local/bin/agav
 
-      - name: Get PR diff
+      - name: Check diff size
+        id: diff-size
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          gh pr diff ${{ github.event.pull_request.number }} > /tmp/pr-diff.txt
+          FILE_COUNT=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files --paginate --jq 'length' | paste -sd+ - | bc)
+          echo "files=$FILE_COUNT" >> "$GITHUB_OUTPUT"
+          if [ "$FILE_COUNT" -gt 300 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping AI review — PR has $FILE_COUNT files (limit: 300)"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Get PR diff
+        id: get-diff
+        if: steps.diff-size.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          # `gh pr diff` refuses a diff carrying raw terminal escapes unless
+          # asked, since printing one to a terminal is an injection vector.
+          # This is a terminal app: escapes turn up in its sources and tests as
+          # a matter of course, and the diff goes to a file, not a terminal.
+          if ! gh pr diff --allow-escape-sequences ${{ github.event.pull_request.number }} > /tmp/pr-diff.txt 2>/tmp/pr-diff-err.txt; then
+            echo "::notice::Skipping AI review — could not fetch PR diff: $(cat /tmp/pr-diff-err.txt)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Review with Agav
+        if: steps.diff-size.outputs.skip != 'true' && steps.get-diff.outputs.skip != 'true'
         timeout-minutes: 3
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

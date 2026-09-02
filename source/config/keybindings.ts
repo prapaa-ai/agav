@@ -6,6 +6,7 @@ export type KeybindingAction =
   | "cancel"
   | "toggleToolDetail"
   | "togglePlanDetail"
+  | "toggleThinking"
   | "cycleSubagents"
   | "newline"
   | "submit"
@@ -19,6 +20,10 @@ export type KeybindingAction =
   | "openCommandPalette"
   | "showKeybindings"
   | "clearScreen"
+  | "scrollUp"
+  | "scrollDown"
+  | "scrollTop"
+  | "scrollBottom"
   | "exit";
 
 export type Keybindings = Record<KeybindingAction, string[]>;
@@ -27,6 +32,7 @@ const ACTIONS: KeybindingAction[] = [
   "cancel",
   "toggleToolDetail",
   "togglePlanDetail",
+  "toggleThinking",
   "cycleSubagents",
   "newline",
   "submit",
@@ -40,6 +46,10 @@ const ACTIONS: KeybindingAction[] = [
   "openCommandPalette",
   "showKeybindings",
   "clearScreen",
+  "scrollUp",
+  "scrollDown",
+  "scrollTop",
+  "scrollBottom",
   "exit",
 ];
 
@@ -50,7 +60,8 @@ const ACTIONS: KeybindingAction[] = [
  */
 export const GLOBAL_ACTIONS: KeybindingAction[] = [
   "cancel", "interrupt", "cycleSubagents", "toggleToolDetail", "togglePlanDetail",
-  "retryLastTurn", "showKeybindings", "clearScreen", "exit",
+  "toggleThinking", "retryLastTurn", "showKeybindings", "clearScreen",
+  "scrollUp", "scrollDown", "scrollTop", "scrollBottom", "exit",
 ];
 
 export const PROMPT_ACTIONS: KeybindingAction[] = [
@@ -65,6 +76,7 @@ export const DEFAULT_KEYBINDINGS: Keybindings = {
   // works, so an unmodified letter is typed into it instead of reaching a
   // shortcut. Ctrl+G because Ctrl+V is the clipboard-image paste.
   togglePlanDetail: ["ctrl+g"],
+  toggleThinking: ["ctrl+t"],
   cycleSubagents: ["tab"],
   // Shift+Enter only survives an enhanced keyboard protocol; the other two are
   // the fallbacks every terminal can send. See normalizeKeyEvent below.
@@ -80,6 +92,10 @@ export const DEFAULT_KEYBINDINGS: Keybindings = {
   openCommandPalette: ["ctrl+k ctrl+p"],
   showKeybindings: ["ctrl+k ctrl+s"],
   clearScreen: ["ctrl+l"],
+  scrollUp: ["ctrl+up", "shift+up"],
+  scrollDown: ["ctrl+down", "shift+down"],
+  scrollTop: ["shift+meta+up"],
+  scrollBottom: ["shift+meta+down"],
   exit: ["ctrl+q"],
 };
 
@@ -148,6 +164,37 @@ interface InkKey {
 /** `CSI 27 ; modifiers ; codepoint ~` — xterm's `modifyOtherKeys=2` encoding. */
 const XTERM_OTHER_KEY_RE = /^\x1b?\[27;(\d+);(\d+)~$/;
 
+/**
+ * Mouse reports leak in when the terminal (or a multiplexer above it) has mouse
+ * tracking on. Ink cannot parse them, so they would land in the prompt as text.
+ *
+ * The leading ESC is optional for the same reason it is on `XTERM_OTHER_KEY_RE`:
+ * Ink strips one ESC off the front of a chunk it could not resolve, so the first
+ * report in a chunk arrives without it while any that follow keep theirs.
+ *
+ *   - SGR (1006): `CSI < Cb ; Cx ; Cy M|m`
+ *   - Legacy (1000): `CSI M` followed by three encoded bytes
+ */
+const SGR_MOUSE_RE = /^\x1b?\[<\d+;\d+;\d+[Mm]/;
+const LEGACY_MOUSE_RE = /^\x1b?\[M[\s\S]{3}/;
+
+/**
+ * Drop every mouse report at the head of `input` and return what is left.
+ *
+ * Wheel reports are deliberately *not* turned into arrow keys. Ink renders to
+ * the normal buffer, so the terminal's own scrollback already handles the
+ * wheel; synthesising arrows would instead cycle the prompt history on scroll,
+ * which is the bug this filter exists to stop.
+ */
+function stripMouseReports(input: string): string {
+  let rest = input;
+  for (;;) {
+    const match = SGR_MOUSE_RE.exec(rest) ?? LEGACY_MOUSE_RE.exec(rest);
+    if (!match) return rest;
+    rest = rest.slice(match[0].length);
+  }
+}
+
 /** Overlay `patch` on an Ink key event without losing fields Ink adds beyond InkKey. */
 function patchKey<K extends InkKey>(key: K, patch: Partial<InkKey>): K {
   return { ...key, ...patch } as K;
@@ -170,6 +217,9 @@ function patchKey<K extends InkKey>(key: K, patch: Partial<InkKey>): K {
  */
 export function normalizeKeyEvent<K extends InkKey>(input: string, key: K): { input: string; key: K } {
   if (input === "\n") return { input: "j", key: patchKey(key, { ctrl: true }) };
+
+  const withoutMouse = stripMouseReports(input);
+  if (withoutMouse !== input) return { input: withoutMouse, key };
 
   const otherKey = XTERM_OTHER_KEY_RE.exec(input);
   if (!otherKey) return { input, key };

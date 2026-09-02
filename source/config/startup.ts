@@ -7,6 +7,8 @@ export type ProviderName = AgavConfig["provider"];
 export const PROVIDERS: readonly ProviderName[] = [
   "anthropic",
   "openai",
+  "openrouter",
+  "nvidia",
   "gemini",
   "vertex-ai",
   "ollama",
@@ -15,6 +17,8 @@ export const PROVIDERS: readonly ProviderName[] = [
 const DEFAULT_MODELS: Record<ProviderName, string> = {
   anthropic: "claude-sonnet-4-20250514",
   openai: "gpt-5.4-mini",
+  openrouter: "openrouter/auto",
+  nvidia: "nvidia/nemotron-3.5-lightning-30b-a3b",
   gemini: "gemini-3.5-flash-lite",
   "vertex-ai": "vertex/gemini-3.5-flash",
   ollama: "",
@@ -79,6 +83,8 @@ export function hasProviderConfiguration(config: AgavConfig, provider: ProviderN
   switch (provider) {
     case "anthropic": return Boolean(config.anthropicApiKey);
     case "openai": return Boolean(config.openaiApiKey);
+    case "openrouter": return Boolean(config.openrouterApiKey);
+    case "nvidia": return Boolean(config.nvidiaApiKey);
     case "gemini": return Boolean(config.geminiApiKey);
     case "vertex-ai": return Boolean(config.vertexAICredentialsPath);
     case "ollama": return true;
@@ -121,6 +127,8 @@ export function providerSetupHints(): string {
     "  Set one of:",
     `    ${setEnvHint("ANTHROPIC_API_KEY", "sk-ant-...")}`,
     `    ${setEnvHint("OPENAI_API_KEY", "sk-...")}`,
+    `    ${setEnvHint("OPENROUTER_API_KEY", "sk-or-v1-...")}`,
+    `    ${setEnvHint("NVIDIA_API_KEY", "nvapi-...")}`,
     `    ${setEnvHint("GEMINI_API_KEY", "...")}`,
     `    ${setEnvHint("VERTEX_AI_CREDENTIALS_PATH", examplePath("path", "to", "service-account.json"))}`,
     "  Or start Ollama: agav --provider ollama",
@@ -140,6 +148,12 @@ export function providerConfigurationError(config: AgavConfig): string | null {
     case "openai":
       return config.openaiApiKey ? null
         : `OpenAI API key not found. Run ${setEnvHint("OPENAI_API_KEY", "sk-...")} or add it to ${agavHomePath("config.json")}`;
+    case "openrouter":
+      return config.openrouterApiKey ? null
+        : `OpenRouter API key not found. Run ${setEnvHint("OPENROUTER_API_KEY", "sk-or-v1-...")} or add it to ${agavHomePath("config.json")}`;
+    case "nvidia":
+      return config.nvidiaApiKey ? null
+        : `NVIDIA API key not found. Run ${setEnvHint("NVIDIA_API_KEY", "nvapi-...")} or add it to ${agavHomePath("config.json")}`;
     case "gemini":
       return config.geminiApiKey ? null
         : `Gemini API key not found. Run ${setEnvHint("GEMINI_API_KEY", "...")} or add it to ${agavHomePath("config.json")}`;

@@ -1,0 +1,115 @@
+trigger:
+  branches:
+    include:
+      - none
+
+parameters:
+  - name: environment
+    displayName: Deployment Environment
+    type: string
+    default: dev
+    values:
+      - dev
+
+  - name: armServiceConnection
+    displayName: Azure Resource Manager Service Connection
+    type: string
+    default: 'arm-acr-datservice-eastus2'
+
+  - name: acrName
+    displayName: Azure Container Registry Name
+    type: string
+    default: 'datserviceeastus2'
+
+  - name: acrResourceGroup
+    displayName: Resource Group of ACR
+    type: string
+    default: 'rg-aks-dev-eus2-gpupoc'
+
+  - name: dockerImageName
+    displayName: Docker Image Name
+    type: string
+    default: 'agav-docs'
+
+  - name: projectPath
+    displayName: Project Path
+    type: string
+    default: './docs'
+
+variables:
+  acrName: ${{ parameters.acrName }}
+  acrResourceGroup: ${{ parameters.acrResourceGroup }}
+  imageRepository: ${{ parameters.dockerImageName }}
+  tag: '$(Build.BuildId)'
+  fullImageName: '${{ parameters.acrName }}.azurecr.io/${{ parameters.dockerImageName }}:$(Build.BuildId)'
+
+stages:
+  - stage: BuildAndPush
+    displayName: Build and Push Docker Image
+    jobs:
+      - job: Build
+        displayName: Build and Push Docker Image
+        pool:
+          name: 'azdo-dat-service-eastus2-agentpool'
+
+        steps:
+          - checkout: self
+            displayName: Checkout Source Code
+
+          - script: |
+              if ! command -v az &> /dev/null; then
+                echo "Azure CLI not found, installing..."
+                sudo apt-get update -y
+                curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+              else
+                echo "Azure CLI already installed: $(az --version | head -1)"
+              fi
+            displayName: Ensure Azure CLI
+
+          - script: |
+              if ! command -v docker &> /dev/null; then
+                echo "Docker not found, installing..."
+                curl -fsSL https://get.docker.com | sudo sh
+              else
+                echo "Docker already installed: $(docker --version)"
+              fi
+              sudo usermod -aG docker $(whoami)
+              sudo chmod 666 /var/run/docker.sock
+            displayName: Ensure Docker
+
+          - script: |
+              docker build \
+                -t $(fullImageName) \
+                -f Dockerfile \
+                .
+            displayName: Build Docker Image
+
+          - task: AzureCLI@2
+            displayName: Login to ACR via Managed Identity
+            inputs:
+              azureSubscription: '${{ parameters.armServiceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az acr login --name $(acrName)
+
+          - script: |
+              docker push $(fullImageName)
+            displayName: Push Image to ACR
+
+          - script: |
+              echo ""
+              echo "=============================================="
+              echo "         IMAGE PUSH SUMMARY"
+              echo "=============================================="
+              printf "%-20s %s\n" "Registry:"     "$(acrName).azurecr.io"
+              printf "%-20s %s\n" "Repository:"   "$(imageRepository)"
+              printf "%-20s %s\n" "Tag:"          "$(tag)"
+              printf "%-20s %s\n" "Full Image:"   "$(fullImageName)"
+              printf "%-20s %s\n" "Environment:"  "${{ parameters.environment }}"
+              printf "%-20s %s\n" "Build ID:"     "$(Build.BuildId)"
+              printf "%-20s %s\n" "Branch:"       "$(Build.SourceBranchName)"
+              printf "%-20s %s\n" "Triggered by:" "$(Build.RequestedFor)"
+              echo "=============================================="
+              echo ""
+            displayName: Print Build Summary

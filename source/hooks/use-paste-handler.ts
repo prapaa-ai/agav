@@ -1,4 +1,4 @@
-import { usePaste } from "ink";
+import { usePaste } from "../ink/index.js";
 import { getClipboardImage, type ClipboardImage } from "../utils/clipboard-image.js";
 
 const PASTE_THRESHOLD = 50;
@@ -14,6 +14,8 @@ export function useClipboardImageDetector(
       getClipboardImage().then((img) => {
         if (img) onImage(img);
       });
+    } else if (!text.includes("\n") && /^https?:\/\//.test(text) && onInsertRaw) {
+      onInsertRaw(text);
     } else if (text.length >= PASTE_THRESHOLD && onText) {
       onText(text);
     } else if (onInsertRaw) {

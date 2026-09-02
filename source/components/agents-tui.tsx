@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text, useInput, usePaste } from "ink";
+import { Box, Text, useInput, usePaste } from "../ink/index.js";
 import { mkdir } from "node:fs/promises";
 import { loadAgents } from "../agents/loader.js";
-import { setAgentEnabled } from "../agents/agent-registry.js";
-import { uninstallAgent } from "../agents/installer.js";
+import { setAgentEnabled, loadRegistry } from "../agents/agent-registry.js";
+import type { AgentRegistryEntry } from "../agents/types.js";
+import { deleteAgentWithTemplate } from "../agents/agent-lifecycle.js";
 import { loadAgentConfig, saveAgentConfig } from "../agents/credentials.js";
 import { implementAgentTools } from "../agents/tool-gen.js";
+import { wheelSelect, stepIndex } from "./wheel-select.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type {
   Tab, ListView, AgentsTUIProps, ReadinessMap,
@@ -17,6 +19,7 @@ import { useSearch, filterInstalledAgents } from "./agents-search.js";
 import { ListTab } from "./agents-list.js";
 import { InspectView, ConfigEditView } from "./agents-inspect.js";
 import { MarketplaceTab } from "./agents-marketplace.js";
+import { CreateTab } from "./agents-create.js";
 
 export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   const [activeTab, setActiveTab] = useState<Tab>("list");
@@ -38,6 +41,12 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   const [configPickerItems, setConfigPickerItems]   = useState<string[]>([]);
   const [configPickerIndex, setConfigPickerIndex]   = useState(0);
   const [runtimeConfigs, setRuntimeConfigs]       = useState<Record<string, Record<string, string>>>({});
+
+  const [configEntryPoint, setConfigEntryPoint]   = useState<"list" | "inspect">("inspect");
+  const [marketplaceBusy, setMarketplaceBusy]     = useState(false);
+  const [createBusy, setCreateBusy]               = useState(false);
+
+  const [registryEntries, setRegistryEntries]     = useState<Record<string, AgentRegistryEntry>>({});
 
   const [implementingTools, setImplementingTools] = useState(false);
   const [implementStatus, setImplementStatus]     = useState<string | null>(null);
@@ -93,6 +102,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
       .catch(() => {
         setLoading(false);
       });
+    loadRegistry().then((reg) => setRegistryEntries(reg.agents));
   }, []);
 
   const reloadAgents = async () => {
@@ -104,6 +114,34 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     setLoading(false);
     computeReadiness(loaded);
     loadAllRuntimeConfigs(loaded);
+    loadRegistry().then((reg) => setRegistryEntries(reg.agents));
+  };
+
+  const enterConfigView = async (agent: AgentDefinition, from: "list" | "inspect") => {
+    const agentKey = agent.alias || agent.manifest.name;
+    const existingConfig = await loadAgentConfig(resolveConfigDir(agent));
+    setRuntimeConfigs((prev) => ({ ...prev, [agentKey]: existingConfig }));
+    setConfigEditIndex(0);
+    setConfigEditKey("");
+    setConfigEditBuffer("");
+    setConfigEditing(false);
+    setConfigSavedKeys({});
+    setConfigError(null);
+    setConfigEntryPoint(from);
+    setListView("config");
+  };
+
+  const handleInstallComplete = () => {
+    setActiveTab("list");
+    setSelectedIndex(0);
+    setListView("list");
+    setRemoveStatus(null);
+  };
+
+  const handleCreateComplete = () => {
+    setActiveTab("list");
+    setSelectedIndex(0);
+    setListView("list");
   };
 
   const { searchQuery: listSearch, searching: listSearching, handleSearchKey: handleListSearch } = useSearch();
@@ -111,9 +149,11 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
 
   useInput(async (input, key) => {
     const isEditingConfig = listView === "config" && (configEditing || configPickerActive);
-    if (!listSearching && !isEditingConfig && (input === "1" || input === "2")) {
+    if (!listSearching && !isEditingConfig && !marketplaceBusy && !createBusy && (input === "1" || input === "2" || input === "3")) {
+      setRemoveStatus(null);
       if (input === "1") { setActiveTab("list"); setSelectedIndex(0); setListView("list"); }
       else if (input === "2") { setActiveTab("marketplace"); setSelectedIndex(0); }
+      else if (input === "3") { setActiveTab("create"); }
       return;
     }
 
@@ -124,10 +164,10 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
             const agent = filteredAgents[selectedIndex];
             if (agent) {
               const agentKey = agent.alias || agent.manifest.name;
-              const destination = agent.origin === "project" ? "project" : "global";
-              const result = await uninstallAgent(agentKey, destination);
+              const entry = registryEntries[agentKey];
+              const result = await deleteAgentWithTemplate(agent, { sourceUrl: entry?.sourceUrl });
               if (result.success) {
-                setRemoveStatus(`Removed ${agentKey}`);
+                setRemoveStatus(`Removed ${agentKey}${result.savedTemplate ? " (saved as template)" : ""}`);
                 setSelectedIndex(Math.max(0, selectedIndex - 1));
                 const { getCachedAgents, setCachedAgents } = await import("../agents/loader.js");
                 setCachedAgents(getCachedAgents().filter((a) => (a.alias || a.manifest.name) !== agentKey));
@@ -162,6 +202,8 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           await reloadAgents();
         } else if (input === "i" && filteredAgents[selectedIndex]) {
           setListView("inspect");
+        } else if (input === "c" && filteredAgents[selectedIndex]) {
+          await enterConfigView(filteredAgents[selectedIndex]!, "list");
         } else if (input === "d" && filteredAgents[selectedIndex]) {
           const agent = filteredAgents[selectedIndex]!;
           if (agent.origin === "bundled") {
@@ -179,16 +221,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
         if (input === "f" && agent && provider && config && agent.origin === "global" && hasTODOTools) {
           runImplementTools(agent);
         } else if (input === "e" && agent) {
-          const agentKey = agent.alias || agent.manifest.name;
-          const existingConfig = await loadAgentConfig(resolveConfigDir(agent));
-          setRuntimeConfigs((prev) => ({ ...prev, [agentKey]: existingConfig }));
-          setConfigEditIndex(0);
-          setConfigEditKey("");
-          setConfigEditBuffer("");
-          setConfigEditing(false);
-          setConfigSavedKeys({});
-          setConfigError(null);
-          setListView("config");
+          await enterConfigView(agent, "inspect");
         } else if (key.escape || input === "b") {
           setListView("list");
         }
@@ -234,14 +267,16 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           } else if (key.return) {
             await saveConfigValue(configEditBuffer);
             setConfigEditing(false);
-          } else if (key.backspace || key.delete) {
+          } else if (key.delete) {
+            setConfigEditBuffer("");
+          } else if (key.backspace) {
             setConfigEditBuffer((b) => b.slice(0, -1));
           } else if (input && input.length === 1) {
             setConfigEditBuffer((b) => b + input);
           }
         } else {
           if (key.escape) {
-            setListView("inspect"); setConfigError(null);
+            setListView(configEntryPoint); setConfigError(null);
           } else if (key.upArrow) {
             setConfigEditIndex((i) => Math.max(0, i - 1)); setConfigError(null);
           } else if (key.downArrow) {
@@ -327,6 +362,12 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
 
   const selectedAgent = filteredAgents[selectedIndex];
 
+  const handleListWheel = wheelSelect((delta) => {
+    if (confirmingRemove) return;
+    setSelectedIndex((i) => stepIndex(i, delta, filteredAgents.length));
+    setRemoveStatus(null);
+  });
+
   return (
     <Box flexDirection="column" padding={1}>
       <Box marginBottom={1}>
@@ -342,19 +383,26 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           [2] Marketplace
         </Text>
         <Text> </Text>
+        <Text color={activeTab === "create" ? "cyan" : "gray"}>
+          [3] Create
+        </Text>
       </Box>
 
       {activeTab === "list" && listView === "list" && (
-        <ListTab
-          agents={filteredAgents}
-          allAgents={agents}
-          selectedIndex={selectedIndex}
-          searchQuery={listSearch}
-          searching={listSearching}
-          confirmingRemove={confirmingRemove}
-          removeStatus={removeStatus}
-          readinessMap={readinessMap}
-        />
+        // Scoped to the list rather than the whole hub: the Create wizard and
+        // the Marketplace tab own their own wheel behaviour.
+        <Box flexDirection="column" onWheel={handleListWheel}>
+          <ListTab
+            agents={filteredAgents}
+            allAgents={agents}
+            selectedIndex={selectedIndex}
+            searchQuery={listSearch}
+            searching={listSearching}
+            confirmingRemove={confirmingRemove}
+            removeStatus={removeStatus}
+            readinessMap={readinessMap}
+          />
+        </Box>
       )}
       {activeTab === "list" && listView === "inspect" && selectedAgent && (
         <Box flexDirection="column">
@@ -398,13 +446,28 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           onReloadAgents={reloadAgents}
           onExit={onExit}
           installedAgents={new Map(agents.map((a) => [a.alias || a.manifest.name, { origin: a.origin, version: a.manifest.version }]))}
+          onBusyChange={setMarketplaceBusy}
+          onInstallComplete={handleInstallComplete}
+        />
+      )}
+      {activeTab === "create" && (
+        <CreateTab
+          onReloadAgents={reloadAgents}
+          onExit={onExit}
+          onBusyChange={setCreateBusy}
+          onCreateComplete={handleCreateComplete}
+          provider={provider}
+          config={config}
+          agents={agents}
+          registryEntries={registryEntries}
+          installedAgents={new Map(agents.map((a) => [a.alias || a.manifest.name, { origin: a.origin, version: a.manifest.version }]))}
         />
       )}
 
       <Box marginTop={1} borderStyle="single" borderTop paddingTop={1}>
         {activeTab === "list" && listView === "list" && (
           <Text dimColor>
-            ↑↓: Navigate | ENTER: Toggle | i: Inspect | d: Remove | s: Search | ESC: Exit/clear
+            ↑↓: Navigate | ENTER: Toggle | i: Inspect | c: Configure | d: Remove | s: Search | ESC: Exit/clear
           </Text>
         )}
         {activeTab === "list" && listView === "inspect" && (
@@ -421,12 +484,15 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
             {configPickerActive
               ? "↑↓: Navigate | ENTER: Select | ESC: Cancel"
               : configEditing
-              ? "Type value (blank = inherit) | ENTER: Save | ESC: Cancel"
-              : "↑↓: Navigate | ENTER: Edit value | ESC: Back to inspect"}
+              ? "Type value | DEL: Clear | ENTER: Save | ESC: Cancel"
+              : `↑↓: Navigate | ENTER: Edit value | ESC: Back to ${configEntryPoint}`}
           </Text>
         )}
         {activeTab === "marketplace" && (
           <Text dimColor>↑↓: Navigate | ←→: Page | ENTER: Install | u: Update | i: Inspect | s: Search | r: Refresh | ESC: Exit/clear</Text>
+        )}
+        {activeTab === "create" && (
+          <Text dimColor>Create wizard — follow the step prompts above</Text>
         )}
       </Box>
     </Box>

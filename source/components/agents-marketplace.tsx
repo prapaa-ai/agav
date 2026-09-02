@@ -1,20 +1,26 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput } from "../ink/index.js";
 import type { MarketplaceAgent } from "../agents/types.js";
 import { installAgent, uninstallAgent } from "../agents/installer.js";
 import { getDefaultMarketplaceUrl } from "../config/config.js";
+import { agavHomePath } from "../utils/shell-hints.js";
 import { parseFileUrl } from "./agents-types.js";
 import { useSearch, filterMarketplaceAgents, SearchBar } from "./agents-search.js";
 import { MarketplaceInspectView } from "./agents-inspect.js";
+import { wheelSelect, stepIndex } from "./wheel-select.js";
 
 export function MarketplaceTab({
   onReloadAgents,
   onExit,
   installedAgents,
+  onBusyChange,
+  onInstallComplete,
 }: {
   onReloadAgents: () => Promise<void>;
   onExit: () => void;
   installedAgents: Map<string, { origin: string; version: string }>;
+  onBusyChange?: (busy: boolean) => void;
+  onInstallComplete?: (agentName: string) => void;
 }) {
   const [marketplaceAgents, setMarketplaceAgents] = useState<MarketplaceAgent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -27,6 +33,13 @@ export function MarketplaceTab({
   const [reinstallCandidate, setReinstallCandidate] = useState<{ agent: MarketplaceAgent; destination: "global" | "project" } | null>(null);
   const [resolvedMarketplaceUrl, setResolvedMarketplaceUrl] = useState("");
   const { searchQuery, searching, handleSearchKey } = useSearch();
+
+  useEffect(() => {
+    onBusyChange?.(Boolean(
+      pendingInstallAgent || reinstallCandidate || inspecting || searching || installing
+    ));
+    return () => onBusyChange?.(false);
+  }, [pendingInstallAgent, reinstallCandidate, inspecting, searching, installing]);
 
   useEffect(() => {
     loadMarketplace();
@@ -82,19 +95,45 @@ export function MarketplaceTab({
     const marketplaceUrl =
       config.agentMarketplace || getDefaultMarketplaceUrl();
     let agentUrl: string;
+    let httpTempPath: string | undefined;
     if (marketplaceUrl.startsWith("file://")) {
       const basePath = parseFileUrl(marketplaceUrl);
       agentUrl = `${basePath}/${agent.path}`;
     } else {
-      agentUrl = `${marketplaceUrl}/${agent.path}`;
+      if (!agent.files || agent.files.length === 0) {
+        setInstallStatus("✗ Failed: marketplace agent has no file manifest");
+        setInstalling(false);
+        setPendingInstallAgent(null);
+        return;
+      }
+      const { downloadAgentFiles } = await import("../agents/installer.js");
+      const agentBaseUrl = `${marketplaceUrl}/${agent.path}`;
+      setInstallStatus("Downloading agent files...");
+      const downloadResult = await downloadAgentFiles(agentBaseUrl, agent.files);
+      if (!downloadResult.success || !downloadResult.path) {
+        setInstallStatus(`✗ Failed: ${downloadResult.error || "Download failed"}`);
+        setInstalling(false);
+        setPendingInstallAgent(null);
+        return;
+      }
+      agentUrl = downloadResult.path;
+      httpTempPath = downloadResult.path;
     }
     const result = await installAgent(agentUrl, { destination });
+    if (httpTempPath) {
+      const { rm } = await import("node:fs/promises");
+      await rm(httpTempPath, { recursive: true, force: true }).catch(() => {});
+    }
     if (result.success) {
       const msg = result.warning
         ? `✓ Installed ${agent.name} (${destination}) — ⚠ ${result.warning}`
         : `✓ Installed ${agent.name} (${destination})`;
       setInstallStatus(msg);
       await onReloadAgents();
+      if (onInstallComplete) {
+        onInstallComplete(agent.name);
+        return;
+      }
     } else if (result.error?.startsWith("Agent '") && result.error?.includes("is already installed")) {
       setInstallStatus(null);
       setReinstallCandidate({ agent, destination });
@@ -278,7 +317,7 @@ export function MarketplaceTab({
           <Text dimColor>Press 'r' to retry</Text>
         </Box>
         <Box marginTop={1}>
-          <Text dimColor>Configure marketplace URL in ~/.agav/config.json:</Text>
+          <Text dimColor>Configure marketplace URL in {agavHomePath("config.json")}:</Text>
         </Box>
         <Text dimColor>  "agentMarketplace": "https://your-repo-url"</Text>
       </Box>
@@ -302,8 +341,14 @@ export function MarketplaceTab({
   const totalPages = Math.ceil(filteredAgents.length / PAGE_SIZE);
   const pageAgents = filteredAgents.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
 
+  const handleWheel = wheelSelect((delta) => {
+    if (installing || pendingInstallAgent || reinstallCandidate) return;
+    setSelectedIndex((i) => stepIndex(i, delta, filteredAgents.length));
+    setInstallStatus(null);
+  });
+
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" onWheel={handleWheel}>
       <SearchBar
         query={searchQuery}
         searching={searching}

@@ -30,6 +30,10 @@ describe("startup provider and model resolution", () => {
       provider: "openai",
       model: "gpt-5.4-mini",
     });
+    expect(resolveStartupSelection(base, { cliProvider: "openrouter" })).toMatchObject({
+      provider: "openrouter",
+      model: "openrouter/auto",
+    });
   });
 
   it("restores both provider and model from a resumed session", () => {
@@ -76,6 +80,10 @@ describe("startup provider and model resolution", () => {
       provider: "openai",
       model: "gpt-5.4-mini",
     });
+    expect(selectConfiguredProvider({ ...base, openrouterApiKey: "key" })).toMatchObject({
+      provider: "openrouter",
+      model: "openrouter/auto",
+    });
   });
 
   it("keeps an explicit --model when falling back to another provider", () => {
@@ -91,7 +99,7 @@ describe("startup provider and model resolution", () => {
 
   it("names a runnable command for every provider when nothing is configured", () => {
     const message = noProviderCredentialsError();
-    for (const variable of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "VERTEX_AI_CREDENTIALS_PATH"]) {
+    for (const variable of ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "VERTEX_AI_CREDENTIALS_PATH"]) {
       // The shell-specific prefix is covered by utils.shell-hints; here it only
       // matters that each variable is shown as a command, not just named.
       expect(message).toMatch(new RegExp(`(export|set|\\$env:)\\s?${variable}`));
@@ -104,5 +112,9 @@ describe("startup provider and model resolution", () => {
       .toContain("ANTHROPIC_API_KEY");
     expect(providerConfigurationError({ ...base, provider: "openai", openaiApiKey: undefined }))
       .toContain("OPENAI_API_KEY");
+    expect(providerConfigurationError({ ...base, provider: "openrouter", openrouterApiKey: undefined }))
+      .toContain("OPENROUTER_API_KEY");
+    expect(providerConfigurationError({ ...base, provider: "openrouter", openrouterApiKey: "sk-or-test" }))
+      .toBeNull();
   });
 });

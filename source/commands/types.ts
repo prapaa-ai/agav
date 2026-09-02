@@ -41,6 +41,8 @@ export interface CommandContext {
   renameSession: (name: string) => void
   currentSessionId?: string
   exit: () => void
+  /** Whether an agent turn is currently in flight. */
+  isLoading?: boolean
   getDebugState: () => DebugState
   submit: (text: string) => void
   handleSubmit: (text: string, invocationReason?: InvocationReason) => void
@@ -48,7 +50,18 @@ export interface CommandContext {
   addTokenUsage: (usage: TokenUsage) => void
   setRunningSkill: (name: string | null) => void
   setPickerActive: (active: boolean) => void
+  /**
+   * Hand the terminal to a picker that writes to stdout directly, and get back
+   * the function that returns it to Ink.
+   *
+   * Ink repaints on a throttle, so a frame committed after the picker has drawn
+   * erases it by line count and leaves the screen mangled. Must be called
+   * before the picker's first write, and must not be awaited in between.
+   * Not needed by the React TUIs — those render inside Ink.
+   */
+  suspendTerminal: () => () => void
   showAgentsTUI: (onDone: () => void) => void
+  showSkillsTUI: (onDone: () => void) => void
 }
 
 /** Represents the result of executing a slash command. */

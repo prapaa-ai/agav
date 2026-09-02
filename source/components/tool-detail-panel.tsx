@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text } from "../ink/index.js";
 import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
 import type { DisplayMessage } from "./message-list.js";
 import { terminalRelativePaths, terminalToolValue, toolPathValues } from "../utils/display-path.js";
@@ -33,6 +33,11 @@ export default function ToolDetailPanel({ tools, closeKey }: Props) {
   return (
     <Box flexDirection="column" borderStyle="single" borderColor="gray" paddingX={1} marginBottom={1}>
       <Text bold dimColor>Tool Output Details <Text>({closeKey} to close)</Text></Text>
+      {/*
+        Rendered at full height. Five tool outputs at 30 preview lines each is
+        ~150 rows, but the panel is one section of the app's single scrolling
+        document, so length costs scrolling rather than screen space.
+      */}
       {recent.map((tool) => {
         const label = tool.toolDisplayName ?? (tool.toolName ? getToolLabel(tool.toolName) : "Tool");
         const inputSummary = tool.toolName ? formatInput(tool.toolName, tool.toolInput) : null;

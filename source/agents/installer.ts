@@ -3,17 +3,18 @@
  */
 
 import { execFile } from "node:child_process";
-import { readdir, rm, cp, mkdir, stat, realpath } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { readdir, rm, cp, mkdir, stat, realpath, writeFile } from "node:fs/promises";
+import { join, resolve, dirname } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { loadAgent } from "./loader.js";
 import { registerAgent, isAgentRegistered } from "./agent-registry.js";
 import type { AgentDefinition } from "./types.js";
 
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
-const DEFAULT_ALLOWED_HOSTS = new Set(["github.com", "gitlab.com", "bitbucket.org"]);
+const DEFAULT_ALLOWED_HOSTS = new Set(["github.com", "gitlab.com", "bitbucket.org", "raw.githubusercontent.com"]);
 
 function getAllowedHosts(): Set<string> {
   const extra = process.env.AGAV_ALLOWED_GIT_HOSTS;
@@ -40,7 +41,7 @@ function validateGitUrl(url: string): void {
   }
 }
 
-async function assertPathContained(child: string, parent: string): Promise<void> {
+export async function assertPathContained(child: string, parent: string): Promise<void> {
   const resolved = await realpath(resolve(child)).catch(() => resolve(child));
   const root = await realpath(resolve(parent)).catch(() => resolve(parent));
   if (!resolved.startsWith(root + "/") && !resolved.startsWith(root + "\\") && resolved !== root) {
@@ -95,6 +96,13 @@ export async function installAgent(
       return { success: false, error: cloneResult.error || "Clone failed" };
     }
     agentPath = cloneResult.path;
+  } else if (source.startsWith("file://")) {
+    // file:// URL — convert to filesystem path
+    try {
+      agentPath = fileURLToPath(source);
+    } catch {
+      return { success: false, error: `Invalid file:// URL: ${source}` };
+    }
   } else {
     // Local path
     agentPath = source;
@@ -169,7 +177,7 @@ export async function installAgent(
       name: agent.manifest.name,
       alias,
       enabled: true,
-      sourceUrl: isGitUrl ? source : undefined,
+      sourceUrl: isGitUrl || source.startsWith("file://") ? source : undefined,
       installedAt: new Date().toISOString(),
       version: agent.manifest.version,
     });
@@ -308,6 +316,66 @@ export async function uninstallAgent(nameOrAlias: string, destination: "global" 
     return {
       success: false,
       error: `Failed to uninstall: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+/**
+ * Download agent files from an HTTP-based marketplace into a temp directory.
+ * Returns the temp directory path, which can be passed to installAgent() as a local path.
+ */
+export async function downloadAgentFiles(
+  baseUrl: string,
+  files: string[],
+): Promise<{ success: boolean; path?: string; error?: string }> {
+  if (!files.length) {
+    return { success: false, error: "No files to download" };
+  }
+
+  for (const f of files) {
+    if (!f || f.includes("..") || /^[/\\]/.test(f) || /^[A-Za-z]:/.test(f)) {
+      return { success: false, error: `Invalid file path: "${f}"` };
+    }
+  }
+
+  const tempDir = join(tmpdir(), `agav-agent-${randomBytes(8).toString("hex")}`);
+
+  try {
+    await mkdir(tempDir, { recursive: true });
+
+    const results = await Promise.allSettled(
+      files.map(async (file) => {
+        const url = `${baseUrl}/${file}`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${file}`);
+        const destPath = join(tempDir, ...file.split("/"));
+        await mkdir(dirname(destPath), { recursive: true });
+        const buffer = Buffer.from(await res.arrayBuffer());
+        await writeFile(destPath, buffer);
+      }),
+    );
+
+    const failures = results
+      .map((r, i) => (r.status === "rejected" ? `${files[i]}: ${r.reason?.message || r.reason}` : null))
+      .filter(Boolean);
+
+    if (failures.length) {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      return { success: false, error: `Failed to download: ${failures.join("; ")}` };
+    }
+
+    const entries = await readdir(tempDir);
+    if (!entries.includes("AGENT.md")) {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      return { success: false, error: "Downloaded files do not contain AGENT.md" };
+    }
+
+    return { success: true, path: tempDir };
+  } catch (error) {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    return {
+      success: false,
+      error: `Download failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
 }

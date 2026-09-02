@@ -7,24 +7,118 @@
 <p>
   <img alt="Version" src="https://img.shields.io/github/package-json/v/prapaa-ai/agav?style=for-the-badge&amp;label=version&amp;color=111">
   <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-111?style=for-the-badge">
+  <a href="https://github.com/harbor-framework/terminal-bench-2-1/pull/225"><img alt="Terminal-Bench 2.1" src="https://img.shields.io/badge/Terminal--Bench_2.1-84.7%25_%7C_top_of_the_board-111?style=for-the-badge"></a>
 </p>
 
 </div>
 
 <div align="center">
-  <img src="https://agav.dev/preview.gif" alt="Agav preview" width="100%" style="border-radius: 16px;" />
+  <img src="https://www.agav.dev/preview.gif" alt="Agav preview" width="100%" style="border-radius: 16px;" />
 </div>
+
+## Vision
+
+- **The best agentic coding harness in the world** — not a wrapper around an API, but a complete autonomous agent that reads, reasons, edits, and verifies across real codebases.
+- **Terminal-first, no compromises** — the terminal is where work happens; Agav meets you there with the full power of an IDE and the speed of the command line.
+- **An agent for everyone** — equally useful to the senior engineer debugging a distributed system and the non-technical founder drafting a pitch deck.
 
 ## What it does
 
-Agav reads, searches and edits the repository you run it in, and runs the commands you'd otherwise run yourself.
+Agav reads, searches and edits the repository you run it in, and runs the commands you'd otherwise run yourself. On [Terminal-Bench 2.1](https://www.tbench.ai/leaderboard/terminal-bench/2.1) — all 89 tasks, five trials each, judge-audited trajectories — Agav scored [**84.7%**](https://github.com/harbor-framework/terminal-bench-2-1/pull/225) (377 of 445 trials, ± 0.84%), ahead of every entry on the current public board (submission in review).
 
-- **Five providers** — Anthropic, OpenAI, Gemini, Vertex AI and Ollama, switchable mid-session with `/model`.
+- **Seven providers** — Anthropic, OpenAI, OpenRouter, NVIDIA NIM, Gemini, Vertex AI and Ollama, switchable mid-session with `/model`.
 - **Sandboxed commands** — shell tools run under Seatbelt on macOS and Bubblewrap on Linux where either is available.
 - **Non-interactive mode** — `agav run` and `agav --print` make the same agent scriptable from CI, with per-tool permissions and optional JSON Schema output.
 - **Sessions that survive** — resume, branch, name, search and export past conversations; `/compact` reclaims context without starting over. Plans are saved per-session and picked back up on resume.
-- **Extensible** — MCP servers, plugins, skills and subagents.
+- **Extensible** — MCP servers, plugins, a skill marketplace and installable agents; delegate scoped work to fresh-context subagents.
+- **Lights-off operation** — schedule tasks (`/schedule`), loop prompts (`/loop`) and watch files (`/watch`); specs go in, verified work comes out.
 - **Repository-aware editing** — LSP-backed queries, notebook support, test running, and `/undo` for the last file change.
+
+## Tools
+
+Agav ships with 19 built-in tools the agent calls on your behalf — reading, writing, searching, running commands, and talking to external services.
+
+| Tool | What it does |
+| --- | --- |
+| `read_file` | Read files — text with line ranges, PDF/Office with page ranges, images as compressed visual previews |
+| `write_file` | Create or overwrite files; creates parent directories as needed |
+| `edit_file` | Surgical string replacement — find an exact string, replace its first occurrence |
+| `run_command` | Execute shell commands, sandboxed via Seatbelt, Bubblewrap or Docker |
+| `grep_search` | Recursive regex search across files, with optional file-glob filters |
+| `find_files` | Glob-based file discovery |
+| `list_directory` | List a directory's contents with file types and sizes |
+| `web_search` | Search the web; returns titles, URLs and snippets |
+| `fetch_url` | HTTP requests (GET/POST/PUT/DELETE/PATCH) with custom headers |
+| `lsp_query` | Language Server Protocol queries — diagnostics, definitions, references, hover |
+| `read_notebook` | Read Jupyter notebook cells with their outputs |
+| `edit_notebook` | Edit Jupyter notebook cells by index |
+| `github` | GitHub CLI integration — create and view PRs and issues |
+| `overview` | Codebase structure map showing the file tree and key symbols per file |
+| `run_tests` | Auto-detecting test runner (pytest, vitest, jest, go test, cargo test) with structured pass/fail results |
+| `update_plan` | Mark plan steps as in-progress, done or failed |
+| `save_memory` | Persist cross-session memories (user, feedback, project, reference) |
+| `subagent` | Spawn independent parallel subagents, each with their own context and tools |
+| `activate_skill` | Run a registered skill by name |
+
+## Skills
+
+Agav ships with a set of built-in skills — reusable instruction bundles the agent can activate on its own or that you can trigger manually. Skills load in order from bundled → global (`~/.agav/skills/`) → project (`.agav/skills/`), with later entries overriding earlier ones.
+
+| Skill | What it does | Trigger |
+| --- | --- | --- |
+| `code-review` | Review code changes for bugs, security issues, and improvements | auto + manual |
+| `deep-research` | Multi-source research on a topic with citations | manual |
+| `diagnose` | Diagnose and fix errors and bugs | auto + manual |
+| `doc-gen` | Generate documentation for code | auto + manual |
+| `explain` | Explain code in plain language | auto + manual |
+| `git-commit` | Generate a commit message from staged changes | auto + manual |
+| `refactor` | Suggest and apply code refactoring | auto + manual |
+| `security-scan` | Check code for security vulnerabilities | manual |
+| `simplify` | Reduce complexity and simplify code | auto + manual |
+| `test-writer` | Generate unit tests for existing code | auto + manual |
+
+Browse and install additional skills from the marketplace with `/skills`, or drop your own into the skills directory.
+
+## Agents
+
+Agav can delegate work to standalone agents — in-process or external — that carry their own tools, model preferences, and permissions.
+
+- **Native agents** — JS/TS agents defined by an `AGENT.md` file with YAML frontmatter, running in-process with custom tools, model/effort overrides, MCP servers, and tool permissions.
+- **A2A agents** — external processes that communicate over HTTP via the Agent-to-Agent protocol.
+- **Marketplace** — install agents from git repos with `/agents`; repos are sparse-cloned, validated, and sandboxed.
+- **Origins** — agents load from bundled → global (`~/.agav/agents/`) → project-local, the same cascade as skills.
+- **Creation** — `/agents → Create` opens a wizard that builds an agent definition with an LLM-generated system prompt, workspace MCP server selection, and credential management.
+
+## Memory
+
+Agav remembers things across sessions. Memories are scoped per project (identified by the git root hash) and stored as markdown files.
+
+Four memory types:
+
+| Type | What it holds | Examples |
+| --- | --- | --- |
+| `user` | Role, preferences, expertise | "I'm a data scientist", "prefer tabs" |
+| `feedback` | Corrections and confirmations | "don't do X", "yes, that approach works" |
+| `project` | Project decisions, deadlines, context | "we use PostgreSQL", "deadline is Friday" |
+| `reference` | Pointers to external resources | Linear boards, Slack channels, dashboards |
+
+The agent saves memories proactively when it detects relevant information during a session. Manage them yourself with:
+
+- `/memory` — list and manage saved memories
+- `/remember` — save a memory manually
+- `/forget` — delete a memory by name
+
+Memories are automatically loaded into future sessions for the same project.
+
+## Planning
+
+Agav creates multi-step plans for complex tasks and tracks progress visually. Plans are saved per-session and picked back up on resume.
+
+- The agent creates plans automatically when a task has enough moving parts to warrant one.
+- Each step carries a status: `in_progress`, `done`, or `failed`.
+- `/plan` shows the active plan; `/plan list`, `/plan <n> <status>`, and `/plan clear` manage it.
+- `Ctrl+G` toggles the plan detail panel.
+- Plans survive `/compact` operations and session resumes — context gets reclaimed, the plan stays.
 
 ## Quickstart
 
@@ -38,6 +132,7 @@ Pick a provider and model, or take the defaults:
 
 ```bash
 agav --provider openai --model gpt-4o
+agav --provider openrouter --model openrouter/auto
 agav --provider vertex-ai --model vertex/gemini-3.5-flash
 agav -r                                  # resume a session (lists them if no id)
 ```
@@ -46,7 +141,10 @@ Non-interactive, for scripts and CI:
 
 ```bash
 agav run "review the code in src/"
-agav run --permission '{"bash":"deny"}' "check for security issues"
+# Read-only audit: block every tool that isn't explicitly allowed
+agav run --permission '{"*":"deny","read_file":"allow","grep_search":"allow"}' "audit dependencies"
+# Deny one tool; the rest still run without confirmation
+agav run --permission '{"write_file":"deny"}' "check for security issues"
 agav -P "what does this project do?"
 agav -P --stream "explain this repository"
 cat error.log | agav -P "explain this error"
@@ -62,13 +160,14 @@ agav update
 
 | Flag | Meaning |
 | --- | --- |
-| `--provider`, `-p` | `anthropic`, `openai`, `gemini`, `vertex-ai` or `ollama` (default: `anthropic`) |
+| `--provider`, `-p` | `anthropic`, `openai`, `openrouter`, `nvidia`, `gemini`, `vertex-ai` or `ollama` (default: `anthropic`) |
 | `--model`, `-m` | Model name |
 | `--effort` | Reasoning effort: `low`, `medium`, `high` or `max` (default: `high`) |
 | `--print`, `-P` | Run the prompt, print the result, exit |
 | `--stream` | Stream text to stdout in real time, with `--print` |
 | `--output-schema` | Require pipe-mode output to match an inline JSON Schema, or `@file` |
 | `--permission` | JSON tool permissions for run mode |
+| `--max-turns` | Cap agent/tool iterations in run mode — a safety limit for unattended CI work |
 | `--resume`, `-r [id]` | Resume a session; prefix match if an id is given |
 | `--auto-accept`, `-y` | Skip tool confirmations |
 | `--deny-writes` | Block all write operations |
@@ -79,7 +178,7 @@ agav update
 ## Slash commands
 
 <details>
-<summary>27 commands, available in any session</summary>
+<summary>29 commands, available in any session</summary>
 
 | Command | What it does |
 | --- | --- |
@@ -96,7 +195,7 @@ agav update
 | `/memory` | Manage persistent memories |
 | `/remember` | Save a memory |
 | `/forget` | Delete a memory by name |
-| `/history` | List saved sessions or load one by index |
+| `/resume` | Resume a previous session |
 | `/search` | Search past sessions by keyword |
 | `/branch` | Fork a new session or list branches |
 | `/name` | Name the current session |
@@ -107,6 +206,8 @@ agav update
 | `/loop` | Repeat a prompt on an interval |
 | `/schedule` | Manage persistent scheduled tasks |
 | `/changelog` | Show release notes for the current version |
+| `/skills` | Manage skills: list, install, remove, or browse the marketplace |
+| `/agents` | Manage service agents (list, install, create) |
 | `/ps` | Run a brief side query without interrupting the main task |
 | `/debug` | Show internal state for debugging |
 | `/exit` | Exit Agav |
@@ -157,6 +258,41 @@ For Windows Command Prompt (`cmd.exe`):
 
 
 Or download a specific platform binary from [Releases](../../releases).
+
+### Pre-release builds
+
+Betas ship as GitHub pre-releases, and the commands above deliberately skip them. Pass `--beta` to install the newest one instead:
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://agav.dev/install.sh | bash -s -- --beta
+```
+
+**Windows PowerShell:**
+
+```powershell
+& ([scriptblock]::Create((irm https://www.agav.dev/install.ps1))) --beta
+```
+
+> [!NOTE]
+> `irm ... | iex -- --beta` does not work — it fails with a parameter binding
+> error. `Invoke-Expression` takes the script as its positional `-Command`
+> argument, so `--beta` claims that slot and the piped script has nowhere left
+> to bind. PowerShell has no `--` end-of-options convention. The script block
+> form above is how you pass any flag on Windows.
+
+**Windows Command Prompt (`cmd.exe`):**
+
+```bat
+curl -fsSL https://agav.dev/install.cmd -o install.cmd
+install.cmd --beta
+del install.cmd
+```
+
+Setting `AGAV_BETA=1` in the environment does the same thing, which is handy when the flag is awkward to thread through.
+
+Once you're on a pre-release, `agav update` leaves you there: it only ever looks at the latest stable release, and it compares `major.minor.patch` with the suffix stripped. From `0.2.0-beta.1` that means you won't be pulled back to `0.1.9`, but you won't move to `0.2.0` final either — you stay until `0.2.1` ships. To rejoin the stable channel sooner, re-run the installer without `--beta`.
 
 ### Staying up to date
 
@@ -256,7 +392,53 @@ Agav says which tool is missing when it hits one of these limits, so there is no
 
 ## Provider setup
 
-Anthropic, OpenAI, and Gemini need nothing more than their API key in the environment — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` — and Ollama just needs a local server running. Vertex AI takes a little more.
+Anthropic, OpenAI, and Gemini need nothing more than their API key in the environment — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` — and Ollama just needs a local server running. OpenRouter needs one key for every model on its platform; Vertex AI takes a little more.
+
+### OpenRouter
+
+OpenRouter fronts hundreds of models from Anthropic, OpenAI, Google, Meta, DeepSeek, Qwen and others behind a single API — one key, one bill, no vendor lock-in. Agav talks to it through its OpenAI-compatible Chat Completions endpoint, so tool calling works as usual.
+
+Create a key at [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) (they start with `sk-or-v1-`) and export it:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-...
+agav --provider openrouter --model openrouter/auto
+```
+
+The default model is `openrouter/auto`, which lets OpenRouter pick a suitable model per request. Any slug from the [model catalog](https://openrouter.ai/models) can be passed with `--model` or `/model`:
+
+```bash
+agav -p openrouter -m anthropic/claude-sonnet-4.5
+agav -p openrouter -m deepseek/deepseek-chat-v3.1
+```
+
+IDs ending in `-latest` prefixed with a tilde (`~anthropic/claude-sonnet-latest`) are OpenRouter aliases that always resolve to the newest version of a family — that's what `/fast` and `/deep` select:
+
+| Command | Model |
+| --- | --- |
+| `/fast` | `~google/gemini-flash-latest` |
+| `/deep` | `~anthropic/claude-sonnet-latest` |
+
+Like the other providers' keys, an `openrouterApiKey` field in `.agav/config.json` or `~/.agav/config.json` is accepted and encrypted at rest — prefer the environment variable. `/model` lists live models straight from your account, and context-window sizes are looked up from OpenRouter so `/context` stays accurate across the whole catalog.
+
+### NVIDIA NIM
+
+```bash
+export NVIDIA_API_KEY="nvapi-..."
+agav --provider nvidia
+agav --provider nvidia --model nvidia/nemotron-3.5-lightning-30b-a3b
+```
+
+Or in config:
+
+```json
+{
+  "provider": "nvidia",
+  "model": "nvidia/nemotron-3.5-lightning-30b-a3b"
+}
+```
+
+All NVIDIA models use the `nvidia/` prefix. Context window sizes are detected automatically.
 
 ### Ollama
 
@@ -316,6 +498,8 @@ Drop an `AGAV.md` (or `.agavrc`) in a repository to add project-specific instruc
 | Variable | Effect |
 | --- | --- |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | Provider credentials |
+| `OPENROUTER_API_KEY` | OpenRouter credential (`sk-or-v1-...`) |
+| `NVIDIA_API_KEY` | NVIDIA NIM credential (`nvapi-...`) |
 | `VERTEX_AI_CREDENTIALS_PATH` / `VERTEX_AI_LOCATION` | Vertex AI service account and region |
 | `OLLAMA_HOST` / `OLLAMA_PORT` / `OLLAMA_ENDPOINT` / `OLLAMA_API_KEY` | Ollama connection |
 | `AGAV_OLLAMA_NUM_CTX` | Override the per-model Ollama context cap |
@@ -323,6 +507,7 @@ Drop an `AGAV.md` (or `.agavrc`) in a repository to add project-specific instruc
 | `AGAV_NO_UPDATE=1` | Disable the startup update check |
 | `AGAV_NO_SANDBOX=1` | Run shell commands unsandboxed |
 | `AGAV_KITTY_KEYBOARD` | Force the Kitty keyboard protocol on (`1`) or off (`0`) |
+| `AGAV_MARKETPLACE_URL` | Override the agent marketplace URL (normally set via `agentMarketplace` in config) |
 | `AGAV_DEBUG_GEMINI` | Verbose Gemini request logging |
 | `LIBREOFFICE_PATH` | Path to LibreOffice, for document conversion |
 | `NO_COLOR` | Disable coloured output |
@@ -331,7 +516,7 @@ Drop an `AGAV.md` (or `.agavrc`) in a repository to add project-specific instruc
 
 ### Sandboxing
 
-Shell commands run inside a sandbox when one is available: `sandbox-exec` (Seatbelt) on macOS, `bwrap` (Bubblewrap) on Linux. Agav detects the backend at runtime and falls back to running unsandboxed when neither is present. Set `AGAV_NO_SANDBOX=1` to opt out deliberately.
+Shell commands run inside a sandbox when one is available: `sandbox-exec` (Seatbelt) on macOS, `bwrap` (Bubblewrap) on Linux, or a restricted Docker container (`--network=none`, capped CPU/memory) as a fallback. Agav detects the backend at runtime and falls back to running unsandboxed when none is present; across all backends, environment variables whose names look like credentials (`KEY`, `TOKEN`, `SECRET`, …) are stripped before child processes spawn. Set `AGAV_NO_SANDBOX=1` to opt out deliberately.
 
 ## Multi-line input
 
@@ -381,6 +566,7 @@ For Shift+Enter with no setup at all, use a terminal that implements the protoco
 | `Esc` | Cancel a streaming response |
 | `Ctrl+D` | Toggle tool detail panel |
 | `Ctrl+G` | Toggle plan detail panel |
+| `Ctrl+T` | Toggle thinking text visibility |
 | `Ctrl+J` | Insert newline (works on every terminal) |
 | `Ctrl+V` | Paste an image from clipboard |
 | `Tab` | Cycle subagent focus |
@@ -403,14 +589,33 @@ To save a full conversation to a file instead, use `/export` — it writes the e
 
 ## Extending
 
-- **MCP servers** — declare them under `mcpServers` in `config.json`; their tools and prompts join the session.
+- **MCP servers** — declare them under `mcpServers` in `config.json`; local stdio servers and remote HTTP/SSE endpoints expose their tools and prompts to the session.
 - **Skills** — reusable instruction bundles, loadable from a marketplace or written yourself.
 - **Plugins** — loaded from `~/.agav/plugins/`.
 - **Subagents** — the agent can delegate a scoped task to a fresh context and keep the noise out of yours.
+- **Agent creation** — `/agents → [3] Create` opens a wizard to build custom agents with LLM-generated system prompts and workspace MCP server selection.
 
 ## Documentation
 
-Detailed CLI documentation can be found [here](https://docs.agav.dev).
+Detailed CLI documentation can be found in the [CLI reference](https://docs.agav.dev/reference/cli).
+
+The source lives in the [`docs/`](docs/) directory — a Next.js app with Markdown content, full-text search, and dark mode. To run it locally:
+
+```bash
+cd docs
+npm install
+npm run dev
+```
+
+Then open [localhost:3000](http://localhost:3000).
+
+Documentation is organised into:
+
+- **[Getting Started](https://docs.agav.dev/docs/getting-started)** — installation, providers, quick start
+- **[Features](https://docs.agav.dev/docs/features)** — tools, skills, agents, MCP, plugins
+- **[Workflows](https://docs.agav.dev/docs/workflows)** — sessions, planning, automation, non-interactive mode
+- **[Guides](https://docs.agav.dev/docs/guides)** — step-by-step recipes for common tasks
+- **[Reference](https://docs.agav.dev/docs/reference)** — CLI flags, slash commands, configuration, keybindings
 
 ## Contributing
 

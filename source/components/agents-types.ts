@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentDefinition } from "../agents/types.js";
 
-export type Tab = "list" | "marketplace";
+export type Tab = "list" | "marketplace" | "create";
 
 export type ListView = "list" | "inspect" | "config";
 
