@@ -3,7 +3,7 @@
 // no native tool is available.
 
 import { platform } from "node:os";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 
 /** Build the OSC 52 escape sequence that sets the system clipboard. */
 export const osc52Copy = (text: string): string => {
@@ -22,31 +22,67 @@ const wrapTmux = (sequence: string): string => {
 	return `\x1bPtmux;\x1b${escaped}\x1b\\`;
 };
 
+/** Check whether a command is available on the system PATH. */
+const commandExists = (cmd: string): boolean => {
+	try {
+		// `which` on POSIX, `where` on Windows — both exit non-zero when
+		// the command is not found, which makes execFileSync throw.
+		const checker = platform() === "win32" ? "where" : "which";
+		execFileSync(checker, [cmd], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+};
+
 /**
  * Resolve the clipboard command once at module load. The platform and
- * WAYLAND_DISPLAY are process-lifetime constants.
+ * WAYLAND_DISPLAY are process-lifetime constants. Returns null when no
+ * native clipboard tool is installed so the caller falls back to OSC 52.
  */
 const resolveClipboardCmd = (): { cmd: string; args: string[] } | null => {
 	const os = platform();
-	if (os === "darwin") return { cmd: "pbcopy", args: [] };
-	if (os === "win32") return { cmd: "clip", args: [] };
-	if (process.env["WAYLAND_DISPLAY"]) return { cmd: "wl-copy", args: [] };
-	return { cmd: "xclip", args: ["-selection", "clipboard"] };
+
+	if (os === "darwin" && commandExists("pbcopy")) {
+		return { cmd: "pbcopy", args: [] };
+	}
+
+	if (os === "win32" && commandExists("clip")) {
+		return { cmd: "clip", args: [] };
+	}
+
+	// Linux / FreeBSD: try clipboard tools in preference order.
+	if (os !== "darwin" && os !== "win32") {
+		if (process.env["WAYLAND_DISPLAY"] && commandExists("wl-copy")) {
+			return { cmd: "wl-copy", args: [] };
+		}
+		if (commandExists("xclip")) {
+			return { cmd: "xclip", args: ["-selection", "clipboard"] };
+		}
+		if (commandExists("xsel")) {
+			return { cmd: "xsel", args: ["--clipboard", "--input"] };
+		}
+	}
+
+	return null;
 };
 
 const clipboardCmd = resolveClipboardCmd();
 
 /**
- * Try to copy text via a platform-native clipboard command.
- * Returns true if a command was spawned, false if none was available.
+ * Copy text via the platform-native clipboard command resolved at startup.
+ * Returns true only when a verified command was spawned successfully.
  */
 const nativeCopy = (text: string): boolean => {
 	if (!clipboardCmd) return false;
 	try {
-		const child = spawn(clipboardCmd.cmd, clipboardCmd.args, { stdio: ["pipe", "ignore", "ignore"] });
+		const child = spawn(clipboardCmd.cmd, clipboardCmd.args, {
+			stdio: ["pipe", "ignore", "ignore"],
+		});
+		child.on("error", () => {}); // swallow unexpected runtime errors
+		child.stdin?.on("error", () => {}); // guard against EPIPE
 		child.stdin?.write(text);
 		child.stdin?.end();
-		child.on("error", () => {}); // swallow ENOENT
 		return true;
 	} catch {
 		return false;
