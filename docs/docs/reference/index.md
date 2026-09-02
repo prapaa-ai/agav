@@ -12,5 +12,6 @@ order: 1
 - [Keybindings](/reference/keybindings)
 - [Security](/reference/security)
 - [Troubleshooting](/reference/troubleshooting)
+- [Changelog](/reference/changelog) lists what changed in each Agav release.
 
 Use `agav --help` for the installed release's startup options and `/help` for interactive commands, including commands added by skills and MCP prompts.

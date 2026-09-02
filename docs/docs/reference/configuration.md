@@ -55,6 +55,10 @@ Agav merges defaults, `~/.agav/config.json`, and `./.agav/config.json` in that o
 | `mcpServers` | Named MCP server definitions (stdio and remote) |
 | `agentMarketplace` | URL of the agent marketplace (supports `https://` and `file://`). Defaults to the official marketplace. Set `AGAV_MARKETPLACE_URL` to override without editing the config file. |
 
+### Thinking tokens
+
+Some models (such as Claude with extended thinking or certain OpenAI o-series models) support thinking tokens — internal reasoning steps the model performs before producing its final answer. Press `Ctrl+T` during a response to toggle visibility of thinking text. Thinking tokens count toward context usage and may increase cost. The status bar shows thinking token counts when available.
+
 ### MCP server fields
 
 **Stdio servers** (local subprocess):
