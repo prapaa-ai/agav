@@ -50,6 +50,7 @@ jobs:
           fi
 
       - name: Get PR diff
+        id: get-diff
         if: steps.diff-size.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -58,10 +59,15 @@ jobs:
           # asked, since printing one to a terminal is an injection vector.
           # This is a terminal app: escapes turn up in its sources and tests as
           # a matter of course, and the diff goes to a file, not a terminal.
-          gh pr diff --allow-escape-sequences ${{ github.event.pull_request.number }} > /tmp/pr-diff.txt
+          if ! gh pr diff --allow-escape-sequences ${{ github.event.pull_request.number }} > /tmp/pr-diff.txt 2>/tmp/pr-diff-err.txt; then
+            echo "::notice::Skipping AI review — could not fetch PR diff: $(cat /tmp/pr-diff-err.txt)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Review with Agav
-        if: steps.diff-size.outputs.skip != 'true'
+        if: steps.diff-size.outputs.skip != 'true' && steps.get-diff.outputs.skip != 'true'
         timeout-minutes: 3
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
