@@ -522,12 +522,41 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         return;
       }
 
+      // Word-jump: mirrors the boundary deleteWordBackward already uses, so
+      // Ctrl+Left lands exactly where Ctrl+Backspace would have deleted to.
+      if (key.leftArrow && (key.ctrl || key.meta)) {
+        const before = value.slice(0, cursorPos);
+        const wordStart = before.search(/\s*\S+\s*$/);
+        moveCaret(wordStart < 0 ? 0 : wordStart);
+        return;
+      }
+      if (key.rightArrow && (key.ctrl || key.meta)) {
+        const after = value.slice(cursorPos);
+        const match = after.match(/^\s*\S+/);
+        moveCaret(match ? cursorPos + match[0].length : value.length);
+        return;
+      }
       if (key.leftArrow) {
         moveCaret(prevGraphemeOffset(value, cursorPos));
         return;
       }
       if (key.rightArrow) {
         moveCaret(nextGraphemeOffset(value, cursorPos));
+        return;
+      }
+
+      // Home/End move to the start/end of the current logical line (the text
+      // between newlines) — not the visually-wrapped row a click would target,
+      // since Home/End are position-independent of terminal width the way a
+      // click's column never is.
+      if (key.home) {
+        const lineStart = value.lastIndexOf("\n", cursorPos - 1) + 1;
+        moveCaret(lineStart);
+        return;
+      }
+      if (key.end) {
+        const nextNewline = value.indexOf("\n", cursorPos);
+        moveCaret(nextNewline === -1 ? value.length : nextNewline);
         return;
       }
 

@@ -585,6 +585,8 @@ Agav runs inside your terminal, so copying uses your terminal's own selection me
 - **Linux** — select text, then `Ctrl+Shift+C` (or middle-click to paste a selection).
 - **Windows Terminal** — select text, then `Ctrl+C` (when nothing is running) or `Ctrl+Shift+C`.
 
+Mouse tracking is off by default specifically so this works — set `AGAV_MOUSE=1` to trade native text selection for mouse wheel-scroll and click-to-place-caret instead (with it on, dragging to select needs your terminal's modifier override: Shift on xterm/VTE/Konsole/Alacritty/kitty/WezTerm, Option on iTerm2, Fn on Terminal.app). Scrolling has keyboard equivalents either way — see the keybindings above.
+
 To save a full conversation to a file instead, use `/export` — it writes the entire session as Markdown.
 
 ## Extending

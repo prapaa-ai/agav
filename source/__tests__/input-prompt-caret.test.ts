@@ -322,10 +322,22 @@ describe("InputPrompt Home/End keys", () => {
   it("Home key does not corrupt the input", async () => {
     const { instance, stdin } = await mount();
     await type(instance, stdin, "hello");
-    // Home key (xterm: \x1b[H) — currently not handled, should be a no-op
+    // Home key (xterm: \x1b[H)
     await press(instance, stdin, Buffer.from("\x1b[H"), 1);
     // Value should be unchanged
     expect(currentValue).toBe("hello");
+    instance.unmount();
+  });
+
+  it("Home key moves the caret to the start of the line, not just a no-op", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "hello");
+    await press(instance, stdin, Buffer.from("\x1b[H"), 1);
+    // Probe where the caret landed the same way the other caret tests do:
+    // insert and see where it appears. From the start of "hello" that's in
+    // front of every character typed so far.
+    await type(instance, stdin, "X");
+    expect(currentValue).toBe("Xhello");
     instance.unmount();
   });
 
@@ -333,10 +345,45 @@ describe("InputPrompt Home/End keys", () => {
     const { instance, stdin } = await mount();
     await type(instance, stdin, "hello");
     await press(instance, stdin, LEFT, 3);
-    // End key (xterm: \x1b[F) — currently not handled, should be a no-op
+    // End key (xterm: \x1b[F)
     await press(instance, stdin, Buffer.from("\x1b[F"), 1);
     // Value should be unchanged
     expect(currentValue).toBe("hello");
+    instance.unmount();
+  });
+
+  it("End key moves the caret to the end of the line, not just a no-op", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "hello");
+    await press(instance, stdin, LEFT, 3);
+    await press(instance, stdin, Buffer.from("\x1b[F"), 1);
+    await type(instance, stdin, "X");
+    expect(currentValue).toBe("helloX");
+    instance.unmount();
+  });
+
+  it("Ctrl+Left jumps a whole word back, mirroring Ctrl+Backspace's boundary", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "foo bar");
+    // xterm: CSI 1;5D (Ctrl+Left). Reuses deleteWordBackward's own boundary
+    // rule, which eats trailing whitespace too — from the end of "foo bar"
+    // that lands right after "foo", the same cut point Ctrl+Backspace uses.
+    await press(instance, stdin, Buffer.from("\x1b[1;5D"), 1);
+    await type(instance, stdin, "X");
+    expect(currentValue).toBe("fooX bar");
+    instance.unmount();
+  });
+
+  it("Ctrl+Right jumps a whole word forward", async () => {
+    const { instance, stdin } = await mount();
+    await type(instance, stdin, "foo bar");
+    // Two word-backs land at the very start; one word-forward should return
+    // to right after "foo", not all the way to where it started.
+    await press(instance, stdin, Buffer.from("\x1b[1;5D"), 2);
+    // xterm: CSI 1;5C (Ctrl+Right)
+    await press(instance, stdin, Buffer.from("\x1b[1;5C"), 1);
+    await type(instance, stdin, "X");
+    expect(currentValue).toBe("fooX bar");
     instance.unmount();
   });
 });

@@ -717,6 +717,14 @@ export async function main() {
     // flicker on terminals without DEC 2026). In-app scrolling is handled by
     // the ScrollBox viewport + mouse wheel, so native scrollback isn't needed.
     alternateScreen: true,
+    // Mouse tracking is off by default: arming it hands every click and drag
+    // to the app, which disables the terminal's own click-drag text selection
+    // outright (getting it back needs a terminal-specific modifier override —
+    // Shift, Option, or Fn depending on emulator). Wheel-scroll and
+    // click-to-place-caret fall back to their keyboard equivalents
+    // (up/down/shift+meta+up/down, arrow keys) with this off. Set
+    // AGAV_MOUSE=0 to opt out of mouse wheel/click support and prefer simple text selection.
+    mouse: process.env["AGAV_MOUSE"] !== "1",
     kittyKeyboard: { mode: enhancedKeyboard ? "enabled" : "disabled", flags: ["disambiguateEscapeCodes"] },
   });
 

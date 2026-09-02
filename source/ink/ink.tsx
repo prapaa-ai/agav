@@ -66,6 +66,17 @@ export type InkOptions = {
 	patchConsole?: boolean;
 	alternateScreen?: boolean;
 	maxFps?: number;
+	/**
+	 * Enable mouse tracking (wheel-scroll and click). Off by default: arming it
+	 * hands every click and drag to the app instead of the terminal, which
+	 * disables the terminal's own click-drag text selection outright — modifier
+	 * overrides (Shift/Option/Fn, terminal-dependent) are the only way back in
+	 * while it's on. Off leaves the terminal's native selection working
+	 * unmodified; wheel-scroll and click-to-place-caret fall back to their
+	 * keyboard equivalents (arrow keys / `scrollUp`/`scrollDown` bindings).
+	 * @default false
+	 */
+	mouse?: boolean;
 	kittyKeyboard?: {
 		mode: "enabled" | "disabled";
 		flags?: string[];
@@ -138,6 +149,7 @@ export default class Ink {
 	private readonly interactive: boolean;
 	private readonly exitOnCtrlC: boolean;
 	private readonly alternateScreen: boolean;
+	private readonly mouseEnabled: boolean;
 
 	// Kitty keyboard protocol state. `kittyKeyboardEnabled` tracks whether we
 	// pushed a flags stack entry on mount so we know to pop it on unmount.
@@ -181,6 +193,7 @@ export default class Ink {
 		this.exitOnCtrlC = options.exitOnCtrlC ?? true;
 		this.interactive = Boolean(options.stdout.isTTY);
 		this.alternateScreen = Boolean(options.alternateScreen);
+		this.mouseEnabled = Boolean(options.mouse);
 		this.kittyKeyboard = options.kittyKeyboard;
 
 		this.rootNode = dom.createNode("ink-root");
@@ -226,7 +239,10 @@ export default class Ink {
 			stdout.write(ENTER_ALT_SCREEN);
 		}
 
-		stdout.write(ENABLE_MOUSE_TRACKING);
+		if (this.mouseEnabled) {
+			stdout.write(ENABLE_MOUSE_TRACKING);
+		}
+
 		stdout.write(HIDE_CURSOR);
 
 		// Pin the kitty keyboard protocol mode if requested. Only force-enable
@@ -245,7 +261,29 @@ export default class Ink {
 
 		this.setRawMode(true);
 		stdin.on("data", this.handleInput);
+
+		// Restore terminal state even if the process dies without ever calling
+		// unmount() — an uncaught exception, a signal, or main.tsx's own
+		// process.exit() paths. Without this, mouse tracking (and, on the
+		// alternate screen, the buffer switch) leaks into the user's shell:
+		// clicks and drags keep being reported as escape sequences instead of
+		// selecting text, until they run `reset` or the equivalent by hand.
+		// unmount() is idempotent (guarded by isUnmounted) and fully
+		// synchronous, so it is safe to run from the "exit" event, which is the
+		// last point at which synchronous work can still reach the streams.
+		process.on("exit", this.handleProcessExit);
 	}
+
+	private readonly handleProcessExit = (): void => {
+		// The "exit" event only allows synchronous work, and Node treats a
+		// throw here as fatal — don't let a destroyed/closed stream (a common
+		// state this late in shutdown) turn a best-effort cleanup into a crash.
+		try {
+			this.unmount();
+		} catch {
+			// Best-effort: the terminal may already be gone.
+		}
+	};
 
 	private readonly setRawMode = (value: boolean): void => {
 		const {stdin} = this.options;
@@ -330,7 +368,10 @@ export default class Ink {
 				this.log.clear();
 			}
 
-			this.options.stdout.write(DISABLE_MOUSE_TRACKING);
+			if (this.mouseEnabled) {
+				this.options.stdout.write(DISABLE_MOUSE_TRACKING);
+			}
+
 			this.options.stdin.off("data", this.handleInput);
 		}
 
@@ -358,7 +399,10 @@ export default class Ink {
 				stdin.resume();
 			}
 
-			stdout.write(ENABLE_MOUSE_TRACKING);
+			if (this.mouseEnabled) {
+				stdout.write(ENABLE_MOUSE_TRACKING);
+			}
+
 			stdout.write(HIDE_CURSOR);
 
 			// Repaint immediately rather than waiting on the throttle, so the UI
@@ -757,6 +801,7 @@ export default class Ink {
 		this.isUnmounted = true;
 		clearTimeout(this.escapeTimer);
 		this.throttledOnRender.cancel();
+		process.off("exit", this.handleProcessExit);
 
 		const {stdout, stdin} = this.options;
 
@@ -800,7 +845,10 @@ export default class Ink {
 			stdout.write("\x1b[<u");
 		}
 
-		stdout.write(DISABLE_MOUSE_TRACKING);
+		if (this.mouseEnabled) {
+			stdout.write(DISABLE_MOUSE_TRACKING);
+		}
+
 		stdout.write(SHOW_CURSOR);
 
 		if (this.alternateScreen) {

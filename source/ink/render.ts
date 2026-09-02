@@ -15,6 +15,15 @@ export type RenderOptions = {
 	patchConsole?: boolean;
 	/** Use the alternate screen buffer. @default false */
 	alternateScreen?: boolean;
+	/**
+	 * Enable mouse tracking (wheel-scroll and click). Off by default so the
+	 * terminal's native click-drag text selection works unmodified — arming
+	 * it hands every click and drag to the app, and getting native selection
+	 * back then requires a terminal-specific modifier override (Shift on
+	 * xterm/VTE/Konsole/Alacritty/kitty/WezTerm, Option on iTerm2, Fn on
+	 * Terminal.app). @default false
+	 */
+	mouse?: boolean;
 	/** Maximum render frames per second. @default 30 */
 	maxFps?: number;
 	/**
@@ -63,6 +72,7 @@ const render = (node: ReactNode, options?: RenderOptions): Instance => {
 		exitOnCtrlC: true,
 		patchConsole: true,
 		alternateScreen: false,
+		mouse: false,
 		maxFps: 30,
 		...options,
 	};
