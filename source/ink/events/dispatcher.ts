@@ -81,6 +81,14 @@ export const dispatchMouseUp = (
 	bubble(target, event, node => node.onMouseUp);
 };
 
+/** Dispatch a mouse-move/drag, bubbling through onMouseMove handlers. */
+export const dispatchMouseMove = (
+	target: DOMElement,
+	event: MouseEventData,
+): void => {
+	bubble(target, event, node => node.onMouseMove);
+};
+
 /** Collect the ancestor chain (including the node itself) up to the root. */
 const ancestorChain = (node: DOMElement | null): DOMElement[] => {
 	const chain: DOMElement[] = [];

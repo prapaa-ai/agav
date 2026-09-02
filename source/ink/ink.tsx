@@ -21,6 +21,7 @@ import {
 	dispatchWheel,
 	dispatchMouseDown,
 	dispatchMouseUp,
+	dispatchMouseMove,
 	dispatchHover,
 } from "./events/dispatcher.js";
 import {

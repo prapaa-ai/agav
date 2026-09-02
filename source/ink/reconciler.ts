@@ -38,6 +38,7 @@ const mouseHandlerKeys = new Set([
 	"onClick",
 	"onMouseDown",
 	"onMouseUp",
+	"onMouseMove",
 	"onMouseEnter",
 	"onMouseLeave",
 	"onWheel",
