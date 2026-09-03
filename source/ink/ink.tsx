@@ -302,6 +302,8 @@ export default class Ink {
 	private selectionLastRepaint = 0;
 	/** Whether the engine consumed the mouse-down for selection (component didn't handle it). */
 	private selectionOwned = false;
+	/** Lines currently displayed on screen (may include highlight), for surgical repaint diffing. */
+	private displayedLines: string[] = [];
 
 	private readonly exitPromise: Promise<void>;
 	private resolveExitPromise: () => void = noop;
@@ -544,6 +546,7 @@ export default class Ink {
 
 		this.log(displayOutput + "\n");
 		this.lastOutput = output;
+		this.displayedLines = displayOutput.split("\n");
 
 		stdout.write(END_SYNC);
 	};
@@ -830,10 +833,12 @@ export default class Ink {
 	}
 
 	/**
-	 * Lightweight repaint: re-write `lastOutput` with (or without) the
-	 * selection overlay. Does NOT trigger a layout or React render — just
-	 * re-paints the existing frame. This eliminates the flicker that a full
-	 * onRender() cycle would cause during a mouse drag.
+	 * Lightweight repaint: update only the lines whose highlight changed.
+	 *
+	 * Instead of erasing and rewriting the entire frame (which flickers on
+	 * Windows terminals that lack DEC 2026 sync support), this diffs the new
+	 * highlighted output against what is currently on screen and uses cursor
+	 * addressing to overwrite only the lines that differ.
 	 */
 	private repaintWithSelection(): void {
 		if (!this.interactive || !this.lastOutput) return;
@@ -842,10 +847,47 @@ export default class Ink {
 			? applySelectionHighlight(this.lastOutput, this.selectionRange)
 			: this.lastOutput;
 
+		const newLines = displayOutput.split("\n");
+		const oldLines = this.displayedLines;
 		const stdout = this.options.stdout;
-		stdout.write(BEGIN_SYNC);
-		this.log(displayOutput + "\n");
-		stdout.write(END_SYNC);
+
+		// If no previous frame is tracked (first paint), fall back to full
+		// log-update repaint.
+		if (oldLines.length === 0 || oldLines.length !== newLines.length) {
+			stdout.write(BEGIN_SYNC);
+			this.log(displayOutput + "\n");
+			this.displayedLines = newLines;
+			stdout.write(END_SYNC);
+			return;
+		}
+
+		// The frame is on screen with the cursor sitting one line below it
+		// (because of the trailing "\n" in `this.log(output + "\n")`). Each
+		// line in the array corresponds to a screen row. To reach row `r` we
+		// need to move up `(totalLines - r)` from the current cursor position.
+		const totalLines = oldLines.length;
+		let buf = BEGIN_SYNC;
+		let touched = false;
+
+		for (let r = 0; r < totalLines; r++) {
+			if (newLines[r] === oldLines[r]) continue;
+			touched = true;
+			// Move cursor to the start of row `r`.
+			const linesUp = totalLines - r;
+			buf += `\x1b[${linesUp}A\r\x1b[2K${newLines[r]!}`;
+			// Move cursor back down to the bottom.
+			buf += `\x1b[${linesUp}B\r`;
+		}
+
+		buf += END_SYNC;
+
+		if (touched) {
+			stdout.write(buf);
+			this.displayedLines = newLines;
+			// Keep log-update in sync so the next full render erases the
+			// right number of lines and doesn't see a stale previousOutput.
+			this.log.sync(displayOutput + "\n");
+		}
 	}
 
 	/** Begin a potential global text selection at the given frame coordinate. */
