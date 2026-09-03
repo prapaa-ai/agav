@@ -298,6 +298,8 @@ export default class Ink {
 	private selectionLastClickTime = 0;
 	/** Click count for multi-click detection. */
 	private selectionClickCount = 0;
+	/** Timestamp of the last selection repaint, for drag throttling. */
+	private selectionLastRepaint = 0;
 	/** Whether the engine consumed the mouse-down for selection (component didn't handle it). */
 	private selectionOwned = false;
 
@@ -893,13 +895,23 @@ export default class Ink {
 		this.selectionDragging = true;
 		this.selectionRange = normalizeSelection(this.selectionAnchor, {x, y});
 
-		// Lightweight repaint — no layout, no React render, no flicker.
-		this.repaintWithSelection();
+		// Throttle repaints to ~30 fps. Drag events arrive at 60+ Hz; full
+		// erase-and-rewrite on every one causes visible flicker on terminals
+		// that do not support synchronized updates (DEC 2026).
+		const now = Date.now();
+		if (now - this.selectionLastRepaint >= 32) {
+			this.selectionLastRepaint = now;
+			this.repaintWithSelection();
+		}
 	}
 
 	/** Finalise the global selection: copy to clipboard and keep highlight. */
 	private finaliseGlobalSelection(): void {
 		if (this.selectionRange) {
+			// Ensure the highlight reflects the final drag position — the last
+			// drag event may have been throttled.
+			this.repaintWithSelection();
+
 			const lines = this.getPlainLines();
 			const text = getSelectedText(lines, this.selectionRange);
 
