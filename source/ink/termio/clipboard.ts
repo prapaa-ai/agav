@@ -47,8 +47,17 @@ const resolveClipboardCmd = (): { cmd: string; args: string[] } | null => {
 		return { cmd: "pbcopy", args: [] };
 	}
 
-	if (os === "win32" && commandExists("clip")) {
-		return { cmd: "clip", args: [] };
+	if (os === "win32") {
+		// Prefer PowerShell's Set-Clipboard over clip.exe — clip reads stdin
+		// in the console's active code page (CP437/CP1252), garbling any
+		// non-ASCII characters like bullets, arrows, or box-drawing symbols.
+		// PowerShell handles Unicode natively.
+		if (commandExists("powershell")) {
+			return { cmd: "powershell", args: [] };
+		}
+		if (commandExists("clip")) {
+			return { cmd: "clip", args: [] };
+		}
 	}
 
 	// Linux / FreeBSD: try clipboard tools in preference order.
@@ -72,10 +81,28 @@ const clipboardCmd = resolveClipboardCmd();
 /**
  * Copy text via the platform-native clipboard command resolved at startup.
  * Returns true only when a verified command was spawned successfully.
+ *
+ * On Windows, `clip.exe` reads stdin using the console's active code page
+ * (usually CP437 or CP1252), not UTF-8, so non-ASCII characters like `•`,
+ * `→`, and box-drawing symbols get garbled. We use PowerShell's
+ * `Set-Clipboard` instead, which handles Unicode natively.
  */
 const nativeCopy = (text: string): boolean => {
 	if (!clipboardCmd) return false;
 	try {
+		if (clipboardCmd.cmd === "powershell") {
+			// PowerShell path: pass text as a Base64-encoded UTF-16LE string
+			// to avoid any quoting or encoding issues on the command line.
+			const utf16 = Buffer.from(text, "utf16le").toString("base64");
+			const ps = `[System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${utf16}')) | Set-Clipboard`;
+			const child = spawn("powershell", ["-NoProfile", "-Command", ps], {
+				stdio: ["ignore", "ignore", "ignore"],
+				windowsHide: true,
+			});
+			child.on("error", () => {});
+			return true;
+		}
+
 		const child = spawn(clipboardCmd.cmd, clipboardCmd.args, {
 			stdio: ["pipe", "ignore", "ignore"],
 		});
