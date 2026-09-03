@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Box, Text, useInput, useStdin, useStdout, type DOMElement, type MouseEventData } from "../ink/index.js";
 import { KeybindingResolver, PROMPT_ACTIONS, formatKeybinding, formatUsableKeybinding, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { loadPromptHistory, savePromptHistory } from "../config/prompt-history.js";
+import { writeClipboard } from "../ink/termio/clipboard.js";
 import { readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 
@@ -70,8 +71,12 @@ function getActiveFileToken(value: string, cursorPos: number): ActiveFileToken |
  * is a bare CSI (`[` + parameter + intermediate + final byte, per ECMA-48) or
  * SS3 (`O` + final byte). Both need at least two characters, which keeps a
  * plain `[` or `O` keystroke typeable.
+ *
+ * The `+` quantifier handles multiple sequences batched in one read — fast
+ * scrolling can produce several mouse reports per chunk, all arriving with
+ * their ESC prefix already stripped.
  */
-const ESCAPE_RESIDUE_RE = /^(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e])$/;
+const ESCAPE_RESIDUE_RE = /^(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e])+$/;
 
 /** Whether `input` is terminal noise rather than something the user typed. */
 export function isEscapeResidue(input: string): boolean {
@@ -233,22 +238,125 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const historyRef = useRef<string[]>([]);
   const historyLoadedRef = useRef(false);
   const historyIndexRef = useRef(-1);
+  /** Saves the in-progress input when the user first presses Up, so Down can restore it. */
+  const draftRef = useRef<string | null>(null);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
   /** The box holding the text rows, for turning a click into a buffer offset. */
   const linesRef = useRef<DOMElement | null>(null);
+  /** Current wrapped lines, kept in a ref so container-level mouse handlers don't need new closures each render. */
+  const wrappedLinesRef = useRef<{ text: string; offset: number; isFirst: boolean }[]>([]);
+
+  // ---------------------------------------------------------------------------
+  // Text selection state.  Selection is tracked as a pair of buffer offsets
+  // (anchor and focus).  When they differ, the range between them is rendered
+  // with an inverse highlight and copied to the clipboard on mouse-up.
+  // ---------------------------------------------------------------------------
+
+  /** The buffer offset where the selection started (mouse-down or Shift+Arrow origin). */
+  const selAnchorRef = useRef<number | null>(null);
+  /** The moving end of the selection (where the drag / Shift+Arrow currently is). */
+  const selFocusRef = useRef<number | null>(null);
+  /** Timestamp of the last mouse-down, for double/triple-click detection. */
+  const lastClickTimeRef = useRef(0);
+  /** Click count for multi-click detection (1 = single, 2 = double, 3 = triple). */
+  const clickCountRef = useRef(0);
+  /** Whether a drag is currently in progress (mouse is down and has moved). */
+  const draggingRef = useRef(false);
+
+  /** Ordered [start, end) of the current selection, or null if none. */
+  const getSelectionRange = (): [number, number] | null => {
+    const a = selAnchorRef.current;
+    const f = selFocusRef.current;
+    if (a === null || f === null || a === f) return null;
+    return a < f ? [a, f] : [f, a];
+  };
+
+  /** Clear any active selection. */
+  const clearSelection = () => {
+    selAnchorRef.current = null;
+    selFocusRef.current = null;
+    draggingRef.current = false;
+  };
+
+  /** If there is a selection, delete it, update the buffer, and return true. */
+  const deleteSelection = (): boolean => {
+    const range = getSelectionRange();
+    if (!range) return false;
+    const [start, end] = range;
+    const val = liveRef.current.value;
+    applyEdit(val.slice(0, start) + val.slice(end), start);
+    clearSelection();
+    return true;
+  };
+
+  /**
+   * Convert a mouse event's x coordinate into a buffer offset for the given
+   * wrapped line.
+   */
+  const eventToOffset = (event: MouseEventData, wl: { offset: number; text: string }): number => {
+    const rows = linesRef.current;
+    if (!rows || rows.internal_x === undefined) return wl.offset;
+    const column = event.x - rows.internal_x - PREFIX_WIDTH;
+    return wl.offset + Math.max(0, Math.min(column, wl.text.length));
+  };
+
+  /**
+   * Convert a mouse event into a buffer offset by finding the correct wrapped
+   * line from the event's y coordinate.  Used by the container-level
+   * onMouseMove and onMouseUp handlers so that drags crossing row boundaries
+   * still resolve to the right buffer position.
+   */
+  const eventToOffsetAuto = (event: MouseEventData, lines: WrappedLine[]): number => {
+    const container = linesRef.current;
+    if (!container || container.internal_y === undefined) return 0;
+    // Each wrapped line is one row tall, starting at container.internal_y.
+    const relRow = event.y - container.internal_y;
+    const idx = Math.max(0, Math.min(relRow, lines.length - 1));
+    const wl = lines[idx]!;
+    return eventToOffset(event, wl);
+  };
+
+  /**
+   * Extract the selected text from the live buffer and copy it to the system
+   * clipboard.
+   */
+  const copySelectionToClipboard = () => {
+    const range = getSelectionRange();
+    if (!range) return;
+    const [start, end] = range;
+    const selected = liveRef.current.value.slice(start, end);
+    if (selected && stdout) writeClipboard(stdout, selected);
+  };
+
+  /**
+   * Find the word boundaries around `offset` in the buffer.
+   * Returns [start, end) offsets.
+   */
+  const wordBoundsAt = (offset: number): [number, number] => {
+    const val = liveRef.current.value;
+    if (offset < 0 || offset >= val.length || !/\w/.test(val[offset]!)) return [offset, offset];
+    let start = offset;
+    while (start > 0 && /\w/.test(val[start - 1]!)) start--;
+    let end = offset;
+    while (end < val.length && /\w/.test(val[end]!)) end++;
+    return [start, end];
+  };
 
   useEffect(() => {
     if (historyLoadedRef.current) return;
     historyLoadedRef.current = true;
     loadPromptHistory().then((saved) => {
       const isAutoContinue = (s: string) => s.startsWith("Do Step ");
-      const resumed = resumeUserMessages ?? [];
-      const merged = saved.filter((s) => !isAutoContinue(s));
-      for (const msg of resumed) {
-        if (msg && !isAutoContinue(msg) && !merged.includes(msg)) merged.push(msg);
-      }
+      const resumed = (resumeUserMessages ?? []).filter((s) => s && !isAutoContinue(s));
+      // Resumed session messages go at the end (most recent) so the first
+      // Up-arrow recall shows the last message from *this* session, not
+      // whatever was typed last in a different session. Remove duplicates
+      // from their earlier position so they are not shown twice.
+      const resumedSet = new Set(resumed);
+      const merged = saved.filter((s) => !isAutoContinue(s) && !resumedSet.has(s));
+      merged.push(...resumed);
       historyRef.current = merged;
     });
   }, []);
@@ -341,13 +449,32 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       const match = keyResolverRef.current.feed(input, key);
       if (match.pending) return;
 
+      // Shift+Arrow: extend or create a selection.
+      if (key.shift && (key.leftArrow || key.rightArrow)) {
+        if (selAnchorRef.current === null) {
+          selAnchorRef.current = cursorPos;
+          selFocusRef.current = cursorPos;
+        }
+        const next = key.leftArrow
+          ? prevGraphemeOffset(value, cursorPos)
+          : nextGraphemeOffset(value, cursorPos);
+        selFocusRef.current = next;
+        moveCaret(next);
+        // If anchor === focus the selection collapsed — clean it up.
+        if (selAnchorRef.current === next) clearSelection();
+        return;
+      }
+
       if (match.action === "clearInput") {
+        clearSelection();
         applyEdit("", 0);
         onClearAttachments?.();
         historyIndexRef.current = -1;
+        draftRef.current = null;
         return;
       }
       if (match.action === "deleteWordBackward") {
+        if (deleteSelection()) return;
         const before = value.slice(0, cursorPos);
         const wordStart = before.search(/\s*\S+\s*$/);
         const start = wordStart < 0 ? 0 : wordStart;
@@ -429,6 +556,11 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       if (match.action === "historyUp" && !value.includes("\n") && !suppressHistory) {
         const history = historyRef.current;
         if (history.length === 0) return;
+        // Save the in-progress input the first time the user enters history,
+        // so pressing Down all the way back restores it instead of clearing.
+        if (historyIndexRef.current === -1) {
+          draftRef.current = value;
+        }
         const nextIdx = Math.min(historyIndexRef.current + 1, history.length - 1);
         historyIndexRef.current = nextIdx;
         const msg = history[history.length - 1 - nextIdx]!;
@@ -436,12 +568,18 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         return;
       }
 
-      // Down arrow — newer history
-      if (match.action === "historyDown" && !value.includes("\n") && !suppressHistory) {
+      // Down arrow — newer history. Only enters when the user is actually
+      // browsing history (historyIndexRef >= 0). Without this guard, pressing
+      // Down while typing (historyIndexRef === -1) would wipe the input
+      // because draftRef is null and the fallback is an empty string.
+      if (match.action === "historyDown" && historyIndexRef.current >= 0 && !value.includes("\n") && !suppressHistory) {
         const history = historyRef.current;
         if (historyIndexRef.current <= 0) {
           historyIndexRef.current = -1;
-          applyEdit("", 0);
+          // Restore the draft the user was typing before they entered history.
+          const draft = draftRef.current ?? "";
+          draftRef.current = null;
+          applyEdit(draft, draft.length);
           return;
         }
         historyIndexRef.current--;
@@ -452,15 +590,20 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
       if (match.action === "newline" || match.action === "submit") {
         if (match.action === "newline") {
-          const before = value.slice(0, cursorPos);
-          const after = value.slice(cursorPos);
-          applyEdit(before + "\n" + after, cursorPos + 1);
+          // Replace selected text with the newline.
+          deleteSelection();
+          const v = liveRef.current.value;
+          const c = liveRef.current.cursor;
+          const before = v.slice(0, c);
+          const after = v.slice(c);
+          applyEdit(before + "\n" + after, c + 1);
         } else {
           if (value.trim()) {
             const deduped = historyRef.current.filter((h) => h !== value);
             deduped.push(value);
             historyRef.current = deduped;
             historyIndexRef.current = -1;
+            draftRef.current = null;
             savePromptHistory(deduped);
             // No caret reset here. The parent clears the buffer only once it
             // has accepted the message, and the clamp above follows it down to
@@ -474,9 +617,16 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       }
 
       // Bound special keys should not become literal input when their defaults are replaced.
-      if (key.return || key.escape || key.upArrow || key.downArrow) return;
+      if (key.return || key.escape || key.upArrow || key.downArrow) {
+        clearSelection();
+        return;
+      }
 
       if (key.backspace) {
+        if (deleteSelection()) {
+          setSelectedSuggestion(0);
+          return;
+        }
         if (cursorPos > 0) {
           // Check if cursor is right after an attachment label like "<<Pasted #1: ...>>"
           const textBefore = value.slice(0, cursorPos);
@@ -495,6 +645,10 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       }
 
       if (key.delete) {
+        if (deleteSelection()) {
+          setSelectedSuggestion(0);
+          return;
+        }
         if (cursorPos < value.length) {
           const next = nextGraphemeOffset(value, cursorPos);
           applyEdit(value.slice(0, cursorPos) + value.slice(next), cursorPos);
@@ -504,10 +658,12 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       }
 
       if (key.leftArrow) {
+        clearSelection();
         moveCaret(prevGraphemeOffset(value, cursorPos));
         return;
       }
       if (key.rightArrow) {
+        clearSelection();
         moveCaret(nextGraphemeOffset(value, cursorPos));
         return;
       }
@@ -520,9 +676,13 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       // except on terminals without bracketed paste, where the whole chunk
       // arrives here and must still be inserted verbatim.
       if (input && !key.ctrl && !key.meta && !isEscapeResidue(input)) {
-        const before = value.slice(0, cursorPos);
-        const after = value.slice(cursorPos);
-        applyEdit(before + input + after, cursorPos + input.length);
+        // If text is selected, replace it with the typed character.
+        deleteSelection();
+        const v = liveRef.current.value;
+        const c = liveRef.current.cursor;
+        const before = v.slice(0, c);
+        const after = v.slice(c);
+        applyEdit(before + input + after, c + input.length);
         setSelectedSuggestion(0);
       }
     },
@@ -566,33 +726,102 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     }
   }
   if (wrappedLines.length === 0) wrappedLines.push({ text: "", offset: 0, isFirst: true });
+  wrappedLinesRef.current = wrappedLines;
 
   const isMultiline = rawLines.length > 1 || wrappedLines.length > 1;
 
+  // ---------------------------------------------------------------------------
+  // Mouse handlers for caret placement and drag-to-select.
+  //
+  // Which row was hit comes from the handler being bound to that row, not from
+  // the mouse's `y`. The two do not agree: a frame taller than the terminal has
+  // scrolled by the time it is on screen, so a row's laid-out `y` is not the
+  // terminal row it is printed on, and subtracting one from the other is off by
+  // however far the frame scrolled. Nothing scrolls sideways, so `x` is sound.
+  //
+  // The wrapped line already knows the buffer offset it starts at — the same
+  // table the caret is drawn from, so what the user aims at and what they get
+  // are the same thing by construction, wrapping and all.
+  // ---------------------------------------------------------------------------
+
+  /** Mouse-down: start a potential selection. */
+  const handleRowMouseDown = (line: WrappedLine) => (event: MouseEventData) => {
+    const offset = snapOutOfAttachment(text, eventToOffset(event, line));
+    const now = Date.now();
+    const MULTI_CLICK_MS = 400;
+
+    if (now - lastClickTimeRef.current < MULTI_CLICK_MS) {
+      clickCountRef.current = (clickCountRef.current % 3) + 1;
+    } else {
+      clickCountRef.current = 1;
+    }
+    lastClickTimeRef.current = now;
+
+    if (clickCountRef.current === 2) {
+      // Double-click: select the word under the cursor.
+      const [start, end] = wordBoundsAt(offset);
+      if (start !== end) {
+        selAnchorRef.current = start;
+        selFocusRef.current = end;
+        moveCaret(end);
+      }
+    } else if (clickCountRef.current === 3) {
+      // Triple-click: select the entire buffer (like a single "line" for the prompt).
+      selAnchorRef.current = 0;
+      selFocusRef.current = text.length;
+      moveCaret(text.length);
+    } else {
+      // Single click: begin a potential drag selection.
+      selAnchorRef.current = offset;
+      selFocusRef.current = offset;
+      draggingRef.current = false;
+    }
+
+    event.stopPropagation?.();
+  };
+
   /**
-   * Puts the caret where the user clicked on one wrapped row.
-   *
-   * Which row it was comes from the handler being bound to that row, not from
-   * the mouse's `y`. The two do not agree: a frame taller than the terminal has
-   * scrolled by the time it is on screen, so a row's laid-out `y` is not the
-   * terminal row it is printed on, and subtracting one from the other is off by
-   * however far the frame scrolled. Nothing scrolls sideways, so `x` is sound.
-   *
-   * The wrapped line already knows the buffer offset it starts at — the same
-   * table the caret is drawn from, so what the user aims at and what they get
-   * are the same thing by construction, wrapping and all.
+   * Mouse-move (drag) on the container: extend the selection from the anchor.
+   * This handler lives on the parent `<Box>` wrapping all rows so that a drag
+   * that crosses wrapped-line boundaries still resolves correctly.
+   */
+  const handleContainerMouseMove = (event: MouseEventData) => {
+    if (selAnchorRef.current === null) return;
+    const offset = snapOutOfAttachment(liveRef.current.value, eventToOffsetAuto(event, wrappedLinesRef.current));
+    draggingRef.current = true;
+    selFocusRef.current = offset;
+    moveCaret(offset);
+    event.stopPropagation?.();
+  };
+
+  /**
+   * Mouse-up on the container: copy any active selection to the clipboard.
+   * Unlike `onClick` (which requires press and release on the same node),
+   * `onMouseUp` fires on every release regardless of where the press started,
+   * so cross-row drag selections are properly handled.
+   */
+  const handleContainerMouseUp = (event: MouseEventData) => {
+    if (draggingRef.current) {
+      copySelectionToClipboard();
+      draggingRef.current = false;
+    } else if (clickCountRef.current >= 2) {
+      // Double/triple-click: selection was set in mouseDown, copy now.
+      copySelectionToClipboard();
+    }
+    event.stopPropagation?.();
+  };
+
+  /**
+   * Click (press + release on the same node): positions the caret.
+   * Selection copy is handled by the container-level mouseUp handler.
    */
   const handleRowClick = (line: WrappedLine) => (event: MouseEventData) => {
-    const rows = linesRef.current;
-    if (!rows || rows.internal_x === undefined) return;
-
-    // Past the end of a line means the end of that line, not the next one:
-    // clicking into the empty space right of the text is how anyone asks for
-    // the caret to go last.
-    const column = event.x - rows.internal_x - PREFIX_WIDTH;
-    const offset = line.offset + Math.max(0, Math.min(column, line.text.length));
-
-    moveCaret(snapOutOfAttachment(text, offset));
+    if (!draggingRef.current && clickCountRef.current <= 1) {
+      // Plain click with no drag — position caret, clear selection.
+      const offset = snapOutOfAttachment(text, eventToOffset(event, line));
+      clearSelection();
+      moveCaret(offset);
+    }
     event.stopPropagation?.();
   };
 
@@ -602,7 +831,12 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     // where anyone clicks to put the caret at its end, and a box that stops at
     // the last character is not there to be clicked.
     <Box flexDirection="column" flexGrow={1}>
-      <Box flexDirection="column" ref={linesRef}>
+      <Box
+        flexDirection="column"
+        ref={linesRef}
+        onMouseMove={handleContainerMouseMove}
+        onMouseUp={handleContainerMouseUp}
+      >
       {wrappedLines.map((wl, i) => {
         const prefix = wl.isFirst ? "❯ " : "  ";
         const lineStart = wl.offset;
@@ -610,12 +844,40 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         const isLastLine = i === wrappedLines.length - 1;
         const cursorInLine = cursorPos >= lineStart && (isLastLine ? cursorPos <= lineEnd : cursorPos < lineEnd);
 
+        // Selection range clamped to this wrapped line.
+        const sel = getSelectionRange();
+        const selStart = sel ? Math.max(sel[0] - lineStart, 0) : 0;
+        const selEnd = sel ? Math.min(sel[1] - lineStart, wl.text.length) : 0;
+        const hasSelection = sel !== null && selStart < selEnd;
+
+        const rowHandlers = {
+          onClick: handleRowClick(wl),
+          onMouseDown: handleRowMouseDown(wl),
+        };
+
         if (!text && wl.isFirst) {
           return (
-            <Box key={i} onClick={handleRowClick(wl)}>
+            <Box key={i} {...rowHandlers}>
               <Text bold color="green">{prefix}</Text>
               <Text inverse> </Text>
               <Text dimColor>Type a message...</Text>
+            </Box>
+          );
+        }
+
+        // When there is a selection, render it with inverse highlighting.
+        // The block cursor is suppressed while a selection is active — the
+        // selection itself shows where the focus is.
+        if (hasSelection) {
+          const before = wl.text.slice(0, selStart);
+          const selected = wl.text.slice(selStart, selEnd);
+          const after = wl.text.slice(selEnd);
+          return (
+            <Box key={i} {...rowHandlers}>
+              {wl.isFirst ? <Text bold color="green">{prefix}</Text> : <Text dimColor>{prefix}</Text>}
+              <Text>{before}</Text>
+              <Text inverse color="cyan">{selected}</Text>
+              <Text>{after}</Text>
             </Box>
           );
         }
@@ -628,7 +890,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
             : { grapheme: " ", length: 1 };
           const after = col < wl.text.length ? wl.text.slice(col + chLen) : "";
           return (
-            <Box key={i} onClick={handleRowClick(wl)}>
+            <Box key={i} {...rowHandlers}>
               {wl.isFirst ? <Text bold color="green">{prefix}</Text> : <Text dimColor>{prefix}</Text>}
               <Text>{before}</Text>
               <Text inverse>{ch}</Text>
@@ -638,7 +900,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         }
 
         return (
-          <Box key={i} onClick={handleRowClick(wl)}>
+          <Box key={i} {...rowHandlers}>
             {wl.isFirst ? <Text bold color="green">{prefix}</Text> : <Text dimColor>{prefix}</Text>}
             <Text>{wl.text || " "}</Text>
           </Box>

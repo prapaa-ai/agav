@@ -100,6 +100,11 @@ export const renderNodeToScreenReaderOutput = (
 	return output;
 };
 
+// Vertical clip bounds threaded through the render tree so subtrees that fall
+// entirely outside the visible viewport can be skipped early — avoiding
+// expensive squashTextNodes / widestLine / wrapText work for off-screen nodes.
+type ClipY = {y1: number; y2: number} | undefined;
+
 // After nodes are laid out, render each to output object, which later gets
 // rendered to terminal
 const renderNodeToOutput = (
@@ -110,6 +115,7 @@ const renderNodeToOutput = (
 		offsetY?: number;
 		transformers?: OutputTransformer[];
 		skipStaticElements: boolean;
+		clipY?: ClipY;
 	},
 ): void => {
 	const {
@@ -117,6 +123,7 @@ const renderNodeToOutput = (
 		offsetY = 0,
 		transformers = [],
 		skipStaticElements,
+		clipY,
 	} = options;
 
 	if (skipStaticElements && node.internal_static) {
@@ -133,13 +140,27 @@ const renderNodeToOutput = (
 		// Left and top positions in Yoga are relative to their parent node
 		const x = offsetX + yogaNode.getComputedLeft();
 		const y = offsetY + yogaNode.getComputedTop();
+		const nodeHeight = yogaNode.getComputedHeight();
 
 		// Store absolute coordinates and dimensions on the node so mouse
 		// events can be hit-tested against the rendered tree later.
 		node.internal_x = x;
 		node.internal_y = y;
 		node.internal_width = yogaNode.getComputedWidth();
-		node.internal_height = yogaNode.getComputedHeight();
+		node.internal_height = nodeHeight;
+
+		// Early-exit: if this node is entirely outside the active vertical
+		// clip bounds it will never produce visible output. Skip the expensive
+		// text processing (squashTextNodes, widestLine, wrapText) and the
+		// entire subtree walk. The internal_* coordinates are already stored
+		// above so hit-testing for mouse events still works for nodes that sit
+		// just outside the viewport.
+		if (clipY && nodeHeight > 0) {
+			const nodeBottom = y + nodeHeight;
+			if (nodeBottom <= clipY.y1 || y >= clipY.y2) {
+				return;
+			}
+		}
 
 		// Transformers are functions that transform final text output of each
 		// component. See Output class for logic that applies transformers.
@@ -169,6 +190,7 @@ const renderNodeToOutput = (
 		}
 
 		let clipped = false;
+		let childClipY = clipY;
 
 		if (node.nodeName === "ink-box") {
 			renderBackground(x, y, node, output);
@@ -203,17 +225,70 @@ const renderNodeToOutput = (
 
 				output.clip({x1, x2, y1, y2});
 				clipped = true;
+
+				// Tighten the vertical clip for children. If the parent
+				// already established a clip, intersect with it.
+				if (y1 !== undefined && y2 !== undefined) {
+					if (childClipY) {
+						childClipY = {
+							y1: Math.max(childClipY.y1, y1),
+							y2: Math.min(childClipY.y2, y2),
+						};
+					} else {
+						childClipY = {y1, y2};
+					}
+				}
 			}
 		}
 
 		if (node.nodeName === "ink-root" || node.nodeName === "ink-box") {
-			for (const childNode of node.childNodes) {
-				renderNodeToOutput(childNode as DOMElement, output, {
-					offsetX: x,
-					offsetY: y,
-					transformers: newTransformers,
-					skipStaticElements,
-				});
+			const children = node.childNodes;
+			if (childClipY && children.length > 8) {
+				// Fast path: when a vertical clip is active and there are many
+				// children (typical for the message list inside ScrollBox),
+				// pre-check each child's position against the clip bounds and
+				// skip off-screen ones without the overhead of a recursive call.
+				// This turns the per-frame child iteration from O(n) recursive
+				// calls into O(n) cheap comparisons + O(visible) recursive calls.
+				for (let ci = 0; ci < children.length; ci++) {
+					const child = children[ci] as DOMElement;
+					const childYoga = child.yogaNode;
+					if (childYoga) {
+						const childTop = y + childYoga.getComputedTop();
+						const childHeight = childYoga.getComputedHeight();
+						// Store layout coordinates so mouse hit-testing still
+						// works for off-screen nodes.
+						child.internal_x = x + childYoga.getComputedLeft();
+						child.internal_y = childTop;
+						child.internal_width = childYoga.getComputedWidth();
+						child.internal_height = childHeight;
+
+						if (childHeight > 0) {
+							const childBottom = childTop + childHeight;
+							if (childBottom <= childClipY.y1 || childTop >= childClipY.y2) {
+								continue;
+							}
+						}
+					}
+
+					renderNodeToOutput(child, output, {
+						offsetX: x,
+						offsetY: y,
+						transformers: newTransformers,
+						skipStaticElements,
+						clipY: childClipY,
+					});
+				}
+			} else {
+				for (const childNode of node.childNodes) {
+					renderNodeToOutput(childNode as DOMElement, output, {
+						offsetX: x,
+						offsetY: y,
+						transformers: newTransformers,
+						skipStaticElements,
+						clipY: childClipY,
+					});
+				}
 			}
 
 			if (clipped) {

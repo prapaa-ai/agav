@@ -16,6 +16,12 @@
   <img src="https://www.agav.dev/preview.gif" alt="Agav preview" width="100%" style="border-radius: 16px;" />
 </div>
 
+## Vision
+
+- **The best agentic coding harness in the world** — not a wrapper around an API, but a complete autonomous agent that reads, reasons, edits, and verifies across real codebases.
+- **Terminal-first, no compromises** — the terminal is where work happens; Agav meets you there with the full power of an IDE and the speed of the command line.
+- **An agent for everyone** — equally useful to the senior engineer debugging a distributed system and the non-technical founder drafting a pitch deck.
+
 ## What it does
 
 Agav reads, searches and edits the repository you run it in, and runs the commands you'd otherwise run yourself. On [Terminal-Bench 2.1](https://www.tbench.ai/leaderboard/terminal-bench/2.1) — all 89 tasks, five trials each, judge-audited trajectories — Agav scored [**84.7%**](https://github.com/harbor-framework/terminal-bench-2-1/pull/225) (377 of 445 trials, ± 0.84%), ahead of every entry on the current public board (submission in review).
