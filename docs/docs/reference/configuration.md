@@ -55,6 +55,45 @@ Agav merges defaults, `~/.agav/config.json`, and `./.agav/config.json` in that o
 | `mcpServers` | Named MCP server definitions (stdio and remote) |
 | `agentMarketplace` | URL of the agent marketplace (supports `https://` and `file://`). Defaults to the official marketplace. Set `AGAV_MARKETPLACE_URL` to override without editing the config file. |
 
+### Tool allowlist examples
+
+`allowedTools` accepts bare tool names and scoped patterns. Scoped patterns match the tool's primary input, such as a command for `run_command` and `process`.
+
+```json
+{
+  "allowedTools": [
+    "read_file",
+    "grep_search",
+    "run_command:npm test*",
+    "process:pnpm test*"
+  ]
+}
+```
+
+A bare `process` rule allows all process actions without confirmation. Prefer scoped process patterns for trusted background commands.
+
+### Background process storage
+
+Daemon-backed background process records and logs are stored outside project configuration under `~/.agav/background-processes/` by default. This directory is managed by the `process` tool and contains job JSON records, stdout/stderr logs, and the generated runner script:
+
+```text
+~/.agav/background-processes/<job-id>.json
+~/.agav/background-processes/<job-id>.stdout.log
+~/.agav/background-processes/<job-id>.stderr.log
+~/.agav/background-processes/process-runner.mjs
+```
+
+It is not configured through `config.json`. Use environment variables before starting Agav:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `AGAV_BACKGROUND_PROCESS_DIR` | `~/.agav/background-processes/` | Overrides the directory used for records, logs, and `process-runner.mjs`. Use the same value across restarts to reattach to jobs in that directory. |
+| `AGAV_NODE` | `process.execPath` | Overrides the Node executable used to launch daemon runners. Use this when a packaged or custom runtime cannot execute `process-runner.mjs`. |
+
+```bash
+AGAV_NODE=/usr/local/bin/node AGAV_BACKGROUND_PROCESS_DIR=/tmp/agav-bg agav
+```
+
 ### MCP server fields
 
 **Stdio servers** (local subprocess):

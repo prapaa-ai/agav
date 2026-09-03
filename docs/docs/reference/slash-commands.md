@@ -36,9 +36,24 @@ Type `/` in an interactive session to autocomplete commands. Run `/help` to see 
 | `/plan clear` | Delete this session's plan. Use `no plan` in a prompt to skip automatic planning. |
 | `/steer <directive>` | Add durable direction for later turns. Use `/steer list`, `/steer remove <number>`, or `/steer clear` to manage directives. |
 | `/loop` | Show the active loop. `/loop <interval> <prompt>` repeats an agent prompt; intervals support `s`, `m`, and `h`. `/loop <prompt>` defaults to ten minutes, and `/loop stop` cancels it. |
-| `/schedule` | List saved tasks. Use `/schedule add "<five-field cron>" <prompt>`, then `enable`, `disable`, or `remove <id>` to manage them. |
+| `/schedule` | List saved tasks. Use `/schedule add "<five-field cron>" <prompt>` for agent prompts, or `/schedule background "<five-field cron>" <command>` for daemon-backed shell commands. Aliases: `/schedule bg` and `/schedule process`. Use `enable`, `disable`, or `remove <id>` to manage tasks. |
 | `/watch <path\|glob> <command>` | Run a shell command after matching files change. `/watch stop` cancels it; glob patterns are supported. |
 | `/undo`, `/undo list` | Revert the most recent tracked file change or inspect the current in-memory undo stack. |
+
+### Schedule syntax
+
+```text
+/schedule list
+/schedule add "0 9 * * 1-5" review open TODOs
+/schedule background "0 9 * * 1-5" pnpm test
+/schedule bg "*/15 * * * *" npm run smoke
+/schedule process "30 17 * * 5" node scripts/report.js
+/schedule disable <id>
+/schedule enable <id>
+/schedule remove <id>
+```
+
+`/schedule add` creates a `[prompt]` task. `/schedule background`, `/schedule bg`, and `/schedule process` create `[process]` tasks that start daemon-backed commands directly, without an LLM turn at trigger time. `/schedule list` shows `Prompt: ...` for prompt schedules and `Command: ...` for process schedules. Schedule definitions persist in `~/.agav/scheduled-tasks.json`; scheduled process logs and job records use `~/.agav/background-processes/` unless `AGAV_BACKGROUND_PROCESS_DIR` is set.
 
 ## Memory and skills
 

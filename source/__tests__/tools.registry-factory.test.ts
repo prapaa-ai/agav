@@ -25,6 +25,7 @@ describe("tools/registry-factory", () => {
       "overview",
       "run_tests",
       "save_memory",
+      "process",
     ]);
   });
 });

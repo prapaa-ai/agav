@@ -55,10 +55,24 @@ Both `--option value` and `--option=value` are accepted for provider, model, eff
 | `OLLAMA_HOST` / `OLLAMA_PORT` | Ollama address components |
 | `OLLAMA_API_KEY` | Ollama bearer token |
 | `AGAV_PERMISSION` | JSON policy used by `agav run` |
+| `AGAV_NODE` | Node.js executable used by daemon-backed background process runners |
+| `AGAV_BACKGROUND_PROCESS_DIR` | Directory for daemon-backed background process records, logs, and `process-runner.mjs`; defaults to `~/.agav/background-processes/` |
 | `AGAV_NO_UPDATE=1` | Disable automatic update checks |
 | `AGAV_NO_SANDBOX=1` | Disable automatic shell sandbox selection |
 | `AGAV_MARKETPLACE_URL` | Override the default agent marketplace URL |
 | `LIBREOFFICE_PATH` | Office document conversion executable |
+
+`AGAV_NODE` is only needed when the current runtime cannot execute the generated background-process runner. Set it before starting Agav:
+
+```bash
+AGAV_NODE=/usr/local/bin/node agav
+```
+
+Set `AGAV_BACKGROUND_PROCESS_DIR` before starting Agav to isolate or relocate daemon-backed job records and logs. Use the same value across restarts if you want Agav to reattach to those jobs:
+
+```bash
+AGAV_BACKGROUND_PROCESS_DIR=/tmp/agav-bg agav
+```
 
 ## Agent subcommands
 

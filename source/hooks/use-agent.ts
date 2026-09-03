@@ -8,6 +8,7 @@ import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
 import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { createToolRegistry } from "../tools/registry-factory.js";
+import { getBackgroundProcessOutputTail, subscribeToProcessEvents } from "../tools/process.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { saveSession, type SessionRecord } from "../config/history.js";
 import { saveSessionState } from "../config/session-state.js";
@@ -240,6 +241,36 @@ export function useAgent(
   }, []);
   const toolRegistryRef = useRef(createToolRegistry());
   const mcpManagerRef = useRef(new MCPManager());
+
+  useEffect(() => {
+    return subscribeToProcessEvents((event) => {
+      const record = event.record;
+      const ok = record.status === "exited" && record.exitCode === 0;
+      const durationMs = Date.parse(record.finishedAt ?? "") - Date.parse(record.startedAt);
+      const duration = Number.isFinite(durationMs) && durationMs >= 0
+        ? `${Math.round(durationMs / 1000)}s`
+        : "unknown duration";
+      const output = getBackgroundProcessOutputTail(record, 3);
+      const status = ok
+        ? "completed successfully"
+        : record.status === "killed"
+          ? `was killed${record.signal ? ` by ${record.signal}` : ""}`
+          : `finished with ${record.status}${record.exitCode == null ? "" : ` ${record.exitCode}`}`;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId(),
+          role: "system",
+          content:
+            `Background process ${record.id} ${status} after ${duration}.\n` +
+            `Command: ${record.command}` +
+            (output ? `\nLast output:\n${output}` : ""),
+          isError: !ok && record.status !== "killed",
+        },
+      ]);
+    });
+  }, []);
+
   const abortRef = useRef<AbortController | null>(null);
   const submitPendingRef = useRef(false);
   const configRef = useRef(config);

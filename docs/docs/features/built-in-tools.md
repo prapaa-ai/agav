@@ -18,6 +18,7 @@ Agav exposes these tools to its agent loop.
 | `list_directory` | List a directory |
 | `overview` | Map a repository's directory and symbol structure |
 | `run_command` | Execute a shell command with sandbox detection |
+| `process` | Start, list, poll, log, wait for, and kill daemon-backed background commands |
 | `run_tests` | Detect and run a supported project test framework |
 | `lsp_query` | Request definitions, references, or hover data from a language server; diagnostic notifications are not yet fully surfaced |
 | `read_notebook` | Read Jupyter notebook cells |
@@ -51,6 +52,23 @@ Explain the flow in execution order. Do not change files.
 ```
 
 Agav combines language-server results with file reads and repository search. If the server is unavailable, confirm that its executable is on `PATH` in the shell that started Agav. Diagnostic notifications are not yet fully surfaced, so use the project's normal diagnostic command when complete output matters.
+
+## Background processes
+
+The `process` tool manages long-running shell commands without blocking the main agent turn. Supported actions are `start`, `list`, `poll`, `log`, `wait`, and `kill`.
+
+Background process records and captured logs live under the Agav config directory at `~/.agav/background-processes/` by default:
+
+```text
+~/.agav/background-processes/<job-id>.json
+~/.agav/background-processes/<job-id>.stdout.log
+~/.agav/background-processes/<job-id>.stderr.log
+~/.agav/background-processes/process-runner.mjs
+```
+
+Jobs continue after Agav exits. The next interactive session reattaches to persisted records in the active background-process directory and reports completed jobs once in the main chat window. Use `AGAV_BACKGROUND_PROCESS_DIR` to relocate job records and logs, and use `AGAV_NODE` to point daemon runners at a specific Node executable when the current runtime cannot run the generated runner script.
+
+For recurring shell commands, `/schedule background`, `/schedule bg`, and `/schedule process` create process schedules that start daemon-backed jobs directly. `/schedule add` remains the prompt-schedule command and submits text to the agent. Read [Background Processes](/features/background-processes) for action fields, schedule syntax, persistence details, and safety notes.
 
 ## Confirmations and undo
 
