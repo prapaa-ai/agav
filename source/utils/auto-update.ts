@@ -42,6 +42,11 @@ function parseVersion(value: string): [number, number, number] | null {
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
+/** True when `value` carries a pre-release suffix like `-beta.3` or `-rc1`. */
+function isPreRelease(value: string): boolean {
+  return /^v?\d+\.\d+\.\d+-/.test(value.trim());
+}
+
 export function isNewer(remote: string, local: string): boolean {
   // Parse rather than `split(".").map(Number)`. A tag like v0.2.0-rc1 turned
   // the last part into NaN, and NaN loses every comparison, so the loop fell
@@ -54,8 +59,11 @@ export function isNewer(remote: string, local: string): boolean {
     if (r[i]! > l[i]!) return true;
     if (r[i]! < l[i]!) return false;
   }
-  // Equal core versions: a pre-release of the version we already run is not an
-  // upgrade, so don't sidegrade v0.1.7 → v0.1.7-rc1.
+  // Equal core versions. Per semver a stable release is newer than any
+  // pre-release of the same version (0.2.0 > 0.2.0-beta.3), but a
+  // pre-release is never an upgrade over the stable release it targets
+  // (don't sidegrade 0.1.7 → 0.1.7-rc1).
+  if (isPreRelease(local) && !isPreRelease(remote)) return true;
   return false;
 }
 
