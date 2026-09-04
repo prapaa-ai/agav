@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",
-    "@anthropic-ai/sdk": "^0.106.0",
+    "@anthropic-ai/sdk": "^0.122.0",
     "ajv": "^8.20.0",
     "ansi-escapes": "^7.3.0",
     "chalk": "^5.4.0",
