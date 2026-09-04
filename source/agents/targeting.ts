@@ -7,6 +7,9 @@ import type { LLMProvider } from "../providers/types.js";
 import type { AgavConfig } from "../config/config.js";
 import type { AgentEvent } from "../agent/loop.js";
 import type { SlashCommand, CommandResult } from "../commands/types.js";
+import { getCachedAgents } from "./loader.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export interface AgentTargetResult {
   output: string;
@@ -21,10 +24,10 @@ export interface AgentTargetResult {
 export async function resolveTargetAgent(
   nameOrAlias: string,
 ): Promise<{ agent: AgentDefinition } | { error: string }> {
-  const { getCachedAgents } = await import("./loader.js");
   const agents = getCachedAgents();
+  const lower = nameOrAlias.toLowerCase();
   const agent = agents.find(
-    (a) => (a.alias || a.manifest.name) === nameOrAlias,
+    (a) => (a.alias || a.manifest.name).toLowerCase() === lower,
   );
   if (!agent) {
     const names = agents
@@ -45,8 +48,6 @@ export async function resolveTargetAgent(
   const requiredConfig = agent.manifest["required-config"] ?? [];
   if (requiredConfig.length > 0) {
     const { getMissingCredentials } = await import("./credentials.js");
-    const { homedir } = await import("node:os");
-    const { join } = await import("node:path");
     const credPath =
       agent.origin === "bundled"
         ? join(homedir(), ".agav", "agents", agent.manifest.name)
@@ -79,6 +80,7 @@ export async function executeTargetedAgent(
     provider: LLMProvider;
     config: AgavConfig;
     hooks?: { afterEdit?: string; afterShell?: string; preCommit?: string };
+    signal?: AbortSignal;
     onProgressUpdate?: (callId: string, event: AgentEvent) => void;
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<any>;
   },

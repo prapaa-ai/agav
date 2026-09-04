@@ -11,6 +11,8 @@ import { createToolRegistry } from "../tools/registry-factory.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { saveSession, type SessionRecord } from "../config/history.js";
 import { saveSessionState } from "../config/session-state.js";
+import { reserveAttachmentIds } from "../utils/attachments.js";
+import { clearAttachmentRegistry } from "../utils/attachment-registry.js";
 import {
   shouldAutoPlan,
   savePlan,
@@ -96,6 +98,7 @@ export interface PendingConfirmation {
   toolName: string;
   input: Record<string, unknown>;
   diffLines?: DiffLine[];
+  mcpServerName?: string;
   resolve: (choice: ConfirmResult) => void;
   subagentId?: string;
   subagentTask?: string;
@@ -235,6 +238,10 @@ export function useAgent(
     if (resumeMessages && resumeMessages.length > 0 && !resumedRef.current) {
       resumedRef.current = true;
       conversationRef.current.setMessages(resumeMessages, resumeCompacted);
+      // Only transcript-facing fields contain attachment tiles. Inspecting all
+      // content blocks could reserve an arbitrary `<<... #n>>` sequence found
+      // inside attached file content.
+      reserveAttachmentIds(resumeMessages.flatMap((message) => [message.displayText, message.sourceText]).filter((text): text is string => typeof text === "string"));
       const displayMsgs = messagesToDisplay(resumeMessages);
       if (displayMsgs.length > 0) {
         setMessages(displayMsgs);
@@ -366,14 +373,7 @@ export function useAgent(
 
       // Load agents — do NOT register as tools yet; registration happens lazily per-turn
       if (provider) {
-        const { loadAgents, setCachedAgents } = await import("../agents/loader.js");
-        const { createAgentTargetCommand } = await import("../agents/targeting.js");
-        const agents = await loadAgents();
-        setCachedAgents(agents);
-        const agentCmds = agents
-          .filter((a) => a.manifest.enabled !== false)
-          .map((a) => createAgentTargetCommand(a));
-        setAgentCommands(agentCmds);
+        await refreshAgentCommands();
       }
 
       // Start MCP servers
@@ -421,6 +421,7 @@ export function useAgent(
     sessionNameRef.current = undefined;
     setSessionName(undefined);
     sessionPermissionModeRef.current = undefined;
+    setTokenUsage({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
     resetPlanContinue();
     // Back to the draft slot, and drop whatever the last unsaved session left
     // there so the new session does not inherit a plan it never made.
@@ -487,6 +488,11 @@ export function useAgent(
   }, [config.model, config.provider]);
 
   const loadSession = useCallback((session: SessionRecord) => {
+    // Attachment records are process-local. Forget the prior session before
+    // reserving this transcript's ids, so its persisted tiles cannot resolve
+    // to attachments created under the previous session.
+    clearAttachmentRegistry();
+    reserveAttachmentIds(session.messages.flatMap((message) => [message.displayText, message.sourceText]).filter((text): text is string => typeof text === "string"));
     conversationRef.current.setMessages(session.messages, session.compacted);
     sessionIdRef.current = session.id;
     setSessionId(session.id);
@@ -581,11 +587,13 @@ export function useAgent(
         toolName: string,
         toolInput: Record<string, unknown>,
         diffPreview?: DiffLine[],
+        mcpServerName?: string,
       ): Promise<ConfirmResult> => {
         return confirmationQueueRef.current.enqueue({
           toolName,
           input: toolInput,
           diffLines: diffPreview,
+          mcpServerName,
         });
       };
 
@@ -1127,6 +1135,7 @@ export function useAgent(
           const result = await executeTargetedAgent(resolved.agent, query, {
             provider,
             config: configRef.current,
+            signal: abortController.signal,
             onProgressUpdate: (callId, event) => {
               if (!trackerCache.has(callId)) {
                 trackerCache.set(

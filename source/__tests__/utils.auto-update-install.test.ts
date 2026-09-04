@@ -184,6 +184,21 @@ describe("isNewer", () => {
     expect(isNewer("v0.1.7-rc1", "0.1.7")).toBe(false);
   });
 
+  // Regression: a stable release (0.2.0) was not offered as an upgrade to
+  // users running a pre-release of the same version (0.2.0-beta.3) because
+  // parseVersion strips the suffix and the cores compare equal. The fix:
+  // stable > pre-release when the core version is the same.
+  it("upgrades from a pre-release to the stable release of the same version", () => {
+    expect(isNewer("v0.2.0", "0.2.0-beta.3")).toBe(true);
+    expect(isNewer("v0.2.0", "0.2.0-rc1")).toBe(true);
+    expect(isNewer("v1.0.0", "1.0.0-alpha.1")).toBe(true);
+  });
+
+  it("does not sidegrade between pre-releases of the same version", () => {
+    expect(isNewer("v0.2.0-beta.4", "0.2.0-beta.3")).toBe(false);
+    expect(isNewer("v0.2.0-rc1", "0.2.0-beta.3")).toBe(false);
+  });
+
   it("refuses to act on a tag it cannot parse", () => {
     expect(isNewer("nightly", "0.1.7")).toBe(false);
     expect(isNewer("", "0.1.7")).toBe(false);

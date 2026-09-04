@@ -4,6 +4,7 @@ import App from "./app.js";
 import { isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
 import { createProvider } from "./providers/registry.js";
 import type { LLMProvider } from "./providers/types.js";
+import { fetchAvailableModels, findMatchingModels, type FetchedModel } from "./commands/model.js";
 import { buildSystemPrompt } from "./utils/system-prompt.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
 import { loadSessionState, markCleanExit, markCleanExitSync } from "./config/session-state.js";
@@ -64,6 +65,48 @@ function findClosestFlag(input: string): string | undefined {
     if (d < bestDist) { bestDist = d; best = flag; }
   }
   return best;
+}
+
+/** Choose between providers which expose the same model during interactive startup. */
+function pickProviderForModel(model: string, matches: FetchedModel[]): Promise<FetchedModel | null> {
+  const stdin = process.stdin;
+  const wasRaw = stdin.isRaw;
+  stdin.setRawMode(true);
+  stdin.resume();
+  let selected = 0;
+
+  const lineCount = matches.length + 3;
+  let rendered = false;
+  const render = () => {
+    if (rendered) process.stdout.write(`\x1b[${lineCount}A`);
+    rendered = true;
+    process.stdout.write(`\x1b[2K  Select provider for ${model}\n`);
+    process.stdout.write("\x1b[2K  ↑↓ navigate · Enter select · Esc cancel\n");
+    process.stdout.write("\x1b[2K\n");
+    for (let i = 0; i < matches.length; i++) {
+      process.stdout.write(`\x1b[2K${i === selected ? "  ❯" : "   "} ${matches[i]!.provider}\n`);
+    }
+  };
+  render();
+
+  return new Promise((resolve) => {
+    const cleanup = () => {
+      stdin.setRawMode(wasRaw ?? false);
+      stdin.removeListener("data", onData);
+      stdin.pause();
+      process.stdout.write(`\x1b[${lineCount}A`);
+      for (let i = 0; i < lineCount; i++) process.stdout.write("\x1b[2K\n");
+      process.stdout.write(`\x1b[${lineCount}A`);
+    };
+    const onData = (data: Buffer) => {
+      const key = data.toString();
+      if (key === "\x1b" || key === "\x03") { cleanup(); resolve(null); return; }
+      if (key === "\r" || key === "\n") { const match = matches[selected]!; cleanup(); resolve(match); return; }
+      if (key === "\x1b[A" || key === "k") { selected = (selected - 1 + matches.length) % matches.length; render(); return; }
+      if (key === "\x1b[B" || key === "j") { selected = (selected + 1) % matches.length; render(); return; }
+    };
+    stdin.on("data", onData);
+  });
 }
 
 /** Parse CLI flags into a lightweight record before config loading and validation. */
@@ -558,6 +601,31 @@ export async function main() {
     cliModel: typeof flags.model === "string" ? flags.model : undefined,
     session: resumeSelection,
   }));
+
+  // An explicit provider and a provider-qualified model remain authoritative.
+  // Otherwise, reuse the /model catalog to route an explicit model to the
+  // provider that actually offers it.
+  const cliModel = typeof flags.model === "string" && flags.model ? flags.model : undefined;
+  if (!cliProvider && !resumeSelection && cliModel) {
+    const { models } = await fetchAvailableModels(config);
+    const matches = findMatchingModels(models, cliModel);
+    if (matches.length === 1) {
+      // Keep the provider catalog's canonical identifier. Vertex lists models
+      // as `vertex/gemini-*`; retaining that prefix makes the startup choice
+      // unambiguous and routes the subsequent request through Vertex AI.
+      config.provider = matches[0]!.provider as ProviderName;
+      config.model = matches[0]!.id;
+    } else if (matches.length > 1) {
+      if (!process.stdin.isTTY) {
+        process.stderr.write(`\n  Agav — model ${JSON.stringify(cliModel)} is available from multiple providers: ${matches.map((match) => match.provider).join(", ")}. Use --provider to choose one.\n\n`);
+        process.exit(1);
+      }
+      const picked = await pickProviderForModel(cliModel, matches);
+      if (!picked) process.exit(0);
+      config.provider = picked.provider as ProviderName;
+      config.model = picked.id;
+    }
+  }
 
   // Plain `agav` may fall back to another configured provider. Explicit and
   // resumed selections are pinned and must report their own missing settings.
