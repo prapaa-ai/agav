@@ -23,6 +23,7 @@ import { steerCommand } from "./steer.js"
 import { changelogCommand } from "./changelog.js"
 import { contextCommand } from "./context.js"
 import { agentsCommand } from "./agents.js"
+import { agentLockCommand } from "./agent-lock.js"
 
 /** Store slash commands and dispatch raw user input to the matching handler. */
 export class CommandRegistry {
@@ -59,11 +60,17 @@ export class CommandRegistry {
     this.register(changelogCommand)
     this.register(contextCommand)
     this.register(agentsCommand)
+    this.register(agentLockCommand)
   }
 
   /** Add a command to the registry by name. */
   register(command: SlashCommand): void {
     this.commands.set(command.name, command)
+  }
+
+  /** Remove a command from the registry by name. */
+  unregister(name: string): void {
+    this.commands.delete(name)
   }
 
   /** Return all registered commands. */

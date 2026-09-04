@@ -121,12 +121,15 @@ interface UseAgentReturn {
   mcpServers: string[];
   mcpPromptCommands: SlashCommand[];
   skillCommands: SlashCommand[];
+  agentCommands: SlashCommand[];
   mcpResourceCount: number;
   mcpPromptCount: number;
   subagentStates: SubagentProgress[];
   activePlan: Plan | null;
   refreshPlan: () => void;
   submit: (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason) => Promise<boolean>;
+  submitToAgent: (agentName: string, query: string, displayText: string, fullAccess?: boolean) => Promise<boolean>;
+  refreshAgentCommands: () => Promise<void>;
   addDisplayMessage: (msg: DisplayMessage) => void;
   cancel: () => void;
   clearMessages: () => void;
@@ -191,6 +194,7 @@ export function useAgent(
   const [mcpServers, setMcpServers] = useState<string[]>([]);
   const [mcpPromptCommands, setMcpPromptCommands] = useState<SlashCommand[]>([]);
   const [skillCommands, setSkillCommands] = useState<SlashCommand[]>([]);
+  const [agentCommands, setAgentCommands] = useState<SlashCommand[]>([]);
   const [mcpResourceCount, setMcpResourceCount] = useState(0);
   const [mcpPromptCount, setMcpPromptCount] = useState(0);
   const [subagentStates, setSubagentStates] = useState<SubagentProgress[]>([]);
@@ -363,8 +367,13 @@ export function useAgent(
       // Load agents — do NOT register as tools yet; registration happens lazily per-turn
       if (provider) {
         const { loadAgents, setCachedAgents } = await import("../agents/loader.js");
+        const { createAgentTargetCommand } = await import("../agents/targeting.js");
         const agents = await loadAgents();
         setCachedAgents(agents);
+        const agentCmds = agents
+          .filter((a) => a.manifest.enabled !== false)
+          .map((a) => createAgentTargetCommand(a));
+        setAgentCommands(agentCmds);
       }
 
       // Start MCP servers
@@ -1057,6 +1066,139 @@ export function useAgent(
     [provider, config, isLoading, activePlan],
   );
 
+  /** Submit a query directly to a named agent, bypassing the main LLM. */
+  const submitToAgent = useCallback(
+    async (agentName: string, query: string, displayText: string, fullAccess?: boolean): Promise<boolean> => {
+      if (!provider) {
+        setError("No LLM provider configured. Check your API key.");
+        return false;
+      }
+      if (submitPendingRef.current) return false;
+      submitPendingRef.current = true;
+
+      const { resolveTargetAgent, executeTargetedAgent } = await import("../agents/targeting.js");
+      const resolved = await resolveTargetAgent(agentName);
+      if ("error" in resolved) {
+        setError(resolved.error);
+        submitPendingRef.current = false;
+        return false;
+      }
+
+      setError(null);
+      setMessages((prev) => [
+        ...prev,
+        { id: nextId(), role: "user", content: displayText },
+      ]);
+      conversationRef.current.addUserMessage(
+        `[Direct query to ${agentName} agent]: ${query}`,
+        undefined,
+        displayText,
+        displayText,
+      );
+
+      setIsLoading(true);
+      updateTurnStart(Date.now());
+      setLastTurnDurationMs(null);
+      setStreamingText("");
+      setToolCalls([]);
+
+      const abortController = new AbortController();
+      abortRef.current = abortController;
+
+      const confirmToolCallback = fullAccess
+        ? undefined
+        : (
+            toolName: string,
+            toolInput: Record<string, unknown>,
+            diffPreview?: DiffLine[],
+          ): Promise<ConfirmResult> => {
+            return confirmationQueueRef.current.enqueue({
+              toolName,
+              input: toolInput,
+              diffLines: diffPreview,
+            });
+          };
+
+      (async () => {
+        try {
+          const { makeAgentProgressTracker } = await import("../agent/subagent-progress.js");
+          const trackerCache = new Map<string, (event: import("../agent/loop.js").AgentEvent) => void>();
+
+          const result = await executeTargetedAgent(resolved.agent, query, {
+            provider,
+            config: configRef.current,
+            onProgressUpdate: (callId, event) => {
+              if (!trackerCache.has(callId)) {
+                trackerCache.set(
+                  callId,
+                  makeAgentProgressTracker(
+                    callId,
+                    agentName,
+                    resolved.agent.manifest.description || agentName,
+                    setSubagentStates,
+                  ),
+                );
+              }
+              trackerCache.get(callId)!(event);
+            },
+            confirmTool: confirmToolCallback,
+          });
+
+          const responseContent = result.isError
+            ? `Error from ${agentName}: ${result.output}`
+            : result.output;
+
+          setMessages((prev) => [
+            ...prev,
+            { id: nextId(), role: "assistant", content: responseContent },
+          ]);
+          conversationRef.current.addAssistantMessage([
+            { type: "text", text: responseContent },
+          ]);
+
+          saveNow();
+        } catch (err) {
+          if (!abortController.signal.aborted) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: nextId(),
+                role: "system",
+                content: `Agent error: ${errMsg}`,
+                isError: true,
+              },
+            ]);
+          }
+        } finally {
+          setIsLoading(false);
+          finalizeTurnTimer();
+          setSubagentStates([]);
+          setStreamingText("");
+          setToolCalls([]);
+          setPendingConfirmation(null);
+          abortRef.current = null;
+          submitPendingRef.current = false;
+        }
+      })();
+
+      return true;
+    },
+    [provider, config, saveNow],
+  );
+
+  /** Reload agents from disk and rebuild the targeting slash commands. */
+  const refreshAgentCommands = useCallback(async () => {
+    const { loadAgents, setCachedAgents } = await import("../agents/loader.js");
+    const { createAgentTargetCommand } = await import("../agents/targeting.js");
+    const agents = await loadAgents();
+    setCachedAgents(agents);
+    const agentCmds = agents
+      .filter((a) => a.manifest.enabled !== false)
+      .map((a) => createAgentTargetCommand(a));
+    setAgentCommands(agentCmds);
+  }, []);
+
   useEffect(() => {
     if (!isLoading && planContinueMsg) {
       const msg = planContinueMsg;
@@ -1080,12 +1222,15 @@ export function useAgent(
     mcpServers,
     mcpPromptCommands,
     skillCommands,
+    agentCommands,
     mcpResourceCount,
     mcpPromptCount,
     subagentStates,
     activePlan,
     refreshPlan,
     submit,
+    submitToAgent,
+    refreshAgentCommands,
     addDisplayMessage,
     cancel,
     clearMessages,

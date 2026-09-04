@@ -9,6 +9,7 @@ import { relative, resolve, sep } from "node:path";
 export interface CommandInfo {
   name: string;
   description: string;
+  category?: "command" | "agent";
 }
 
 interface Props {
@@ -34,9 +35,15 @@ interface Props {
   /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
   enhancedKeyboard?: boolean;
   resumeUserMessages?: string[];
+  agentLock?: string;
+  /** Available agent names for /agent argument completion. */
+  agentNames?: Array<{ name: string; description: string }>;
 }
 
 const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules", "build", "dist"]);
+
+/** Default prompt prefix width: `"❯ "` is 2 chars. */
+const DEFAULT_PREFIX_WIDTH = 2;
 
 /** Describes the active @file token under the cursor. */
 interface ActiveFileToken {
@@ -183,7 +190,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
 }
 
 /** Renders the interactive prompt with history, completion, and paste handling. */
-export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
+export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages, agentLock, agentNames = [] }: Props) {
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
   const [, bumpCursor] = useState(0);
@@ -284,6 +291,16 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     : [];
   const hasCommandSuggestions = matchingCommands.length > 0;
   const hasFileSuggestions = Boolean(activeFileToken) && fileSuggestions.length > 0;
+
+  // Agent argument suggestions for `/agent <partial>`
+  const agentArgMatch = text.match(/^\/agent\s+(\S*)$/i);
+  const agentArgPartial = agentArgMatch?.[1]?.toLowerCase() ?? "";
+  const matchingAgentArgs = agentArgMatch && agentNames.length > 0
+    ? agentNames
+        .filter((a) => a.name.toLowerCase().startsWith(agentArgPartial))
+        .slice(0, 10)
+    : [];
+  const hasAgentArgSuggestions = matchingAgentArgs.length > 0;
 
   /** Applies the selected file suggestion to the current token. */
   const completeFileSuggestion = (selected: FileSuggestion, token: ActiveFileToken) => {
@@ -394,6 +411,32 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         }
         if (match.action === "cancel") {
           setFileSuggestions([]);
+          setSelectedSuggestion(0);
+          return;
+        }
+      }
+
+      // Agent argument suggestions (for `/agent <partial>`)
+      if (hasAgentArgSuggestions) {
+        if (match.action === "historyDown") {
+          setSelectedSuggestion((prev) => Math.min(prev + 1, matchingAgentArgs.length - 1));
+          return;
+        }
+        if (match.action === "historyUp") {
+          setSelectedSuggestion((prev) => Math.max(prev - 1, 0));
+          return;
+        }
+        if (key.tab || match.action === "submit") {
+          const selected = matchingAgentArgs[selectedSuggestion];
+          if (selected) {
+            const completed = `/agent ${selected.name} `;
+            applyEdit(completed, completed.length);
+            setSelectedSuggestion(0);
+          }
+          return;
+        }
+        if (match.action === "cancel") {
+          applyEdit("", 0);
           setSelectedSuggestion(0);
           return;
         }
@@ -563,7 +606,9 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   // same wrap table. Measuring against a different width would put the caret
   // somewhere other than where the user aimed.
   const cols = stdout?.columns || 80;
-  const usable = Math.max(1, cols - PREFIX_WIDTH);
+  const lockPrefix = agentLock ? `${agentLock} › ` : "";
+  const prefixWidth = agentLock ? lockPrefix.length : DEFAULT_PREFIX_WIDTH;
+  const usable = Math.max(1, cols - prefixWidth);
 
   interface WrappedLine { text: string; offset: number; isFirst: boolean }
   const wrappedLines: WrappedLine[] = [];
@@ -608,7 +653,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     // Past the end of a line means the end of that line, not the next one:
     // clicking into the empty space right of the text is how anyone asks for
     // the caret to go last.
-    const column = event.x - rows.internal_x - PREFIX_WIDTH;
+    const column = event.x - rows.internal_x - prefixWidth;
     const offset = line.offset + Math.max(0, Math.min(column, line.text.length));
 
     moveCaret(snapOutOfAttachment(text, offset));
@@ -629,12 +674,18 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         const isLastLine = i === wrappedLines.length - 1;
         const cursorInLine = cursorPos >= lineStart && (isLastLine ? cursorPos <= lineEnd : cursorPos < lineEnd);
 
+        const renderPrefix = (isFirst: boolean) => {
+          if (!isFirst) return <Text dimColor>{"  "}</Text>;
+          if (agentLock) return <Text bold color="magenta">{lockPrefix}</Text>;
+          return <Text bold color="green">{"❯ "}</Text>;
+        };
+
         if (!text && wl.isFirst) {
           return (
             <Box key={i} onClick={handleRowClick(wl)}>
-              <Text bold color="green">{prefix}</Text>
+              {renderPrefix(true)}
               <Text inverse> </Text>
-              <Text dimColor>Type a message...</Text>
+              <Text dimColor>{agentLock ? `Ask ${agentLock}...` : "Type a message..."}</Text>
             </Box>
           );
         }
@@ -648,7 +699,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           const after = col < wl.text.length ? wl.text.slice(col + chLen) : "";
           return (
             <Box key={i} onClick={handleRowClick(wl)}>
-              {wl.isFirst ? <Text bold color="green">{prefix}</Text> : <Text dimColor>{prefix}</Text>}
+              {renderPrefix(wl.isFirst)}
               <Text>{before}</Text>
               <Text inverse>{ch}</Text>
               <Text>{after}</Text>
@@ -658,7 +709,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
         return (
           <Box key={i} onClick={handleRowClick(wl)}>
-            {wl.isFirst ? <Text bold color="green">{prefix}</Text> : <Text dimColor>{prefix}</Text>}
+            {renderPrefix(wl.isFirst)}
             <Text>{wl.text || " "}</Text>
           </Box>
         );
@@ -674,13 +725,17 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
             {visible.map((cmd, vi) => {
               const i = scrollStart + vi;
               const isSelected = i === selectedSuggestion;
+              const isAgent = cmd.category === "agent";
+              const selectedColor = isAgent ? "magenta" : "cyan";
+              const displayDesc = isAgent ? cmd.description.replace("[agent] ", "") : cmd.description;
               return (
                 <Text key={cmd.name}>
                   <Text dimColor={!isSelected}>{"  "}</Text>
-                  <Text color={isSelected ? "cyan" : undefined} bold={isSelected} inverse={isSelected}>
+                  <Text color={isSelected ? selectedColor : undefined} bold={isSelected} inverse={isSelected}>
                     {` /${cmd.name} `}
                   </Text>
-                  <Text dimColor={!isSelected} color={isSelected ? "white" : undefined}> {cmd.description}</Text>
+                  {isAgent && <Text dimColor color={isSelected ? "magenta" : undefined}>[agent] </Text>}
+                  <Text dimColor={!isSelected} color={isSelected ? "white" : undefined}> {displayDesc}</Text>
                 </Text>
               );
             })}
@@ -690,6 +745,22 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           </Box>
         );
       })()}
+      {hasAgentArgSuggestions && (
+        <Box flexDirection="column">
+          {matchingAgentArgs.map((agent, i) => {
+            const isSelected = i === selectedSuggestion;
+            return (
+              <Text key={agent.name}>
+                <Text dimColor={!isSelected}>{"  "}</Text>
+                <Text color={isSelected ? "magenta" : undefined} bold={isSelected} inverse={isSelected}>
+                  {` ${agent.name} `}
+                </Text>
+                <Text dimColor={!isSelected} color={isSelected ? "white" : undefined}> {agent.description}</Text>
+              </Text>
+            );
+          })}
+        </Box>
+      )}
       {hasFileSuggestions && (
         <Box flexDirection="column">
           {fileSuggestions.map((suggestion, i) => {

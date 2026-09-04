@@ -123,12 +123,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     mcpServers,
     mcpPromptCommands,
     skillCommands,
+    agentCommands,
     mcpResourceCount,
     mcpPromptCount,
     subagentStates,
     activePlan,
     refreshPlan,
     submit,
+    submitToAgent,
+    refreshAgentCommands,
     addDisplayMessage,
     cancel,
     clearMessages,
@@ -162,6 +165,34 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       commandRegistryRef.current.register(command);
     }
   }, [skillCommands]);
+
+  // Register agent targeting slash commands (/<agent-name>).
+  // On refresh, remove stale agent commands before adding current ones.
+  useEffect(() => {
+    const registry = commandRegistryRef.current;
+    const builtInNames = new Set(registry.list().filter(
+      (c) => !c.description.startsWith("[agent]"),
+    ).map((c) => c.name));
+    builtInNames.add("ps");
+
+    // Remove previously registered agent commands that are no longer current
+    const currentAgentNames = new Set(agentCommands.map((c) => c.name));
+    for (const existing of registry.list()) {
+      if (existing.description.startsWith("[agent]") && !currentAgentNames.has(existing.name)) {
+        registry.unregister(existing.name);
+      }
+    }
+
+    // Register current agent commands
+    for (const cmd of agentCommands) {
+      if (!builtInNames.has(cmd.name)) {
+        registry.register(cmd);
+      }
+    }
+  }, [agentCommands]);
+
+  // Track agent session lock for UI display.
+  const [agentLockState, setAgentLockState] = useState<{ name: string; full: boolean } | null>(null);
 
   /** Convert pasted text into an attachment so large snippets do not bloat the visible prompt line. */
   const handlePaste = useCallback((text: string, insertLabel: (label: string) => void) => {
@@ -554,6 +585,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
         setRunningSkillName(null);
 
+        // Sync agent lock state after any slash command (handles /agent, /clear, /new)
+        const { getLockedAgent } = await import("./commands/agent-lock.js");
+        setAgentLockState(getLockedAgent());
+
         if (result) {
           switch (result.type) {
             case "message": {
@@ -570,6 +605,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             case "submit":
               submit(result.text, undefined, undefined, undefined, invocationReason);
               break;
+            case "agent_invoke": {
+              setInput("");
+              setSystemMessages([]);
+              submitToAgent(result.agentName, result.query, trimmed);
+              break;
+            }
             case "clear":
               break;
             case "exit":
@@ -577,6 +618,22 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           }
         }
         return;
+      }
+
+      // Session agent lock — route non-command input directly to the locked agent
+      {
+        const { getLockedAgent } = await import("./commands/agent-lock.js");
+        const lock = getLockedAgent();
+        if (lock) {
+          const llmText = trimmed || "See attached content";
+          setInput("");
+          setAttachments([]);
+          setShowToolDetail(false);
+          setPsResponse(undefined);
+          setSystemMessages([]);
+          submitToAgent(lock.name, llmText, trimmed, lock.full);
+          return;
+        }
       }
 
       // Collect attachment content blocks
@@ -804,6 +861,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             const resolve = agentsTUIResolveRef.current;
             agentsTUIResolveRef.current = null;
             resolve?.();
+            refreshAgentCommands();
           }}
           provider={activeProvider}
           config={config}
@@ -835,11 +893,20 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           suppressHistory={isLoading}
           commands={[
             { name: "ps", description: "Side query while agent is working" },
-            ...commandRegistryRef.current.list().map((c) => ({ name: c.name, description: c.description })),
+            ...commandRegistryRef.current.list().map((c) => ({
+              name: c.name,
+              description: c.description,
+              category: c.description.startsWith("[agent]") ? "agent" as const : "command" as const,
+            })),
           ]}
           keybindings={keybindings}
           enhancedKeyboard={enhancedKeyboard}
           resumeUserMessages={resumeUserMessages}
+          agentLock={agentLockState?.name}
+          agentNames={agentCommands.map((c) => ({
+            name: c.name,
+            description: c.description.replace("[agent] ", ""),
+          }))}
         /></Box>
       )}
 
@@ -862,6 +929,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         lastTurnDurationMs={lastTurnDurationMs}
         isLoading={isLoading}
         isPaused={!!pendingConfirmation}
+        agentLock={agentLockState ?? undefined}
       />
       </Box>
     </Box>
