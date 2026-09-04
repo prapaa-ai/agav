@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { createElement as h } from "react";
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -75,7 +75,7 @@ describe("clicking a file path inside a user-typed message", () => {
   });
 
   it("resolves to the same path the user typed, opened via onOpenRef", async () => {
-    root = await mkdtemp(join(tmpdir(), "agav-user-click-"));
+    root = await realpath(await mkdtemp(join(tmpdir(), "agav-user-click-")));
     const origCwd = process.cwd();
     await mkdir(join(root, "src"), { recursive: true });
     await writeFile(join(root, "src", "app.ts"), "export {}\n");

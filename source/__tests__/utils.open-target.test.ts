@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -192,14 +192,15 @@ describe("openTarget", () => {
       try {
         const filePath = join(dir, "note.txt");
         await writeFile(filePath, "hello");
+        const resolvedFilePath = await realpath(filePath);
         if (process.platform === "linux") process.env["DISPLAY"] = ":0";
         openExternalMock.mockResolvedValue(true);
 
         const result = await openTarget({ kind: "file", absPath: filePath });
 
         expect(result.ok).toBe(true);
-        expect(result.message).toContain(filePath);
-        expect(openExternalMock).toHaveBeenCalledWith(filePath);
+        expect(result.message).toContain(resolvedFilePath);
+        expect(openExternalMock).toHaveBeenCalledWith(resolvedFilePath);
       } finally {
         await rm(dir, { recursive: true, force: true });
       }

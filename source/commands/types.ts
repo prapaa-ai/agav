@@ -71,6 +71,7 @@ export type CommandResult =
   | { type: "exit" }
   | { type: "none" }
   | { type: "submit"; text: string }
+  | { type: "agent_invoke"; agentName: string; query: string }
 
 /** Defines the metadata and executor for a slash command. */
 export interface SlashCommand {
