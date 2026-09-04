@@ -39,6 +39,7 @@ const KNOWN_FLAGS = [
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
   "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns",
+  "--trace",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -139,6 +140,8 @@ export function parseArgs(argv: string[]) {
       flags.autoAccept = true;
     } else if (arg === "--stream") {
       flags.stream = true;
+    } else if (arg === "--trace") {
+      flags.trace = true;
     } else if (arg === "--output-schema") {
       flags.outputSchema = argv[++i] ?? "";
     } else if (arg.startsWith("--output-schema=")) {
@@ -219,7 +222,7 @@ export async function runPipeMode(
   prompt: string,
   config: AgavConfig,
   provider: LLMProvider,
-  options: { stream?: boolean; outputSchema?: OutputSchema; stdinContent?: string; includeDynamicContext?: boolean; permissionOverride?: import("./config/config.js").PermissionMode; allowedToolsOverride?: string[]; maxTurns?: number } = {},
+  options: { stream?: boolean; trace?: boolean; outputSchema?: OutputSchema; stdinContent?: string; includeDynamicContext?: boolean; permissionOverride?: import("./config/config.js").PermissionMode; allowedToolsOverride?: string[]; maxTurns?: number } = {},
 ): Promise<number> {
   const { stream = false, outputSchema } = options;
   const stdinContent = options.stdinContent ?? await readStdin();
@@ -285,6 +288,11 @@ export async function runPipeMode(
         allowedTools: options.allowedToolsOverride,
       });
 
+      const trace = options.trace === true;
+      let traceStep = 0;
+      const traceToolArgs: Map<string, string> = new Map();
+      let traceTextAccum = "";
+
       for await (const event of loop) {
         switch (event.type) {
           case "streaming_text":
@@ -292,18 +300,60 @@ export async function runPipeMode(
               process.stdout.write(event.text);
               wroteStreamText = true;
             }
+            if (trace) traceTextAccum += event.text;
+            break;
+          case "thinking":
+            if (trace) {
+              process.stderr.write(`\n💭 THOUGHT\n${event.text}\n`);
+            }
             break;
           case "tool_call_start":
-            process.stderr.write(`  ${icons.pending} ${getToolLabel(event.toolName)}...\n`);
+            if (trace) {
+              traceStep++;
+              traceToolArgs.set(event.toolCallId, "");
+              process.stderr.write(`\n========================= STEP ${traceStep} =========================\n`);
+              process.stderr.write(`🎬 ACTION: ${event.toolName}\n`);
+            } else {
+              process.stderr.write(`  ${icons.pending} ${getToolLabel(event.toolName)}...\n`);
+            }
             if (event.toolName === "edit_file" || event.toolName === "write_file") {
               madeEdits = true;
             }
             break;
+          case "tool_call_input_delta":
+            if (trace) {
+              const prev = traceToolArgs.get(event.toolCallId) ?? "";
+              traceToolArgs.set(event.toolCallId, prev + event.argsJson);
+            }
+            break;
+          case "tool_confirmation_request":
+            if (trace) {
+              process.stderr.write(`INPUT:\n${JSON.stringify(event.input, null, 2)}\n`);
+            }
+            break;
           case "tool_result":
-            if (event.isError) {
-              process.stderr.write(`  ${icons.error} ${getToolLabel(event.toolName)}: ${event.output.slice(0, 100)}\n`);
+            if (trace) {
+              // Print accumulated args if we have them
+              const args = traceToolArgs.get(event.toolCallId ?? "");
+              if (args) {
+                try {
+                  const parsed = JSON.parse(args);
+                  process.stderr.write(`INPUT:\n${JSON.stringify(parsed, null, 2)}\n`);
+                } catch { /* partial args */ }
+              }
+              const outputPreview = event.output.length > 2000
+                ? event.output.slice(0, 2000) + `\n... (truncated, ${event.output.length} chars total)`
+                : event.output;
+              process.stderr.write(`\nOBSERVATION:\n${outputPreview}\n`);
+              if (event.isError) {
+                process.stderr.write(`(ERROR)\n`);
+              }
             } else {
-              process.stderr.write(`  ${icons.success} ${getToolLabel(event.toolName)}\n`);
+              if (event.isError) {
+                process.stderr.write(`  ${icons.error} ${getToolLabel(event.toolName)}: ${event.output.slice(0, 100)}\n`);
+              } else {
+                process.stderr.write(`  ${icons.success} ${getToolLabel(event.toolName)}\n`);
+              }
             }
             break;
           case "compacted":
@@ -311,6 +361,17 @@ export async function runPipeMode(
             break;
           case "assistant_message_complete":
             finalText = event.text;
+            if (trace && traceTextAccum) {
+              process.stderr.write(`\n🤖 ASSISTANT RESPONSE:\n${traceTextAccum}\n`);
+              traceTextAccum = "";
+            }
+            break;
+          case "usage":
+            if (trace) {
+              process.stderr.write(`📊 USAGE: input=${event.inputTokens} output=${event.outputTokens}` +
+                (event.cacheReadTokens ? ` cache_read=${event.cacheReadTokens}` : "") +
+                (event.cacheWriteTokens ? ` cache_write=${event.cacheWriteTokens}` : "") + "\n");
+            }
             break;
           case "error":
             process.stderr.write(`Error: ${event.error.message}\n`);
@@ -720,6 +781,10 @@ export async function main() {
     if (typeof flags.maxTurns === "string" && flags.maxTurns) {
       const n = parseInt(flags.maxTurns, 10);
       if (!isNaN(n) && n > 0) runOptions.maxTurns = n;
+    }
+
+    if (flags.trace) {
+      runOptions.trace = true;
     }
 
     const exitCode = await runPipeMode(String(flags.runPrompt ?? ""), config, provider, runOptions);
