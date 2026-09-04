@@ -1,6 +1,12 @@
-import { resolve, dirname, basename, sep } from "node:path";
+import { resolve, dirname, basename, sep, relative } from "node:path";
 import { realpath } from "node:fs/promises";
 import { tmpdir, homedir } from "node:os";
+
+/** Whether `candidate` resolves to a path at or under `root` (no symlink resolution — callers needing that should resolve first). */
+export function isWithinRoot(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith(sep));
+}
 
 /**
  * Paths that are always denied for read or write operations — credential

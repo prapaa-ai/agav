@@ -584,10 +584,17 @@ export default class Ink {
 			clearTimeout(this.escapeTimer);
 		}
 
-		// Ctrl+C handling.
+		// CMD cannot distinguish Ctrl+Shift+C from Ctrl+C: both arrive as ETX.
+		// When a global selection is active, treat ETX as the copy shortcut rather
+		// than exiting. A plain Ctrl+C (with no selection) still exits normally.
 		if (this.exitOnCtrlC && chunk.includes("\x03")) {
-			this.unmount();
-			return;
+			if (this.selectionRange) {
+				this.copyGlobalSelection();
+				chunk = chunk.replaceAll("\x03", "");
+			} else {
+				this.unmount();
+				return;
+			}
 		}
 
 		// Drain the chunk left-to-right. Mouse reports and bracketed paste
@@ -597,9 +604,19 @@ export default class Ink {
 
 		const flushInput = (): void => {
 			if (pendingInput.length > 0) {
-				// Any keyboard input clears the global selection.
-				this.clearGlobalSelection();
-				this.internalEventEmitter.emit("input", pendingInput);
+				// Ctrl+Shift+C is an explicit copy fallback for terminals (notably
+				// Windows Terminal) that do not automatically copy a selection.
+				// Handle it before keyboard input clears the in-app highlight.
+				if (pendingInput.includes("\x1b[99;6u")) {
+					this.copyGlobalSelection();
+					pendingInput = pendingInput.replaceAll("\x1b[99;6u", "");
+				}
+
+				if (pendingInput.length > 0) {
+					// Any other keyboard input clears the global selection.
+					this.clearGlobalSelection();
+					this.internalEventEmitter.emit("input", pendingInput);
+				}
 				pendingInput = "";
 			}
 		};
@@ -799,6 +816,13 @@ export default class Ink {
 				}
 			}
 
+			// Some terminals (including CMD) report only the press and release,
+			// not button-motion. Use the release location as the final endpoint so
+			// a drag still selects and copies without an intermediate drag report.
+			if (this.selectionOwned && this.selectionAnchor) {
+				this.extendGlobalSelection(ev.x, y);
+			}
+
 			// Finalise global selection: copy to clipboard on mouse-up.
 			if (this.selectionOwned) {
 				this.finaliseGlobalSelection();
@@ -947,19 +971,23 @@ export default class Ink {
 		}
 	}
 
+	/** Copy the active frame-wide selection without changing its highlight. */
+	private copyGlobalSelection(): void {
+		if (!this.selectionRange) return;
+
+		const text = getSelectedText(this.getPlainLines(), this.selectionRange);
+		if (text.trim()) {
+			writeClipboard(this.options.stdout, text);
+		}
+	}
+
 	/** Finalise the global selection: copy to clipboard and keep highlight. */
 	private finaliseGlobalSelection(): void {
 		if (this.selectionRange) {
 			// Ensure the highlight reflects the final drag position — the last
 			// drag event may have been throttled.
 			this.repaintWithSelection();
-
-			const lines = this.getPlainLines();
-			const text = getSelectedText(lines, this.selectionRange);
-
-			if (text.trim()) {
-				writeClipboard(this.options.stdout, text);
-			}
+			this.copyGlobalSelection();
 
 			if (!this.selectionDragging && this.selectionClickCount >= 2) {
 				// Double/triple-click — copy and keep highlight briefly.
