@@ -584,10 +584,17 @@ export default class Ink {
 			clearTimeout(this.escapeTimer);
 		}
 
-		// Ctrl+C handling.
+		// CMD cannot distinguish Ctrl+Shift+C from Ctrl+C: both arrive as ETX.
+		// When a global selection is active, treat ETX as the copy shortcut rather
+		// than exiting. A plain Ctrl+C (with no selection) still exits normally.
 		if (this.exitOnCtrlC && chunk.includes("\x03")) {
-			this.unmount();
-			return;
+			if (this.selectionRange) {
+				this.copyGlobalSelection();
+				chunk = chunk.replaceAll("\x03", "");
+			} else {
+				this.unmount();
+				return;
+			}
 		}
 
 		// Drain the chunk left-to-right. Mouse reports and bracketed paste
@@ -807,6 +814,13 @@ export default class Ink {
 				if (target === this.mouseDownTarget) {
 					dispatchClick(target, base);
 				}
+			}
+
+			// Some terminals (including CMD) report only the press and release,
+			// not button-motion. Use the release location as the final endpoint so
+			// a drag still selects and copies without an intermediate drag report.
+			if (this.selectionOwned && this.selectionAnchor) {
+				this.extendGlobalSelection(ev.x, y);
 			}
 
 			// Finalise global selection: copy to clipboard on mouse-up.

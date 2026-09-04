@@ -74,4 +74,42 @@ describe("global text selection", () => {
 		expect(writeClipboard).toHaveBeenCalledWith(stdout, "hello");
 		instance.unmount();
 	});
+
+	it("uses a release-only mouse report to copy a drag", async () => {
+		const stdout = makeStdout();
+		const stdin = makeStdin();
+		const instance = render(createElement(Text, null, "hello"), {
+			stdout,
+			stdin,
+			patchConsole: false,
+			exitOnCtrlC: false,
+		});
+		await instance.waitUntilRenderFlush();
+
+		stdin.emit("data", "\x1b[<0;1;1M");
+		stdin.emit("data", "\x1b[<0;6;1m");
+
+		expect(writeClipboard).toHaveBeenCalledWith(stdout, "hello");
+		instance.unmount();
+	});
+
+	it("copies an active selection when CMD reports Ctrl+Shift+C as Ctrl+C", async () => {
+		const stdout = makeStdout();
+		const stdin = makeStdin();
+		const instance = render(createElement(Text, null, "hello"), {
+			stdout,
+			stdin,
+			patchConsole: false,
+			exitOnCtrlC: true,
+		});
+		await instance.waitUntilRenderFlush();
+
+		stdin.emit("data", "\x1b[<0;1;1M");
+		stdin.emit("data", "\x1b[<0;6;1m");
+		writeClipboard.mockClear();
+		stdin.emit("data", "\x03");
+
+		expect(writeClipboard).toHaveBeenCalledWith(stdout, "hello");
+		instance.unmount();
+	});
 });
