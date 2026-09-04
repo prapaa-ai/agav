@@ -61,6 +61,7 @@ export class MCPManager {
         description: `[MCP: ${mcpTool.serverName}] ${mcpTool.description}`,
         inputSchema: mcpTool.inputSchema,
       },
+      mcpServerName: mcpTool.serverName,
       execute: async (input: Record<string, unknown>): Promise<ToolResult> => {
         const client = this.clients.get(mcpTool.serverName);
         if (!client) {

@@ -96,6 +96,7 @@ export interface PendingConfirmation {
   toolName: string;
   input: Record<string, unknown>;
   diffLines?: DiffLine[];
+  mcpServerName?: string;
   resolve: (choice: ConfirmResult) => void;
   subagentId?: string;
   subagentTask?: string;
@@ -573,11 +574,13 @@ export function useAgent(
         toolName: string,
         toolInput: Record<string, unknown>,
         diffPreview?: DiffLine[],
+        mcpServerName?: string,
       ): Promise<ConfirmResult> => {
         return confirmationQueueRef.current.enqueue({
           toolName,
           input: toolInput,
           diffLines: diffPreview,
+          mcpServerName,
         });
       };
 
