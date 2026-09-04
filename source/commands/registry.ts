@@ -23,6 +23,7 @@ import { steerCommand } from "./steer.js"
 import { changelogCommand } from "./changelog.js"
 import { contextCommand } from "./context.js"
 import { agentsCommand } from "./agents.js"
+import { openCommand } from "./open.js"
 
 /** Store slash commands and dispatch raw user input to the matching handler. */
 export class CommandRegistry {
@@ -59,6 +60,7 @@ export class CommandRegistry {
     this.register(changelogCommand)
     this.register(contextCommand)
     this.register(agentsCommand)
+    this.register(openCommand)
   }
 
   /** Add a command to the registry by name. */

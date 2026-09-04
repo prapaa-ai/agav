@@ -5,6 +5,7 @@ import { loadPromptHistory, savePromptHistory } from "../config/prompt-history.j
 import { writeClipboard } from "../ink/termio/clipboard.js";
 import { readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
+import { ATTACHMENT_TILE_RE, attachmentTileScanner, attachmentTileForId } from "../utils/attachments.js";
 
 /** Metadata for a slash command suggestion. */
 export interface CommandInfo {
@@ -20,6 +21,16 @@ interface Props {
   onRemoveAttachment?: () => void;
   onClearAttachments?: () => void;
   onRegisterInsert?: (fn: (label: string) => void) => void;
+  /**
+   * Registers a function that replaces an existing attachment tile (matched
+   * by id) in the buffer with literal text — the "paste the same thing again
+   * to expand it" gesture. Returns whether a matching tile was found and
+   * replaced; the caller falls back to creating a fresh attachment when it
+   * returns `false` (the tile was edited away, or never existed here).
+   */
+  onRegisterExpand?: (fn: (id: number, fullText: string) => boolean) => void;
+  /** Opens/previews the attachment a tile click resolved to, instead of moving the caret. */
+  onOpenAttachment?: (id: number) => void;
   disabled?: boolean;
   /**
    * When true, arrow keys do not cycle through prompt history.
@@ -84,17 +95,13 @@ export function isEscapeResidue(input: string): boolean {
 }
 
 /**
- * Matches an attachment placeholder: the `<<...>>` stand-in the prompt shows
- * for a pasted block or an image.
- *
- * Written once because two things depend on its exact shape — backspace, which
- * takes a whole one out at a stroke, and click, which refuses to put the caret
- * inside one.
+ * The attachment tile grammar, immediately before the cursor, with its
+ * trailing space. Shared with `ATTACHMENT_TILE_RE` from `utils/attachments.ts`
+ * so backspace (which removes a whole tile at a stroke) and click (which
+ * refuses to put the caret inside one) never disagree with how a tile was
+ * actually built.
  */
-const ATTACHMENT_LABEL = String.raw`<<(?:\(.*?\) )?(?:Pasted|Image)(?:\s*#\d+)?:.+?>>`;
-
-/** The same placeholder, immediately before the cursor, with its trailing space. */
-const ATTACHMENT_BEFORE_CURSOR_RE = new RegExp(`${ATTACHMENT_LABEL} ?$`);
+const ATTACHMENT_BEFORE_CURSOR_RE = new RegExp(ATTACHMENT_TILE_RE.source + " ?$");
 
 /** Every character cell the prompt prints before the text: `"❯ "` or `"  "`. */
 const PREFIX_WIDTH = 2;
@@ -111,7 +118,7 @@ const PREFIX_WIDTH = 2;
  * are positions the user can sensibly mean, so pick the closer one.
  */
 export function snapOutOfAttachment(text: string, offset: number): number {
-  const pattern = new RegExp(ATTACHMENT_LABEL, "g");
+  const pattern = attachmentTileScanner();
 
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
     const start = match.index;
@@ -125,6 +132,29 @@ export function snapOutOfAttachment(text: string, offset: number): number {
   }
 
   return offset;
+}
+
+/**
+ * Returns the attachment id of the tile that spans `offset`, or `null` if
+ * `offset` does not land inside one. A click landing anywhere within a
+ * tile — including on its edges — resolves to it; the click handler checks
+ * this before falling back to `snapOutOfAttachment`, so opening a tile never
+ * also moves the caret.
+ */
+export function attachmentTileAt(text: string, offset: number): number | null {
+  const pattern = attachmentTileScanner();
+
+  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (offset >= start && offset < end) {
+      const id = Number(match[1]);
+      return Number.isFinite(id) ? id : null;
+    }
+    if (start > offset) break;
+  }
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,7 +214,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
 }
 
 /** Renders the interactive prompt with history, completion, and paste handling. */
-export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
+export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, onRegisterExpand, onOpenAttachment, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages }: Props) {
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
   const [, bumpCursor] = useState(0);
@@ -374,6 +404,29 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       });
     }
   }, [onRegisterInsert]);
+
+  // Register expand function so the parent can turn a pasted-block tile back
+  // into its full literal text — the "paste the same thing again" gesture.
+  useEffect(() => {
+    if (onRegisterExpand) {
+      onRegisterExpand((id: number, fullText: string) => {
+        const val = liveRef.current.value;
+        const match = val.match(attachmentTileForId(id));
+        if (!match || match.index === undefined) return false;
+        const start = match.index;
+        const end = start + match[0].length;
+        const cur = liveRef.current.cursor;
+        // A caret sitting inside the tile being replaced (or anywhere after
+        // it) must shift by the length delta so it lands in the same
+        // *logical* spot in the expanded text rather than snapping to
+        // wherever the old offset now falls.
+        const delta = fullText.length - match[0].length;
+        const nextCursor = cur <= start ? cur : cur >= end ? cur + delta : end + delta;
+        applyEdit(val.slice(0, start) + fullText + val.slice(end), nextCursor);
+        return true;
+      });
+    }
+  }, [onRegisterExpand]);
 
   const activeFileToken = getActiveFileToken(text, cursorPos);
   const showSuggestions = !activeFileToken && text.startsWith("/") && !text.includes(" ") && text.length >= 1;
@@ -812,13 +865,21 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   };
 
   /**
-   * Click (press + release on the same node): positions the caret.
-   * Selection copy is handled by the container-level mouseUp handler.
+   * Click (press + release on the same node): opens the attachment under the
+   * click if there is one, otherwise positions the caret. Selection copy is
+   * handled by the container-level mouseUp handler.
    */
   const handleRowClick = (line: WrappedLine) => (event: MouseEventData) => {
     if (!draggingRef.current && clickCountRef.current <= 1) {
+      const rawOffset = eventToOffset(event, line);
+      const tileId = onOpenAttachment ? attachmentTileAt(text, rawOffset) : null;
+      if (tileId !== null) {
+        onOpenAttachment!(tileId);
+        event.stopPropagation?.();
+        return;
+      }
       // Plain click with no drag — position caret, clear selection.
-      const offset = snapOutOfAttachment(text, eventToOffset(event, line));
+      const offset = snapOutOfAttachment(text, rawOffset);
       clearSelection();
       moveCaret(offset);
     }

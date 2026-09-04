@@ -186,8 +186,8 @@ describe("clicking in the input prompt", () => {
 // into two strings that match nothing, orphaning the attachment silently.
 
 describe("clicking on an attachment placeholder", () => {
-  const PASTE = "<<(hello worl...) Pasted #1: 2k chars and 40 lines>>";
-  const IMAGE = "<<Image #2: 800x600>>";
+  const PASTE = "<<Pasted #1 · 2k chars, 40 lines>>";
+  const IMAGE = "<<Image #2 · 800x600>>";
 
   it("snaps to the near edge of a pasted-text placeholder", async () => {
     const { instance, stdin } = await mount(`${PASTE} tail`);
@@ -273,7 +273,7 @@ describe("clicking a prompt on a frame that has scrolled", () => {
 });
 
 describe("snapOutOfAttachment", () => {
-  const PASTE = "<<(hello worl...) Pasted #1: 2k chars and 40 lines>>";
+  const PASTE = "<<Pasted #1 · 2k chars, 40 lines>>";
 
   it("leaves an offset outside every placeholder alone", () => {
     const text = `head ${PASTE} tail`;
@@ -295,7 +295,7 @@ describe("snapOutOfAttachment", () => {
   });
 
   it("picks the right placeholder when there are several", () => {
-    const image = "<<Image #2: 800x600>>";
+    const image = "<<Image #2 · 800x600>>";
     const text = `${PASTE} ${image}`;
     const imageStart = PASTE.length + 1;
     expect(snapOutOfAttachment(text, imageStart + 2)).toBe(imageStart);

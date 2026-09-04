@@ -1,14 +1,18 @@
 import React from "react";
 import { Box, Text } from "../ink/index.js";
 import { renderMarkdown } from "./markdown-text.js";
+import ClickableLine from "./clickable-line.js";
 import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
 import { getTheme } from "../config/theme.js";
-import { fileLink } from "../utils/hyperlink.js";
 import type { DiffLine } from "../utils/diff.js";
 import type { InvocationReason } from "../providers/types.js";
 import { projectRelativePath, terminalRelativePaths, toolPathValues } from "../utils/display-path.js";
 import { visualLen, wrapToWidth } from "../utils/wrap-text.js";
 import { VERSION } from "../version.js";
+import { useDetectedTargets } from "../hooks/use-detected-targets.js";
+import { buildClickableLines } from "../utils/render-clickable.js";
+import { targetToRefId, wrapTextToRuns } from "../utils/wrap-runs.js";
+import { encodeOpenRef, type OpenRef } from "../utils/open-ref.js";
 
 /** Normalized message shape used for terminal rendering. */
 export interface DisplayMessage {
@@ -28,7 +32,107 @@ interface Props {
   messages: DisplayMessage[];
   toolDetailKey: string;
   columns: number;
+  /** Opens/previews whatever a clickable run in the transcript resolved to. */
+  onOpenRef?: (ref: OpenRef) => void;
 }
+
+/**
+ * Renders markdown-rendered text as a column of `ClickableLine` rows, making
+ * every detected URL/file path in it clickable. Falls back to plain
+ * `renderMarkdown` output with no per-run splitting while detection is still
+ * pending or found nothing — indistinguishable from today's rendering.
+ */
+const ClickableMarkdown = React.memo(function ClickableMarkdown({
+  rawText, styledText, messageId, columns, indent, onOpenRef, dimColor,
+}: { rawText: string; styledText: string; messageId: string; columns: number; indent: string; onOpenRef?: (ref: OpenRef) => void; dimColor?: boolean }) {
+  const theme = getTheme();
+  const targets = useDetectedTargets(rawText, messageId, Boolean(onOpenRef));
+
+  if (targets.length === 0 || !onOpenRef) {
+    return <Text dimColor={dimColor}>{indent}{styledText}</Text>;
+  }
+
+  const width = Math.max(10, columns - visualLen(indent));
+  const lines = buildClickableLines(styledText, width, targets, (t) => targetToRefId(t, encodeOpenRef), {
+    color: theme.linkColor,
+    underline: true,
+  }, { dimColor });
+
+  const handleOpen = (targetId: string) => {
+    const ref = JSON.parse(targetId) as OpenRef;
+    onOpenRef(ref);
+  };
+
+  return (
+    <Box flexDirection="column">
+      {lines.map((runs, i) => (
+        <ClickableLine
+          key={i}
+          runs={i === 0 ? [{ text: indent }, ...runs] : [{ text: " ".repeat(visualLen(indent)) }, ...runs]}
+          onOpen={handleOpen}
+        />
+      ))}
+    </Box>
+  );
+});
+
+/**
+ * Renders a user message inside its padded background band, making every
+ * detected URL/file path in it clickable.
+ *
+ * The band is painted by writing each line followed by enough spaces to reach
+ * the right edge (`wrapToWidth` guarantees each line fits in one row), so a
+ * clickable run's padding must land on the SAME row it was measured for — the
+ * padding is appended as a final plain run on that row rather than as a
+ * separate `<Text>` sibling measured against the whole message.
+ */
+const UserMessage = React.memo(function UserMessage({ message, columns, onOpenRef }: { message: DisplayMessage; columns: number; onOpenRef?: (ref: OpenRef) => void }) {
+  const cols = columns;
+  const usable = cols - 2;
+  const targets = useDetectedTargets(message.content, message.id, Boolean(onOpenRef));
+
+  const emptyLine = " ".repeat(cols);
+  const invocationText = message.invocationReason
+    ? `AUTOMATION  /${message.invocationReason.source} · ${message.invocationReason.detail}`
+    : undefined;
+
+  const handleOpen = (targetId: string) => {
+    const ref = JSON.parse(targetId) as OpenRef;
+    onOpenRef?.(ref);
+  };
+
+  // Every line is padded out to the full width below, which only paints a
+  // clean band while each one fits on a single row — `wrapToWidth` (used both
+  // directly here and inside `wrapTextToRuns`) guarantees that.
+  const runLines = onOpenRef && targets.length > 0
+    ? wrapTextToRuns(message.content, usable, targets, (t) => targetToRefId(t, encodeOpenRef), { color: getTheme().linkColor, underline: true }, { color: "white" })
+    : wrapToWidth(message.content, usable).map((line) => [{ text: line, color: "white" }]);
+
+  return (
+    <Box flexDirection="column" marginTop={1} marginBottom={1}>
+      <Text backgroundColor="#2d2d2d">{emptyLine}</Text>
+      {invocationText ? (
+        <Text backgroundColor="#2d2d2d">
+          <Text color="yellow" bold>{"  AUTOMATION"}</Text>
+          <Text dimColor>{`  /${message.invocationReason!.source} · ${message.invocationReason!.detail}`}</Text>
+          {" ".repeat(Math.max(0, cols - visualLen(invocationText) - 2))}
+        </Text>
+      ) : null}
+      {runLines.map((runs, i) => {
+        const prefix = i === 0 ? "❯ " : "  ";
+        const lineText = runs.map((r) => r.text).join("");
+        const pad = Math.max(0, cols - prefix.length - visualLen(lineText));
+        const prefixRun = i === 0
+          ? { text: prefix, color: "green", bold: true, backgroundColor: "#2d2d2d" }
+          : { text: prefix, dimColor: true, backgroundColor: "#2d2d2d" };
+        const styledRuns = runs.map((r) => ({ ...r, backgroundColor: "#2d2d2d" }));
+        const padRun = { text: " ".repeat(pad), backgroundColor: "#2d2d2d" };
+        return <ClickableLine key={i} runs={[prefixRun, ...styledRuns, padRun]} onOpen={handleOpen} />;
+      })}
+      <Text backgroundColor="#2d2d2d">{emptyLine}</Text>
+    </Box>
+  );
+});
 
 /** Renders a compact preview of diff output. */
 const DiffView = React.memo(function DiffView({ diffLines }: { diffLines: DiffLine[] }) {
@@ -89,16 +193,19 @@ const ToolResultLine = React.memo(function ToolResultLine({ message }: { message
   const summary = message.toolName && message.toolInput ? getToolSummary(message.toolName, message.toolInput) : "";
   const displayContent = terminalRelativePaths(message.content, toolPathValues(message.toolInput));
 
-  // Image reference with hyperlink
+  // Image reference. Plain text rather than an OSC 8 hyperlink — this
+  // renderer corrupts OSC 8 (the URL leaks into visible text) and emitting it
+  // on a row we also handle clicks for causes terminals to double-open. The
+  // path itself is picked up by the same file-path detection the rest of the
+  // transcript uses, so it is still clickable.
   if (message.toolName === "image" && message.content) {
     const filePath = message.content;
-    const linked = fileLink(projectRelativePath(filePath), filePath);
     return (
       <Box flexDirection="column">
         <Text>
           <Text dimColor>{"  └─ "}</Text>
           <Text bold color="magenta">Image</Text>
-          <Text> {linked}</Text>
+          <Text> {projectRelativePath(filePath)}</Text>
         </Text>
       </Box>
     );
@@ -148,7 +255,7 @@ const ToolResultLine = React.memo(function ToolResultLine({ message }: { message
 });
 
 /** Renders the appropriate terminal bubble for a message role. */
-const MessageBubble = React.memo(function MessageBubble({ message, prevRole, toolDetailKey, columns }: { message: DisplayMessage; prevRole?: string; toolDetailKey: string; columns: number }) {
+const MessageBubble = React.memo(function MessageBubble({ message, prevRole, toolDetailKey, columns, onOpenRef }: { message: DisplayMessage; prevRole?: string; toolDetailKey: string; columns: number; onOpenRef?: (ref: OpenRef) => void }) {
   if (message.role === "banner") {
     return (
       <Box flexDirection="column" marginBottom={1}>
@@ -182,38 +289,12 @@ const MessageBubble = React.memo(function MessageBubble({ message, prevRole, too
   }
 
   if (message.role === "user") {
-    const cols = columns;
-    // Every line is padded out to the full width below, which only paints a clean
-    // band while each one fits on a single row. `wrapToWidth` guarantees that.
-    const lines = wrapToWidth(message.content, cols - 2);
-
-    const emptyLine = " ".repeat(cols);
-    const invocationText = message.invocationReason
-      ? `AUTOMATION  /${message.invocationReason.source} · ${message.invocationReason.detail}`
-      : undefined;
     return (
-      <Box flexDirection="column" marginTop={1} marginBottom={1}>
-        <Text backgroundColor="#2d2d2d">{emptyLine}</Text>
-        {invocationText ? (
-          <Text backgroundColor="#2d2d2d">
-            <Text color="yellow" bold>{"  AUTOMATION"}</Text>
-            <Text dimColor>{`  /${message.invocationReason!.source} · ${message.invocationReason!.detail}`}</Text>
-            {" ".repeat(Math.max(0, cols - visualLen(invocationText) - 2))}
-          </Text>
-        ) : null}
-        {lines.map((line, i) => {
-          const prefix = i === 0 ? "❯ " : "  ";
-          const pad = Math.max(0, cols - prefix.length - visualLen(line));
-          return (
-            <Text key={i} backgroundColor="#2d2d2d">
-              {i === 0 ? <Text color="green" bold>{prefix}</Text> : <Text dimColor>{prefix}</Text>}
-              <Text color="white">{line}</Text>
-              {" ".repeat(pad)}
-            </Text>
-          );
-        })}
-        <Text backgroundColor="#2d2d2d">{emptyLine}</Text>
-      </Box>
+      <UserMessage
+        message={message}
+        columns={columns}
+        onOpenRef={onOpenRef}
+      />
     );
   }
 
@@ -223,21 +304,45 @@ const MessageBubble = React.memo(function MessageBubble({ message, prevRole, too
 
   if (message.role === "assistant") {
     const hadTools = prevRole === "tool";
+    const displayContent = terminalRelativePaths(message.content);
     return (
       <Box flexDirection="column" marginBottom={1}>
         {hadTools ? <Text dimColor>  ({toolDetailKey} to expand tools)</Text> : null}
-        <Text>{"  "}{renderMarkdown(terminalRelativePaths(message.content))}</Text>
+        <ClickableMarkdown
+          rawText={displayContent}
+          styledText={renderMarkdown(displayContent)}
+          messageId={message.id}
+          columns={columns}
+          indent="  "
+          onOpenRef={onOpenRef}
+        />
       </Box>
     );
   }
 
   if (message.role === "system") {
     const isLong = message.content.length > 200;
+    const displayContent = terminalRelativePaths(message.content);
+    if (message.isError) {
+      return (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text color="red">
+            {"  "}{isLong ? renderMarkdown(displayContent) : displayContent}
+          </Text>
+        </Box>
+      );
+    }
     return (
       <Box flexDirection="column" marginBottom={1}>
-        <Text color={message.isError ? "red" : undefined} dimColor={!message.isError}>
-          {"  "}{isLong ? renderMarkdown(terminalRelativePaths(message.content)) : terminalRelativePaths(message.content)}
-        </Text>
+        <ClickableMarkdown
+          rawText={displayContent}
+          styledText={isLong ? renderMarkdown(displayContent) : displayContent}
+          messageId={message.id}
+          columns={columns}
+          indent="  "
+          onOpenRef={onOpenRef}
+          dimColor
+        />
       </Box>
     );
   }
@@ -253,11 +358,11 @@ const MessageBubble = React.memo(function MessageBubble({ message, prevRole, too
  * to a fixed band of the screen while everything below — a streaming reply, a
  * plan, a detail panel — slid around inside bands of their own.
  */
-const MessageList = React.memo(function MessageList({ messages, toolDetailKey, columns }: Props) {
+const MessageList = React.memo(function MessageList({ messages, toolDetailKey, columns, onOpenRef }: Props) {
   return (
     <Box flexDirection="column" flexShrink={0}>
       {messages.map((message, index) => (
-        <MessageBubble key={message.id} message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} columns={columns} />
+        <MessageBubble key={message.id} message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} columns={columns} onOpenRef={onOpenRef} />
       ))}
     </Box>
   );

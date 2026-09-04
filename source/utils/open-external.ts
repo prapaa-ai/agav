@@ -2,14 +2,51 @@ import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, isAbsolute } from "node:path";
 
-/** Open a URL or file using the platform's default handler. */
+/** Matches a URI scheme prefix, e.g. "https:", "vscode:", "file:". */
+const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
+
+/**
+ * Whether `target` is safe to hand to the platform's "open" launcher without
+ * a shell in the loop. This only validates *shape* — it accepts anything
+ * that looks like a URL (any scheme) or an absolute filesystem path. It is
+ * not an allow-list of schemes or directories; callers that need to restrict
+ * targets further (e.g. to http/https only, or to a specific directory) must
+ * do that themselves.
+ */
+export function isSafeOpenTarget(target: string): boolean {
+  if (URL_SCHEME_RE.test(target)) return true;
+  return isAbsolute(target) && !target.startsWith("-");
+}
+
+/**
+ * Open a URL or file using the platform's default handler.
+ *
+ * Callers passing local files must pass an absolute path — URLs are
+ * naturally absolute already. Relative paths and anything that doesn't look
+ * like an absolute path or a URL are rejected without spawning a process.
+ */
 export function openExternal(target: string): Promise<boolean> {
+  // On Linux, xdg-open falls back to a chain of TTY browsers when there's no
+  // display server, which would hijack the terminal's alt-screen and hang on
+  // stdin. Refuse to spawn anything in that case.
+  if (
+    process.platform === "linux" &&
+    !process.env["DISPLAY"] &&
+    !process.env["WAYLAND_DISPLAY"]
+  ) {
+    return Promise.resolve(false);
+  }
+
+  if (!isSafeOpenTarget(target)) {
+    return Promise.resolve(false);
+  }
+
   const launcher = process.platform === "darwin"
     ? { bin: "open", args: [] as string[] }
     : process.platform === "win32"
-      ? { bin: "cmd.exe", args: ["/c", "start", ""] }
+      ? { bin: "explorer.exe", args: [] as string[] }
       : { bin: "xdg-open", args: [] as string[] };
 
   return new Promise((resolve) => {
