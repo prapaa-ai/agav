@@ -23,7 +23,7 @@
     "prepare": "husky"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",
