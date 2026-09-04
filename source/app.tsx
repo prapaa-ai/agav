@@ -789,6 +789,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           toolName={pendingConfirmation.toolName}
           input={pendingConfirmation.input}
           diffLines={pendingConfirmation.diffLines}
+          mcpServerName={pendingConfirmation.mcpServerName}
           onConfirm={confirmTool}
           subagentTask={pendingConfirmation.subagentTask}
           keybindings={keybindings}

@@ -13,13 +13,14 @@ interface Props {
   toolName: string;
   input: Record<string, unknown>;
   diffLines?: DiffLine[];
+  mcpServerName?: string;
   onConfirm: (choice: ConfirmChoice) => void;
   subagentTask?: string;
   keybindings: Keybindings;
 }
 
 /** Prompts the user to approve or reject a pending tool action. */
-export default function ToolConfirm({ toolName, input, diffLines, onConfirm, subagentTask, keybindings }: Props) {
+export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, keybindings }: Props) {
   const keyResolver = React.useRef(new KeybindingResolver(keybindings, ["cancel", "submit"]));
   useInput((rawChar, rawKey) => {
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
@@ -35,7 +36,7 @@ export default function ToolConfirm({ toolName, input, diffLines, onConfirm, sub
 
   const label = getToolLabel(toolName);
   const summary = getToolSummary(toolName, input);
-  const mcpServer = getMcpServerName(toolName);
+  const mcpServer = mcpServerName ?? getMcpServerName(toolName);
   const theme = getTheme();
 
   /** Formats non-edit arguments into a compact confirmation preview. */
