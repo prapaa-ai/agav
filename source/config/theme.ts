@@ -11,6 +11,8 @@ export interface AgavTheme {
   promptColor: string;
   userBg?: string;
   userFg?: string;
+  /** Color for a clickable run — a detected file path, URL, or attachment tile. */
+  linkColor: string;
 }
 
 const DEFAULT_THEME: AgavTheme = {
@@ -26,6 +28,7 @@ const DEFAULT_THEME: AgavTheme = {
   promptColor: "green",
   userBg: "#2d2d2d",
   userFg: "white",
+  linkColor: "cyan",
 };
 
 let currentTheme: AgavTheme = { ...DEFAULT_THEME };

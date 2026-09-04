@@ -1,6 +1,6 @@
 {
   "name": "agav-cli",
-  "version": "0.2.1-beta.1",
+  "version": "0.2.1-beta.2",
   "description": "Terminal-native AI coding assistant for real repositories",
   "type": "module",
   "bin": {
@@ -23,11 +23,11 @@
     "prepare": "husky"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.0",
-    "@anthropic-ai/sdk": "^0.106.0",
+    "@anthropic-ai/sdk": "^0.123.0",
     "ajv": "^8.20.0",
     "ansi-escapes": "^7.3.0",
     "chalk": "^5.4.0",
@@ -38,8 +38,8 @@
     "marked": "^15.0.0",
     "marked-terminal": "^7.3.0",
     "ollama": "^0.6.3",
-    "openai": "^6.46.0",
-    "pdfjs-dist": "^6.1.200",
+    "openai": "^7.9.0",
+    "pdfjs-dist": "^6.3.289",
     "react": "^19.2.0",
     "react-reconciler": "0.33.0",
     "scheduler": "^0.27.0",
@@ -51,13 +51,13 @@
   },
   "devDependencies": {
     "@sindresorhus/tsconfig": "^8.1.0",
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.4.1",
     "@types/react": "^19.2.0",
     "@types/react-reconciler": "^0.33.0",
     "@types/scheduler": "^0.26.0",
     "@vitest/coverage-v8": "^2.1.8",
     "husky": "^9.0.0",
-    "tsx": "^4.19.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.8.0",
     "vitest": "^2.1.8"
   }
