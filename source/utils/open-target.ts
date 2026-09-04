@@ -1,4 +1,4 @@
-import { access, constants } from "node:fs/promises";
+import { access, constants, realpath } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -80,6 +80,20 @@ function hasGui(): boolean {
 
 function isCI(): boolean {
   return Boolean(process.env["CI"]) || !process.stdout.isTTY;
+}
+
+/** Split a $BROWSER command without invoking a shell; quotes group arguments and `%s` is replaced with the URL. */
+function parseBrowserCommand(value: string): string[] | null {
+  const args: string[] = [];
+  const tokens = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|([^\s"']+)/g;
+  let match: RegExpExecArray | null;
+  let end = 0;
+  while ((match = tokens.exec(value))) {
+    if (value.slice(end, match.index).trim()) return null;
+    args.push((match[1] ?? match[2] ?? match[3] ?? "").replace(/\\([\\"'])/g, "$1"));
+    end = tokens.lastIndex;
+  }
+  return args.length > 0 && !value.slice(end).trim() ? args : null;
 }
 
 /** Detect whether we're inside WSL with a reachable Windows interop layer (not an SSH session). */
@@ -164,9 +178,13 @@ export async function openTarget(request: OpenRequest): Promise<OpenOutcome> {
     }
 
     const browserOverride = process.env["BROWSER"];
-    if (browserOverride) {
+    const browserCommand = browserOverride && parseBrowserCommand(browserOverride);
+    if (browserCommand) {
       try {
-        await execFileAsync(browserOverride, [request.url], { timeout: 10_000 });
+        const hasUrlPlaceholder = browserCommand.some((argument) => argument.includes("%s"));
+        const browserArgs = browserCommand.slice(1).map((argument) => argument.replaceAll("%s", request.url));
+        if (!hasUrlPlaceholder) browserArgs.push(request.url);
+        await execFileAsync(browserCommand[0]!, browserArgs, { timeout: 10_000 });
         return { ok: true, message: `Opened ${request.url} via $BROWSER.` };
       } catch {
         // Fall through to the platform opener.
@@ -191,40 +209,49 @@ export async function openTarget(request: OpenRequest): Promise<OpenOutcome> {
     return { ok: false, message: `Cannot open: ${boundaryError}` };
   }
 
+  let resolvedPath: string;
   try {
-    await access(absPath, constants.F_OK);
+    // Re-resolve immediately before dispatching to an external opener so a
+    // symlink swap after the policy check cannot redirect the open target.
+    resolvedPath = await realpath(absPath);
   } catch {
     return { ok: false, message: `Cannot open: file no longer exists (${absPath}).` };
   }
+  if (resolvedPath !== absPath) {
+    const resolvedBoundaryError = await checkPathBoundary(resolvedPath, "read");
+    if (resolvedBoundaryError) {
+      return { ok: false, message: `Cannot open: ${resolvedBoundaryError}` };
+    }
+  }
 
   if (isCI()) {
-    return { ok: false, message: `No GUI detected — path copied to clipboard: ${absPath}` };
+    return { ok: false, message: `No GUI detected — copy this path manually: ${absPath}` };
   }
 
   if (isVsCodeTerminal()) {
     const cli = await findVsCodeCli();
-    if (cli && await openWithVsCode(cli, absPath, request.line, request.col)) {
-      return { ok: true, message: `Opened ${absPath} in VS Code.` };
+    if (cli && await openWithVsCode(cli, resolvedPath, request.line, request.col)) {
+      return { ok: true, message: `Opened ${resolvedPath} in VS Code.` };
     }
   }
 
   if (await detectWsl()) {
-    if (await openWsl(absPath)) {
-      return { ok: true, message: `Opened ${absPath}.` };
+    if (await openWsl(resolvedPath)) {
+      return { ok: true, message: `Opened ${resolvedPath}.` };
     }
   }
 
   if (!hasGui()) {
-    return { ok: false, message: `No GUI detected — path copied to clipboard: ${absPath}` };
+    return { ok: false, message: `No GUI detected — copy this path manually: ${resolvedPath}` };
   }
 
-  const ext = extOf(absPath);
+  const ext = extOf(resolvedPath);
   if (ext && !INERT_EXTENSIONS.has(ext)) {
     return { ok: false, message: `Cannot open: "${ext}" files are not in the allow-list of safe types to hand to the OS.` };
   }
 
-  const ok = await openExternal(absPath);
+  const ok = await openExternal(resolvedPath);
   return ok
-    ? { ok: true, message: `Opened ${absPath}.` }
-    : { ok: false, message: `Could not open ${absPath} — no default app available.` };
+    ? { ok: true, message: `Opened ${resolvedPath}.` }
+    : { ok: false, message: `Could not open ${resolvedPath} — no default app available.` };
 }

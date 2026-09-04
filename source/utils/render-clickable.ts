@@ -26,13 +26,10 @@ import type { LineRunSpec } from "./wrap-runs.js";
  * within it, makes a straddling target's ownership span the boundary the same
  * way `wrapTextToRuns` already does for plain (non-styled) text.
  *
- * Offsets are matched by indexOf on the ANSI-stripped text and then converted
- * through `sliceStyled`, which counts by grapheme cluster. For the ASCII-only
- * targets this module ever receives (paths, URLs) that lines up exactly with
- * a code-unit index; a wide/combining character earlier in the text could in
- * principle shift alignment, which would only ever under-detect (fail to
- * linkify) rather than mis-slice, since `sliceStyled` itself is always safe
- * against arbitrary indices.
+ * Offsets are matched by indexOf on ANSI-stripped text (UTF-16 code units),
+ * then converted to grapheme offsets separately for each wrapped line before
+ * slicing styled output. This keeps targets after emoji or combining text
+ * aligned with `sliceStyled`, whose offsets are grapheme based.
  */
 export function buildClickableLines(
   styledText: string,
@@ -46,6 +43,14 @@ export function buildClickableLines(
   if (targets.length === 0) return wrapped.map((line) => [{ text: line, ...plainRunStyle }]);
 
   const fullVisible = stripAnsi(styledText);
+  const graphemeOffsetAt = (text: string, codeUnitOffset: number) => {
+    let offset = 0;
+    for (const { index } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)) {
+      if (index >= codeUnitOffset) break;
+      offset++;
+    }
+    return offset;
+  };
 
   type Occurrence = { start: number; end: number; target: DetectedTarget };
   const occurrences: Occurrence[] = [];
@@ -97,7 +102,7 @@ export function buildClickableLines(
       const target = owner[lineStart + i] ?? null;
       let j = i;
       while (j < visibleLine.length && (owner[lineStart + j] ?? null) === target) j++;
-      const chunk = sliceStyled(line, i, j);
+      const chunk = sliceStyled(line, graphemeOffsetAt(visibleLine, i), graphemeOffsetAt(visibleLine, j));
       if (target) {
         runs.push({ text: chunk, targetId: makeTargetId(target), color: style.color, underline: style.underline });
       } else {

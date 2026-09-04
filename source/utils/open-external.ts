@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { rmSync } from "node:fs";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
@@ -69,11 +70,53 @@ export function extensionForImage(mediaType: string | undefined): string {
   }
 }
 
+const spooledImagePaths = new Set<string>();
+let cleanupHooksInstalled = false;
+
+function installSpooledImageCleanupHooks(): void {
+  if (cleanupHooksInstalled) return;
+  cleanupHooksInstalled = true;
+  const cleanup = () => {
+    for (const path of spooledImagePaths) {
+      try {
+        rmSync(path, { force: true });
+      } catch {
+        // Process-exit cleanup is best-effort.
+      }
+    }
+    spooledImagePaths.clear();
+  };
+  process.once("exit", cleanup);
+  process.once("SIGINT", () => {
+    cleanup();
+    process.exit(130);
+  });
+  process.once("SIGTERM", () => {
+    cleanup();
+    process.exit(143);
+  });
+}
+
+/** Remove one image file created by this process. Cleanup is best-effort. */
+export async function cleanupSpooledImage(path: string): Promise<void> {
+  if (!spooledImagePaths.delete(path)) return;
+  await rm(path, { force: true }).catch(() => {});
+}
+
+/** Remove all image files created by this process. Cleanup is best-effort. */
+export async function cleanupSpooledImages(): Promise<void> {
+  const paths = [...spooledImagePaths];
+  spooledImagePaths.clear();
+  await Promise.all(paths.map((path) => rm(path, { force: true }).catch(() => {})));
+}
+
 /** Persist image data to a temporary file for a native image viewer. */
 export async function spoolImageToTempFile(base64: string, mediaType: string | undefined): Promise<string> {
   const directory = join(tmpdir(), "agav-images");
   await mkdir(directory, { recursive: true });
   const path = join(directory, `image-${Date.now()}-${randomBytes(4).toString("hex")}${extensionForImage(mediaType)}`);
   await writeFile(path, Buffer.from(base64, "base64"));
+  spooledImagePaths.add(path);
+  installSpooledImageCleanupHooks();
   return path;
 }

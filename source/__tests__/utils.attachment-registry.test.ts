@@ -2,9 +2,11 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 
 vi.mock("../utils/open-external.js", () => ({
   spoolImageToTempFile: vi.fn(),
+  cleanupSpooledImage: vi.fn().mockResolvedValue(undefined),
+  cleanupSpooledImages: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { spoolImageToTempFile } from "../utils/open-external.js";
+import { spoolImageToTempFile, cleanupSpooledImage } from "../utils/open-external.js";
 import {
   getAttachment,
   clearAttachmentRegistry,
@@ -22,6 +24,7 @@ import {
 } from "../utils/attachments.js";
 
 const spoolMock = vi.mocked(spoolImageToTempFile);
+const cleanupSpoolMock = vi.mocked(cleanupSpooledImage);
 
 describe("utils/attachment-registry: listAttachments", () => {
   beforeEach(() => {
@@ -49,6 +52,14 @@ describe("utils/attachment-registry: listAttachments", () => {
     const listed = listAttachments();
     expect(listed.find((a) => a.id === first.id)).toBeUndefined();
     expect(listed).toHaveLength(200);
+  });
+
+  it("removes a spooled image when it is evicted", () => {
+    const image = createImageAttachmentFromData("YWJj", "image/png");
+    (getAttachment(image.id)!.source as any).spoolPath = "/tmp/agav-images/image-evicted.png";
+    for (let i = 0; i < 200; i++) createTextAttachment(`filler-${i}`);
+
+    expect(cleanupSpoolMock).toHaveBeenCalledWith("/tmp/agav-images/image-evicted.png");
   });
 });
 

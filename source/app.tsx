@@ -714,7 +714,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
 
       // Collect attachment content blocks
-      const extraBlocks: ContentBlock[] = attachments.map((a) => a.contentBlock);
+      // The registry later compacts image records by dropping their retained
+      // payload. Give the conversation its own block objects so that cleanup
+      // cannot mutate image data retained in the submitted turn.
+      const extraBlocks: ContentBlock[] = attachments.map((attachment) => ({ ...attachment.contentBlock }));
       const llmText = trimmed || "See attached content";
       const accepted = await submit(llmText, extraBlocks, undefined, undefined, invocationReason);
       if (!accepted) return;

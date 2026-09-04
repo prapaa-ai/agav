@@ -1,5 +1,5 @@
 import type { Attachment } from "./attachments.js";
-import { spoolImageToTempFile } from "./open-external.js";
+import { spoolImageToTempFile, cleanupSpooledImage, cleanupSpooledImages } from "./open-external.js";
 
 /**
  * Session-scoped store of every attachment created this session, keyed by id.
@@ -23,7 +23,13 @@ const evicted = new Set<number>();
 
 /** Register a newly-created attachment, evicting the oldest record if the cap is exceeded. */
 export function registerAttachment(attachment: Attachment): void {
+  const existing = registry.get(attachment.id);
+  const existingIndex = insertionOrder.indexOf(attachment.id);
+  if (existingIndex !== -1) insertionOrder.splice(existingIndex, 1);
   registry.set(attachment.id, attachment);
+  if (existing?.source.type === "image" && existing.source.spoolPath && existing !== attachment) {
+    cleanupSpooledImage(existing.source.spoolPath).catch(() => {});
+  }
   insertionOrder.push(attachment.id);
   evicted.delete(attachment.id);
 
@@ -34,8 +40,12 @@ export function registerAttachment(attachment: Attachment): void {
     // we just inserted — this can't happen since attachment ids are
     // monotonic, but guard anyway for safety.
     if (oldestId === attachment.id) continue;
+    const evictedAttachment = registry.get(oldestId);
     registry.delete(oldestId);
     evicted.add(oldestId);
+    if (evictedAttachment?.source.type === "image" && evictedAttachment.source.spoolPath) {
+      cleanupSpooledImage(evictedAttachment.source.spoolPath).catch(() => {});
+    }
   }
 }
 
@@ -52,9 +62,13 @@ export function getAttachment(id: number): Attachment | undefined {
  * referring to it.
  */
 export function unregisterAttachment(id: number): void {
+  const attachment = registry.get(id);
   registry.delete(id);
   const index = insertionOrder.indexOf(id);
   if (index !== -1) insertionOrder.splice(index, 1);
+  if (attachment?.source.type === "image" && attachment.source.spoolPath) {
+    cleanupSpooledImage(attachment.source.spoolPath).catch(() => {});
+  }
 }
 
 /** Whether `id` once existed in this session but was evicted to make room for newer attachments. */
@@ -67,6 +81,7 @@ export function clearAttachmentRegistry(): void {
   registry.clear();
   insertionOrder.length = 0;
   evicted.clear();
+  cleanupSpooledImages().catch(() => {});
 }
 
 /** All attachments currently registered, oldest first — used by `/open` to list targets. */
@@ -89,7 +104,16 @@ export async function compactImageAttachment(id: number): Promise<void> {
 
   try {
     const spoolPath = await spoolImageToTempFile(attachment.source.base64, attachment.source.mediaType);
+    // The record may have been cleared, evicted, or replaced while the image
+    // was being written. Do not retain an orphaned temp file in that case.
+    if (registry.get(id) !== attachment) {
+      await cleanupSpooledImage(spoolPath);
+      return;
+    }
     attachment.source = { ...attachment.source, base64: undefined, spoolPath };
+    // `app.tsx` clones blocks into the submitted conversation, so this is only
+    // the registry's duplicate payload and can be released after spooling.
+    attachment.contentBlock.imageData = undefined;
   } catch {
     // Leave the base64 in place if spooling fails — still resolvable, just
     // not compacted.

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, realpath, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -56,6 +56,21 @@ describe("utils/detect-targets", () => {
     // is outside `projectRoot`.
     const targets = await detectTargets("do not open ../../etc/passwd please", projectRoot);
     expect(targets.find((t) => t.kind === "path")).toBeUndefined();
+  });
+
+  it("does not report a project-relative symlink that resolves outside root", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "agav-detect-outside-"));
+    try {
+      const secret = join(outside, "secret.txt");
+      await writeFile(secret, "not project content\n");
+      await mkdir(join(root, "public"));
+      await symlink(secret, join(root, "public", "secret.txt"));
+
+      const targets = await detectTargets("read public/secret.txt", root);
+      expect(targets.find((target) => target.kind === "path")).toBeUndefined();
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it("validates a path candidate that has a :line:col suffix, resolving/stat-ing the bare path only", async () => {

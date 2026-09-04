@@ -18,6 +18,9 @@ export function useDetectedTargets(text: string, cacheKey: string | undefined, e
       setTargets([]);
       return;
     }
+    // Do not apply ranges from the previous text while a streaming update is
+    // being scanned; those offsets can point at unrelated content.
+    setTargets([]);
     let cancelled = false;
     detectTargets(text, process.cwd(), cacheKey).then((found) => {
       if (!cancelled) setTargets(found);

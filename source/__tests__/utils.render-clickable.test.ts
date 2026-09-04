@@ -116,6 +116,15 @@ describe("buildClickableLines", () => {
     expect(clickableRuns.map((r) => stripAnsi(r.text)).join("")).toBe(longPath);
   });
 
+  it("keeps a target after a wide grapheme aligned with its styled text", () => {
+    const target = makeTarget("source/app.ts");
+    const styled = `🎉 see ${chalk.bold(target.text)} for details`;
+    const result = buildClickableLines(styled, 80, [target], () => "target-id", {});
+
+    const clickable = result.flat().filter((run) => run.targetId === "target-id");
+    expect(clickable.map((run) => stripAnsi(run.text)).join("")).toBe(target.text);
+  });
+
   it("loses no visible characters across all lines/runs for a styled multi-run input", () => {
     const styled = chalk.bold("hello ") + "plain text about " + chalk.underline.cyan("source/app.ts") + " and more words to force wrapping across several lines of output";
     const width = 20;

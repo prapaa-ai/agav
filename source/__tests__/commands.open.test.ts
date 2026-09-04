@@ -9,6 +9,7 @@ vi.mock("../utils/open-target.js", () => ({
 
 vi.mock("../utils/open-external.js", () => ({
   spoolImageToTempFile: vi.fn(),
+  cleanupSpooledImages: vi.fn().mockResolvedValue(undefined),
 }));
 
 import { openTarget } from "../utils/open-target.js";

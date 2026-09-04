@@ -1,3 +1,5 @@
+import stringWidth from "string-width";
+
 /**
  * Line breaking for text drawn inside a padded background band.
  *
@@ -15,7 +17,7 @@ export function stripAnsi(value: string): string {
 }
 
 export function visualLen(value: string): number {
-  return stripAnsi(value).length;
+  return stringWidth(stripAnsi(value));
 }
 
 /**
@@ -41,8 +43,17 @@ export function wrapToWidth(content: string, width: number): string[] {
       if (current) lines.push(current);
       current = word;
       while (visualLen(current) > usable) {
-        lines.push(current.slice(0, usable));
-        current = current.slice(usable);
+        let cut = 0;
+        let used = 0;
+        for (const { segment, index } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(current)) {
+          const segmentWidth = stringWidth(segment);
+          if (cut > 0 && used + segmentWidth > usable) break;
+          used += segmentWidth;
+          cut = index + segment.length;
+          if (used >= usable) break;
+        }
+        lines.push(current.slice(0, cut));
+        current = current.slice(cut);
       }
     }
     // Pushed unconditionally so a blank line stays blank instead of collapsing.

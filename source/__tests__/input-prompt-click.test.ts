@@ -169,6 +169,18 @@ describe("clicking in the input prompt", () => {
     instance.unmount();
   });
 
+  it("snaps a click in a wide grapheme to its boundary", async () => {
+    const { instance, stdin } = await mount("a🎉b");
+
+    // The second cell of 🎉 must place the caret after the entire emoji, not
+    // between its surrogate halves.
+    await clickAt(instance, stdin, PREFIX + 2, 0);
+    await type(instance, stdin, "X");
+
+    expect(currentValue).toBe("a🎉Xb");
+    instance.unmount();
+  });
+
   it("does nothing to an empty prompt", async () => {
     const { instance, stdin } = await mount("");
 

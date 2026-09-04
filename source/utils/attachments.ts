@@ -42,6 +42,15 @@ export function resetAttachmentCounter(): void {
   counter = 0;
 }
 
+/** Reserve ids already present in a restored transcript, preventing stale tiles from resolving to new attachments. */
+export function reserveAttachmentIds(messages: Iterable<string>): void {
+  for (const message of messages) {
+    for (const match of message.matchAll(attachmentTileScanner())) {
+      counter = Math.max(counter, Number(match[1]));
+    }
+  }
+}
+
 /** Allocate the next session-unique attachment id. */
 export function nextAttachmentId(): number {
   return ++counter;
@@ -66,7 +75,7 @@ export function attachmentTileScanner(): RegExp {
 
 /** Matches the specific tile for attachment `id`, wherever it sits in a string. */
 export function attachmentTileForId(id: number): RegExp {
-  return new RegExp(`<<(?:Pasted|Image|File) #${id} · [^>]*>>`);
+  return new RegExp(`<<(?:Pasted|Image|File) #${id}(?!\\d) · [^>]*>>`);
 }
 
 /** Display-only substitution so a summary can never contain the tile's own closing delimiter. */

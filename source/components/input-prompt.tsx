@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import stringWidth from "string-width";
 import { Box, Text, useInput, useStdin, useStdout, type DOMElement, type MouseEventData } from "../ink/index.js";
 import { KeybindingResolver, PROMPT_ACTIONS, formatKeybinding, formatUsableKeybinding, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { loadPromptHistory, savePromptHistory } from "../config/prompt-history.js";
@@ -328,8 +329,18 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const eventToOffset = (event: MouseEventData, wl: { offset: number; text: string }): number => {
     const rows = linesRef.current;
     if (!rows || rows.internal_x === undefined) return wl.offset;
-    const column = event.x - rows.internal_x - PREFIX_WIDTH;
-    return wl.offset + Math.max(0, Math.min(column, wl.text.length));
+    const column = Math.max(0, event.x - rows.internal_x - PREFIX_WIDTH);
+    let offset = 0;
+    let width = 0;
+    for (const { segment, index } of segmenter.segment(wl.text)) {
+      const nextWidth = width + stringWidth(segment);
+      if (column < nextWidth) {
+        return wl.offset + (column - width < nextWidth - column ? index : index + segment.length);
+      }
+      width = nextWidth;
+      offset = index + segment.length;
+    }
+    return wl.offset + offset;
   };
 
   /**
@@ -765,18 +776,24 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   let globalOffset = 0;
   for (let li = 0; li < rawLines.length; li++) {
     const raw = rawLines[li]!;
-    if (raw.length <= usable) {
-      wrappedLines.push({ text: raw, offset: globalOffset, isFirst: li === 0 && wrappedLines.length === 0 });
-      globalOffset += raw.length + 1;
-    } else {
-      let pos = 0;
-      while (pos < raw.length) {
-        const chunk = raw.slice(pos, pos + usable);
-        wrappedLines.push({ text: chunk, offset: globalOffset + pos, isFirst: li === 0 && pos === 0 });
-        pos += usable;
+    let chunkStart = 0;
+    let chunkWidth = 0;
+    let hasChunk = false;
+    for (const { segment, index } of segmenter.segment(raw)) {
+      const segmentWidth = stringWidth(segment);
+      if (hasChunk && chunkWidth + segmentWidth > usable) {
+        wrappedLines.push({ text: raw.slice(chunkStart, index), offset: globalOffset + chunkStart, isFirst: li === 0 && chunkStart === 0 });
+        chunkStart = index;
+        chunkWidth = 0;
+        hasChunk = false;
       }
-      globalOffset += raw.length + 1;
+      chunkWidth += segmentWidth;
+      hasChunk = true;
     }
+    if (hasChunk || raw === "") {
+      wrappedLines.push({ text: raw.slice(chunkStart), offset: globalOffset + chunkStart, isFirst: li === 0 && chunkStart === 0 });
+    }
+    globalOffset += raw.length + 1;
   }
   if (wrappedLines.length === 0) wrappedLines.push({ text: "", offset: 0, isFirst: true });
   wrappedLinesRef.current = wrappedLines;

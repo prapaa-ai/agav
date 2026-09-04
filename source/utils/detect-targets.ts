@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { stat, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { isWithinRoot } from "./path-guard.js";
 
@@ -50,7 +50,7 @@ const PATH_RE = /(?<![\w@/.-])((?:\.{1,2}\/)?(?:[\w.-]+\/)+[\w.-]+\.[A-Za-z][\w]
 /** Replace every URL match with spaces of the same length, so path matching cannot see into one. */
 function blankUrls(text: string, urlMatches: { start: number; end: number }[]): string {
   if (urlMatches.length === 0) return text;
-  const chars = [...text];
+  const chars = text.split("");
   for (const { start, end } of urlMatches) {
     for (let i = start; i < end; i++) chars[i] = " ";
   }
@@ -105,8 +105,12 @@ const DETECTION_CACHE_MAX = 300;
  * filesystem stats and must not repeat per render.
  */
 export async function detectTargets(text: string, root: string, cacheKey?: string): Promise<DetectedTarget[]> {
-  if (cacheKey) {
-    const cached = detectionCache.get(cacheKey);
+  // Messages retain their id while their assistant text streams. Scope cache
+  // entries to the exact text as well, so an early empty scan cannot hide a
+  // URL or path received in a later chunk.
+  const textCacheKey = cacheKey === undefined ? undefined : `${cacheKey}\0${text}`;
+  if (textCacheKey !== undefined) {
+    const cached = detectionCache.get(textCacheKey);
     if (cached) return cached;
   }
 
@@ -128,21 +132,23 @@ export async function detectTargets(text: string, root: string, cacheKey?: strin
     // kind === "path"
     try {
       const absPath = resolve(root, candidate.pathOnly ?? candidate.text);
-      if (!isWithinRoot(root, absPath)) continue;
       await stat(absPath);
-      validated.push({ ...candidate, absPath });
+      const realRoot = await realpath(root);
+      const realPath = await realpath(absPath);
+      if (!isWithinRoot(realRoot, realPath)) continue;
+      validated.push({ ...candidate, absPath: realPath });
     } catch {
       // Missing file, traversal outside root, or any other stat failure —
       // not clickable, rendered as plain text.
     }
   }
 
-  if (cacheKey) {
+  if (textCacheKey !== undefined) {
     if (detectionCache.size >= DETECTION_CACHE_MAX) {
       const firstKey = detectionCache.keys().next().value;
       if (firstKey !== undefined) detectionCache.delete(firstKey);
     }
-    detectionCache.set(cacheKey, validated);
+    detectionCache.set(textCacheKey, validated);
   }
 
   return validated;
