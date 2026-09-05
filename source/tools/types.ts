@@ -15,5 +15,6 @@ export interface ToolContext {
 
 export interface ToolDefinition {
   schema: ToolSchema;
+  mcpServerName?: string;
   execute(input: Record<string, unknown>, context?: ToolContext): Promise<ToolResult>;
 }

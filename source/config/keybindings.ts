@@ -159,6 +159,7 @@ interface InkKey {
   backspace: boolean;
   delete: boolean;
   meta: boolean;
+  super: boolean;
 }
 
 /** `CSI 27 ; modifiers ; codepoint ~` — xterm's `modifyOtherKeys=2` encoding. */
@@ -271,7 +272,7 @@ function eventStroke(input: string, key: InkKey): string | null {
   if (!name) return null;
 
   const modifiers: string[] = [];
-  if (key.ctrl) modifiers.push("ctrl");
+  if (key.ctrl || (key.super && process.platform === "darwin")) modifiers.push("ctrl");
   if (key.meta) modifiers.push("meta");
   if (key.shift) modifiers.push("shift");
   return [...modifiers, name].join("+");
