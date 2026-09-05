@@ -58,18 +58,28 @@ jobs:
             os: ubuntu-latest
           - target: linux-arm64
             os: ubuntu-latest
-          # Bun cross-compiles, so no Windows runner is needed. `ext` is empty
-          # for every other target. No windows-arm64: Bun has no such target.
+          # Windows binaries must be built on a Windows runner. Cross-compiling
+          # from Linux (--target=bun-windows-x64 on ubuntu) produces a binary
+          # whose embedded Bun runtime does not correctly initialise the Windows
+          # console (SetConsoleMode flags like ENABLE_VIRTUAL_TERMINAL_INPUT and
+          # QUICK_EDIT_MODE). The result: mouse tracking, text selection,
+          # copy/paste, and bracketed paste all silently break because the
+          # terminal never receives or forwards VT escape sequences.
+          # No windows-arm64: Bun has no such target; ARM64 Windows runs x64
+          # under emulation.
           - target: windows-x64
-            os: ubuntu-latest
+            os: windows-latest
             ext: .exe
           # Baseline variant without AVX2 for older CPUs and Intel hybrid
           # CPUs whose E-cores lack AVX2.  Also sidesteps a class of Bun
           # segfaults tied to SIMD code paths on Windows.
           - target: windows-x64-baseline
-            os: ubuntu-latest
+            os: windows-latest
             ext: .exe
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4.2.2
         with:
@@ -99,13 +109,27 @@ jobs:
       - name: Build binary
         run: |
           mkdir -p dist
-          # Always cross-compile, including for the runner's own platform. A
-          # host-target build embeds whichever native .node addons happen to
-          # resolve locally, while the cross toolchain silently drops the ones
-          # that do not resolve for the target — which is how the macOS
-          # binaries ended up ~27MB heavier than the others and how the two
-          # halves of the matrix stopped behaving alike.
-          bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
+          # Cross-compile for non-native targets. A host-target build embeds
+          # whichever native .node addons happen to resolve locally, while the
+          # cross toolchain silently drops the ones that do not resolve for
+          # the target — which is how the macOS binaries ended up ~27MB
+          # heavier than the others and how the two halves of the matrix
+          # stopped behaving alike.
+          #
+          # Windows x64 is the exception: it runs on windows-latest as a
+          # native build. Cross-compiling Windows from Linux produces a
+          # binary whose Bun runtime does not properly initialise the Windows
+          # console (SetConsoleMode flags), breaking mouse tracking, text
+          # selection, copy/paste, and bracketed paste.
+          #
+          # The baseline variant still needs --target so Bun emits AVX2-free
+          # code — it cross-compiles on the same Windows runner, getting
+          # correct console APIs and the safe instruction set.
+          if [[ "${{ matrix.target }}" == "windows-x64" ]]; then
+            bun build source/cli.tsx --compile --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
+          else
+            bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
+          fi
       - name: Sign binary (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |

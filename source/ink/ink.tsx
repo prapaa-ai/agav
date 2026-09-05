@@ -464,6 +464,17 @@ export default class Ink {
 			}
 
 			this.options.stdout.write(DISABLE_MOUSE_TRACKING);
+
+			// Pop kitty keyboard flags so raw stdin handlers in the suspended
+			// caller receive legacy escape sequences they can parse (e.g. bare
+			// ESC instead of CSI 27 u). The flags are pushed back on resume.
+			// Clear the flag so unmount() won't double-pop if the app exits
+			// while still suspended.
+			if (this.kittyKeyboardEnabled) {
+				this.kittyKeyboardEnabled = false;
+				this.options.stdout.write("\x1b[<u");
+			}
+
 			this.options.stdin.off("data", this.handleInput);
 		}
 
@@ -493,6 +504,17 @@ export default class Ink {
 
 			stdout.write(ENABLE_MOUSE_TRACKING);
 			stdout.write(HIDE_CURSOR);
+
+			// Re-push the kitty keyboard flags that were popped on suspend.
+			// The flag was cleared in suspend() to prevent double-pop on exit,
+			// so check the original config instead and restore the flag.
+			if (this.kittyKeyboard?.mode === "enabled") {
+				const flags = ((this.kittyKeyboard.flags ?? [
+					"disambiguateEscapeCodes",
+				]) as KittyFlagName[]);
+				stdout.write(`\x1b[>${resolveFlags(flags)}u`);
+				this.kittyKeyboardEnabled = true;
+			}
 
 			// Repaint immediately rather than waiting on the throttle, so the UI
 			// is back before the next keystroke. On the alternate screen there is
