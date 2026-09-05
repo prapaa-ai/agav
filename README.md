@@ -632,3 +632,4 @@ To report a vulnerability, follow [SECURITY.md](SECURITY.md). Please don't open 
 ## Contact
 
 Email: contact@agav.dev
+Discord: [discord.gg/6u3m2JN6k](https://discord.gg/6u3m2JN6k)
