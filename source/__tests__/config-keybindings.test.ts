@@ -76,11 +76,11 @@ describe("keybindings", () => {
       showKeybindings: ["ctrl+k ctrl+s"],
     }, ["cancel", "openCommandPalette", "showKeybindings"]);
 
-    expect(resolver.feed("", { escape: true, return: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, ctrl: false, shift: false, tab: false, backspace: false, delete: false, meta: false })).toMatchObject({ action: "cancel" });
+    expect(resolver.feed("", { escape: true, return: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, ctrl: false, shift: false, tab: false, backspace: false, delete: false, meta: false, super: false })).toMatchObject({ action: "cancel" });
 
-    const first = resolver.feed("k", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false });
+    const first = resolver.feed("k", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false, super: false });
     expect(first.pending).toBe(true);
-    const second = resolver.feed("p", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false });
+    const second = resolver.feed("p", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false, super: false });
     expect(second.action).toBe("openCommandPalette");
   });
 
@@ -98,8 +98,8 @@ describe("keybindings", () => {
     expect(mod.formatKeybinding(bindings, "newline")).toContain(process.platform === "darwin" ? "Option+Return" : "Alt+Enter");
 
     const resolver = new mod.KeybindingResolver(bindings, ["clearInput", "deleteWordBackward", "newline"]);
-    expect(resolver.feed("u", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false })).toMatchObject({ action: "clearInput" });
-    expect(resolver.feed("w", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false })).toMatchObject({ action: "deleteWordBackward" });
+    expect(resolver.feed("u", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false, super: false })).toMatchObject({ action: "clearInput" });
+    expect(resolver.feed("w", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false, super: false })).toMatchObject({ action: "deleteWordBackward" });
   });
 
   // Ctrl+V is the clipboard-image paste and Ctrl+D the tool detail panel, so
@@ -151,6 +151,7 @@ const NO_KEY = {
   upArrow: false, downArrow: false, leftArrow: false, rightArrow: false,
   return: false, escape: false, ctrl: false, shift: false,
   tab: false, backspace: false, delete: false, meta: false,
+  super: false,
 };
 
 describe("newline keybinding", () => {

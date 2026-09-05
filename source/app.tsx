@@ -493,7 +493,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     // while a turn is in flight.
     if (preview) {
       if (key.escape) { setPreview(null); return; }
-      if (char === "c" && !key.ctrl && !key.meta) {
+      if (char === "c" && ((!key.ctrl && !key.meta && !key.super) || key.super)) {
         if (stdout) writeClipboard(stdout, preview.text);
         showStatusLine("Copied preview to clipboard.");
         return;
@@ -571,7 +571,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     if (key.ctrl && char === "o" && !pendingConfirmation) {
       setShowCompactionSummary((prev) => !prev);
     }
-    if (key.ctrl && char === "v" && !pendingConfirmation) {
+    if ((key.ctrl || key.super) && char === "v" && !pendingConfirmation) {
       // Try clipboard image first, then fall back to clipboard text.
       // This covers terminals (e.g. native PowerShell/cmd) that don't
       // support bracketed paste mode, where Ctrl+V arrives as a raw

@@ -464,6 +464,17 @@ export default class Ink {
 			}
 
 			this.options.stdout.write(DISABLE_MOUSE_TRACKING);
+
+			// Pop kitty keyboard flags so raw stdin handlers in the suspended
+			// caller receive legacy escape sequences they can parse (e.g. bare
+			// ESC instead of CSI 27 u). The flags are pushed back on resume.
+			// Clear the flag so unmount() won't double-pop if the app exits
+			// while still suspended.
+			if (this.kittyKeyboardEnabled) {
+				this.kittyKeyboardEnabled = false;
+				this.options.stdout.write("\x1b[<u");
+			}
+
 			this.options.stdin.off("data", this.handleInput);
 		}
 
@@ -493,6 +504,17 @@ export default class Ink {
 
 			stdout.write(ENABLE_MOUSE_TRACKING);
 			stdout.write(HIDE_CURSOR);
+
+			// Re-push the kitty keyboard flags that were popped on suspend.
+			// The flag was cleared in suspend() to prevent double-pop on exit,
+			// so check the original config instead and restore the flag.
+			if (this.kittyKeyboard?.mode === "enabled") {
+				const flags = ((this.kittyKeyboard.flags ?? [
+					"disambiguateEscapeCodes",
+				]) as KittyFlagName[]);
+				stdout.write(`\x1b[>${resolveFlags(flags)}u`);
+				this.kittyKeyboardEnabled = true;
+			}
 
 			// Repaint immediately rather than waiting on the throttle, so the UI
 			// is back before the next keystroke. On the alternate screen there is
@@ -606,10 +628,12 @@ export default class Ink {
 			if (pendingInput.length > 0) {
 				// Ctrl+Shift+C is an explicit copy fallback for terminals (notably
 				// Windows Terminal) that do not automatically copy a selection.
-				// Handle it before keyboard input clears the in-app highlight.
-				if (pendingInput.includes("\x1b[99;6u")) {
+				// Super+C (Cmd+C on macOS via Kitty keyboard protocol) is the
+				// same gesture — handle both before keyboard input clears the
+				// in-app highlight.
+				if (pendingInput.includes("\x1b[99;6u") || pendingInput.includes("\x1b[99;9u")) {
 					this.copyGlobalSelection();
-					pendingInput = pendingInput.replaceAll("\x1b[99;6u", "");
+					pendingInput = pendingInput.replaceAll("\x1b[99;6u", "").replaceAll("\x1b[99;9u", "");
 				}
 
 				if (pendingInput.length > 0) {
@@ -1272,13 +1296,61 @@ const X10_MOUSE_PARTIAL_RE = /^\x1b\[M[\s\S]{0,2}$/;
  */
 const ORPHANED_SGR_MOUSE_RE = /^\[<\d+;\d+;\d+[Mm]/;
 
+/**
+ * Matches the tail of an SGR mouse report that was split mid-sequence across
+ * reads, so the leading `\x1b[` (or more) was consumed in a previous read.
+ *
+ * When the terminal floods stdin with scroll-wheel events, a read boundary can
+ * land inside a `\x1b[<65;52;26M` report.  The leading `\x1b` was buffered by
+ * the previous handleInput call, but the 50 ms escape timer may have flushed it
+ * before this read arrives, leaving `[<65;52;26M…` or even `<65;52;26M…`,
+ * `;52;26M…`, `52;26M…`, `26M…` — any suffix of the body.  Without this check
+ * each character of that tail falls through to pendingInput and gets inserted
+ * into the prompt as literal text.
+ *
+ * Patterns caught (always followed by the `M`/`m` terminator):
+ *   <digits;digits;digits[Mm]   — body minus \x1b[
+ *   digits;digits;digits[Mm]    — body minus \x1b[<
+ *   ;digits;digits[Mm]          — mid-field split
+ *   digits;digits[Mm]
+ *   ;digits[Mm]
+ *
+ * A bare `digits[Mm]` without any semicolons is NOT matched — that would
+ * swallow normal user input like "26M", "5m", "100M" (file sizes, durations).
+ * Real SGR mouse bodies always contain semicolons separating button;col;row.
+ *
+ * Each numeric field is bounded to 1–4 digits: a real SGR mouse report carries a
+ * button code and terminal column/row, none of which realistically exceed four
+ * digits. Bounding the fields (rather than the earlier `[\d;]*`/`\d+`) shrinks
+ * the whole-read false-positive surface so a read that *begins* with an
+ * over-long numeric field — the position where a genuine split tail starts — is
+ * rejected instead of dropped.
+ *
+ * Caveat: matchOrphanedCSI is re-checked as the input handler walks forward one
+ * character at a time, so a *suffix* of a long numeric string can still match a
+ * bounded tail. The digit bound is therefore a read-boundary guarantee, not an
+ * anywhere-in-the-stream one. A small two-field pair like `1;2m` remains
+ * indistinguishable from a real `col;row` tail and is dropped by design.
+ */
+const ORPHANED_SGR_MOUSE_TAIL_RE =
+	/^<?(?:;\d{1,4}(?:;\d{1,4})*|(?:\d{1,4};)+\d{1,4})[Mm]/;
+
 const matchOrphanedCSI = (chunk: string): number => {
-	if (chunk.length < 6 || chunk[0] !== "[" || chunk[1] !== "<") {
-		return 0;
+	// Full orphaned CSI: `[<button;col;rowM`
+	if (chunk.length >= 6 && chunk[0] === "[" && chunk[1] === "<") {
+		const m = ORPHANED_SGR_MOUSE_RE.exec(chunk);
+		if (m) return m[0].length;
 	}
 
-	const m = ORPHANED_SGR_MOUSE_RE.exec(chunk);
-	return m ? m[0].length : 0;
+	// Tail fragment: `<65;52;26M`, `65;52;26M`, `;26M`, `26M`, etc.
+	// Only attempt when the first character is plausibly part of a mouse body.
+	const ch = chunk[0];
+	if (ch === "<" || ch === ";" || (ch !== undefined && ch >= "0" && ch <= "9")) {
+		const m = ORPHANED_SGR_MOUSE_TAIL_RE.exec(chunk);
+		if (m) return m[0].length;
+	}
+
+	return 0;
 };
 
 const mouseSequencePrefixLength = (chunk: string): number => {
