@@ -67,6 +67,7 @@ export async function installAgent(
     alias?: string;
     destination?: "global" | "project";
     cwd?: string;
+    sourceUrl?: string;
   } = {}
 ): Promise<{ success: boolean; agent?: AgentDefinition; error?: string; warning?: string }> {
   const { alias, destination = "global", cwd = process.cwd() } = options;
@@ -177,7 +178,7 @@ export async function installAgent(
       name: agent.manifest.name,
       alias,
       enabled: true,
-      sourceUrl: isGitUrl || source.startsWith("file://") ? source : undefined,
+      sourceUrl: options.sourceUrl ?? (isGitUrl || source.startsWith("file://") ? source : undefined),
       installedAt: new Date().toISOString(),
       version: agent.manifest.version,
     });

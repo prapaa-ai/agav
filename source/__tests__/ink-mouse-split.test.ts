@@ -168,4 +168,89 @@ describe("split mouse sequences must not leak into the input prompt", () => {
 
     instance.unmount();
   });
+
+  it("drops an orphaned SGR mouse tail that arrives without a buffered prefix", async () => {
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // The escape timer (50ms) may flush a buffered \x1b before the rest of the
+    // sequence arrives.  The remaining body `[<65;52;26M` is caught by
+    // matchOrphanedCSI, but a deeper split — e.g. the \x1b[ was already
+    // consumed — leaves a raw tail like `<65;52;26M` or `;52;26M`.  These must
+    // be silently dropped, not inserted into the prompt.
+    stdin.emit("data", "<65;52;26M");
+    await settle(instance);
+    expect(currentValue).toBe("");
+
+    // Tail starting mid-field: `;52;26M`
+    stdin.emit("data", ";52;26M");
+    await settle(instance);
+    expect(currentValue).toBe("");
+
+    // Multiple orphaned tails concatenated (scroll burst)
+    stdin.emit("data", "<65;52;26M<65;52;27M<65;52;28M");
+    await settle(instance);
+    expect(currentValue).toBe("");
+
+    instance.unmount();
+  });
+
+  it("drops an orphaned tail followed by a complete mouse sequence", async () => {
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // A tail fragment followed by a full escape sequence in the same read.
+    stdin.emit("data", ";26M\x1b[<65;52;27M");
+    await settle(instance);
+    expect(currentValue).toBe("");
+
+    instance.unmount();
+  });
+
+  it("does not swallow bare digits-plus-M that look like user input", async () => {
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // Bare "26M", "5m", "100M" are plausible user input (file sizes, durations).
+    // They must NOT be dropped — only fragments with at least one semicolon
+    // (the SGR field separator) are recognized as orphaned mouse tails.
+    stdin.emit("data", "26M");
+    await settle(instance);
+    expect(currentValue).toBe("26M");
+
+    instance.unmount();
+  });
+
+  it("documents the accepted trade-off: a two-field small-number tail is dropped", async () => {
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // A "col;row" pair of small numbers (e.g. "1;2m") is indistinguishable from
+    // a genuine two-field SGR mouse tail whose leading fields were consumed in a
+    // prior read, so it is dropped. This is a deliberate, documented trade-off:
+    // preventing mouse-report leakage into the prompt is worth losing this rare
+    // form of input. Digit bounding (1–4 per field) limits the blast radius to
+    // exactly these small "N;N" shapes.
+    stdin.emit("data", "1;2m");
+    await settle(instance);
+    expect(currentValue).toBe("");
+
+    instance.unmount();
+  });
 });
