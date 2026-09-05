@@ -58,21 +58,22 @@ jobs:
             os: ubuntu-latest
           - target: linux-arm64
             os: ubuntu-latest
-          # Windows binaries must be built on a Windows runner. Cross-compiling
-          # from Linux (--target=bun-windows-x64 on ubuntu) produces a binary
-          # whose embedded Bun runtime does not correctly initialise the Windows
-          # console (SetConsoleMode flags like ENABLE_VIRTUAL_TERMINAL_INPUT and
-          # QUICK_EDIT_MODE). The result: mouse tracking, text selection,
-          # copy/paste, and bracketed paste all silently break because the
-          # terminal never receives or forwards VT escape sequences.
+          # Windows binaries must be built natively on a Windows runner.
+          # Cross-compiling from Linux (--target=bun-windows-x64 on ubuntu)
+          # produces a binary whose embedded Bun runtime does not correctly
+          # initialise the Windows console (SetConsoleMode flags), breaking
+          # mouse tracking, text selection, copy/paste, and bracketed paste.
           # No windows-arm64: Bun has no such target; ARM64 Windows runs x64
           # under emulation.
           - target: windows-x64
             os: windows-latest
             ext: .exe
-          # Baseline variant without AVX2 for older CPUs and Intel hybrid
-          # CPUs whose E-cores lack AVX2.  Also sidesteps a class of Bun
-          # segfaults tied to SIMD code paths on Windows.
+          # Baseline variant: Bun's x64 binary now ships a single build that
+          # targets Nehalem (SSE4.2) and selects AVX2/AVX-512 code paths at
+          # runtime, so -baseline resolves to the same binary. We keep the
+          # artifact name for backward compatibility with existing installers.
+          # Built natively to avoid Bun's EPERM cache bug on Windows
+          # (oven-sh/bun#11198) which breaks --target cross-compilation.
           - target: windows-x64-baseline
             os: windows-latest
             ext: .exe
@@ -107,12 +108,6 @@ jobs:
       - name: Generate bundled skills manifest
         run: node scripts/gen-bundled-skills.mjs
       - name: Build binary
-        env:
-          # Bun's --target cross-compile on Windows fails with EPERM when
-          # moving the downloaded binary into its default cache directory
-          # (oven-sh/bun#11198). Pointing the cache at a fresh temp dir
-          # sidesteps the issue. Harmless on non-Windows runners.
-          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
         run: |
           mkdir -p dist
           # Cross-compile for non-native targets. A host-target build embeds
@@ -122,16 +117,12 @@ jobs:
           # heavier than the others and how the two halves of the matrix
           # stopped behaving alike.
           #
-          # Windows x64 is the exception: it runs on windows-latest as a
-          # native build. Cross-compiling Windows from Linux produces a
-          # binary whose Bun runtime does not properly initialise the Windows
-          # console (SetConsoleMode flags), breaking mouse tracking, text
-          # selection, copy/paste, and bracketed paste.
-          #
-          # The baseline variant still needs --target so Bun emits AVX2-free
-          # code — it cross-compiles on the same Windows runner, getting
-          # correct console APIs and the safe instruction set.
-          if [[ "${{ matrix.target }}" == "windows-x64" ]]; then
+          # Both Windows targets build natively (no --target). Cross-compiling
+          # from Linux breaks console initialisation, and --target on Windows
+          # hits Bun's EPERM cache bug (oven-sh/bun#11198). Since Bun's x64
+          # binary now auto-selects AVX2 code paths at runtime, -baseline and
+          # the standard build produce the same binary anyway.
+          if [[ "${{ matrix.target }}" == windows-* ]]; then
             bun build source/cli.tsx --compile --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
           else
             bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
