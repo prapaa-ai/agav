@@ -58,13 +58,20 @@ describe("utils/detect-targets", () => {
     expect(targets.find((t) => t.kind === "path")).toBeUndefined();
   });
 
+  // Windows requires elevated privileges (Administrator or Developer Mode) to
+  // create symlinks, so this test is skipped when the OS refuses the call.
   it("does not report a project-relative symlink that resolves outside root", async () => {
     const outside = await mkdtemp(join(tmpdir(), "agav-detect-outside-"));
     try {
       const secret = join(outside, "secret.txt");
       await writeFile(secret, "not project content\n");
       await mkdir(join(root, "public"));
-      await symlink(secret, join(root, "public", "secret.txt"));
+      try {
+        await symlink(secret, join(root, "public", "secret.txt"));
+      } catch (err: any) {
+        if (err?.code === "EPERM") return; // skip on Windows without symlink privileges
+        throw err;
+      }
 
       const targets = await detectTargets("read public/secret.txt", root);
       expect(targets.find((target) => target.kind === "path")).toBeUndefined();

@@ -299,7 +299,8 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
     if (entry.type === "agent") {
       const agent = entry.agent;
       const name = agent.alias || agent.manifest.name;
-      const result = await deleteAgentWithTemplate(agent);
+      const regEntry = registryEntries[name];
+      const result = await deleteAgentWithTemplate(agent, { sourceUrl: regEntry?.sourceUrl });
       if (result.success) {
         setRemoveStatus(`Removed "${name}"${result.savedTemplate ? " (saved as template)" : ""}`);
         await onReloadAgents();
