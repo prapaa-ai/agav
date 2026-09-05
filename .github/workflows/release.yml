@@ -115,6 +115,9 @@ jobs:
           BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
         run: |
           mkdir -p dist
+          # On Windows, Bun's cross-compile cache move can fail with EPERM
+          # if the cache directory doesn't exist yet. Pre-create it.
+          mkdir -p "$HOME/.bun/install/cache" 2>/dev/null || true
           # Cross-compile for non-native targets. A host-target build embeds
           # whichever native .node addons happen to resolve locally, while the
           # cross toolchain silently drops the ones that do not resolve for
