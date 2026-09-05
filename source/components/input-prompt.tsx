@@ -789,7 +789,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       // Character input — pastes are handled by usePaste in use-paste-handler,
       // except on terminals without bracketed paste, where the whole chunk
       // arrives here and must still be inserted verbatim.
-      if (input && !key.ctrl && !key.meta && !isEscapeResidue(input)) {
+      if (input && !key.ctrl && !key.meta && !key.super && !isEscapeResidue(input)) {
         // If text is selected, replace it with the typed character.
         deleteSelection();
         const v = liveRef.current.value;

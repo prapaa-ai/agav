@@ -606,10 +606,12 @@ export default class Ink {
 			if (pendingInput.length > 0) {
 				// Ctrl+Shift+C is an explicit copy fallback for terminals (notably
 				// Windows Terminal) that do not automatically copy a selection.
-				// Handle it before keyboard input clears the in-app highlight.
-				if (pendingInput.includes("\x1b[99;6u")) {
+				// Super+C (Cmd+C on macOS via Kitty keyboard protocol) is the
+				// same gesture — handle both before keyboard input clears the
+				// in-app highlight.
+				if (pendingInput.includes("\x1b[99;6u") || pendingInput.includes("\x1b[99;9u")) {
 					this.copyGlobalSelection();
-					pendingInput = pendingInput.replaceAll("\x1b[99;6u", "");
+					pendingInput = pendingInput.replaceAll("\x1b[99;6u", "").replaceAll("\x1b[99;9u", "");
 				}
 
 				if (pendingInput.length > 0) {
