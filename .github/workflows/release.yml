@@ -116,12 +116,16 @@ jobs:
           # heavier than the others and how the two halves of the matrix
           # stopped behaving alike.
           #
-          # Windows targets are the exception: they run on windows-latest, so
-          # they are native builds. Cross-compiling Windows from Linux
-          # produces a binary whose Bun runtime does not properly initialise
-          # the Windows console (SetConsoleMode flags), breaking mouse
-          # tracking, text selection, copy/paste, and bracketed paste.
-          if [[ "${{ matrix.target }}" == windows-* ]]; then
+          # Windows x64 is the exception: it runs on windows-latest as a
+          # native build. Cross-compiling Windows from Linux produces a
+          # binary whose Bun runtime does not properly initialise the Windows
+          # console (SetConsoleMode flags), breaking mouse tracking, text
+          # selection, copy/paste, and bracketed paste.
+          #
+          # The baseline variant still needs --target so Bun emits AVX2-free
+          # code — it cross-compiles on the same Windows runner, getting
+          # correct console APIs and the safe instruction set.
+          if [[ "${{ matrix.target }}" == "windows-x64" ]]; then
             bun build source/cli.tsx --compile --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
           else
             bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
