@@ -1318,8 +1318,22 @@ const ORPHANED_SGR_MOUSE_RE = /^\[<\d+;\d+;\d+[Mm]/;
  * A bare `digits[Mm]` without any semicolons is NOT matched — that would
  * swallow normal user input like "26M", "5m", "100M" (file sizes, durations).
  * Real SGR mouse bodies always contain semicolons separating button;col;row.
+ *
+ * Each numeric field is bounded to 1–4 digits: a real SGR mouse report carries a
+ * button code and terminal column/row, none of which realistically exceed four
+ * digits. Bounding the fields (rather than the earlier `[\d;]*`/`\d+`) shrinks
+ * the whole-read false-positive surface so a read that *begins* with an
+ * over-long numeric field — the position where a genuine split tail starts — is
+ * rejected instead of dropped.
+ *
+ * Caveat: matchOrphanedCSI is re-checked as the input handler walks forward one
+ * character at a time, so a *suffix* of a long numeric string can still match a
+ * bounded tail. The digit bound is therefore a read-boundary guarantee, not an
+ * anywhere-in-the-stream one. A small two-field pair like `1;2m` remains
+ * indistinguishable from a real `col;row` tail and is dropped by design.
  */
-const ORPHANED_SGR_MOUSE_TAIL_RE = /^<?[\d;]*;\d+[Mm]/;
+const ORPHANED_SGR_MOUSE_TAIL_RE =
+	/^<?(?:;\d{1,4}(?:;\d{1,4})*|(?:\d{1,4};)+\d{1,4})[Mm]/;
 
 const matchOrphanedCSI = (chunk: string): number => {
 	// Full orphaned CSI: `[<button;col;rowM`

@@ -232,4 +232,25 @@ describe("split mouse sequences must not leak into the input prompt", () => {
 
     instance.unmount();
   });
+
+  it("documents the accepted trade-off: a two-field small-number tail is dropped", async () => {
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // A "col;row" pair of small numbers (e.g. "1;2m") is indistinguishable from
+    // a genuine two-field SGR mouse tail whose leading fields were consumed in a
+    // prior read, so it is dropped. This is a deliberate, documented trade-off:
+    // preventing mouse-report leakage into the prompt is worth losing this rare
+    // form of input. Digit bounding (1–4 per field) limits the blast radius to
+    // exactly these small "N;N" shapes.
+    stdin.emit("data", "1;2m");
+    await settle(instance);
+    expect(currentValue).toBe("");
+
+    instance.unmount();
+  });
 });
