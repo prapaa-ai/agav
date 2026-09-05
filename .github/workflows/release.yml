@@ -108,12 +108,6 @@ jobs:
       - name: Generate bundled skills manifest
         run: node scripts/gen-bundled-skills.mjs
       - name: Build binary
-        env:
-          # Bun's --target cross-compile on Windows fails with EPERM when
-          # moving the downloaded binary into its default cache directory
-          # (oven-sh/bun#11198). Pointing the cache at a fresh temp dir
-          # sidesteps the issue. Harmless on non-Windows runners.
-          BUN_INSTALL_CACHE_DIR: ${{ runner.temp }}/bun-cache
         run: |
           mkdir -p dist
           # Cross-compile for non-native targets. A host-target build embeds
