@@ -13,7 +13,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN }}
           fetch-depth: 2
@@ -82,7 +82,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN }}
       - uses: oven-sh/setup-bun@v2
@@ -182,7 +182,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN }}
           fetch-depth: 0
