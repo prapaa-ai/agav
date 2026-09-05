@@ -1314,14 +1314,12 @@ const ORPHANED_SGR_MOUSE_RE = /^\[<\d+;\d+;\d+[Mm]/;
  *   ;digits;digits[Mm]          — mid-field split
  *   digits;digits[Mm]
  *   ;digits[Mm]
- *   digits[Mm]
  *
- * False-positive risk is negligible: a semicolon-delimited number group ending
- * in exactly `M` or `m` with no surrounding text is not a realistic user input,
- * and this check only runs when the chunk did not match any escape sequence
- * first.
+ * A bare `digits[Mm]` without any semicolons is NOT matched — that would
+ * swallow normal user input like "26M", "5m", "100M" (file sizes, durations).
+ * Real SGR mouse bodies always contain semicolons separating button;col;row.
  */
-const ORPHANED_SGR_MOUSE_TAIL_RE = /^<?[\d;]*\d+[Mm]/;
+const ORPHANED_SGR_MOUSE_TAIL_RE = /^<?[\d;]*;\d+[Mm]/;
 
 const matchOrphanedCSI = (chunk: string): number => {
 	// Full orphaned CSI: `[<button;col;rowM`

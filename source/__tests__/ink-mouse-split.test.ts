@@ -191,11 +191,6 @@ describe("split mouse sequences must not leak into the input prompt", () => {
     await settle(instance);
     expect(currentValue).toBe("");
 
-    // Tail with just the row and terminator: `26M`
-    stdin.emit("data", "26M");
-    await settle(instance);
-    expect(currentValue).toBe("");
-
     // Multiple orphaned tails concatenated (scroll burst)
     stdin.emit("data", "<65;52;26M<65;52;27M<65;52;28M");
     await settle(instance);
@@ -216,6 +211,24 @@ describe("split mouse sequences must not leak into the input prompt", () => {
     stdin.emit("data", ";26M\x1b[<65;52;27M");
     await settle(instance);
     expect(currentValue).toBe("");
+
+    instance.unmount();
+  });
+
+  it("does not swallow bare digits-plus-M that look like user input", async () => {
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // Bare "26M", "5m", "100M" are plausible user input (file sizes, durations).
+    // They must NOT be dropped — only fragments with at least one semicolon
+    // (the SGR field separator) are recognized as orphaned mouse tails.
+    stdin.emit("data", "26M");
+    await settle(instance);
+    expect(currentValue).toBe("26M");
 
     instance.unmount();
   });
