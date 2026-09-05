@@ -468,7 +468,10 @@ export default class Ink {
 			// Pop kitty keyboard flags so raw stdin handlers in the suspended
 			// caller receive legacy escape sequences they can parse (e.g. bare
 			// ESC instead of CSI 27 u). The flags are pushed back on resume.
+			// Clear the flag so unmount() won't double-pop if the app exits
+			// while still suspended.
 			if (this.kittyKeyboardEnabled) {
+				this.kittyKeyboardEnabled = false;
 				this.options.stdout.write("\x1b[<u");
 			}
 
@@ -503,11 +506,14 @@ export default class Ink {
 			stdout.write(HIDE_CURSOR);
 
 			// Re-push the kitty keyboard flags that were popped on suspend.
-			if (this.kittyKeyboardEnabled) {
-				const flags = ((this.kittyKeyboard?.flags ?? [
+			// The flag was cleared in suspend() to prevent double-pop on exit,
+			// so check the original config instead and restore the flag.
+			if (this.kittyKeyboard?.mode === "enabled") {
+				const flags = ((this.kittyKeyboard.flags ?? [
 					"disambiguateEscapeCodes",
 				]) as KittyFlagName[]);
 				stdout.write(`\x1b[>${resolveFlags(flags)}u`);
+				this.kittyKeyboardEnabled = true;
 			}
 
 			// Repaint immediately rather than waiting on the throttle, so the UI
