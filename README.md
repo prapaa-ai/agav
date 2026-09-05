@@ -16,6 +16,61 @@
   <img src="https://www.agav.dev/preview.gif" alt="Agav preview" width="100%" style="border-radius: 16px;" />
 </div>
 
+## Quickstart
+
+Run it inside a repository:
+
+```bash
+agav
+```
+
+Pick a provider and model, or take the defaults:
+
+```bash
+agav --provider openai --model gpt-4o
+agav --provider openrouter --model openrouter/auto
+agav --provider vertex-ai --model vertex/gemini-3.5-flash
+agav -r                                  # resume a session (lists them if no id)
+```
+
+Non-interactive, for scripts and CI:
+
+```bash
+agav run "review the code in src/"
+# Read-only audit: block every tool that isn't explicitly allowed
+agav run --permission '{"*":"deny","read_file":"allow","grep_search":"allow"}' "audit dependencies"
+# Deny one tool; the rest still run without confirmation
+agav run --permission '{"write_file":"deny"}' "check for security issues"
+agav -P "what does this project do?"
+agav -P --stream "explain this repository"
+cat error.log | agav -P "explain this error"
+```
+
+Keep it current:
+
+```bash
+agav update
+```
+
+### Options
+
+| Flag | Meaning |
+| --- | --- |
+| `--provider`, `-p` | `anthropic`, `openai`, `openrouter`, `nvidia`, `gemini`, `vertex-ai` or `ollama` (default: `anthropic`) |
+| `--model`, `-m` | Model name |
+| `--effort` | Reasoning effort: `low`, `medium`, `high` or `max` (default: `high`) |
+| `--print`, `-P` | Run the prompt, print the result, exit |
+| `--stream` | Stream text to stdout in real time, with `--print` |
+| `--output-schema` | Require pipe-mode output to match an inline JSON Schema, or `@file` |
+| `--permission` | JSON tool permissions for run mode |
+| `--max-turns` | Cap agent/tool iterations in run mode — a safety limit for unattended CI work |
+| `--resume`, `-r [id]` | Resume a session; prefix match if an id is given |
+| `--auto-accept`, `-y` | Skip tool confirmations |
+| `--deny-writes` | Block all write operations |
+| `--openai-api` | OpenAI API mode: `responses` or `chat` (default: `responses`) |
+| `--ollama-host` / `--ollama-port` / `--ollama-endpoint` / `--ollama-api-key` | Ollama connection |
+| `--help`, `-h` / `--version`, `-v` | Help, version |
+
 ## Vision
 
 - **The best agentic coding harness in the world** — not a wrapper around an API, but a complete autonomous agent that reads, reasons, edits, and verifies across real codebases.
@@ -119,61 +174,6 @@ Agav creates multi-step plans for complex tasks and tracks progress visually. Pl
 - `/plan` shows the active plan; `/plan list`, `/plan <n> <status>`, and `/plan clear` manage it.
 - `Ctrl+G` toggles the plan detail panel.
 - Plans survive `/compact` operations and session resumes — context gets reclaimed, the plan stays.
-
-## Quickstart
-
-Run it inside a repository:
-
-```bash
-agav
-```
-
-Pick a provider and model, or take the defaults:
-
-```bash
-agav --provider openai --model gpt-4o
-agav --provider openrouter --model openrouter/auto
-agav --provider vertex-ai --model vertex/gemini-3.5-flash
-agav -r                                  # resume a session (lists them if no id)
-```
-
-Non-interactive, for scripts and CI:
-
-```bash
-agav run "review the code in src/"
-# Read-only audit: block every tool that isn't explicitly allowed
-agav run --permission '{"*":"deny","read_file":"allow","grep_search":"allow"}' "audit dependencies"
-# Deny one tool; the rest still run without confirmation
-agav run --permission '{"write_file":"deny"}' "check for security issues"
-agav -P "what does this project do?"
-agav -P --stream "explain this repository"
-cat error.log | agav -P "explain this error"
-```
-
-Keep it current:
-
-```bash
-agav update
-```
-
-### Options
-
-| Flag | Meaning |
-| --- | --- |
-| `--provider`, `-p` | `anthropic`, `openai`, `openrouter`, `nvidia`, `gemini`, `vertex-ai` or `ollama` (default: `anthropic`) |
-| `--model`, `-m` | Model name |
-| `--effort` | Reasoning effort: `low`, `medium`, `high` or `max` (default: `high`) |
-| `--print`, `-P` | Run the prompt, print the result, exit |
-| `--stream` | Stream text to stdout in real time, with `--print` |
-| `--output-schema` | Require pipe-mode output to match an inline JSON Schema, or `@file` |
-| `--permission` | JSON tool permissions for run mode |
-| `--max-turns` | Cap agent/tool iterations in run mode — a safety limit for unattended CI work |
-| `--resume`, `-r [id]` | Resume a session; prefix match if an id is given |
-| `--auto-accept`, `-y` | Skip tool confirmations |
-| `--deny-writes` | Block all write operations |
-| `--openai-api` | OpenAI API mode: `responses` or `chat` (default: `responses`) |
-| `--ollama-host` / `--ollama-port` / `--ollama-endpoint` / `--ollama-api-key` | Ollama connection |
-| `--help`, `-h` / `--version`, `-v` | Help, version |
 
 ## Slash commands
 
