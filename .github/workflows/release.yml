@@ -192,7 +192,7 @@ jobs:
       # which the branch ruleset rejects with GH013, and it swallowed that
       # failure as a warning — so the badge silently stopped tracking after
       # 0.1.2 while every release still reported success.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Prepare release assets
