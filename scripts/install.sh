@@ -871,7 +871,7 @@ if [ -n "$start_hint" ]; then
 fi
 printf '   Type  agav  to get started.\n'
 printf '\n'
-printf '   Docs      https://agav.dev\n'
+printf '   Docs      https://docs.agav.dev\n'
 printf '   Update    agav update\n'
 printf '\n'
 printf '  ────────────────────────────────────────────\n'
