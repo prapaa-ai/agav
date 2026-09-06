@@ -48,10 +48,14 @@ download_file() {
   output="$2"
 
   if command -v curl >/dev/null 2>&1; then
+    # --connect-timeout caps the time spent waiting to reach the host and
+    # --retry recovers from transient GitHub/CDN failures instead of hanging
+    # indefinitely. No --max-time here: large binaries on slow links can
+    # legitimately take minutes, and a hard cap would abort a healthy download.
     if [ -t 2 ]; then
-      curl -fL --progress-bar "$url" -o "$output"
+      curl -fL --connect-timeout 30 --retry 3 --retry-delay 2 --progress-bar "$url" -o "$output"
     else
-      curl -fsSL "$url" -o "$output"
+      curl -fsSL --connect-timeout 30 --retry 3 --retry-delay 2 "$url" -o "$output"
     fi
     return
   fi
@@ -61,12 +65,12 @@ download_file() {
       # --show-progress keeps the bar but drops the verbose request log. It
       # landed in wget 1.16 and is absent from busybox wget, so probe first.
       if wget --help 2>&1 | grep -q -- "--show-progress"; then
-        wget -q --show-progress -O "$output" "$url"
+        wget -q --show-progress --timeout=30 --tries=3 -O "$output" "$url"
       else
-        wget -O "$output" "$url"
+        wget --timeout=30 --tries=3 -O "$output" "$url"
       fi
     else
-      wget -q -O "$output" "$url"
+      wget -q --timeout=30 --tries=3 -O "$output" "$url"
     fi
     return
   fi
@@ -78,13 +82,16 @@ download_file() {
 download_text() {
   url="$1"
 
+  # These fetch small files (SHA256SUMS, release JSON), so a hard --max-time is
+  # safe and keeps the install from hanging silently on a slow or unresponsive
+  # host — the case where "Verifying checksum..." appears frozen.
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url"
+    curl -fsSL --connect-timeout 15 --max-time 60 --retry 3 --retry-delay 2 "$url"
     return
   fi
 
   if command -v wget >/dev/null 2>&1; then
-    wget -q -O - "$url"
+    wget -q --timeout=15 --tries=3 -O - "$url"
     return
   fi
 
