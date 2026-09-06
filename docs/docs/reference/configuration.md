@@ -8,6 +8,8 @@ order: 4
 
 Agav merges defaults, `~/.agav/config.json`, and `./.agav/config.json` in that order. Environment variables then override provider credentials and Ollama address settings; CLI flags override the active startup values.
 
+> **Windows:** `~/.agav/` resolves to `%USERPROFILE%\.agav\` (typically `C:\Users\<username>\.agav\`). This applies to all `~/.agav/` paths throughout the documentation.
+
 ```json
 {
   "provider": "openai",

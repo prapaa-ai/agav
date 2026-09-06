@@ -119,10 +119,10 @@ Writes are always denied to:
 
 Reads are denied for credential stores:
 
-- `~/.ssh/`
-- `~/.aws/`
-- `~/.gnupg/`
-- `~/.kube/config`
+- `~/.ssh/` (`%USERPROFILE%\.ssh\` on Windows)
+- `~/.aws/` (`%USERPROFILE%\.aws\` on Windows)
+- `~/.gnupg/` (`%USERPROFILE%\.gnupg\` on Windows)
+- `~/.kube/config` (`%USERPROFILE%\.kube\config` on Windows)
 
 ### Bypass
 

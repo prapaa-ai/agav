@@ -19,11 +19,20 @@ This guide connects Agav to GitHub's official MCP server, then uses its read-onl
 
 GitHub's local MCP server runs in Docker. Install and start Docker, then create a GitHub personal access token with only the repository access needed for the repositories you will inspect. Keep the token out of project configuration and version control.
 
-In the terminal that will start Agav, export the token and restrict the server to repository and issue tools:
+In the terminal that will start Agav, set the token and restrict the server to repository and issue tools:
+
+**macOS / Linux:**
 
 ```bash
 export GITHUB_PERSONAL_ACCESS_TOKEN="your-token"
 export GITHUB_TOOLSETS="repos,issues"
+```
+
+**Windows PowerShell:**
+
+```powershell
+$env:GITHUB_PERSONAL_ACCESS_TOKEN="your-token"
+$env:GITHUB_TOOLSETS="repos,issues"
 ```
 
 The read-only switch prevents the GitHub MCP server from exposing write tools, even when its enabled toolsets include them. See GitHub's [local server prerequisites and token guidance](https://github.com/github/github-mcp-server#local-github-mcp-server) before choosing token permissions.
@@ -60,16 +69,16 @@ Run `/debug`. Under **MCP servers**, confirm that `github` is listed. If it is n
 
 ## 3. Use GitHub tools for a repository task
 
-Ask Agav to use the GitHub tools explicitly and to keep all GitHub activity read-only. For example, before fixing a local scraper failure:
+Ask Agav to use the GitHub tools explicitly and to keep all GitHub activity read-only. For example, before making a local change to hello-agav:
 
 ```text
-Use the GitHub MCP tools to inspect open issues in quora/model-deprecation-tracker
-about provider coverage or scraper failures. Read the most relevant issue and
-its linked pull requests, then summarize the expected behavior, affected files,
-and any implementation constraints. Do not modify GitHub or local files yet.
+Use the GitHub MCP tools to inspect open issues and recent pull requests
+in prapaa-ai/hello-agav. Summarize the most relevant open issue, the files
+it affects, and any constraints mentioned in the discussion.
+Do not modify GitHub or local files yet.
 ```
 
-Agav can use the discovered issue and repository tools to gather the upstream context, then return a local implementation plan. Follow up with a scoped request such as:
+Agav can use the discovered issue and repository tools to gather upstream context, then return a local implementation plan. Follow up with a scoped request such as:
 
 ```text
 Using that issue summary, inspect this checkout and propose the smallest local

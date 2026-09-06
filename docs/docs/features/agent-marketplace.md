@@ -27,6 +27,7 @@ Agents are displayed three per page. Navigate with:
 | `s`       | Open search — filter by name, description, category, or tag        |
 | `i`       | Inspect selected agent (shows tools, credentials, and description) |
 | `r`       | Refresh from the marketplace URL                                   |
+| `u`       | Update the selected agent to the latest marketplace version        |
 | `ESC`     | Clear search / exit                                                |
 
 Agents already installed on your system show a `✓ global` or `✓ project` badge.
@@ -66,6 +67,8 @@ agav agents install ./path/to/local-agent --destination project
 agav agents install https://github.com/org/repo/tree/main/agents/my-agent
 ```
 
+Remote installs are restricted to trusted git hosts: **github.com**, **gitlab.com**, **bitbucket.org**, and **raw.githubusercontent.com**. Set `AGAV_ALLOWED_GIT_HOSTS` (comma-separated) to allow additional hosts. Agent names must start with a letter or digit and contain only lowercase letters, digits, dots, hyphens, or underscores (max 64 characters).
+
 ## Local marketplace
 
 For local development and testing, clone the marketplace repo and set:
@@ -96,7 +99,7 @@ See the [official marketplace repository](https://github.com/prapaa-ai/agav-mark
 
 ## Deleting agents
 
-When a user-created agent (one without a marketplace `sourceUrl`) is deleted from the List or Create tab, Agav automatically saves it as a template before removal. The template preserves the agent's name, description, system prompt, MCP server selections, and tags. You can restore it later from the Create tab (`[3] Create`).
+When a globally installed, user-created agent (one without a marketplace `sourceUrl`) is deleted from the List or Create tab, Agav automatically saves it as a template before removal. Project-scoped user-created agents are deleted without a template. The template preserves the agent's name, description, system prompt, MCP server selections, and tags. You can restore it later from the Create tab (`[3] Create`).
 
 Marketplace agents (those installed from a URL) are deleted without creating a template — they can be reinstalled from the marketplace at any time.
 
