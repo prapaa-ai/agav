@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text, useInput } from "../ink/index.js";
-import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
+import { getToolLabel, getToolSummary, getMcpServerName } from "../utils/tool-labels.js";
 import type { DiffLine } from "../utils/diff.js";
 import { getTheme } from "../config/theme.js";
 import { KeybindingResolver, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
@@ -13,13 +13,14 @@ interface Props {
   toolName: string;
   input: Record<string, unknown>;
   diffLines?: DiffLine[];
+  mcpServerName?: string;
   onConfirm: (choice: ConfirmChoice) => void;
   subagentTask?: string;
   keybindings: Keybindings;
 }
 
 /** Prompts the user to approve or reject a pending tool action. */
-export default function ToolConfirm({ toolName, input, diffLines, onConfirm, subagentTask, keybindings }: Props) {
+export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, keybindings }: Props) {
   const keyResolver = React.useRef(new KeybindingResolver(keybindings, ["cancel", "submit"]));
   useInput((rawChar, rawKey) => {
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
@@ -35,6 +36,7 @@ export default function ToolConfirm({ toolName, input, diffLines, onConfirm, sub
 
   const label = getToolLabel(toolName);
   const summary = getToolSummary(toolName, input);
+  const mcpServer = mcpServerName ?? getMcpServerName(toolName);
   const theme = getTheme();
 
   /** Formats non-edit arguments into a compact confirmation preview. */
@@ -58,7 +60,7 @@ export default function ToolConfirm({ toolName, input, diffLines, onConfirm, sub
         <Text dimColor>Subagent "{subagentTask}" requests:</Text>
       )}
       <Text bold color="yellow">
-        Allow {label}?
+        Allow {label}?{mcpServer ? <Text dimColor bold={false}>{` (MCP: ${mcpServer})`}</Text> : null}
       </Text>
       {summary ? <Text dimColor>  {summary}</Text> : null}
       {details ? <Text dimColor>{details}</Text> : null}

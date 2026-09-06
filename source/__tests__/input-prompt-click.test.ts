@@ -169,6 +169,18 @@ describe("clicking in the input prompt", () => {
     instance.unmount();
   });
 
+  it("snaps a click in a wide grapheme to its boundary", async () => {
+    const { instance, stdin } = await mount("a🎉b");
+
+    // The second cell of 🎉 must place the caret after the entire emoji, not
+    // between its surrogate halves.
+    await clickAt(instance, stdin, PREFIX + 2, 0);
+    await type(instance, stdin, "X");
+
+    expect(currentValue).toBe("a🎉Xb");
+    instance.unmount();
+  });
+
   it("does nothing to an empty prompt", async () => {
     const { instance, stdin } = await mount("");
 
@@ -186,8 +198,8 @@ describe("clicking in the input prompt", () => {
 // into two strings that match nothing, orphaning the attachment silently.
 
 describe("clicking on an attachment placeholder", () => {
-  const PASTE = "<<(hello worl...) Pasted #1: 2k chars and 40 lines>>";
-  const IMAGE = "<<Image #2: 800x600>>";
+  const PASTE = "<<Pasted #1 · 2k chars, 40 lines>>";
+  const IMAGE = "<<Image #2 · 800x600>>";
 
   it("snaps to the near edge of a pasted-text placeholder", async () => {
     const { instance, stdin } = await mount(`${PASTE} tail`);
@@ -273,7 +285,7 @@ describe("clicking a prompt on a frame that has scrolled", () => {
 });
 
 describe("snapOutOfAttachment", () => {
-  const PASTE = "<<(hello worl...) Pasted #1: 2k chars and 40 lines>>";
+  const PASTE = "<<Pasted #1 · 2k chars, 40 lines>>";
 
   it("leaves an offset outside every placeholder alone", () => {
     const text = `head ${PASTE} tail`;
@@ -295,7 +307,7 @@ describe("snapOutOfAttachment", () => {
   });
 
   it("picks the right placeholder when there are several", () => {
-    const image = "<<Image #2: 800x600>>";
+    const image = "<<Image #2 · 800x600>>";
     const text = `${PASTE} ${image}`;
     const imageStart = PASTE.length + 1;
     expect(snapOutOfAttachment(text, imageStart + 2)).toBe(imageStart);

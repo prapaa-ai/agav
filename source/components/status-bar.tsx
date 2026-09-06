@@ -23,6 +23,7 @@ interface Props {
   lastTurnDurationMs?: number | null;
   isLoading?: boolean;
   isPaused?: boolean;
+  agentLock?: { name: string; full: boolean };
 }
 
 /** Formats token counts into a compact display string. */
@@ -72,6 +73,7 @@ export default function StatusBar({
   lastTurnDurationMs,
   isLoading,
   isPaused,
+  agentLock,
 }: Props) {
   const total = inputTokens + outputTokens;
   const parts = [];
@@ -123,6 +125,11 @@ export default function StatusBar({
       <Text dimColor>
         {provider}/{model} · effort: {effort} · {messageCount} msgs · {parts.join(" ")}{durationSegment}{sandboxBackend ? ` · ${sandboxBackend}` : ""}{branchName ? ` · session: ${branchName}` : ""}
       </Text>
+      {agentLock && (
+        <Text color={agentLock.full ? "red" : "yellow"} dimColor>
+          {"🔒 agent: "}{agentLock.name}{agentLock.full ? " (full)" : " (read-only)"}
+        </Text>
+      )}
       {loopStatus && (
         <Text color="yellow" dimColor>{loopStatus}</Text>
       )}

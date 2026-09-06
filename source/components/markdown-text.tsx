@@ -96,6 +96,19 @@ function applySgr(state: string[], seq: string): string[] {
  */
 export function wrapStyled(text: string, maxWidth: number): string[] {
   if (maxWidth <= 0) return [""];
+  // A hard newline in the source must become a hard line break in the output,
+  // not a zero-width character to wrap through — `stringWidth` counts "\n" as
+  // contributing nothing to a line's visible width, so without this the
+  // single-line algorithm below would happily pack "line one\nline two" onto
+  // one wrapped "line", producing a `ClickableLine` row that itself contains
+  // an embedded newline and renders as two terminal rows squeezed into one
+  // Box, breaking multi-line markdown (bulleted lists, in particular) into a
+  // single run-on line. Each hard-split segment is wrapped independently —
+  // mirroring `ink/wrap-text.ts`'s own per-line wrapping — so a returned
+  // array entry is always exactly one visual row.
+  if (text.includes("\n")) {
+    return text.split("\n").flatMap((line) => wrapStyled(line, maxWidth));
+  }
   if (stringWidth(text) <= maxWidth) return [text];
 
   const lines: string[] = [];
@@ -146,6 +159,55 @@ export function wrapStyled(text: string, maxWidth: number): string[] {
     emit(cut, line.length);
   }
   return lines.length > 0 ? lines : [""];
+}
+
+/**
+ * Slice a possibly-ANSI-styled string by *visible* character position — the
+ * same units `stringWidth`-based logic elsewhere in this file uses — without
+ * ever cutting inside an SGR escape sequence, and reopening/closing whatever
+ * styles were active at the cut so each returned piece renders correctly on
+ * its own.
+ *
+ * Used to split one call to `renderMarkdown` (which returns one big styled
+ * string) into several sibling `<Text>` spans — e.g. plain / clickable-link /
+ * plain — without losing any styling `renderMarkdown` applied.
+ *
+ * `start`/`end` count visible grapheme clusters (not UTF-16 code units), so
+ * they line up with what a user counted on screen. Out-of-range indices clamp
+ * to the string's visible bounds. If `end <= start` after clamping, returns
+ * an empty string.
+ */
+export function sliceStyled(text: string, start: number, end: number): string {
+  const pieces = toPieces(text);
+  const total = pieces.reduce((n, p) => n + (p.kind === "text" ? 1 : 0), 0);
+
+  const clampedStart = Math.max(0, Math.min(start, total));
+  const clampedEnd = Math.max(clampedStart, Math.min(end, total));
+  if (clampedEnd <= clampedStart) return "";
+
+  let openBefore: string[] = [];
+  const collected: string[] = [];
+  let visibleIndex = 0;
+
+  for (const piece of pieces) {
+    if (piece.kind === "sgr") {
+      if (visibleIndex < clampedStart) {
+        openBefore = applySgr(openBefore, piece.value);
+      } else if (visibleIndex >= clampedStart && visibleIndex <= clampedEnd) {
+        collected.push(piece.value);
+      }
+      continue;
+    }
+    if (visibleIndex >= clampedStart && visibleIndex < clampedEnd) {
+      collected.push(piece.value);
+    }
+    visibleIndex++;
+  }
+
+  const body = collected.join("");
+  return body.length > 0 && (openBefore.length > 0 || body.includes("\x1b"))
+    ? openBefore.join("") + body + RESET
+    : body;
 }
 
 function extractCells(token: any): { headers: string[]; rows: string[][] } {
@@ -271,7 +333,21 @@ function getMarked(): Marked {
   const instance = new Marked();
   instance.use({ extensions: [makeTableExtension(width)] });
   instance.use(markedTerminal({
-    reflowText: true,
+    // marked-terminal's own text reflow wraps prose at `width` *inside* this
+    // function's output, splitting a long inline token (a file path, a URL)
+    // across two lines with a literal "\n" in the middle whenever it happens
+    // to straddle that column. Everything this module hands `renderMarkdown`'s
+    // result to re-wraps it a second time anyway — `wrapStyled` for
+    // `ClickableMarkdown`, or Ink's own `<Text>` wrapping for every other
+    // caller — and that second pass correctly hard-breaks a long token
+    // without ever inserting a real newline through it. Two independent wrap
+    // passes at slightly different widths (this one ignores the 2-space
+    // indent every caller applies) is what made target detection — a literal
+    // substring search for the token marked as clickable — fail for exactly
+    // the tokens long enough to have been split here, which is why ctrl+click
+    // worked on some agent-mentioned paths and not others of the same kind.
+    // Turning this off leaves ALL wrapping to the single downstream pass.
+    reflowText: false,
     width,
     heading: (text: string) => "\n" + chalk.bold.cyan(text) + "\n",
     strong: chalk.bold,

@@ -44,6 +44,18 @@ describe("wrapToWidth", () => {
     expect(wrapToWidth(colored, 7)).toEqual([colored]);
   });
 
+  it("wraps wide graphemes by terminal column without splitting them", () => {
+    const lines = wrapToWidth("界界界", 4);
+    expect(lines).toEqual(["界界", "界"]);
+    expect(fitsOnOneRow(lines, 4)).toBe(true);
+  });
+
+  it("keeps emoji grapheme clusters intact while wrapping", () => {
+    const lines = wrapToWidth("🎉🎉🎉", 4);
+    expect(lines).toEqual(["🎉🎉", "🎉"]);
+    expect(fitsOnOneRow(lines, 4)).toBe(true);
+  });
+
   it("always returns at least one line", () => {
     expect(wrapToWidth("", 40)).toEqual([""]);
   });

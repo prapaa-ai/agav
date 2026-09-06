@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from "react";
-import { Box, Text, useInput, usePaste } from "../ink/index.js";
+import React, { useState, useEffect, useRef } from "react";
+import { Box, Text, ScrollBox, useInput, usePaste, useStdout, measureElement } from "../ink/index.js";
+import type { DOMElement, ScrollBoxControls } from "../ink/index.js";
 import { mkdir } from "node:fs/promises";
 import { loadAgents } from "../agents/loader.js";
 import { setAgentEnabled, loadRegistry } from "../agents/agent-registry.js";
@@ -50,6 +51,29 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
 
   const [implementingTools, setImplementingTools] = useState(false);
   const [implementStatus, setImplementStatus]     = useState<string | null>(null);
+
+  // --- Scrollable viewport ---
+  // The outer Box is pinned to termRows so the TUI never overflows the
+  // terminal. Header and footer have flexShrink={0}; the middle slot
+  // (scrollSlotRef) gets flexGrow={1} and we measure it after layout to
+  // feed the exact row count into ScrollBox.
+  const { stdout } = useStdout();
+  const [termRows, setTermRows] = useState(stdout.rows || 24);
+  const scrollControls = useRef<ScrollBoxControls | null>(null);
+  const scrollSlotRef = useRef<DOMElement | null>(null);
+  const [scrollHeight, setScrollHeight] = useState(Math.max(4, termRows - 8));
+
+  useEffect(() => {
+    const onResize = () => setTermRows(stdout.rows || 24);
+    stdout.on("resize", onResize);
+    return () => { stdout.off("resize", onResize); };
+  }, [stdout]);
+
+  // Measure the slot Yoga allocated for the scroll area after every commit.
+  useEffect(() => {
+    const h = measureElement(scrollSlotRef.current).height;
+    if (h > 0 && h !== scrollHeight) setScrollHeight(h);
+  });
 
   const runImplementTools = async (agent: AgentDefinition) => {
     if (!provider || !config) return;
@@ -128,6 +152,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     setConfigSavedKeys({});
     setConfigError(null);
     setConfigEntryPoint(from);
+    scrollControls.current?.scrollToBottom();
     setListView("config");
   };
 
@@ -151,6 +176,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     const isEditingConfig = listView === "config" && (configEditing || configPickerActive);
     if (!listSearching && !isEditingConfig && !marketplaceBusy && !createBusy && (input === "1" || input === "2" || input === "3")) {
       setRemoveStatus(null);
+      scrollControls.current?.scrollToBottom();
       if (input === "1") { setActiveTab("list"); setSelectedIndex(0); setListView("list"); }
       else if (input === "2") { setActiveTab("marketplace"); setSelectedIndex(0); }
       else if (input === "3") { setActiveTab("create"); }
@@ -201,6 +227,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           await setAgentEnabled(agentKey, !isEnabled);
           await reloadAgents();
         } else if (input === "i" && filteredAgents[selectedIndex]) {
+          scrollControls.current?.scrollToBottom();
           setListView("inspect");
         } else if (input === "c" && filteredAgents[selectedIndex]) {
           await enterConfigView(filteredAgents[selectedIndex]!, "list");
@@ -223,6 +250,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
         } else if (input === "e" && agent) {
           await enterConfigView(agent, "inspect");
         } else if (key.escape || input === "b") {
+          scrollControls.current?.scrollToBottom();
           setListView("list");
         }
       } else if (listView === "config") {
@@ -276,6 +304,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           }
         } else {
           if (key.escape) {
+            scrollControls.current?.scrollToBottom();
             setListView(configEntryPoint); setConfigError(null);
           } else if (key.upArrow) {
             setConfigEditIndex((i) => Math.max(0, i - 1)); setConfigError(null);
@@ -369,7 +398,8 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   });
 
   return (
-    <Box flexDirection="column" padding={1}>
+    <Box flexDirection="column" height={termRows} padding={1}>
+      <Box flexDirection="column" flexShrink={0}>
       <Box marginBottom={1}>
         <Text bold>Agents Management</Text>
       </Box>
@@ -387,7 +417,10 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           [3] Create
         </Text>
       </Box>
+      </Box>
 
+      <Box ref={scrollSlotRef} flexGrow={1} flexDirection="column">
+      <ScrollBox height={scrollHeight} controls={scrollControls}>
       {activeTab === "list" && listView === "list" && (
         // Scoped to the list rather than the whole hub: the Create wizard and
         // the Marketplace tab own their own wheel behaviour.
@@ -463,7 +496,10 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           installedAgents={new Map(agents.map((a) => [a.alias || a.manifest.name, { origin: a.origin, version: a.manifest.version }]))}
         />
       )}
+      </ScrollBox>
+      </Box>
 
+      <Box flexDirection="column" flexShrink={0}>
       <Box marginTop={1} borderStyle="single" borderTop paddingTop={1}>
         {activeTab === "list" && listView === "list" && (
           <Text dimColor>
@@ -494,6 +530,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
         {activeTab === "create" && (
           <Text dimColor>Create wizard — follow the step prompts above</Text>
         )}
+      </Box>
       </Box>
     </Box>
   );

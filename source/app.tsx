@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { basename } from "node:path";
-import { Box, Text, ScrollBox, Spinner, useInput, useApp, measureElement } from "./ink/index.js";
+import { Box, Text, ScrollBox, Spinner, useInput, useApp, useStdout, measureElement } from "./ink/index.js";
 import type { DOMElement, ScrollBoxControls, WheelEventData } from "./ink/index.js";
 import MessageList from "./components/message-list.js";
 import type { DisplayMessage } from "./components/message-list.js";
@@ -26,9 +26,10 @@ import { saveSession } from "./config/history.js";
 import {
   type Attachment,
   createTextAttachment,
+  createImageAttachmentFromData,
 } from "./utils/attachments.js";
+import { getAttachment, clearAttachmentRegistry, compactImageAttachments, unregisterAttachment, wasEvicted } from "./utils/attachment-registry.js";
 import { getRandomHint } from "./utils/hints.js";
-import { fileLink } from "./utils/hyperlink.js";
 import { getClipboardImage, type ClipboardImage } from "./utils/clipboard-image.js";
 import { getClipboardText } from "./utils/clipboard-text.js";
 import { useClipboardImageDetector } from "./hooks/use-paste-handler.js";
@@ -38,6 +39,12 @@ import { loadScheduledTasks, cronMatches, markTaskRun } from "./config/scheduler
 import { getSandboxName } from "./utils/sandbox.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
 import { terminalRelativePaths } from "./utils/display-path.js";
+import { openTarget } from "./utils/open-target.js";
+import { writeClipboard } from "./ink/termio/clipboard.js";
+import type { OpenRef } from "./utils/open-ref.js";
+import AttachmentPreview, { type PreviewContent } from "./components/attachment-preview.js";
+import { readFileContext } from "./utils/file-context.js";
+import { spoolImageToTempFile } from "./utils/open-external.js";
 
 import type { Message } from "./providers/types.js";
 
@@ -77,6 +84,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [showPlanDetail, setShowPlanDetail] = useState(false);
   const [showThinking, setShowThinking] = useState(initialConfig.showThinking ?? false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [preview, setPreview] = useState<PreviewContent | null>(null);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
   // Everything above the input prompt is one scrolling document, driven from
   // here by the scroll keybindings and by wheel events that landed on the
@@ -123,12 +131,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     mcpServers,
     mcpPromptCommands,
     skillCommands,
+    agentCommands,
     mcpResourceCount,
     mcpPromptCount,
     subagentStates,
     activePlan,
     refreshPlan,
     submit,
+    submitToAgent,
+    refreshAgentCommands,
     addDisplayMessage,
     cancel,
     clearMessages,
@@ -148,6 +159,99 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
+  const { stdout } = useStdout();
+
+  /** Show a single-line status update via the system-message channel. */
+  const showStatusLine = useCallback((text: string, isError = false) => {
+    setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: text, isError }]);
+  }, []);
+
+  /** Preview a pasted-text attachment in the document. */
+  const previewAttachment = useCallback((attachment: Attachment) => {
+    if (attachment.kind === "paste" && attachment.source.type === "text") {
+      setPreview({ title: `Pasted #${attachment.id} · ${attachment.summary}`, text: attachment.source.text });
+      return;
+    }
+    if (attachment.kind === "file" && attachment.source.type === "file") {
+      readFileContext(attachment.source.absPath)
+        .then((result) => {
+          if (result.kind !== "text") {
+            showStatusLine(`Cannot preview: ${attachment.source.type === "file" ? attachment.source.absPath : ""} is not a text file.`, true);
+            return;
+          }
+          setPreview({ title: `File #${attachment.id} · ${attachment.summary}`, text: result.output });
+        })
+        .catch((err) => showStatusLine(`Cannot preview: ${err instanceof Error ? err.message : String(err)}`, true));
+    }
+  }, [showStatusLine]);
+
+  /** Try the OS/editor open ladder for a file; fall back to an in-document preview when neither succeeds. */
+  const openFileOrPreview = useCallback((absPath: string, title: string, line?: number, col?: number) => {
+    openTarget({ kind: "file", absPath, line, col })
+      .then((outcome) => {
+        if (outcome.ok) {
+          showStatusLine(outcome.message, false);
+          return;
+        }
+        readFileContext(absPath)
+          .then((result) => {
+            if (result.kind !== "text") {
+              showStatusLine(outcome.message, true);
+              return;
+            }
+            setPreview({ title, text: result.output });
+          })
+          .catch(() => showStatusLine(outcome.message, true));
+      })
+      .catch((err) => showStatusLine(`Cannot open: ${err instanceof Error ? err.message : String(err)}`, true));
+  }, [showStatusLine]);
+
+  /** Open or preview an attachment tile the user clicked, resolved by id from the session registry. */
+  const handleOpenAttachment = useCallback((id: number) => {
+    const attachment = getAttachment(id);
+    if (!attachment) {
+      showStatusLine(wasEvicted(id) ? `Attachment #${id} is no longer available.` : `Attachment #${id} could not be found.`, true);
+      return;
+    }
+
+    if (attachment.kind === "paste") {
+      previewAttachment(attachment);
+      return;
+    }
+
+    if (attachment.kind === "image" && attachment.source.type === "image") {
+      const spoolPromise = attachment.source.spoolPath
+        ? Promise.resolve(attachment.source.spoolPath)
+        : attachment.source.base64
+          ? spoolImageToTempFile(attachment.source.base64, attachment.source.mediaType)
+          : Promise.reject(new Error("image data is no longer available"));
+      spoolPromise
+        .then((path) => openTarget({ kind: "file", absPath: path }))
+        .then((outcome) => showStatusLine(outcome.message, !outcome.ok))
+        .catch((err) => showStatusLine(`Cannot open image: ${err instanceof Error ? err.message : String(err)}`, true));
+      return;
+    }
+
+    if (attachment.kind === "file" && attachment.source.type === "file") {
+      openFileOrPreview(attachment.source.absPath, `File #${id} · ${attachment.summary}`);
+    }
+  }, [previewAttachment, showStatusLine, openFileOrPreview]);
+
+  /** Open or preview whatever a detected URL/file-path run in the transcript resolved to. */
+  const handleOpenRef = useCallback((ref: OpenRef) => {
+    if (ref.kind === "attachment") {
+      handleOpenAttachment(ref.id);
+      return;
+    }
+    if (ref.kind === "url") {
+      openTarget({ kind: "url", url: ref.url })
+        .then((outcome) => showStatusLine(outcome.message, !outcome.ok))
+        .catch((err) => showStatusLine(`Cannot open: ${err instanceof Error ? err.message : String(err)}`, true));
+      return;
+    }
+    // ref.kind === "path"
+    openFileOrPreview(ref.absPath, ref.absPath, ref.line, ref.col);
+  }, [handleOpenAttachment, openFileOrPreview]);
 
   // Register/refresh slash commands discovered from connected MCP servers' prompts.
   useEffect(() => {
@@ -163,6 +267,34 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     }
   }, [skillCommands]);
 
+  // Register agent targeting slash commands (/<agent-name>).
+  // On refresh, remove stale agent commands before adding current ones.
+  useEffect(() => {
+    const registry = commandRegistryRef.current;
+    const builtInNames = new Set(registry.list().filter(
+      (c) => !c.description.startsWith("[agent]"),
+    ).map((c) => c.name));
+    builtInNames.add("ps");
+
+    // Remove previously registered agent commands that are no longer current
+    const currentAgentNames = new Set(agentCommands.map((c) => c.name));
+    for (const existing of registry.list()) {
+      if (existing.description.startsWith("[agent]") && !currentAgentNames.has(existing.name)) {
+        registry.unregister(existing.name);
+      }
+    }
+
+    // Register current agent commands
+    for (const cmd of agentCommands) {
+      if (!builtInNames.has(cmd.name)) {
+        registry.register(cmd);
+      }
+    }
+  }, [agentCommands]);
+
+  // Track agent session lock for UI display.
+  const [agentLockState, setAgentLockState] = useState<{ name: string; full: boolean } | null>(null);
+
   /** Convert pasted text into an attachment so large snippets do not bloat the visible prompt line. */
   const handlePaste = useCallback((text: string, insertLabel: (label: string) => void) => {
     const attachment = createTextAttachment(text);
@@ -171,26 +303,45 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, []);
 
   const insertLabelRef = useRef<((label: string) => void) | null>(null);
+  const expandTileRef = useRef<((id: number, fullText: string) => boolean) | null>(null);
+  // The most recent paste that was compacted into a tile, so an identical
+  // paste immediately after it is recognized as "expand this" rather than
+  // "attach a second copy of the same thing" — similar to Claude Code's
+  // double-paste-to-expand.
+  const lastPasteRef = useRef<{ text: string; attachmentId: number } | null>(null);
   const [psResponse, setPsResponse] = useState<string | undefined>();
   const [psLoading, setPsLoading] = useState(false);
 
   /** Auto-detect clipboard images so copied screenshots can be attached without manual file handling. */
   const handleClipboardImage = useCallback((img: ClipboardImage) => {
-    const id = Date.now();
-    const dimStr = img.width && img.height ? `${img.width}x${img.height}` : "image";
-    const label = `<<Image: ${dimStr}>>`;
-
-    setAttachments((prev) => [...prev, {
-      id, type: "image", label,
-      contentBlock: { type: "image", imageData: img.base64, imageMediaType: img.mediaType, imageWidth: img.width, imageHeight: img.height },
-    }]);
-    insertLabelRef.current?.(label);
+    // Uses the shared monotonic counter (not `Date.now()`) so this attachment's
+    // id can never collide with one created in the same millisecond, and its
+    // tile is always resolvable back to a record.
+    const attachment = createImageAttachmentFromData(img.base64, img.mediaType, img.width || undefined, img.height || undefined);
+    setAttachments((prev) => [...prev, attachment]);
+    insertLabelRef.current?.(attachment.label);
   }, []);
 
   const handleLargePaste = useCallback((text: string) => {
+    const last = lastPasteRef.current;
+    if (last && last.text === text) {
+      // Same text pasted again — try to swap the tile it made for its full
+      // literal text. `onRegisterExpand`'s function reports back whether the
+      // tile was still there to replace; if the user had already edited or
+      // removed it, fall through and attach this paste as a fresh tile
+      // instead of silently doing nothing.
+      const expanded = expandTileRef.current?.(last.attachmentId, text) ?? false;
+      if (expanded) {
+        setAttachments((prev) => prev.filter((a) => a.id !== last.attachmentId));
+        unregisterAttachment(last.attachmentId);
+        lastPasteRef.current = null;
+        return;
+      }
+    }
     const attachment = createTextAttachment(text);
     setAttachments((prev) => [...prev, attachment]);
     insertLabelRef.current?.(attachment.label);
+    lastPasteRef.current = { text, attachmentId: attachment.id };
   }, []);
 
   const handleShortPaste = useCallback((text: string) => {
@@ -336,6 +487,18 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   useInput((rawChar, rawKey) => {
     if (pickerActive) return;
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
+    // The attachment/file preview panel is read-only and owns no other state,
+    // so its keys are handled before anything else can claim them — Esc closes
+    // it outright rather than falling through to whatever else Esc means
+    // while a turn is in flight.
+    if (preview) {
+      if (key.escape) { setPreview(null); return; }
+      if (char === "c" && ((!key.ctrl && !key.meta && !key.super) || key.super)) {
+        if (stdout) writeClipboard(stdout, preview.text);
+        showStatusLine("Copied preview to clipboard.");
+        return;
+      }
+    }
     const match = keyResolverRef.current.feed(char, key);
     if (match.action === "interrupt" && isLoading && !pendingConfirmation) {
       cancel();
@@ -408,7 +571,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     if (key.ctrl && char === "o" && !pendingConfirmation) {
       setShowCompactionSummary((prev) => !prev);
     }
-    if (key.ctrl && char === "v" && !pendingConfirmation) {
+    if ((key.ctrl || key.super) && char === "v" && !pendingConfirmation) {
       // Try clipboard image first, then fall back to clipboard text.
       // This covers terminals (e.g. native PowerShell/cmd) that don't
       // support bracketed paste mode, where Ctrl+V arrives as a raw
@@ -515,6 +678,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           clearMessages: () => {
             clearMessages();
             setSystemMessages([]);
+            setPreview(null);
+            clearAttachmentRegistry();
             resetDisplay();
           },
           refreshPlan,
@@ -554,6 +719,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
         setRunningSkillName(null);
 
+        // Sync agent lock state after any slash command (handles /agent, /clear, /new)
+        const { getLockedAgent } = await import("./commands/agent-lock.js");
+        setAgentLockState(getLockedAgent());
+
         if (result) {
           switch (result.type) {
             case "message": {
@@ -570,6 +739,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             case "submit":
               submit(result.text, undefined, undefined, undefined, invocationReason);
               break;
+            case "agent_invoke": {
+              setInput("");
+              setSystemMessages([]);
+              submitToAgent(result.agentName, result.query, trimmed);
+              break;
+            }
             case "clear":
               break;
             case "exit":
@@ -579,13 +754,42 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         return;
       }
 
+      // Session agent lock — route non-command input directly to the locked agent
+      {
+        const { getLockedAgent } = await import("./commands/agent-lock.js");
+        const lock = getLockedAgent();
+        if (lock) {
+          const llmText = trimmed || "See attached content";
+          setInput("");
+          setAttachments([]);
+          setShowToolDetail(false);
+          setPsResponse(undefined);
+          setSystemMessages([]);
+          submitToAgent(lock.name, llmText, trimmed, lock.full);
+          return;
+        }
+      }
+
       // Collect attachment content blocks
-      const extraBlocks: ContentBlock[] = attachments.map((a) => a.contentBlock);
+      // The registry later compacts image records by dropping their retained
+      // payload. Give the conversation its own block objects so that cleanup
+      // cannot mutate image data retained in the submitted turn.
+      const extraBlocks: ContentBlock[] = attachments.map((attachment) => ({ ...attachment.contentBlock }));
       const llmText = trimmed || "See attached content";
       const accepted = await submit(llmText, extraBlocks, undefined, undefined, invocationReason);
       if (!accepted) return;
+      // The pending list is cleared here, but the registry (keyed by id) is
+      // not — a tile stays clickable in the scrolled-back transcript for the
+      // rest of the session. Image bytes are spooled to disk and dropped from
+      // memory now that the base64 payload has already gone to the provider.
+      const imageIds = attachments.filter((a) => a.kind === "image").map((a) => a.id);
+      if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => {});
       setInput("");
       setAttachments([]);
+      // The tile a tracked paste made is gone now that the buffer is cleared;
+      // an identical paste after this turn should attach fresh, not try to
+      // expand a tile that no longer exists anywhere.
+      lastPasteRef.current = null;
       setShowToolDetail(false);
       setPsResponse(undefined);
       setSystemMessages([]);
@@ -651,7 +855,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         </Box>
       )}
 
-      <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} columns={termCols} />
+      <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} columns={termCols} onOpenRef={handleOpenRef} />
 
       {systemMessages.length > 0 && (
         <Box marginBottom={1} flexDirection="column">
@@ -775,6 +979,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           closeKey={formatKeybinding(keybindings, "togglePlanDetail")}
         />
       )}
+
+      {preview && (
+        <AttachmentPreview
+          content={preview}
+          closeKey="Esc"
+          copyKey="c"
+          columns={termCols}
+        />
+      )}
       </ScrollBox>
 
       {/*
@@ -789,6 +1002,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           toolName={pendingConfirmation.toolName}
           input={pendingConfirmation.input}
           diffLines={pendingConfirmation.diffLines}
+          mcpServerName={pendingConfirmation.mcpServerName}
           onConfirm={confirmTool}
           subagentTask={pendingConfirmation.subagentTask}
           keybindings={keybindings}
@@ -804,6 +1018,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             const resolve = agentsTUIResolveRef.current;
             agentsTUIResolveRef.current = null;
             resolve?.();
+            refreshAgentCommands();
           }}
           provider={activeProvider}
           config={config}
@@ -828,18 +1043,35 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           onChange={setInput}
           onSubmit={handleSubmit}
           onPaste={handlePaste}
-          onRemoveAttachment={() => setAttachments((prev) => prev.slice(0, -1))}
-          onClearAttachments={() => setAttachments([])}
+          onRemoveAttachment={() => {
+            setAttachments((prev) => prev.slice(0, -1));
+            lastPasteRef.current = null;
+          }}
+          onClearAttachments={() => {
+            setAttachments([]);
+            lastPasteRef.current = null;
+          }}
           onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
+          onRegisterExpand={(fn) => { expandTileRef.current = fn; }}
+          onOpenAttachment={handleOpenAttachment}
           disabled={pickerActive}
           suppressHistory={isLoading}
           commands={[
             { name: "ps", description: "Side query while agent is working" },
-            ...commandRegistryRef.current.list().map((c) => ({ name: c.name, description: c.description })),
+            ...commandRegistryRef.current.list().map((c) => ({
+              name: c.name,
+              description: c.description,
+              category: c.description.startsWith("[agent]") ? "agent" as const : "command" as const,
+            })),
           ]}
           keybindings={keybindings}
           enhancedKeyboard={enhancedKeyboard}
           resumeUserMessages={resumeUserMessages}
+          agentLock={agentLockState?.name}
+          agentNames={agentCommands.map((c) => ({
+            name: c.name,
+            description: c.description.replace("[agent] ", ""),
+          }))}
         /></Box>
       )}
 
@@ -862,6 +1094,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         lastTurnDurationMs={lastTurnDurationMs}
         isLoading={isLoading}
         isPaused={!!pendingConfirmation}
+        agentLock={agentLockState ?? undefined}
       />
       </Box>
     </Box>

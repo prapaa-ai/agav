@@ -10,23 +10,16 @@ export const decset = (code: number | string): string => `\x1b[?${code}h`;
 /** Build a DECRESET (disable) sequence for the given private mode code. */
 export const decreset = (code: number | string): string => `\x1b[?${code}l`;
 
-// Mouse tracking private mode codes.
-const MOUSE_NORMAL = 1000; // X11 normal tracking (press/release).
+// Mouse tracking private mode codes. Button-motion is needed for Agav's
+// application-owned drag selection; any-motion is not, and needlessly floods
+// stdin while the pointer moves with no button held.
+const MOUSE_NORMAL = 1000; // X11 normal tracking (press/release and wheel).
 const MOUSE_BUTTON_MOTION = 1002; // Button-event (drag) tracking.
-const MOUSE_ANY_MOTION = 1003; // Any-motion tracking.
 const MOUSE_SGR = 1006; // SGR extended coordinate encoding.
 
-const MOUSE_MODES = [
-	MOUSE_NORMAL,
-	MOUSE_BUTTON_MOTION,
-	MOUSE_ANY_MOTION,
-	MOUSE_SGR,
-];
+const MOUSE_MODES = [MOUSE_NORMAL, MOUSE_BUTTON_MOTION, MOUSE_SGR];
 
-/**
- * Enable mouse tracking: normal (1000), button-motion (1002), any-motion
- * (1003), and SGR extended encoding (1006).
- */
+/** Enable normal, drag, and SGR-coordinate mouse tracking. */
 export const ENABLE_MOUSE_TRACKING = MOUSE_MODES.map(decset).join("");
 
 /** Disable the same set of mouse tracking modes. */

@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text, Spinner } from "../ink/index.js";
-import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
+import { getToolLabel, getToolSummary, isBookkeepingTool, getMcpServerName } from "../utils/tool-labels.js";
 import type { DiffLine } from "../utils/diff.js";
 
 /** Describes a tool invocation shown in the UI. */
@@ -22,6 +22,7 @@ interface Props {
 export default function ToolCallDisplay({ toolCall }: Props) {
   const label = getToolLabel(toolCall.toolName);
   const summary = getToolSummary(toolCall.toolName, toolCall.input);
+  const mcpServer = getMcpServerName(toolCall.toolName);
   // A progress tick carries the same bold yellow as an edit or a shell command,
   // which is what makes it look like the agent doing something to the project.
   const bookkeeping = isBookkeepingTool(toolCall.toolName);
@@ -40,6 +41,7 @@ export default function ToolCallDisplay({ toolCall }: Props) {
         <Text color="green">{"✓ "}</Text>
       )}
       <Text bold={!bookkeeping} color={bookkeeping ? undefined : "yellow"} dimColor={bookkeeping}>{label}</Text>
+      {mcpServer ? <Text dimColor>{` (MCP: ${mcpServer})`}</Text> : null}
       {summary ? <Text dimColor> {summary}</Text> : null}
     </Box>
   );

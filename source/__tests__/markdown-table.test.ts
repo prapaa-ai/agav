@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import stringWidth from "string-width";
+import chalk from "chalk";
 
-const { wrapStyled, fitColumns, renderMarkdown } = await import("../components/markdown-text.js");
+const { wrapStyled, fitColumns, renderMarkdown, sliceStyled } = await import("../components/markdown-text.js");
 
 const ESC = String.fromCharCode(27);
 const bold = (s: string) => `${ESC}[1m${s}${ESC}[22m`;
@@ -57,6 +58,125 @@ describe("wrapStyled", () => {
       // A split flag would leave a lone regional indicator.
       expect(Array.from(line).length % 2).toBe(0);
     }
+  });
+
+  it("treats an embedded newline as a hard break, not a zero-width character to wrap through", () => {
+    // Regression: `stringWidth("\n")` is 0, so without an explicit newline
+    // split the single-pass wrapper below happily packed several source
+    // lines — e.g. every bullet of a rendered markdown list — onto one
+    // returned "line", which downstream renders as one `<Box>` row containing
+    // a raw "\n" and breaks the terminal display (bullets run together with
+    // no visible separation).
+    const text = "line one\nline two\nline three";
+    const lines = wrapStyled(text, 60);
+    expect(lines).toEqual(["line one", "line two", "line three"]);
+    for (const line of lines) expect(line.includes("\n")).toBe(false);
+  });
+
+  it("wraps each newline-separated segment independently when a segment overflows", () => {
+    const text = "short\na very long line that needs to be wrapped across more than one row of output";
+    const lines = wrapStyled(text, 20);
+    for (const line of lines) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(20);
+      expect(line.includes("\n")).toBe(false);
+    }
+    expect(lines[0]).toBe("short");
+    expect(lines.join(" ").replace(/\s+/g, " ")).toContain("a very long line that needs to be wrapped across more than one row of output".split(" ")[0]);
+  });
+
+  it("reproduces a multi-line bulleted list as one wrapped row per bullet", () => {
+    const styled = renderMarkdown("Files:\n- source/app.ts\n- source/utils/attachments.ts\n- source/commands/open.ts\n");
+    const lines = wrapStyled(styled, 60);
+    const visible = lines.map(stripAnsi);
+    expect(visible.filter((l) => l.includes("•")).length).toBe(3);
+    for (const line of lines) expect(line.includes("\n")).toBe(false);
+  });
+});
+
+describe("renderMarkdown does not pre-wrap prose (leaves wrapping to a single downstream pass)", () => {
+  // Regression: marked-terminal's own `reflowText` option wrapped prose to a
+  // fixed column count *inside* renderMarkdown's own output, inserting a
+  // literal "\n" through any inline token (a file path, a URL) long enough to
+  // straddle that column. Every caller re-wraps `renderMarkdown`'s result a
+  // second time anyway (`wrapStyled` for clickable messages, Ink's own
+  // `<Text>` wrapping everywhere else), and detection/click-matching does a
+  // literal substring search for the token that was found clickable — a
+  // token pre-split by marked-terminal's reflow could never be found as one
+  // contiguous substring again, which is why ctrl+click worked for some
+  // agent-mentioned paths (short enough to survive intact) and silently
+  // failed for others of the exact same kind (long enough to be reflow-split)
+  // — depending only on width and per-message text, with no visible sign
+  // anything had gone wrong.
+  it("keeps a long inline path/URL-like token intact rather than splitting it with an embedded newline", () => {
+    const longPath = ".agav-worktrees/vertex-ai-thinking-tokens/source/commands/export.ts";
+    const out = renderMarkdown(`See ${longPath} for details.`);
+    expect(out).toContain(longPath);
+    expect(out.includes("\n")).toBe(false);
+  });
+
+  it("keeps a long inline token intact regardless of terminal width", () => {
+    const longPath = "source/utils/some-really-quite-long-module-name-here.ts";
+    for (const width of [40, 60, 80, 120]) {
+      const original = process.stdout.columns;
+      process.stdout.columns = width;
+      try {
+        const out = renderMarkdown(`Check ${longPath} please`);
+        expect(out).toContain(longPath);
+      } finally {
+        process.stdout.columns = original;
+      }
+    }
+  });
+});
+
+describe("sliceStyled", () => {
+  // chalk paints nothing at all when it cannot detect a colour terminal,
+  // which it never can under vitest. Force a level so the escapes the
+  // styled-string tests below look for are actually emitted.
+  beforeAll(() => {
+    chalk.level = 3;
+  });
+
+  it("slices a plain unstyled string", () => {
+    expect(sliceStyled("hello world", 0, 5)).toBe("hello");
+  });
+
+  it("clamps out-of-range indices", () => {
+    expect(sliceStyled("hello", 2, 100)).toBe("llo");
+    expect(sliceStyled("hello", -5, 3)).toBe("hel");
+  });
+
+  it("returns an empty string when end <= start", () => {
+    expect(sliceStyled("hello", 3, 3)).toBe("");
+    expect(sliceStyled("hello", 4, 2)).toBe("");
+  });
+
+  it("loses no visible characters when concatenating slices", () => {
+    const styled = chalk.bold("hello ") + "plain " + chalk.underline.cyan("link");
+    const visible = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+    const total = visible(styled).length;
+    const a = sliceStyled(styled, 0, 6);
+    const b = sliceStyled(styled, 6, 13);
+    const c = sliceStyled(styled, 13, total);
+    expect(visible(a) + visible(b) + visible(c)).toBe(visible(styled));
+  });
+
+  it("keeps a middle slice's own styling recoverable", () => {
+    const styled = chalk.bold("hello ") + "plain " + chalk.underline.cyan("link");
+    const visible = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+    const total = visible(styled).length;
+    const linkStart = visible(styled).indexOf("link");
+    const c = sliceStyled(styled, linkStart, total);
+    expect(c).toMatch(/\x1b\[/);
+    expect(visible(c)).toBe("link");
+  });
+
+  it("never slices inside an escape sequence", () => {
+    const styled = chalk.bold("hello ") + "plain " + chalk.underline.cyan("link");
+    expect(() => sliceStyled(styled, 0, 1)).not.toThrow();
+    const first = sliceStyled(styled, 0, 1);
+    const visible = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+    expect(visible(first)).toBe("h");
   });
 });
 

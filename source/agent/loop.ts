@@ -40,6 +40,7 @@ export type ConfirmToolFn = (
   toolName: string,
   input: Record<string, unknown>,
   diffLines?: DiffLine[],
+  mcpServerName?: string,
 ) => Promise<ConfirmResult>;
 
 import type { PermissionMode } from "../config/config.js";
@@ -430,7 +431,7 @@ export async function* runAgentLoop(
         } catch {}
 
         yield { type: "tool_confirmation_request", toolName: call.name, toolCallId: id, input, diffLines: previewDiff };
-        const choice = await confirmTool(call.name, input, previewDiff);
+        const choice = await confirmTool(call.name, input, previewDiff, tool?.mcpServerName);
         if (choice === "always") {
           permissionMode = "auto-accept";
         }

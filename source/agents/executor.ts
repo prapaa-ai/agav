@@ -72,6 +72,7 @@ export async function executeNativeAgent(
     provider: LLMProvider;
     config: AgavConfig;
     hooks?: AgavHooks;
+    signal?: AbortSignal;
     /** Called for each AgentEvent emitted by the child loop, keyed by a per-invocation callId. */
     onProgressUpdate?: (callId: string, event: import("../agent/loop.js").AgentEvent) => void;
     /** Parent's confirmTool — when provided, agent sub-tools that are marked
@@ -142,6 +143,7 @@ export async function executeNativeAgent(
       systemPrompt,
       effort,
       maxTokens: deps.config.maxTokens,
+      signal: deps.signal,
       confirmTool: deps.confirmTool,
       permissionMode: deps.confirmTool ? "ask" : "deny-writes",
       maxIterations: 50,

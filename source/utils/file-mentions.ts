@@ -1,7 +1,7 @@
 import { relative } from "node:path";
 import type { ContentBlock } from "../providers/types.js";
-import { fileLink } from "./hyperlink.js";
 import { readFileContext, readDirectoryContext, resolveMentionPath, type FileContextKind } from "./file-context.js";
+import { createFileAttachment } from "./attachments.js";
 import { stat } from "node:fs/promises";
 
 const MAX_FILES_PER_PROMPT = 5;
@@ -91,14 +91,18 @@ export async function expandFileMentions(
     summarized: context.summarized,
   }));
   const contextByPath = new Map(contexts.map((context) => [context.path, context]));
-  const fileNumber = new Map(uniquePaths.map((path, index) => [path, index + 1]));
+  // One attachment record per unique file — registered once here so its tile
+  // (however many mentions of the same file appear in the prompt) resolves
+  // back to a single, clickable, openable record.
+  const fileAttachmentLabel = new Map(uniquePaths.map((path) => {
+    const rel = relative(options.cwd, path) || path;
+    return [path, createFileAttachment(path, rel).label];
+  }));
   const absoluteReplacements = new Map<string, string>();
   const displayReplacements = new Map<string, string>();
   for (const [mention, absolute] of resolvedByMention) {
     absoluteReplacements.set(mention, absolute);
-    const number = fileNumber.get(absolute)!;
-    const rel = relative(options.cwd, absolute) || absolute;
-    displayReplacements.set(mention, fileLink(`<<File #${number}: ${rel}>>`, absolute));
+    displayReplacements.set(mention, fileAttachmentLabel.get(absolute)!);
   }
 
   const expandedPrompt = replaceMentions(escapedText, matches, absoluteReplacements).replaceAll(ESCAPED_AT, "@");

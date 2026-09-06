@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
+import { getToolLabel, getToolSummary, isBookkeepingTool, getMcpServerName } from "../utils/tool-labels.js";
 
 describe("utils/tool-labels", () => {
   it("returns known labels", () => {
@@ -36,5 +36,41 @@ describe("utils/tool-labels", () => {
   it("falls back for unknown tools", () => {
     expect(getToolLabel("custom_tool")).toBe("Tool");
     expect(getToolSummary("custom_tool", { a: 1, b: 2 })).toBe("a, b");
+  });
+
+  describe("MCP tool label formatting", () => {
+    it("formats MCP tool names by stripping server prefix and humanizing", () => {
+      expect(getToolLabel("paper__get_guide")).toBe("Get guide");
+      expect(getToolLabel("mcp-web-scraper__scrape_website_tool")).toBe("Scrape website tool");
+    });
+  });
+
+  describe("getMcpServerName", () => {
+    it("extracts the server name from MCP tool names", () => {
+      expect(getMcpServerName("paper__get_guide")).toBe("paper");
+      expect(getMcpServerName("mcp-web-scraper__scrape_website_tool")).toBe("mcp-web-scraper");
+    });
+
+    it("returns undefined for non-MCP tool names", () => {
+      expect(getMcpServerName("read_file")).toBeUndefined();
+      expect(getMcpServerName("run_command")).toBeUndefined();
+      expect(getMcpServerName("custom_tool")).toBeUndefined();
+    });
+  });
+
+  describe("edge cases with double underscores", () => {
+    it("uses first __ as separator when multiple __ exist", () => {
+      expect(getMcpServerName("server__tool__with__underscores")).toBe("server");
+      expect(getToolLabel("server__tool__with__underscores")).toBe("Tool  with  underscores");
+    });
+
+    it("returns fallback/undefined for empty string", () => {
+      expect(getToolLabel("")).toBe("Tool");
+      expect(getMcpServerName("")).toBeUndefined();
+    });
+
+    it("returns undefined server name when __ is leading", () => {
+      expect(getMcpServerName("__leading")).toBeUndefined();
+    });
   });
 });

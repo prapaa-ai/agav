@@ -96,9 +96,11 @@ export function MarketplaceTab({
       config.agentMarketplace || getDefaultMarketplaceUrl();
     let agentUrl: string;
     let httpTempPath: string | undefined;
+    let marketplaceSourceUrl: string;
     if (marketplaceUrl.startsWith("file://")) {
       const basePath = parseFileUrl(marketplaceUrl);
       agentUrl = `${basePath}/${agent.path}`;
+      marketplaceSourceUrl = `${marketplaceUrl}/${agent.path}`;
     } else {
       if (!agent.files || agent.files.length === 0) {
         setInstallStatus("✗ Failed: marketplace agent has no file manifest");
@@ -118,8 +120,9 @@ export function MarketplaceTab({
       }
       agentUrl = downloadResult.path;
       httpTempPath = downloadResult.path;
+      marketplaceSourceUrl = agentBaseUrl;
     }
-    const result = await installAgent(agentUrl, { destination });
+    const result = await installAgent(agentUrl, { destination, sourceUrl: marketplaceSourceUrl });
     if (httpTempPath) {
       const { rm } = await import("node:fs/promises");
       await rm(httpTempPath, { recursive: true, force: true }).catch(() => {});

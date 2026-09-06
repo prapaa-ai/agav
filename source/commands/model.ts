@@ -3,7 +3,7 @@ import type { AgavConfig } from "../config/config.js";
 import { providerSetupHints } from "../config/startup.js";
 import { fetchVertexAIModels } from "../providers/vertex-ai.js";
 
-interface FetchedModel {
+export interface FetchedModel {
   id: string;
   provider: string;
 }
@@ -131,8 +131,17 @@ interface FetchAllResult {
   warnings: string[];
 }
 
+/** Match a requested model against catalog identifiers, including Vertex's prefix. */
+export function findMatchingModels(models: FetchedModel[], model: string): FetchedModel[] {
+  return models.filter((candidate) => candidate.id === model
+    || (candidate.provider === "vertex-ai" && candidate.id === `vertex/${model}`)
+    // OpenRouter persists routed model names as `vendor/model`; compare the
+    // bare CLI name too, so `--model model` retains every eligible provider.
+    || (candidate.provider === "openrouter" && candidate.id.endsWith(`/${model}`)));
+}
+
 /** Query every configured provider at once, in the order they appear in the picker. */
-async function fetchAllModels(config: AgavConfig): Promise<FetchAllResult> {
+export async function fetchAvailableModels(config: AgavConfig): Promise<FetchAllResult> {
   const warnings: string[] = [];
   const fetches: Promise<FetchedModel[]>[] = [];
 
@@ -170,6 +179,7 @@ function pickModel(
   models: FetchedModel[],
   currentModel: string,
   currentProvider: string,
+  title = "Select Model",
 ): Promise<FetchedModel | null> {
   const stdin = process.stdin;
   const wasRaw = stdin.isRaw;
@@ -202,7 +212,7 @@ function pickModel(
     rendered = true;
 
     clearLine();
-    process.stdout.write(`\x1b[1;36m  Select Model\x1b[0m\x1b[2m  (${filtered.length} of ${models.length})\x1b[0m\n`);
+    process.stdout.write(`\x1b[1;36m  ${title}\x1b[0m\x1b[2m  (${filtered.length} of ${models.length})\x1b[0m\n`);
     clearLine();
     process.stdout.write(`\x1b[2m  ↑↓ navigate · Enter select · Type to filter · Esc cancel\x1b[0m\n`);
     clearLine();
@@ -319,8 +329,24 @@ export const modelCommand: SlashCommand = {
 
     if (model) {
       context.showStatus(`Validating model: ${model}...`);
-      const { models: allModels, warnings } = await fetchAllModels(context.config);
-      const match = allModels.find((m) => m.id === model);
+      const { models: allModels, warnings } = await fetchAvailableModels(context.config);
+      const matches = findMatchingModels(allModels, model);
+      let match: FetchedModel | undefined = matches[0];
+      let selectedFromAmbiguousMatches = false;
+
+      if (matches.length > 1) {
+        context.setPickerActive(true);
+        const resumeTerminal = context.suspendTerminal();
+        try {
+          match = await pickModel(matches, model, context.config.provider, `Select provider for ${model}`) ?? undefined;
+          selectedFromAmbiguousMatches = Boolean(match);
+        } finally {
+          resumeTerminal();
+          context.setPickerActive(false);
+        }
+        context.refreshDisplay();
+        if (!match) return { type: "message", text: `Kept model as ${context.config.model}${warningSuffix(warnings)}` };
+      }
 
       if (!match && allModels.length > 0) {
         const close = allModels.filter((m) => m.id.includes(model) || model.includes(m.id)).slice(0, 3);
@@ -333,13 +359,14 @@ export const modelCommand: SlashCommand = {
         };
       }
 
-      context.setModel(model);
+      const selectedModel = selectedFromAmbiguousMatches ? match!.id : model;
+      context.setModel(selectedModel);
       if (match && match.provider !== context.config.provider
-        && !matchesProviderPrefix(model, context.config.provider)) {
+        && (selectedFromAmbiguousMatches || !matchesProviderPrefix(selectedModel, context.config.provider))) {
         context.setProvider(match.provider as import("../config/config.js").AgavConfig["provider"]);
-        return { type: "message", text: `Model changed to: ${model} (switched to ${match.provider})` };
+        return { type: "message", text: `Model changed to: ${selectedModel} (switched to ${match.provider})` };
       }
-      return { type: "message", text: `Model changed to: ${model}` };
+      return { type: "message", text: `Model changed to: ${selectedModel}` };
     }
 
     context.showStatus("Fetching available models...");
@@ -347,7 +374,7 @@ export const modelCommand: SlashCommand = {
     const currentModel = context.config.model;
     const currentProvider = context.config.provider;
 
-    const { models: allModels, warnings } = await fetchAllModels(context.config);
+    const { models: allModels, warnings } = await fetchAvailableModels(context.config);
 
     if (allModels.length === 0) {
       return {

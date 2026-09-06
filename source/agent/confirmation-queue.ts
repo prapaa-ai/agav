@@ -5,6 +5,7 @@ export interface QueuedConfirmation {
   toolName: string;
   input: Record<string, unknown>;
   diffLines?: DiffLine[];
+  mcpServerName?: string;
   subagentId?: string;
   subagentTask?: string;
   resolve: (choice: ConfirmResult) => void;

@@ -51,6 +51,8 @@ const HINTS = [
   "/steer clear removes all steers",
   "/model opens an interactive model picker with live API fetch",
   "/git-commit generates a commit message from staged changes",
+  "Ctrl+click (Cmd+click on macOS) opens a file path, URL, or attachment tile",
+  "/open lists every attachment in the session and opens or previews one",
 ];
 
 let lastIndex = -1;

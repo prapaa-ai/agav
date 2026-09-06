@@ -20,12 +20,15 @@ type Stoppable = {stopped: boolean; stopPropagation: () => void};
 /**
  * Bubble an event from `target` up the parentNode chain, invoking `handler`
  * on each ancestor that defines it. Stops early if stopPropagation() is called.
+ *
+ * Returns `true` when at least one handler called `stopPropagation()`, letting
+ * the caller know the event was consumed by a component.
  */
 const bubble = <E extends object>(
 	target: DOMElement,
 	event: E,
 	getHandler: (node: DOMElement) => ((event: E) => void) | undefined,
-): void => {
+): boolean => {
 	const state: Stoppable = {
 		stopped: false,
 		stopPropagation() {
@@ -47,39 +50,39 @@ const bubble = <E extends object>(
 
 		node = node.parentNode;
 	}
+
+	return state.stopped;
 };
 
 /** Dispatch a click, bubbling through onClick handlers up the tree. */
 export const dispatchClick = (
 	target: DOMElement,
 	event: MouseEventData,
-): void => {
-	bubble(target, event, node => node.onClick);
-};
+): boolean => bubble(target, event, node => node.onClick);
 
 /** Dispatch a wheel event, bubbling through onWheel handlers up the tree. */
 export const dispatchWheel = (
 	target: DOMElement,
 	event: WheelEventData,
-): void => {
-	bubble(target, event, node => node.onWheel);
-};
+): boolean => bubble(target, event, node => node.onWheel);
 
 /** Dispatch a mouse-down, bubbling through onMouseDown handlers. */
 export const dispatchMouseDown = (
 	target: DOMElement,
 	event: MouseEventData,
-): void => {
-	bubble(target, event, node => node.onMouseDown);
-};
+): boolean => bubble(target, event, node => node.onMouseDown);
 
 /** Dispatch a mouse-up, bubbling through onMouseUp handlers. */
 export const dispatchMouseUp = (
 	target: DOMElement,
 	event: MouseEventData,
-): void => {
-	bubble(target, event, node => node.onMouseUp);
-};
+): boolean => bubble(target, event, node => node.onMouseUp);
+
+/** Dispatch a mouse-move/drag, bubbling through onMouseMove handlers. */
+export const dispatchMouseMove = (
+	target: DOMElement,
+	event: MouseEventData,
+): boolean => bubble(target, event, node => node.onMouseMove);
 
 /** Collect the ancestor chain (including the node itself) up to the root. */
 const ancestorChain = (node: DOMElement | null): DOMElement[] => {

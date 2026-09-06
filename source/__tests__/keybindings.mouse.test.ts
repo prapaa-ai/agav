@@ -6,7 +6,7 @@ const ESC = String.fromCharCode(27);
 const blankKey = {
   upArrow: false, downArrow: false, leftArrow: false, rightArrow: false,
   return: false, escape: false, ctrl: false, shift: false, tab: false,
-  backspace: false, delete: false, meta: false,
+  backspace: false, delete: false, meta: false, super: false,
 };
 
 /**

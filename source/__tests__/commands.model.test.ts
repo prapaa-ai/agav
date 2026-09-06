@@ -6,7 +6,7 @@ vi.mock("../providers/vertex-ai.js", () => ({
 
 const { fetchVertexAIModels } = await import("../providers/vertex-ai.js");
 const fetchVertexAIModelsMock = vi.mocked(fetchVertexAIModels);
-const { modelCommand } = await import("../commands/model.js");
+const { fetchAvailableModels, findMatchingModels, modelCommand } = await import("../commands/model.js");
 
 import type { CommandContext } from "../commands/types.js";
 import type { AgavConfig } from "../config/config.js";
@@ -80,6 +80,62 @@ afterEach(() => {
 });
 
 describe("commands/model", () => {
+  it("matches a bare model against OpenRouter's provider-prefixed catalog name", async () => {
+    stubFetch([], ["openai/gpt-5.6-sol"]);
+
+    const { models } = await fetchAvailableModels({
+      ...createContext({ provider: "openai", openaiApiKey: "openai-key", openrouterApiKey: "openrouter-key" }).config,
+    });
+
+    expect(findMatchingModels(models, "gpt-5.6-sol")).toEqual([
+      { id: "openai/gpt-5.6-sol", provider: "openrouter" },
+    ]);
+  });
+
+  it("returns every provider for a bare model that OpenAI and OpenRouter both offer", async () => {
+    stubFetch([], ["openai/gpt-5.6-sol"]);
+    globalThis.fetch = vi.fn(async (input: any) => {
+      const url = String(input);
+      if (url.includes("api.openai.com")) {
+        return { ok: true, json: async () => ({ data: [{ id: "gpt-5.6-sol" }] }) } as any;
+      }
+      if (url.includes("openrouter.ai/api/v1/models")) {
+        return { ok: true, json: async () => ({ data: [{ id: "openai/gpt-5.6-sol" }] }) } as any;
+      }
+      throw new Error("unreachable");
+    }) as any;
+
+    const { models } = await fetchAvailableModels({
+      ...createContext({ openaiApiKey: "openai-key", openrouterApiKey: "openrouter-key" }).config,
+    });
+
+    expect(findMatchingModels(models, "gpt-5.6-sol")).toEqual([
+      { id: "gpt-5.6-sol", provider: "openai" },
+      { id: "openai/gpt-5.6-sol", provider: "openrouter" },
+    ]);
+  });
+
+  it("returns every provider for an ambiguous model so startup can prompt for a choice", async () => {
+    stubFetch(["shared-model"], ["shared-model"]);
+
+    const { models } = await fetchAvailableModels({
+      ...createContext({ anthropicApiKey: "anthropic-key", openrouterApiKey: "openrouter-key" }).config,
+    });
+
+    expect(models.filter((candidate) => candidate.id === "shared-model").map((candidate) => candidate.provider))
+      .toEqual(["anthropic", "openrouter"]);
+  });
+
+  it("returns no candidates for an unavailable model", async () => {
+    stubFetch(["claude-sonnet"], ["anthropic/claude-sonnet"]);
+
+    const { models } = await fetchAvailableModels({
+      ...createContext({ anthropicApiKey: "anthropic-key", openrouterApiKey: "openrouter-key" }).config,
+    });
+
+    expect(models.filter((candidate) => candidate.id === "missing-model")).toEqual([]);
+  });
+
   it("lists Vertex AI models alongside the other providers", async () => {
     stubFetch([]);
     fetchVertexAIModelsMock.mockResolvedValue(["vertex/gemini-3.5-pro"]);
@@ -90,6 +146,18 @@ describe("commands/model", () => {
     expect(fetchVertexAIModelsMock).toHaveBeenCalledWith("/tmp/sa.json", "us-east5");
     expect(context.setModel).toHaveBeenCalledWith("vertex/gemini-3.5-pro");
     expect(messageText(result)).toContain("Model changed to: vertex/gemini-3.5-pro");
+  });
+
+  it("matches a bare Vertex Gemini model to its canonical catalog identifier", async () => {
+    stubFetch([]);
+    fetchVertexAIModelsMock.mockResolvedValue(["vertex/gemini-3.6-flash"]);
+
+    const context = createContext({ provider: "openai", vertexAICredentialsPath: "/tmp/sa.json" });
+    const result = await modelCommand.execute("gemini-3.6-flash", context);
+
+    expect(context.setModel).toHaveBeenCalledWith("gemini-3.6-flash");
+    expect(context.setProvider).toHaveBeenCalledWith("vertex-ai");
+    expect(messageText(result)).toContain("switched to vertex-ai");
   });
 
   // A misread key file used to be swallowed, so /model just showed no Vertex

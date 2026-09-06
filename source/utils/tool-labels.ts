@@ -115,8 +115,25 @@ const DEFAULT_META: ToolMeta = {
   },
 };
 
+/**
+ * Extract the MCP server name from a tool name.
+ * MCP tools are named `serverName__toolName` (double underscore separator).
+ * Returns the server name or `undefined` if the tool is not an MCP tool.
+ */
+export function getMcpServerName(name: string): string | undefined {
+  const idx = name.indexOf("__");
+  if (idx > 0) return name.slice(0, idx);
+  return undefined;
+}
+
 export function getToolLabel(name: string): string {
   if (TOOL_META[name]) return TOOL_META[name].label;
+  // MCP tools (e.g. "paper__get_guide" → "get guide")
+  const mcpIdx = name.indexOf("__");
+  if (mcpIdx > 0) {
+    const toolPart = name.slice(mcpIdx + 2).replace(/_/g, " ");
+    return toolPart.charAt(0).toUpperCase() + toolPart.slice(1);
+  }
   // Named agent tools (e.g. "win_cua_agent" → "win-cua agent")
   if (name.endsWith("_agent")) {
     const agentName = name.slice(0, -6).replace(/_/g, "-");

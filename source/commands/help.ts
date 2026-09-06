@@ -3,7 +3,7 @@ import type { SlashCommand, CommandResult } from "./types.js";
 const CATEGORIES: Record<string, string[]> = {
   "Chat": ["clear", "new", "model", "effort", "fast", "deep", "compact", "ps", "export"],
   "Sessions": ["resume", "search", "branch", "name"],
-  "Agents": ["agents"],
+  "Agents": ["agents", "agent"],
   "Skills": ["skills"],
   "Workflow": ["plan", "steer", "loop", "schedule", "watch"],
   "Memory": ["memory", "remember", "forget"],
@@ -67,7 +67,13 @@ export function createHelpCommand(
         }
       }
 
-      const skillCmds = commands.filter((c) => !listed.has(c.name) && !Object.values(CATEGORIES).flat().includes(c.name));
+      const unlisted = commands.filter((c) => !listed.has(c.name) && !Object.values(CATEGORIES).flat().includes(c.name));
+      const agentCmds = unlisted.filter((c) => c.description.startsWith("[agent]"));
+      const skillCmds = unlisted.filter((c) => !c.description.startsWith("[agent]"));
+      if (agentCmds.length > 0) {
+        const lines = agentCmds.map((c) => `    /${c.name.padEnd(14)} ${c.description.replace("[agent] ", "")}`);
+        sections.push(`  Agent commands\n${lines.join("\n")}`);
+      }
       if (skillCmds.length > 0) {
         const lines = skillCmds.map((c) => `    /${c.name.padEnd(14)} ${c.description}`);
         sections.push(`  Skill commands\n${lines.join("\n")}`);

@@ -7,6 +7,7 @@ import {
 	extendSelection,
 } from "../ink/selection.js";
 import {osc52Copy} from "../ink/termio/clipboard.js";
+import {ENABLE_MOUSE_TRACKING} from "../ink/termio/dec.js";
 
 describe("normalizeSelection", () => {
 	it("orders two points on different rows into reading order", () => {
@@ -93,5 +94,14 @@ describe("getSelectedText", () => {
 describe("osc52Copy", () => {
 	it("produces the correct base64 and escape wrapper for 'hello'", () => {
 		expect(osc52Copy("hello")).toBe("\x1b]52;c;aGVsbG8=\x07");
+	});
+});
+
+describe("mouse tracking for in-app selection", () => {
+	it("enables drag tracking but not unused any-motion tracking", () => {
+		expect(ENABLE_MOUSE_TRACKING).toContain("\x1b[?1000h");
+		expect(ENABLE_MOUSE_TRACKING).toContain("\x1b[?1002h");
+		expect(ENABLE_MOUSE_TRACKING).toContain("\x1b[?1006h");
+		expect(ENABLE_MOUSE_TRACKING).not.toContain("\x1b[?1003h");
 	});
 });
