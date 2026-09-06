@@ -20,7 +20,7 @@ Agav discovers agents from three locations. Later tiers override earlier ones by
 
 | Tier | Location | Override priority |
 | --- | --- | --- |
-| Bundled | Shipped with Agav binary | Lowest |
+| Bundled | Shipped with Agav binary (currently empty — reserved for future built-in agents) | Lowest |
 | Global | `~/.agav/agents/` | Middle |
 | Project | `.agav/agents/` in the working directory | Highest |
 
@@ -50,7 +50,7 @@ Selecting **New Agent** launches a four-step wizard:
 
 1. **Name & Description** — pick a unique agent name and a short description of what it does.
 2. **System Prompt** — write the agent's system prompt, or press `g` to auto-generate one. The LLM uses your name and description to draft a prompt you can edit before continuing.
-3. **MCP Servers** — select which MCP servers the agent should have access to. The list is populated from your workspace config (`mcp-servers` in `.agav/config.json` or `~/.agav/config.json`).
+3. **MCP Servers** — select which MCP servers the agent should have access to. The list is populated from your workspace config (`mcpServers` in `.agav/config.json` or `~/.agav/config.json`).
 4. **Review & Save** — preview the full agent definition and confirm. The agent is saved to `~/.agav/agents/<name>/` and immediately available for use.
 
 ## Templates
@@ -80,14 +80,26 @@ Agents with missing credentials show a `⚠ Needs config` indicator in the List 
 
 ## Tool permissions and confirmation
 
-Every tool in an agent is classified as either `safe` (read-only) or `modifies` (creates, edits, or deletes data):
+Every tool in an agent is classified as either `safe` (read-only) or `destructive` (creates, edits, or deletes data):
 
 - **Safe tools** run without a confirmation prompt.
-- **Modifies tools** pause and display a `[Y]es / [N]o / [A]lways` confirmation before executing.
+- **Destructive tools** pause and display a `[Y]es / [N]o / [A]lways` confirmation before executing.
 
 The classification is declared in the agent manifest (`tool-permissions`) and is visible in the inspect view.
 
-Agent tools also run inside the OS-level sandbox when one is available (Seatbelt on macOS, Bubblewrap on Linux). This applies the same filesystem, network, and credential isolation described in [Security — Shell sandbox](/reference/security#shell-sandbox) to every agent tool execution, not just shell commands. Bundled agent tools are excluded from sandboxing since they ship with Agav.
+### Agent sandbox
+
+Non-bundled agent tools run inside an OS-level sandbox that is **stricter than the shell sandbox** used by `run_command`:
+
+| Property | Agent sandbox | Shell sandbox |
+| --- | --- | --- |
+| Default policy | Deny all, then allow specific paths | Allow all, then deny specific paths |
+| Network | Denied | Allowed |
+| Filesystem writes | Working directory and temp directory only | Allowed except system directories |
+| Credential directories | `~/.ssh`, `~/.aws`, `~/.gnupg` denied | Same |
+| Environment secrets | Stripped (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, …) | Stripped |
+
+On macOS the agent sandbox uses a deny-default Seatbelt profile; on Linux it uses Bubblewrap with `--unshare-net`. Bundled agent tools are excluded from sandboxing since they ship with Agav.
 
 ## Model and effort overrides
 

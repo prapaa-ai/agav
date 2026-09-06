@@ -121,7 +121,7 @@ The same four-step flow applies. Press `ENTER` on the final review step to save 
 
 Templates preserve deleted agents so you can restore them later.
 
-**How templates are created** — when you delete a user-created agent (from either the **List** or **Create** tab), Agav automatically saves it as a template. Nothing extra is required.
+**How templates are created** — when you delete a globally installed, user-created agent (from either the **List** or **Create** tab), Agav automatically saves it as a template. Project-scoped user-created agents are deleted without a template. Nothing extra is required.
 
 **Finding templates** — templates appear in the **Create** tab alongside your active agents, marked with a `[template]` label.
 

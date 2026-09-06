@@ -57,7 +57,7 @@ System prompt content here.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `required-config` | string[] | no | — | Environment variable names the agent needs. Agav collects these in the config editor and stores them encrypted in `~/.agav/agents/<name>/config.json`. Injected into `process.env` during the agent's execution only. |
+| `required-config` | string[] | no | — | Environment variable names the agent needs. Agav collects these in the config editor and stores them encrypted in `~/.agav/agents/<name>/config.json` (`%USERPROFILE%\.agav\agents\<name>\config.json` on Windows). Injected into `process.env` during the agent's execution only. |
 | `tools-dir` | string | no | `./tools` | Relative path to the directory containing `.mjs` tool files. |
 
 ### Model and effort

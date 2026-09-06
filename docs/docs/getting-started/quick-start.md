@@ -6,13 +6,13 @@ order: 4
 
 # Your First Repository Task
 
-This walkthrough uses [quora/model-deprecation-tracker](https://github.com/quora/model-deprecation-tracker), a small Python project with a clear entry point and generated outputs. You can use the same prompts in your own repository.
+This walkthrough uses [prapaa-ai/hello-agav](https://github.com/prapaa-ai/hello-agav), a tiny Python CLI that greets you and counts its own runs. It is small enough to explore in five minutes and has one obvious thing to improve. You can use the same prompts in your own repository.
 
 ## 1. Open the repository root
 
 ```bash
-git clone https://github.com/quora/model-deprecation-tracker.git
-cd model-deprecation-tracker
+git clone https://github.com/prapaa-ai/hello-agav.git
+cd hello-agav
 git status --short
 ```
 
@@ -43,14 +43,14 @@ Cite the file paths you used and do not change anything.
 
 Typing `@` opens file suggestions. Choose a path with Up or Down, then press Enter or Tab to attach it. An attachment gives Agav exact context; the question tells it what to do with that context.
 
-For this repository, the answer should identify `main.py` as the entry point and explain how the scrapers feed the generated data, README, calendar, and optional Slack notifications.
+For this repository, the answer should identify `main.py` as the entry point and explain how it calls `greeting.py` to build the message and `counter.py` to track runs via `state.json`.
 
 ## 4. Narrow the investigation
 
 Follow the broad tour with one concrete path through the code:
 
 ```text
-Trace how the scraper registry in @scraper/__init__.py is used by @main.py.
+Trace how @main.py calls @greeting.py and @counter.py.
 List the files in execution order and explain each responsibility.
 Do not change anything.
 ```
@@ -68,8 +68,9 @@ agav --provider openai --model gpt-5.4-mini
 Ask for a small change with a clear boundary:
 
 ```text
-Clarify the local setup instructions in @README.md.
-Preserve the existing style, change no other files.
+The setup section in @README.md says "Install dependencies and run" but this
+project has no external dependencies — it is pure Python. Fix the setup
+instructions to be accurate. Preserve the existing style, change no other files.
 ```
 
 The default `ask` mode pauses before sensitive actions and shows edit diffs. Check the file path and proposed change before approving. Reject the action and clarify your request if it is broader than expected.
@@ -85,6 +86,12 @@ git diff
 
 These commands distinguish Agav's work from changes that already existed. Use `/undo` before exiting Agav to restore a tracked file edit, or use your normal Git workflow afterward.
 
+## Tips for longer sessions
+
+- Use `/compact` to reclaim context if the conversation gets long — it summarises history without starting over.
+- Use `/undo` to revert the last file edit without leaving Agav.
+- Resume a past session with `agav -r` instead of starting from scratch.
+
 ## What you learned
 
 You now know the core Agav loop:
@@ -94,5 +101,7 @@ You now know the core Agav loop:
 3. attach exact context and ask a specific question
 4. narrow the scope before requesting a change
 5. review confirmations, diffs, and Git state
+
+For scripting and CI, see [non-interactive mode](/workflows/non-interactive) — `agav run` and `agav --print` let you use the same agent from pipelines and automation.
 
 Next: [add project instructions and defaults](/getting-started/projects), or learn more about [files and context](/workflows/files-and-context).

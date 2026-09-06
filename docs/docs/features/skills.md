@@ -26,20 +26,31 @@ Bundled skills are compiled directly into the binary, so they work even when run
 
 ## Bundled skills
 
-Agav ships with 10 bundled skills:
+Agav ships with 21 bundled skills:
 
-| Skill | Description |
-|-------|-------------|
-| `code-review` | Review code changes for bugs, security issues, and improvements |
-| `deep-research` | Multi-source research on a topic with citations |
-| `diagnose` | Diagnose and fix errors and bugs |
-| `doc-gen` | Generate documentation for code |
-| `explain` | Explain code in plain language |
-| `git-commit` | Generate a commit message from staged changes |
-| `refactor` | Suggest and apply code refactoring |
-| `security-scan` | Check code for security vulnerabilities |
-| `simplify` | Reduce complexity and simplify code |
-| `test-writer` | Generate unit tests for existing code |
+| Skill | Description | Invocation |
+|-------|-------------|------------|
+| `code-review` | Review code changes for bugs, security issues, and improvements | auto + manual |
+| `data-clean` | Clean up and analyze CSV/Excel data for non-analysts | auto + manual |
+| `deep-research` | Multi-source research on a topic with citations | manual |
+| `diagnose` | Diagnose and fix errors and bugs | auto + manual |
+| `doc-gen` | Generate documentation for code | auto + manual |
+| `docx` | Create, read, edit, and review Word .docx documents | auto + manual |
+| `email-draft` | Draft emails and replies with the right tone — never sends them | auto + manual |
+| `explain` | Explain code in plain language | auto + manual |
+| `file-organizer` | Clean up a messy folder with a dry-run plan before moving anything | auto + manual |
+| `git-commit` | Generate a commit message from staged changes | auto + manual |
+| `meeting-notes` | Turn raw meeting notes or transcripts into structured minutes | auto + manual |
+| `pdf` | Extract text from, merge, split, and fill PDF files | auto + manual |
+| `plain-language` | Rewrite text to be clear and understandable for any reader | auto + manual |
+| `pptx` | Create and edit PowerPoint .pptx presentations | auto + manual |
+| `refactor` | Suggest and apply code refactoring | auto + manual |
+| `security-scan` | Check code for security vulnerabilities | manual |
+| `simplify` | Reduce complexity and simplify code | auto + manual |
+| `skill-creator` | Guide for authoring a new agav skill (SKILL.md) | manual |
+| `summarize` | Summarize documents, web pages, or pasted text at any depth | auto + manual |
+| `test-writer` | Generate unit tests for existing code | auto + manual |
+| `xlsx` | Create, read, and edit Excel .xlsx spreadsheets and CSV files | auto + manual |
 
 ## Using skills
 
@@ -155,9 +166,9 @@ Check $ARGUMENTS for the files to review. Working directory is $CWD.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | yes | Unique identifier. Must be lowercase with single hyphens (`my-skill`), max 64 chars. |
+| `name` | string | yes | Unique identifier. Must be lowercase letters, digits, and single hyphens (`my-skill-2`), max 64 chars. |
 | `description` | string | yes | One-line description, max 1024 chars. |
-| `version` | string | yes | Semver version string. |
+| `version` | string | no | Semver version string. Recommended but not enforced. |
 | `invocation` | `user` \| `agav` \| `both` | no | How the skill can be triggered. Default: `both`. |
 | `allowed-tools` | string[] | no | Whitelist of tools the skill can use. Supports parenthesized qualifiers like `Bash(npm run test:*)`. |
 | `disallowed-tools` | string[] | no | Blacklist of tools removed from the skill's registry. |
@@ -213,7 +224,7 @@ Agav validates skills before installing or loading them. Validation checks inclu
 - **Directory name** — must match the skill `name` when installed in a dedicated directory
 - **Size limits** — maximum 64 KB file size
 - **Field length limits** — name ≤64 chars, description ≤1024 chars, compatibility ≤500 chars
-- **Dangerous patterns** — blocks skills containing prompt injection strings (`ignore all previous instructions`), pipe-to-shell commands (`curl ... | bash`), `eval()`, `rm -rf /`, `chmod 777`, `sudo` piping, or `base64 | bash`
+- **Dangerous patterns** — blocks skills containing prompt injection strings (`ignore all previous instructions`, `ignore all prior`, `disregard previous`), pipe-to-shell commands (`curl ... | bash`, `wget ... | bash`), `eval()`, `rm -rf /`, `chmod 777`, `sudo` piping, or `base64 | bash`
 - **Tool name checks** — unknown tool names in `allowed-tools` and `disallowed-tools` produce warnings with "did you mean?" suggestions
 
 Blocking failures prevent installation. Naming non-conformance produces warnings but the skill still loads.
