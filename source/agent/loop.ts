@@ -147,6 +147,17 @@ export async function* runAgentLoop(
 
   let pendingSummarizeUsage: Record<string, number> | null = null;
 
+  let lastMessagesHash = "";
+  function hashMessages(msgs: Message[]): string {
+    const simple = msgs.map(m => `${m.role}:${m.content?.length ?? 0}`).join("|");
+    let h = 0;
+    for (let i = 0; i < simple.length; i++) {
+      h = ((h << 5) - h) + simple.charCodeAt(i);
+      h |= 0;
+    }
+    return String(h);
+  }
+
   const summarize = async (msgs: Message[]): Promise<string> => {
     let result = "";
     pendingSummarizeUsage = null;

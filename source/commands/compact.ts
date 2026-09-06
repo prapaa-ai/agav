@@ -26,15 +26,9 @@ export const compactCommand: SlashCommand = {
             model,
             messages: msgs,
             systemPrompt:
-              "Summarize this conversation concisely. Structure your summary as:\n\n" +
-              "## Task\nWhat the user asked for (1 sentence)\n\n" +
-              "## Changes Made\n- File paths modified and what was changed\n\n" +
-              "## Key Findings\n- Bugs found, errors encountered, important observations\n\n" +
-              "## Current State\n- What has been completed vs what remains\n- Last approach tried and whether it worked\n\n" +
-              "Be brief but preserve ALL file paths, function names, and specific error messages. " +
-              "This summary replaces earlier messages — anything not included here is lost.",
-            maxTokens: 2048,
-            effort: context.config.effort,
+              "Summarize for compaction. Keep: task in 1 sentence, changed files with what changed, key errors, what remains. Preserve file paths, function names, error messages. Output max 300 words.",
+            maxTokens: 1024,
+            effort: "low",
           })) {
             if (event.type === "text_delta") result += event.text;
             if (event.type === "usage") {

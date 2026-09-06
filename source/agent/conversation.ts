@@ -223,11 +223,27 @@ export class ConversationState {
     return freed;
   }
 
+  private compressMessages(): void {
+    for (const msg of this.messages) {
+      for (const block of msg.content) {
+        if (block.type === "text" && typeof block.text === "string") {
+          block.text = block.text.replace(/\s+/g, " ").trim();
+          if (block.text.length > 8000) {
+            block.text = block.text.slice(0, 8000) + "…";
+          }
+        }
+      }
+    }
+  }
+
   async compactIfNeeded(
     force = false,
     summarize?: (messages: Message[]) => Promise<string>,
   ): Promise<{ compacted: boolean; droppedCount: number; summary?: string }> {
     const limits = getContextLimits(this.model, this.contextWindow);
+    
+    // Compress whitespace and truncate long blocks before token counting
+    this.compressMessages();
     const currentTokens = this.tokenCount;
 
     if (!force && currentTokens < limits.warningThreshold) {

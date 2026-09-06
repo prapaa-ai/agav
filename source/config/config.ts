@@ -60,6 +60,7 @@ export interface AgavConfig {
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
   showThinking?: boolean;
+  tokenBudget?: number;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");

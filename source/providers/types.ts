@@ -68,6 +68,7 @@ export interface StreamParams {
 export interface LLMProvider {
   readonly name: string;
   stream(params: StreamParams): AsyncIterable<StreamEvent>;
+  complete?(params: StreamParams): Promise<{ text: string; usage?: { inputTokens: number; outputTokens: number } }>;
   /**
    * Real context window this provider will enforce for the model, when it can
    * be discovered at runtime. Optional: providers whose window is implied by
