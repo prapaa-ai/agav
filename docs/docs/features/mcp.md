@@ -86,9 +86,17 @@ If you know which transport the server speaks, pin it with `transport`:
 
 ## Exposed capabilities
 
-- **Tools** are registered in the main tool pool with their server name in the description.
+- **Tools** are registered in the main tool pool with their server name prefixed to the tool name and shown in the description. MCP tools are not in the built-in safe list, so they **require user confirmation** before each call unless you are in `auto-accept` mode or the tool is explicitly allowed via `--permission`.
 - **Resources** are summarized in model context and read on demand through `mcp_read_resource`.
 - **Prompts** become slash commands. Agav requests the rendered prompt from the owning server and submits its messages to the conversation.
 
 If one server fails to start, Agav continues without it. Run `/debug` to see connected server names and counts for discovered resources and prompts.
+
+## Live refresh
+
+When a connected server sends `notifications/tools/list_changed`, `notifications/resources/list_changed`, or `notifications/prompts/list_changed`, Agav re-fetches the corresponding catalog from that server and updates the session immediately — no restart needed. This only applies to changes the server advertises at runtime; edits to `config.json` itself still require a restart.
+
+## Related
+
+- [Research GitHub with an MCP Server](/guides/mcp) — practical walkthrough using the GitHub MCP server
 

@@ -9,6 +9,7 @@ order: 1
 - [CLI reference](/reference/cli)
 - [Slash commands](/reference/slash-commands)
 - [Configuration](/reference/configuration)
+- [Agent Manifest](/reference/agent-manifest)
 - [Keybindings](/reference/keybindings)
 - [Security](/reference/security)
 - [Troubleshooting](/reference/troubleshooting)

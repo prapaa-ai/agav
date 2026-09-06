@@ -13,7 +13,7 @@ Agav needs one model provider. The easiest path is:
 3. launch Agav with that provider and model
 4. ask one read-only question to confirm it works
 
-If you are not sure which provider to pick, use OpenAI, Anthropic, or Gemini if you already have an API key. Use OpenRouter if you want access to multiple providers behind a single key. Use NVIDIA NIM for NVIDIA-hosted models. Use Ollama if you want to run locally. Use Vertex AI if you already run on Google Cloud and want Gemini or Claude billed through that project.
+The default provider is **Anthropic** — if you run `agav` with no flags and no config file, it will try to use Anthropic. If you are not sure which provider to pick, use OpenAI, Anthropic, or Gemini if you already have an API key. Use OpenRouter if you want access to multiple providers behind a single key. Use NVIDIA NIM for NVIDIA-hosted models. Use Ollama if you want to run locally. Use Vertex AI if you already run on Google Cloud and want Gemini or Claude billed through that project.
 
 ## Fastest path
 
@@ -23,6 +23,8 @@ If you already have an OpenAI key, this is the quickest first run:
 export OPENAI_API_KEY="your-key"
 agav --provider openai --model gpt-5.4-mini --deny-writes
 ```
+
+> **Windows:** Use `set OPENAI_API_KEY=your-key` in Command Prompt or `$env:OPENAI_API_KEY="your-key"` in PowerShell. All `export` commands on this page follow the same pattern.
 
 Then ask:
 
@@ -35,6 +37,12 @@ What files are in this repository? Do not change anything.
 ```bash
 export OPENAI_API_KEY="your-key"
 agav --provider openai --model gpt-5.4-mini
+```
+
+By default Agav uses the OpenAI Responses API. If you need the Chat Completions API instead (for example behind a proxy that only supports it), pass `--openai-api chat`:
+
+```bash
+agav --provider openai --model gpt-5.4-mini --openai-api chat
 ```
 
 ## OpenRouter
@@ -68,7 +76,7 @@ Or set it in `~/.agav/config.json`:
 }
 ```
 
-`/fast` switches to a lightweight model and `/deep` to the most capable one available through OpenRouter.
+`/fast` and `/deep` switch models — see the table below for every provider's mapping.
 
 ## NVIDIA NIM
 
@@ -133,9 +141,9 @@ Claude partner models are supported by the same provider and credentials, addres
 agav --provider vertex-ai --model vertex/claude-sonnet-4-5@20250929
 ```
 
-The service account's `project_id`, `client_email`, `private_key`, and optional `token_uri` are read from the JSON file. Agav exchanges the signed credentials for a short-lived OAuth token and refreshes it automatically.
+The service account's `project_id`, `client_email`, `private_key`, and optional `token_uri` are read from the JSON file. Agav exchanges the signed credentials for a short-lived OAuth token and refreshes it automatically. Vertex AI's implicit Gemini caching and Claude's ephemeral prompt caching are used automatically when supported.
 
-**Protect the key file.** The service-account JSON holds an unencrypted private key that can act as that service account against your entire Google Cloud project. Unlike the API keys Agav encrypts into `config.json`, this file is yours to secure: keep it outside the repository, `chmod 600` it, and grant the service account only the `roles/aiplatform.user` role it actually needs.
+**Protect the key file.** The service-account JSON holds an unencrypted private key that can act as that service account against your entire Google Cloud project. Unlike the API keys Agav encrypts into `config.json`, this file is yours to secure: keep it outside the repository, `chmod 600` it (on Windows, use file properties to restrict access to your user account), and grant the service account only the `roles/aiplatform.user` role it actually needs.
 
 ## Ollama
 
@@ -154,6 +162,23 @@ agav --provider ollama --model llama3.2
 
 For a remote Ollama server, set `OLLAMA_ENDPOINT` and, when required, `OLLAMA_API_KEY`. If you prefer host and port separately, Agav also supports `OLLAMA_HOST` and `OLLAMA_PORT`.
 
+Agav sizes the context window per model. Set `AGAV_OLLAMA_NUM_CTX` to override that cap when you know your hardware can take more.
+
+## `/fast` and `/deep` models
+
+Every provider except Ollama has a preset for `/fast` (lightweight, quick answers) and `/deep` (most capable, complex reasoning):
+
+| Provider | `/fast` | `/deep` |
+| --- | --- | --- |
+| Anthropic | `claude-haiku-4-5-20251001` | `claude-sonnet-4-20250514` |
+| OpenAI | `gpt-4o-mini` | `gpt-4o` |
+| OpenRouter | `~google/gemini-flash-latest` | `~anthropic/claude-sonnet-latest` |
+| NVIDIA NIM | `nvidia/nemotron-3.5-lightning-30b-a3b` | `nvidia/nemotron-3.5-lightning-30b-a3b` |
+| Gemini | `gemini-3.5-flash-lite` | `gemini-3.5-pro` |
+| Vertex AI | `vertex/gemini-3.5-flash-lite` | `vertex/gemini-3.5-pro` |
+
+Ollama has no preset — `/fast` and `/deep` fall back to the OpenAI defaults, which won't work on a local Ollama instance. Use `/model` to switch models manually instead.
+
 ## Make it stick
 
 If you do not want to pass `--provider` and `--model` every time, save defaults in your user config file:
@@ -170,7 +195,7 @@ Example:
 }
 ```
 
-Keep cloud API keys in environment variables when possible. Agav can also read provider keys from config, but environment variables are safer for shared machines and less likely to end up in version control.
+Agav can also store provider API keys directly in `config.json` — they are **encrypted at rest** with AES-256-GCM, so the file never contains plaintext secrets. Even so, environment variables are the safer choice on shared machines and less likely to end up in version control.
 
 ## Verify the connection
 
