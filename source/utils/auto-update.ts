@@ -225,7 +225,9 @@ async function streamAssetToFile(
   }
 }
 
-async function downloadBinary(version: string, label?: string): Promise<string | null> {
+// Exported for testing: exercises the real mirror-first / GitHub-fallback
+// download + per-origin checksum loop against a mocked fetch.
+export async function downloadBinary(version: string, label?: string): Promise<string | null> {
   const binaryName = getBinaryName();
   // Keyed by pid as well as version: two agav processes updating to the same
   // version at once would otherwise interleave their writes into one file, and
