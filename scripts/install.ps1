@@ -15,6 +15,17 @@ try {
 
 $Repo = "prapaa-ai/agav"
 $BinaryName = "agav.exe"
+
+# Release assets are served from the Cloudflare mirror first and GitHub second.
+# The mirror (releases.agav.dev) serves objects from R2 and itself falls back to
+# GitHub for anything not yet mirrored, so it is a strict superset; GitHub stays
+# as a second, independent origin in case the mirror is unreachable. Override
+# with AGAV_MIRROR_BASE, or set it empty to use GitHub only. The digest is
+# checked against whichever origin served the bytes, so a bad mirror can never
+# cause an unverified install.
+$MirrorBase = if ($null -ne $env:AGAV_MIRROR_BASE) { $env:AGAV_MIRROR_BASE } else { "https://releases.agav.dev" }
+$GitHubBase = "https://github.com/$Repo/releases/download"
+
 $Version = if ($env:AGAV_VERSION) { $env:AGAV_VERSION } else { "latest" }
 $InstallDir = if ($env:AGAV_INSTALL_DIR) { $env:AGAV_INSTALL_DIR } else { "$env:LOCALAPPDATA\agav" }
 $SkipChecksum = $env:AGAV_SKIP_CHECKSUM -match '^(1|true|yes)$'
@@ -331,18 +342,35 @@ if ($Version -eq "latest") {
             $ReleasesJson = Get-RemoteText "https://api.github.com/repos/$Repo/releases?per_page=1"
             $Tag = [regex]::Match($ReleasesJson, '"tag_name"\s*:\s*"v?([^"]+)"').Groups[1].Value
             if (-not $Tag) { throw "No tag found" }
-            $DownloadUrl = "https://github.com/$Repo/releases/download/v$Tag/$AssetName"
+            $ResolvedVersion = $Tag
             Write-Host "agav -> Resolved: v$Tag" -ForegroundColor Cyan
         } catch {
             Write-Host "Could not resolve latest pre-release: $($_.Exception.Message)" -ForegroundColor Red
             exit 1
         }
     } else {
-        $DownloadUrl = "https://github.com/$Repo/releases/latest/download/$AssetName"
+        # Resolve the concrete version so the mirror (keyed by version) can be
+        # addressed. Fall back to GitHub's latest-redirect if the API call fails.
+        try {
+            $LatestJson = Get-RemoteText "https://api.github.com/repos/$Repo/releases/latest"
+            $ResolvedVersion = [regex]::Match($LatestJson, '"tag_name"\s*:\s*"v?([^"]+)"').Groups[1].Value
+            if (-not $ResolvedVersion) { throw "No tag found" }
+        } catch {
+            Write-Host "Could not resolve latest release: $($_.Exception.Message)" -ForegroundColor Red
+            exit 1
+        }
     }
 } else {
-    $DownloadUrl = "https://github.com/$Repo/releases/download/v$Version/$AssetName"
+    $ResolvedVersion = $Version
 }
+
+# Ordered list of "<base>/v<version>" prefixes to try per asset: mirror first,
+# then GitHub. Each asset (binary, .gz, .sha256) is appended to these in turn.
+$AssetPrefixes = @()
+if (-not [string]::IsNullOrEmpty($MirrorBase)) {
+    $AssetPrefixes += "$MirrorBase/v$ResolvedVersion"
+}
+$AssetPrefixes += "$GitHubBase/v$ResolvedVersion"
 
 Write-Host "agav -> Downloading agav for $Target..." -ForegroundColor Cyan
 
@@ -470,6 +498,40 @@ function Expand-GzipFile {
     }
 }
 
+# Try each origin in turn for one asset, returning the inline SHA-256 the
+# downloader computed. Throws only if every origin fails; the caller then
+# decides whether to fall back (e.g. .gz -> raw binary).
+function Save-AssetWithProgress {
+    param(
+        [Parameter(Mandatory = $true)][string]$AssetPath,   # e.g. "agav-windows-x64.exe.gz"
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$Activity
+    )
+
+    $LastError = $null
+    foreach ($Prefix in $AssetPrefixes) {
+        try {
+            return Save-FileWithProgress -Url "$Prefix/$AssetPath" -Destination $Destination -Activity $Activity
+        } catch {
+            $LastError = $_
+        }
+    }
+    throw $LastError
+}
+
+# Same ordered-origin fetch for small text files (per-asset .sha256). Returns
+# $null if every origin fails, so the caller can report a clean error.
+function Get-AssetText {
+    param([Parameter(Mandatory = $true)][string]$AssetPath)
+
+    foreach ($Prefix in $AssetPrefixes) {
+        try {
+            return Get-RemoteText "$Prefix/$AssetPath"
+        } catch {}
+    }
+    return $null
+}
+
 if (-not (Test-Path -LiteralPath $InstallDir)) {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 }
@@ -482,7 +544,7 @@ $TmpFile = Join-Path $InstallDir "$BinaryName.$PID.tmp"
 $TmpGzFile = "$TmpFile.gz"
 $GotCompressed = $false
 try {
-    Save-FileWithProgress -Url "$DownloadUrl.gz" -Destination $TmpGzFile -Activity "Downloading $AssetName.gz"
+    Save-AssetWithProgress -AssetPath "$AssetName.gz" -Destination $TmpGzFile -Activity "Downloading $AssetName.gz"
     $InlineHash = Expand-GzipFile -Source $TmpGzFile -Destination $TmpFile
     $GotCompressed = $true
 } catch {
@@ -493,7 +555,7 @@ try {
 
 if (-not $GotCompressed) {
     try {
-        $InlineHash = Save-FileWithProgress -Url $DownloadUrl -Destination $TmpFile -Activity "Downloading $AssetName"
+        $InlineHash = Save-AssetWithProgress -AssetPath $AssetName -Destination $TmpFile -Activity "Downloading $AssetName"
     } catch {
         # Write-Host, not Write-Error: $ErrorActionPreference is Stop, so a
         # Write-Error here would abort the handler before the cleanup below runs.
@@ -515,9 +577,13 @@ if ($SkipChecksum) {
     $Expected = $null
     try {
         # Published as "<hex>  <asset>" next to the binary, one file per asset.
-        $Expected = ((Get-RemoteText "$DownloadUrl.sha256").Trim() -split '\s+')[0]
+        # Fetched mirror-first, then GitHub, matching the binary's origin order.
+        $ShaText = Get-AssetText "$AssetName.sha256"
+        if ($null -ne $ShaText) {
+            $Expected = ($ShaText.Trim() -split '\s+')[0]
+        }
     } catch {
-        Write-Host "Could not download $DownloadUrl.sha256 - $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Could not download $AssetName.sha256 - $($_.Exception.Message)" -ForegroundColor Red
     }
 
     if ($Expected -notmatch '^[0-9a-fA-F]{64}$') {

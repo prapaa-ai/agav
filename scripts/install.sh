@@ -5,6 +5,16 @@ set -eu
 REPO="prapaa-ai/agav"
 BINARY_NAME="agav"
 VERSION="${AGAV_VERSION:-latest}"
+
+# Release assets are served from the Cloudflare mirror first and GitHub second.
+# The mirror (releases.agav.dev) serves objects from R2 and itself falls back
+# to GitHub for anything not yet mirrored, so it is a strict superset of what
+# GitHub has; GitHub stays as a second, independent origin in case the mirror
+# is unreachable. Override the mirror with AGAV_MIRROR_BASE, or set it empty to
+# use GitHub only. The digest is checked against whichever origin served the
+# bytes, so a bad mirror can never cause an unverified install.
+MIRROR_BASE="${AGAV_MIRROR_BASE-https://releases.agav.dev}"
+GITHUB_BASE="https://github.com/${REPO}/releases/download"
 NON_INTERACTIVE="${AGAV_NON_INTERACTIVE:-false}"
 SKIP_CHECKSUM="${AGAV_SKIP_CHECKSUM:-0}"
 BETA="${AGAV_BETA:-0}"
@@ -97,6 +107,53 @@ download_text() {
 
   err "curl or wget is required to install Agav."
   exit 1
+}
+
+# --- Mirror-aware asset fetch ---
+#
+# Every release asset is addressed by "<version>/<asset>". Try the Cloudflare
+# mirror first, then GitHub. Both origins publish byte-identical files, and the
+# caller verifies the SHA-256 afterwards, so falling through on any failure is
+# safe. Returns 0 on the first origin that succeeds, 1 if all fail.
+
+asset_bases() {
+  # Emit the base URLs to try, in order. Newline-separated so a base can never
+  # be split on spaces (there are none today, but keep it robust).
+  if [ -n "$MIRROR_BASE" ]; then
+    printf '%s\n' "$MIRROR_BASE"
+  fi
+  printf '%s\n' "$GITHUB_BASE"
+}
+
+# download_asset <version> <relative-path> <output>
+# e.g. download_asset 0.2.1 agav-darwin-arm64.gz /tmp/x.gz
+download_asset() {
+  _dv="$1"
+  _dpath="$2"
+  _dout="$3"
+  asset_bases | while IFS= read -r _base; do
+    [ -n "$_base" ] || continue
+    if download_file "${_base}/v${_dv}/${_dpath}" "$_dout" 2>/dev/null; then
+      exit 0
+    fi
+  done
+  # `while` runs in a subshell (piped from asset_bases); its exit status is the
+  # loop's, so a successful `exit 0` above surfaces here as this command's 0.
+}
+
+# fetch_asset_text <version> <relative-path>
+# Prints the file body from the first origin that serves it; empty + status 1
+# if none do.
+fetch_asset_text() {
+  _tv="$1"
+  _tpath="$2"
+  asset_bases | while IFS= read -r _base; do
+    [ -n "$_base" ] || continue
+    if _body="$(download_text "${_base}/v${_tv}/${_tpath}" 2>/dev/null)" && [ -n "$_body" ]; then
+      printf '%s' "$_body"
+      exit 0
+    fi
+  done
 }
 
 # --- Checksum verification ---
@@ -740,8 +797,8 @@ trap cleanup EXIT INT TERM
 mkdir -p "$RELEASES_DIR" "$BIN_DIR"
 acquire_lock
 
-# Download binary
-download_url="https://github.com/${REPO}/releases/download/v${resolved_version}/${asset_name}"
+# Download binary. Each asset is tried on the mirror first, then GitHub
+# (see download_asset); the checksum below is the authoritative gate either way.
 archive_path="$tmp_dir/$asset_name"
 compressed_path="$tmp_dir/${asset_name}.gz"
 
@@ -750,7 +807,7 @@ precomputed_hash=""
 hash_file="$tmp_dir/.sha256"
 if have_gunzip; then
   step "Downloading ${asset_name}.gz..."
-  if download_file "${download_url}.gz" "$compressed_path" && gunzip_to "$compressed_path" "$archive_path" "$hash_file"; then
+  if download_asset "$resolved_version" "${asset_name}.gz" "$compressed_path" && gunzip_to "$compressed_path" "$archive_path" "$hash_file"; then
     downloaded=1
     # Capture the hash computed inline during decompression (avoids re-reading
     # the ~100 MB decompressed binary from disk).
@@ -765,7 +822,7 @@ fi
 
 if [ -z "$downloaded" ]; then
   step "Downloading $asset_name..."
-  download_file "$download_url" "$archive_path" || {
+  download_asset "$resolved_version" "$asset_name" "$archive_path" || {
     err "Download failed. Check: https://github.com/${REPO}/releases"
     exit 1
   }
@@ -776,10 +833,11 @@ fi
 if checksum_bypassed; then
   warn "AGAV_SKIP_CHECKSUM is set — installing without verifying the download."
 else
-  checksum_url="https://github.com/${REPO}/releases/download/v${resolved_version}/SHA256SUMS"
   step "Verifying checksum..."
-  if ! checksum_text="$(download_text "$checksum_url" 2>/dev/null)"; then
-    checksum_abort "Could not download $checksum_url." "$archive_path"
+  # Fetched from the mirror first, then GitHub — same order as the binary, so a
+  # mirror that served the bytes also serves the digest to check them against.
+  if ! checksum_text="$(fetch_asset_text "$resolved_version" "SHA256SUMS")" || [ -z "$checksum_text" ]; then
+    checksum_abort "Could not download SHA256SUMS for v${resolved_version}." "$archive_path"
   fi
   # sha256sum writes "<hex>  <name>", so the asset is field 2.
   expected_checksum="$(printf '%s\n' "$checksum_text" | awk -v asset="$asset_name" '$2 == asset { print $1 }')"
