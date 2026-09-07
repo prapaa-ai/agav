@@ -333,6 +333,11 @@ if ($Version -ne "latest") {
     $Version = $Version -replace '^[vV]', ''
 }
 
+# Resolve which release "tag segment" to request. Both the mirror and GitHub
+# understand a moving "latest" pointer, so stable-latest needs NO version-lookup
+# API call (which is rate-limited and used to fail installs from busy IPs). Only
+# --beta must consult the releases list, because "newest of any kind" has no
+# stable redirect. A pinned --version uses the version directly.
 if ($Version -eq "latest") {
     if ($Beta) {
         Write-Host "agav -> Resolving latest pre-release..." -ForegroundColor Cyan
@@ -342,35 +347,37 @@ if ($Version -eq "latest") {
             $ReleasesJson = Get-RemoteText "https://api.github.com/repos/$Repo/releases?per_page=1"
             $Tag = [regex]::Match($ReleasesJson, '"tag_name"\s*:\s*"v?([^"]+)"').Groups[1].Value
             if (-not $Tag) { throw "No tag found" }
-            $ResolvedVersion = $Tag
+            $TagSegment = "v$Tag"
             Write-Host "agav -> Resolved: v$Tag" -ForegroundColor Cyan
         } catch {
             Write-Host "Could not resolve latest pre-release: $($_.Exception.Message)" -ForegroundColor Red
             exit 1
         }
     } else {
-        # Resolve the concrete version so the mirror (keyed by version) can be
-        # addressed. Fall back to GitHub's latest-redirect if the API call fails.
-        try {
-            $LatestJson = Get-RemoteText "https://api.github.com/repos/$Repo/releases/latest"
-            $ResolvedVersion = [regex]::Match($LatestJson, '"tag_name"\s*:\s*"v?([^"]+)"').Groups[1].Value
-            if (-not $ResolvedVersion) { throw "No tag found" }
-        } catch {
-            Write-Host "Could not resolve latest release: $($_.Exception.Message)" -ForegroundColor Red
-            exit 1
-        }
+        # The moving "latest" pointer, understood by both origins. No API call.
+        $TagSegment = "latest"
     }
 } else {
-    $ResolvedVersion = $Version
+    $TagSegment = "v$Version"
 }
 
-# Ordered list of "<base>/v<version>" prefixes to try per asset: mirror first,
-# then GitHub. Each asset (binary, .gz, .sha256) is appended to these in turn.
+# Ordered list of "<base>/<tag>" prefixes to try per asset: mirror first, then
+# GitHub. Each asset (binary, .gz, .sha256) is appended to these in turn.
+# The mirror serves "latest/<asset>" via GitHub's latest-release redirect, and
+# GitHub serves it via /releases/latest/download/<asset>; concrete "v<version>"
+# tags resolve normally. So mirror + GitHub fallback holds for every case.
 $AssetPrefixes = @()
-if (-not [string]::IsNullOrEmpty($MirrorBase)) {
-    $AssetPrefixes += "$MirrorBase/v$ResolvedVersion"
+if ($TagSegment -eq "latest") {
+    if (-not [string]::IsNullOrEmpty($MirrorBase)) {
+        $AssetPrefixes += "$MirrorBase/latest"
+    }
+    $AssetPrefixes += "https://github.com/$Repo/releases/latest/download"
+} else {
+    if (-not [string]::IsNullOrEmpty($MirrorBase)) {
+        $AssetPrefixes += "$MirrorBase/$TagSegment"
+    }
+    $AssetPrefixes += "$GitHubBase/$TagSegment"
 }
-$AssetPrefixes += "$GitHubBase/v$ResolvedVersion"
 
 Write-Host "agav -> Downloading agav for $Target..." -ForegroundColor Cyan
 

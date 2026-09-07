@@ -105,6 +105,49 @@ describe("releases-worker: R2 primary + GitHub fallback", () => {
     expect(res.status).toBe(405);
   });
 
+  it("resolves the 'latest' tag to GitHub's latest-release redirect, skipping R2", async () => {
+    // R2 has a v0.2.1 object, but a /latest/ request must NOT read R2 (there is
+    // no 'latest/*' key) — it goes straight to GitHub's latest redirect.
+    const env = { RELEASES: makeR2({ "v0.2.1/agav-darwin-arm64.gz": "OLD-R2" }) };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const u = typeof input === "string" ? input : input.toString();
+        expect(u).toBe(
+          "https://github.com/prapaa-ai/agav/releases/latest/download/agav-darwin-arm64.gz",
+        );
+        return new Response("LATEST-BYTES", { status: 200 });
+      }),
+    );
+
+    const res = await worker.fetch(req("/latest/agav-darwin-arm64.gz"), env as never, ctx);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Agav-Origin")).toBe("github-fallback");
+    expect(await res.text()).toBe("LATEST-BYTES");
+    // Moving pointer: must not be cached immutably.
+    expect(res.headers.get("Cache-Control")).not.toContain("immutable");
+    expect(res.headers.get("Cache-Control")).toContain("max-age=300");
+  });
+
+  it("resolves 'latest' for the SHA256 file too", async () => {
+    const env = { RELEASES: makeR2({}) };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const u = typeof input === "string" ? input : input.toString();
+        expect(u).toBe(
+          "https://github.com/prapaa-ai/agav/releases/latest/download/agav-darwin-arm64.gz.sha256",
+        );
+        return new Response("deadbeef  agav-darwin-arm64.gz", { status: 200 });
+      }),
+    );
+
+    const res = await worker.fetch(req("/latest/agav-darwin-arm64.gz.sha256"), env as never, ctx);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("deadbeef");
+  });
+
   it("rejects unsafe / malformed paths", async () => {
     const env = { RELEASES: makeR2({}) };
     vi.stubGlobal("fetch", vi.fn());

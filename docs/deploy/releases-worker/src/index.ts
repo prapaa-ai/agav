@@ -27,7 +27,26 @@ const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 
 const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
 
+// A "latest" download must never be cached immutably — it moves with each
+// release. Short TTL so a new release is picked up promptly.
+const LATEST_CACHE = "public, max-age=300";
+
+// The moving pointer tags. These are not concrete release tags: they resolve to
+// GitHub's own "latest release" redirects, so `releases.agav.dev/latest/<asset>`
+// always serves the newest stable asset (and /latest-beta the newest of any
+// release) without the caller needing to resolve a version number via the
+// rate-limited GitHub API.
+const LATEST_STABLE = "latest";
+
+function isLatestTag(tag: string): boolean {
+  return tag === LATEST_STABLE;
+}
+
 function githubUrl(tag: string, asset: string): string {
+  if (isLatestTag(tag)) {
+    // GitHub's own latest-release redirect; follows to the newest stable asset.
+    return `https://github.com/${REPO}/releases/latest/download/${asset}`;
+  }
   return `https://github.com/${REPO}/releases/download/${tag}/${asset}`;
 }
 
@@ -66,24 +85,31 @@ export default {
     }
 
     const key = `${tag}/${asset}`;
+    const latest = isLatestTag(tag);
+    // "latest" is a moving pointer with no concrete R2 key; it always resolves
+    // through GitHub's latest-release redirect. Concrete version tags check R2
+    // first, then fall back to GitHub.
+    const cacheControl = latest ? LATEST_CACHE : IMMUTABLE_CACHE;
 
-    // ---- Tier 1: R2 (primary) ----
-    const object =
-      request.method === "HEAD"
-        ? await env.RELEASES.head(key)
-        : await env.RELEASES.get(key);
+    // ---- Tier 1: R2 (primary) — skipped for the moving "latest" pointer ----
+    if (!latest) {
+      const object =
+        request.method === "HEAD"
+          ? await env.RELEASES.head(key)
+          : await env.RELEASES.get(key);
 
-    if (object) {
-      const headers = new Headers();
-      object.writeHttpMetadata(headers);
-      headers.set("etag", object.httpEtag);
-      if (!headers.has("Cache-Control")) {
-        headers.set("Cache-Control", IMMUTABLE_CACHE);
+      if (object) {
+        const headers = new Headers();
+        object.writeHttpMetadata(headers);
+        headers.set("etag", object.httpEtag);
+        if (!headers.has("Cache-Control")) {
+          headers.set("Cache-Control", IMMUTABLE_CACHE);
+        }
+        headers.set("X-Agav-Origin", "r2");
+        const body =
+          request.method === "HEAD" ? null : (object as R2ObjectBody).body;
+        return new Response(body, { status: 200, headers });
       }
-      headers.set("X-Agav-Origin", "r2");
-      const body =
-        request.method === "HEAD" ? null : (object as R2ObjectBody).body;
-      return new Response(body, { status: 200, headers });
     }
 
     // ---- Tier 2: GitHub Releases (fallback), edge-cached ----
@@ -102,7 +128,9 @@ export default {
     const ghResp = await fetch(upstream, {
       method: "GET",
       redirect: "follow",
-      cf: { cacheEverything: true, cacheTtl: 31536000 },
+      // Concrete versions are immutable (cache a year); "latest" moves, so give
+      // it a short TTL to pick up new releases promptly.
+      cf: { cacheEverything: true, cacheTtl: latest ? 300 : 31536000 },
     });
 
     if (!ghResp.ok) {
@@ -113,7 +141,7 @@ export default {
     }
 
     const response = new Response(ghResp.body, ghResp);
-    response.headers.set("Cache-Control", IMMUTABLE_CACHE);
+    response.headers.set("Cache-Control", cacheControl);
     response.headers.set("X-Agav-Origin", "github-fallback");
 
     ctx.waitUntil(cache.put(cacheKey, response.clone()));
