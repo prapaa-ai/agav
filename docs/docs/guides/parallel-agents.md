@@ -9,21 +9,21 @@ order: 2
 
 Use subagents when independent investigations need more context than a few tool calls.
 
-## Scenario: audit every provider scraper
+## Scenario: audit every module in hello-agav
 
-The tracker has separate implementations for OpenAI, Anthropic, Google, and AWS. They can be reviewed independently, then compared against the shared `DeprecationEntry` contract.
+The project has separate modules for CLI parsing, greeting logic, and counter persistence. They can be reviewed independently, then compared for consistency.
 
 ```text
-Audit the provider scrapers with three parallel subagents:
+Audit the hello-agav modules with three parallel subagents:
 
-- Review scraper/openai_scraper.py and scraper/anthropic_scraper.py.
-- Review scraper/vertex_scraper.py and scraper/gemini_scraper.py.
-- Review scraper/bedrock_scraper.py.
+- Review @main.py for argument handling, error paths, and missing edge cases.
+- Review @greeting.py for format correctness, locale issues, and untested inputs.
+- Review @counter.py for race conditions, file corruption, and error handling when state.json is malformed.
 
 Each subagent must:
-- compare its scrapers with scraper/base.py
-- report date parsing, deduplication, and missing-data risks
-- cite file paths
+- read only its assigned module and the relevant tests
+- report bugs, risks, and missing test coverage
+- cite file paths and line numbers
 - make no edits
 
 After they finish, combine the findings into one prioritized report.
@@ -39,5 +39,6 @@ When all workers finish, ask the main agent to resolve disagreements and remove 
 
 ## Expected result
 
-You receive three bounded audits and one reconciled list of scraper risks, while the main conversation retains final ownership.
+You receive three bounded audits and one reconciled list of risks across main.py, greeting.py, and counter.py, while the main conversation retains final ownership.
 
+Next: [Run Tools in Parallel](/guides/parallel-tools).

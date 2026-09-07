@@ -22,18 +22,18 @@ Use memory for verified facts that should influence future conversations, not fo
 | `/forget <memory name>` | Remove the saved memory named `<memory name>`. |
 | `/memory clear` | Remove every memory for the current project. |
 
-## Scenario: preserve the generated-output contract
+## Scenario: preserve the project data contract
 
 | Command | Intent |
 | --- | --- |
-| `/remember <text>` | Save the verified generated-output contract as a durable project memory. |
-| `/memory list` | Confirm that Agav saved the generated-output contract. |
+| `/remember <text>` | Save the verified data contract as a durable project memory. |
+| `/memory list` | Confirm that Agav saved the data contract. |
 | `/memory path` | Find the project's memory directory when you need to inspect it. |
 
-The tracker writes the same entries to three outputs. Save that stable convention:
+hello-agav persists its run counter in `state.json`. Save that stable convention:
 
 ```text
-/remember main.py writes deprecations to data/deprecations.json, updates the generated README table, and writes deprecations.ics. Scraper changes must preserve all three outputs.
+/remember counter.py reads and writes state.json with a {"count": N} shape. Any module that touches the counter must preserve this format and use the path parameter for testability.
 ```
 
 Inspect the saved entry:
@@ -46,7 +46,7 @@ Inspect the saved entry:
 Exit Agav, reopen it from the same Git repository, and ask:
 
 ```text
-What outputs must I consider before changing a provider scraper?
+What must I preserve when changing how the run counter works?
 ```
 
 Agav should recall the convention because memory is scoped from the Git repository root.
@@ -59,17 +59,17 @@ Agav should recall the convention because memory is scoped from the Git reposito
 | `/forget <memory name>` | Remove the specific outdated memory named `<memory name>`. |
 | `/memory clear` | Remove all project memories when none should be retained. |
 
-If the project stops generating one of those outputs, list the memories and remove the outdated entry:
+If the project changes its persistence format, list the memories and remove the outdated entry:
 
 ```text
 /forget
 /forget <memory name>
 ```
 
-Replace `<memory name>` with the memory name shown in the list; for example, `/forget generated-output-contract`. Use `/memory clear` only when every project memory should be removed. Do not save current plan steps, branch names, guesses, or one-off errors.
+Replace `<memory name>` with the memory name shown in the list; for example, `/forget state-json-contract`. Use `/memory clear` only when every project memory should be removed. Do not save current plan steps, branch names, guesses, or one-off errors.
 
 ## Expected result
 
-Future tracker sessions begin with the verified output contract without carrying temporary work forward.
+Future sessions begin with the verified data contract without carrying temporary work forward.
 
 Next: [Sessions and Memory](/workflows/sessions-and-memory).

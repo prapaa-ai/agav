@@ -28,6 +28,7 @@ Agav exposes these tools to its agent loop.
 | `update_plan` | Update the active plan's current step |
 | `save_memory` | Persist durable project or user context |
 | `subagent` | Delegate an independent task |
+| `activate_skill` | Run a registered skill by name |
 
 Connected MCP servers, installed plugins, and active skills can add more tools.
 
@@ -45,7 +46,7 @@ The `lsp_query` tool can find definitions, references, and hover information in 
 Ask Agav for semantic evidence explicitly when a text search is not enough:
 
 ```text
-@scraper/__init__.py find the scraper registry.
+@counter.py find the increment function.
 Use definitions and references to trace where it is declared and called.
 Explain the flow in execution order. Do not change files.
 ```
@@ -71,4 +72,14 @@ The file tools (`read_file`, `write_file`, `edit_file`) enforce path boundary ch
 
 ## Shell execution
 
-Shell commands have a 30-second default timeout and bounded output. Agav auto-detects macOS Seatbelt or Linux Bubblewrap; Docker can be requested as a tool override. The Seatbelt and Bubblewrap backends deny network access and restrict filesystem writes to the working directory. When no backend is available, the command runs unsandboxed with secret-like environment variables filtered out. Use `--sandbox-required` to refuse startup without a sandbox. Review [security](/reference/security) before using auto-accept mode.
+Shell commands have a 30-second default timeout and bounded output. Agav auto-detects macOS Seatbelt or Linux Bubblewrap; Docker can be requested as a tool override.
+
+Each sandbox backend has different isolation properties:
+
+| Backend | Filesystem writes | Network | Credential dirs |
+| --- | --- | --- | --- |
+| Seatbelt (macOS) | Allowed except `/System`, `/usr`, `/Library`, `/Applications` | Allowed | `~/.ssh`, `~/.aws`, `~/.gnupg` reads denied |
+| Bubblewrap (Linux) | Read-only root, writable working directory and `/tmp` | Allowed | `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config` masked |
+| Docker | Mounted working directory only | Denied (`--network=none`) | Not mounted |
+
+When no backend is available, the command runs unsandboxed with secret-like environment variables (`KEY`, `TOKEN`, `SECRET`, …) filtered out. Set `AGAV_NO_SANDBOX=1` to opt out of sandboxing deliberately. Review [security](/reference/security) before using auto-accept mode.

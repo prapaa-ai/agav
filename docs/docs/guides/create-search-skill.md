@@ -9,14 +9,14 @@ order: 3
 
 Use a skill when you repeat the same procedure across several tasks.
 
-## Scenario: review provider scrapers consistently
+## Scenario: review modules consistently
 
-Create `.agav/skills/scraper-review/SKILL.md` in the tracker repository:
+Create `.agav/skills/module-review/SKILL.md` in the hello-agav repository:
 
 ```markdown
 ---
-name: scraper-review
-description: Review a provider scraper against tracker conventions
+name: module-review
+description: Review a Python module against project conventions
 version: 1.0.0
 invocation: user
 allowed-tools:
@@ -25,11 +25,11 @@ allowed-tools:
   - find_files
 ---
 
-# Scraper Review
+# Module Review
 
-1. Read the supplied scraper and `scraper/base.py`.
-2. Find its registration in `scraper/__init__.py`.
-3. Check date parsing, missing values, status, and deduplication.
+1. Read the supplied module and identify its public functions.
+2. Check for type annotations, docstrings, and error handling.
+3. Find the corresponding test file in `tests/` and list untested paths.
 4. Return a table with risk, evidence path, and recommendation.
 5. Do not edit files.
 ```
@@ -37,7 +37,7 @@ allowed-tools:
 Restart Agav, then run the skill manually:
 
 ```text
-/scraper-review @scraper/openai_scraper.py
+/module-review @counter.py
 ```
 
 `invocation: user` keeps the workflow predictable: it runs only when you call it. The tool allowlist also keeps the review read-only.
@@ -47,13 +47,13 @@ Restart Agav, then run the skill manually:
 Inspect its configuration and usage:
 
 ```text
-/skills info scraper-review
+/skills info module-review
 ```
 
-After several runs, change one instruction when you see a repeated problem—for example, add a replacement-model check if reviews keep missing it. Keep project skills in source control and review instruction changes like code.
+After several runs, change one instruction when you see a repeated problem — for example, add an edge-case check for malformed JSON if reviews keep missing it. Keep project skills in source control and review instruction changes like code.
 
 ## Expected result
 
-Every provider review follows the same checks and produces the same compact report format.
+Every module review follows the same checks and produces the same compact report format.
 
 Next: [Compose Agents, Skills, and Tools](/guides/agent-skill-tool-combinations).
