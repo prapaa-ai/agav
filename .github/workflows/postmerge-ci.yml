@@ -12,7 +12,7 @@ jobs:
     name: Full Test Suite
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN }}
       - uses: actions/setup-node@v4.4.0
@@ -41,7 +41,7 @@ jobs:
             os: ubuntu-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN }}
       - uses: oven-sh/setup-bun@v2
@@ -67,7 +67,7 @@ jobs:
     name: License Compliance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN }}
       - uses: actions/setup-node@v4.4.0
@@ -85,7 +85,7 @@ jobs:
     name: SBOM Generation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN }}
       - uses: actions/setup-node@v4.4.0
@@ -112,7 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN }}
       - name: Scan container image
@@ -128,7 +128,7 @@ jobs:
     name: File Size Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN }}
       - name: Check for large files
@@ -144,7 +144,7 @@ jobs:
     name: Dependency Pinning Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN }}
       - name: Check for unpinned dependencies
@@ -172,7 +172,7 @@ jobs:
     name: Commit Signing Verification
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN }}
           fetch-depth: 10

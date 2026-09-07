@@ -21,7 +21,7 @@ jobs:
       deps: ${{ steps.diff.outputs.deps }}
       scripts: ${{ steps.diff.outputs.scripts }}
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
           fetch-depth: 0
@@ -59,7 +59,7 @@ jobs:
     if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@v4.4.0
@@ -84,7 +84,7 @@ jobs:
     if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@v4.4.0
@@ -109,7 +109,7 @@ jobs:
     if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@v4.4.0
@@ -137,7 +137,7 @@ jobs:
     if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - uses: oven-sh/setup-bun@v2
@@ -202,7 +202,7 @@ jobs:
     if: needs.changed.outputs.scripts == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - name: ShellCheck
@@ -233,7 +233,7 @@ jobs:
     if: needs.changed.outputs.scripts == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - name: Suites under Windows PowerShell 5.1
@@ -288,7 +288,7 @@ jobs:
     name: Secret Leak Detection
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
           fetch-depth: 0
@@ -313,7 +313,7 @@ jobs:
     name: Blob Size Policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
           fetch-depth: 0
@@ -339,7 +339,7 @@ jobs:
     name: Dangerous Pattern Detection
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - name: Scan for dangerous code patterns
@@ -376,7 +376,7 @@ jobs:
     if: needs.changed.outputs.deps == 'true' || needs.changed.outputs.source == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@v4.4.0
@@ -394,7 +394,7 @@ jobs:
     if: needs.changed.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - name: Verify lockfile exists
@@ -419,7 +419,7 @@ jobs:
     container:
       image: semgrep/semgrep:latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - run: |
@@ -437,7 +437,7 @@ jobs:
     name: Sensitive File Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - name: Check sensitive files are not tracked
@@ -459,7 +459,7 @@ jobs:
     name: README Badge Freshness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v7.0.1
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - name: Check the version badge is derived, not hardcoded
