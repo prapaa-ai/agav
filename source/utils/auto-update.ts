@@ -15,6 +15,38 @@ const AGAV_DIR = join(homedir(), ".agav");
 const UPDATE_STATE_FILE = join(AGAV_DIR, "update-state.json");
 const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const REPO = "prapaa-ai/agav";
+/**
+ * Release assets are fetched from the Cloudflare mirror first and GitHub second,
+ * matching install.sh / install.ps1. The mirror (releases.agav.dev, backed by
+ * R2) is a strict superset of GitHub — it proxies GitHub for anything not yet
+ * mirrored — and GitHub stays as an independent second origin. The digest is
+ * checked against whichever origin served the bytes, so a bad mirror can never
+ * cause an unverified self-update. Set AGAV_MIRROR_BASE="" to use GitHub only.
+ */
+const DEFAULT_MIRROR_BASE = "https://releases.agav.dev";
+const GITHUB_BASE = `https://github.com/${REPO}/releases/download`;
+
+/** The mirror base, resolved at call time so AGAV_MIRROR_BASE is honored and
+ * an empty value disables the mirror (GitHub only). */
+function mirrorBase(): string {
+  return process.env.AGAV_MIRROR_BASE !== undefined
+    ? process.env.AGAV_MIRROR_BASE
+    : DEFAULT_MIRROR_BASE;
+}
+
+/**
+ * Ordered list of "<base>/<version>" prefixes to try for one release's assets:
+ * mirror first, then GitHub. A per-asset path (binary, `.gz`, `.sha256`) is
+ * appended to each. Exported for testing.
+ */
+export function assetBaseUrls(version: string): string[] {
+  const bases: string[] = [];
+  const mirror = mirrorBase();
+  if (mirror) bases.push(`${mirror}/${version}`);
+  bases.push(`${GITHUB_BASE}/${version}`);
+  return bases;
+}
+
 /** Prefix for in-flight downloads sitting in ~/.agav, swept on a later launch. */
 const DOWNLOAD_PREFIX = "agav-update-";
 /** A download older than this cannot belong to a live process worth waiting on. */
@@ -193,9 +225,10 @@ async function streamAssetToFile(
   }
 }
 
-async function downloadBinary(version: string, label?: string): Promise<string | null> {
+// Exported for testing: exercises the real mirror-first / GitHub-fallback
+// download + per-origin checksum loop against a mocked fetch.
+export async function downloadBinary(version: string, label?: string): Promise<string | null> {
   const binaryName = getBinaryName();
-  const url = `https://github.com/${REPO}/releases/download/${version}/${binaryName}`;
   // Keyed by pid as well as version: two agav processes updating to the same
   // version at once would otherwise interleave their writes into one file, and
   // both would fail the checksum.
@@ -205,33 +238,46 @@ async function downloadBinary(version: string, label?: string): Promise<string |
   try {
     await ensureDir(AGAV_DIR);
 
-    // Releases publish a gzipped copy next to the raw binary; it is roughly a
-    // third of the size, which is most of an auto-update's cost on a slow link.
-    // Anything at all wrong with it — a release from before the compressed
-    // asset existed, a 404, bytes that are not a gzip stream — just falls back
-    // to the full binary. Either way the digest below is the one published for
-    // the *raw* asset, checked against the decompressed file, so the compressed
-    // path is not a second thing to trust.
-    //
-    // streamAssetToFile returns the SHA-256 of the decompressed bytes written
-    // to disk, computed inline during the download. This eliminates the ~100 MB
-    // re-read that used to make the post-download checksum step noticeably slow
-    // on macOS.
-    let fileHash = await streamAssetToFile(`${url}.gz`, tmpPath, activity, true);
-    if (!fileHash) fileHash = await streamAssetToFile(url, tmpPath, activity, false);
-    if (!fileHash) return null;
+    // Try each origin in turn — the Cloudflare mirror first, then GitHub. Each
+    // origin is fully self-contained: download the binary AND verify it against
+    // that same origin's .sha256, so a mirror that serves a stale or corrupt
+    // binary is caught and we move on to GitHub rather than installing it.
+    for (const base of assetBaseUrls(version)) {
+      const url = `${base}/${binaryName}`;
 
-    // Verify against the published checksum before this ever becomes
-    // executable. We are about to replace our own binary and re-exec it, so an
-    // unverified download is a code-execution primitive. Fail closed: if the
-    // .sha256 asset is missing or doesn't match, abandon the update.
-    if (!(await verifyChecksum(fileHash, `${url}.sha256`))) {
-      await rm(tmpPath, { force: true });
-      return null;
+      // Releases publish a gzipped copy next to the raw binary; it is roughly a
+      // third of the size, which is most of an auto-update's cost on a slow
+      // link. Anything at all wrong with it — a release from before the
+      // compressed asset existed, a 404, bytes that are not a gzip stream —
+      // just falls back to the full binary. Either way the digest below is the
+      // one published for the *raw* asset, checked against the decompressed
+      // file, so the compressed path is not a second thing to trust.
+      //
+      // streamAssetToFile returns the SHA-256 of the decompressed bytes written
+      // to disk, computed inline during the download. This eliminates the
+      // ~100 MB re-read that used to make the post-download checksum step
+      // noticeably slow on macOS.
+      let fileHash = await streamAssetToFile(`${url}.gz`, tmpPath, activity, true);
+      if (!fileHash) fileHash = await streamAssetToFile(url, tmpPath, activity, false);
+      if (!fileHash) continue; // this origin did not serve the binary — try next
+
+      // Verify against the published checksum before this ever becomes
+      // executable. We are about to replace our own binary and re-exec it, so
+      // an unverified download is a code-execution primitive. Fail closed: if
+      // this origin's .sha256 is missing or doesn't match, discard and try the
+      // next origin rather than installing an unverified binary.
+      if (!(await verifyChecksum(fileHash, `${url}.sha256`))) {
+        await rm(tmpPath, { force: true }).catch(() => {});
+        continue;
+      }
+
+      await chmod(tmpPath, 0o755);
+      return tmpPath;
     }
 
-    await chmod(tmpPath, 0o755);
-    return tmpPath;
+    // No origin produced a verified binary.
+    await rm(tmpPath, { force: true }).catch(() => {});
+    return null;
   } catch {
     await rm(tmpPath, { force: true }).catch(() => {});
     return null;
