@@ -77,8 +77,8 @@ describe("installer docs and scripts", () => {
 
     expect(readme).toContain("curl -fsSL https://agav.dev/install.sh | bash");
     expect(readme).toContain("curl -fsSL https://agav.dev/install.cmd -o install.cmd");
-    expect(installSh).toContain('curl -fL --progress-bar "$url" -o "$output"');
-    expect(installSh).toContain('curl -fsSL "$url" -o "$output"');
+    expect(installSh).toContain('curl -fL --connect-timeout 30 --retry 3 --retry-delay 2 --progress-bar "$url" -o "$output"');
+    expect(installSh).toContain('curl -fsSL --connect-timeout 30 --retry 3 --retry-delay 2 "$url" -o "$output"');
   });
 
   it("does not suppress PowerShell web request progress in install.cmd", () => {
