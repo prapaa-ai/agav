@@ -281,23 +281,37 @@ if (Test-Path $FinalPath) {
 function Get-RemoteText {
     param([Parameter(Mandatory = $true)][string]$Url)
 
-    Add-Type -AssemblyName System.Net.Http
-    $Handler = New-Object System.Net.Http.HttpClientHandler
-    try {
-        $Handler.DefaultProxyCredentials = [System.Net.CredentialCache]::DefaultCredentials
-    } catch {}
-    $Client = New-Object System.Net.Http.HttpClient($Handler)
-    $Client.DefaultRequestHeaders.UserAgent.ParseAdd("agav-installer")
-    $Response = $null
-    try {
-        $Response = $Client.GetAsync($Url).GetAwaiter().GetResult()
-        $Response.EnsureSuccessStatusCode() | Out-Null
-        return $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-    } finally {
-        if ($Response) { $Response.Dispose() }
-        $Client.Dispose()
-        $Handler.Dispose()
+    # These fetch small files (SHA256SUMS, release JSON). Without a timeout a
+    # stalled or unresponsive host makes the whole installer hang silently -
+    # the case where "Verifying checksum..." appears frozen. Bound each attempt
+    # to 60s and retry transient failures, mirroring install.sh's
+    # --max-time 60 --retry 3 --retry-delay 2.
+    $Attempts = 3
+    $LastError = $null
+    for ($i = 1; $i -le $Attempts; $i++) {
+        Add-Type -AssemblyName System.Net.Http
+        $Handler = New-Object System.Net.Http.HttpClientHandler
+        try {
+            $Handler.DefaultProxyCredentials = [System.Net.CredentialCache]::DefaultCredentials
+        } catch {}
+        $Client = New-Object System.Net.Http.HttpClient($Handler)
+        $Client.Timeout = [System.TimeSpan]::FromSeconds(60)
+        $Client.DefaultRequestHeaders.UserAgent.ParseAdd("agav-installer")
+        $Response = $null
+        try {
+            $Response = $Client.GetAsync($Url).GetAwaiter().GetResult()
+            $Response.EnsureSuccessStatusCode() | Out-Null
+            return $Response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        } catch {
+            $LastError = $_
+        } finally {
+            if ($Response) { $Response.Dispose() }
+            $Client.Dispose()
+            $Handler.Dispose()
+        }
+        if ($i -lt $Attempts) { Start-Sleep -Seconds 2 }
     }
+    throw $LastError
 }
 
 # --- Resolve download URL ---
@@ -352,6 +366,12 @@ function Save-FileWithProgress {
         $Handler.DefaultProxyCredentials = [System.Net.CredentialCache]::DefaultCredentials
     } catch {}
     $Client = New-Object System.Net.Http.HttpClient($Handler)
+    # HttpClient.Timeout bounds the whole operation, including the body stream
+    # read. A large binary on a slow link can legitimately take minutes, so use
+    # a generous cap that still guarantees a stalled connection eventually fails
+    # instead of hanging forever. This mirrors install.sh, which sets a connect
+    # timeout on the binary but no hard --max-time.
+    $Client.Timeout = [System.TimeSpan]::FromMinutes(20)
     $Client.DefaultRequestHeaders.UserAgent.ParseAdd("agav-installer")
     $Response = $null
     $InputStream = $null
