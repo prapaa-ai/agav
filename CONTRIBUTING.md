@@ -196,6 +196,7 @@ AGAV_BETA=1 curl -fsSL https://agav.dev/install.sh | bash
 - **Description**: Explain the user-visible change and any tradeoffs
 - **Scope**: Keep PRs focused. One feature or fix per PR when possible
 - **Tests**: Add tests for new functionality. Don't modify production code to make tests pass
+- **Docs**: If your change affects user-facing behavior, updating the relevant documentation in the same PR is appreciated. It's not required, but it helps keep docs in sync and saves maintainers time
 
 ## Code guidelines
 
