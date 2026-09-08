@@ -142,6 +142,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     refreshAgentCommands,
     addDisplayMessage,
     cancel,
+    cancelSubagent,
     clearMessages,
     confirmTool,
     conversation,
@@ -506,6 +507,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     }
     if (match.action === "cancel" && isLoading && !pendingConfirmation) {
       if (focusedSubagentId) {
+        cancelSubagent(focusedSubagentId);
         setFocusedSubagentId(null);
       } else {
         cancel();

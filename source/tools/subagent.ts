@@ -29,9 +29,10 @@ export interface SubagentToolDeps {
 }
 
 /** Build the subagent tool, including progress tracking and optional isolated worktrees. */
-export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
+export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { cancelSubagent: (id: string) => void } {
   let counter = 0;
   const active = new Map<string, SubagentProgress>();
+  const controllers = new Map<string, AbortController>();
 
   // Throttle UI updates to ~15 fps so concurrent subagents don't flood
   // React with state updates on every streaming_text delta.
@@ -164,6 +165,15 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
 
         const signal = deps.getSignal();
 
+        const childController = new AbortController();
+        controllers.set(id, childController);
+        // Link to parent signal so cancelling everything cascades
+        if (signal && !signal.aborted) {
+          signal.addEventListener("abort", () => childController.abort(), { once: true });
+        } else if (signal?.aborted) {
+          childController.abort();
+        }
+
         const confirmTool = (
           toolName: string,
           toolInput: Record<string, unknown>,
@@ -184,7 +194,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
           toolRegistry: childRegistry,
           model: config.model,
           systemPrompt: subagentSystemPrompt,
-          signal,
+          signal: childController.signal,
           confirmTool,
           permissionMode: config.permissionMode,
           effort: config.effort,
@@ -212,7 +222,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
         };
 
         for await (const event of loop) {
-          if (signal?.aborted) break;
+          if (childController.signal.aborted) break;
 
           switch (event.type) {
             case "thinking":
@@ -281,6 +291,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
               progress.status = "error";
               progress.error = event.error.message;
               active.set(id, { ...progress });
+              controllers.delete(id);
               broadcastNow();
               if (worktreePath) {
                 process.chdir(originalCwd);
@@ -307,6 +318,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
         progress.result = finalText;
         progress.streamingText = "";
         active.set(id, { ...progress });
+        controllers.delete(id);
         broadcastNow();
 
         setTimeout(() => {
@@ -323,6 +335,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
         progress.status = "error";
         progress.error = errMsg;
         active.set(id, { ...progress });
+        controllers.delete(id);
         broadcastNow();
 
         if (worktreePath) {
@@ -336,6 +349,13 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition {
         }, 100);
 
         return { output: `Subagent error: ${errMsg}`, isError: true };
+      }
+    },
+
+    cancelSubagent(id: string) {
+      const controller = controllers.get(id);
+      if (controller) {
+        controller.abort();
       }
     },
   };
