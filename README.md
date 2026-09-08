@@ -2,7 +2,12 @@
 
 # Agav
 
-**Terminal-native autonomous coding agent for real repositories**
+**Terminal-native autonomous agent for real repositories and projects**
+
+<p align="center">
+  <a href="https://docs.agav.dev"><strong>Documentation: https://docs.agav.dev</strong></a>
+</p>
+
 
 <p>
   <img alt="Version" src="https://img.shields.io/github/package-json/v/prapaa-ai/agav?style=for-the-badge&amp;label=version&amp;color=111">
@@ -17,7 +22,7 @@
   <img src="https://www.agav.dev/preview.gif" alt="Agav preview" width="100%" style="border-radius:16px;" />
 </div>
 
-Agav is an autonomous agent, not a chat wrapper. It reads, reasons, edits and verifies across your actual codebase — in the terminal where work happens.
+> ⚠️ **Experimental Beta** — Agav is under active development. Expect breaking changes, rough edges, and rapid iteration. Feedback and bug reports are welcome!
 
 ## Install
 
@@ -33,7 +38,15 @@ Windows PowerShell:
 irm https://www.agav.dev/install.ps1 | iex
 ```
 
-Download binaries or pre-releases from [Releases](../../releases). See [docs.agav.dev/getting-started/installation](https://docs.agav.dev/getting-started/installation) for Windows cmd, `--beta`, upgrade and uninstall.
+Windows Command Prompt:
+
+```bat
+curl -fsSL https://agav.dev/install.cmd -o install.cmd
+install.cmd
+del install.cmd
+```
+
+Download binaries or pre-releases from [Releases](../../releases). See [docs.agav.dev/getting-started/installation](https://docs.agav.dev/getting-started/installation) for detailed installation steps.
 
 ## Run
 
@@ -67,7 +80,7 @@ agav update
 
 Today, the most powerful AI tools are controlled by a handful of companies. They choose which models you use, where your data goes, and how much you pay. If they change the rules tomorrow, you have no choice but to follow.
 
-We’re building the alternative — an AI that works for you, runs on your terms, and belongs to no one.
+We’re building the alternative, an AI that works for you, runs on your terms, and belongs to no one.
 
 **You own it.** Apache 2.0 open source. No lock-in, no hidden telemetry, auditable code.
 
@@ -75,15 +88,7 @@ We’re building the alternative — an AI that works for you, runs on your term
 
 **You control the data.** Encrypted API keys, local-first option, per-tool permissions, and sandboxed commands on macOS/Linux.
 
-**Real work, not chat.** Built-in tools read, search, edit, test and undo inside your repo. Plans are tracked, sessions survive, and `/undo` keeps you safe.
-
 **Autonomous and verifiable.** Plans are created and tracked automatically, human-in-the-loop for destructive actions, and non-interactive `agav run` for CI with JSON Schema output.
-
-## Vision
-
-* **Autonomous in real code** — a complete coding harness that reads, reasons, edits and verifies across real codebases.
-* **Terminal-native superpower** — meets you where work happens with IDE capabilities and command-line speed.
-* **An agent for everyone** — equally useful to senior engineers debugging distributed systems and non-technical founders drafting a pitch deck.
 
 ## Who is it for
 
@@ -93,8 +98,8 @@ Refactor, debug, run Terminal-Bench level tasks, and audit repos with scriptable
 **Teams & Ops**
 Schedule, watch and loop tasks. Non-interactive mode with per-tool permissions for CI. Memory and planning that survive session restarts.
 
-**Non-coders**
-Ask in plain English to summarize docs, analyze a CSV, generate a deck outline or draft emails — private, no code required.
+**Anyone with a machine**
+Ask in plain English to summarize docs, analyze a CSV, generate a deck outline or draft emails, no code required.
 
 ## Proof
 
