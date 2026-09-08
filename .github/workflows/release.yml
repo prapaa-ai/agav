@@ -333,3 +333,26 @@ jobs:
             </details>
           generate_release_notes: true
           files: release/*
+
+      # Mirror every published asset to Cloudflare R2 so releases.agav.dev can
+      # serve them as the primary source, with GitHub Releases as the fallback
+      # (see docs/deploy/releases-mirror-setup.md and
+      # docs/deploy/releases-worker/). Runs AFTER the GitHub Release is created,
+      # so the fallback origin is never empty while R2 is being populated. If
+      # the R2 credentials are absent (e.g. on a fork), the sync is skipped
+      # rather than failing the release.
+      - name: Mirror release assets to R2
+        env:
+          TAG: v${{ needs.check-version.outputs.version }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${R2_ACCESS_KEY_ID:-}" ]; then
+            echo "R2 credentials not configured — skipping R2 mirror."
+            exit 0
+          fi
+          npm install --no-save @aws-sdk/client-s3@3
+          node scripts/mirror-release-to-r2.mjs "$TAG" release

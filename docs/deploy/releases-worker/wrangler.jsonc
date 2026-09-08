@@ -1,0 +1,29 @@
+/**
+ * Cloudflare Worker: releases.agav.dev — R2-primary release mirror with
+ * GitHub Releases fallback.
+ *
+ * Deploy from this directory:
+ *   npm install
+ *   npx wrangler deploy
+ *
+ * Then attach the custom domain `releases.agav.dev` to THIS Worker
+ * (Workers & Pages -> agav-releases-proxy -> Settings -> Domains & Routes ->
+ * Add Custom Domain). Because the Worker binds the bucket, attach the domain to
+ * the Worker rather than directly to the bucket.
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agav-releases-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-07",
+  "observability": {
+    "enabled": true
+  },
+  // Primary origin: the R2 bucket created in Step 1.
+  "r2_buckets": [
+    {
+      "binding": "RELEASES",
+      "bucket_name": "agav-releases"
+    }
+  ]
+}

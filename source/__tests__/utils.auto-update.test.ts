@@ -106,7 +106,11 @@ describe("installer docs and scripts", () => {
     expect(installSh).toContain("checksum_abort");
     expect(installSh).toContain("AGAV_SKIP_CHECKSUM");
     expect(installPs1).toContain("SHA256");
-    expect(installPs1).toContain("$DownloadUrl.sha256");
+    // The per-asset ".sha256" is fetched through the mirror-aware helper
+    // (Get-AssetText), which tries the Cloudflare mirror then GitHub. Assert on
+    // that fetch rather than a hardcoded URL variable so the check tracks the
+    // download path in use.
+    expect(installPs1).toContain('Get-AssetText "$AssetName.sha256"');
     expect(installPs1).toContain("Checksum verification failed");
   });
 
