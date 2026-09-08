@@ -6,6 +6,7 @@ import type { LLMProvider, ContentBlock, InvocationReason, Message } from "../pr
 import type { AgavConfig } from "../config/config.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
+import { resolveFastModel, resolveTurnModelAsync } from "../agent/model-tiers.js";
 import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { createToolRegistry } from "../tools/registry-factory.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -772,6 +773,16 @@ export function useAgent(
             );
           }
 
+          // Resolve the (opt-in) per-turn model with the trained classifier.
+          const routedTurnModel = (
+            await resolveTurnModelAsync({
+              provider: config.provider,
+              currentModel: config.model,
+              text: submittedText,
+              enabled: config.autoRouteTurns === true,
+            })
+          ).model;
+
           const loop = runAgentLoop({
             provider,
             conversation: conversationRef.current,
@@ -786,6 +797,14 @@ export function useAgent(
             permissionMode: sessionPermissionModeRef.current ?? config.permissionMode,
             allowedTools: config.allowedTools,
             hooks: config.hooks,
+            tokenBudget: config.tokenBudget,
+            contextEditing: config.contextEditing,
+            outputReduction: config.outputReduction,
+            summarizerModel:
+              config.autoRouteInternal === false
+                ? config.model
+                : resolveFastModel(config.provider, config.model),
+            turnModel: routedTurnModel,
             // Only the main conversation's loop drains mid-turn /steer
             // directives — subagent/skill/agent loops must not consume them.
             drainSteers,
@@ -801,6 +820,17 @@ export function useAgent(
               case "streaming_text":
                 currentText += event.text;
                 setStreamingText(currentText);
+                break;
+
+              case "context_edited":
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: nextId(),
+                    role: "system",
+                    content: `\x1b[2mContext trimmed: cleared ~${event.freedTokens} tokens of old tool output to save cost\x1b[0m`,
+                  },
+                ]);
                 break;
 
               case "compacted":

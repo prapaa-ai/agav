@@ -42,7 +42,7 @@ export class AnthropicProvider implements LLMProvider {
       model: params.model,
       max_tokens: params.maxTokens ?? 16384,
       system: systemBlocks as any,
-      messages: this.toMessages(params.messages),
+      messages: this.withHistoryCacheBreakpoint(this.toMessages(params.messages)),
       tools: tools as any,
       output_config: nativeEffort ? { effort: nativeEffort } : undefined,
     });
@@ -106,6 +106,38 @@ export class AnthropicProvider implements LLMProvider {
         };
       }
     }
+  }
+
+  /**
+   * Add a rolling `cache_control` breakpoint to the conversation history so
+   * the whole prefix bills as a cache read (~10% of input cost) on every
+   * follow-up turn instead of full price.
+   *
+   * The system prompt and tool list already carry the other two breakpoints.
+   * Anthropic caches everything up to and including the marked block, and the
+   * prefix must be byte-identical to hit. We therefore mark the LAST block of
+   * the second-to-last message: that message is stable across the next request
+   * (the newest turn is what changes), so next turn's cache key matches this
+   * turn's write. Below the ~1024-token minimum, caching is a no-op anyway, so
+   * we skip short histories to avoid needless write premiums.
+   */
+  private withHistoryCacheBreakpoint(
+    messages: Anthropic.Messages.MessageParam[],
+  ): Anthropic.Messages.MessageParam[] {
+    if (messages.length < 3) return messages;
+    const targetIndex = messages.length - 2;
+    return messages.map((msg, i) => {
+      if (i !== targetIndex) return msg;
+      if (typeof msg.content === "string") return msg;
+      const blocks = msg.content;
+      if (blocks.length === 0) return msg;
+      const cached = blocks.map((b, j) =>
+        j === blocks.length - 1
+          ? { ...b, cache_control: { type: "ephemeral" as const } }
+          : b,
+      );
+      return { ...msg, content: cached };
+    });
   }
 
   // Anthropic accepts structured content blocks directly, so this is mostly a shape conversion.

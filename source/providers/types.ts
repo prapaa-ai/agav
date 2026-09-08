@@ -14,6 +14,12 @@ export interface ContentBlock {
   toolInput?: Record<string, unknown>;
   toolResult?: string;
   toolResultContent?: ContentBlock[];
+  /**
+   * True once a tool_result's payload has been replaced by a re-fetchable
+   * placeholder via context editing. Lets the cleaner skip already-cleared
+   * blocks and keeps token accounting honest.
+   */
+  toolResultCleared?: boolean;
   isError?: boolean;
   imageData?: string;
   imageMediaType?: string;

@@ -28,5 +28,6 @@ The examples use [prapaa-ai/hello-agav](https://github.com/prapaa-ai/hello-agav)
 | Write your own agent from scratch | [Build a Native Agent](/guides/build-native-agent) |
 | Add a local JavaScript tool | [Create a Local Plugin](/guides/plugins) |
 | Operate a multi-phase task with checkpoints | [Operate a Long-Running Task](/guides/long-running-agent) |
+| Cut LLM token spend on long sessions | [Reduce Token Cost](/guides/reduce-token-cost) |
 
 Start with the narrowest guide that matches your task. Add subagents, automation, or extension points only when the work has a clear independent boundary or will be repeated.

@@ -27,6 +27,7 @@ Agav exposes these tools to its agent loop.
 | `github` | Create or view GitHub pull requests and issues |
 | `update_plan` | Update the active plan's current step |
 | `save_memory` | Persist durable project or user context |
+| `retrieve` | Retrieve the full original of a tool result that was cleared to save context |
 | `subagent` | Delegate an independent task |
 | `activate_skill` | Run a registered skill by name |
 

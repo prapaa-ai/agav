@@ -841,4 +841,180 @@ describe("runAgentLoop", () => {
     expect(denials.every((event) => (event as { isError?: boolean }).isError)).toBe(true);
     expect((denials[1] as { output: string }).output).toContain("already denied");
   });
+  it("routes the compaction summarizer to summarizerModel, not the main model", async () => {
+    // First stream: the summarizer call (fires before the turn when the
+    // conversation is over the compaction threshold). Second stream: the turn.
+    const provider = new MockProvider([
+      [
+        { type: "text_delta", text: "## Task\nsummary text" },
+        { type: "message_end", stopReason: "end_turn" },
+      ],
+      [
+        { type: "text_delta", text: "done" },
+        { type: "message_end", stopReason: "end_turn" },
+      ],
+    ]);
+
+    const conversation = new ConversationState();
+    conversation.setModel("claude-sonnet-4-20250514");
+    // Tiny window so the existing history is instantly over the threshold.
+    conversation.setContextWindow(1000);
+    for (let i = 0; i < 12; i++) {
+      conversation.addUserMessage(`question ${i} `.repeat(80));
+      conversation.addAssistantMessage([{ type: "text", text: `answer ${i} `.repeat(80) }]);
+    }
+
+    await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry: new ToolRegistry(),
+        model: "claude-sonnet-4-20250514",
+        summarizerModel: "claude-haiku-4-5-20251001",
+        maxIterations: 1,
+      }),
+    );
+
+    const calls = provider.stream.mock.calls.map((c) => c[0]);
+    const summarizerCall = calls.find((p) =>
+      typeof p.systemPrompt === "string" && p.systemPrompt.startsWith("Summarize this conversation"),
+    );
+    const turnCall = calls.find((p) => p !== summarizerCall);
+
+    expect(summarizerCall, "summarizer should have run").toBeDefined();
+    // Summary goes to the cheap model...
+    expect(summarizerCall!.model).toBe("claude-haiku-4-5-20251001");
+    // ...while the actual turn stays on the user's model.
+    expect(turnCall!.model).toBe("claude-sonnet-4-20250514");
+  });
+
+  it("uses turnModel for the user turn but the main model for tool continuation", async () => {
+    const provider = new MockProvider([
+      [
+        { type: "tool_call_start", toolCallId: "c1", toolName: "noop" },
+        { type: "tool_call_end", toolCallId: "c1" },
+        { type: "message_end", stopReason: "tool_use" },
+      ],
+      [
+        { type: "text_delta", text: "done" },
+        { type: "message_end", stopReason: "end_turn" },
+      ],
+    ]);
+
+    const conversation = new ConversationState();
+    conversation.setModel("claude-sonnet-4-20250514");
+    conversation.addUserMessage("what is a closure?");
+
+    const tools = new ToolRegistry();
+    tools.register(createTool("noop", async () => ({ output: "ok", isError: false })));
+
+    await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry: tools,
+        model: "claude-sonnet-4-20250514",
+        turnModel: "claude-haiku-4-5-20251001",
+        permissionMode: "auto-accept",
+        maxIterations: 2,
+      }),
+    );
+
+    const models = provider.stream.mock.calls.map((c) => c[0].model);
+    expect(models[0]).toBe("claude-haiku-4-5-20251001");
+    expect(models[1]).toBe("claude-sonnet-4-20250514");
+  });
+
+  it("compresses a large JSON tool result in history but yields the full output", async () => {
+    const provider = new MockProvider([
+      [
+        { type: "tool_call_start", toolCallId: "c1", toolName: "search" },
+        { type: "tool_call_end", toolCallId: "c1" },
+        { type: "message_end", stopReason: "tool_use" },
+      ],
+      [
+        { type: "text_delta", text: "done" },
+        { type: "message_end", stopReason: "end_turn" },
+      ],
+    ]);
+
+    const bigJson = JSON.stringify(
+      Array.from({ length: 200 }, (_, i) => ({ id: i, path: `src/f${i}.ts`, snippet: `match ${i}` })),
+    );
+
+    const conversation = new ConversationState();
+    conversation.setModel("claude-sonnet-4-20250514");
+    conversation.addUserMessage("search the repo");
+
+    const tools = new ToolRegistry();
+    tools.register(createTool("search", async () => ({ output: bigJson, isError: false })));
+
+    const events = await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry: tools,
+        model: "claude-sonnet-4-20250514",
+        permissionMode: "auto-accept",
+        maxIterations: 2,
+      }),
+    );
+
+    // The UI event carries the full, uncompressed output.
+    const toolEvent = events.find((e) => e.type === "tool_result");
+    expect((toolEvent as { output: string }).output).toBe(bigJson);
+
+    // The stored history copy is compressed (smaller, valid JSON, has marker).
+    const stored = conversation
+      .getMessages()
+      .flatMap((m) => m.content)
+      .find((b) => b.type === "tool_result" && b.toolCallId === "c1");
+    expect(stored).toBeDefined();
+    const storedText = (stored as { toolResult: string }).toolResult;
+    expect(storedText.length).toBeLessThan(bigJson.length);
+    expect(storedText).toContain("__compressed__");
+    expect(() => JSON.parse(storedText)).not.toThrow();
+  });
+
+  it("steers verbosity and lowers effort on a clean resume turn", async () => {
+    const provider = new MockProvider([
+      [
+        { type: "tool_call_start", toolCallId: "c1", toolName: "noop" },
+        { type: "tool_call_end", toolCallId: "c1" },
+        { type: "message_end", stopReason: "tool_use" },
+      ],
+      [
+        { type: "text_delta", text: "done" },
+        { type: "message_end", stopReason: "end_turn" },
+      ],
+    ]);
+
+    const conversation = new ConversationState();
+    conversation.setModel("claude-sonnet-4-20250514");
+    conversation.addUserMessage("do the thing");
+
+    const tools = new ToolRegistry();
+    tools.register(createTool("noop", async () => ({ output: "ok", isError: false })));
+
+    await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry: tools,
+        model: "claude-sonnet-4-20250514",
+        systemPrompt: "You are a coding agent.",
+        effort: "high",
+        permissionMode: "auto-accept",
+        maxIterations: 5,
+      }),
+    );
+
+    const calls = provider.stream.mock.calls.map((c) => c[0]);
+    // Verbosity steering: system prompt keeps its prefix and gains a tail note.
+    expect(calls[0]!.systemPrompt!.startsWith("You are a coding agent.")).toBe(true);
+    expect(calls[0]!.systemPrompt).toContain("be concise");
+    // Fresh user turn keeps full effort; clean resume turn is lowered one notch.
+    expect(calls[0]!.effort).toBe("high");
+    expect(calls[1]!.effort).toBe("medium");
+  });
 });

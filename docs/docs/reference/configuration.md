@@ -56,6 +56,11 @@ Agav merges defaults, `~/.agav/config.json`, and `./.agav/config.json` in that o
 | `theme` | Partial terminal color overrides |
 | `mcpServers` | Named MCP server definitions (stdio and remote) |
 | `agentMarketplace` | URL of the agent marketplace (supports `https://` and `file://`). Defaults to the official marketplace. Set `AGAV_MARKETPLACE_URL` to override without editing the config file. |
+| `tokenBudget` | Optional soft token ceiling for a session. A one-time warning is emitted at 80% of the budget. Advisory only — never blocks. See [Reduce Token Cost](/guides/reduce-token-cost). |
+| `contextEditing` | Tool-result cost controls: `{ enabled?, keepRecentResults?, minClearChars?, compressJson? }`. Enabled by default. Clears older re-fetchable tool output with a compact placeholder, and compresses large JSON tool results (keeping errors/outliers/boundaries). |
+| `autoRouteInternal` | Route internal calls (conversation summarization) to the provider's cheap model tier. Enabled by default; the user-facing model is never changed. |
+| `autoRouteTurns` | **Opt-in, off by default.** Route confidently-simple user turns to the cheap model tier. Anything that might edit code stays on your model. |
+| `outputReduction` | Output-token controls: `{ enabled?, verbositySteering?, resumeEffortRouting? }`. Enabled by default; both are cache-safe. Trims reply ceremony and lowers effort on clean resume-after-tool turns. |
 
 ### MCP server fields
 

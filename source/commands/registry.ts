@@ -25,6 +25,7 @@ import { contextCommand } from "./context.js"
 import { agentsCommand } from "./agents.js"
 import { agentLockCommand } from "./agent-lock.js"
 import { openCommand } from "./open.js"
+import { costCommand } from "./cost.js"
 
 /** Store slash commands and dispatch raw user input to the matching handler. */
 export class CommandRegistry {
@@ -63,6 +64,7 @@ export class CommandRegistry {
     this.register(agentsCommand)
     this.register(agentLockCommand)
     this.register(openCommand)
+    this.register(costCommand)
   }
 
   /** Add a command to the registry by name. */

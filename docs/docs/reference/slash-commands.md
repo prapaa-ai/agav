@@ -68,6 +68,7 @@ Type `/` in an interactive session to autocomplete commands. Run `/help` to see 
 
 | Command | Purpose |
 | --- | --- |
+| `/cost` | Show session token usage, an estimated dollar cost for the current model, and how much prompt caching saved. |
 | `/debug` | Show conversation, plan, sandbox, token, plugin, MCP, undo, and memory state. |
 | `/changelog` | Show release notes from the latest update. |
 | `/exit` | Save the current session and exit Agav. |

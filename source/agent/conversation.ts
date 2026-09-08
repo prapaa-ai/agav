@@ -1,5 +1,6 @@
 import type { Message, ContentBlock, InvocationReason } from "../providers/types.js";
 import { COMPACTION_PLACEHOLDER_PREFIX } from "./internal-prompts.js";
+import { clearedStore } from "./cleared-store.js";
 import {
   estimateConversationTokens,
   estimateMessageTokens,
@@ -13,6 +14,9 @@ export class ConversationState {
   private contextWindow?: number;
   private _compacted = false;
   private _lastCompactionSummary = "";
+  // Token count at the last context-editing pass, so we clear in batches at a
+  // threshold instead of rewriting (and cache-invalidating) history every turn.
+  private _lastClearAtTokens = 0;
 
   setModel(model: string): void {
     // A window resolved for the previous model says nothing about the new one,
@@ -221,6 +225,115 @@ export class ConversationState {
       if (this.tokenCount <= targetTokens) break;
     }
     return freed;
+  }
+
+  /**
+   * Context editing: replace older, re-fetchable tool results with a compact
+   * placeholder that names the tool and its input, so the model can re-run it
+   * if it needs the data again. This is the cheapest way to reclaim context —
+   * the record of the call is kept, only the bulky payload is dropped, at zero
+   * inference cost.
+   *
+   * Cache safety: rewriting a block invalidates the provider's prompt-cache
+   * prefix from that point on. To avoid paying that on every turn, callers gate
+   * this behind a token threshold and we only run when the conversation has
+   * grown meaningfully since the last pass (see shouldClearToolResults). The
+   * newest `keepRecentResults` tool results are always left intact.
+   *
+   * The tool_use block that opened the cycle is never touched, so tool_use /
+   * tool_result pairing stays valid for providers that enforce it.
+   */
+  clearStaleToolResults(options?: {
+    keepRecentResults?: number;
+    minClearChars?: number;
+  }): number {
+    const keepRecentResults = Math.max(0, options?.keepRecentResults ?? 4);
+    const minClearChars = Math.max(1, options?.minClearChars ?? 2000);
+
+    // Find the indices (message, block) of every uncleared tool_result, oldest
+    // first, so we can preserve the last N and clear the rest.
+    const resultLocations: Array<{ mi: number; bi: number }> = [];
+    for (let mi = 0; mi < this.messages.length; mi++) {
+      const msg = this.messages[mi]!;
+      if (msg.role !== "user") continue;
+      for (let bi = 0; bi < msg.content.length; bi++) {
+        const block = msg.content[bi]!;
+        if (block.type === "tool_result" && !block.toolResultCleared) {
+          resultLocations.push({ mi, bi });
+        }
+      }
+    }
+
+    const clearableCount = Math.max(0, resultLocations.length - keepRecentResults);
+    if (clearableCount === 0) return 0;
+
+    // Map tool_use id -> { name, input } so the placeholder can describe what
+    // was cleared and how to get it back.
+    const toolUseById = new Map<string, { name?: string; input?: Record<string, unknown> }>();
+    for (const msg of this.messages) {
+      if (msg.role !== "assistant") continue;
+      for (const block of msg.content) {
+        if (block.type === "tool_use" && block.toolCallId) {
+          toolUseById.set(block.toolCallId, { name: block.toolName, input: block.toolInput });
+        }
+      }
+    }
+
+    let freed = 0;
+    for (let k = 0; k < clearableCount; k++) {
+      const { mi, bi } = resultLocations[k]!;
+      const block = this.messages[mi]!.content[bi]!;
+
+      const payloadLen =
+        (block.toolResult?.length ?? 0) +
+        (block.toolResultContent
+          ? JSON.stringify(block.toolResultContent).length
+          : 0);
+      if (payloadLen < minClearChars) continue;
+
+      const before = estimateMessageTokens({ role: "user", content: [block] });
+
+      const meta = block.toolCallId ? toolUseById.get(block.toolCallId) : undefined;
+      const label = meta?.name ? `\`${meta.name}\`` : "a tool";
+      const inputHint = meta?.input
+        ? ` with input ${JSON.stringify(meta.input).slice(0, 200)}`
+        : "";
+      // CCR: stash the exact original so the model can retrieve it losslessly,
+      // rather than only being told to re-run the tool.
+      const original =
+        block.toolResult ??
+        (block.toolResultContent ? JSON.stringify(block.toolResultContent) : "");
+      const retrieveId = original ? clearedStore.put(original) : undefined;
+      block.toolResult =
+        `[tool result cleared to save context — was output of ${label}${inputHint}. ` +
+        (retrieveId
+          ? `Call retrieve({ id: "${retrieveId}" }) to get the full original, or re-run the tool.]`
+          : `Re-run the tool if you need this data again.]`);
+      block.toolResultContent = undefined;
+      block.toolResultCleared = true;
+
+      const after = estimateMessageTokens({ role: "user", content: [block] });
+      freed += Math.max(0, before - after);
+    }
+
+    if (freed > 0) this._lastClearAtTokens = this.tokenCount;
+    return freed;
+  }
+
+  /**
+   * Whether a context-editing pass is worth running now. Gated on both an
+   * absolute threshold (a fraction of the usable window) and on growth since
+   * the last pass, so we batch clears rather than rewriting history — and its
+   * cache prefix — every turn.
+   */
+  shouldClearToolResults(): boolean {
+    const limits = getContextLimits(this.model, this.contextWindow);
+    const threshold = Math.floor(limits.maxTokens * 0.5);
+    if (this.tokenCount < threshold) return false;
+    // Only re-run once the conversation has grown by ~10% of the window since
+    // the last successful clear, to avoid cache-thrashing on every turn.
+    const growthGate = Math.floor(limits.maxTokens * 0.1);
+    return this.tokenCount - this._lastClearAtTokens >= growthGate;
   }
 
   async compactIfNeeded(

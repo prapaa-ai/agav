@@ -19,6 +19,7 @@ export type AgentEvent =
   | { type: "thinking"; text: string }
   | { type: "streaming_text"; text: string }
   | { type: "compacted"; droppedCount: number }
+  | { type: "context_edited"; freedTokens: number }
   | { type: "tool_call_start"; toolName: string; toolCallId: string }
   | { type: "tool_call_input_delta"; toolCallId: string; argsJson: string }
   | { type: "tool_confirmation_request"; toolName: string; toolCallId: string; input: Record<string, unknown>; diffLines?: import("../utils/diff.js").DiffLine[] }
@@ -46,6 +47,9 @@ export type ConfirmToolFn = (
 import type { PermissionMode } from "../config/config.js";
 import { runHook, getHookForTool } from "./hooks.js";
 import { isDestructiveCommand } from "../utils/sandbox.js";
+import { SummaryCache, hashSummaryInput } from "./summary-cache.js";
+import { compressJsonToolResult } from "./json-compressor.js";
+import { applyVerbositySteering, resolveTurnEffort, inspectLastToolResults } from "./output-reduction.js";
 
 interface LoopParams {
   provider: LLMProvider;
@@ -68,13 +72,53 @@ interface LoopParams {
    * the loop simply never receives mid-turn steers.
    */
   drainSteers?: () => string[];
+  /**
+   * Optional soft ceiling (in tokens) for the whole loop. When cumulative
+   * input+output tokens cross 80% of it, the loop emits a single `thinking`
+   * warning. Advisory only — it never blocks or truncates.
+   */
+  tokenBudget?: number;
+  /**
+   * Context editing (tool-result clearing) config. When enabled (default), the
+   * loop replaces older, re-fetchable tool results with a compact placeholder
+   * once the conversation crosses a token threshold — before falling back to
+   * the more expensive summarize-and-drop compaction.
+   */
+  contextEditing?: {
+    enabled?: boolean;
+    keepRecentResults?: number;
+    minClearChars?: number;
+    compressJson?: boolean;
+  };
+  /**
+   * Model to use for internal, correctness-tolerant calls (conversation
+   * summarization). Automatic model routing points this at the provider's cheap
+   * tier so compaction never pays flagship prices. Defaults to `model`.
+   */
+  summarizerModel?: string;
+  /**
+   * Model to use for the FIRST iteration (the user's turn) when automatic
+   * turn routing has downgraded a confidently-simple turn to the cheap tier.
+   * Tool-cycle continuation stays on `model`. Defaults to `model`.
+   */
+  turnModel?: string;
+  /**
+   * Output-token reduction toggles. Cache-safe: verbosity steering only appends
+   * to the system prompt tail, effort routing only lowers effort on clean resume
+   * turns. Both default on.
+   */
+  outputReduction?: {
+    enabled?: boolean;
+    verbositySteering?: boolean;
+    resumeEffortRouting?: boolean;
+  };
 }
 
 // Tools that never need confirmation because they cannot modify the working
 // tree or reach outside the session. `save_memory` and `update_plan` write only
 // to Agav's own state — the plan is in-memory scratch space the model rewrites
 // constantly, so prompting for it would make every turn unusable.
-const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_directory", "web_search", "lsp_query", "read_notebook", "fetch_url", "overview", "activate_skill", "save_memory", "update_plan"]);
+const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_directory", "web_search", "lsp_query", "read_notebook", "fetch_url", "overview", "activate_skill", "save_memory", "update_plan", "retrieve"]);
 
 /** Tools that perform file mutations — always blocked in deny-writes mode. */
 const WRITE_TOOLS = new Set(["edit_file", "write_file", "edit_notebook"]);
@@ -125,6 +169,27 @@ export async function* runAgentLoop(
   params: LoopParams,
 ): AsyncGenerator<AgentEvent> {
   const { provider, conversation, toolRegistry, model, systemPrompt, effort, maxTokens, signal, confirmTool } = params;
+  const tokenBudget = params.tokenBudget;
+  const contextEditingEnabled = params.contextEditing?.enabled !== false;
+  // Compress large JSON tool results before storing them in history (the UI
+  // still shows the full output). Rides under the contextEditing umbrella.
+  const compressJsonEnabled =
+    contextEditingEnabled && params.contextEditing?.compressJson !== false;
+  // Internal summaries just need faithful compression, not flagship reasoning,
+  // so route them to the cheap model when routing supplied one.
+  const summarizerModel = params.summarizerModel ?? model;
+  // Output-token reduction (cache-safe). Verbosity steering appends a terse note
+  // to the system-prompt tail once; the cached prefix is unchanged.
+  const outputReductionEnabled = params.outputReduction?.enabled !== false;
+  const verbositySteeringOn =
+    outputReductionEnabled && params.outputReduction?.verbositySteering !== false;
+  const resumeEffortRoutingOn =
+    outputReductionEnabled && params.outputReduction?.resumeEffortRouting !== false;
+  const effectiveSystemPrompt = verbositySteeringOn
+    ? applyVerbositySteering(systemPrompt)
+    : systemPrompt;
+  let cumulativeTokens = 0;
+  let tokenBudgetWarned = false;
   let permissionMode = params.permissionMode ?? "ask";
   let testRepairAttempts = 0;
   const MAX_REPAIR_ATTEMPTS = 3;
@@ -146,13 +211,23 @@ export async function* runAgentLoop(
   const collectSteers = () => (drainSteers ? drainSteers() : []);
 
   let pendingSummarizeUsage: Record<string, number> | null = null;
+  // Cache summaries by drop-set signature so an identical set summarized twice
+  // (error-recovery re-compaction, retries) reuses the first result for free.
+  const summaryCache = new SummaryCache();
 
   const summarize = async (msgs: Message[]): Promise<string> => {
+    const cacheKey = hashSummaryInput(summarizerModel, msgs);
+    const cached = summaryCache.get(cacheKey);
+    if (cached !== undefined) {
+      // A cache hit costs nothing, so report no usage for it.
+      pendingSummarizeUsage = null;
+      return cached;
+    }
     let result = "";
     pendingSummarizeUsage = null;
     try {
       for await (const event of provider.stream({
-        model,
+        model: summarizerModel,
         messages: msgs,
         systemPrompt:
           "Summarize this conversation concisely. Structure your summary as:\n\n" +
@@ -160,10 +235,10 @@ export async function* runAgentLoop(
           "## Changes Made\n- File paths modified and what was changed\n\n" +
           "## Key Findings\n- Bugs found, errors encountered, important observations\n\n" +
           "## Current State\n- What has been completed vs what remains\n- Last approach tried and whether it worked\n\n" +
-          "Be brief but preserve ALL file paths, function names, and specific error messages. " +
+          "Be brief (under ~300 words) but preserve ALL file paths, function names, and specific error messages. " +
           "This summary replaces earlier messages — anything not included here is lost.",
-        effort,
-        maxTokens: 2048,
+        effort: "low",
+        maxTokens: 1024,
       })) {
         if (event.type === "text_delta") result += event.text;
         if (event.type === "usage") {
@@ -178,6 +253,7 @@ export async function* runAgentLoop(
     } catch {
       return "";
     }
+    summaryCache.set(cacheKey, result);
     return result || "";
   };
 
@@ -193,6 +269,23 @@ export async function* runAgentLoop(
   }
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
+    // Turn routing only applies to the user's own turn (iteration 0). Once a
+    // tool cycle is in flight, staying on the configured model keeps behavior
+    // consistent and preserves the provider's prompt cache.
+    const activeModel = iteration === 0 ? (params.turnModel ?? model) : model;
+
+    // Context editing: reclaim cheap, re-fetchable tokens (old tool results)
+    // before paying for summarize-and-drop compaction. Gated so it batches
+    // clears at a threshold rather than rewriting history — and its prompt
+    // cache prefix — on every turn.
+    if (contextEditingEnabled && conversation.shouldClearToolResults()) {
+      const freed = conversation.clearStaleToolResults({
+        keepRecentResults: params.contextEditing?.keepRecentResults,
+        minClearChars: params.contextEditing?.minClearChars,
+      });
+      if (freed > 0) yield { type: "context_edited", freedTokens: freed };
+    }
+
     // Auto-compact if conversation is getting long
     const { compacted, droppedCount } = await conversation.compactIfNeeded(false, summarize);
     if (compacted) {
@@ -217,12 +310,22 @@ export async function* runAgentLoop(
     let stopReason = "";
 
     try {
+      // Lower reasoning effort on a clean resume-after-tools turn; keep full
+      // effort on the user's own turn and whenever the latest tool output erred.
+      const lastResults = inspectLastToolResults(conversation.getMessages());
+      const turnEffort = resumeEffortRoutingOn
+        ? resolveTurnEffort(effort, {
+            isResumeTurn: iteration > 0 && lastResults.isResumeTurn,
+            lastToolOutputHadError: lastResults.hadError,
+          })
+        : effort;
+
       for await (const event of provider.stream({
-        model,
+        model: activeModel,
         messages: conversation.getMessages(),
         tools: toolRegistry.getSchemas(),
-        systemPrompt,
-        effort,
+        systemPrompt: effectiveSystemPrompt,
+        effort: turnEffort,
         maxTokens,
         signal,
       })) {
@@ -273,6 +376,11 @@ export async function* runAgentLoop(
 
           case "usage":
             yield { type: "usage", inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens };
+            cumulativeTokens += (event.inputTokens ?? 0) + (event.outputTokens ?? 0);
+            if (tokenBudget && !tokenBudgetWarned && cumulativeTokens >= tokenBudget * 0.8) {
+              tokenBudgetWarned = true;
+              yield { type: "thinking", text: `\u26a0\ufe0f Token budget: used ~${cumulativeTokens} of ${tokenBudget} (${Math.round((cumulativeTokens / tokenBudget) * 100)}%). Consider /compact to reduce cost.` };
+            }
             break;
 
           case "message_end":
@@ -484,10 +592,16 @@ export async function* runAgentLoop(
           }
         }
         yield { type: "tool_result", toolName: name, toolCallId: id, output: result.output, isError: result.isError, diffLines: result.diffLines };
+        // Store a JSON-compressed copy in history when it helps; the UI above
+        // already received the full output. Never compress error results.
+        const storedResult =
+          compressJsonEnabled && !result.isError
+            ? compressJsonToolResult(result.output).text
+            : result.output;
         toolResults.push({
           type: "tool_result",
           toolCallId: id,
-          toolResult: result.output,
+          toolResult: storedResult,
           toolResultContent: result.contentBlocks,
           isError: result.isError,
         });

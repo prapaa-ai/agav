@@ -8,7 +8,7 @@ const CATEGORIES: Record<string, string[]> = {
   "Workflow": ["plan", "steer", "loop", "schedule", "watch"],
   "Memory": ["memory", "remember", "forget"],
   "Safety": ["undo"],
-  "Debug": ["context", "debug", "changelog", "exit", "help"],
+  "Debug": ["cost", "context", "debug", "changelog", "exit", "help"],
 };
 
 const VIRTUAL_COMMANDS: Record<string, { description: string; usage: string }> = {

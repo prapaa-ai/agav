@@ -11,6 +11,7 @@ import { loadSessionState, markCleanExit, markCleanExitSync } from "./config/ses
 import { loadTheme } from "./config/theme.js";
 import { ConversationState } from "./agent/conversation.js";
 import { runAgentLoop } from "./agent/loop.js";
+import { resolveFastModel } from "./agent/model-tiers.js";
 import { NO_EDITS_PROMPT, schemaRetryPrompt } from "./agent/internal-prompts.js";
 import { createToolRegistry } from "./tools/registry-factory.js";
 import { getToolLabel } from "./utils/tool-labels.js";
@@ -283,6 +284,13 @@ export async function runPipeMode(
         maxIterations: options.maxTurns ?? config.maxIterations,
         permissionMode,
         allowedTools: options.allowedToolsOverride,
+        tokenBudget: config.tokenBudget,
+        contextEditing: config.contextEditing,
+        outputReduction: config.outputReduction,
+        summarizerModel:
+          config.autoRouteInternal === false
+            ? config.model
+            : resolveFastModel(config.provider, config.model),
       });
 
       for await (const event of loop) {
@@ -305,6 +313,9 @@ export async function runPipeMode(
             } else {
               process.stderr.write(`  ${icons.success} ${getToolLabel(event.toolName)}\n`);
             }
+            break;
+          case "context_edited":
+            process.stderr.write(`  ${icons.warning} Context trimmed: cleared ~${event.freedTokens} tokens of old tool output\n`);
             break;
           case "compacted":
             process.stderr.write(`  ${icons.warning} Auto-compacted: ${event.droppedCount} messages summarized\n`);

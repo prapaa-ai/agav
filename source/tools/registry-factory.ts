@@ -15,6 +15,7 @@ import { githubTool } from "./github.js";
 import { overviewTool } from "./overview.js";
 import { testRunnerTool } from "./test-runner.js";
 import { memoryTool } from "./memory.js";
+import { retrieveTool } from "./retrieve.js";
 
 /**
  * The set of tool names that ship with agav. Exported so that skill validation
@@ -41,6 +42,7 @@ export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
   "save_memory",
   "subagent",
   "activate_skill",
+  "retrieve",
 ]);
 
 /** Register the default built-in tool set used by interactive and print-mode sessions. */
@@ -63,5 +65,6 @@ export function createToolRegistry(): ToolRegistry {
   registry.register(overviewTool);
   registry.register(testRunnerTool);
   registry.register(memoryTool);
+  registry.register(retrieveTool);
   return registry;
 }

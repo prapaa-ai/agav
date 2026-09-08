@@ -60,6 +60,57 @@ export interface AgavConfig {
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
   showThinking?: boolean;
+  /**
+   * Soft ceiling (in tokens) for a session, used for cost visibility. Reserved:
+   * currently stored via config only — no hard enforcement yet.
+   */
+  tokenBudget?: number;
+  /**
+   * Context editing (tool-result clearing). Replaces older, re-fetchable tool
+   * results with a compact placeholder to cut token cost on long sessions.
+   * Enabled by default; set { enabled: false } to turn off.
+   */
+  contextEditing?: {
+    enabled?: boolean;
+    /** How many of the most recent tool results to keep in full. */
+    keepRecentResults?: number;
+    /** Only clear tool results whose payload exceeds this many characters. */
+    minClearChars?: number;
+    /**
+     * Compress large JSON tool results (arrays of similar objects) in place,
+     * keeping errors/outliers/boundaries. Enabled by default. This shrinks the
+     * copy stored in history; the full output is still shown in the UI.
+     */
+    compressJson?: boolean;
+  };
+  /**
+   * Automatically route internal, correctness-tolerant LLM calls (e.g.
+   * conversation summarization for compaction) to the provider's cheap model
+   * tier. The user-facing model is never changed. Enabled by default; set
+   * false to keep internal calls on the main model.
+   */
+  autoRouteInternal?: boolean;
+  /**
+   * OPT-IN. Automatically route confidently-simple user turns (short lookups,
+   * explanations) to the cheap model tier. Off by default because misrouting a
+   * hard task to a weak model degrades output; enable only if you value cost
+   * over guaranteed depth on trivial turns. Anything that might edit code stays
+   * on your configured model.
+   */
+  autoRouteTurns?: boolean;
+  /**
+   * Output-token reduction. Output tokens cost several times input, so Agav
+   * can trim ceremony and dial reasoning effort down on routine resume turns.
+   * Enabled by default; both sub-toggles are cache-safe (they never rewrite the
+   * cached prompt prefix).
+   */
+  outputReduction?: {
+    enabled?: boolean;
+    /** Append a terse "don't restate context" note to the END of the system prompt. */
+    verbositySteering?: boolean;
+    /** Lower reasoning effort when a turn is just resuming after clean tool output. */
+    resumeEffortRouting?: boolean;
+  };
 }
 
 const AGAV_DIR = join(homedir(), ".agav");

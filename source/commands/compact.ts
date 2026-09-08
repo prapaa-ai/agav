@@ -1,4 +1,10 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
+import { resolveFastModel } from "../agent/model-tiers.js";
+import { SummaryCache, hashSummaryInput } from "../agent/summary-cache.js";
+
+// Persists across /compact calls within a session process, so running /compact
+// twice on unchanged history returns the first summary without a second call.
+const summaryCache = new SummaryCache();
 
 /** Handles the /compact command. */
 export const compactCommand: SlashCommand = {
@@ -18,8 +24,16 @@ export const compactCommand: SlashCommand = {
 
     if (context.provider) {
       const provider = context.provider;
-      const model = context.config.model;
+      // Internal summary: route to the cheap model tier unless the user opted
+      // out. The user-facing model is untouched.
+      const model =
+        context.config.autoRouteInternal === false
+          ? context.config.model
+          : resolveFastModel(context.config.provider, context.config.model);
       summarize = async (msgs) => {
+        const cacheKey = hashSummaryInput(model, msgs);
+        const cached = summaryCache.get(cacheKey);
+        if (cached !== undefined) return cached;
         let result = "";
         try {
           for await (const event of provider.stream({
@@ -31,10 +45,10 @@ export const compactCommand: SlashCommand = {
               "## Changes Made\n- File paths modified and what was changed\n\n" +
               "## Key Findings\n- Bugs found, errors encountered, important observations\n\n" +
               "## Current State\n- What has been completed vs what remains\n- Last approach tried and whether it worked\n\n" +
-              "Be brief but preserve ALL file paths, function names, and specific error messages. " +
+              "Be brief (under ~300 words) but preserve ALL file paths, function names, and specific error messages. " +
               "This summary replaces earlier messages — anything not included here is lost.",
-            maxTokens: 2048,
-            effort: context.config.effort,
+            maxTokens: 1024,
+            effort: "low",
           })) {
             if (event.type === "text_delta") result += event.text;
             if (event.type === "usage") {
@@ -54,6 +68,7 @@ export const compactCommand: SlashCommand = {
           summarizeError = "the model returned an empty summary";
           throw new Error(summarizeError);
         }
+        summaryCache.set(cacheKey, result);
         return result;
       };
     }
