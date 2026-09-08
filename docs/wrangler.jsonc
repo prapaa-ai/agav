@@ -1,0 +1,17 @@
+/**
+ * Cloudflare Worker (static assets) config for the docs site.
+ *
+ * The docs are a Next.js static export (`output: 'export'` when CF_PAGES is
+ * set — see next.config.ts), so there is no server entry point: the Worker
+ * just serves the prerendered files in `out/`. Cloudflare's deploy step runs
+ * `wrangler versions upload`, which reads this file to find the assets
+ * directory.
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agav-docs",
+  "compatibility_date": "2026-09-07",
+  "assets": {
+    "directory": "./out"
+  }
+}
