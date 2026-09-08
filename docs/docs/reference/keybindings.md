@@ -15,7 +15,9 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Plan detail panel | `Ctrl+G` |
 | Toggle thinking text | `Ctrl+T` |
 | Toggle compaction summary | `Ctrl+O` |
-| Cycle subagents | `Tab` |
+| Select subagent | `↑` / `↓` |
+| Inspect subagent | `Enter` |
+| Back to overview | `Tab` |
 | Insert newline | `Shift+Enter`, or `Option+Return` on macOS terminals that support it |
 | Submit | `Enter` |
 | Prompt history | `Up` / `Down` |
