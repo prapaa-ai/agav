@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "tsx scripts/generate-search-index.ts && next build",
+    "build:cf": "STATIC_EXPORT=1 tsx scripts/generate-search-index.ts && STATIC_EXPORT=1 next build",
     "start": "next start",
     "lint": "eslint",
     "prebuild": "tsx scripts/generate-search-index.ts",
