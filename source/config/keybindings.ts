@@ -7,7 +7,6 @@ export type KeybindingAction =
   | "toggleToolDetail"
   | "togglePlanDetail"
   | "toggleThinking"
-  | "cycleSubagents"
   | "newline"
   | "submit"
   | "historyUp"
@@ -33,7 +32,6 @@ const ACTIONS: KeybindingAction[] = [
   "toggleToolDetail",
   "togglePlanDetail",
   "toggleThinking",
-  "cycleSubagents",
   "newline",
   "submit",
   "historyUp",
@@ -59,7 +57,7 @@ const ACTIONS: KeybindingAction[] = [
  * dead at the keyboard. Keep them exhaustive over `ACTIONS` — a test enforces it.
  */
 export const GLOBAL_ACTIONS: KeybindingAction[] = [
-  "cancel", "interrupt", "cycleSubagents", "toggleToolDetail", "togglePlanDetail",
+  "cancel", "interrupt", "toggleToolDetail", "togglePlanDetail",
   "toggleThinking", "retryLastTurn", "showKeybindings", "clearScreen",
   "scrollUp", "scrollDown", "scrollTop", "scrollBottom", "exit",
 ];
@@ -77,7 +75,6 @@ export const DEFAULT_KEYBINDINGS: Keybindings = {
   // shortcut. Ctrl+G because Ctrl+V is the clipboard-image paste.
   togglePlanDetail: ["ctrl+g"],
   toggleThinking: ["ctrl+t"],
-  cycleSubagents: ["tab"],
   // Shift+Enter only survives an enhanced keyboard protocol; the other two are
   // the fallbacks every terminal can send. See normalizeKeyEvent below.
   newline: ["shift+enter", "meta+enter", "ctrl+j"],

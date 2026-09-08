@@ -86,6 +86,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [preview, setPreview] = useState<PreviewContent | null>(null);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
+  const [selectedSubagentIdx, setSelectedSubagentIdx] = useState(0);
   // Everything above the input prompt is one scrolling document, driven from
   // here by the scroll keybindings and by wheel events that landed on the
   // footer. It stays uncontrolled: holding the offset in React state would mean
@@ -481,8 +482,16 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   useEffect(() => {
     if (!isLoading) {
       setFocusedSubagentId(null);
+      setSelectedSubagentIdx(0);
     }
   }, [focusedSubagentId, isLoading]);
+
+  // Clamp the selection index when subagents finish and the list shrinks.
+  useEffect(() => {
+    if (subagentStates.length > 0) {
+      setSelectedSubagentIdx((prev) => Math.min(prev, subagentStates.length - 1));
+    }
+  }, [subagentStates.length]);
 
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
   useInput((rawChar, rawKey) => {
@@ -514,14 +523,25 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
       return;
     }
-    if (match.action === "cycleSubagents" && hasSubagents && !pendingConfirmation) {
-      setFocusedSubagentId((prev) => {
-        if (!prev) return subagentStates[0]?.id ?? null;
-        const idx = subagentStates.findIndex((s) => s.id === prev);
-        if (idx < 0 || idx >= subagentStates.length - 1) return null;
-        return subagentStates[idx + 1]!.id;
-      });
+    if (focusedSubagentId && isLoading && !pendingConfirmation && key.tab) {
+      setFocusedSubagentId(null);
       return;
+    }
+    // Arrow key navigation in the subagent overview list
+    if (hasSubagents && !focusedSubagentId && !pendingConfirmation) {
+      if (key.upArrow) {
+        setSelectedSubagentIdx((prev) => Math.max(0, prev - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setSelectedSubagentIdx((prev) => Math.min(subagentStates.length - 1, prev + 1));
+        return;
+      }
+      if (key.return) {
+        const sa = subagentStates[selectedSubagentIdx];
+        if (sa) setFocusedSubagentId(sa.id);
+        return;
+      }
     }
     if (match.action === "toggleToolDetail" && !pendingConfirmation) {
       if (messages.some((message) => message.role === "tool")) {
@@ -945,7 +965,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           return (
             <Box flexDirection="column" marginBottom={1}>
               <SubagentDisplay progress={focusedSubagent} mode="detail" />
-              <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cancel")}: back to overview</Text>
+              <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cancel")}: cancel this subagent · Tab: back to overview</Text>
             </Box>
           );
         }
@@ -957,12 +977,33 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               .map((tc, i) => (
                 <ToolCallDisplay key={`${tc.toolName}-${i}`} toolCall={tc} />
               ))}
-            {subagentStates.map((sa, i) => (
-              <SubagentDisplay key={sa.id} progress={sa} mode="compact" index={i} />
-            ))}
+            {subagentStates.map((sa, i) => {
+              const isSelected = i === selectedSubagentIdx;
+              return (
+                <Box key={sa.id}>
+                  {isSelected ? <Text color="cyan">{"▸ "}</Text> : <Text>{"  "}</Text>}
+                  <SubagentDisplay progress={sa} mode="compact" index={i} />
+                </Box>
+              );
+            })}
+            {(() => {
+              const pendingSubagents = toolCalls.filter((tc) => tc.toolName === "subagent" && tc.status === "running");
+              const spawning = pendingSubagents.length > 0 && subagentStates.length === 0;
+              if (spawning) {
+                const count = pendingSubagents.length;
+                return (
+                  <Box>
+                    <Text dimColor>{"  "}</Text>
+                    <Text color="cyan"><Spinner />{" "}</Text>
+                    <Text dimColor>Spawning {count} subagent{count !== 1 ? "s" : ""}...</Text>
+                  </Box>
+                );
+              }
+              return null;
+            })()}
             <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} />
             {hasSubagents && (
-              <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cycleSubagents")}: cycle subagents · {formatKeybinding(keybindings, "cancel")}: cancel</Text>
+              <Text dimColor>{"\n  "}↑↓: select · Enter: inspect · {formatKeybinding(keybindings, "cancel")}: cancel all</Text>
             )}
           </Box>
         );
