@@ -7,6 +7,7 @@ vi.mock("../ink/termio/clipboard.js", () => ({writeClipboard}));
 
 import render from "../ink/render.js";
 import Text from "../ink/components/Text.js";
+import {DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING} from "../ink/termio/dec.js";
 
 type FakeStdout = NodeJS.WriteStream & {chunks: string[]};
 
@@ -87,6 +88,55 @@ describe("global text selection", () => {
 		await instance.waitUntilRenderFlush();
 
 		stdin.emit("data", "\x1b[<0;1;1M");
+		stdin.emit("data", "\x1b[<0;6;1m");
+
+		expect(writeClipboard).toHaveBeenCalledWith(stdout, "hello");
+		instance.unmount();
+	});
+
+	it("ignores right-click reports so the host's native context menu handles them", async () => {
+		const stdout = makeStdout();
+		const stdin = makeStdin();
+		const instance = render(createElement(Text, null, "hello"), {
+			stdout,
+			stdin,
+			patchConsole: false,
+			exitOnCtrlC: false,
+		});
+		await instance.waitUntilRenderFlush();
+
+		// A right-click press must not touch the clipboard or selection state,
+		// and must re-assert mouse tracking (DISABLE then ENABLE) to reset the
+		// terminal's button-state machine — otherwise xterm.js in Cursor is left
+		// believing a button is held and every later click breaks.
+		const before = stdout.chunks.length;
+		stdin.emit("data", "\x1b[<2;3;1M");
+
+		expect(writeClipboard).not.toHaveBeenCalled();
+		const written = stdout.chunks.slice(before).join("");
+		const disableIdx = written.indexOf(DISABLE_MOUSE_TRACKING);
+		const enableIdx = written.indexOf(ENABLE_MOUSE_TRACKING);
+		expect(disableIdx).toBeGreaterThanOrEqual(0);
+		expect(enableIdx).toBeGreaterThan(disableIdx);
+		instance.unmount();
+	});
+
+	it("a left-drag still works after a stray right-click", async () => {
+		const stdout = makeStdout();
+		const stdin = makeStdin();
+		const instance = render(createElement(Text, null, "hello"), {
+			stdout,
+			stdin,
+			patchConsole: false,
+			exitOnCtrlC: false,
+		});
+		await instance.waitUntilRenderFlush();
+
+		// Right-click first (ignored), then a normal left-drag selection: the
+		// dropped right-click must not have wedged any selection state.
+		stdin.emit("data", "\x1b[<2;3;1M");
+		stdin.emit("data", "\x1b[<0;1;1M");
+		stdin.emit("data", "\x1b[<32;6;1M");
 		stdin.emit("data", "\x1b[<0;6;1m");
 
 		expect(writeClipboard).toHaveBeenCalledWith(stdout, "hello");
