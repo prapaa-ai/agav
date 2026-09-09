@@ -65,6 +65,14 @@ const END_SYNC = "\x1b[?2026l";
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 
+// After this many milliseconds of stdin silence, the next chunk triggers a
+// terminal-mode re-assert. Laptop sleep/wake, lid close, Space switch, display
+// change, tmux detach→attach and ssh reconnect can all leave the terminal
+// having silently reset DEC private modes (mouse tracking, kitty keyboard)
+// while sending no signal we can hook. 5s is well above normal inter-keystroke
+// gaps but short enough that the first interaction after waking works.
+const STDIN_RESUME_GAP_MS = 5000;
+
 const noop = (): void => {};
 
 // ---------------------------------------------------------------------------
@@ -281,6 +289,9 @@ export default class Ink {
 	// Prepended to the next stdin chunk so the sequence can be matched whole.
 	private mouseBuffer: string | undefined;
 	private escapeTimer: NodeJS.Timeout | undefined;
+	// Timestamp of the last stdin chunk. Used to detect long idle gaps after
+	// which the terminal may have silently reset DEC private modes.
+	private lastInputTime = Date.now();
 	private lastOutput = "";
 	private fullStaticOutput = "";
 
@@ -425,6 +436,63 @@ export default class Ink {
 			// Best effort — a failure here must not take down the UI on top of
 			// the read error we are already recovering from.
 		}
+	};
+
+	/**
+	 * Re-assert terminal modes after a long stdin-silence gap.
+	 *
+	 * Laptop sleep/wake, lid close, Space switch, display change, tmux
+	 * detach→attach and ssh reconnect can all leave the terminal having reset
+	 * DEC private modes — none of which send a signal we can hook. The next
+	 * keystroke then arrives into a terminal whose mouse tracking and kitty
+	 * keyboard state no longer match what Ink believes, so mouse reports and
+	 * key sequences leak into the prompt as gibberish (the exact macOS
+	 * idle-then-type symptom in Cursor's terminal).
+	 *
+	 * Re-writing the modes on that first post-idle chunk restores the
+	 * agreement. Mouse tracking is idempotent (a DEC set-when-set is a no-op),
+	 * so re-asserting it is always safe. The kitty keyboard protocol is NOT
+	 * idempotent — `CSI > flags u` pushes onto a stack — so we pop first
+	 * (`CSI < u`) to keep the depth at exactly one; a pop on an empty stack is
+	 * a spec no-op, so this still restores depth 0→1 after a genuine reset.
+	 * Never touches the terminal while suspended (a raw-stdout caller owns it).
+	 */
+	private readonly reassertTerminalModes = (): void => {
+		const {stdout} = this.options;
+		if (this.isUnmounted || this.suspendCount > 0 || !stdout.isTTY) {
+			return;
+		}
+
+		// Mouse tracking — idempotent, safe to re-assert unconditionally.
+		stdout.write(ENABLE_MOUSE_TRACKING);
+
+		// Kitty keyboard — pop-before-push keeps the stack balanced instead of
+		// accumulating an entry on every idle gap (which the single pop on exit
+		// could not drain, leaving the shell in CSI-u mode afterward).
+		if (this.kittyKeyboardEnabled && this.kittyKeyboard?.mode === "enabled") {
+			const flags = (this.kittyKeyboard.flags ?? [
+				"disambiguateEscapeCodes",
+			]) as KittyFlagName[];
+			stdout.write("\x1b[<u" + `\x1b[>${resolveFlags(flags)}u`);
+		}
+	};
+
+	/**
+	 * Reset the terminal's mouse-tracking state machine.
+	 *
+	 * A right/middle click whose release is swallowed by a host context menu
+	 * (Cursor, VS Code) leaves xterm.js believing a button is still held, which
+	 * breaks every subsequent click. Re-issuing DISABLE→ENABLE forces the
+	 * terminal to drop any half-held button and start clean. Mouse tracking is
+	 * left enabled afterwards, so left-click selection keeps working.
+	 */
+	private readonly resetMouseTracking = (): void => {
+		const {stdout} = this.options;
+		if (this.isUnmounted || this.suspendCount > 0 || !stdout.isTTY) {
+			return;
+		}
+		stdout.write(DISABLE_MOUSE_TRACKING);
+		stdout.write(ENABLE_MOUSE_TRACKING);
 	};
 
 	private readonly setRawMode = (value: boolean): void => {
@@ -627,6 +695,16 @@ export default class Ink {
 			return;
 		}
 
+		// Detect a long idle gap: if the terminal was silent past the threshold,
+		// it may have reset DEC private modes while asleep/detached. Re-assert
+		// them before this chunk is parsed so mouse/key sequences don't leak as
+		// gibberish. One Date.now() covers the whole chunk.
+		const now = Date.now();
+		if (now - this.lastInputTime > STDIN_RESUME_GAP_MS) {
+			this.reassertTerminalModes();
+		}
+		this.lastInputTime = now;
+
 		let chunk =
 			typeof data === "string"
 				? data
@@ -818,6 +896,26 @@ export default class Ink {
 	}
 
 	private readonly handleMouseEvent = (ev: ParsedMouse): void => {
+		// Non-left mouse buttons (button 1 = middle, 2 = right) have no in-app
+		// behaviour — we only use the left button for selection. But we cannot
+		// simply ignore them: in embedded terminals like Cursor's / VS Code's
+		// xterm.js a right-click opens the host's native context menu and then
+		// stops forwarding mouse events, so the matching *release* never arrives.
+		// With button-event tracking (DEC 1002) on, xterm.js's drag-state
+		// machine is left believing a button is still held, and every subsequent
+		// click is mis-tracked — the mouse "goes dead" until restart.
+		//
+		// The protocol has no way to opt out of right-click reporting (mode 1000
+		// reports every button), so instead we self-heal: drop the report AND
+		// re-assert mouse tracking, which resets the terminal's button-state
+		// machine (a fresh DISABLE→ENABLE clears any half-held button). Left
+		// clicks keep working, and the host's native right-click menu still
+		// appears. Wheel events also carry a button number, so exclude them.
+		if (!ev.wheel && ev.button !== 0) {
+			this.resetMouseTracking();
+			return;
+		}
+
 		// Everything downstream — hit-testing, and the coordinates handlers
 		// compare against `internal_x` / `internal_y` — works in frame rows.
 		const y = ev.y + this.frameScrollOffset;
