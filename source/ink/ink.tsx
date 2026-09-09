@@ -378,7 +378,54 @@ export default class Ink {
 
 		this.setRawMode(true);
 		stdin.on("data", this.handleInput);
+		stdin.on("error", this.handleStdinError);
 	}
+
+	/**
+	 * Recover from a transient TTY read error instead of going deaf.
+	 *
+	 * On macOS, after the process has been idle (App Nap, lid close, Space
+	 * switch, display change) a read on the raw TTY can surface a transient
+	 * error — commonly EAGAIN/EIO. Node reports it on the stream and, with no
+	 * handler, stops the 'data' flow entirely: the UI stays painted but every
+	 * keystroke vanishes, and the only way out is to kill the process from
+	 * another terminal (see dekit#213, claude-code#25286).
+	 *
+	 * Re-arming raw mode and resuming the stream restores input delivery
+	 * without disturbing terminal state. A hard error (stream truly gone) is
+	 * left to the normal exit path.
+	 */
+	private readonly handleStdinError = (error: NodeJS.ErrnoException): void => {
+		if (this.isUnmounted) {
+			return;
+		}
+
+		// EAGAIN/EIO are the transient "try again" errors a raw TTY throws after
+		// the OS parks it. Anything else (e.g. the descriptor was revoked on a
+		// terminal hangup) is not recoverable here.
+		const transient = error?.code === "EAGAIN" || error?.code === "EIO";
+		if (!transient) {
+			return;
+		}
+
+		const {stdin} = this.options;
+		try {
+			if (
+				this.isRawModeEnabled &&
+				stdin.isTTY &&
+				typeof stdin.setRawMode === "function"
+			) {
+				// Toggle raw mode off and back on to reset the underlying read
+				// request that the OS abandoned.
+				stdin.setRawMode(false);
+				stdin.setRawMode(true);
+			}
+			stdin.resume();
+		} catch {
+			// Best effort — a failure here must not take down the UI on top of
+			// the read error we are already recovering from.
+		}
+	};
 
 	private readonly setRawMode = (value: boolean): void => {
 		const {stdin} = this.options;
@@ -476,6 +523,7 @@ export default class Ink {
 			}
 
 			this.options.stdin.off("data", this.handleInput);
+			this.options.stdin.off("error", this.handleStdinError);
 		}
 
 		let resumed = false;
@@ -495,6 +543,7 @@ export default class Ink {
 			const {stdout, stdin} = this.options;
 
 			stdin.on("data", this.handleInput);
+			stdin.on("error", this.handleStdinError);
 
 			// A raw-stdout caller commonly pauses stdin on its way out, which
 			// would leave Ink deaf now that its listener is back.
@@ -1146,6 +1195,7 @@ export default class Ink {
 		const {stdout, stdin} = this.options;
 
 		stdin.off("data", this.handleInput);
+		stdin.off("error", this.handleStdinError);
 
 		// Restore raw mode.
 		this.rawModeEnabledCount = 0;

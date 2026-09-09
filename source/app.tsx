@@ -95,12 +95,45 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [termRows, setTermRows] = useState(process.stdout.rows || 24);
   const [termCols, setTermCols] = useState(process.stdout.columns || 80);
   useEffect(() => {
-    const onResize = () => {
-      setTermRows(process.stdout.rows || 24);
-      setTermCols(process.stdout.columns || 80);
+    // macOS terminals (Cursor's xterm.js, iTerm2, Terminal.app) fire bursts of
+    // resize events — often with identical or no-op dimensions — on focus, wake
+    // from idle, Space switches, and display changes. Handling each one triggers
+    // a React re-render and a full-screen repaint; a burst saturates the event
+    // loop and leaves the UI frozen (see dekit#213, claude-code#25286).
+    //
+    // Two guards defuse it: drop resizes that don't actually change the reported
+    // size, and coalesce any remaining burst into a single trailing update on
+    // the next tick so N events cost one render, not N.
+    let lastRows = process.stdout.rows || 24;
+    let lastCols = process.stdout.columns || 80;
+    let scheduled: ReturnType<typeof setTimeout> | undefined;
+
+    const apply = () => {
+      scheduled = undefined;
+      const rows = process.stdout.rows || 24;
+      const cols = process.stdout.columns || 80;
+      if (rows === lastRows && cols === lastCols) return;
+      lastRows = rows;
+      lastCols = cols;
+      setTermRows(rows);
+      setTermCols(cols);
     };
+
+    const onResize = () => {
+      const rows = process.stdout.rows || 24;
+      const cols = process.stdout.columns || 80;
+      // No-op resize (same dimensions): ignore entirely.
+      if (rows === lastRows && cols === lastCols) return;
+      // Coalesce a burst: the last event in the tick wins.
+      if (scheduled) return;
+      scheduled = setTimeout(apply, 16);
+    };
+
     process.stdout.on("resize", onResize);
-    return () => { process.stdout.off("resize", onResize); };
+    return () => {
+      if (scheduled) clearTimeout(scheduled);
+      process.stdout.off("resize", onResize);
+    };
   }, []);
   const [showCompactionSummary, setShowCompactionSummary] = useState(false);
   const [runningSkillName, setRunningSkillName] = useState<string | null>(null);
