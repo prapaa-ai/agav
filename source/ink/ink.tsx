@@ -1483,10 +1483,42 @@ const ORPHANED_SGR_MOUSE_RE = /^\[<\d+;\d+;\d+[Mm]/;
 const ORPHANED_SGR_MOUSE_TAIL_RE =
 	/^<?(?:;\d{1,4}(?:;\d{1,4})*|(?:\d{1,4};)+\d{1,4})[Mm]/;
 
+/**
+ * Matches an orphaned *legacy X10* mouse report at the start of `chunk` — the
+ * `[M` introducer plus its three raw coordinate bytes, whose leading `\x1b` was
+ * already consumed by a previous read.
+ *
+ * This is the macOS scroll-after-wake failure mode: on wake the terminal can
+ * silently drop SGR extended coords (DEC 1006) and fall back to X10 wheel
+ * reports (`\x1b[M` + 3 bytes). Under a scroll flood a read boundary can leave a
+ * lone trailing `\x1b`; the 50 ms escape timer then flushes it as an Escape
+ * keypress, so the next read begins with a headless `[M`+3-byte body. Unlike the
+ * SGR case (`matchOrphanedCSI`), there was no recovery for this shape, so each
+ * wheel tick leaked five bytes into the prompt — the reported "gibberish that
+ * grows on every scroll".
+ *
+ * We match ONLY the exact `[M` + 3-byte form. The three payload bytes are each
+ * offset by 32 in the X10 encoding, so they are always >= 0x20 (printable
+ * range); we still require the `[M` introducer verbatim so ordinary text like
+ * "Menu" (an `M` with no preceding `[`) is never swallowed. The bytes
+ * themselves are not range-checked beyond "present", matching how the complete
+ * X10 matcher (`X10_MOUSE_RE`) accepts any three bytes.
+ */
+const ORPHANED_X10_MOUSE_RE =
+	// eslint-disable-next-line no-control-regex
+	/^\[M[\s\S]{3}/;
+
 const matchOrphanedCSI = (chunk: string): number => {
-	// Full orphaned CSI: `[<button;col;rowM`
+	// Full orphaned SGR CSI: `[<button;col;rowM`
 	if (chunk.length >= 6 && chunk[0] === "[" && chunk[1] === "<") {
 		const m = ORPHANED_SGR_MOUSE_RE.exec(chunk);
+		if (m) return m[0].length;
+	}
+
+	// Full orphaned X10 body: `[M` + 3 raw coordinate bytes. Leading \x1b was
+	// flushed by the escape timer; without this the bytes leak into the prompt.
+	if (chunk.length >= 5 && chunk[0] === "[" && chunk[1] === "M") {
+		const m = ORPHANED_X10_MOUSE_RE.exec(chunk);
 		if (m) return m[0].length;
 	}
 
