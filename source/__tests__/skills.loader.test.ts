@@ -8,9 +8,10 @@ vi.mock("../config/config.js", () => ({
   getAgavDir: () => mockAgavDir,
 }));
 
-import { buildSkillCatalog, getCachedSkills, getSkill, loadSkills, parseSkillMarkdown } from "../skills/loader.js";
+import { buildSkillCatalog, getCachedSkills, getSkill, loadAllSkills, loadSkills, parseSkillMarkdown } from "../skills/loader.js";
 import type { SkillDefinition } from "../skills/types.js";
 import { BUNDLED_SKILL_FILES } from "../skills/bundled-manifest.js";
+import { setSkillEnabled } from "../skills/skill-registry.js";
 
 describe("skills/loader", () => {
   it("parses frontmatter with lists, booleans, quoted values, and body text", () => {
@@ -486,5 +487,60 @@ describe("skills/loader — loadBundled", () => {
       expect(s.name).toBeTruthy();
       expect(s.origin).toBe("bundled");
     }
+  });
+});
+
+describe("skills/loader — disable/enable", () => {
+  let tmpBase: string;
+
+  beforeEach(async () => {
+    tmpBase = await mkdtemp(join(tmpdir(), "agav-disable-test-"));
+    await mkdir(join(tmpBase, "global", "skills"), { recursive: true });
+    await mkdir(join(tmpBase, "project", ".agav", "skills"), { recursive: true });
+    mockAgavDir = join(tmpBase, "global");
+    vi.spyOn(process, "cwd").mockReturnValue(join(tmpBase, "project"));
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(tmpBase, { recursive: true, force: true });
+  });
+
+  it("disabling a bundled skill excludes it from loadSkills but keeps it in loadAllSkills", async () => {
+    const target = Object.keys(BUNDLED_SKILL_FILES)[0]!;
+
+    // Sanity: present and enabled before disabling.
+    expect((await loadSkills()).some((s) => s.slug === target)).toBe(true);
+
+    await setSkillEnabled(target, false);
+
+    const active = await loadSkills();
+    expect(active.some((s) => s.slug === target)).toBe(false);
+
+    const all = await loadAllSkills();
+    const entry = all.find((s) => s.slug === target);
+    expect(entry).toBeDefined();
+    expect(entry!.disabled).toBe(true);
+  });
+
+  it("re-enabling a disabled bundled skill restores it to loadSkills", async () => {
+    const target = Object.keys(BUNDLED_SKILL_FILES)[0]!;
+
+    await setSkillEnabled(target, false);
+    expect((await loadSkills()).some((s) => s.slug === target)).toBe(false);
+
+    await setSkillEnabled(target, true);
+    const active = await loadSkills();
+    expect(active.some((s) => s.slug === target)).toBe(true);
+    expect(active.find((s) => s.slug === target)!.disabled).toBeFalsy();
+  });
+
+  it("a disabled skill is excluded from the catalog fed to the model", async () => {
+    const target = Object.keys(BUNDLED_SKILL_FILES)[0]!;
+    const disabledName = (await loadAllSkills()).find((s) => s.slug === target)!.name;
+    await setSkillEnabled(target, false);
+
+    const catalog = buildSkillCatalog(await loadSkills());
+    expect(catalog).not.toContain(`- ${disabledName}:`);
   });
 });

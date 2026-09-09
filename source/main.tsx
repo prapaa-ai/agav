@@ -190,6 +190,11 @@ export function parseArgs(argv: string[]) {
       if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
         flags.agentsCommand = argv[++i]!;
       }
+    } else if (arg === "skills" && i === 0) {
+      flags.skills = true;
+      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
+        flags.skillsCommand = argv[++i]!;
+      }
     } else if (arg === "run" && i === 0) {
       flags.run = true;
     } else if (flags.run && !arg.startsWith("-") && !flags.runPrompt) {
@@ -397,6 +402,7 @@ export async function main() {
     $ agav run "prompt"            Non-interactive agent mode (CI/scripting)
     $ agav update                  Update to the latest version
     $ agav agents [command]        Manage service agents
+    $ agav skills [command]        Manage skills
     $ agav --print "prompt"
     $ cat file | agav -P "explain this"
 
@@ -425,6 +431,14 @@ export async function main() {
     $ agav agents remove <name>    Uninstall an agent
     $ agav agents enable <name>    Enable an agent
     $ agav agents disable <name>   Disable an agent
+
+  Skill Commands
+    $ agav skills list             List all skills (bundled, global, project)
+    $ agav skills add <url|path>   Install a skill from a URL or local path
+    $ agav skills remove <name>    Uninstall a global skill
+    $ agav skills disable <name>   Disable a skill (bundled skills included)
+    $ agav skills enable <name>    Re-enable a disabled skill
+    $ agav skills clear            Remove all user-installed skills
 
   Examples
     $ agav
@@ -466,6 +480,20 @@ export async function main() {
       ? agentsIdx + (agentsCommand ? 2 : 1)
       : (agentsCommand ? 4 : 3);
     const exitCode = await runAgentsCommand(agentsCommand, process.argv.slice(argsStartIndex));
+    process.exit(exitCode);
+    return;
+  }
+
+  // Skill management: agav skills <command>
+  if (flags.skills) {
+    const { runSkillsCommand } = await import("./cli/skills-cli.js");
+    const skillsCommand = typeof flags.skillsCommand === "string" ? flags.skillsCommand : undefined;
+    // Find "skills" position in argv to correctly slice remaining args
+    const skillsIdx = process.argv.indexOf("skills");
+    const argsStartIndex = skillsIdx >= 0
+      ? skillsIdx + (skillsCommand ? 2 : 1)
+      : (skillsCommand ? 4 : 3);
+    const exitCode = await runSkillsCommand(skillsCommand, process.argv.slice(argsStartIndex));
     process.exit(exitCode);
     return;
   }

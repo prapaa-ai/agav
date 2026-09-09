@@ -55,6 +55,8 @@ Type `/` in an interactive session to autocomplete commands. Run `/help` to see 
 | `/skills add <path\|url>` | Validate and install a skill from a local `SKILL.md` or trusted URL. Restart Agav to activate it. |
 | `/skills marketplace [number]` | List available marketplace skills or install a numbered entry. |
 | `/skills remove <name>`, `/skills rm <name>` | Remove an installed global skill. Restart Agav to apply the change. |
+| `/skills disable <name>` | Turn a skill off without deleting it. Works on bundled skills, which are compiled into the binary and cannot be removed. Restart Agav to apply. |
+| `/skills enable <name>` | Turn a previously disabled skill back on. Restart Agav to apply. |
 | `/skills clear` | Remove all user-installed (global) skills. Bundled and project skills are unaffected. Restart Agav to apply. |
 | `/<skill-name> [arguments]` | Invoke an installed user-callable skill. The exact command name comes from the skill's slug. |
 
