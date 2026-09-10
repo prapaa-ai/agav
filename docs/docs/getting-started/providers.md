@@ -13,7 +13,7 @@ Agav needs one model provider. The easiest path is:
 3. launch Agav with that provider and model
 4. ask one read-only question to confirm it works
 
-The default provider is **Anthropic** — if you run `agav` with no flags and no config file, it will try to use Anthropic. If you are not sure which provider to pick, use OpenAI, Anthropic, or Gemini if you already have an API key. Use OpenRouter if you want access to multiple providers behind a single key. Use NVIDIA NIM for NVIDIA-hosted models. Use Ollama if you want to run locally. Use Vertex AI if you already run on Google Cloud and want Gemini or Claude billed through that project.
+The default provider is **Anthropic** — if you run `agav` with no flags and no config file, it will try to use Anthropic. If you are not sure which provider to pick, use OpenAI, Anthropic, or Gemini if you already have an API key. Use OpenRouter if you want access to multiple providers behind a single key. Use NVIDIA NIM for NVIDIA-hosted models. Use DeepSeek for DeepSeek's own models. Use Ollama if you want to run locally. Use Vertex AI if you already run on Google Cloud and want Gemini or Claude billed through that project.
 
 ## Fastest path
 
@@ -44,6 +44,28 @@ By default Agav uses the OpenAI Responses API. If you need the Chat Completions 
 ```bash
 agav --provider openai --model gpt-5.4-mini --openai-api chat
 ```
+
+### Custom base URL (OpenAI-compatible endpoints)
+
+Many services speak the OpenAI API without being OpenAI — private gateways, self-hosted deployments, LiteLLM/vLLM servers, or vendors that expose an OpenAI-compatible endpoint. Point the `openai` provider at one with `OPENAI_BASE_URL` instead of adding a dedicated provider:
+
+```bash
+export OPENAI_API_KEY="your-key"
+export OPENAI_BASE_URL="https://my-gateway.example.com/v1"
+agav --provider openai --model your-model
+```
+
+Or set it in `~/.agav/config.json`:
+
+```json
+{
+  "provider": "openai",
+  "model": "your-model",
+  "openaiBaseURL": "https://my-gateway.example.com/v1"
+}
+```
+
+The base URL applies only to the `openai` provider. When unset, Agav uses OpenAI's default endpoint. Most OpenAI-compatible endpoints implement Chat Completions rather than the Responses API, so pair a custom base URL with `--openai-api chat` if requests fail.
 
 ## OpenRouter
 
@@ -110,6 +132,38 @@ Or set it in `~/.agav/config.json`:
 
 Context window sizes are detected automatically from the NVIDIA API. The API base URL is `https://integrate.api.nvidia.com/v1`.
 
+## DeepSeek
+
+[DeepSeek](https://api-docs.deepseek.com) provides access to DeepSeek's own models through an OpenAI-compatible API. Set the API key:
+
+```bash
+export DEEPSEEK_API_KEY="sk-..."
+```
+
+Start Agav with DeepSeek:
+
+```bash
+agav --provider deepseek
+agav --provider deepseek --model deepseek-v4-pro
+```
+
+The default model is `deepseek-v4-pro`. DeepSeek also offers `deepseek-v4-flash` for faster, lighter responses:
+
+```bash
+agav --provider deepseek --model deepseek-v4-flash
+```
+
+Or set it in `~/.agav/config.json`:
+
+```json
+{
+  "provider": "deepseek",
+  "model": "deepseek-v4-pro"
+}
+```
+
+Context window sizes are detected automatically from the DeepSeek API. The API base URL is `https://api.deepseek.com`.
+
 ## Anthropic
 
 ```bash
@@ -174,6 +228,7 @@ Every provider except Ollama has a preset for `/fast` (lightweight, quick answer
 | OpenAI | `gpt-4o-mini` | `gpt-4o` |
 | OpenRouter | `~google/gemini-flash-latest` | `~anthropic/claude-sonnet-latest` |
 | NVIDIA NIM | `nvidia/nemotron-3.5-lightning-30b-a3b` | `nvidia/nemotron-3.5-lightning-30b-a3b` |
+| DeepSeek | `deepseek-v4-flash` | `deepseek-v4-pro` |
 | Gemini | `gemini-3.5-flash-lite` | `gemini-3.5-pro` |
 | Vertex AI | `vertex/gemini-3.5-flash-lite` | `vertex/gemini-3.5-pro` |
 
