@@ -135,6 +135,7 @@ interface UseAgentReturn {
   refreshAgentCommands: () => Promise<void>;
   addDisplayMessage: (msg: DisplayMessage) => void;
   cancel: () => void;
+  cancelSubagent: (id: string) => void;
   clearMessages: () => void;
   confirmTool: (choice: ConfirmResult) => void;
   conversation: ConversationState;
@@ -217,6 +218,7 @@ export function useAgent(
   const resetPlanContinue = () => { planContinueRef.current = { stepId: -1, attempts: 0 }; };
   const resumedRef = useRef(false);
 
+  const subagentToolRef = useRef<{ cancelSubagent: (id: string) => void } | null>(null);
   const confirmationQueueRef = useRef(new ConfirmationQueue());
   const conversationRef = useRef(new ConversationState());
   conversationRef.current.setModel(config.model);
@@ -281,6 +283,7 @@ export function useAgent(
         })),
         getSignal: () => abortRef.current?.signal,
       });
+      subagentToolRef.current = subagentTool;
       toolRegistryRef.current.register(subagentTool);
     }
   }, [provider]);
@@ -405,6 +408,11 @@ export function useAgent(
   const cancel = useCallback(() => {
     abortRef.current?.abort();
     confirmationQueueRef.current.clear();
+  }, []);
+
+  /** Cancel a single subagent by its ID while leaving others running. */
+  const cancelSubagent = useCallback((id: string) => {
+    subagentToolRef.current?.cancelSubagent(id);
   }, []);
 
   const addDisplayMessage = useCallback((msg: DisplayMessage) => {
@@ -1242,6 +1250,7 @@ export function useAgent(
     refreshAgentCommands,
     addDisplayMessage,
     cancel,
+    cancelSubagent,
     clearMessages,
     confirmTool,
     conversation: conversationRef.current,
