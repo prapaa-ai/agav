@@ -34,6 +34,7 @@ const HINTS = [
   "/debug shows internal state, sandbox, and diagnostics",
   "/skills lists installed skills — /skills marketplace to browse more",
   "/skills info <name> shows skill usage stats and traces",
+  "/skills disable <name> turns off a skill — even bundled ones",
   "/loop 5m <prompt> repeats a prompt on an interval",
   "/loop stop cancels the active loop",
   "/schedule add \"0 9 * * *\" <prompt> creates a persistent cron task",
