@@ -45,6 +45,10 @@ export interface AgavConfig {
   // endpoint (self-hosted gateway, private deployment, or any vendor that
   // speaks the OpenAI API without a dedicated provider entry).
   openaiBaseURL?: string;
+  // Extra HTTP headers sent with every OpenAI-provider request. Useful for
+  // OpenAI-compatible gateways that require custom auth or routing headers
+  // (e.g. an "x-api-key" or a tenant selector) alongside the base URL.
+  openaiHeaders?: Record<string, string>;
   geminiApiKey?: string;
   vertexAICredentialsPath?: string;
   vertexAILocation?: string;
@@ -170,6 +174,11 @@ const PROJECT_CONFIG_TEMPLATE = {
     description: "Override the OpenAI base URL to target an OpenAI-compatible endpoint. Prefer the OPENAI_BASE_URL environment variable.",
     type: "string",
     eg: "https://my-gateway.example.com/v1",
+  },
+  openaiHeaders: {
+    description: "Extra HTTP headers sent with every OpenAI-provider request. Useful for OpenAI-compatible gateways that need custom auth or routing headers.",
+    type: "object",
+    eg: { "x-api-key": "gateway-token", "x-tenant": "team-a" },
   },
   geminiApiKey: {
     description: "Google Gemini API key. Prefer the GEMINI_API_KEY environment variable for secrets.",

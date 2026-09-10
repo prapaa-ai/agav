@@ -38,6 +38,7 @@ export function createProvider(config: AgavConfig): LLMProvider {
       const key = required(config.openaiApiKey, "OpenAI API key");
       provider = new OpenAIProvider(key, config.openaiApi ?? "responses", {
         baseURL: config.openaiBaseURL,
+        defaultHeaders: config.openaiHeaders,
       });
       break;
     }

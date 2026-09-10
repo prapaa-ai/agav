@@ -43,6 +43,7 @@ Agav merges defaults, `~/.agav/config.json`, and `./.agav/config.json` in that o
 | `provider` | `anthropic`, `openai`, `openrouter`, `nvidia`, `deepseek`, `gemini`, `vertex-ai`, or `ollama` |
 | `model` | Provider-specific model identifier |
 | `openaiBaseURL` | Override the OpenAI base URL to target an OpenAI-compatible endpoint (private gateway, self-hosted deployment). Applies only to the `openai` provider. Prefer `OPENAI_BASE_URL`. |
+| `openaiHeaders` | Extra HTTP headers sent with every `openai`-provider request. Useful for OpenAI-compatible gateways that need custom auth or routing headers. |
 | `vertexAICredentialsPath` | Path to a Google Cloud service-account JSON file used by Vertex AI; setting it enables the provider. Supports a leading `~`. Prefer `VERTEX_AI_CREDENTIALS_PATH`. |
 | `vertexAILocation` | Vertex AI region, or `global` for the multi-region endpoint (default `global`). Can also be set with `VERTEX_AI_LOCATION`. |
 | `effort` | `low`, `medium`, `high`, or `max`; invalid values fall back to `medium` |

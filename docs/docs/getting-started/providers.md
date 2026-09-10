@@ -67,6 +67,20 @@ Or set it in `~/.agav/config.json`:
 
 The base URL applies only to the `openai` provider. When unset, Agav uses OpenAI's default endpoint. Most OpenAI-compatible endpoints implement Chat Completions rather than the Responses API, so pair a custom base URL with `--openai-api chat` if requests fail.
 
+If your gateway needs extra HTTP headers — a custom auth header, a tenant selector, or routing metadata — set `openaiHeaders` in `~/.agav/config.json`. They are sent with every OpenAI-provider request:
+
+```json
+{
+  "provider": "openai",
+  "model": "your-model",
+  "openaiBaseURL": "https://my-gateway.example.com/v1",
+  "openaiHeaders": {
+    "x-api-key": "gateway-token",
+    "x-tenant": "team-a"
+  }
+}
+```
+
 ## OpenRouter
 
 [OpenRouter](https://openrouter.ai) aggregates multiple model providers behind a single API key. Set the key as an environment variable:
