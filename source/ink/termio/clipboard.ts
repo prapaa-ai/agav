@@ -3,7 +3,7 @@
 // no native tool is available.
 
 import { platform } from "node:os";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 
 /** Build the OSC 52 escape sequence that sets the system clipboard. */
 export const osc52Copy = (text: string): string => {
@@ -92,24 +92,31 @@ const nativeCopy = (text: string): boolean => {
 	try {
 		if (clipboardCmd.cmd === "powershell") {
 			// PowerShell path: pass text as a Base64-encoded UTF-16LE string
-			// to avoid any quoting or encoding issues on the command line.
+			// baked into the command itself, so this path takes no stdin.
+			// execFile buffers and reaps the child via its callback, so the
+			// process handle is released the moment PowerShell exits — no
+			// long-lived child accumulates over a session.
 			const utf16 = Buffer.from(text, "utf16le").toString("base64");
 			const ps = `[System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${utf16}')) | Set-Clipboard`;
-			const child = spawn("powershell", ["-NoProfile", "-Command", ps], {
-				stdio: ["ignore", "ignore", "ignore"],
-				windowsHide: true,
-			});
-			child.on("error", () => {});
+			const child = execFile(
+				"powershell",
+				["-NoProfile", "-Command", ps],
+				{ windowsHide: true },
+				() => {},
+			);
+			child.on("error", () => {}); // swallow spawn failures (command missing, etc.)
 			return true;
 		}
 
-		const child = spawn(clipboardCmd.cmd, clipboardCmd.args, {
-			stdio: ["pipe", "ignore", "ignore"],
-		});
+		// pbcopy / xclip / xsel read the text from stdin, which must be written
+		// and then closed with .end() so the tool sees EOF and exits. execFile
+		// (over a bare spawn) gives us the completion callback that reaps the
+		// child, but it has no `input` option for the async form — the payload
+		// still has to go through child.stdin explicitly.
+		const child = execFile(clipboardCmd.cmd, clipboardCmd.args, () => {});
 		child.on("error", () => {}); // swallow unexpected runtime errors
-		child.stdin?.on("error", () => {}); // guard against EPIPE
-		child.stdin?.write(text);
-		child.stdin?.end();
+		child.stdin?.on("error", () => {}); // guard against EPIPE if the tool exits early
+		child.stdin?.end(text); // write payload and signal EOF in one call
 		return true;
 	} catch {
 		return false;
