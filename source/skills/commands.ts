@@ -1,8 +1,10 @@
 import type { SlashCommand, CommandResult, CommandContext } from "../commands/types.js";
 import type { SkillDefinition } from "./types.js";
-import { loadSkills, getSkill } from "./loader.js";
+import { loadSkills, loadAllSkills, getSkill } from "./loader.js";
 import { executeSkill } from "./executor.js";
 import { installFromUrl, installFromPath, removeSkill, clearSkills } from "./marketplace.js";
+import { setSkillEnabled } from "./skill-registry.js";
+import { slugify } from "./skill-utils.js";
 import { getSkillTraces } from "./improvement.js";
 import { agavHomePath } from "../utils/shell-hints.js";
 
@@ -48,13 +50,13 @@ export const skillsCommand: SlashCommand = {
   description: "Manage skills",
   // agavHomePath rather than a literal "~/.agav/skills": on PowerShell and cmd
   // that spelling is neither typeable nor recognisable.
-  usage: `Usage: /skills [action]\n\n  /skills                 List installed skills\n  /skills list            Same as above\n  /skills add <url|path>  Install from a URL or a local skill directory\n  /skills remove <name>   Uninstall a skill\n  /skills clear           Remove all user-installed skills\n  /skills info <name>     Show details about a skill\n  /skills marketplace     Browse available skills\n\nA skill is a directory holding a SKILL.md with YAML frontmatter, plus\noptional scripts/, references/ and assets/. The agent can activate one\nautomatically or you can invoke it as a slash command.\n\nInstalls are written to ${agavHomePath("skills")} and take effect after a\nrestart. Point a path at the skill directory to install all of it, or at a\nlone SKILL.md to take just that file and any scripts/, references/ or\nassets/ beside it. GitHub URLs install the whole directory; other hosts\noffer no listing, so only the SKILL.md itself is fetched.`,
+  usage: `Usage: /skills [action]\n\n  /skills                 List installed skills\n  /skills list            Same as above\n  /skills add <url|path>  Install from a URL or a local skill directory\n  /skills remove <name>   Uninstall a skill\n  /skills disable <name>  Turn off a skill (works for bundled skills too)\n  /skills enable <name>   Turn a disabled skill back on\n  /skills clear           Remove all user-installed skills\n  /skills info <name>     Show details about a skill\n  /skills marketplace     Browse available skills\n\nA skill is a directory holding a SKILL.md with YAML frontmatter, plus\noptional scripts/, references/ and assets/. The agent can activate one\nautomatically or you can invoke it as a slash command.\n\nInstalls are written to ${agavHomePath("skills")} and take effect after a\nrestart. Point a path at the skill directory to install all of it, or at a\nlone SKILL.md to take just that file and any scripts/, references/ or\nassets/ beside it. GitHub URLs install the whole directory; other hosts\noffer no listing, so only the SKILL.md itself is fetched.`,
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const parts = args.trim().split(/\s+/);
     const action = parts[0]?.toLowerCase() || "list";
 
     if (action === "list" || !args.trim()) {
-      const skills = await loadSkills();
+      const skills = await loadAllSkills();
       if (skills.length === 0) {
         return { type: "message", text: "No skills installed. Use /skills add <url|path> or /skills marketplace." };
       }
@@ -63,9 +65,21 @@ export const skillsCommand: SlashCommand = {
         const label = inv === "both" ? "auto+manual" : inv === "agav" ? "auto" : "manual";
         let origin = s.origin === "bundled" ? " (bundled)" : s.origin === "project" ? " (project)" : "";
         if (s.overriddenOrigin) origin = ` (project, overrides ${s.overriddenOrigin})`;
-        return `  /${s.slug.padEnd(18)} ${s.description.slice(0, 50).padEnd(50)} [${label}]${origin}`;
+        const state = s.disabled ? " [disabled]" : "";
+        return `  /${s.slug.padEnd(18)} ${s.description.slice(0, 50).padEnd(50)} [${label}]${origin}${state}`;
       });
       return { type: "message", text: "Installed skills:\n" + lines.join("\n") };
+    }
+
+    if (action === "disable" || action === "enable") {
+      const name = parts.slice(1).join(" ").trim();
+      if (!name) return { type: "message", text: `Usage: /skills ${action} <name>` };
+      const slug = slugify(name);
+      const skill = (await loadAllSkills()).find((s) => s.slug === slug || s.name === name);
+      if (!skill) return { type: "message", text: `Skill "${name}" not found.` };
+      await setSkillEnabled(skill.slug, action === "enable");
+      const verb = action === "enable" ? "Enabled" : "Disabled";
+      return { type: "message", text: `${verb} skill: ${skill.name}. Restart to take effect.` };
     }
 
     if (action === "add") {
@@ -94,6 +108,18 @@ export const skillsCommand: SlashCommand = {
     if (action === "remove" || action === "rm") {
       const name = parts.slice(1).join(" ").trim();
       if (!name) return { type: "message", text: "Usage: /skills remove <name>" };
+      // Only global (user-installed) skills live on disk under the config dir and
+      // can be removed. Bundled skills are compiled into the binary; project
+      // skills belong to the repo. Steer the user to /skills disable instead of
+      // reporting a false "removed".
+      const slug = slugify(name);
+      const skill = (await loadAllSkills()).find((s) => s.slug === slug || s.name === name);
+      if (skill && skill.origin === "bundled") {
+        return { type: "message", text: `"${skill.name}" is a bundled skill and can't be removed. Use /skills disable ${skill.slug} to turn it off instead.` };
+      }
+      if (skill && skill.origin === "project") {
+        return { type: "message", text: `"${skill.name}" is a project skill. Delete it from .agav/skills/ in the repo, or use /skills disable ${skill.slug} to turn it off.` };
+      }
       const removed = await removeSkill(name);
       return { type: "message", text: removed ? `Removed skill: ${name}. Restart to take effect.` : `Skill "${name}" not found.` };
     }
@@ -151,6 +177,6 @@ export const skillsCommand: SlashCommand = {
       });
     }
 
-    return { type: "message", text: "Unknown action. Usage: /skills [list|add|remove|info|marketplace]" };
+    return { type: "message", text: "Unknown action. Usage: /skills [list|add|remove|disable|enable|clear|info|marketplace]" };
   },
 };

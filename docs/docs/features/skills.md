@@ -118,14 +118,20 @@ If the URL returns an HTML page instead of Markdown, Agav reports a clear error 
 /skills marketplace 3            # Install skill #3 directly
 ```
 
-The marketplace opens an interactive TUI:
+The marketplace opens an interactive TUI with two tabs — **Marketplace** (browse
+and install) and **Installed** (manage what you already have):
+- **Tab** to switch between the Marketplace and Installed tabs
 - **↑↓** to navigate, **←→** to page (5 skills per page)
 - **s** to search by name or description
-- **ENTER** to install the selected skill
+- **ENTER** to install the selected marketplace skill
+- In the Installed tab, **d** (or **ENTER**) toggles a skill between enabled and
+  disabled — this works on bundled skills too
 - **r** to refresh the catalog
 - **ESC** to exit
 
 Already-installed skills show a `✓ installed` badge and cannot be reinstalled.
+In the Installed tab each skill shows its origin and an `[enabled]`/`[disabled]`
+state.
 
 ### Removing skills
 
@@ -135,7 +141,41 @@ Already-installed skills show a `✓ installed` badge and cannot be reinstalled.
 /skills clear                    # remove ALL global skills
 ```
 
+Only **global** (user-installed) skills can be removed. Bundled skills live
+inside the binary and project skills belong to the repo, so `remove` on one of
+those reports an error and points you to `/skills disable` instead. Removing a
+global skill also clears any disabled state it had, so reinstalling it later
+starts enabled again.
+
 Restart Agav after installing or removing a skill.
+
+### Disabling bundled skills
+
+Bundled skills are compiled into the binary, so they cannot be removed with
+`/skills remove` or `/skills clear`. To turn one off, disable it instead:
+
+```text
+/skills disable pdf              # hide a bundled (or global/project) skill
+/skills enable pdf               # turn it back on
+```
+
+A disabled skill is excluded from the catalog the model sees, loses its slash
+command, and can no longer be activated — but it still appears in `/skills list`
+marked `[disabled]` so you can re-enable it. The choice is stored in
+`~/.agav/skills/registry.json` and survives upgrades. Restart Agav after
+disabling or enabling a skill.
+
+You can also toggle skills from the Installed tab of `/skills marketplace`
+(press **d**), or from outside a session with the CLI:
+
+```bash
+agav skills list                 # all skills grouped by origin, with state
+agav skills disable pdf          # disable (bundled skills included)
+agav skills enable pdf           # re-enable
+agav skills add <url|path>       # install
+agav skills remove <name>        # uninstall a global skill
+agav skills clear                # remove all user-installed skills
+```
 
 ## Creating a skill
 
