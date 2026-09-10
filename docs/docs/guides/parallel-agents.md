@@ -33,7 +33,7 @@ Each assignment includes its files, checks, output, and no-edit constraint becau
 
 ## Review the combined result
 
-Use `Tab` to inspect active subagents. Sensitive confirmations still appear in the main terminal.
+Use `↑` / `↓` to select a subagent and `Enter` to inspect it. Press `Esc` in the detail view to cancel the focused subagent, or `Tab` to return to the overview without cancelling. Sensitive confirmations still appear in the main terminal.
 
 When all workers finish, ask the main agent to resolve disagreements and remove duplicate findings. Delegate edits only when workers own different files; worktrees reduce interference but do not make overlapping changes safe.
 
