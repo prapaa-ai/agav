@@ -253,4 +253,72 @@ describe("split mouse sequences must not leak into the input prompt", () => {
 
     instance.unmount();
   });
+
+  it("drops bare digit(s)M fragments during a mouse burst (app-switch scenario)", async () => {
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // Simulate the app-switch scenario: a complete mouse sequence arrives first,
+    // establishing a "mouse burst" context. Then bare digit+M fragments from
+    // split sequences in the same burst should be dropped.
+    stdin.emit("data", "\x1b[<65;10;27M");
+    await settle(instance);
+    expect(currentValue).toBe("");
+
+    // Bare tail fragments arriving immediately after — these are from split
+    // sequences in the same burst and should be suppressed.
+    stdin.emit("data", "10M");
+    await settle(instance);
+    expect(currentValue).toBe("");
+
+    stdin.emit("data", "27M");
+    await settle(instance);
+    expect(currentValue).toBe("");
+
+    instance.unmount();
+  });
+
+  it("drops bare digit(s)M mixed with complete sequences in same read", async () => {
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // A read containing a complete mouse sequence followed by a bare tail
+    // from a split adjacent sequence — all in the same chunk.
+    stdin.emit("data", "\x1b[<65;10;27M28M");
+    await settle(instance);
+    expect(currentValue).toBe("");
+
+    instance.unmount();
+  });
+
+  it("preserves typed text after a mouse burst window expires", async () => {
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // Consume a mouse sequence to start a burst.
+    stdin.emit("data", "\x1b[<65;10;27M");
+    await settle(instance);
+
+    // Wait for the burst window to expire (150ms).
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+
+    // Now bare "26M" should be treated as normal user input.
+    stdin.emit("data", "26M");
+    await settle(instance);
+    expect(currentValue).toBe("26M");
+
+    instance.unmount();
+  });
 });
