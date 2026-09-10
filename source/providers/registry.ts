@@ -4,6 +4,7 @@ import { AnthropicProvider } from "./anthropic.js";
 import { OpenAIProvider } from "./openai.js";
 import { OpenRouterProvider } from "./openrouter.js";
 import { NvidiaProvider } from "./nvidia.js";
+import { DeepSeekProvider } from "./deepseek.js";
 import { OllamaProvider } from "./ollama.js";
 import { GeminiProvider } from "./gemini.js";
 import { VertexAIProvider } from "./vertex-ai.js";
@@ -35,7 +36,9 @@ export function createProvider(config: AgavConfig): LLMProvider {
     }
     case "openai": {
       const key = required(config.openaiApiKey, "OpenAI API key");
-      provider = new OpenAIProvider(key, config.openaiApi ?? "responses");
+      provider = new OpenAIProvider(key, config.openaiApi ?? "responses", {
+        baseURL: config.openaiBaseURL,
+      });
       break;
     }
     case "openrouter": {
@@ -46,6 +49,11 @@ export function createProvider(config: AgavConfig): LLMProvider {
     case "nvidia": {
       const key = required(config.nvidiaApiKey, "NVIDIA API key");
       provider = new NvidiaProvider(key);
+      break;
+    }
+    case "deepseek": {
+      const key = required(config.deepseekApiKey, "DeepSeek API key");
+      provider = new DeepSeekProvider(key);
       break;
     }
     case "ollama": {

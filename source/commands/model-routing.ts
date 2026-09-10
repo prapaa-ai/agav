@@ -6,6 +6,7 @@ const FAST_MODELS: Record<string, string> = {
   openai: "gpt-4o-mini",
   openrouter: "~google/gemini-flash-latest",
   nvidia: "nvidia/nemotron-3.5-lightning-30b-a3b",
+  deepseek: "deepseek-v4-flash",
   gemini: "gemini-3.5-flash-lite",
   "vertex-ai": "vertex/gemini-3.5-flash-lite",
 }
@@ -16,6 +17,7 @@ const DEEP_MODELS: Record<string, string> = {
   openai: "gpt-4o",
   openrouter: "~anthropic/claude-sonnet-latest",
   nvidia: "nvidia/nemotron-3.5-lightning-30b-a3b",
+  deepseek: "deepseek-v4-pro",
   gemini: "gemini-3.5-pro",
   "vertex-ai": "vertex/gemini-3.5-pro",
 }
