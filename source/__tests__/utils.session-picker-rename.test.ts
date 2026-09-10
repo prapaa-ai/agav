@@ -175,6 +175,28 @@ describe("session picker rename view", () => {
     expect(await promise).toBeNull();
   });
 
+  it("ignores arrow keys / escape sequences instead of inserting garbage", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+
+    stdin.send("r");
+    await tick();
+    stdin.send("A");
+    stdin.send("\x1b[A"); // up arrow — must not append "[A"
+    stdin.send("\x1b[B"); // down arrow
+    stdin.send("\x1b[C"); // right arrow
+    stdin.send("\x1b[D"); // left arrow
+    stdin.send("b");
+    await tick();
+    stdin.send("\r");
+    await tick();
+
+    expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", "Ab");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
   it("supports backspace editing in the rename view", async () => {
     const promise = pickSession(makeSessions());
     await tick();

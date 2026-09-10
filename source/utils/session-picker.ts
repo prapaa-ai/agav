@@ -168,9 +168,13 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       function onRenameInput(renameData: Buffer) {
         const input = renameData.toString();
 
-        // Esc cancels and returns to the list without renaming.
-        if (input === "\x1b") {
-          returnToList();
+        // A chunk starting with ESC is either the Esc key or a terminal
+        // escape sequence (arrow keys, function keys, etc.). A bare ESC cancels
+        // and returns to the list; longer sequences are control input, not
+        // text, so drop them instead of appending their bytes (e.g. "[A") as
+        // literal characters into the rename buffer.
+        if (input[0] === "\x1b") {
+          if (input.length === 1) returnToList();
           return;
         }
 
@@ -214,7 +218,8 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
           return;
         }
 
-        // Append printable characters (skip other control/escape sequences).
+        // Append printable characters only. Control bytes (< 0x20) and DEL are
+        // skipped; escape sequences were already handled above.
         let appended = false;
         for (const ch of input) {
           const code = ch.codePointAt(0)!;
