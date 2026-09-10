@@ -4,6 +4,12 @@ import { applyEffortPrompt, mapOpenAIEffort, supportsNativeEffort } from "./effo
 import type { ContentBlock, LLMProvider, Message, StreamEvent, StreamParams, ToolSchema } from "./types.js";
 
 const CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
+// Backdate the JWT's `iat` so a local clock that is a little ahead of Google's
+// servers never mints a future-dated assertion. Google rejects those with a
+// 400 `invalid_grant` ("Invalid JWT: Token ... check your iat and exp values
+// and use a clock with skew"), which shows up as a transient auth failure right
+// after boot/wake — before NTP resettles the clock — and clears on retry.
+const JWT_CLOCK_SKEW_SECONDS = 10;
 const DEFAULT_VERTEX_LOCATION = "global";
 const THOUGHT_SIGNATURE_KEY = "vertexAIThoughtSignature";
 const SKIP_THOUGHT_SIGNATURE_VALIDATOR = "skip_thought_signature_validator";
@@ -50,41 +56,65 @@ export class VertexAIAuth {
 
   private async mintAccessToken(): Promise<string> {
     const credentials = await this.loadCredentials();
-    const now = Math.floor(Date.now() / 1000);
     const tokenUri = credentials.token_uri ?? "https://oauth2.googleapis.com/token";
+
+    // A cold start (right after boot or wake from sleep) can hit the token
+    // endpoint before NTP has resettled the clock, or catch a transient 5xx.
+    // Both clear within a second, so retry once with a fresh assertion — the
+    // JWT is re-signed each attempt so its `iat`/`exp` track the current clock —
+    // rather than poisoning the whole session's first turn with a hard failure.
+    let lastDetail = "";
+    let lastStatus = 0;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetch(tokenUri, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+          assertion: this.signAssertion(credentials, tokenUri),
+        }),
+      });
+      if (response.ok) {
+        const result = await response.json() as { access_token?: string; expires_in?: number };
+        if (!result.access_token) throw new Error("Vertex AI authentication response did not include an access token");
+        this.token = {
+          value: result.access_token,
+          expiresAt: Date.now() + (result.expires_in ?? 3600) * 1000,
+        };
+        return this.token.value;
+      }
+      lastStatus = response.status;
+      lastDetail = await response.text().catch(() => "");
+      // `invalid_grant` from a skewed clock and 5xx/429 blips are the only
+      // things a retry can fix; a genuine bad key (400 without invalid_grant,
+      // 401, 403) will not improve, so fail fast on those.
+      const retryable = response.status >= 500
+        || response.status === 429
+        || (response.status === 400 && /invalid_grant/i.test(lastDetail));
+      if (attempt === 0 && retryable) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        continue;
+      }
+      break;
+    }
+    throw new Error(`Vertex AI authentication failed (${lastStatus}): ${lastDetail}`);
+  }
+
+  private signAssertion(credentials: ServiceAccountCredentials, tokenUri: string): string {
+    const now = Math.floor(Date.now() / 1000);
     const header = base64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
     const claims = base64Url(JSON.stringify({
       iss: credentials.client_email,
       scope: CLOUD_PLATFORM_SCOPE,
       aud: tokenUri,
-      iat: now,
+      iat: now - JWT_CLOCK_SKEW_SECONDS,
       exp: now + 3600,
     }));
     const unsigned = `${header}.${claims}`;
     const signer = createSign("RSA-SHA256");
     signer.update(unsigned);
     signer.end();
-    const assertion = `${unsigned}.${signer.sign(credentials.private_key, "base64url")}`;
-
-    const response = await fetch(tokenUri, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        assertion,
-      }),
-    });
-    if (!response.ok) {
-      const detail = await response.text().catch(() => "");
-      throw new Error(`Vertex AI authentication failed (${response.status}): ${detail}`);
-    }
-    const result = await response.json() as { access_token?: string; expires_in?: number };
-    if (!result.access_token) throw new Error("Vertex AI authentication response did not include an access token");
-    this.token = {
-      value: result.access_token,
-      expiresAt: Date.now() + (result.expires_in ?? 3600) * 1000,
-    };
-    return this.token.value;
+    return `${unsigned}.${signer.sign(credentials.private_key, "base64url")}`;
   }
 
   private async loadCredentials(): Promise<ServiceAccountCredentials> {
