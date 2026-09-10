@@ -262,8 +262,11 @@ function deepMerge<T extends Record<string, unknown>>(base: T, override: Partial
   return result;
 }
 
+let _templateChecked = false;
+
 /** Create or enrich the project config with self-documenting configuration metadata. */
 async function ensureProjectConfigTemplate(): Promise<void> {
+  if (_templateChecked) return;
   const projectDir = join(process.cwd(), ".agav");
   const projectPath = join(projectDir, "config.json");
   await ensureDir(projectDir);
@@ -273,7 +276,10 @@ async function ensureProjectConfigTemplate(): Promise<void> {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     // Refresh shipped metadata after upgrades while preserving user settings,
     // but avoid rewriting committed config files when nothing changed.
-    if (JSON.stringify(parsed.template) === JSON.stringify(PROJECT_CONFIG_TEMPLATE)) return;
+    if (JSON.stringify(parsed.template) === JSON.stringify(PROJECT_CONFIG_TEMPLATE)) {
+      _templateChecked = true;
+      return;
+    }
     parsed.template = PROJECT_CONFIG_TEMPLATE;
     await writeFile(projectPath, JSON.stringify(parsed, null, 2) + "\n");
   } catch (error) {
@@ -283,6 +289,7 @@ async function ensureProjectConfigTemplate(): Promise<void> {
       JSON.stringify({ template: PROJECT_CONFIG_TEMPLATE }, null, 2) + "\n",
     );
   }
+  _templateChecked = true;
 }
 
 /** Load config from global and project files, then apply environment-derived overrides. */

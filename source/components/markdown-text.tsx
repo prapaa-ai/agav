@@ -395,12 +395,17 @@ export function renderMarkdown(text: string): string {
         .replace(/`([^`]+)`/g, (_match, code) => chalk.bold.yellow(code));
     });
     const output = lines.join("\n");
-    if (_markdownCache.size >= MARKDOWN_CACHE_MAX) {
-      // Evict oldest entry
-      const firstKey = _markdownCache.keys().next().value;
-      if (firstKey !== undefined) _markdownCache.delete(firstKey);
+    // Only cache if the text is short enough to benefit from caching.
+    // Streaming text changes every token, so caching long strings wastes
+    // memory on entries that will never be re-read.
+    if (text.length <= 2000) {
+      if (_markdownCache.size >= MARKDOWN_CACHE_MAX) {
+        // Evict oldest entry
+        const firstKey = _markdownCache.keys().next().value;
+        if (firstKey !== undefined) _markdownCache.delete(firstKey);
+      }
+      _markdownCache.set(cacheKey, output);
     }
-    _markdownCache.set(cacheKey, output);
     return output;
   } catch {
     return text;

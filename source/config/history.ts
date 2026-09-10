@@ -93,24 +93,25 @@ export async function listSessions(): Promise<SessionRecord[]> {
   try {
     await ensureDir(dir);
     const files = await readdir(dir);
-    const sessions: SessionRecord[] = [];
+    const jsonFiles = files.filter((f) => f.endsWith(".json"));
 
-    for (const file of files) {
-      if (!file.endsWith(".json")) continue;
-      try {
-        const raw = await readFile(join(dir, file), "utf-8");
-        const record = JSON.parse(raw) as SessionRecord;
-        sessions.push(record);
-      } catch {
-        // Skip corrupted files
-      }
-    }
-
-    sessions.sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    const sessions = await Promise.all(
+      jsonFiles.map(async (file) => {
+        try {
+          const raw = await readFile(join(dir, file), "utf-8");
+          return JSON.parse(raw) as SessionRecord;
+        } catch {
+          return null;
+        }
+      }),
     );
-    return sessions;
+
+    return sessions
+      .filter((s): s is SessionRecord => s !== null)
+      .sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      );
   } catch {
     return [];
   }

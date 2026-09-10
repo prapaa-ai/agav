@@ -309,6 +309,7 @@ export async function* runAgentLoop(
     if (textAccum) {
       assistantContent.push({ type: "text", text: textAccum });
     }
+    const parsedInputs = new Map<string, Record<string, unknown>>();
     for (const [id, call] of toolCalls) {
       let input: Record<string, unknown> = {};
       try {
@@ -316,6 +317,7 @@ export async function* runAgentLoop(
       } catch {
         input = { raw: call.argsJson };
       }
+      parsedInputs.set(id, input);
       assistantContent.push({
         type: "tool_use",
         toolCallId: id,
@@ -359,13 +361,7 @@ export async function* runAgentLoop(
     const toolResults: ContentBlock[] = [];
 
     for (const [id, call] of toolCalls) {
-      let input: Record<string, unknown> = {};
-      try {
-        input = JSON.parse(call.argsJson);
-      } catch {
-        input = { raw: call.argsJson };
-      }
-
+      const input = parsedInputs.get(id) ?? { raw: call.argsJson };
       // Hard block: if an explicit allowlist is set, reject tools not on it
       if (params.allowedTools && params.allowedTools.length > 0
         && !SAFE_TOOLS.has(call.name)
@@ -375,7 +371,7 @@ export async function* runAgentLoop(
         continue;
       }
 
-      const tool = params.toolRegistry.list().find((t) => t.schema.name === call.name);
+      const tool = params.toolRegistry.get(call.name);
       const toolDestructiveFlag = tool?.schema.destructive;
 
       // Only trust destructive:false from builtin tools (SAFE_TOOLS).

@@ -232,6 +232,15 @@ export class GeminiProvider implements LLMProvider {
     } else {
       this.rawTurnParts.set(`__text_${this.textTurnCounter++}__`, turnParts);
     }
+
+    // Prune stale entries to prevent unbounded memory growth in long sessions.
+    // Only the most recent turns need raw parts for conversation replay.
+    if (this.rawTurnParts.size > 200) {
+      const keys = [...this.rawTurnParts.keys()];
+      for (let i = 0; i < keys.length - 100; i++) {
+        this.rawTurnParts.delete(keys[i]!);
+      }
+    }
   }
 
   private toContents(messages: Message[]): GeminiContent[] {
