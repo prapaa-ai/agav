@@ -141,6 +141,100 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       process.stdout.write("\x1b[2J\x1b[H");
     }
 
+    // Raw-mode line editor for renaming a session. Unlike cooked input, this
+    // lets Esc cancel and return to the list without applying any change.
+    function openRenameEditor(session: SessionRecord) {
+      let buffer = "";
+
+      function returnToList() {
+        stdin.removeListener("data", onRenameInput);
+        process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
+        totalLinesRendered = 0;
+        stdin.on("data", onData);
+        render();
+      }
+
+      function renderRenamePrompt() {
+        process.stdout.write("\x1b[2J\x1b[H\x1b[?25h");
+        totalLinesRendered = 0;
+        process.stdout.write(
+          `\x1b[1;36m  Rename session\x1b[0m "${session.title}"\r\n` +
+            `\x1b[2m  Enter save · Esc cancel / back\x1b[0m\r\n` +
+            `\r\n` +
+            `  New name: ${buffer}`,
+        );
+      }
+
+      function onRenameInput(renameData: Buffer) {
+        const input = renameData.toString();
+
+        // A chunk starting with ESC is either the Esc key or a terminal
+        // escape sequence (arrow keys, function keys, etc.). A bare ESC cancels
+        // and returns to the list; longer sequences are control input, not
+        // text, so drop them instead of appending their bytes (e.g. "[A") as
+        // literal characters into the rename buffer.
+        if (input[0] === "\x1b") {
+          if (input.length === 1) returnToList();
+          return;
+        }
+
+        // Ctrl-C exits the whole picker, matching the list handler.
+        if (input === "\x03") {
+          stdin.removeListener("data", onRenameInput);
+          restoreRawMode();
+          process.stdout.write("\x1b[2J\x1b[H");
+          process.exit(0);
+        }
+
+        // Enter (\r, \n, or \r\n) submits. An empty/whitespace name is treated
+        // as a cancel since renameSession rejects blank names anyway.
+        if (input === "\r" || input === "\n" || input === "\r\n") {
+          const name = buffer.trim();
+          stdin.removeListener("data", onRenameInput);
+          if (!name) {
+            returnToList();
+            return;
+          }
+          void renameSession(session.id, name)
+            .then((renamed) => {
+              if (renamed) items[selected] = renamed;
+            })
+            .catch(() => {})
+            .finally(() => {
+              process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
+              totalLinesRendered = 0;
+              stdin.on("data", onData);
+              render();
+            });
+          return;
+        }
+
+        // Backspace / Delete removes the last character.
+        if (input === "\x7f" || input === "\b") {
+          if (buffer.length > 0) {
+            buffer = buffer.slice(0, -1);
+            renderRenamePrompt();
+          }
+          return;
+        }
+
+        // Append printable characters only. Control bytes (< 0x20) and DEL are
+        // skipped; escape sequences were already handled above.
+        let appended = false;
+        for (const ch of input) {
+          const code = ch.codePointAt(0)!;
+          if (code >= 0x20 && code !== 0x7f) {
+            buffer += ch;
+            appended = true;
+          }
+        }
+        if (appended) renderRenamePrompt();
+      }
+
+      renderRenamePrompt();
+      stdin.on("data", onRenameInput);
+    }
+
     function onData(data: Buffer) {
       const key = data.toString();
 
@@ -198,31 +292,12 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       if (key === "m" || key === "M" || key === "r" || key === "R") {
         const selectedSession = items[selected];
         if (!selectedSession) return;
+        // Hand input over to the raw-mode rename editor. Staying in raw mode
+        // (instead of switching to cooked line input) lets us intercept Esc as
+        // a discrete cancel key so the user can return to the list without
+        // being forced to submit a name change.
         stdin.removeListener("data", onData);
-        stdin.setRawMode(false);
-        // Clear screen for rename prompt
-        process.stdout.write("\x1b[2J\x1b[H\x1b[?25h");
-        totalLinesRendered = 0;
-        process.stdout.write(`  Rename session "${selectedSession.title}"\n  New name: `);
-        const onRenameInput = (renameData: Buffer) => {
-          stdin.removeListener("data", onRenameInput);
-          stdin.setRawMode(true);
-          process.stdout.write("\x1b[?25l");
-          const name = renameData.toString().trim();
-          void renameSession(selectedSession.id, name).then((renamed) => {
-            if (renamed) items[selected] = renamed;
-            process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
-            totalLinesRendered = 0;
-            stdin.on("data", onData);
-            render();
-          }).catch(() => {
-            process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
-            totalLinesRendered = 0;
-            stdin.on("data", onData);
-            render();
-          });
-        };
-        stdin.once("data", onRenameInput);
+        openRenameEditor(selectedSession);
         return;
       }
 
