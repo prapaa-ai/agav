@@ -86,6 +86,22 @@ async function removeSkillCommand(args: string[]): Promise<number> {
   }
 
   const name = args[0]!;
+  // Bundled skills can't be removed (they live in the binary); project skills
+  // belong to the repo. Direct the user to `disable` rather than reporting a
+  // false success or a bare "not found".
+  const slug = slugify(name);
+  const skill = (await loadAllSkills()).find((s) => s.slug === slug || s.name === name);
+  if (skill && skill.origin === "bundled") {
+    console.error(`\nError: "${skill.name}" is a bundled skill and can't be removed.`);
+    console.error(`Use 'agav skills disable ${skill.slug}' to turn it off instead.\n`);
+    return 1;
+  }
+  if (skill && skill.origin === "project") {
+    console.error(`\nError: "${skill.name}" is a project skill.`);
+    console.error(`Delete it from .agav/skills/ in the repo, or use 'agav skills disable ${skill.slug}'.\n`);
+    return 1;
+  }
+
   const removed = await removeSkill(name);
   if (!removed) {
     console.error(`\nError: Skill "${name}" not found (only global skills can be removed).\n`);

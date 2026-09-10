@@ -79,6 +79,25 @@ export async function setSkillEnabled(nameOrSlug: string, enabled: boolean): Pro
   }
 }
 
+/**
+ * Delete a skill's registry entry. Called when a global skill is uninstalled so
+ * a stale `{ enabled: false }` record can't silently disable a later reinstall
+ * of the same slug. No-op when there is nothing recorded.
+ */
+export async function unsetSkillEnabled(nameOrSlug: string): Promise<void> {
+  const slug = slugify(nameOrSlug);
+  const release = await acquireRegistryLock();
+  try {
+    const registry = await loadSkillRegistry();
+    if (registry.skills[slug] !== undefined) {
+      delete registry.skills[slug];
+      await saveSkillRegistry(registry);
+    }
+  } finally {
+    release();
+  }
+}
+
 /** A skill is disabled only when an entry exists and is explicitly disabled. */
 export function isSkillDisabled(slug: string, registry: SkillRegistry): boolean {
   const entry = registry.skills[slug];

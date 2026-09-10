@@ -141,6 +141,12 @@ state.
 /skills clear                    # remove ALL global skills
 ```
 
+Only **global** (user-installed) skills can be removed. Bundled skills live
+inside the binary and project skills belong to the repo, so `remove` on one of
+those reports an error and points you to `/skills disable` instead. Removing a
+global skill also clears any disabled state it had, so reinstalling it later
+starts enabled again.
+
 Restart Agav after installing or removing a skill.
 
 ### Disabling bundled skills

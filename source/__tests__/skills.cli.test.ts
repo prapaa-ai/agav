@@ -106,6 +106,17 @@ describe("cli/skills-cli", () => {
     expect(err).toContain("Usage: agav skills disable <name>");
   });
 
+  it("remove on a bundled skill errors and suggests disable instead", async () => {
+    const cap = captureConsole();
+    const code = await runSkillsCommand("remove", [target]);
+    const err = cap.err();
+    cap.restore();
+
+    expect(code).toBe(1);
+    expect(err).toContain("bundled skill and can't be removed");
+    expect(err).toContain(`agav skills disable ${target}`);
+  });
+
   it("unknown command fails with guidance", async () => {
     const cap = captureConsole();
     const code = await runSkillsCommand("frobnicate", []);

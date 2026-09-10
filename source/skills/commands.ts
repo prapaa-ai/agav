@@ -108,6 +108,18 @@ export const skillsCommand: SlashCommand = {
     if (action === "remove" || action === "rm") {
       const name = parts.slice(1).join(" ").trim();
       if (!name) return { type: "message", text: "Usage: /skills remove <name>" };
+      // Only global (user-installed) skills live on disk under the config dir and
+      // can be removed. Bundled skills are compiled into the binary; project
+      // skills belong to the repo. Steer the user to /skills disable instead of
+      // reporting a false "removed".
+      const slug = slugify(name);
+      const skill = (await loadAllSkills()).find((s) => s.slug === slug || s.name === name);
+      if (skill && skill.origin === "bundled") {
+        return { type: "message", text: `"${skill.name}" is a bundled skill and can't be removed. Use /skills disable ${skill.slug} to turn it off instead.` };
+      }
+      if (skill && skill.origin === "project") {
+        return { type: "message", text: `"${skill.name}" is a project skill. Delete it from .agav/skills/ in the repo, or use /skills disable ${skill.slug} to turn it off.` };
+      }
       const removed = await removeSkill(name);
       return { type: "message", text: removed ? `Removed skill: ${name}. Restart to take effect.` : `Skill "${name}" not found.` };
     }
