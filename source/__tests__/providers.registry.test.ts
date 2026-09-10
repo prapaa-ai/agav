@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createProvider } from "../providers/registry.js";
 import { OpenRouterProvider } from "../providers/openrouter.js";
 import { NvidiaProvider } from "../providers/nvidia.js";
+import { DeepSeekProvider } from "../providers/deepseek.js";
 import { OpenAIProvider } from "../providers/openai.js";
 import { AnthropicProvider } from "../providers/anthropic.js";
 import { GeminiProvider } from "../providers/gemini.js";

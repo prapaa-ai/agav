@@ -33,13 +33,22 @@ export interface AgavHooks {
 }
 
 export interface AgavConfig {
-  provider: "anthropic" | "openai" | "openrouter" | "nvidia" | "ollama" | "gemini" | "vertex-ai";
+  provider: "anthropic" | "openai" | "openrouter" | "nvidia" | "deepseek" | "ollama" | "gemini" | "vertex-ai";
   model: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
   openrouterApiKey?: string;
   nvidiaApiKey?: string;
+  deepseekApiKey?: string;
   openaiApi?: "chat" | "responses";
+  // Override the OpenAI provider's base URL to target an OpenAI-compatible
+  // endpoint (self-hosted gateway, private deployment, or any vendor that
+  // speaks the OpenAI API without a dedicated provider entry).
+  openaiBaseURL?: string;
+  // Extra HTTP headers sent with every OpenAI-provider request. Useful for
+  // OpenAI-compatible gateways that require custom auth or routing headers
+  // (e.g. an "x-api-key" or a tenant selector) alongside the base URL.
+  openaiHeaders?: Record<string, string>;
   geminiApiKey?: string;
   vertexAICredentialsPath?: string;
   vertexAILocation?: string;
@@ -155,6 +164,21 @@ const PROJECT_CONFIG_TEMPLATE = {
     description: "NVIDIA NIM API key. Prefer the NVIDIA_API_KEY environment variable for secrets.",
     type: "string",
     eg: "set-via-NVIDIA_API_KEY",
+  },
+  deepseekApiKey: {
+    description: "DeepSeek API key. Prefer the DEEPSEEK_API_KEY environment variable for secrets.",
+    type: "string",
+    eg: "set-via-DEEPSEEK_API_KEY",
+  },
+  openaiBaseURL: {
+    description: "Override the OpenAI base URL to target an OpenAI-compatible endpoint. Prefer the OPENAI_BASE_URL environment variable.",
+    type: "string",
+    eg: "https://my-gateway.example.com/v1",
+  },
+  openaiHeaders: {
+    description: "Extra HTTP headers sent with every OpenAI-provider request. Useful for OpenAI-compatible gateways that need custom auth or routing headers.",
+    type: "object",
+    eg: { "x-api-key": "gateway-token", "x-tenant": "team-a" },
   },
   geminiApiKey: {
     description: "Google Gemini API key. Prefer the GEMINI_API_KEY environment variable for secrets.",
@@ -371,12 +395,13 @@ export async function loadConfig(): Promise<AgavConfig> {
 /** Persist config to the global config file, encrypting any API keys present. */
 export async function saveConfig(config: AgavConfig): Promise<void> {
   await ensureDir(AGAV_DIR);
-  const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
+  const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
   const out: Record<string, unknown> = { ...safe };
   if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
   if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
   if (openrouterApiKey) out.openrouterApiKey = encrypt(openrouterApiKey);
   if (nvidiaApiKey) out.nvidiaApiKey = encrypt(nvidiaApiKey);
+  if (deepseekApiKey) out.deepseekApiKey = encrypt(deepseekApiKey);
   if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
   if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
   await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
