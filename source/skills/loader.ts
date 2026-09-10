@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYAML } from "yaml";
 import { getAgavDir } from "../config/config.js";
 import { BUNDLED_SKILL_FILES } from "./bundled-manifest.js";
+import { loadSkillRegistry, isSkillDisabled } from "./skill-registry.js";
 import { RESERVED_COMMAND_NAMES } from "../commands/reserved-names.js";
 import { validateSkill } from "./validate.js";
 import { slugify } from "./skill-utils.js";
@@ -165,7 +166,12 @@ async function scanDir(dir: string, origin: SkillDefinition["origin"]): Promise<
   return skills;
 }
 
-export async function loadSkills(): Promise<SkillDefinition[]> {
+/**
+ * Resolve the three tiers into a single collision-free list, marking each skill
+ * as disabled per the registry but keeping it in the list. Callers decide
+ * whether to filter disabled entries out.
+ */
+async function collectSkills(): Promise<SkillDefinition[]> {
   const skills: SkillDefinition[] = [];
   // slug → filePath of the winner, so collision warnings can name both files.
   const seen = new Map<string, string>();
@@ -208,6 +214,28 @@ export async function loadSkills(): Promise<SkillDefinition[]> {
     }
   }
 
+  const registry = await loadSkillRegistry();
+  for (const s of skills) {
+    if (isSkillDisabled(s.slug, registry)) s.disabled = true;
+  }
+
+  return skills;
+}
+
+/**
+ * Load every skill including disabled ones, for management UIs (`/skills`,
+ * `agav skills list`) that need to show what can be re-enabled.
+ */
+export async function loadAllSkills(): Promise<SkillDefinition[]> {
+  return collectSkills();
+}
+
+/**
+ * Load only active skills — disabled ones are excluded so they never reach the
+ * catalog, slash commands, or activation. This is what the agent runtime uses.
+ */
+export async function loadSkills(): Promise<SkillDefinition[]> {
+  const skills = (await collectSkills()).filter((s) => !s.disabled);
   cachedSkills = skills;
   return skills;
 }

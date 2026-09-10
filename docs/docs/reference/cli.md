@@ -77,3 +77,17 @@ agav agents disable <name>             # Disable without removing files
 | `--destination global\|project` | Install scope; defaults to `global` |
 
 Local paths and GitHub repository URLs are both supported for `install`. For GitHub, Agav uses sparse checkout to download only the agent directory.
+
+## Skill subcommands
+
+```bash
+agav skills                            # Alias for agav skills list
+agav skills list                       # List all skills grouped by origin, with state
+agav skills add <url|path>             # Install from a URL or local path
+agav skills remove <name>              # Uninstall a global skill
+agav skills disable <name>             # Disable a skill (bundled skills included)
+agav skills enable <name>              # Re-enable a disabled skill
+agav skills clear                      # Remove all user-installed skills
+```
+
+Bundled skills are compiled into the binary and cannot be removed, but `disable` turns them off without deleting anything. The enabled/disabled state is stored in `~/.agav/skills/registry.json`. Changes take effect on the next start.

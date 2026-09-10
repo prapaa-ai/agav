@@ -8,7 +8,8 @@ vi.mock("../config/config.js", () => ({
   getAgavDir: () => agavDir,
 }));
 
-import { installFromPath, installFromUrl, clearSkills } from "../skills/marketplace.js";
+import { installFromPath, installFromUrl, clearSkills, removeSkill } from "../skills/marketplace.js";
+import { setSkillEnabled, loadSkillRegistry } from "../skills/skill-registry.js";
 
 const SKILL_MD = `---
 name: pdf-processing
@@ -617,6 +618,54 @@ description: Skill with no body.
 });
 
 // ---------------------------------------------------------------------------
+// removeSkill
+// ---------------------------------------------------------------------------
+
+describe("skills/marketplace removeSkill", () => {
+  beforeEach(async () => {
+    agavDir = await mkdtemp(join(tmpdir(), "agav-home-"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("removes an existing global skill directory", async () => {
+    const skillsDir = join(agavDir, "skills");
+    await mkdir(join(skillsDir, "my-skill"), { recursive: true });
+    await writeFile(join(skillsDir, "my-skill", "SKILL.md"), "---\nname: my-skill\ndescription: X\n---\nBody.\n");
+
+    const ok = await removeSkill("my-skill");
+    expect(ok).toBe(true);
+
+    const { readdir: rd } = await import("node:fs/promises");
+    const remaining = await rd(skillsDir);
+    expect(remaining).not.toContain("my-skill");
+  });
+
+  it("returns false when the skill directory does not exist (e.g. a bundled skill)", async () => {
+    await mkdir(join(agavDir, "skills"), { recursive: true });
+    // No directory for "code-review" (a bundled skill has no global dir), so
+    // remove must report failure rather than a false success.
+    const ok = await removeSkill("code-review");
+    expect(ok).toBe(false);
+  });
+
+  it("clears a stale disabled registry entry so a reinstall isn't silently disabled", async () => {
+    const skillsDir = join(agavDir, "skills");
+    await mkdir(join(skillsDir, "my-skill"), { recursive: true });
+    await writeFile(join(skillsDir, "my-skill", "SKILL.md"), "---\nname: my-skill\ndescription: X\n---\nBody.\n");
+
+    await setSkillEnabled("my-skill", false);
+    expect((await loadSkillRegistry()).skills["my-skill"]).toBeDefined();
+
+    await removeSkill("my-skill");
+
+    expect((await loadSkillRegistry()).skills["my-skill"]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // clearSkills
 // ---------------------------------------------------------------------------
 
@@ -654,5 +703,17 @@ describe("skills/marketplace clearSkills", () => {
     await mkdir(join(agavDir, "skills"), { recursive: true });
     const removed = await clearSkills();
     expect(removed).toEqual([]);
+  });
+
+  it("purges disabled registry entries for the skills it removes", async () => {
+    const skillsDir = join(agavDir, "skills");
+    await mkdir(join(skillsDir, "skill-a"), { recursive: true });
+    await writeFile(join(skillsDir, "skill-a", "SKILL.md"), "---\nname: skill-a\ndescription: A\n---\nBody.\n");
+    await setSkillEnabled("skill-a", false);
+    expect((await loadSkillRegistry()).skills["skill-a"]).toBeDefined();
+
+    await clearSkills();
+
+    expect((await loadSkillRegistry()).skills["skill-a"]).toBeUndefined();
   });
 });
