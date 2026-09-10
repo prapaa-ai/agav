@@ -58,6 +58,25 @@ export class ConfirmationQueue {
     }
   }
 
+  /** Reject all pending and active confirmations for a specific subagent,
+   *  resolving them as "no" so the tool call fails and the loop can exit. */
+  rejectBySubagentId(subagentId: string): void {
+    // Reject queued items
+    this.queue = this.queue.filter((entry) => {
+      if (entry.subagentId === subagentId) {
+        entry.resolve("no");
+        return false;
+      }
+      return true;
+    });
+    // Reject the active item if it belongs to this subagent
+    if (this.activeItem?.subagentId === subagentId) {
+      this.activeItem.resolve("no");
+      this.activeItem = null;
+      this.dequeue();
+    }
+  }
+
   clear(): void {
     this.queue = [];
     this.activeItem = null;
