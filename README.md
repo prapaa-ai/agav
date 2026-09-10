@@ -90,17 +90,6 @@ We’re building the alternative, an AI that works for you, runs on your terms, 
 
 **Autonomous and verifiable.** Plans are created and tracked automatically, human-in-the-loop for destructive actions, and non-interactive `agav run` for CI with JSON Schema output.
 
-## Who is it for
-
-**Developers & Engineers**
-Refactor, debug, run Terminal-Bench level tasks, and audit repos with scriptable `agav run` and JSON schema output.
-
-**Teams & Ops**
-Schedule, watch and loop tasks. Non-interactive mode with per-tool permissions for CI. Memory and planning that survive session restarts.
-
-**Anyone with a machine**
-Ask in plain English to summarize docs, analyze a CSV, generate a deck outline or draft emails, no code required.
-
 ## Proof
 
 * **Terminal-Bench 2.1** — 84.7% [377/445 trials ±0.84%](https://github.com/harbor-framework/terminal-bench-2-1/pull/225), top of public board.(PR under review)
