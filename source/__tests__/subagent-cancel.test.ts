@@ -53,7 +53,7 @@ function makeDeps(overrides: Partial<Parameters<typeof createSubagentTool>[0]> =
       effort: "medium" as const,
       maxIterations: 1,
     }),
-    confirmationQueue: { enqueue: vi.fn(() => Promise.resolve("yes")) } as any,
+    confirmationQueue: { enqueue: vi.fn(() => Promise.resolve("yes")), rejectBySubagentId: vi.fn() } as any,
     onProgressUpdate: vi.fn(),
     onTokenUsage: vi.fn(),
     getSignal: () => undefined,
@@ -99,10 +99,10 @@ describe("subagent per-subagent cancellation", () => {
     // Second subagent's signal should NOT be aborted
     expect(call2Signal.aborted).toBe(false);
 
-    // First subagent should have resolved (the loop breaks on abort before
-    // processing the final assistant_message_complete, so finalText is empty)
+    // Cancelled subagent should resolve with an error result
     const result1 = await p1;
-    expect(result1.isError).toBe(false);
+    expect(result1.isError).toBe(true);
+    expect(result1.output).toContain("cancelled");
 
     // Clean up: cancel the second subagent so its promise resolves
     tool.cancelSubagent("sa-2");
@@ -139,10 +139,12 @@ describe("subagent per-subagent cancellation", () => {
     expect(call1Signal.aborted).toBe(true);
     expect(call2Signal.aborted).toBe(true);
 
-    // Both subagents should resolve (the abort causes the loop to break)
+    // Both subagents should resolve as cancelled
     const [result1, result2] = await Promise.all([p1, p2]);
-    expect(result1.isError).toBe(false);
-    expect(result2.isError).toBe(false);
+    expect(result1.isError).toBe(true);
+    expect(result1.output).toContain("cancelled");
+    expect(result2.isError).toBe(true);
+    expect(result2.output).toContain("cancelled");
   });
 
   it("cancelSubagent is a no-op for unknown IDs", () => {

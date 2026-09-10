@@ -155,6 +155,17 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
 
       let finalText = "";
 
+      // Create the child controller before any async work so cancellation is
+      // possible during worktree setup, not only once streaming starts.
+      const signal = deps.getSignal();
+      const childController = new AbortController();
+      controllers.set(id, childController);
+      if (signal && !signal.aborted) {
+        signal.addEventListener("abort", () => childController.abort(), { once: true });
+      } else if (signal?.aborted) {
+        childController.abort();
+      }
+
       try {
         if (useWorktree) {
           worktreePath = await createWorktree(id);
@@ -163,15 +174,18 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           }
         }
 
-        const signal = deps.getSignal();
-
-        const childController = new AbortController();
-        controllers.set(id, childController);
-        // Link to parent signal so cancelling everything cascades
-        if (signal && !signal.aborted) {
-          signal.addEventListener("abort", () => childController.abort(), { once: true });
-        } else if (signal?.aborted) {
-          childController.abort();
+        // If cancelled during worktree setup, bail out before starting the loop.
+        if (childController.signal.aborted) {
+          if (worktreePath) {
+            process.chdir(originalCwd);
+            await removeWorktree(worktreePath, branchName).catch(() => {});
+          }
+          progress.status = "error";
+          progress.error = "Cancelled";
+          active.set(id, { ...progress });
+          controllers.delete(id);
+          broadcastNow();
+          return { output: "Subagent cancelled.", isError: true };
         }
 
         const confirmTool = (
@@ -307,11 +321,25 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         let mergeNote = "";
         if (worktreePath) {
           process.chdir(originalCwd);
-          const { applied, error: mergeErr } = await applyWorktreeChanges(worktreePath);
-          if (!applied) {
-            mergeNote = `\n\n[Worktree merge warning]: ${mergeErr}`;
+          // Never merge partial edits from a cancelled subagent — discard the
+          // worktree so incomplete, unreviewed changes cannot reach the parent.
+          if (!childController.signal.aborted) {
+            const { applied, error: mergeErr } = await applyWorktreeChanges(worktreePath);
+            if (!applied) {
+              mergeNote = `\n\n[Worktree merge warning]: ${mergeErr}`;
+            }
           }
           await removeWorktree(worktreePath, branchName).catch(() => {});
+        }
+
+        if (childController.signal.aborted) {
+          progress.status = "error";
+          progress.error = "Cancelled";
+          active.set(id, { ...progress });
+          controllers.delete(id);
+          broadcastNow();
+          setTimeout(() => { active.delete(id); broadcastNow(); }, 100);
+          return { output: "Subagent cancelled.", isError: true };
         }
 
         progress.status = "done";
@@ -357,6 +385,8 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       if (controller) {
         controller.abort();
       }
+      // Unblock any confirmation the subagent is waiting on so its loop can exit.
+      deps.confirmationQueue.rejectBySubagentId(id);
     },
   };
 }
