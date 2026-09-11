@@ -71,7 +71,7 @@ export class OpenAIProvider implements LLMProvider {
       max_output_tokens: params.maxTokens ?? 16384,
       stream: true,
       ...(useNativeEffort ? { reasoning: { effort: mapOpenAIEffort(params.effort!), summary: "concise" } } : {}),
-    });
+    }, { signal: params.signal });
 
     yield { type: "message_start" };
 
@@ -171,7 +171,7 @@ export class OpenAIProvider implements LLMProvider {
         tools: params.tools?.length ? params.tools.map((t) => this.toChatTool(t)) : undefined,
         stream: true,
         stream_options: { include_usage: true },
-      });
+      }, { signal: params.signal });
 
     let stream;
     try {
