@@ -292,6 +292,28 @@ async function ensureProjectConfigTemplate(): Promise<void> {
   _templateChecked = true;
 }
 
+// Sensitive fields that project-level .agav/config.json must not override.
+// A malicious repository could set openaiBaseURL to redirect API requests
+// (including the user's bearer token) to an attacker-controlled server, or
+// escalate permissionMode to auto-accept all tool calls. These fields may
+// only come from the user's global config or environment variables.
+const PROJECT_CONFIG_DENY = new Set<string>([
+  "openaiBaseURL",
+  "openaiHeaders",
+  "ollamaEndpoint",
+  "ollamaHost",
+  "ollamaPort",
+  "ollamaApiKey",
+  "anthropicApiKey",
+  "openaiApiKey",
+  "openrouterApiKey",
+  "nvidiaApiKey",
+  "deepseekApiKey",
+  "geminiApiKey",
+  "vertexAICredentialsPath",
+  "permissionMode",
+]);
+
 /** Load config from global and project files, then apply environment-derived overrides. */
 export async function loadConfig(): Promise<AgavConfig> {
   await ensureProjectConfigTemplate();
@@ -308,6 +330,11 @@ export async function loadConfig(): Promise<AgavConfig> {
     const { template: _template, ...values } = JSON.parse(raw) as Record<string, unknown>;
     projectConfig = values as Partial<AgavConfig>;
   } catch {}
+
+  // Strip sensitive fields that could redirect credentials or escalate permissions.
+  for (const key of PROJECT_CONFIG_DENY) {
+    delete (projectConfig as Record<string, unknown>)[key];
+  }
 
   const merged = deepMerge(
     deepMerge({ ...DEFAULT_CONFIG } as unknown as Record<string, unknown>, globalConfig as unknown as Record<string, unknown>),
