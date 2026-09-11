@@ -87,6 +87,14 @@ export class OllamaProvider implements LLMProvider {
         },
       });
 
+      // The Ollama SDK manages its own AbortController internally. Hook the
+      // caller's signal so that an external abort tears down the stream.
+      const onAbort = () => (response as any).abort?.();
+      if (params.signal) {
+        if (params.signal.aborted) { (response as any).abort?.(); }
+        else { params.signal.addEventListener("abort", onAbort, { once: true }); }
+      }
+
       yield { type: "message_start" };
 
       // Ollama repeats a tool_call across chunks, so each one needs a stable
@@ -151,6 +159,8 @@ export class OllamaProvider implements LLMProvider {
           };
         }
       }
+
+      params.signal?.removeEventListener("abort", onAbort);
     }
     catch (e: unknown) {
       // Swallowing this used to end the turn with no output and no explanation.

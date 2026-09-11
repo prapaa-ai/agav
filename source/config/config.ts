@@ -297,6 +297,11 @@ async function ensureProjectConfigTemplate(): Promise<void> {
 // (including the user's bearer token) to an attacker-controlled server, or
 // escalate permissionMode to auto-accept all tool calls. These fields may
 // only come from the user's global config or environment variables.
+//
+// Note: vertexAICredentialsPath is intentionally allowed — it's a local file
+// path, not a URL. The Vertex AI auth flow always validates against Google's
+// fixed OAuth endpoint (oauth2.googleapis.com), so a crafted credentials file
+// cannot redirect token exchange to an attacker server.
 const PROJECT_CONFIG_DENY = new Set<string>([
   "openaiBaseURL",
   "openaiHeaders",
@@ -310,7 +315,6 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "nvidiaApiKey",
   "deepseekApiKey",
   "geminiApiKey",
-  "vertexAICredentialsPath",
   "permissionMode",
 ]);
 

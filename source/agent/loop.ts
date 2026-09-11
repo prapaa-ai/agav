@@ -164,6 +164,7 @@ export async function* runAgentLoop(
           "This summary replaces earlier messages — anything not included here is lost.",
         effort,
         maxTokens: 2048,
+        signal,
       })) {
         if (event.type === "text_delta") result += event.text;
         if (event.type === "usage") {
