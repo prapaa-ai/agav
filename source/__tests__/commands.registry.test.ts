@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { CommandRegistry } from "../commands/registry.js";
+import {
+  CommandRegistry,
+  MID_TURN_SAFE_COMMANDS,
+  isCommandAllowedMidTurn,
+} from "../commands/registry.js";
 import type { CommandContext, SlashCommand } from "../commands/types.js";
 
 const createContext = (): CommandContext => ({
@@ -75,5 +79,40 @@ describe("commands/registry", () => {
 
     expect(execute).toHaveBeenCalledWith("alpha beta", context);
     expect(result).toEqual({ type: "message", text: "args=alpha beta" });
+  });
+});
+
+describe("commands/registry mid-turn safety", () => {
+  it("allows exit to run mid-turn so users can quit without waiting for idle", () => {
+    // Regression guard: `exit` was previously dropped while a turn was in
+    // flight, so /exit did nothing until the CLI was idle.
+    expect(isCommandAllowedMidTurn("exit")).toBe(true);
+  });
+
+  it("allows the known mid-turn-safe commands", () => {
+    expect(isCommandAllowedMidTurn("steer")).toBe(true);
+    expect(isCommandAllowedMidTurn("help")).toBe(true);
+    expect(isCommandAllowedMidTurn("loop")).toBe(true);
+  });
+
+  it("is case-insensitive on the command name", () => {
+    expect(isCommandAllowedMidTurn("EXIT")).toBe(true);
+    expect(isCommandAllowedMidTurn("Steer")).toBe(true);
+  });
+
+  it("defers other commands until the agent is idle", () => {
+    expect(isCommandAllowedMidTurn("model")).toBe(false);
+    expect(isCommandAllowedMidTurn("clear")).toBe(false);
+    expect(isCommandAllowedMidTurn("unknown-command")).toBe(false);
+    expect(isCommandAllowedMidTurn("")).toBe(false);
+  });
+
+  it("only exposes commands that are actually registered", () => {
+    const registry = new CommandRegistry();
+    const registered = new Set(registry.list().map((command) => command.name));
+
+    for (const name of MID_TURN_SAFE_COMMANDS) {
+      expect(registered.has(name)).toBe(true);
+    }
   });
 });
