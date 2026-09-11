@@ -1,6 +1,6 @@
 import { readFile, writeFile, readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { getAgavDir } from "./config.js";
 import { ensureDir } from "../utils/fs.js";
@@ -24,30 +24,48 @@ export interface MemoryEntry {
   createdAt?: string;
 }
 
-function getGitRepoRoot(): string {
+let _cachedGitRoot: string | undefined;
+
+async function getGitRepoRoot(): Promise<string> {
+  if (_cachedGitRoot !== undefined) return _cachedGitRoot;
   try {
-    return execFileSync("git", ["rev-parse", "--show-toplevel"], {
-      timeout: 3000,
-      stdio: ["pipe", "pipe", "pipe"],
-      cwd: process.cwd(),
-    }).toString().trim();
+    const root = await new Promise<string>((resolve, reject) => {
+      execFile("git", ["rev-parse", "--show-toplevel"], {
+        timeout: 3000,
+        cwd: process.cwd(),
+      }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout.toString().trim());
+      });
+    });
+    _cachedGitRoot = root;
+    return root;
   } catch {
-    return process.cwd();
+    _cachedGitRoot = process.cwd();
+    return _cachedGitRoot;
   }
 }
 
-function getProjectHash(): string {
-  const root = getGitRepoRoot();
+async function getProjectHash(): Promise<string> {
+  const root = await getGitRepoRoot();
   return createHash("sha256").update(root).digest("hex").slice(0, 12);
 }
 
-function getProjectMemoryDir(): string {
-  const hash = getProjectHash();
+async function getProjectMemoryDir(): Promise<string> {
+  const hash = await getProjectHash();
   return join(getAgavDir(), "projects", hash, "memory");
 }
 
-function getMemoryIndexPath(): string {
-  return join(getProjectMemoryDir(), "MEMORY.md");
+async function getMemoryIndexPath(): Promise<string> {
+  return join(await getProjectMemoryDir(), "MEMORY.md");
+}
+
+let _memoriesCache: MemoryEntry[] | undefined;
+let _memoriesCacheDir: string | undefined;
+
+function invalidateMemoriesCache(): void {
+  _memoriesCache = undefined;
+  _memoriesCacheDir = undefined;
 }
 
 function slugify(name: string): string {
@@ -98,19 +116,23 @@ export async function saveMemory(entry: {
   type: MemoryType;
   content: string;
 }): Promise<string> {
-  const dir = getProjectMemoryDir();
+  const dir = await getProjectMemoryDir();
   await ensureDir(dir);
 
   const slug = slugify(entry.name);
   const filePath = join(dir, `${slug}.md`);
   await writeFile(filePath, formatMemoryFile(entry));
 
+  invalidateMemoriesCache();
   await updateMemoryIndex();
   return slug;
 }
 
 export async function loadMemories(): Promise<MemoryEntry[]> {
-  const dir = getProjectMemoryDir();
+  const dir = await getProjectMemoryDir();
+  if (_memoriesCache !== undefined && _memoriesCacheDir === dir) {
+    return _memoriesCache;
+  }
   try {
     await ensureDir(dir);
     const files = await readdir(dir);
@@ -127,6 +149,8 @@ export async function loadMemories(): Promise<MemoryEntry[]> {
     }
 
     memories.sort((a, b) => a.name.localeCompare(b.name));
+    _memoriesCache = memories;
+    _memoriesCacheDir = dir;
     return memories;
   } catch {
     return [];
@@ -134,12 +158,13 @@ export async function loadMemories(): Promise<MemoryEntry[]> {
 }
 
 export async function deleteMemory(name: string): Promise<boolean> {
-  const dir = getProjectMemoryDir();
+  const dir = await getProjectMemoryDir();
   const slug = slugify(name);
 
   for (const ext of [".md", ".json"]) {
     try {
       await unlink(join(dir, `${slug}${ext}`));
+      invalidateMemoriesCache();
       await updateMemoryIndex();
       return true;
     } catch {}
@@ -154,6 +179,7 @@ export async function deleteMemory(name: string): Promise<boolean> {
       const entry = parseMemoryFile(raw, filePath);
       if (entry && (entry.name === name || slugify(entry.name) === slug)) {
         await unlink(filePath);
+        invalidateMemoriesCache();
         await updateMemoryIndex();
         return true;
       }
@@ -172,17 +198,18 @@ export async function deleteAllMemories(): Promise<number> {
       count++;
     } catch {}
   }
+  invalidateMemoriesCache();
   await updateMemoryIndex();
   return count;
 }
 
 async function updateMemoryIndex(): Promise<void> {
-  const dir = getProjectMemoryDir();
+  const dir = await getProjectMemoryDir();
   await ensureDir(dir);
   const memories = await loadMemories();
 
   if (memories.length === 0) {
-    await writeFile(getMemoryIndexPath(), "# Memories\n\nNo memories saved yet.\n");
+    await writeFile(await getMemoryIndexPath(), "# Memories\n\nNo memories saved yet.\n");
     return;
   }
 
@@ -192,7 +219,7 @@ async function updateMemoryIndex(): Promise<void> {
   });
 
   await writeFile(
-    getMemoryIndexPath(),
+    await getMemoryIndexPath(),
     `# Memories\n\n${lines.join("\n")}\n`,
   );
 }
@@ -241,6 +268,6 @@ export async function formatMemoriesForPrompt(): Promise<string> {
   return result;
 }
 
-export function getProjectMemoryPath(): string {
+export async function getProjectMemoryPath(): Promise<string> {
   return getProjectMemoryDir();
 }

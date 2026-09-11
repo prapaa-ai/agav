@@ -18,6 +18,10 @@ Agav can read files, edit code, and execute commands. Choose controls appropriat
 
 Set a default in configuration or use `--auto-accept` and `--deny-writes` at startup. `allowedTools` can auto-approve named tools or scoped command patterns.
 
+### Project config safety
+
+Sensitive configuration fields are blocked from project-level `.agav/config.json` to prevent credential exfiltration and permission escalation when working in untrusted repositories. See [Configuration → Project config restrictions](/reference/configuration#project-config-restrictions) for the full list.
+
 ### deny-writes mode
 
 In `deny-writes` mode, all file-mutating tools (`edit_file`, `write_file`, `run_command`, `edit_notebook`) are blocked unconditionally — even if they appear in the `allowedTools` list. This prevents a blanket allowlist grant from quietly authorising destructive operations.

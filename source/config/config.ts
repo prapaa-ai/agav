@@ -262,8 +262,11 @@ function deepMerge<T extends Record<string, unknown>>(base: T, override: Partial
   return result;
 }
 
+let _templateChecked = false;
+
 /** Create or enrich the project config with self-documenting configuration metadata. */
 async function ensureProjectConfigTemplate(): Promise<void> {
+  if (_templateChecked) return;
   const projectDir = join(process.cwd(), ".agav");
   const projectPath = join(projectDir, "config.json");
   await ensureDir(projectDir);
@@ -273,7 +276,10 @@ async function ensureProjectConfigTemplate(): Promise<void> {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     // Refresh shipped metadata after upgrades while preserving user settings,
     // but avoid rewriting committed config files when nothing changed.
-    if (JSON.stringify(parsed.template) === JSON.stringify(PROJECT_CONFIG_TEMPLATE)) return;
+    if (JSON.stringify(parsed.template) === JSON.stringify(PROJECT_CONFIG_TEMPLATE)) {
+      _templateChecked = true;
+      return;
+    }
     parsed.template = PROJECT_CONFIG_TEMPLATE;
     await writeFile(projectPath, JSON.stringify(parsed, null, 2) + "\n");
   } catch (error) {
@@ -283,7 +289,34 @@ async function ensureProjectConfigTemplate(): Promise<void> {
       JSON.stringify({ template: PROJECT_CONFIG_TEMPLATE }, null, 2) + "\n",
     );
   }
+  _templateChecked = true;
 }
+
+// Sensitive fields that project-level .agav/config.json must not override.
+// A malicious repository could set openaiBaseURL to redirect API requests
+// (including the user's bearer token) to an attacker-controlled server, or
+// escalate permissionMode to auto-accept all tool calls. These fields may
+// only come from the user's global config or environment variables.
+//
+// Note: vertexAICredentialsPath is intentionally allowed — it's a local file
+// path, not a URL. The Vertex AI auth flow always validates against Google's
+// fixed OAuth endpoint (oauth2.googleapis.com), so a crafted credentials file
+// cannot redirect token exchange to an attacker server.
+const PROJECT_CONFIG_DENY = new Set<string>([
+  "openaiBaseURL",
+  "openaiHeaders",
+  "ollamaEndpoint",
+  "ollamaHost",
+  "ollamaPort",
+  "ollamaApiKey",
+  "anthropicApiKey",
+  "openaiApiKey",
+  "openrouterApiKey",
+  "nvidiaApiKey",
+  "deepseekApiKey",
+  "geminiApiKey",
+  "permissionMode",
+]);
 
 /** Load config from global and project files, then apply environment-derived overrides. */
 export async function loadConfig(): Promise<AgavConfig> {
@@ -301,6 +334,11 @@ export async function loadConfig(): Promise<AgavConfig> {
     const { template: _template, ...values } = JSON.parse(raw) as Record<string, unknown>;
     projectConfig = values as Partial<AgavConfig>;
   } catch {}
+
+  // Strip sensitive fields that could redirect credentials or escalate permissions.
+  for (const key of PROJECT_CONFIG_DENY) {
+    delete (projectConfig as Record<string, unknown>)[key];
+  }
 
   const merged = deepMerge(
     deepMerge({ ...DEFAULT_CONFIG } as unknown as Record<string, unknown>, globalConfig as unknown as Record<string, unknown>),
@@ -349,6 +387,12 @@ export async function loadConfig(): Promise<AgavConfig> {
     projectConfig.nvidiaApiKey ??
     globalConfig.nvidiaApiKey ??
     DEFAULT_CONFIG.nvidiaApiKey ?? "",
+  ) || undefined;
+  merged.deepseekApiKey = decrypt(
+    process.env["DEEPSEEK_API_KEY"] ??
+    projectConfig.deepseekApiKey ??
+    globalConfig.deepseekApiKey ??
+    DEFAULT_CONFIG.deepseekApiKey ?? "",
   ) || undefined;
   merged.geminiApiKey = decrypt(
     process.env["GEMINI_API_KEY"] ??
