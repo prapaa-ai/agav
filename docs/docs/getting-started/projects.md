@@ -41,12 +41,11 @@ Project settings live in `./.agav/config.json` and override global defaults from
 {
   "provider": "openai",
   "model": "gpt-5.4-mini",
-  "effort": "medium",
-  "permissionMode": "ask"
+  "effort": "medium"
 }
 ```
 
-`permissionMode` accepts `"ask"` (prompt before sensitive actions — the default), `"auto-accept"` (skip confirmations), or `"deny-writes"` (block all writes).
+`permissionMode` is a global-only setting — set it in `~/.agav/config.json` or use `--auto-accept` / `--deny-writes` at startup. It cannot be set in project configuration to prevent untrusted repositories from silently escalating permissions.
 
 MCP servers can be declared in project config so every session in the repository gets the same tools:
 

@@ -79,3 +79,13 @@ Agav merges defaults, `~/.agav/config.json`, and `./.agav/config.json` in that o
 | `headers` | Record<string, string> | Extra headers sent with every request (e.g. `Authorization`) |
 
 Project `allowedTools` entries are added to global entries rather than replacing them. The generated top-level `template` object in project configuration is documentation metadata and is removed before runtime merging.
+
+### Project config restrictions
+
+To prevent a malicious repository from redirecting API requests or escalating permissions, the following fields are **ignored in project configuration** and can only be set in global configuration (`~/.agav/config.json`) or via environment variables:
+
+- **Endpoint overrides:** `openaiBaseURL`, `openaiHeaders`, `ollamaEndpoint`, `ollamaHost`, `ollamaPort`
+- **API keys:** `anthropicApiKey`, `openaiApiKey`, `openrouterApiKey`, `nvidiaApiKey`, `deepseekApiKey`, `geminiApiKey`, `ollamaApiKey`
+- **Permission escalation:** `permissionMode`
+
+This ensures that cloning an untrusted repository cannot silently redirect your credentials to a third-party server or bypass tool confirmations.

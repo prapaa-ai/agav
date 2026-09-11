@@ -45,7 +45,7 @@ export class AnthropicProvider implements LLMProvider {
       messages: this.toMessages(params.messages),
       tools: tools as any,
       output_config: nativeEffort ? { effort: nativeEffort } : undefined,
-    });
+    }, { signal: params.signal });
 
     // Track which content block index maps to which tool call ID
     const blockToolIds = new Map<number, string>();

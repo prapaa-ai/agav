@@ -73,6 +73,12 @@ const PASTE_END = "\x1b[201~";
 // gaps but short enough that the first interaction after waking works.
 const STDIN_RESUME_GAP_MS = 5000;
 
+// When we recently consumed a mouse sequence, bare `digit(s)M` fragments that
+// are indistinguishable from user input in isolation are almost certainly tails
+// of split SGR mouse reports. This window defines how long after the last mouse
+// consumption we should suppress those fragments.
+const MOUSE_BURST_WINDOW_MS = 150;
+
 const noop = (): void => {};
 
 // ---------------------------------------------------------------------------
@@ -292,6 +298,10 @@ export default class Ink {
 	// Timestamp of the last stdin chunk. Used to detect long idle gaps after
 	// which the terminal may have silently reset DEC private modes.
 	private lastInputTime = Date.now();
+	// Timestamp of the last time a mouse sequence was consumed (by matchMouseAt
+	// or matchOrphanedCSI). Used to suppress bare `digit(s)M` fragments during
+	// mouse event bursts (e.g. app-switch scroll floods).
+	private lastMouseConsumedAt = 0;
 	private lastOutput = "";
 	private fullStaticOutput = "";
 
@@ -795,6 +805,7 @@ export default class Ink {
 			const match = matchMouseAt(chunk);
 			if (match) {
 				flushInput();
+				this.lastMouseConsumedAt = now;
 				const parsed = parseMouseEvent(match.sequence);
 				if (parsed) {
 					this.handleMouseEvent(parsed);
@@ -814,22 +825,25 @@ export default class Ink {
 				continue;
 			}
 
-			// A trailing ESC is almost always the start of an escape sequence
-			// (arrow key, mouse report, function key) that got split across
-			// reads. Buffer it so the next read can complete the sequence.
-			// Without this, the ESC goes through as input while the rest of
-			// the sequence arrives next and leaks as literal text (e.g. the
-			// SGR mouse body `[<65;44;18M` appears in the prompt).
-			if (chunk.length === 1 && chunk[0] === "\x1b") {
+			// A trailing ESC (or ESC+`[` CSI introducer) is almost always the
+			// start of an escape sequence (arrow key, mouse report, function
+			// key) that got split across reads. Buffer it so the next read
+			// can complete the sequence. Without this, the ESC goes through
+			// as input while the rest of the sequence arrives next and leaks
+			// as literal text (e.g. the SGR mouse body `[<65;44;18M` appears
+			// in the prompt).
+			if (chunk.length <= 2 && chunk[0] === "\x1b") {
 				flushInput();
-				this.mouseBuffer = "\x1b";
-				// If no follow-up bytes arrive within 50ms, this is a real Escape
-				// keypress — flush it as input rather than holding it indefinitely.
+				this.mouseBuffer = chunk;
+				// If no follow-up bytes arrive within 50ms, this is a real
+				// Escape keypress (or Alt+[ on some terminals) — flush it as
+				// input rather than holding it indefinitely.
 				clearTimeout(this.escapeTimer);
 				this.escapeTimer = setTimeout(() => {
-					if (this.mouseBuffer === "\x1b") {
+					const buf = this.mouseBuffer;
+					if (buf !== undefined && buf[0] === "\x1b" && buf.length <= 2) {
 						this.mouseBuffer = undefined;
-						this.internalEventEmitter.emit("input", "\x1b");
+						this.internalEventEmitter.emit("input", buf);
 					}
 				}, 50);
 				chunk = "";
@@ -840,9 +854,11 @@ export default class Ink {
 			// final byte, matching the shape of an escape sequence whose
 			// leading ESC was already consumed (split across reads, or
 			// stripped upstream). Drop it silently — it is never real input.
-			const orphanedLen = matchOrphanedCSI(chunk);
+			const inMouseBurst = (now - this.lastMouseConsumedAt) < MOUSE_BURST_WINDOW_MS;
+			const orphanedLen = matchOrphanedCSI(chunk, inMouseBurst);
 			if (orphanedLen > 0) {
 				flushInput();
+				this.lastMouseConsumedAt = now;
 				chunk = chunk.slice(orphanedLen);
 				continue;
 			}
@@ -1508,7 +1524,16 @@ const ORPHANED_X10_MOUSE_RE =
 	// eslint-disable-next-line no-control-regex
 	/^\[M[\s\S]{3}/;
 
-const matchOrphanedCSI = (chunk: string): number => {
+/**
+ * Matches a bare `digit(s)M` or `digit(s)m` fragment — the final numeric field
+ * plus terminator of a split SGR mouse report. Without any semicolons these are
+ * indistinguishable from user-typed text like "26M" or "100M", so this pattern
+ * is ONLY checked during a mouse burst (when we recently consumed another mouse
+ * sequence) to avoid false positives during normal typing.
+ */
+const BARE_MOUSE_TAIL_RE = /^\d{1,4}[Mm]/;
+
+const matchOrphanedCSI = (chunk: string, inMouseBurst = false): number => {
 	// Full orphaned SGR CSI: `[<button;col;rowM`
 	if (chunk.length >= 6 && chunk[0] === "[" && chunk[1] === "<") {
 		const m = ORPHANED_SGR_MOUSE_RE.exec(chunk);
@@ -1527,6 +1552,18 @@ const matchOrphanedCSI = (chunk: string): number => {
 	const ch = chunk[0];
 	if (ch === "<" || ch === ";" || (ch !== undefined && ch >= "0" && ch <= "9")) {
 		const m = ORPHANED_SGR_MOUSE_TAIL_RE.exec(chunk);
+		if (m) return m[0].length;
+	}
+
+	// Bare `digit(s)M` — the final numeric field of a split SGR report that
+	// lost all semicolons to a prior read boundary. Normally this would be
+	// ambiguous with user input ("26M", "10M"), but during a mouse burst
+	// (within MOUSE_BURST_WINDOW_MS of consuming another mouse sequence) it is
+	// almost certainly residue from the same flood. This handles the common
+	// app-switch scenario where the terminal emits rapid mouse reports and
+	// read boundaries split sequences at arbitrary points.
+	if (inMouseBurst && ch !== undefined && ch >= "0" && ch <= "9") {
+		const m = BARE_MOUSE_TAIL_RE.exec(chunk);
 		if (m) return m[0].length;
 	}
 
