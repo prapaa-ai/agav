@@ -388,6 +388,12 @@ export async function loadConfig(): Promise<AgavConfig> {
     globalConfig.nvidiaApiKey ??
     DEFAULT_CONFIG.nvidiaApiKey ?? "",
   ) || undefined;
+  merged.deepseekApiKey = decrypt(
+    process.env["DEEPSEEK_API_KEY"] ??
+    projectConfig.deepseekApiKey ??
+    globalConfig.deepseekApiKey ??
+    DEFAULT_CONFIG.deepseekApiKey ?? "",
+  ) || undefined;
   merged.geminiApiKey = decrypt(
     process.env["GEMINI_API_KEY"] ??
     projectConfig.geminiApiKey ??

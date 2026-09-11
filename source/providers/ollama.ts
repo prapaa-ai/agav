@@ -95,6 +95,7 @@ export class OllamaProvider implements LLMProvider {
         else { params.signal.addEventListener("abort", onAbort, { once: true }); }
       }
 
+      try {
       yield { type: "message_start" };
 
       // Ollama repeats a tool_call across chunks, so each one needs a stable
@@ -160,7 +161,9 @@ export class OllamaProvider implements LLMProvider {
         }
       }
 
-      params.signal?.removeEventListener("abort", onAbort);
+      } finally {
+        params.signal?.removeEventListener("abort", onAbort);
+      }
     }
     catch (e: unknown) {
       // Swallowing this used to end the turn with no output and no explanation.
