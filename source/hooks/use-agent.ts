@@ -1093,7 +1093,7 @@ export function useAgent(
       submitPendingRef.current = true;
 
       const { resolveTargetAgent, executeTargetedAgent } = await import("../agents/targeting.js");
-      const resolved = await resolveTargetAgent(agentName);
+      const resolved = await resolveTargetAgent(agentName, configRef.current);
       if ("error" in resolved) {
         setError(resolved.error);
         submitPendingRef.current = false;

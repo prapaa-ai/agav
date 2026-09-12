@@ -50,12 +50,12 @@ export interface AgentManifest {
   // Tool permissions
   "tool-permissions"?: Record<string, ToolPermission>;
 
-  // Per-agent MCP servers (started when this agent runs, scoped to this agent)
+  // Per-agent MCP servers (started when this agent runs, scoped to this agent).
+  // Env/credentials are resolved from the global/project config, not stored here.
   "mcp-servers"?: Array<{
-    key: string;     // identifier for this MCP connection
+    key: string;     // identifier — must match a key in config.json mcpServers
     command: string; // "npx" | "uvx" | "docker" | "http"
     args?: string[]; // e.g. ["-y", "@scope/pkg"] or ["https://endpoint"]
-    env?: Record<string, string>; // environment variables for this server
   }>;
 
   // A2A-specific fields

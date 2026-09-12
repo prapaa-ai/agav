@@ -23,6 +23,7 @@ export interface AgentTargetResult {
  */
 export async function resolveTargetAgent(
   nameOrAlias: string,
+  globalConfig?: AgavConfig,
 ): Promise<{ agent: AgentDefinition } | { error: string }> {
   const agents = getCachedAgents();
   const lower = nameOrAlias.toLowerCase();
@@ -52,16 +53,17 @@ export async function resolveTargetAgent(
       agent.origin === "bundled"
         ? join(homedir(), ".agav", "agents", agent.manifest.name)
         : agent.path;
-    const missing = await getMissingCredentials(credPath, agent.manifest);
+    const missing = await getMissingCredentials(credPath, agent.manifest, globalConfig);
     if (missing.length > 0) {
       const { setEnvHint, agavHomePath } = await import("../utils/shell-hints.js");
       const lines = [
         `Agent "${nameOrAlias}" is missing required credentials: ${missing.join(", ")}.`,
         ``,
-        `Set the following environment variables before starting agav:`,
-        ...missing.map((k) => `  ${setEnvHint(k, "<your-value>")}`),
-        ``,
-        `Or store them in ${agavHomePath(`agents/${agent.manifest.name}/config.json`)}`,
+        `Provide them via any of:`,
+        `  1. The matching MCP server's env in ${agavHomePath("config.json")}`,
+        `  2. Project .agav/config.json (mcpServers.<key>.env)`,
+        `  3. Environment variables:`,
+        ...missing.map((k) => `     ${setEnvHint(k, "<your-value>")}`),
       ];
       return { error: lines.join("\n") };
     }

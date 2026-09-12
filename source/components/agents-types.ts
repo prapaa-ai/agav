@@ -34,14 +34,8 @@ export function resolveConfigPath(agent: AgentDefinition): string {
   return join(resolveConfigDir(agent), "config.json");
 }
 
-export function getConfigItems(agent: AgentDefinition): ConfigItem[] {
-  const credItems: ConfigItem[] = (agent.manifest["required-config"] ?? []).map((k) => ({
-    key: k,
-    label: k,
-    secret: true,
-  }));
+export function getConfigItems(_agent: AgentDefinition): ConfigItem[] {
   return [
-    ...credItems,
     { key: "model",  label: "Model  (blank = inherit session)", secret: false },
     { key: "effort", label: "Effort (blank = inherit session)", secret: false },
   ];

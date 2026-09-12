@@ -99,7 +99,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
       if (required.length === 0) {
         result[key] = { ready: true, missing: [] };
       } else {
-        const missing = await getMissingCredentials(resolveConfigDir(agent), agent.manifest);
+        const missing = await getMissingCredentials(resolveConfigDir(agent), agent.manifest, config);
         result[key] = { ready: missing.length === 0, missing };
       }
     }

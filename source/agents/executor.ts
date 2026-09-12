@@ -82,30 +82,39 @@ export async function executeNativeAgent(
 ): Promise<string> {
   const callId = `${agent.manifest.name}-${randomUUID().slice(0, 8)}`;
 
-  // Load per-agent runtime config: credentials + optional model/effort overrides.
-  // Priority: config.json > AGENT.md manifest > session config.
-  const runtimeConfig = await loadAgentCredentials(agent.path, agent.manifest.name);
+  // Per-agent model/effort overrides (from per-agent config.json).
+  const agentOverrides = await loadAgentCredentials(agent.path, agent.manifest.name);
 
-  const model  = runtimeConfig["model"]  || agent.manifest.model  || deps.config.model;
-  const effort = (runtimeConfig["effort"] || agent.manifest.effort || deps.config.effort) as import("../config/config.js").EffortLevel;
+  const model  = agentOverrides["model"]  || agent.manifest.model  || deps.config.model;
+  const effort = (agentOverrides["effort"] || agent.manifest.effort || deps.config.effort) as import("../config/config.js").EffortLevel;
 
-  // Start per-agent MCP servers (credentials passed via subprocess env, not process.env)
+  // Start per-agent MCP servers.
+  // Env resolution: process.env < global/project config mcpServers[key].env.
   let agentMCPManager: import("../mcp/manager.js").MCPManager | null = null;
   const mcpServersDecl = agent.manifest["mcp-servers"] ?? [];
   if (mcpServersDecl.length > 0) {
     const { MCPManager } = await import("../mcp/manager.js");
     agentMCPManager = new MCPManager();
     for (const srv of mcpServersDecl) {
+      const globalServerEnv = deps.config.mcpServers?.[srv.key]?.env ?? {};
       const serverConfig = {
         command: srv.command,
         args: srv.args ?? [],
-        env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...srv.env, ...runtimeConfig },
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...globalServerEnv },
       };
       try {
         await agentMCPManager.startServer(srv.key, serverConfig);
       } catch (err) {
         console.warn(`[agent:${agent.manifest.name}] Failed to start MCP server "${srv.key}":`, err);
       }
+    }
+  }
+
+  // Collect all env values from global/project config MCP servers for tool context.
+  const globalMcpEnv: Record<string, string> = {};
+  if (deps.config.mcpServers) {
+    for (const srv of Object.values(deps.config.mcpServers)) {
+      if (srv.env) Object.assign(globalMcpEnv, srv.env);
     }
   }
 
@@ -116,7 +125,7 @@ export async function executeNativeAgent(
     for (const tool of agent.tools) {
       childRegistry.register({
         schema: tool.schema,
-        execute: (input) => tool.execute(input, { env: runtimeConfig }),
+        execute: (input) => tool.execute(input, { env: globalMcpEnv }),
       });
     }
 

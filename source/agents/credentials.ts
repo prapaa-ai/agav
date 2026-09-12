@@ -6,6 +6,17 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { encrypt, decrypt } from "../utils/encrypt.js";
 import type { AgentManifest } from "./types.js";
+import type { AgavConfig } from "../config/config.js";
+
+function collectGlobalMcpEnv(globalConfig?: AgavConfig): Record<string, string> {
+  const env: Record<string, string> = {};
+  if (globalConfig?.mcpServers) {
+    for (const srv of Object.values(globalConfig.mcpServers)) {
+      if (srv.env) Object.assign(env, srv.env);
+    }
+  }
+  return env;
+}
 
 /**
  * Load agent credentials from config.json
@@ -55,35 +66,35 @@ export async function saveAgentConfig(
 }
 
 /**
- * Check if agent has all required credentials
+ * Check if agent has all required credentials.
+ * Resolution: global/project config mcpServers env → process.env
  */
 export async function hasRequiredCredentials(
-  agentPath: string,
-  manifest: AgentManifest
+  _agentPath: string,
+  manifest: AgentManifest,
+  globalConfig?: AgavConfig
 ): Promise<boolean> {
   const requiredConfig = manifest["required-config"] || [];
   if (requiredConfig.length === 0) return true;
 
-  const config = await loadAgentConfig(agentPath);
-  return requiredConfig.every((key) => (key in config && config[key]) || process.env[key]);
+  const mcpEnv = collectGlobalMcpEnv(globalConfig);
+  return requiredConfig.every((key) => mcpEnv[key] || process.env[key]);
 }
 
 /**
- * Get missing credential keys - checks config.json first, then process.env
+ * Get missing credential keys.
+ * Resolution: global/project config mcpServers env → process.env
  */
 export async function getMissingCredentials(
-  agentPath: string,
-  manifest: AgentManifest
+  _agentPath: string,
+  manifest: AgentManifest,
+  globalConfig?: AgavConfig
 ): Promise<string[]> {
   const requiredConfig = manifest["required-config"] || [];
   if (requiredConfig.length === 0) return [];
 
-  const config = await loadAgentConfig(agentPath);
-  return requiredConfig.filter((key) => {
-    const fromFile = config[key];
-    const fromEnv = process.env[key];
-    return !fromFile && !fromEnv;
-  });
+  const mcpEnv = collectGlobalMcpEnv(globalConfig);
+  return requiredConfig.filter((key) => !mcpEnv[key] && !process.env[key]);
 }
 
 /**

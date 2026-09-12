@@ -60,16 +60,17 @@ export function agentToTool(
           const credPath = agent.origin === "bundled"
             ? join(homedir(), ".agav", "agents", agent.manifest.name)
             : agent.path;
-          const missing = await getMissingCredentials(credPath, agent.manifest);
+          const missing = await getMissingCredentials(credPath, agent.manifest, deps.config);
           if (missing.length > 0) {
             const agentName = agent.manifest.name;
             const lines = [
               `Cannot run the ${agentName} agent — missing required configuration: ${missing.join(", ")}.`,
               ``,
-              `To configure, set the following environment variables before starting agav:`,
-              ...missing.map((k) => `  ${setEnvHint(k, "<your-value>")}`),
-              ``,
-              `Or store them permanently in ${agavHomePath(`agents/${agentName}/config.json`)}`,
+              `Provide them via any of:`,
+              `  1. The matching MCP server's env in ${agavHomePath("config.json")}`,
+              `  2. Project .agav/config.json (mcpServers.<key>.env)`,
+              `  3. Environment variables:`,
+              ...missing.map((k) => `     ${setEnvHint(k, "<your-value>")}`),
             ];
             return { output: lines.join("\n"), isError: true };
           }

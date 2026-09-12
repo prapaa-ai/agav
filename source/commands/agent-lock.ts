@@ -26,7 +26,7 @@ export const agentLockCommand: SlashCommand = {
     "  /agent                 Show current lock status",
   ].join("\n"),
 
-  async execute(args: string): Promise<CommandResult> {
+  async execute(args: string, context: import("./types.js").CommandContext): Promise<CommandResult> {
     const parts = args.trim().split(/\s+/);
     const name = parts[0]?.toLowerCase() ?? "";
     const flags = parts.slice(1);
@@ -57,7 +57,7 @@ export const agentLockCommand: SlashCommand = {
     }
 
     const { resolveTargetAgent } = await import("../agents/targeting.js");
-    const resolved = await resolveTargetAgent(name);
+    const resolved = await resolveTargetAgent(name, context.config);
     if ("error" in resolved) {
       return { type: "message", text: resolved.error };
     }

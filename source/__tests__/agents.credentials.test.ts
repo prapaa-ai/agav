@@ -86,10 +86,22 @@ describe("agents/credentials", () => {
       expect(missing).toEqual(["API_KEY", "API_SECRET"]);
     });
 
-    it("both agree when config.json has all keys", async () => {
+    it("per-agent config.json does NOT satisfy required credentials", async () => {
       await saveAgentConfig(dir, { API_KEY: "k1", API_SECRET: "k2" });
       const has = await hasRequiredCredentials(dir, manifest);
       const missing = await getMissingCredentials(dir, manifest);
+      expect(has).toBe(false);
+      expect(missing).toEqual(["API_KEY", "API_SECRET"]);
+    });
+
+    it("both agree when global config mcpServers env has all keys", async () => {
+      const globalConfig = {
+        mcpServers: {
+          test: { env: { API_KEY: "k1", API_SECRET: "k2" } },
+        },
+      } as unknown as import("../config/config.js").AgavConfig;
+      const has = await hasRequiredCredentials(dir, manifest, globalConfig);
+      const missing = await getMissingCredentials(dir, manifest, globalConfig);
       expect(has).toBe(true);
       expect(missing).toEqual([]);
     });
