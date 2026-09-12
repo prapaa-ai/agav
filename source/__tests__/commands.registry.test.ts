@@ -93,6 +93,10 @@ describe("commands/registry mid-turn safety", () => {
     expect(isCommandAllowedMidTurn("steer")).toBe(true);
     expect(isCommandAllowedMidTurn("help")).toBe(true);
     expect(isCommandAllowedMidTurn("loop")).toBe(true);
+    expect(isCommandAllowedMidTurn("memory")).toBe(true);
+    expect(isCommandAllowedMidTurn("remember")).toBe(true);
+    expect(isCommandAllowedMidTurn("forget")).toBe(true);
+    expect(isCommandAllowedMidTurn("context")).toBe(true);
   });
 
   it("is case-insensitive on the command name", () => {

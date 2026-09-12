@@ -33,7 +33,16 @@ import { openCommand } from "./open.js"
  * instead of waiting for the CLI to become idle; the exit handler aborts
  * the active turn before tearing down.
  */
-export const MID_TURN_SAFE_COMMANDS = new Set(["steer", "help", "loop", "exit"])
+export const MID_TURN_SAFE_COMMANDS = new Set([
+  "steer",
+  "help",
+  "loop",
+  "exit",
+  "memory",
+  "remember",
+  "forget",
+  "context",
+])
 
 /** Whether a slash command may run while a turn is still in flight. */
 export function isCommandAllowedMidTurn(name: string): boolean {
