@@ -220,18 +220,27 @@ async function cloneAgent(url: string): Promise<{ success: boolean; path?: strin
     const isSubdirectory = url.includes("/tree/") || url.includes("/agents/");
 
     if (isSubdirectory) {
-      const match = url.match(/^(https?:\/\/[^\/]+\/[^\/]+\/[^\/]+)(?:\/tree\/[^\/]+)?(\/.+)$/);
+      const match = url.match(/^(https?:\/\/[^\/]+\/[^\/]+\/[^\/]+)(?:\/tree\/(.+?))?(?=\/agents\/|\/AGENT\.md|$)(.*)$/);
       if (!match) {
         return { success: false, error: "Invalid git URL format" };
       }
 
-      const [, repoUrl, subPath] = match;
+      const [, repoUrl, branch, subPath = ""] = match;
 
-      await gitExec(["clone", "--depth=1", "--filter=blob:none", "--sparse", repoUrl!, "."], tempDir);
-      await gitExec(["sparse-checkout", "set", subPath!.slice(1)], tempDir);
+      const cloneArgs = ["clone", "--depth=1", "--filter=blob:none", "--sparse"];
+      if (branch) {
+        cloneArgs.push("--branch", branch);
+      }
+      cloneArgs.push(repoUrl!, ".");
+
+      await gitExec(cloneArgs, tempDir);
+      
+      if (subPath && subPath.length > 1) {
+        await gitExec(["sparse-checkout", "set", subPath.slice(1)], tempDir);
+      }
 
       // Copy agent out of the clone, then clean up (avoids dragging .git into the install)
-      const agentSrc = join(tempDir, subPath!.slice(1));
+      const agentSrc = join(tempDir, subPath ? subPath.slice(1) : "");
       await assertPathContained(agentSrc, tempDir);
       const outDir = join(tmpdir(), `agav-agent-${randomBytes(8).toString("hex")}`);
       await mkdir(outDir, { recursive: true });
