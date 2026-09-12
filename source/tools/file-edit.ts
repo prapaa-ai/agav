@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import { computeEditDiff } from "../utils/diff.js";
 import { pushUndo } from "../utils/undo.js";
+import { checkPathBoundary } from "../utils/path-guard.js";
 
 export const editFileTool: ToolDefinition = {
   schema: {
@@ -38,6 +39,11 @@ export const editFileTool: ToolDefinition = {
 
     if (!oldString) {
       return { output: "old_string cannot be empty", isError: true };
+    }
+
+    const pathError = await checkPathBoundary(filePath, "write");
+    if (pathError) {
+      return { output: pathError, isError: true };
     }
 
     try {

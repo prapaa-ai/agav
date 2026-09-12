@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import { readFileContext } from "../utils/file-context.js";
+import { checkPathBoundary } from "../utils/path-guard.js";
 
 export const fileReadTool: ToolDefinition = {
   schema: {
@@ -25,6 +26,11 @@ export const fileReadTool: ToolDefinition = {
 
   async execute(input): Promise<ToolResult> {
     const filePath = resolve(String(input.path));
+
+    const pathError = await checkPathBoundary(filePath, "read");
+    if (pathError) {
+      return { output: pathError, isError: true };
+    }
 
     try {
       const result = await readFileContext(filePath, {
