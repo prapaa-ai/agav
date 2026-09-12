@@ -50,6 +50,50 @@ describe("VertexAIProvider", () => {
     );
   });
 
+  it("backdates the JWT iat to tolerate a locally fast clock", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", expires_in: 3600 }), { status: 200 }));
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    await new VertexAIAuth(credentialsPath).getAccessToken();
+
+    const assertion = new URLSearchParams(String(fetchMock.mock.calls[0]?.[1]?.body)).get("assertion")!;
+    const claims = JSON.parse(Buffer.from(assertion.split(".")[1]!, "base64url").toString());
+    // iat must sit strictly in the past relative to "now", never in the future.
+    expect(claims.iat).toBeLessThan(nowSeconds);
+    expect(nowSeconds - claims.iat).toBeGreaterThanOrEqual(10);
+  });
+
+  it("retries token minting once when a skewed clock triggers invalid_grant", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "invalid_grant", error_description: "Invalid JWT: Token used too early" }), { status: 400 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", expires_in: 3600 }), { status: 200 }));
+
+    await expect(new VertexAIAuth(credentialsPath).getAccessToken()).resolves.toBe("access-token");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Each attempt signs a fresh assertion so its timestamps track the clock.
+    expect(fetchMock.mock.calls[0]?.[1]?.body).not.toBe(fetchMock.mock.calls[1]?.[1]?.body);
+  });
+
+  it("retries token minting once on a transient 5xx from the token endpoint", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("upstream boom", { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", expires_in: 3600 }), { status: 200 }));
+
+    await expect(new VertexAIAuth(credentialsPath).getAccessToken()).resolves.toBe("access-token");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails fast without retrying on a non-recoverable auth error", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "unauthorized_client" }), { status: 401 }));
+
+    await expect(new VertexAIAuth(credentialsPath).getAccessToken()).rejects.toThrow(
+      "Vertex AI authentication failed (401)",
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("authenticates with the service account and streams chat/tool/usage events", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", expires_in: 3600 }), { status: 200 }))

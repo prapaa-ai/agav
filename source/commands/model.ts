@@ -76,6 +76,22 @@ async function fetchNvidiaModels(apiKey: string): Promise<FetchedModel[]> {
   }
 }
 
+async function fetchDeepSeekModels(apiKey: string): Promise<FetchedModel[]> {
+  try {
+    const res = await fetch("https://api.deepseek.com/models", {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { data?: { id: string }[] };
+    return (data.data ?? [])
+      .map((m) => ({ id: m.id, provider: "deepseek" }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+  } catch {
+    return [];
+  }
+}
+
 async function fetchOllamaModels(baseUrl: string): Promise<FetchedModel[]> {
   try {
     const res = await fetch(`${baseUrl}/api/tags`, {
@@ -149,6 +165,7 @@ export async function fetchAvailableModels(config: AgavConfig): Promise<FetchAll
   if (config.openaiApiKey) fetches.push(fetchOpenAIModels(config.openaiApiKey));
   if (config.openrouterApiKey) fetches.push(fetchOpenRouterModels(config.openrouterApiKey));
   if (config.nvidiaApiKey) fetches.push(fetchNvidiaModels(config.nvidiaApiKey));
+  if (config.deepseekApiKey) fetches.push(fetchDeepSeekModels(config.deepseekApiKey));
   if (config.geminiApiKey) fetches.push(fetchGeminiModels(config.geminiApiKey));
   if (config.vertexAICredentialsPath) {
     fetches.push(fetchVertexModels(config.vertexAICredentialsPath, config.vertexAILocation, warnings));

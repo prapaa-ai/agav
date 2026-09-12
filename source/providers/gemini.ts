@@ -80,6 +80,7 @@ export class GeminiProvider implements LLMProvider {
       systemPrompt = applyEffortPrompt(systemPrompt, params.effort ?? "medium");
     }
 
+    this.pruneUnreferencedRawParts(params.messages);
     const contents = this.toContents(params.messages);
     const tools = params.tools?.length
       ? [{ functionDeclarations: params.tools.map((t) => this.toTool(t)) }]
@@ -231,6 +232,33 @@ export class GeminiProvider implements LLMProvider {
       }
     } else {
       this.rawTurnParts.set(`__text_${this.textTurnCounter++}__`, turnParts);
+    }
+
+  }
+
+  /**
+   * Prune rawTurnParts entries that are no longer referenced by any message
+   * in the active conversation. Unlike blind count-based pruning, this is
+   * safe for thinking models whose raw parts contain required thought
+   * signatures — we never evict an entry the next request still needs.
+   */
+  private pruneUnreferencedRawParts(messages: Message[]): void {
+    if (this.rawTurnParts.size <= 100) return;
+
+    const liveKeys = new Set<string>();
+    for (const msg of messages) {
+      if (msg.role !== "assistant") continue;
+      for (const block of msg.content) {
+        if (block.type === "tool_use" && block.toolCallId) {
+          liveKeys.add(block.toolCallId);
+        }
+      }
+    }
+
+    for (const key of this.rawTurnParts.keys()) {
+      if (!liveKeys.has(key)) {
+        this.rawTurnParts.delete(key);
+      }
     }
   }
 

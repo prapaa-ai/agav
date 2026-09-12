@@ -19,7 +19,7 @@ import { createProvider } from "./providers/registry.js";
 import type { ContentBlock, InvocationReason } from "./providers/types.js";
 import { useAgent } from "./hooks/use-agent.js";
 import { isInternalUserMessage } from "./agent/internal-prompts.js";
-import { CommandRegistry } from "./commands/registry.js";
+import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { saveSession } from "./config/history.js";
@@ -86,6 +86,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [preview, setPreview] = useState<PreviewContent | null>(null);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
+  const [selectedSubagentIdx, setSelectedSubagentIdx] = useState(0);
   // Everything above the input prompt is one scrolling document, driven from
   // here by the scroll keybindings and by wheel events that landed on the
   // footer. It stays uncontrolled: holding the offset in React state would mean
@@ -95,12 +96,45 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [termRows, setTermRows] = useState(process.stdout.rows || 24);
   const [termCols, setTermCols] = useState(process.stdout.columns || 80);
   useEffect(() => {
-    const onResize = () => {
-      setTermRows(process.stdout.rows || 24);
-      setTermCols(process.stdout.columns || 80);
+    // macOS terminals (Cursor's xterm.js, iTerm2, Terminal.app) fire bursts of
+    // resize events — often with identical or no-op dimensions — on focus, wake
+    // from idle, Space switches, and display changes. Handling each one triggers
+    // a React re-render and a full-screen repaint; a burst saturates the event
+    // loop and leaves the UI frozen (see dekit#213, claude-code#25286).
+    //
+    // Two guards defuse it: drop resizes that don't actually change the reported
+    // size, and coalesce any remaining burst into a single trailing update on
+    // the next tick so N events cost one render, not N.
+    let lastRows = process.stdout.rows || 24;
+    let lastCols = process.stdout.columns || 80;
+    let scheduled: ReturnType<typeof setTimeout> | undefined;
+
+    const apply = () => {
+      scheduled = undefined;
+      const rows = process.stdout.rows || 24;
+      const cols = process.stdout.columns || 80;
+      if (rows === lastRows && cols === lastCols) return;
+      lastRows = rows;
+      lastCols = cols;
+      setTermRows(rows);
+      setTermCols(cols);
     };
+
+    const onResize = () => {
+      const rows = process.stdout.rows || 24;
+      const cols = process.stdout.columns || 80;
+      // No-op resize (same dimensions): ignore entirely.
+      if (rows === lastRows && cols === lastCols) return;
+      // Coalesce a burst: the last event in the tick wins.
+      if (scheduled) return;
+      scheduled = setTimeout(apply, 16);
+    };
+
     process.stdout.on("resize", onResize);
-    return () => { process.stdout.off("resize", onResize); };
+    return () => {
+      if (scheduled) clearTimeout(scheduled);
+      process.stdout.off("resize", onResize);
+    };
   }, []);
   const [showCompactionSummary, setShowCompactionSummary] = useState(false);
   const [runningSkillName, setRunningSkillName] = useState<string | null>(null);
@@ -110,10 +144,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [skillsTUIActive, setSkillsTUIActive] = useState(false);
   const skillsTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
-  const exit = useCallback(() => {
-    stopActiveLoop();
-    exitInk();
-  }, [exitInk]);
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
   /** Lets handleSubmit re-sync InputPrompt's caret after rewriting its buffer. */
@@ -142,6 +172,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     refreshAgentCommands,
     addDisplayMessage,
     cancel,
+    cancelSubagent,
     clearMessages,
     confirmTool,
     conversation,
@@ -157,6 +188,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     turnStartTime,
     lastTurnDurationMs,
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
+
+  /**
+   * Exit cleanly. Aborts any in-flight agent turn (streaming/tool call) and
+   * stops the repeating prompt loop before tearing down Ink, so `/exit` works
+   * mid-turn instead of being ignored until the CLI is idle.
+   */
+  const exit = useCallback(() => {
+    cancel();
+    stopActiveLoop();
+    exitInk();
+  }, [cancel, exitInk]);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
   const { stdout } = useStdout();
@@ -480,8 +522,16 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   useEffect(() => {
     if (!isLoading) {
       setFocusedSubagentId(null);
+      setSelectedSubagentIdx(0);
     }
   }, [focusedSubagentId, isLoading]);
+
+  // Clamp the selection index when subagents finish and the list shrinks.
+  useEffect(() => {
+    if (subagentStates.length > 0) {
+      setSelectedSubagentIdx((prev) => Math.min(prev, subagentStates.length - 1));
+    }
+  }, [subagentStates.length]);
 
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
   useInput((rawChar, rawKey) => {
@@ -506,20 +556,32 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     }
     if (match.action === "cancel" && isLoading && !pendingConfirmation) {
       if (focusedSubagentId) {
+        cancelSubagent(focusedSubagentId);
         setFocusedSubagentId(null);
       } else {
         cancel();
       }
       return;
     }
-    if (match.action === "cycleSubagents" && hasSubagents && !pendingConfirmation) {
-      setFocusedSubagentId((prev) => {
-        if (!prev) return subagentStates[0]?.id ?? null;
-        const idx = subagentStates.findIndex((s) => s.id === prev);
-        if (idx < 0 || idx >= subagentStates.length - 1) return null;
-        return subagentStates[idx + 1]!.id;
-      });
+    if (focusedSubagentId && isLoading && !pendingConfirmation && key.tab) {
+      setFocusedSubagentId(null);
       return;
+    }
+    // Arrow key navigation in the subagent overview list
+    if (hasSubagents && !focusedSubagentId && !pendingConfirmation) {
+      if (key.upArrow) {
+        setSelectedSubagentIdx((prev) => Math.max(0, prev - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setSelectedSubagentIdx((prev) => Math.min(subagentStates.length - 1, prev + 1));
+        return;
+      }
+      if (key.return) {
+        const sa = subagentStates[selectedSubagentIdx];
+        if (sa) setFocusedSubagentId(sa.id);
+        return;
+      }
     }
     if (match.action === "toggleToolDetail" && !pendingConfirmation) {
       if (messages.some((message) => message.role === "tool")) {
@@ -648,10 +710,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       if (!trimmed && attachments.length === 0) return;
 
       const commandName = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
-      const midTurnSafe = new Set(["steer", "help", "loop"]);
       const isSlashCommand = trimmed.startsWith("/")
         && attachments.length === 0
-        && (!isLoading || midTurnSafe.has(commandName));
+        && (!isLoading || isCommandAllowedMidTurn(commandName));
       if (!isSlashCommand && isLoading) return;
 
       if (isSlashCommand) {
@@ -943,7 +1004,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           return (
             <Box flexDirection="column" marginBottom={1}>
               <SubagentDisplay progress={focusedSubagent} mode="detail" />
-              <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cancel")}: back to overview</Text>
+              <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cancel")}: cancel this subagent · Tab: back to overview</Text>
             </Box>
           );
         }
@@ -955,12 +1016,33 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               .map((tc, i) => (
                 <ToolCallDisplay key={`${tc.toolName}-${i}`} toolCall={tc} />
               ))}
-            {subagentStates.map((sa, i) => (
-              <SubagentDisplay key={sa.id} progress={sa} mode="compact" index={i} />
-            ))}
+            {subagentStates.map((sa, i) => {
+              const isSelected = i === selectedSubagentIdx;
+              return (
+                <Box key={sa.id}>
+                  {isSelected ? <Text color="cyan">{"▸ "}</Text> : <Text>{"  "}</Text>}
+                  <SubagentDisplay progress={sa} mode="compact" index={i} />
+                </Box>
+              );
+            })}
+            {(() => {
+              const pendingSubagents = toolCalls.filter((tc) => tc.toolName === "subagent" && tc.status === "running");
+              const spawning = pendingSubagents.length > 0 && subagentStates.length === 0;
+              if (spawning) {
+                const count = pendingSubagents.length;
+                return (
+                  <Box>
+                    <Text dimColor>{"  "}</Text>
+                    <Text color="cyan"><Spinner />{" "}</Text>
+                    <Text dimColor>Spawning {count} subagent{count !== 1 ? "s" : ""}...</Text>
+                  </Box>
+                );
+              }
+              return null;
+            })()}
             <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} />
             {hasSubagents && (
-              <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cycleSubagents")}: cycle subagents · {formatKeybinding(keybindings, "cancel")}: cancel</Text>
+              <Text dimColor>{"\n  "}↑↓: select · Enter: inspect · {formatKeybinding(keybindings, "cancel")}: cancel all</Text>
             )}
           </Box>
         );

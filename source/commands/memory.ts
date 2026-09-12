@@ -57,7 +57,7 @@ export const memoryCommand: SlashCommand = {
     }
 
     if (action === "path") {
-      return { type: "message", text: `Memory directory: ${getProjectMemoryPath()}` }
+      return { type: "message", text: `Memory directory: ${await getProjectMemoryPath()}` }
     }
 
     return { type: "message", text: "Usage: /memory [list|add|delete|clear|path]" }

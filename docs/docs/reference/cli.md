@@ -19,7 +19,7 @@ agav update [version]        # Update the installed release
 
 | Option | Description |
 | --- | --- |
-| `--provider`, `-p` | `anthropic`, `openai`, `openrouter`, `nvidia`, `gemini`, `vertex-ai`, or `ollama` |
+| `--provider`, `-p` | `anthropic`, `openai`, `openrouter`, `nvidia`, `deepseek`, `gemini`, `vertex-ai`, or `ollama` |
 | `--model`, `-m` | Provider model identifier |
 | `--effort` | `low`, `medium`, `high`, or `max` |
 | `--ollama-host` | Ollama host when no complete endpoint is set |
@@ -48,6 +48,8 @@ Both `--option value` and `--option=value` are accepted for provider, model, eff
 | `OPENAI_API_KEY` | OpenAI credential |
 | `OPENROUTER_API_KEY` | OpenRouter credential (`sk-or-v1-...`) |
 | `NVIDIA_API_KEY` | NVIDIA NIM credential (`nvapi-...`) |
+| `DEEPSEEK_API_KEY` | DeepSeek credential (`sk-...`) |
+| `OPENAI_BASE_URL` | Override the OpenAI base URL to target an OpenAI-compatible endpoint |
 | `GEMINI_API_KEY` | Gemini credential |
 | `VERTEX_AI_CREDENTIALS_PATH` | Path to a Google Cloud service-account JSON file; enables Vertex AI |
 | `VERTEX_AI_LOCATION` | Vertex AI region, or `global` for the multi-region endpoint (default `global`) |
@@ -77,3 +79,17 @@ agav agents disable <name>             # Disable without removing files
 | `--destination global\|project` | Install scope; defaults to `global` |
 
 Local paths and GitHub repository URLs are both supported for `install`. For GitHub, Agav uses sparse checkout to download only the agent directory.
+
+## Skill subcommands
+
+```bash
+agav skills                            # Alias for agav skills list
+agav skills list                       # List all skills grouped by origin, with state
+agav skills add <url|path>             # Install from a URL or local path
+agav skills remove <name>              # Uninstall a global skill
+agav skills disable <name>             # Disable a skill (bundled skills included)
+agav skills enable <name>              # Re-enable a disabled skill
+agav skills clear                      # Remove all user-installed skills
+```
+
+Bundled skills are compiled into the binary and cannot be removed, but `disable` turns them off without deleting anything. The enabled/disabled state is stored in `~/.agav/skills/registry.json`. Changes take effect on the next start.

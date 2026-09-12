@@ -25,6 +25,7 @@ import { contextCommand } from "./context.js"
 import { agentsCommand } from "./agents.js"
 import { agentLockCommand } from "./agent-lock.js"
 import { openCommand } from "./open.js"
+export { MID_TURN_SAFE_COMMANDS, isCommandAllowedMidTurn } from "./mid-turn.js"
 
 /** Store slash commands and dispatch raw user input to the matching handler. */
 export class CommandRegistry {

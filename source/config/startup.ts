@@ -9,6 +9,7 @@ export const PROVIDERS: readonly ProviderName[] = [
   "openai",
   "openrouter",
   "nvidia",
+  "deepseek",
   "gemini",
   "vertex-ai",
   "ollama",
@@ -19,6 +20,7 @@ const DEFAULT_MODELS: Record<ProviderName, string> = {
   openai: "gpt-5.4-mini",
   openrouter: "openrouter/auto",
   nvidia: "nvidia/nemotron-3.5-lightning-30b-a3b",
+  deepseek: "deepseek-v4-pro",
   gemini: "gemini-3.5-flash-lite",
   "vertex-ai": "vertex/gemini-3.5-flash",
   ollama: "",
@@ -85,6 +87,7 @@ export function hasProviderConfiguration(config: AgavConfig, provider: ProviderN
     case "openai": return Boolean(config.openaiApiKey);
     case "openrouter": return Boolean(config.openrouterApiKey);
     case "nvidia": return Boolean(config.nvidiaApiKey);
+    case "deepseek": return Boolean(config.deepseekApiKey);
     case "gemini": return Boolean(config.geminiApiKey);
     case "vertex-ai": return Boolean(config.vertexAICredentialsPath);
     case "ollama": return true;
@@ -129,6 +132,7 @@ export function providerSetupHints(): string {
     `    ${setEnvHint("OPENAI_API_KEY", "sk-...")}`,
     `    ${setEnvHint("OPENROUTER_API_KEY", "sk-or-v1-...")}`,
     `    ${setEnvHint("NVIDIA_API_KEY", "nvapi-...")}`,
+    `    ${setEnvHint("DEEPSEEK_API_KEY", "sk-...")}`,
     `    ${setEnvHint("GEMINI_API_KEY", "...")}`,
     `    ${setEnvHint("VERTEX_AI_CREDENTIALS_PATH", examplePath("path", "to", "service-account.json"))}`,
     "  Or start Ollama: agav --provider ollama",
@@ -154,6 +158,9 @@ export function providerConfigurationError(config: AgavConfig): string | null {
     case "nvidia":
       return config.nvidiaApiKey ? null
         : `NVIDIA API key not found. Run ${setEnvHint("NVIDIA_API_KEY", "nvapi-...")} or add it to ${agavHomePath("config.json")}`;
+    case "deepseek":
+      return config.deepseekApiKey ? null
+        : `DeepSeek API key not found. Run ${setEnvHint("DEEPSEEK_API_KEY", "sk-...")} or add it to ${agavHomePath("config.json")}`;
     case "gemini":
       return config.geminiApiKey ? null
         : `Gemini API key not found. Run ${setEnvHint("GEMINI_API_KEY", "...")} or add it to ${agavHomePath("config.json")}`;

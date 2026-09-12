@@ -8,6 +8,8 @@ order: 3
 
 Type `/` in an interactive session to autocomplete commands. Run `/help` to see the commands loaded in the current session, or `/help <command>` for detailed usage. Skills and MCP servers can add commands at runtime, so they are not listed individually here.
 
+Most slash commands run when Agav is idle. These commands can also run while Agav is streaming, executing tools, or otherwise doing in-flight work: `/help`, `/exit`, `/loop`, `/steer`, `/context`, `/memory`, `/remember`, and `/forget`.
+
 ## Chat and models
 
 | Command | Purpose |
@@ -54,7 +56,9 @@ Type `/` in an interactive session to autocomplete commands. Run `/help` to see 
 | `/skills info <name>` | Show a skill's origin, invocation mode, tool policy, path, and usage statistics. |
 | `/skills add <path\|url>` | Validate and install a skill from a local `SKILL.md` or trusted URL. Restart Agav to activate it. |
 | `/skills marketplace [number]` | List available marketplace skills or install a numbered entry. |
-| `/skills remove <name>`, `/skills rm <name>` | Remove an installed global skill. Restart Agav to apply the change. |
+| `/skills remove <name>`, `/skills rm <name>` | Remove an installed global skill. Bundled and project skills can't be removed — Agav points you to `/skills disable` instead. Restart Agav to apply the change. |
+| `/skills disable <name>` | Turn a skill off without deleting it. Works on bundled skills, which are compiled into the binary and cannot be removed. Restart Agav to apply. |
+| `/skills enable <name>` | Turn a previously disabled skill back on. Restart Agav to apply. |
 | `/skills clear` | Remove all user-installed (global) skills. Bundled and project skills are unaffected. Restart Agav to apply. |
 | `/<skill-name> [arguments]` | Invoke an installed user-callable skill. The exact command name comes from the skill's slug. |
 

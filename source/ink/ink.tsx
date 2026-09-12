@@ -65,6 +65,20 @@ const END_SYNC = "\x1b[?2026l";
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
 
+// After this many milliseconds of stdin silence, the next chunk triggers a
+// terminal-mode re-assert. Laptop sleep/wake, lid close, Space switch, display
+// change, tmux detach→attach and ssh reconnect can all leave the terminal
+// having silently reset DEC private modes (mouse tracking, kitty keyboard)
+// while sending no signal we can hook. 5s is well above normal inter-keystroke
+// gaps but short enough that the first interaction after waking works.
+const STDIN_RESUME_GAP_MS = 5000;
+
+// When we recently consumed a mouse sequence, bare `digit(s)M` fragments that
+// are indistinguishable from user input in isolation are almost certainly tails
+// of split SGR mouse reports. This window defines how long after the last mouse
+// consumption we should suppress those fragments.
+const MOUSE_BURST_WINDOW_MS = 150;
+
 const noop = (): void => {};
 
 // ---------------------------------------------------------------------------
@@ -281,6 +295,13 @@ export default class Ink {
 	// Prepended to the next stdin chunk so the sequence can be matched whole.
 	private mouseBuffer: string | undefined;
 	private escapeTimer: NodeJS.Timeout | undefined;
+	// Timestamp of the last stdin chunk. Used to detect long idle gaps after
+	// which the terminal may have silently reset DEC private modes.
+	private lastInputTime = Date.now();
+	// Timestamp of the last time a mouse sequence was consumed (by matchMouseAt
+	// or matchOrphanedCSI). Used to suppress bare `digit(s)M` fragments during
+	// mouse event bursts (e.g. app-switch scroll floods).
+	private lastMouseConsumedAt = 0;
 	private lastOutput = "";
 	private fullStaticOutput = "";
 
@@ -378,7 +399,111 @@ export default class Ink {
 
 		this.setRawMode(true);
 		stdin.on("data", this.handleInput);
+		stdin.on("error", this.handleStdinError);
 	}
+
+	/**
+	 * Recover from a transient TTY read error instead of going deaf.
+	 *
+	 * On macOS, after the process has been idle (App Nap, lid close, Space
+	 * switch, display change) a read on the raw TTY can surface a transient
+	 * error — commonly EAGAIN/EIO. Node reports it on the stream and, with no
+	 * handler, stops the 'data' flow entirely: the UI stays painted but every
+	 * keystroke vanishes, and the only way out is to kill the process from
+	 * another terminal (see dekit#213, claude-code#25286).
+	 *
+	 * Re-arming raw mode and resuming the stream restores input delivery
+	 * without disturbing terminal state. A hard error (stream truly gone) is
+	 * left to the normal exit path.
+	 */
+	private readonly handleStdinError = (error: NodeJS.ErrnoException): void => {
+		if (this.isUnmounted) {
+			return;
+		}
+
+		// EAGAIN/EIO are the transient "try again" errors a raw TTY throws after
+		// the OS parks it. Anything else (e.g. the descriptor was revoked on a
+		// terminal hangup) is not recoverable here.
+		const transient = error?.code === "EAGAIN" || error?.code === "EIO";
+		if (!transient) {
+			return;
+		}
+
+		const {stdin} = this.options;
+		try {
+			if (
+				this.isRawModeEnabled &&
+				stdin.isTTY &&
+				typeof stdin.setRawMode === "function"
+			) {
+				// Toggle raw mode off and back on to reset the underlying read
+				// request that the OS abandoned.
+				stdin.setRawMode(false);
+				stdin.setRawMode(true);
+			}
+			stdin.resume();
+		} catch {
+			// Best effort — a failure here must not take down the UI on top of
+			// the read error we are already recovering from.
+		}
+	};
+
+	/**
+	 * Re-assert terminal modes after a long stdin-silence gap.
+	 *
+	 * Laptop sleep/wake, lid close, Space switch, display change, tmux
+	 * detach→attach and ssh reconnect can all leave the terminal having reset
+	 * DEC private modes — none of which send a signal we can hook. The next
+	 * keystroke then arrives into a terminal whose mouse tracking and kitty
+	 * keyboard state no longer match what Ink believes, so mouse reports and
+	 * key sequences leak into the prompt as gibberish (the exact macOS
+	 * idle-then-type symptom in Cursor's terminal).
+	 *
+	 * Re-writing the modes on that first post-idle chunk restores the
+	 * agreement. Mouse tracking is idempotent (a DEC set-when-set is a no-op),
+	 * so re-asserting it is always safe. The kitty keyboard protocol is NOT
+	 * idempotent — `CSI > flags u` pushes onto a stack — so we pop first
+	 * (`CSI < u`) to keep the depth at exactly one; a pop on an empty stack is
+	 * a spec no-op, so this still restores depth 0→1 after a genuine reset.
+	 * Never touches the terminal while suspended (a raw-stdout caller owns it).
+	 */
+	private readonly reassertTerminalModes = (): void => {
+		const {stdout} = this.options;
+		if (this.isUnmounted || this.suspendCount > 0 || !stdout.isTTY) {
+			return;
+		}
+
+		// Mouse tracking — idempotent, safe to re-assert unconditionally.
+		stdout.write(ENABLE_MOUSE_TRACKING);
+
+		// Kitty keyboard — pop-before-push keeps the stack balanced instead of
+		// accumulating an entry on every idle gap (which the single pop on exit
+		// could not drain, leaving the shell in CSI-u mode afterward).
+		if (this.kittyKeyboardEnabled && this.kittyKeyboard?.mode === "enabled") {
+			const flags = (this.kittyKeyboard.flags ?? [
+				"disambiguateEscapeCodes",
+			]) as KittyFlagName[];
+			stdout.write("\x1b[<u" + `\x1b[>${resolveFlags(flags)}u`);
+		}
+	};
+
+	/**
+	 * Reset the terminal's mouse-tracking state machine.
+	 *
+	 * A right/middle click whose release is swallowed by a host context menu
+	 * (Cursor, VS Code) leaves xterm.js believing a button is still held, which
+	 * breaks every subsequent click. Re-issuing DISABLE→ENABLE forces the
+	 * terminal to drop any half-held button and start clean. Mouse tracking is
+	 * left enabled afterwards, so left-click selection keeps working.
+	 */
+	private readonly resetMouseTracking = (): void => {
+		const {stdout} = this.options;
+		if (this.isUnmounted || this.suspendCount > 0 || !stdout.isTTY) {
+			return;
+		}
+		stdout.write(DISABLE_MOUSE_TRACKING);
+		stdout.write(ENABLE_MOUSE_TRACKING);
+	};
 
 	private readonly setRawMode = (value: boolean): void => {
 		const {stdin} = this.options;
@@ -476,6 +601,7 @@ export default class Ink {
 			}
 
 			this.options.stdin.off("data", this.handleInput);
+			this.options.stdin.off("error", this.handleStdinError);
 		}
 
 		let resumed = false;
@@ -495,6 +621,7 @@ export default class Ink {
 			const {stdout, stdin} = this.options;
 
 			stdin.on("data", this.handleInput);
+			stdin.on("error", this.handleStdinError);
 
 			// A raw-stdout caller commonly pauses stdin on its way out, which
 			// would leave Ink deaf now that its listener is back.
@@ -577,6 +704,16 @@ export default class Ink {
 		if (this.isUnmounted) {
 			return;
 		}
+
+		// Detect a long idle gap: if the terminal was silent past the threshold,
+		// it may have reset DEC private modes while asleep/detached. Re-assert
+		// them before this chunk is parsed so mouse/key sequences don't leak as
+		// gibberish. One Date.now() covers the whole chunk.
+		const now = Date.now();
+		if (now - this.lastInputTime > STDIN_RESUME_GAP_MS) {
+			this.reassertTerminalModes();
+		}
+		this.lastInputTime = now;
 
 		let chunk =
 			typeof data === "string"
@@ -668,6 +805,7 @@ export default class Ink {
 			const match = matchMouseAt(chunk);
 			if (match) {
 				flushInput();
+				this.lastMouseConsumedAt = now;
 				const parsed = parseMouseEvent(match.sequence);
 				if (parsed) {
 					this.handleMouseEvent(parsed);
@@ -687,22 +825,25 @@ export default class Ink {
 				continue;
 			}
 
-			// A trailing ESC is almost always the start of an escape sequence
-			// (arrow key, mouse report, function key) that got split across
-			// reads. Buffer it so the next read can complete the sequence.
-			// Without this, the ESC goes through as input while the rest of
-			// the sequence arrives next and leaks as literal text (e.g. the
-			// SGR mouse body `[<65;44;18M` appears in the prompt).
-			if (chunk.length === 1 && chunk[0] === "\x1b") {
+			// A trailing ESC (or ESC+`[` CSI introducer) is almost always the
+			// start of an escape sequence (arrow key, mouse report, function
+			// key) that got split across reads. Buffer it so the next read
+			// can complete the sequence. Without this, the ESC goes through
+			// as input while the rest of the sequence arrives next and leaks
+			// as literal text (e.g. the SGR mouse body `[<65;44;18M` appears
+			// in the prompt).
+			if (chunk.length <= 2 && chunk[0] === "\x1b") {
 				flushInput();
-				this.mouseBuffer = "\x1b";
-				// If no follow-up bytes arrive within 50ms, this is a real Escape
-				// keypress — flush it as input rather than holding it indefinitely.
+				this.mouseBuffer = chunk;
+				// If no follow-up bytes arrive within 50ms, this is a real
+				// Escape keypress (or Alt+[ on some terminals) — flush it as
+				// input rather than holding it indefinitely.
 				clearTimeout(this.escapeTimer);
 				this.escapeTimer = setTimeout(() => {
-					if (this.mouseBuffer === "\x1b") {
+					const buf = this.mouseBuffer;
+					if (buf !== undefined && buf[0] === "\x1b" && buf.length <= 2) {
 						this.mouseBuffer = undefined;
-						this.internalEventEmitter.emit("input", "\x1b");
+						this.internalEventEmitter.emit("input", buf);
 					}
 				}, 50);
 				chunk = "";
@@ -713,9 +854,11 @@ export default class Ink {
 			// final byte, matching the shape of an escape sequence whose
 			// leading ESC was already consumed (split across reads, or
 			// stripped upstream). Drop it silently — it is never real input.
-			const orphanedLen = matchOrphanedCSI(chunk);
+			const inMouseBurst = (now - this.lastMouseConsumedAt) < MOUSE_BURST_WINDOW_MS;
+			const orphanedLen = matchOrphanedCSI(chunk, inMouseBurst);
 			if (orphanedLen > 0) {
 				flushInput();
+				this.lastMouseConsumedAt = now;
 				chunk = chunk.slice(orphanedLen);
 				continue;
 			}
@@ -769,6 +912,26 @@ export default class Ink {
 	}
 
 	private readonly handleMouseEvent = (ev: ParsedMouse): void => {
+		// Non-left mouse buttons (button 1 = middle, 2 = right) have no in-app
+		// behaviour — we only use the left button for selection. But we cannot
+		// simply ignore them: in embedded terminals like Cursor's / VS Code's
+		// xterm.js a right-click opens the host's native context menu and then
+		// stops forwarding mouse events, so the matching *release* never arrives.
+		// With button-event tracking (DEC 1002) on, xterm.js's drag-state
+		// machine is left believing a button is still held, and every subsequent
+		// click is mis-tracked — the mouse "goes dead" until restart.
+		//
+		// The protocol has no way to opt out of right-click reporting (mode 1000
+		// reports every button), so instead we self-heal: drop the report AND
+		// re-assert mouse tracking, which resets the terminal's button-state
+		// machine (a fresh DISABLE→ENABLE clears any half-held button). Left
+		// clicks keep working, and the host's native right-click menu still
+		// appears. Wheel events also carry a button number, so exclude them.
+		if (!ev.wheel && ev.button !== 0) {
+			this.resetMouseTracking();
+			return;
+		}
+
 		// Everything downstream — hit-testing, and the coordinates handlers
 		// compare against `internal_x` / `internal_y` — works in frame rows.
 		const y = ev.y + this.frameScrollOffset;
@@ -1146,6 +1309,7 @@ export default class Ink {
 		const {stdout, stdin} = this.options;
 
 		stdin.off("data", this.handleInput);
+		stdin.off("error", this.handleStdinError);
 
 		// Restore raw mode.
 		this.rawModeEnabledCount = 0;
@@ -1335,10 +1499,51 @@ const ORPHANED_SGR_MOUSE_RE = /^\[<\d+;\d+;\d+[Mm]/;
 const ORPHANED_SGR_MOUSE_TAIL_RE =
 	/^<?(?:;\d{1,4}(?:;\d{1,4})*|(?:\d{1,4};)+\d{1,4})[Mm]/;
 
-const matchOrphanedCSI = (chunk: string): number => {
-	// Full orphaned CSI: `[<button;col;rowM`
+/**
+ * Matches an orphaned *legacy X10* mouse report at the start of `chunk` — the
+ * `[M` introducer plus its three raw coordinate bytes, whose leading `\x1b` was
+ * already consumed by a previous read.
+ *
+ * This is the macOS scroll-after-wake failure mode: on wake the terminal can
+ * silently drop SGR extended coords (DEC 1006) and fall back to X10 wheel
+ * reports (`\x1b[M` + 3 bytes). Under a scroll flood a read boundary can leave a
+ * lone trailing `\x1b`; the 50 ms escape timer then flushes it as an Escape
+ * keypress, so the next read begins with a headless `[M`+3-byte body. Unlike the
+ * SGR case (`matchOrphanedCSI`), there was no recovery for this shape, so each
+ * wheel tick leaked five bytes into the prompt — the reported "gibberish that
+ * grows on every scroll".
+ *
+ * We match ONLY the exact `[M` + 3-byte form. The three payload bytes are each
+ * offset by 32 in the X10 encoding, so they are always >= 0x20 (printable
+ * range); we still require the `[M` introducer verbatim so ordinary text like
+ * "Menu" (an `M` with no preceding `[`) is never swallowed. The bytes
+ * themselves are not range-checked beyond "present", matching how the complete
+ * X10 matcher (`X10_MOUSE_RE`) accepts any three bytes.
+ */
+const ORPHANED_X10_MOUSE_RE =
+	// eslint-disable-next-line no-control-regex
+	/^\[M[\s\S]{3}/;
+
+/**
+ * Matches a bare `digit(s)M` or `digit(s)m` fragment — the final numeric field
+ * plus terminator of a split SGR mouse report. Without any semicolons these are
+ * indistinguishable from user-typed text like "26M" or "100M", so this pattern
+ * is ONLY checked during a mouse burst (when we recently consumed another mouse
+ * sequence) to avoid false positives during normal typing.
+ */
+const BARE_MOUSE_TAIL_RE = /^\d{1,4}[Mm]/;
+
+const matchOrphanedCSI = (chunk: string, inMouseBurst = false): number => {
+	// Full orphaned SGR CSI: `[<button;col;rowM`
 	if (chunk.length >= 6 && chunk[0] === "[" && chunk[1] === "<") {
 		const m = ORPHANED_SGR_MOUSE_RE.exec(chunk);
+		if (m) return m[0].length;
+	}
+
+	// Full orphaned X10 body: `[M` + 3 raw coordinate bytes. Leading \x1b was
+	// flushed by the escape timer; without this the bytes leak into the prompt.
+	if (chunk.length >= 5 && chunk[0] === "[" && chunk[1] === "M") {
+		const m = ORPHANED_X10_MOUSE_RE.exec(chunk);
 		if (m) return m[0].length;
 	}
 
@@ -1347,6 +1552,18 @@ const matchOrphanedCSI = (chunk: string): number => {
 	const ch = chunk[0];
 	if (ch === "<" || ch === ";" || (ch !== undefined && ch >= "0" && ch <= "9")) {
 		const m = ORPHANED_SGR_MOUSE_TAIL_RE.exec(chunk);
+		if (m) return m[0].length;
+	}
+
+	// Bare `digit(s)M` — the final numeric field of a split SGR report that
+	// lost all semicolons to a prior read boundary. Normally this would be
+	// ambiguous with user input ("26M", "10M"), but during a mouse burst
+	// (within MOUSE_BURST_WINDOW_MS of consuming another mouse sequence) it is
+	// almost certainly residue from the same flood. This handles the common
+	// app-switch scenario where the terminal emits rapid mouse reports and
+	// read boundaries split sequences at arbitrary points.
+	if (inMouseBurst && ch !== undefined && ch >= "0" && ch <= "9") {
+		const m = BARE_MOUSE_TAIL_RE.exec(chunk);
 		if (m) return m[0].length;
 	}
 

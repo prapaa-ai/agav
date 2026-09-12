@@ -13,6 +13,7 @@ export class ConversationState {
   private contextWindow?: number;
   private _compacted = false;
   private _lastCompactionSummary = "";
+  private _cachedTokenCount: number | undefined;
 
   setModel(model: string): void {
     // A window resolved for the previous model says nothing about the new one,
@@ -53,6 +54,7 @@ export class ConversationState {
       ...(sourceText ? { sourceText } : {}),
       ...(invocationReason ? { invocationReason } : {}),
     });
+    this.invalidateTokenCache();
   }
 
   /**
@@ -61,6 +63,7 @@ export class ConversationState {
    */
   addInternalUserMessage(text: string): void {
     this.messages.push({ role: "user", content: [{ type: "text", text }], internal: true });
+    this.invalidateTokenCache();
   }
 
   /**
@@ -74,6 +77,7 @@ export class ConversationState {
     const last = this.messages[this.messages.length - 1];
     if (!last || last.role !== "user") return;
     last.content.push({ type: "text", text });
+    this.invalidateTokenCache();
   }
 
   /**
@@ -117,14 +121,17 @@ export class ConversationState {
       internal: true,
     };
     this.messages.splice(insertAt, 0, injected);
+    this.invalidateTokenCache();
   }
 
   addAssistantMessage(content: ContentBlock[]): void {
     this.messages.push({ role: "assistant", content });
+    this.invalidateTokenCache();
   }
 
   addToolResults(results: ContentBlock[]): void {
     this.messages.push({ role: "user", content: results });
+    this.invalidateTokenCache();
   }
 
   getMessages(): Message[] {
@@ -134,6 +141,7 @@ export class ConversationState {
   clear(): void {
     this.messages = [];
     this._compacted = false;
+    this.invalidateTokenCache();
   }
 
   get length(): number {
@@ -141,7 +149,14 @@ export class ConversationState {
   }
 
   get tokenCount(): number {
-    return estimateConversationTokens(this.messages);
+    if (this._cachedTokenCount === undefined) {
+      this._cachedTokenCount = estimateConversationTokens(this.messages);
+    }
+    return this._cachedTokenCount;
+  }
+
+  private invalidateTokenCache(): void {
+    this._cachedTokenCount = undefined;
   }
 
   get wasCompacted(): boolean {
@@ -155,6 +170,7 @@ export class ConversationState {
   setMessages(messages: Message[], compacted?: boolean): void {
     this.messages = this.sanitizeMessages([...messages]);
     if (compacted !== undefined) this._compacted = compacted;
+    this.invalidateTokenCache();
   }
 
   private sanitizeMessages(messages: Message[]): Message[] {
@@ -204,6 +220,7 @@ export class ConversationState {
   private trimToolResults(targetTokens: number, preserveRecent: number): number {
     let freed = 0;
     const trimBoundary = Math.max(0, this.messages.length - preserveRecent);
+    let currentTokens = this.tokenCount; // read once, cached
 
     for (let i = 0; i < trimBoundary; i++) {
       const msg = this.messages[i]!;
@@ -214,12 +231,15 @@ export class ConversationState {
           const before = estimateTokens(block.toolResult);
           block.toolResult = block.toolResult.slice(0, 200) + "\n...(trimmed)";
           block.toolResultContent = undefined;
-          freed += before - estimateTokens(block.toolResult);
+          const delta = before - estimateTokens(block.toolResult);
+          freed += delta;
+          currentTokens -= delta;
         }
       }
 
-      if (this.tokenCount <= targetTokens) break;
+      if (currentTokens <= targetTokens) break;
     }
+    if (freed > 0) this.invalidateTokenCache();
     return freed;
   }
 
@@ -298,6 +318,7 @@ export class ConversationState {
     this.messages = this.sanitizeMessages([summary, ...this.messages.slice(keepFrom)]);
     this._compacted = true;
     this._lastCompactionSummary = summaryText;
+    this.invalidateTokenCache();
 
     return { compacted: true, droppedCount, summary: summaryText };
   }

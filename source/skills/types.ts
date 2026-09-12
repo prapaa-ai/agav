@@ -39,4 +39,10 @@ export interface SkillDefinition {
   origin: "bundled" | "global" | "project";
   /** When a project/global skill overrides one from a higher-trust tier. */
   overriddenOrigin?: "bundled" | "global";
+  /**
+   * True when the user turned this skill off via the skill registry. Disabled
+   * skills are excluded from the catalog and slash commands but still listed by
+   * `/skills` so they can be re-enabled.
+   */
+  disabled?: boolean;
 }

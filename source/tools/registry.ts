@@ -34,6 +34,10 @@ export class ToolRegistry {
     }
   }
 
+  get(name: string): ToolDefinition | undefined {
+    return this.tools.get(name);
+  }
+
   list(): ToolDefinition[] {
     return Array.from(this.tools.values());
   }

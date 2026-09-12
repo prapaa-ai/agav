@@ -4,6 +4,7 @@ import { getAgavDir } from "../config/config.js";
 import { validateSkill } from "./validate.js";
 import { slugify } from "./skill-utils.js";
 import { ensureDir } from "../utils/fs.js";
+import { unsetSkillEnabled } from "./skill-registry.js";
 
 interface MarketplaceSkill {
   name: string;
@@ -521,10 +522,19 @@ async function installMultipleFromPath(
 export async function removeSkill(name: string): Promise<boolean> {
   // Same slug the install wrote, hyphen trimming included, or a skill named
   // "PDF Tools " would be installed to pdf-tools and looked for at pdf-tools-.
-  const skillDir = join(getAgavDir(), "skills", slugify(name));
+  const slug = slugify(name);
+  const skillDir = join(getAgavDir(), "skills", slug);
+  // Confirm the directory exists first: `rm({ force: true })` succeeds silently
+  // on a missing path, so without this a bundled skill (which has no global
+  // directory) would report a false "removed" success.
+  const info = await stat(skillDir).catch(() => null);
+  if (!info?.isDirectory()) return false;
   try {
     const { rm } = await import("node:fs/promises");
     await rm(skillDir, { recursive: true, force: true });
+    // Drop any disabled-state record so reinstalling this slug isn't silently
+    // excluded by a stale registry entry.
+    await unsetSkillEnabled(slug);
     return true;
   } catch {
     return false;
@@ -556,6 +566,9 @@ export async function clearSkills(): Promise<string[]> {
     if (!info?.isDirectory()) continue;
     try {
       await rm(full, { recursive: true, force: true });
+      // The directory name is the slug; drop its disabled-state record too so a
+      // later reinstall of the same slug isn't silently excluded.
+      await unsetSkillEnabled(entry);
       removed.push(entry);
     } catch { /* best effort */ }
   }
