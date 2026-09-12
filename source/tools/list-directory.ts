@@ -1,6 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { resolve, join, relative } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
+import { checkPathBoundary } from "../utils/path-guard.js";
 
 export const listDirectoryTool: ToolDefinition = {
   schema: {
@@ -22,6 +23,11 @@ export const listDirectoryTool: ToolDefinition = {
 
   async execute(input): Promise<ToolResult> {
     const dirPath = resolve(String(input.path ?? "."));
+
+    const pathError = await checkPathBoundary(dirPath, "read");
+    if (pathError) {
+      return { output: pathError, isError: true };
+    }
 
     try {
       const entries = await readdir(dirPath);
