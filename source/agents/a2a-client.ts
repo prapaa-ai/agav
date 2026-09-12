@@ -117,6 +117,7 @@ export async function startA2AAgent(agent: AgentDefinition): Promise<{ success: 
     const proc = spawn(command, args, {
       cwd: agent.path,
       stdio: ["ignore", "pipe", "pipe"],
+      shell: process.platform === "win32",
     });
 
     proc.stdout?.on("data", (data) => {
