@@ -115,6 +115,9 @@ const type = async (
 const BACKSPACE = Buffer.from("\x7f");
 const ENTER = Buffer.from("\r");
 const LEFT = Buffer.from("\x1b[D");
+const UP = Buffer.from("\x1b[A");
+const DOWN = Buffer.from("\x1b[B");
+const NEWLINE = Buffer.from("\n");
 
 const press = async (
   instance: { waitUntilRenderFlush: () => Promise<void> },
@@ -290,6 +293,36 @@ describe("InputPrompt keys arriving faster than a render commit", () => {
     await burst(instance, stdin, [LEFT, LEFT, Buffer.from("X")]);
 
     expect(currentValue).toBe("abXcd");
+    instance.unmount();
+  });
+});
+
+describe("InputPrompt multiline caret movement", () => {
+  it("moves Up to the same column on the previous line", async () => {
+    const { instance, stdout, stdin } = await mount();
+
+    await type(instance, stdin, "first");
+    await press(instance, stdin, NEWLINE);
+    await type(instance, stdin, "second");
+    await press(instance, stdin, UP);
+    expect(hasBlockCursor(stdout.chunks)).toBe(true);
+    await type(instance, stdin, "X");
+
+    expect(currentValue).toBe("firstX\nsecond");
+    instance.unmount();
+  });
+
+  it("moves Down to the same column on the next line", async () => {
+    const { instance, stdin } = await mount();
+
+    await type(instance, stdin, "first");
+    await press(instance, stdin, NEWLINE);
+    await type(instance, stdin, "second");
+    await press(instance, stdin, UP);
+    await press(instance, stdin, DOWN);
+    await type(instance, stdin, "X");
+
+    expect(currentValue).toBe("first\nsecondX");
     instance.unmount();
   });
 });
