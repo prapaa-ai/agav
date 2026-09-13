@@ -1159,6 +1159,7 @@ export function useAgent(
               trackerCache.get(callId)!(event);
             },
             confirmTool: confirmToolCallback,
+            permissionMode: fullAccess ? "auto-accept" : undefined,
           });
 
           const responseContent = result.isError

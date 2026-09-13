@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runAgentLoop } from "../agent/loop.js";
+import { executeNativeAgent } from "../agents/executor.js";
 import { ConversationState } from "../agent/conversation.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { LLMProvider, StreamEvent, StreamParams } from "../providers/types.js";
@@ -94,6 +95,37 @@ describe("permission gate: destructive flag trust", () => {
 
     // The tool is not in SAFE_TOOLS, so even with destructive:false it should prompt
     expect(confirmTool).toHaveBeenCalled();
+  });
+
+  it("full-access native execution does not downgrade to deny-writes without a confirmation callback", async () => {
+    const tool = {
+      schema: {
+        name: "write_record",
+        description: "Write a record",
+        destructive: true,
+        inputSchema: { type: "object", properties: {} },
+      },
+      execute: vi.fn().mockResolvedValue({ output: "written", isError: false }),
+    };
+    const provider = new MockProvider([
+      makeToolCallStream("write_record", {}),
+      [{ type: "text_delta" as const, text: "Done" }, { type: "usage" as const, inputTokens: 5, outputTokens: 3 }],
+    ]);
+    const agent = {
+      manifest: { name: "writer", description: "Writes", version: "1.0.0" },
+      systemPrompt: "test",
+      tools: [tool],
+      origin: "global" as const,
+      path: cwd,
+    };
+
+    await expect(executeNativeAgent(agent, "write it", {
+      provider,
+      config: { model: "mock", effort: "low", maxTokens: 1000 } as any,
+      permissionMode: "auto-accept",
+    })).resolves.toBe("Done");
+
+    expect(tool.execute).toHaveBeenCalled();
   });
 
   it("deny-writes mode blocks non-builtin tool regardless of destructive flag", async () => {

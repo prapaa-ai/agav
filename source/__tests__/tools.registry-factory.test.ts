@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { createToolRegistry } from "../tools/registry-factory.js";
+import { createBuiltinToolRegistry, createToolRegistry } from "../tools/registry-factory.js";
 
 describe("tools/registry-factory", () => {
+  it("registers only explicitly requested built-in tools", () => {
+    const registry = createBuiltinToolRegistry(["read_file", "web_search", "not_a_tool"]);
+    expect(registry.list().map((tool) => tool.schema.name)).toEqual(["read_file", "web_search"]);
+  });
+
   it("registers the default built-in tools", () => {
     const registry = createToolRegistry();
     const names = registry.list().map((tool) => tool.schema.name);

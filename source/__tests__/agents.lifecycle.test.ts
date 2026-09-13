@@ -128,6 +128,7 @@ describe("agents/agent-lifecycle", () => {
         description: "Has MCP",
         version: "1.0.0",
         "mcp-servers": [{ key: "github", command: "npx", args: ["-y", "@mcp/github"] }],
+        "native-tools": ["read_file", "web_search"],
         tags: ["github", "dev"],
       } as any,
       systemPrompt: "MCP prompt",
@@ -139,6 +140,7 @@ describe("agents/agent-lifecycle", () => {
       expect.objectContaining({
         name: "mcp-agent",
         mcpServers: [{ key: "github", command: "npx", args: ["-y", "@mcp/github"] }],
+        nativeTools: ["read_file", "web_search"],
         tags: ["github", "dev"],
       }),
     );

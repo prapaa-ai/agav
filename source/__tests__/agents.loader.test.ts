@@ -24,6 +24,7 @@ describe("agents/loader", () => {
         "name: test-agent",
         "description: A test agent",
         "version: 1.0.0",
+        "native-tools: [read_file, web_search]",
         "tool-permissions:",
         "  run_query: safe",
         "  delete_table: destructive",
@@ -41,6 +42,7 @@ describe("agents/loader", () => {
 
       expect(agent).not.toBeNull();
       expect(agent!.manifest.name).toBe("test-agent");
+      expect(agent!.manifest["native-tools"]).toEqual(["read_file", "web_search"]);
       expect(agent!.manifest["tool-permissions"]).toEqual({
         run_query: "safe",
         delete_table: "destructive",

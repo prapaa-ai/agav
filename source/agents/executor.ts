@@ -6,7 +6,7 @@ import type { AgentDefinition } from "./types.js";
 import { ConversationState } from "../agent/conversation.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { LLMProvider } from "../providers/types.js";
-import type { AgavConfig } from "../config/config.js";
+import type { AgavConfig, PermissionMode } from "../config/config.js";
 import { runAgentLoop } from "../agent/loop.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -78,6 +78,8 @@ export async function executeNativeAgent(
     /** Parent's confirmTool — when provided, agent sub-tools that are marked
      *  destructive will pause and surface HITL confirmation to the user. */
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<import("../agent/loop.js").ConfirmResult>;
+    /** Explicit mode for direct executions such as a full-access agent lock. */
+    permissionMode?: PermissionMode;
   }
 ): Promise<string> {
   const callId = `${agent.manifest.name}-${randomUUID().slice(0, 8)}`;
@@ -113,6 +115,13 @@ export async function executeNativeAgent(
     // Wrap each tool's execute to inject credentials via context, not process.env.
     // Tools access credentials via process.env during their execute() call only.
     const childRegistry = new ToolRegistry();
+    const nativeTools = agent.manifest["native-tools"] ?? [];
+    if (nativeTools.length > 0) {
+      const { createBuiltinToolRegistry } = await import("../tools/registry-factory.js");
+      for (const tool of createBuiltinToolRegistry(nativeTools).list()) {
+        childRegistry.register(tool);
+      }
+    }
     for (const tool of agent.tools) {
       childRegistry.register({
         schema: tool.schema,
@@ -144,9 +153,10 @@ export async function executeNativeAgent(
       effort,
       maxTokens: deps.config.maxTokens,
       signal: deps.signal,
-      confirmTool: deps.confirmTool,
-      permissionMode: deps.confirmTool ? "ask" : "deny-writes",
+      confirmTool: deps.confirmTool ?? (deps.permissionMode === "auto-accept" ? async () => "yes" : undefined),
+      permissionMode: deps.permissionMode ?? (deps.confirmTool ? "ask" : "deny-writes"),
       maxIterations: 50,
+      allowedTools: nativeTools,
       hooks: deps.hooks,
     });
 

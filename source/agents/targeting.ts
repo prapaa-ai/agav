@@ -83,6 +83,7 @@ export async function executeTargetedAgent(
     signal?: AbortSignal;
     onProgressUpdate?: (callId: string, event: AgentEvent) => void;
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<any>;
+    permissionMode?: import("../config/config.js").PermissionMode;
   },
 ): Promise<AgentTargetResult> {
   const { executeNativeAgent, executeA2AAgent } = await import("./executor.js");

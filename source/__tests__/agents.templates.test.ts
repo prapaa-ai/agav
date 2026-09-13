@@ -40,6 +40,7 @@ describe("agents/templates", () => {
       description: "A test agent",
       systemPrompt: "You are a test assistant.",
       mcpServers: [{ key: "github", command: "npx", args: ["-y", "@mcp/server-github"] }],
+      nativeTools: ["read_file", "web_search"],
       tags: ["test"],
       savedAt: "2026-08-24T00:00:00.000Z",
     });
@@ -51,6 +52,7 @@ describe("agents/templates", () => {
     expect(templates[0]!.systemPrompt).toBe("You are a test assistant.");
     expect(templates[0]!.mcpServers).toHaveLength(1);
     expect(templates[0]!.mcpServers![0]!.key).toBe("github");
+    expect(templates[0]!.nativeTools).toEqual(["read_file", "web_search"]);
     expect(templates[0]!.tags).toEqual(["test"]);
   });
 
