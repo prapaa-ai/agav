@@ -201,6 +201,57 @@ function nextGraphemeOffset(text: string, pos: number): number {
 }
 
 /**
+ * Move an offset to the same column on the adjacent hard line.
+ *
+ * A newline belongs to the end of the line before it: this makes Left from
+ * the beginning of a line, followed by Up, land at the end of the preceding
+ * line rather than in a position that cannot be rendered. Returning null
+ * means there is no adjacent line in that direction.
+ */
+function moveCaretVertically(text: string, pos: number, direction: -1 | 1, desiredColumn?: number): number | null {
+  const safePos = Math.min(Math.max(pos, 0), text.length);
+  const lineStart = text.lastIndexOf("\n", Math.max(0, safePos - 1)) + 1;
+  const lineEndAt = text.indexOf("\n", safePos);
+  const lineEnd = lineEndAt === -1 ? text.length : lineEndAt;
+  const column = desiredColumn ?? displayColumn(text.slice(lineStart, safePos));
+  const offsetAtColumn = (start: number, end: number): number =>
+    start + offsetAtDisplayColumn(text.slice(start, end), column);
+
+  if (direction < 0) {
+    if (lineStart === 0) return null;
+    const previousEnd = lineStart - 1;
+    const previousStart = text.lastIndexOf("\n", Math.max(0, previousEnd - 1)) + 1;
+    return offsetAtColumn(previousStart, previousEnd);
+  }
+
+  if (lineEnd === text.length) return null;
+  const nextStart = lineEnd + 1;
+  const nextEndAt = text.indexOf("\n", nextStart);
+  const nextEnd = nextEndAt === -1 ? text.length : nextEndAt;
+  return offsetAtColumn(nextStart, nextEnd);
+}
+
+/** Return a string's terminal display width, respecting grapheme clusters. */
+function displayColumn(text: string): number {
+  let column = 0;
+  for (const { segment } of segmenter.segment(text)) column += stringWidth(segment);
+  return column;
+}
+
+/** Return the closest grapheme boundary at or before a display column. */
+function offsetAtDisplayColumn(text: string, column: number): number {
+  let width = 0;
+  let offset = 0;
+  for (const { segment, index } of segmenter.segment(text)) {
+    const nextWidth = width + stringWidth(segment);
+    if (nextWidth > column) return index;
+    width = nextWidth;
+    offset = index + segment.length;
+  }
+  return offset;
+}
+
+/**
  * Extract the full grapheme cluster at code-unit offset `pos`.
  * Returns the grapheme string and its code-unit length.
  */
@@ -274,6 +325,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const historyRef = useRef<string[]>([]);
   const historyLoadedRef = useRef(false);
   const historyIndexRef = useRef(-1);
+  /** Preferred column retained while moving through lines of different lengths. */
+  const verticalColumnRef = useRef<number | null>(null);
   /** Saves the in-progress input when the user first presses Up, so Down can restore it. */
   const draftRef = useRef<string | null>(null);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
@@ -354,7 +407,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
    * onMouseMove and onMouseUp handlers so that drags crossing row boundaries
    * still resolve to the right buffer position.
    */
-  const eventToOffsetAuto = (event: MouseEventData, lines: WrappedLine[]): number => {
+  const eventToOffsetAuto = (event: MouseEventData, lines: Array<{ text: string; offset: number }>): number => {
     const container = linesRef.current;
     if (!container || container.internal_y === undefined) return 0;
     // Each wrapped line is one row tall, starting at container.internal_y.
@@ -527,6 +580,9 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       const { input, key } = normalizeKeyEvent(rawInput, rawKey);
       const match = keyResolverRef.current.feed(input, key);
       if (match.pending) return;
+      if (match.action !== "historyUp" && match.action !== "historyDown") {
+        verticalColumnRef.current = null;
+      }
 
       // Shift+Arrow: extend or create a selection.
       if (key.shift && (key.leftArrow || key.rightArrow)) {
@@ -667,6 +723,23 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
       // Up arrow — message history (suppressed during agent runs to prevent
       // mouse-wheel-as-arrow-key from triggering costly re-renders).
+      // A multiline prompt owns Up/Down for vertical caret movement. History
+      // recall deliberately remains available for one-line prompts, where
+      // there is no line to move to. This must come before the history guards:
+      // they intentionally ignore multiline values, and the special-key guard
+      // below would otherwise consume the key without doing anything.
+      if (value.includes("\n") && (match.action === "historyUp" || match.action === "historyDown")) {
+        const lineStart = value.lastIndexOf("\n", Math.max(0, cursorPos - 1)) + 1;
+        const desiredColumn = verticalColumnRef.current ?? displayColumn(value.slice(lineStart, cursorPos));
+        verticalColumnRef.current = desiredColumn;
+        const nextCursor = moveCaretVertically(value, cursorPos, match.action === "historyUp" ? -1 : 1, desiredColumn);
+        if (nextCursor !== null) {
+          clearSelection();
+          moveCaret(nextCursor);
+        }
+        return;
+      }
+
       if (match.action === "historyUp" && !value.includes("\n") && !suppressHistory) {
         const history = historyRef.current;
         if (history.length === 0) return;
@@ -822,7 +895,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const prefixWidth = agentLock ? stringWidth(lockPrefix) : DEFAULT_PREFIX_WIDTH;
   const usable = Math.max(1, cols - prefixWidth);
 
-  interface WrappedLine { text: string; offset: number; isFirst: boolean }
+  interface WrappedLine { text: string; offset: number; isFirst: boolean; hardBreakAfter: boolean }
   const wrappedLines: WrappedLine[] = [];
   const rawLines = text.split("\n");
   let globalOffset = 0;
@@ -834,7 +907,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     for (const { segment, index } of segmenter.segment(raw)) {
       const segmentWidth = stringWidth(segment);
       if (hasChunk && chunkWidth + segmentWidth > usable) {
-        wrappedLines.push({ text: raw.slice(chunkStart, index), offset: globalOffset + chunkStart, isFirst: li === 0 && chunkStart === 0 });
+        wrappedLines.push({ text: raw.slice(chunkStart, index), offset: globalOffset + chunkStart, isFirst: li === 0 && chunkStart === 0, hardBreakAfter: false });
         chunkStart = index;
         chunkWidth = 0;
         hasChunk = false;
@@ -843,11 +916,11 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       hasChunk = true;
     }
     if (hasChunk || raw === "") {
-      wrappedLines.push({ text: raw.slice(chunkStart), offset: globalOffset + chunkStart, isFirst: li === 0 && chunkStart === 0 });
+      wrappedLines.push({ text: raw.slice(chunkStart), offset: globalOffset + chunkStart, isFirst: li === 0 && chunkStart === 0, hardBreakAfter: li < rawLines.length - 1 });
     }
     globalOffset += raw.length + 1;
   }
-  if (wrappedLines.length === 0) wrappedLines.push({ text: "", offset: 0, isFirst: true });
+  if (wrappedLines.length === 0) wrappedLines.push({ text: "", offset: 0, isFirst: true, hardBreakAfter: false });
   wrappedLinesRef.current = wrappedLines;
 
   const isMultiline = rawLines.length > 1 || wrappedLines.length > 1;
@@ -970,7 +1043,10 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         const lineStart = wl.offset;
         const lineEnd = lineStart + wl.text.length;
         const isLastLine = i === wrappedLines.length - 1;
-        const cursorInLine = cursorPos >= lineStart && (isLastLine ? cursorPos <= lineEnd : cursorPos < lineEnd);
+        const cursorInLine = cursorPos >= lineStart && (
+          cursorPos < lineEnd ||
+          (cursorPos === lineEnd && (isLastLine || wl.hardBreakAfter))
+        );
 
         const renderPrefix = (isFirst: boolean) => {
           if (!isFirst) return <Text dimColor>{"  "}</Text>;

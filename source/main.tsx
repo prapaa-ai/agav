@@ -555,10 +555,6 @@ export async function main() {
     config.effort = flags.effort;
   }
 
-  if (!config.systemPrompt) {
-    config.systemPrompt = await buildSystemPrompt();
-  }
-
   if (flags.autoAccept) {
     config.permissionMode = "auto-accept";
   } else if (flags.denyWrites) {
@@ -674,6 +670,14 @@ export async function main() {
   if (configurationError) {
     process.stderr.write(`\n  Agav — ${configurationError}\n\n`);
     process.exit(1);
+  }
+
+  // System-prompt construction reads project instructions, memories, and
+  // skills. It is unnecessary work when startup will fail for missing
+  // credentials, and in non-interactive mode it can delay that clear error
+  // long enough for callers to time out.
+  if (!config.systemPrompt) {
+    config.systemPrompt = await buildSystemPrompt();
   }
 
   // If Ollama is selected without a model, query the local server and choose one.

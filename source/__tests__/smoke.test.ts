@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 const nodeVersion = parseInt(process.versions.node.split(".")[0]!, 10);
 const skipCli = nodeVersion < 22;
@@ -44,19 +47,32 @@ describe("CLI boot", () => {
   });
 
   it("-P without API key exits 1 with helpful error (not a crash)", async () => {
-    const result = await runCli(["-P", "hello"], {
-      ANTHROPIC_API_KEY: "",
-      OPENAI_API_KEY: "",
-      OPENROUTER_API_KEY: "",
-      GEMINI_API_KEY: "",
-      VERTEX_AI_CREDENTIALS_PATH: "",
-    });
-    expect(result.exitCode).toBe(1);
-    // Helpful means naming a variable and a command to set it, not just saying
-    // that credentials are missing.
-    const output = `${result.stdout}\n${result.stderr}`;
-    expect(output).toContain("no provider credentials found");
-    expect(output).toMatch(/(export|set|\$env:)\s?ANTHROPIC_API_KEY/);
+    // The CLI inherits its caller's environment and normally reads
+    // ~/.agav/config.json. Give the child an empty home and explicitly clear
+    // every cloud-provider key so a developer's local setup cannot turn this
+    // no-credentials assertion into a real provider request.
+    const cleanHome = await mkdtemp(join(tmpdir(), "agav-smoke-"));
+    try {
+      const result = await runCli(["-P", "hello"], {
+        HOME: cleanHome,
+        USERPROFILE: cleanHome,
+        ANTHROPIC_API_KEY: "",
+        OPENAI_API_KEY: "",
+        OPENROUTER_API_KEY: "",
+        NVIDIA_API_KEY: "",
+        DEEPSEEK_API_KEY: "",
+        GEMINI_API_KEY: "",
+        VERTEX_AI_CREDENTIALS_PATH: "",
+      });
+      expect(result.exitCode).toBe(1);
+      // Helpful means naming a variable and a command to set it, not just saying
+      // that credentials are missing.
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain("no provider credentials found");
+      expect(output).toMatch(/(export|set|\$env:)\s?ANTHROPIC_API_KEY/);
+    } finally {
+      await rm(cleanHome, { recursive: true, force: true });
+    }
   });
 });
 
