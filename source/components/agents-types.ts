@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentDefinition } from "../agents/types.js";
+import type { AgavConfig } from "../config/config.js";
+import { getRequiredEnvVars } from "../mcp/env-vars.js";
 
 export type Tab = "list" | "marketplace" | "create";
 
@@ -19,6 +21,8 @@ export interface ConfigItem {
   key: string;
   label: string;
   secret: boolean;
+  mcpServerKey?: string;
+  envVarKey?: string;
 }
 
 export const EFFORT_VALUES = ["low", "medium", "high", "max"] as const;
@@ -34,11 +38,32 @@ export function resolveConfigPath(agent: AgentDefinition): string {
   return join(resolveConfigDir(agent), "config.json");
 }
 
-export function getConfigItems(_agent: AgentDefinition): ConfigItem[] {
-  return [
+export function getConfigItems(
+  agent: AgentDefinition,
+  config?: AgavConfig,
+): ConfigItem[] {
+  const items: ConfigItem[] = [
     { key: "model",  label: "Model  (blank = inherit session)", secret: false },
     { key: "effort", label: "Effort (blank = inherit session)", secret: false },
   ];
+
+  const mcpServers = agent.manifest["mcp-servers"] ?? [];
+  for (const srv of mcpServers) {
+    const serverConfig = config?.mcpServers?.[srv.key];
+    if (!serverConfig) continue;
+    const vars = getRequiredEnvVars(srv.key, serverConfig);
+    for (const v of vars) {
+      items.push({
+        key: `mcp:${srv.key}:${v.name}`,
+        label: `${srv.key} → ${v.name}`,
+        secret: true,
+        mcpServerKey: srv.key,
+        envVarKey: v.name,
+      });
+    }
+  }
+
+  return items;
 }
 
 export function parseFileUrl(url: string): string {

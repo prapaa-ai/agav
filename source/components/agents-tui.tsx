@@ -7,6 +7,7 @@ import { setAgentEnabled, loadRegistry } from "../agents/agent-registry.js";
 import type { AgentRegistryEntry } from "../agents/types.js";
 import { deleteAgentWithTemplate } from "../agents/agent-lifecycle.js";
 import { loadAgentConfig, saveAgentConfig } from "../agents/credentials.js";
+import { saveGlobalMcpEnvVar } from "../config/config.js";
 import { implementAgentTools } from "../agents/tool-gen.js";
 import { wheelSelect, stepIndex } from "./wheel-select.js";
 import type { AgentDefinition } from "../agents/types.js";
@@ -257,19 +258,25 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
         const agent = filteredAgents[selectedIndex];
         if (!agent) return;
         const agentKey = agent.alias || agent.manifest.name;
-        const items = getConfigItems(agent);
+        const items = getConfigItems(agent, config);
 
         const saveConfigValue = async (value: string) => {
           setConfigError(null);
+          const currentItem = items[configEditIndex];
           try {
-            const dir = resolveConfigDir(agent);
-            await mkdir(dir, { recursive: true });
-            const existing = await loadAgentConfig(dir);
-            const merged: Record<string, string> = { ...existing };
-            if (value) { merged[configEditKey] = value; } else { delete merged[configEditKey]; }
-            await saveAgentConfig(dir, merged);
-            setRuntimeConfigs((prev) => ({ ...prev, [agentKey]: merged }));
-            setConfigSavedKeys((prev) => ({ ...prev, [configEditKey]: value }));
+            if (currentItem?.mcpServerKey && currentItem?.envVarKey) {
+              await saveGlobalMcpEnvVar(currentItem.mcpServerKey, currentItem.envVarKey, value);
+              setConfigSavedKeys((prev) => ({ ...prev, [configEditKey]: value }));
+            } else {
+              const dir = resolveConfigDir(agent);
+              await mkdir(dir, { recursive: true });
+              const existing = await loadAgentConfig(dir);
+              const merged: Record<string, string> = { ...existing };
+              if (value) { merged[configEditKey] = value; } else { delete merged[configEditKey]; }
+              await saveAgentConfig(dir, merged);
+              setRuntimeConfigs((prev) => ({ ...prev, [agentKey]: merged }));
+              setConfigSavedKeys((prev) => ({ ...prev, [configEditKey]: value }));
+            }
             computeReadiness(agents);
           } catch (err) {
             setConfigError(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -446,6 +453,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
             sessionModel={config?.model}
             sessionEffort={config?.effort}
             sessionProvider={config?.provider}
+            config={config}
           />
           {implementingTools && implementStatus && (
             <Box marginTop={1}><Text color="cyan">{implementStatus}</Text></Box>
@@ -460,7 +468,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
       {activeTab === "list" && listView === "config" && selectedAgent && (
         <ConfigEditView
           agent={selectedAgent}
-          items={getConfigItems(selectedAgent)}
+          items={getConfigItems(selectedAgent, config)}
           editIndex={configEditIndex}
           editKey={configEditKey}
           editBuffer={configEditBuffer}
@@ -472,6 +480,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           pickerActive={configPickerActive}
           pickerItems={configPickerItems}
           pickerIndex={configPickerIndex}
+          config={config}
         />
       )}
       {activeTab === "marketplace" && (

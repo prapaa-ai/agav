@@ -451,6 +451,28 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
 }
 
+/** Surgically update a single env var in the global config's mcpServers section. */
+export async function saveGlobalMcpEnvVar(
+  serverKey: string,
+  envKey: string,
+  value: string,
+): Promise<void> {
+  await ensureDir(AGAV_DIR);
+  let raw: Record<string, unknown> = {};
+  try {
+    raw = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+  } catch { /* empty or missing config */ }
+
+  const mcpServers = (raw.mcpServers ?? {}) as Record<string, Record<string, unknown>>;
+  if (!mcpServers[serverKey]) mcpServers[serverKey] = {};
+  const env = (mcpServers[serverKey].env ?? {}) as Record<string, string>;
+  env[envKey] = value;
+  mcpServers[serverKey].env = env;
+  raw.mcpServers = mcpServers;
+
+  await writeFile(CONFIG_PATH, JSON.stringify(raw, null, 2) + "\n");
+}
+
 /** Return the root directory used for Agav's global state files. */
 export function getAgavDir(): string {
   return AGAV_DIR;

@@ -1,8 +1,18 @@
+export interface MCPEnvVarDeclaration {
+  name: string;
+  description?: string;
+  isRequired?: boolean;
+  isSecret?: boolean;
+}
+
 // Launch configuration for an MCP server process.
 export interface MCPServerConfig {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  // Declarative list of env vars this server requires.
+  // When absent, inferred from the keys of `env`.
+  requiredEnvVars?: MCPEnvVarDeclaration[];
   type?: "stdio" | "remote";
   url?: string;
   // Remote transport selection. "http" = Streamable HTTP (POST /mcp, current spec);

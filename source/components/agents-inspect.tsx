@@ -3,8 +3,10 @@ import { Box, Text } from "../ink/index.js";
 import type { AgentDefinition, MarketplaceAgent } from "../agents/types.js";
 import type { AgentReadiness, ConfigItem } from "./agents-types.js";
 import { resolveConfigPath, parseFileUrl } from "./agents-types.js";
+import type { AgavConfig } from "../config/config.js";
+import { resolveEnvVarStatuses } from "../mcp/env-vars.js";
 
-export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sessionModel, sessionEffort, sessionProvider }: {
+export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sessionModel, sessionEffort, sessionProvider, config }: {
   agent: AgentDefinition;
   statusLabel?: string;
   readiness?: AgentReadiness;
@@ -12,6 +14,7 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
   sessionModel?: string;
   sessionEffort?: string;
   sessionProvider?: string;
+  config?: AgavConfig;
 }) {
   const name = agent.alias || agent.manifest.name;
   const manifest = agent.manifest;
@@ -136,6 +139,24 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
         </Box>
       )}
 
+      {mcpServers.length > 0 && config && (
+        <Box flexDirection="column" marginBottom={1}>
+          <Text bold>MCP Credentials:</Text>
+          {mcpServers.map((srv) => {
+            const serverConfig = config.mcpServers?.[srv.key];
+            if (!serverConfig) return null;
+            const statuses = resolveEnvVarStatuses(srv.key, serverConfig, config);
+            return statuses.map((s) => (
+              <Text key={`${srv.key}-${s.name}`}>
+                {"  "}{s.hasValue ? <Text color="green">✓</Text> : <Text color="red">✗</Text>}
+                {" "}{srv.key} → {s.name}
+                {s.hasValue ? <Text dimColor> ({s.source})</Text> : <Text color="red"> not set</Text>}
+              </Text>
+            ));
+          })}
+        </Box>
+      )}
+
       <Box flexDirection="column" marginBottom={1}>
         <Text bold>Tools ({agent.tools.length}):</Text>
         {agent.tools.map((tool) => (
@@ -174,6 +195,7 @@ export function ConfigEditView({
   pickerActive,
   pickerItems,
   pickerIndex,
+  config,
 }: {
   agent: AgentDefinition;
   items: ConfigItem[];
@@ -188,6 +210,7 @@ export function ConfigEditView({
   pickerActive?: boolean;
   pickerItems?: string[];
   pickerIndex?: number;
+  config?: AgavConfig;
 }) {
   const configPath = resolveConfigPath(agent);
 
@@ -256,47 +279,76 @@ export function ConfigEditView({
       </Box>
 
       <Box flexDirection="column" marginBottom={1}>
-        {items.map((item, idx) => {
-          const isSelected = idx === editIndex;
-          const isEditingThis = isEditing && editKey === item.key;
+        {(() => {
+          const hasMcpItems = items.some((i) => i.mcpServerKey);
+          let mcpHeaderShown = false;
+          return items.map((item, idx) => {
+            const isSelected = idx === editIndex;
+            const isEditingThis = isEditing && editKey === item.key;
 
-          let valueNode: React.ReactNode;
-          if (isEditingThis) {
-            const display = item.secret ? "•".repeat(editBuffer.length) : editBuffer;
-            valueNode = (
-              <Box>
-                <Text color="cyan">{display}</Text>
-                <Text color="cyan">█</Text>
+            // Show section header before the first MCP item
+            let sectionHeader: React.ReactNode = null;
+            if (hasMcpItems && item.mcpServerKey && !mcpHeaderShown) {
+              mcpHeaderShown = true;
+              sectionHeader = (
+                <Box marginTop={1} marginBottom={0}>
+                  <Text dimColor>── MCP Credentials ──</Text>
+                </Box>
+              );
+            }
+
+            let valueNode: React.ReactNode;
+            if (isEditingThis) {
+              const display = item.secret ? "•".repeat(editBuffer.length) : editBuffer;
+              valueNode = (
+                <Box>
+                  <Text color="cyan">{display}</Text>
+                  <Text color="cyan">█</Text>
+                </Box>
+              );
+            } else if (item.mcpServerKey && item.envVarKey) {
+              if (savedKeys[item.key] !== undefined) {
+                valueNode = <Text color="green">✓ just saved</Text>;
+              } else {
+                const serverEnv = config?.mcpServers?.[item.mcpServerKey]?.env;
+                const hasInConfig = Boolean(serverEnv?.[item.envVarKey]);
+                const hasInEnv = Boolean(process.env[item.envVarKey]);
+                if (hasInConfig || hasInEnv) {
+                  valueNode = <Text color="green">✓ configured</Text>;
+                } else {
+                  valueNode = <Text color="red">✗ not set</Text>;
+                }
+              }
+            } else if (item.key === "model" || item.key === "effort") {
+              const val = savedKeys[item.key] !== undefined ? savedKeys[item.key] : runtimeConfig[item.key];
+              valueNode = val
+                ? <Text color="green">{val} <Text dimColor>(override)</Text></Text>
+                : <Text dimColor>inherited from session</Text>;
+            } else {
+              if (savedKeys[item.key] !== undefined) {
+                valueNode = <Text color="green">✓ just saved</Text>;
+              } else if (readiness?.missing.includes(item.key)) {
+                valueNode = <Text color="red">✗ not set</Text>;
+              } else {
+                valueNode = <Text color="green">✓ configured</Text>;
+              }
+            }
+
+            return (
+              <Box key={item.key} flexDirection="column">
+                {sectionHeader}
+                <Box>
+                  <Text color={isSelected ? "cyan" : undefined} bold={isSelected}>
+                    {isSelected ? "→ " : "  "}
+                    {item.label}{"  "}
+                  </Text>
+                  {valueNode}
+                </Box>
+                {isSelected && (item.key === "model" || item.key === "effort") && renderPicker()}
               </Box>
             );
-          } else if (item.key === "model" || item.key === "effort") {
-            const val = savedKeys[item.key] !== undefined ? savedKeys[item.key] : runtimeConfig[item.key];
-            valueNode = val
-              ? <Text color="green">{val} <Text dimColor>(override)</Text></Text>
-              : <Text dimColor>inherited from session</Text>;
-          } else {
-            if (savedKeys[item.key] !== undefined) {
-              valueNode = <Text color="green">✓ just saved</Text>;
-            } else if (readiness?.missing.includes(item.key)) {
-              valueNode = <Text color="red">✗ not set</Text>;
-            } else {
-              valueNode = <Text color="green">✓ configured</Text>;
-            }
-          }
-
-          return (
-            <Box key={item.key} flexDirection="column">
-              <Box>
-                <Text color={isSelected ? "cyan" : undefined} bold={isSelected}>
-                  {isSelected ? "→ " : "  "}
-                  {item.label}{"  "}
-                </Text>
-                {valueNode}
-              </Box>
-              {isSelected && (item.key === "model" || item.key === "effort") && renderPicker()}
-            </Box>
-          );
-        })}
+          });
+        })()}
       </Box>
 
       {error && !pickerActive && (

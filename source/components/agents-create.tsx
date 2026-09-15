@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { stringify as yamlStringify } from "yaml";
 import type { LLMProvider } from "../providers/types.js";
-import type { AgavConfig } from "../config/config.js";
+import { type AgavConfig, saveGlobalMcpEnvVar } from "../config/config.js";
 import type { AgentDefinition, AgentRegistryEntry } from "../agents/types.js";
-import type { MCPServerConfig } from "../mcp/types.js";
+import type { MCPServerConfig, MCPEnvVarDeclaration } from "../mcp/types.js";
+import { getRequiredEnvVars } from "../mcp/env-vars.js";
 import { loadAgent } from "../agents/loader.js";
 import { registerAgent } from "../agents/agent-registry.js";
 import { assertPathContained } from "../agents/installer.js";
@@ -19,6 +20,12 @@ const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 const STEP_LABELS = ["Name & Description", "System Prompt", "MCP Servers", "Review & Save"];
 
 type WizardStep = 1 | 2 | 3 | 4;
+
+interface MCPCredItem {
+  serverKey: string;
+  envVar: MCPEnvVarDeclaration;
+  configured: boolean;
+}
 
 interface CreateTabProps {
   onReloadAgents: () => Promise<void>;
@@ -70,6 +77,12 @@ export function CreateTab({
   const [promptError, setPromptError] = useState<string | null>(null);
   const [mcpSelectedKeys, setMcpSelectedKeys] = useState<Set<string>>(new Set());
   const [mcpScrollIndex, setMcpScrollIndex] = useState(0);
+  const [mcpCredPhase, setMcpCredPhase] = useState<"select" | "credentials">("select");
+  const [mcpCredItems, setMcpCredItems] = useState<MCPCredItem[]>([]);
+  const [mcpCredIndex, setMcpCredIndex] = useState(0);
+  const [mcpCredBuffer, setMcpCredBuffer] = useState("");
+  const [mcpCredEditing, setMcpCredEditing] = useState(false);
+  const [destination, setDestination] = useState<"global" | "project">("global");
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -80,7 +93,7 @@ export function CreateTab({
 
   // Build list entries: my agents + templates + [New Agent]
   const myAgents = agents.filter((a) => {
-    if (a.origin !== "global") return false;
+    if (a.origin !== "global" && a.origin !== "project") return false;
     const entry = registryEntries[a.alias || a.manifest.name];
     return !entry?.sourceUrl;
   });
@@ -199,6 +212,12 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
     setPromptError(null);
     setPromptGenerating(false);
     setMcpScrollIndex(0);
+    setMcpCredPhase("select");
+    setMcpCredItems([]);
+    setMcpCredIndex(0);
+    setMcpCredBuffer("");
+    setMcpCredEditing(false);
+    setDestination("global");
     setSaving(false);
     setSaveStatus("");
     setSaveError(null);
@@ -216,25 +235,25 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
   const saveAgent = useCallback(async () => {
     setSaving(true);
     setSaveError(null);
-    const agentDir = join(homedir(), ".agav", "agents", agentName);
+    const agentDir = destination === "global"
+      ? join(homedir(), ".agav", "agents", agentName)
+      : join(process.cwd(), ".agav", "agents", agentName);
     const toolsDir = join(agentDir, "tools");
 
     try {
       setSaveStatus("Creating agent directory...");
-      const agentsRoot = join(homedir(), ".agav", "agents");
+      const agentsRoot = destination === "global"
+        ? join(homedir(), ".agav", "agents")
+        : join(process.cwd(), ".agav", "agents");
       await assertPathContained(agentDir, agentsRoot);
       await mkdir(agentDir, { recursive: true });
       await mkdir(toolsDir, { recursive: true });
 
-      const mcpServerEntries: Array<{ key: string; command: string; args?: string[]; env?: Record<string, string> }> = [];
+      const mcpServerEntries: Array<{ key: string; command: string; args?: string[] }> = [];
       for (const key of mcpSelectedKeys) {
         const serverConfig = config?.mcpServers?.[key];
         if (serverConfig?.command) {
-          const entry: typeof mcpServerEntries[number] = { key, command: serverConfig.command, args: serverConfig.args };
-          if (serverConfig.env && Object.keys(serverConfig.env).length > 0) {
-            entry.env = serverConfig.env;
-          }
-          mcpServerEntries.push(entry);
+          mcpServerEntries.push({ key, command: serverConfig.command, args: serverConfig.args });
         }
       }
 
@@ -250,6 +269,19 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
 
       if (mcpServerEntries.length > 0) {
         manifest["mcp-servers"] = mcpServerEntries;
+      }
+
+      const requiredConfig = new Set<string>();
+      for (const key of mcpSelectedKeys) {
+        const serverConfig = config?.mcpServers?.[key];
+        if (serverConfig) {
+          for (const v of getRequiredEnvVars(key, serverConfig)) {
+            requiredConfig.add(v.name);
+          }
+        }
+      }
+      if (requiredConfig.size > 0) {
+        manifest["required-config"] = [...requiredConfig];
       }
 
       setSaveStatus("Writing AGENT.md...");
@@ -270,7 +302,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       await registerAgent(registryOpts as any);
 
       setSaveStatus("Validating...");
-      const loaded = await loadAgent(agentDir, "global");
+      const loaded = await loadAgent(agentDir, destination === "global" ? "global" : "project");
       if (!loaded) {
         throw new Error("Agent validation failed after writing to disk");
       }
@@ -289,7 +321,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       setSaveError(err instanceof Error ? err.message : String(err));
       setSaving(false);
     }
-  }, [agentName, agentDescription, systemPrompt, mcpSelectedKeys, config, onReloadAgents, onCreateComplete, editingAgent]);
+  }, [agentName, agentDescription, systemPrompt, mcpSelectedKeys, config, onReloadAgents, onCreateComplete, editingAgent, destination]);
 
   // --- Delete agent ---
   const doRemove = useCallback(async () => {
@@ -412,26 +444,93 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
 
     // Step 3: MCP Server Selection
     if (wizardStep === 3) {
-      if (key.escape || input === "b") { setWizardStep(2); return; }
-      if (key.return) { setWizardStep(4); return; }
-      if (input === " " && workspaceMcpEntries.length > 0) {
-        const [serverKey] = workspaceMcpEntries[mcpScrollIndex] ?? [];
-        if (serverKey) {
-          setMcpSelectedKeys((prev) => {
-            const next = new Set(prev);
-            if (next.has(serverKey)) next.delete(serverKey);
-            else next.add(serverKey);
-            return next;
-          });
+      if (mcpCredPhase === "select") {
+        if (key.escape || input === "b") { setWizardStep(2); return; }
+        if (key.return) {
+          // Compute credential items for selected servers
+          const credItems: MCPCredItem[] = [];
+          for (const k of mcpSelectedKeys) {
+            const serverConfig = config?.mcpServers?.[k];
+            if (!serverConfig) continue;
+            const vars = getRequiredEnvVars(k, serverConfig);
+            for (const v of vars) {
+              const configured = Boolean(serverConfig.env?.[v.name] || process.env[v.name]);
+              credItems.push({ serverKey: k, envVar: v, configured });
+            }
+          }
+          const hasMissing = credItems.some((item) => !item.configured);
+          if (!hasMissing) {
+            setWizardStep(4);
+          } else {
+            setMcpCredItems(credItems);
+            setMcpCredIndex(0);
+            setMcpCredBuffer("");
+            setMcpCredEditing(false);
+            setMcpCredPhase("credentials");
+          }
+          return;
+        }
+        if (input === " " && workspaceMcpEntries.length > 0) {
+          const [serverKey] = workspaceMcpEntries[mcpScrollIndex] ?? [];
+          if (serverKey) {
+            setMcpSelectedKeys((prev) => {
+              const next = new Set(prev);
+              if (next.has(serverKey)) next.delete(serverKey);
+              else next.add(serverKey);
+              return next;
+            });
+          }
+          return;
+        }
+        if (key.upArrow && workspaceMcpEntries.length > 0) {
+          setMcpScrollIndex((i) => Math.max(0, i - 1));
+          return;
+        }
+        if (key.downArrow && workspaceMcpEntries.length > 0) {
+          setMcpScrollIndex((i) => Math.min(workspaceMcpEntries.length - 1, i + 1));
+          return;
         }
         return;
       }
-      if (key.upArrow && workspaceMcpEntries.length > 0) {
-        setMcpScrollIndex((i) => Math.max(0, i - 1));
-        return;
-      }
-      if (key.downArrow && workspaceMcpEntries.length > 0) {
-        setMcpScrollIndex((i) => Math.min(workspaceMcpEntries.length - 1, i + 1));
+
+      // Credential entry sub-phase
+      if (mcpCredPhase === "credentials") {
+        if (key.escape) {
+          if (mcpCredEditing) { setMcpCredEditing(false); setMcpCredBuffer(""); }
+          else { setMcpCredPhase("select"); }
+          return;
+        }
+        if (key.rightArrow && !mcpCredEditing) { setWizardStep(4); return; }
+        if (key.return) {
+          if (mcpCredEditing) {
+            const item = mcpCredItems[mcpCredIndex];
+            if (item && mcpCredBuffer.trim()) {
+              saveGlobalMcpEnvVar(item.serverKey, item.envVar.name, mcpCredBuffer.trim()).catch(() => {});
+              setMcpCredItems((prev) => prev.map((it, i) =>
+                i === mcpCredIndex ? { ...it, configured: true } : it,
+              ));
+            }
+            setMcpCredEditing(false);
+            setMcpCredBuffer("");
+          } else {
+            setMcpCredEditing(true);
+            setMcpCredBuffer("");
+          }
+          return;
+        }
+        if (key.tab) {
+          if (mcpCredEditing) { setMcpCredEditing(false); setMcpCredBuffer(""); }
+          if (mcpCredIndex < mcpCredItems.length - 1) {
+            setMcpCredIndex((i) => i + 1);
+          }
+          return;
+        }
+        if (key.upArrow && !mcpCredEditing) { setMcpCredIndex((i) => Math.max(0, i - 1)); return; }
+        if (key.downArrow && !mcpCredEditing) { setMcpCredIndex((i) => Math.min(mcpCredItems.length - 1, i + 1)); return; }
+        if (mcpCredEditing) {
+          if (key.backspace || key.delete) { setMcpCredBuffer((v) => v.slice(0, -1)); return; }
+          if (input && !key.ctrl && !key.meta) { setMcpCredBuffer((v) => v + input); return; }
+        }
         return;
       }
       return;
@@ -439,17 +538,24 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
 
     // Step 4: Review & Save
     if (wizardStep === 4) {
-      if (key.escape || input === "b") { setWizardStep(3); return; }
+      if (key.escape || input === "b") { setMcpCredPhase("select"); setWizardStep(3); return; }
+      if (input === "1" && !saving) { setDestination("global"); return; }
+      if (input === "2" && !saving) { setDestination("project"); return; }
       if (key.return && !saving && !saveError) { saveAgent(); return; }
       return;
     }
   });
 
   usePaste((text) => {
-    if (mode !== "wizard" || wizardStep !== 1) return;
-    const cleaned = text.replace(/\n/g, "").trim();
-    if (activeField === "name" && !editingAgent) setAgentName((v) => v + cleaned);
-    else if (activeField === "description") setAgentDescription((v) => v + cleaned);
+    if (mode !== "wizard") return;
+    if (wizardStep === 1) {
+      const cleaned = text.replace(/\n/g, "").trim();
+      if (activeField === "name" && !editingAgent) setAgentName((v) => v + cleaned);
+      else if (activeField === "description") setAgentDescription((v) => v + cleaned);
+    } else if (wizardStep === 3 && mcpCredPhase === "credentials" && mcpCredEditing) {
+      const cleaned = text.replace(/\n/g, "").trim();
+      setMcpCredBuffer((v) => v + cleaned);
+    }
   });
 
   // --- Render ---
@@ -532,11 +638,20 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
         />
       )}
 
-      {wizardStep === 3 && (
+      {wizardStep === 3 && mcpCredPhase === "select" && (
         <MCPServerStep
           entries={workspaceMcpEntries}
           selectedKeys={mcpSelectedKeys}
           scrollIndex={mcpScrollIndex}
+        />
+      )}
+
+      {wizardStep === 3 && mcpCredPhase === "credentials" && (
+        <MCPCredentialsStep
+          items={mcpCredItems}
+          currentIndex={mcpCredIndex}
+          editing={mcpCredEditing}
+          buffer={mcpCredBuffer}
         />
       )}
 
@@ -550,6 +665,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
           saveStatus={saveStatus}
           saveError={saveError}
           isEdit={!!editingAgent}
+          destination={destination}
         />
       )}
     </Box>
@@ -709,14 +825,63 @@ function MCPServerStep({
   );
 }
 
+function MCPCredentialsStep({
+  items, currentIndex, editing, buffer,
+}: {
+  items: MCPCredItem[];
+  currentIndex: number;
+  editing: boolean;
+  buffer: string;
+}) {
+  const configuredCount = items.filter((item) => item.configured).length;
+  const maxKeyLen = items.length > 0 ? Math.max(...items.map((item) => item.serverKey.length)) : 0;
+  const maxVarLen = items.length > 0 ? Math.max(...items.map((item) => item.envVar.name.length)) : 0;
+
+  return (
+    <Box flexDirection="column">
+      <Text bold>MCP Server Credentials</Text>
+      <Text dimColor>  {configuredCount} of {items.length} already configured</Text>
+      <Box flexDirection="column" marginY={1}>
+        {items.map((item, i) => {
+          const isCursor = i === currentIndex;
+          const keyPadded = item.serverKey.padEnd(maxKeyLen);
+          const varPadded = item.envVar.name.padEnd(maxVarLen);
+          const showEditor = isCursor && editing;
+
+          return (
+            <Box key={`${item.serverKey}-${item.envVar.name}`}>
+              <Text color={isCursor ? "cyan" : undefined} bold={isCursor}>
+                {isCursor ? "  > " : "    "}{keyPadded} → {varPadded}
+              </Text>
+              {showEditor ? (
+                <>
+                  <Text>[enter value]: </Text>
+                  <Text>{buffer}</Text>
+                  <Text color="cyan">█</Text>
+                </>
+              ) : item.configured ? (
+                <Text color="green">✓ configured</Text>
+              ) : (
+                <Text color="red">✗ not set</Text>
+              )}
+            </Box>
+          );
+        })}
+      </Box>
+      <Text dimColor>↑↓ Navigate | ENTER Edit/Save | TAB Skip | → Next</Text>
+    </Box>
+  );
+}
+
 function ReviewSaveStep({
   agentName, agentDescription, systemPrompt, mcpEntries,
-  saving, saveStatus, saveError, isEdit,
+  saving, saveStatus, saveError, isEdit, destination,
 }: {
   agentName: string; agentDescription: string; systemPrompt: string;
   mcpEntries: [string, MCPServerConfig][];
   saving: boolean; saveStatus: string; saveError: string | null;
   isEdit: boolean;
+  destination: "global" | "project";
 }) {
   const promptPreview = systemPrompt.split("\n").slice(0, 3).join("\n");
   const hasMore = systemPrompt.split("\n").length > 3;
@@ -733,9 +898,18 @@ function ReviewSaveStep({
           <Text bold>Description: </Text>
           <Text>{agentDescription}</Text>
         </Box>
-        <Box>
-          <Text bold>Destination: </Text>
-          <Text dimColor>~/.agav/agents/{agentName}/</Text>
+        <Box flexDirection="column">
+          <Text bold>Destination:</Text>
+          <Box>
+            <Text color={destination === "global" ? "cyan" : undefined}>
+              {"  "}{destination === "global" ? "> " : "  "}[1] Global (~/.agav/agents/) — available in all projects
+            </Text>
+          </Box>
+          <Box>
+            <Text color={destination === "project" ? "cyan" : undefined}>
+              {"  "}{destination === "project" ? "> " : "  "}[2] Project (.agav/agents/) — this project only
+            </Text>
+          </Box>
         </Box>
         <Box marginTop={1} flexDirection="column">
           <Text bold>System Prompt:</Text>

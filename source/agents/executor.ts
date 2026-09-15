@@ -89,18 +89,31 @@ export async function executeNativeAgent(
   const effort = (agentOverrides["effort"] || agent.manifest.effort || deps.config.effort) as import("../config/config.js").EffortLevel;
 
   // Start per-agent MCP servers.
-  // Env resolution: process.env < global/project config mcpServers[key].env.
+  // Env resolution: process.env < global/project config mcpServers[key].env < per-agent overrides.
   let agentMCPManager: import("../mcp/manager.js").MCPManager | null = null;
   const mcpServersDecl = agent.manifest["mcp-servers"] ?? [];
+
+  // Extract per-agent MCP env overrides from agentOverrides (keys like "mcp:<serverKey>:<envKey>").
+  const perAgentMcpOverrides: Record<string, Record<string, string>> = {};
+  for (const [k, v] of Object.entries(agentOverrides)) {
+    const parts = k.split(":");
+    if (parts.length === 3 && parts[0] === "mcp") {
+      const srvKey = parts[1]!;
+      if (!perAgentMcpOverrides[srvKey]) perAgentMcpOverrides[srvKey] = {};
+      perAgentMcpOverrides[srvKey]![parts[2]!] = v;
+    }
+  }
+
   if (mcpServersDecl.length > 0) {
     const { MCPManager } = await import("../mcp/manager.js");
     agentMCPManager = new MCPManager();
     for (const srv of mcpServersDecl) {
       const globalServerEnv = deps.config.mcpServers?.[srv.key]?.env ?? {};
+      const agentServerOverrides = perAgentMcpOverrides[srv.key] ?? {};
       const serverConfig = {
         command: srv.command,
         args: srv.args ?? [],
-        env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...globalServerEnv },
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...globalServerEnv, ...agentServerOverrides },
       };
       try {
         await agentMCPManager.startServer(srv.key, serverConfig);
@@ -110,12 +123,16 @@ export async function executeNativeAgent(
     }
   }
 
-  // Collect all env values from global/project config MCP servers for tool context.
-  const globalMcpEnv: Record<string, string> = {};
+  // Collect env values from the agent's declared MCP servers for tool context.
+  const agentMcpKeys = new Set(mcpServersDecl.map((s) => s.key));
+  const agentMcpEnv: Record<string, string> = {};
   if (deps.config.mcpServers) {
-    for (const srv of Object.values(deps.config.mcpServers)) {
-      if (srv.env) Object.assign(globalMcpEnv, srv.env);
+    for (const [key, srv] of Object.entries(deps.config.mcpServers)) {
+      if (agentMcpKeys.has(key) && srv.env) Object.assign(agentMcpEnv, srv.env);
     }
+  }
+  for (const overrides of Object.values(perAgentMcpOverrides)) {
+    Object.assign(agentMcpEnv, overrides);
   }
 
   try {
@@ -125,7 +142,7 @@ export async function executeNativeAgent(
     for (const tool of agent.tools) {
       childRegistry.register({
         schema: tool.schema,
-        execute: (input) => tool.execute(input, { env: globalMcpEnv }),
+        execute: (input) => tool.execute(input, { env: agentMcpEnv }),
       });
     }
 
