@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { ContentBlock } from "../providers/types.js";
-import { downscaleImage, hasImageTool, imageToolHint, pdfRasterHint, rasterisePdfRange } from "./media-tools.js";
+import { downscaleImage, hasImageTool, imageToolHint, pdfRasterHint, rasterisePdfRange, IMAGE_LONG_EDGE, IMAGE_QUALITY, MAX_RAW_IMAGE_BYTES } from "./media-tools.js";
 import { extractDocxText, extractPptxText } from "./office-text.js";
 import { setEnvHint } from "./shell-hints.js";
 
@@ -17,14 +17,6 @@ export const MAX_MENTION_LINES = 500;
 export const MAX_MENTION_BYTES = 100 * 1024;
 export const MAX_DOCUMENT_PAGES = 10;
 const MAX_TEXT_TOOL_BYTES = 1024 * 1024;
-const IMAGE_LONG_EDGE = 1600;
-const IMAGE_QUALITY = 80;
-/**
- * Ceiling for an image forwarded without downscaling. Base64 inflates by a
- * third, and providers reject attachments past roughly 5MB encoded, so a
- * larger original has to be resized or refused rather than sent and bounced.
- */
-const MAX_RAW_IMAGE_BYTES = 3.5 * 1024 * 1024;
 /** Formats a provider accepts as-is when no downscaler is installed. */
 const RAW_IMAGE_MEDIA_TYPES: Record<string, string> = {
   ".png": "image/png",
