@@ -117,13 +117,15 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       const onDrain = (chunk: Buffer) => {
         clearTimeout(timer);
         const s = chunk.toString();
-        if (s !== "\n") {
-          // Not a trailing newline — put it back by re-emitting after
-          // restoring raw mode so downstream handlers see the right state.
+        if (s.startsWith("\r\n") || s.startsWith("\n")) {
           restoreRawMode();
-          stdin.emit("data", chunk);
+          const remainder = s.startsWith("\r\n") ? s.slice(2) : s.slice(1);
+          if (remainder.length > 0) {
+            stdin.emit("data", Buffer.from(remainder));
+          }
         } else {
           restoreRawMode();
+          stdin.emit("data", chunk);
         }
       };
       stdin.once("data", onDrain);
@@ -212,7 +214,13 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
         // Backspace / Delete removes the last character.
         if (input === "\x7f" || input === "\b") {
           if (buffer.length > 0) {
-            buffer = buffer.slice(0, -1);
+            const segments = Array.from(
+              new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(buffer),
+            );
+            buffer = segments
+              .slice(0, -1)
+              .map((s) => s.segment)
+              .join("");
             renderRenamePrompt();
           }
           return;

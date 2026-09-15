@@ -148,7 +148,11 @@ export function wrapStyled(text: string, maxWidth: number): string[] {
         emit(line.length, line.length);
       }
     }
-    if (piece.space && width === 0) continue; // no leading spaces on a wrapped line
+    // Distinguish source-line starts from continuation rows to preserve indentation
+    // for nested markdown lists and code blocks, while still trimming spaces
+    // created by soft wrap breaks.
+    const isContinuationRow = lines.length > 0;
+    if (piece.space && width === 0 && isContinuationRow) continue;
     lastSpace = piece.space ? (lastSpace < 0 ? line.length : lastSpace) : -1;
     line.push(piece);
     width += piece.width;

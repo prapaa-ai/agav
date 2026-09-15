@@ -5,6 +5,7 @@ type Dimensions = {
 	height: number;
 };
 
+const MAX_CACHE_SIZE = 10_000;
 const cache = new Map<string, Dimensions>();
 
 /**
@@ -41,6 +42,12 @@ const measureText = (text: string): Dimensions => {
 	}
 
 	const dimensions: Dimensions = {width, height: lines.length};
+	if (cache.size >= MAX_CACHE_SIZE) {
+		const oldestKey = cache.keys().next().value;
+		if (oldestKey !== undefined) {
+			cache.delete(oldestKey);
+		}
+	}
 	cache.set(text, dimensions);
 
 	return dimensions;

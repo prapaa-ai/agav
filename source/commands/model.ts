@@ -376,10 +376,11 @@ export const modelCommand: SlashCommand = {
         };
       }
 
-      const selectedModel = selectedFromAmbiguousMatches ? match!.id : model;
+      const isOpenRouter = Boolean(match && match.provider === "openrouter");
+      const selectedModel = (selectedFromAmbiguousMatches || isOpenRouter) ? match!.id : model;
       context.setModel(selectedModel);
       if (match && match.provider !== context.config.provider
-        && (selectedFromAmbiguousMatches || !matchesProviderPrefix(selectedModel, context.config.provider))) {
+        && (selectedFromAmbiguousMatches || isOpenRouter || !matchesProviderPrefix(selectedModel, context.config.provider))) {
         context.setProvider(match.provider as import("../config/config.js").AgavConfig["provider"]);
         return { type: "message", text: `Model changed to: ${selectedModel} (switched to ${match.provider})` };
       }

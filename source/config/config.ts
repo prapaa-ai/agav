@@ -89,7 +89,7 @@ export function expandHome(path: string): string {
 const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
-    enum: ["openai", "openrouter", "nvidia", "ollama", "anthropic", "gemini", "vertex-ai"],
+    enum: ["openai", "openrouter", "nvidia", "ollama", "anthropic", "gemini", "vertex-ai", "deepseek"],
     type: "string",
     eg: "openai",
   },
@@ -433,13 +433,31 @@ export async function loadConfig(): Promise<AgavConfig> {
     DEFAULT_CONFIG.ollamaApiKey ?? "",
   ) || undefined;
 
+  if (merged.openaiHeaders && typeof merged.openaiHeaders === "object") {
+    const decryptedHeaders: Record<string, string> = {};
+    for (const [key, value] of Object.entries(merged.openaiHeaders)) {
+      decryptedHeaders[key] = typeof value === "string" ? decrypt(value) : value;
+    }
+    merged.openaiHeaders = decryptedHeaders;
+  }
+
   return merged;
 }
 
 /** Persist config to the global config file, encrypting any API keys present. */
 export async function saveConfig(config: AgavConfig): Promise<void> {
   await ensureDir(AGAV_DIR);
-  const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
+  const {
+    anthropicApiKey,
+    openaiApiKey,
+    openrouterApiKey,
+    nvidiaApiKey,
+    deepseekApiKey,
+    geminiApiKey,
+    ollamaApiKey,
+    openaiHeaders,
+    ...safe
+  } = config;
   const out: Record<string, unknown> = { ...safe };
   if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
   if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
@@ -448,6 +466,13 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   if (deepseekApiKey) out.deepseekApiKey = encrypt(deepseekApiKey);
   if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
   if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
+  if (openaiHeaders && typeof openaiHeaders === "object") {
+    const encryptedHeaders: Record<string, string> = {};
+    for (const [key, value] of Object.entries(openaiHeaders)) {
+      encryptedHeaders[key] = typeof value === "string" ? encrypt(value) : value;
+    }
+    out.openaiHeaders = encryptedHeaders;
+  }
   await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
 }
 

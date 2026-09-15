@@ -41,7 +41,13 @@ function tryCommand(cmd: string, args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(cmd, args, { timeout: 3000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
       if (err) return resolve(null);
-      const text = stdout.toString();
+      let text = stdout.toString();
+      if (process.platform === "win32" && cmd.includes("powershell")) {
+        text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        if (text.endsWith("\n")) {
+          text = text.slice(0, -1);
+        }
+      }
       resolve(text.length > 0 ? text : null);
     });
   });

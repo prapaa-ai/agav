@@ -80,6 +80,7 @@ export async function executeNativeAgent(
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<import("../agent/loop.js").ConfirmResult>;
     /** Explicit mode for direct executions such as a full-access agent lock. */
     permissionMode?: PermissionMode;
+    extraBlocks?: import("../agent/conversation.js").ContentBlock[];
   }
 ): Promise<string> {
   const callId = `${agent.manifest.name}-${randomUUID().slice(0, 8)}`;
@@ -136,7 +137,7 @@ export async function executeNativeAgent(
     }
 
     const conversation = new ConversationState();
-    conversation.addUserMessage(task);
+    conversation.addUserMessage(task, deps.extraBlocks);
 
     const base = deps.config.systemPrompt ?? "";
     const systemPrompt = base ? `${base}\n\n${agent.systemPrompt}` : agent.systemPrompt;
@@ -193,10 +194,11 @@ export async function executeNativeAgent(
  */
 export async function executeA2AAgent(
   agent: AgentDefinition,
-  task: string
+  task: string,
+  extraBlocks?: import("../agent/conversation.js").ContentBlock[]
 ): Promise<string> {
   const { executeA2AAgent: a2aExecute } = await import("./a2a-client.js");
 
-  const output = await a2aExecute(agent, task);
+  const output = await a2aExecute(agent, task, undefined, extraBlocks);
   return output;
 }

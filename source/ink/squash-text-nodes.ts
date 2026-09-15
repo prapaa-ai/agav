@@ -20,7 +20,7 @@ const sanitizeAnsi = (text: string): string => {
 	}
 
 	// eslint-disable-next-line no-control-regex
-	const escapeMatcher = /\u001B[[\]P^_X][\s\S]*?(?:[\u0040-\u007E]|\u0007|\u001B\\)|\u001B[@-Z\\-_]/g;
+	const escapeMatcher = /\u001B\[[\s\S]*?[\u0040-\u007E]|\u001B[\]P^_X][\s\S]*?(?:\u0007|\u001B\\)|\u001B[@-Z\\-_]/g;
 
 	let output = "";
 	let lastIndex = 0;

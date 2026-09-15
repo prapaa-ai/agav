@@ -95,7 +95,7 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
     const shell = isWindows ? "cmd.exe" : "/bin/sh";
     const shellArgs = isWindows ? ["/c", block.command] : ["-c", block.command];
     const output = await new Promise<string>((resolve) => {
-      execFile(shell, shellArgs, { timeout: 10_000 }, (_err, stdout) => {
+      execFile(shell, shellArgs, { timeout: 10_000, windowsVerbatimArguments: isWindows }, (_err, stdout) => {
         resolve((stdout ?? "").trim());
       });
     });

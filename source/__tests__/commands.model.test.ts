@@ -216,7 +216,7 @@ describe("commands/model", () => {
     expect(messageText(result)).toContain("Model changed to: deepseek/deepseek-chat-v3.1 (switched to openrouter)");
   });
 
-  it("keeps the direct provider for an OpenRouter slug with the same provider prefix", async () => {
+  it("switches to OpenRouter for an OpenRouter slug even with the same provider prefix", async () => {
     stubFetch([], ["anthropic/claude-sonnet-4.5"]);
 
     const context = createContext({
@@ -226,8 +226,8 @@ describe("commands/model", () => {
     const result = await modelCommand.execute("anthropic/claude-sonnet-4.5", context);
 
     expect(context.setModel).toHaveBeenCalledWith("anthropic/claude-sonnet-4.5");
-    expect(context.setProvider).not.toHaveBeenCalled();
-    expect(messageText(result)).toBe("Model changed to: anthropic/claude-sonnet-4.5");
+    expect(context.setProvider).toHaveBeenCalledWith("openrouter");
+    expect(messageText(result)).toBe("Model changed to: anthropic/claude-sonnet-4.5 (switched to openrouter)");
   });
 
   it("swallows OpenRouter API errors gracefully when fetching models", async () => {

@@ -17,11 +17,12 @@ function globToRegex(glob: string): RegExp {
 }
 
 /** Pure Node.js recursive find implementation for platforms without find. */
-async function nodeFind(searchPath: string, pattern: RegExp): Promise<string[]> {
+async function nodeFind(searchPath: string, pattern: RegExp): Promise<{ results: string[]; truncated: boolean }> {
   const results: string[] = [];
+  let truncated = false;
 
   async function walkDir(dir: string): Promise<void> {
-    if (results.length >= MAX_RESULTS) return;
+    if (truncated) return;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -29,7 +30,7 @@ async function nodeFind(searchPath: string, pattern: RegExp): Promise<string[]> 
       return;
     }
     for (const entry of entries) {
-      if (results.length >= MAX_RESULTS) return;
+      if (truncated) return;
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) {
@@ -37,6 +38,10 @@ async function nodeFind(searchPath: string, pattern: RegExp): Promise<string[]> 
         }
       } else if (entry.isFile()) {
         if (pattern.test(entry.name)) {
+          if (results.length >= MAX_RESULTS) {
+            truncated = true;
+            return;
+          }
           results.push(fullPath);
         }
       }
@@ -44,7 +49,7 @@ async function nodeFind(searchPath: string, pattern: RegExp): Promise<string[]> 
   }
 
   await walkDir(searchPath);
-  return results;
+  return { results, truncated };
 }
 
 /** Run native find and return output. Rejects if find is not found or not Unix find. */
@@ -128,12 +133,12 @@ export const findFilesTool: ToolDefinition = {
     // Node.js fallback (always used on Windows)
     try {
       const regex = globToRegex(pattern);
-      const results = await nodeFind(searchPath, regex);
+      const { results, truncated } = await nodeFind(searchPath, regex);
       if (results.length === 0) {
         return { output: "No files found.", isError: false };
       }
-      const output = results.length >= MAX_RESULTS
-        ? results.join("\n") + `\n... ${results.length - MAX_RESULTS} more files`
+      const output = truncated
+        ? results.join("\n") + `\n... results truncated at ${MAX_RESULTS} files`
         : results.join("\n");
       return { output, isError: false };
     } catch (err) {

@@ -217,7 +217,10 @@ export function normalizeKeyEvent<K extends InkKey>(input: string, key: K): { in
   if (input === "\n") return { input: "j", key: patchKey(key, { ctrl: true }) };
 
   const withoutMouse = stripMouseReports(input);
-  if (withoutMouse !== input) return { input: withoutMouse, key };
+  if (withoutMouse !== input) {
+    if (!withoutMouse) return { input: "", key };
+    return normalizeKeyEvent(withoutMouse, key);
+  }
 
   const otherKey = XTERM_OTHER_KEY_RE.exec(input);
   if (!otherKey) return { input, key };

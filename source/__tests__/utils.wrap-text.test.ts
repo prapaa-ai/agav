@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import wrapText from "../ink/wrap-text.js";
 import { stripAnsi, visualLen, wrapToWidth } from "../utils/wrap-text.js";
 
 /** The invariant the padded background band depends on. */
@@ -76,5 +77,23 @@ describe("stripAnsi", () => {
   it("removes SGR sequences and OSC-8 hyperlinks", () => {
     expect(stripAnsi("\x1b[1mbold\x1b[22m")).toBe("bold");
     expect(visualLen("\x1b]8;;https://example.com\x1b\\link")).toBe(4);
+  });
+});
+
+describe("wrapText (Ink)", () => {
+  it("preserves surrogate pairs and emoji clusters in truncate-start", () => {
+    const text = "hello 🌍 world";
+    expect(wrapText(text, 10, "truncate-start")).toBe("… 🌍 world");
+
+    const emojiCluster = "hello 👨‍👩‍👧‍👦 world";
+    expect(wrapText(emojiCluster, 10, "truncate-start")).toBe("… 👨‍👩‍👧‍👦 world");
+  });
+
+  it("preserves surrogate pairs and emoji clusters in truncate-middle", () => {
+    const text = "start text 🌍 end";
+    expect(wrapText(text, 12, "truncate-middle")).toBe("start…🌍 end");
+
+    const emojiCluster = "start text 👨‍👩‍👧‍👦 end";
+    expect(wrapText(emojiCluster, 12, "truncate-middle")).toBe("start…👨‍👩‍👧‍👦 end");
   });
 });

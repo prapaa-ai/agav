@@ -33,8 +33,13 @@ function validateAgentName(name: string): void {
   }
 }
 
-function validateGitUrl(url: string): void {
+export const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+
+export function validateGitUrl(url: string): void {
   const parsed = new URL(url);
+  if (parsed.protocol !== "https:") {
+    throw new Error(`Untrusted protocol: ${parsed.protocol}. Only HTTPS URLs are allowed.`);
+  }
   const allowed = getAllowedHosts();
   if (!allowed.has(parsed.hostname)) {
     throw new Error(`Untrusted git host: ${parsed.hostname}. Allowed: ${[...allowed].join(", ")}`);
@@ -329,6 +334,12 @@ export async function downloadAgentFiles(
   baseUrl: string,
   files: string[],
 ): Promise<{ success: boolean; path?: string; error?: string }> {
+  try {
+    validateGitUrl(baseUrl);
+  } catch (e) {
+    return { success: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
   if (!files.length) {
     return { success: false, error: "No files to download" };
   }
@@ -344,14 +355,89 @@ export async function downloadAgentFiles(
   try {
     await mkdir(tempDir, { recursive: true });
 
+    const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
+    const MAX_REDIRECTS = 5;
+
     const results = await Promise.allSettled(
       files.map(async (file) => {
-        const url = `${baseUrl}/${file}`;
-        const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${file}`);
+        let currentUrl = `${baseUrl}/${file}`;
+        validateGitUrl(currentUrl);
+
+        let res: Response;
+        let redirectCount = 0;
+
+        while (true) {
+          res = await fetch(currentUrl, {
+            redirect: "manual",
+            signal: AbortSignal.timeout(30_000),
+          });
+
+          if (REDIRECT_STATUS_CODES.has(res.status)) {
+            await res.body?.cancel?.().catch(() => {});
+            if (redirectCount >= MAX_REDIRECTS) {
+              throw new Error(`Too many redirects (exceeded ${MAX_REDIRECTS}) for ${file}`);
+            }
+            const location =
+              typeof res.headers?.get === "function"
+                ? res.headers.get("location")
+                : ((res.headers as unknown as Record<string, string> | undefined)?.["location"] ??
+                   (res.headers as unknown as Record<string, string> | undefined)?.["Location"]);
+            if (!location) {
+              throw new Error(`Redirect response missing Location header for ${file}`);
+            }
+            const resolvedUrl = new URL(location, currentUrl).href;
+            validateGitUrl(resolvedUrl);
+            currentUrl = resolvedUrl;
+            redirectCount++;
+            continue;
+          }
+
+          break;
+        }
+
+        if (!res.ok) {
+          await res.body?.cancel?.().catch(() => {});
+          throw new Error(`${res.status} ${res.statusText} for ${file}`);
+        }
+
+        const contentLength = res.headers?.get?.("content-length");
+        if (contentLength) {
+          const parsedLength = parseInt(contentLength, 10);
+          if (!Number.isNaN(parsedLength) && parsedLength > MAX_FILE_SIZE) {
+            await res.body?.cancel?.().catch(() => {});
+            throw new Error(`File "${file}" exceeds maximum size limit of ${MAX_FILE_SIZE} bytes`);
+          }
+        }
+
         const destPath = join(tempDir, ...file.split("/"));
         await mkdir(dirname(destPath), { recursive: true });
-        const buffer = Buffer.from(await res.arrayBuffer());
+
+        let buffer: Buffer;
+        if (res.body && typeof res.body.getReader === "function") {
+          const reader = res.body.getReader();
+          const chunks: Uint8Array[] = [];
+          let totalBytes = 0;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) {
+              totalBytes += value.byteLength;
+              if (totalBytes > MAX_FILE_SIZE) {
+                await reader.cancel().catch(() => {});
+                throw new Error(`File "${file}" exceeds maximum size limit of ${MAX_FILE_SIZE} bytes`);
+              }
+              chunks.push(value);
+            }
+          }
+          buffer = Buffer.concat(chunks);
+        } else {
+          const arrayBuffer = await res.arrayBuffer();
+          if (arrayBuffer.byteLength > MAX_FILE_SIZE) {
+            throw new Error(`File "${file}" exceeds maximum size limit of ${MAX_FILE_SIZE} bytes`);
+          }
+          buffer = Buffer.from(arrayBuffer);
+        }
+
         await writeFile(destPath, buffer);
       }),
     );

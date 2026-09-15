@@ -84,6 +84,7 @@ export async function executeTargetedAgent(
     onProgressUpdate?: (callId: string, event: AgentEvent) => void;
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<any>;
     permissionMode?: import("../config/config.js").PermissionMode;
+    extraBlocks?: import("../agent/conversation.js").ContentBlock[];
   },
 ): Promise<AgentTargetResult> {
   const { executeNativeAgent, executeA2AAgent } = await import("./executor.js");
@@ -95,7 +96,7 @@ export async function executeTargetedAgent(
     if (agentType === "native") {
       output = await executeNativeAgent(agent, query, deps);
     } else if (agentType === "a2a") {
-      output = await executeA2AAgent(agent, query);
+      output = await executeA2AAgent(agent, query, deps.extraBlocks);
     } else {
       return { output: `Unknown agent type: ${agentType}`, isError: true, agentName };
     }
