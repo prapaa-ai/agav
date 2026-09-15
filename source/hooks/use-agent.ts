@@ -146,6 +146,8 @@ interface UseAgentReturn {
   loadSession: (session: SessionRecord) => void;
   activateSession: (id: string, name?: string) => void;
   renameSession: (name: string) => void;
+  isGenerationPaused: boolean;
+  togglePause: () => void;
   sessionId: string | undefined;
   sessionName: string | undefined;
   transcriptRevision: number;
@@ -254,6 +256,26 @@ export function useAgent(
   const toolRegistryRef = useRef(createToolRegistry());
   const mcpManagerRef = useRef(new MCPManager());
   const abortRef = useRef<AbortController | null>(null);
+  
+  const isPausedRef = useRef(false);
+  const pausePromiseRef = useRef<{ promise: Promise<void>; resolve: () => void } | null>(null);
+  const [isGenerationPaused, setIsGenerationPaused] = useState(false);
+
+  const togglePause = useCallback(() => {
+    if (isPausedRef.current) {
+      isPausedRef.current = false;
+      setIsGenerationPaused(false);
+      pausePromiseRef.current?.resolve();
+      pausePromiseRef.current = null;
+    } else {
+      isPausedRef.current = true;
+      setIsGenerationPaused(true);
+      let r!: () => void;
+      const p = new Promise<void>((resolve) => { r = resolve; });
+      pausePromiseRef.current = { promise: p, resolve: r };
+    }
+  }, []);
+
   const submitPendingRef = useRef(false);
   const configRef = useRef(config);
   configRef.current = config;
@@ -704,6 +726,7 @@ export function useAgent(
               maxTokens: config.maxTokens,
               signal: abortController.signal,
             })) {
+              if (pausePromiseRef.current) await pausePromiseRef.current.promise;
               if (event.type === "text_delta") planJson += event.text;
               if (event.type === "usage") {
                 setTokenUsage((prev) => ({
@@ -800,6 +823,7 @@ export function useAgent(
           });
 
           for await (const event of loop) {
+            if (pausePromiseRef.current) await pausePromiseRef.current.promise;
             switch (event.type) {
               case "thinking":
                 currentThinking += event.text;
@@ -1245,6 +1269,8 @@ export function useAgent(
     mcpPromptCount,
     subagentStates,
     activePlan,
+    isGenerationPaused,
+    togglePause,
     refreshPlan,
     submit,
     submitToAgent,

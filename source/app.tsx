@@ -187,6 +187,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     sessionName,
     turnStartTime,
     lastTurnDurationMs,
+    isGenerationPaused,
+    togglePause,
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
   /**
@@ -549,6 +551,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         return;
       }
     }
+    
+    if (key.ctrl && char === "p" && isLoading && !pendingConfirmation) {
+      togglePause();
+      return;
+    }
+
     const match = keyResolverRef.current.feed(char, key);
     if (match.action === "interrupt" && isLoading && !pendingConfirmation) {
       cancel();
@@ -1040,7 +1048,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               }
               return null;
             })()}
-            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} />
+            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} isPaused={isGenerationPaused} />
             {hasSubagents && (
               <Text dimColor>{"\n  "}↑↓: select · Enter: inspect · {formatKeybinding(keybindings, "cancel")}: cancel all</Text>
             )}
@@ -1158,6 +1166,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       )}
 
       <StatusBar
+        isPaused={isGenerationPaused || !!pendingConfirmation}
         model={config.model}
         provider={config.provider}
         effort={config.effort}
@@ -1175,7 +1184,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         turnStartTime={turnStartTime}
         lastTurnDurationMs={lastTurnDurationMs}
         isLoading={isLoading}
-        isPaused={!!pendingConfirmation}
         agentLock={agentLockState ?? undefined}
       />
       </Box>
