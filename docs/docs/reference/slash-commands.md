@@ -66,7 +66,7 @@ Most slash commands run when Agav is idle. These commands can also run while Aga
 
 | Command | Purpose |
 | --- | --- |
-| `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor. `[2]` Marketplace tab browses, searches, and installs community agents. `[3]` Create tab lists user-created agents and templates, and opens a 4-step wizard to create or edit agents. |
+| `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor, including native-tool selection for editable native agents. `[2]` Marketplace tab browses, searches, and installs community agents. `[3]` Create tab lists user-created agents and templates, and opens a 5-step wizard to create or edit agents. |
 
 ## Diagnostics and exit
 
