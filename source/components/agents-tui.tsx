@@ -1,12 +1,16 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Box, Text, ScrollBox, useInput, usePaste, useStdout, measureElement } from "../ink/index.js";
 import type { DOMElement, ScrollBoxControls } from "../ink/index.js";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { join } from "node:path";
+import { parse as yamlParse, stringify as yamlStringify } from "yaml";
 import { loadAgents } from "../agents/loader.js";
 import { setAgentEnabled, loadRegistry } from "../agents/agent-registry.js";
 import type { AgentRegistryEntry } from "../agents/types.js";
 import { deleteAgentWithTemplate } from "../agents/agent-lifecycle.js";
 import { loadAgentConfig, saveAgentConfig } from "../agents/credentials.js";
+import { createToolRegistry } from "../tools/registry-factory.js";
 import { implementAgentTools } from "../agents/tool-gen.js";
 import { wheelSelect, stepIndex } from "./wheel-select.js";
 import type { AgentDefinition } from "../agents/types.js";
@@ -41,7 +45,12 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   const [configPickerActive, setConfigPickerActive] = useState(false);
   const [configPickerItems, setConfigPickerItems]   = useState<string[]>([]);
   const [configPickerIndex, setConfigPickerIndex]   = useState(0);
+  const [nativeToolNames, setNativeToolNames]       = useState<Set<string>>(new Set());
+  const [nativeToolsIndex, setNativeToolsIndex]     = useState(0);
+  const [nativeToolsEditing, setNativeToolsEditing] = useState(false);
   const [runtimeConfigs, setRuntimeConfigs]       = useState<Record<string, Record<string, string>>>({});
+
+  const nativeTools = createToolRegistry().list();
 
   const [configEntryPoint, setConfigEntryPoint]   = useState<"list" | "inspect">("inspect");
   const [marketplaceBusy, setMarketplaceBusy]     = useState(false);
@@ -141,6 +150,22 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     loadRegistry().then((reg) => setRegistryEntries(reg.agents));
   };
 
+  const saveNativeTools = async (agent: AgentDefinition, names: Set<string>) => {
+    const manifestPath = join(agent.path, "AGENT.md");
+    const content = await readFile(manifestPath, "utf-8");
+    const match = content.match(/^(---\r?\n)([\s\S]*?)(\r?\n---\r?\n)([\s\S]*)$/);
+    if (!match) throw new Error("Invalid AGENT.md format: missing YAML frontmatter");
+
+    const manifest = yamlParse(match[2]) as Record<string, unknown>;
+    if (names.size > 0) manifest["native-tools"] = [...names];
+    else delete manifest["native-tools"];
+
+    const updated = `${match[1]}${yamlStringify(manifest)}---\n${match[4]}`;
+    const tempPath = `${manifestPath}.${randomBytes(4).toString("hex")}.tmp`;
+    await writeFile(tempPath, updated, "utf-8");
+    await rename(tempPath, manifestPath);
+  };
+
   const enterConfigView = async (agent: AgentDefinition, from: "list" | "inspect") => {
     const agentKey = agent.alias || agent.manifest.name;
     const existingConfig = await loadAgentConfig(resolveConfigDir(agent));
@@ -149,6 +174,9 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     setConfigEditKey("");
     setConfigEditBuffer("");
     setConfigEditing(false);
+    setNativeToolNames(new Set(agent.manifest["native-tools"] ?? []));
+    setNativeToolsIndex(0);
+    setNativeToolsEditing(false);
     setConfigSavedKeys({});
     setConfigError(null);
     setConfigEntryPoint(from);
@@ -173,7 +201,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   const filteredAgents = filterInstalledAgents(agents, listSearch);
 
   useInput(async (input, key) => {
-    const isEditingConfig = listView === "config" && (configEditing || configPickerActive);
+    const isEditingConfig = listView === "config" && (configEditing || configPickerActive || nativeToolsEditing);
     if (!listSearching && !isEditingConfig && !marketplaceBusy && !createBusy && (input === "1" || input === "2" || input === "3")) {
       setRemoveStatus(null);
       scrollControls.current?.scrollToBottom();
@@ -276,7 +304,34 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           }
         };
 
-        if (configPickerActive) {
+        if (nativeToolsEditing) {
+          if (key.escape) {
+            setNativeToolsEditing(false); setConfigError(null);
+          } else if (key.upArrow) {
+            setNativeToolsIndex((i) => Math.max(0, i - 1));
+          } else if (key.downArrow) {
+            setNativeToolsIndex((i) => Math.min(nativeTools.length - 1, i + 1));
+          } else if (input === " ") {
+            const tool = nativeTools[nativeToolsIndex];
+            if (tool) {
+              setNativeToolNames((prev) => {
+                const next = new Set(prev);
+                if (next.has(tool.schema.name)) next.delete(tool.schema.name);
+                else next.add(tool.schema.name);
+                return next;
+              });
+            }
+          } else if (key.return) {
+            try {
+              await saveNativeTools(agent, nativeToolNames);
+              setConfigSavedKeys((prev) => ({ ...prev, "native-tools": "saved" }));
+              setNativeToolsEditing(false);
+              await reloadAgents();
+            } catch (err) {
+              setConfigError(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        } else if (configPickerActive) {
           if (key.escape) {
             setConfigPickerActive(false); setConfigError(null);
           } else if (key.upArrow) {
@@ -317,7 +372,10 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
             setConfigEditBuffer(existingConfig[selectedItem.key] ?? "");
             setConfigError(null);
 
-            if (selectedItem.key === "model") {
+            if (selectedItem.type === "native-tools") {
+              setNativeToolsIndex(0);
+              setNativeToolsEditing(true);
+            } else if (selectedItem.key === "model") {
               const modelItems: string[] = [];
               const fetches: Promise<string[]>[] = [];
               if (config?.anthropicApiKey) {
@@ -472,6 +530,9 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           pickerActive={configPickerActive}
           pickerItems={configPickerItems}
           pickerIndex={configPickerIndex}
+          nativeToolNames={nativeToolNames}
+          nativeToolsIndex={nativeToolsIndex}
+          nativeToolsEditing={nativeToolsEditing}
         />
       )}
       {activeTab === "marketplace" && (
@@ -517,7 +578,9 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
         )}
         {activeTab === "list" && listView === "config" && (
           <Text dimColor>
-            {configPickerActive
+            {nativeToolsEditing
+              ? "↑↓: Navigate | SPACE: Toggle | ENTER: Save | ESC: Cancel"
+              : configPickerActive
               ? "↑↓: Navigate | ENTER: Select | ESC: Cancel"
               : configEditing
               ? "Type value | DEL: Clear | ENTER: Save | ESC: Cancel"

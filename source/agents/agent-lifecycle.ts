@@ -24,6 +24,7 @@ export async function deleteAgentWithTemplate(
         description: agent.manifest.description,
         systemPrompt: agent.systemPrompt,
         mcpServers: agent.manifest["mcp-servers"],
+        nativeTools: agent.manifest["native-tools"],
         tags: agent.manifest.tags,
         savedAt: new Date().toISOString(),
       });

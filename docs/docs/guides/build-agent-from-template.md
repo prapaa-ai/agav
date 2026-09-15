@@ -1,13 +1,13 @@
 ---
 title: Create an Agent with the Wizard
-description: Use the built-in wizard to create a custom agent with LLM-generated system prompts and workspace MCP servers
+description: Use the built-in wizard to create a custom agent with system prompts, native tools, and workspace MCP servers
 guideLevel: beginner
 order: 12
 ---
 
 # Create an Agent with the Wizard
 
-The agent creation wizard lets you build a custom agent in four guided steps — name it, generate a system prompt with your LLM, attach MCP servers, and save. Agav writes the `AGENT.md` manifest for you and registers the agent immediately.
+The agent creation wizard lets you build a custom agent in five guided steps — name it, generate a system prompt with your LLM, select built-in native tools, attach MCP servers, and save. Agav writes the `AGENT.md` manifest for you and registers the agent immediately.
 
 This guide walks through creating a `github-helper` agent from scratch, then covers editing existing agents and working with templates.
 
@@ -29,10 +29,10 @@ If you haven't created any agents yet, the list will be empty except for the `[+
 
 ## Step 2: Start the wizard
 
-Navigate to `[+ New Agent]` and press `ENTER` to launch the four-step creation wizard. A progress bar at the top tracks your position through the flow:
+Navigate to `[+ New Agent]` and press `ENTER` to launch the five-step creation wizard. A progress bar at the top tracks your position through the flow:
 
 ```
-Name & Description → System Prompt → MCP Servers → Review & Save
+Name & Description → System Prompt → Native Tools → MCP Servers → Review & Save
 ```
 
 You can press `b` or `ESC` at any step to go back to the previous one without losing your input.
@@ -71,7 +71,16 @@ If the prompt doesn't match what you need, press `r` to regenerate it. You can r
 
 When you're satisfied, press `ENTER` to accept the prompt and continue.
 
-## Step 5: Select MCP servers (optional)
+## Step 5: Select native tools (optional)
+
+This step lists Agav's built-in tools. Choose only the tools this agent needs:
+
+- Press `↑` / `↓` to navigate the list
+- Press `SPACE` to toggle a tool on or off
+
+The selected names are written to the agent's `native-tools` manifest allowlist. If you leave every tool unchecked, the agent still has access to its own local tools and selected MCP servers, but not Agav's built-in tools.
+
+## Step 6: Select MCP servers (optional)
 
 This step shows a list of MCP servers defined in your workspace `config.json`. Each server appears with a checkbox.
 
@@ -82,7 +91,7 @@ Selected servers are bundled into the agent's manifest, making them available wh
 
 If you don't need any MCP servers, or none are configured in your workspace, press `ENTER` to skip this step and continue.
 
-## Step 6: Review and save
+## Step 7: Review and save
 
 The final step shows a summary of everything you've configured:
 
@@ -90,6 +99,7 @@ The final step shows a summary of everything you've configured:
 - **Description** — "Helps with GitHub repository management tasks"
 - **Destination path** — where `AGENT.md` will be written
 - **System prompt preview** — the generated prompt text
+- **Native tools** — the built-in Agav tools you selected
 - **MCP servers** — any servers you selected
 - **Tags** — auto-generated from your name and description
 
@@ -113,9 +123,10 @@ During edits:
 - **Name** is read-only — you cannot rename an agent after creation
 - **Description** can be updated freely
 - **System prompt** can be regenerated with `r` or accepted as-is
+- **Native tools** can be added or removed
 - **MCP servers** can be added or removed
 
-The same four-step flow applies. Press `ENTER` on the final review step to save your changes.
+The same five-step flow applies. Press `ENTER` on the final review step to save your changes.
 
 ## Working with templates
 

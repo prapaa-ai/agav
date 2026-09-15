@@ -3,6 +3,9 @@ import { Box, Text } from "../ink/index.js";
 import type { AgentDefinition, MarketplaceAgent } from "../agents/types.js";
 import type { AgentReadiness, ConfigItem } from "./agents-types.js";
 import { resolveConfigPath, parseFileUrl } from "./agents-types.js";
+import { createToolRegistry } from "../tools/registry-factory.js";
+
+const NATIVE_TOOLS = createToolRegistry().list().map((tool) => tool.schema);
 
 export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sessionModel, sessionEffort, sessionProvider }: {
   agent: AgentDefinition;
@@ -174,6 +177,9 @@ export function ConfigEditView({
   pickerActive,
   pickerItems,
   pickerIndex,
+  nativeToolNames,
+  nativeToolsIndex,
+  nativeToolsEditing,
 }: {
   agent: AgentDefinition;
   items: ConfigItem[];
@@ -188,6 +194,9 @@ export function ConfigEditView({
   pickerActive?: boolean;
   pickerItems?: string[];
   pickerIndex?: number;
+  nativeToolNames?: Set<string>;
+  nativeToolsIndex?: number;
+  nativeToolsEditing?: boolean;
 }) {
   const configPath = resolveConfigPath(agent);
 
@@ -259,6 +268,7 @@ export function ConfigEditView({
         {items.map((item, idx) => {
           const isSelected = idx === editIndex;
           const isEditingThis = isEditing && editKey === item.key;
+          const isNativeTools = item.type === "native-tools";
 
           let valueNode: React.ReactNode;
           if (isEditingThis) {
@@ -269,6 +279,8 @@ export function ConfigEditView({
                 <Text color="cyan">█</Text>
               </Box>
             );
+          } else if (isNativeTools) {
+            valueNode = <Text color="green">{nativeToolNames?.size ?? 0} selected</Text>;
           } else if (item.key === "model" || item.key === "effort") {
             const val = savedKeys[item.key] !== undefined ? savedKeys[item.key] : runtimeConfig[item.key];
             valueNode = val
@@ -294,6 +306,9 @@ export function ConfigEditView({
                 {valueNode}
               </Box>
               {isSelected && (item.key === "model" || item.key === "effort") && renderPicker()}
+              {isSelected && isNativeTools && nativeToolsEditing && (
+                <NativeToolsEditor selectedNames={nativeToolNames ?? new Set()} scrollIndex={nativeToolsIndex ?? 0} />
+              )}
             </Box>
           );
         })}
@@ -304,6 +319,34 @@ export function ConfigEditView({
           <Text color="red">{error}</Text>
         </Box>
       )}
+    </Box>
+  );
+}
+
+function NativeToolsEditor({ selectedNames, scrollIndex }: { selectedNames: Set<string>; scrollIndex: number }) {
+  const maxVisible = 8;
+  const scrollStart = Math.max(0, Math.min(scrollIndex - Math.floor(maxVisible / 2), NATIVE_TOOLS.length - maxVisible));
+  const visibleTools = NATIVE_TOOLS.slice(scrollStart, scrollStart + maxVisible);
+
+  return (
+    <Box flexDirection="column" marginLeft={2} marginBottom={1}>
+      <Text dimColor>Choose the built-in Agav tools this agent can use</Text>
+      <Text dimColor>{NATIVE_TOOLS.length} tool(s) available — {selectedNames.size} selected</Text>
+      {visibleTools.map((tool, visibleIndex) => {
+        const index = scrollStart + visibleIndex;
+        const selected = selectedNames.has(tool.name);
+        const isCursor = index === scrollIndex;
+        return (
+          <Box key={tool.name}>
+            <Text color={isCursor ? "cyan" : undefined} bold={isCursor}>
+              {isCursor ? "› " : "  "}{selected ? "[x]" : "[ ]"} {tool.name}
+            </Text>
+            <Text dimColor> — {tool.description}</Text>
+          </Box>
+        );
+      })}
+      {NATIVE_TOOLS.length > maxVisible && <Text dimColor>{scrollStart + 1}-{Math.min(scrollStart + maxVisible, NATIVE_TOOLS.length)} of {NATIVE_TOOLS.length}</Text>}
+      <Text dimColor>SPACE: Toggle | ENTER: Save | ESC: Cancel</Text>
     </Box>
   );
 }
