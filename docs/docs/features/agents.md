@@ -46,12 +46,13 @@ The **Create** tab opens a "My Agents" hub that lists your user-created agents a
 
 ### Wizard flow
 
-Selecting **New Agent** launches a four-step wizard:
+Selecting **New Agent** launches a five-step wizard:
 
 1. **Name & Description** — pick a unique agent name and a short description of what it does.
 2. **System Prompt** — write the agent's system prompt, or press `g` to auto-generate one. The LLM uses your name and description to draft a prompt you can edit before continuing.
-3. **MCP Servers** — select which MCP servers the agent should have access to. The list is populated from your workspace config (`mcpServers` in `.agav/config.json` or `~/.agav/config.json`).
-4. **Review & Save** — preview the full agent definition and confirm. The agent is saved to `~/.agav/agents/<name>/` and immediately available for use.
+3. **Native Tools** — select the built-in Agav tools the agent can use. This creates the manifest's `native-tools` allowlist; leave every option unchecked if the agent should use only its local and MCP tools.
+4. **MCP Servers** — select which MCP servers the agent should have access to. The list is populated from your workspace config (`mcpServers` in `.agav/config.json` or `~/.agav/config.json`).
+5. **Review & Save** — preview the full agent definition and confirm. The agent is saved to `~/.agav/agents/<name>/` and immediately available for use.
 
 ## Templates
 
@@ -86,6 +87,10 @@ Every tool in an agent is classified as either `safe` (read-only) or `destructiv
 - **Destructive tools** pause and display a `[Y]es / [N]o / [A]lways` confirmation before executing.
 
 The classification is declared in the agent manifest (`tool-permissions`) and is visible in the inspect view.
+
+## Native tool access
+
+Native agents do not automatically receive Agav's built-in tools. Select the tools they need during creation, or open `/agents → List → inspect → e` and edit **Native Tools**. The chosen tools are written to the agent's `native-tools` manifest allowlist. Leaving the list empty keeps built-in tools unavailable while preserving agent-local and declared MCP tools. Bundled and A2A agents cannot edit this setting.
 
 ### Agent sandbox
 
