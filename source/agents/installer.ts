@@ -202,6 +202,88 @@ export async function installAgent(
   }
 }
 
+export interface ParsedGitUrl {
+  repoUrl: string;
+  branch?: string;
+  subPath?: string;
+}
+
+/**
+ * Parses a git repository URL into repoUrl, optional branch, and optional subPath.
+ *
+ * Branch vs. path ambiguity:
+ * Git URLs with `/tree/<path>` (e.g. GitHub/GitLab) do not structurally distinguish between
+ * multi-segment branch names and directory paths. A full resolution requires querying remote refs.
+ *
+ * Without querying remote refs, we apply the following heuristics:
+ * 1. If `/tree/<path>` contains an agent marker (`/agents/`, `agents/`, or `/AGENT.md`),
+ *    everything before the marker is treated as the branch (supporting slashed branches
+ *    like `feature/my-agent`), and the marker onward is the subPath.
+ *    (e.g., `/tree/main/subdir/agents/foo` parses as `branch: "main/subdir"`, `subPath: "/agents/foo"`).
+ * 2. If no agent marker is present, the first segment after `/tree/` is treated as the branch,
+ *    and any remaining segments are treated as the custom subPath
+ *    (e.g., `/tree/main/tools/foo` -> `branch: "main"`, `subPath: "/tools/foo"`).
+ * 3. For URLs without `/tree/`, any path following `:owner/:repo` is treated as a subPath
+ *    on the default branch (e.g., `/agents/foo` -> `subPath: "/agents/foo"`).
+ */
+export function parseGitAgentUrl(url: string): ParsedGitUrl | null {
+  const repoMatch = url.match(/^(https?:\/\/[^\/]+\/[^\/]+\/[^\/]+?)(?:\.git)?(\/.*)?$/);
+  if (!repoMatch) {
+    return null;
+  }
+
+  const repoUrl = repoMatch[1]!;
+  const rest = repoMatch[2] || "";
+
+  if (!rest || rest === "/") {
+    return { repoUrl };
+  }
+
+  // Check for /tree/ (GitHub), /-/tree/ (GitLab), or /blob/
+  const treeMatch = rest.match(/^(?:\/-\/tree\/|\/tree\/|\/blob\/)(.+)$/);
+  if (treeMatch) {
+    const afterTree = treeMatch[1]!.replace(/\/+$/, "");
+    if (!afterTree) {
+      return { repoUrl };
+    }
+
+    // Heuristic 1: Look for /agents/ or /AGENT.md markers for slashed branches
+    const markerMatch = afterTree.match(/^(.*?)(?:\/|^)(agents(?:\/.*)?|AGENT\.md)$/);
+    if (markerMatch) {
+      const branchPart = markerMatch[1];
+      const subPathPart = markerMatch[2];
+      return {
+        repoUrl,
+        branch: branchPart ? branchPart : undefined,
+        subPath: "/" + subPathPart,
+      };
+    }
+
+    // Heuristic 2: Custom subdirectory without agent markers.
+    // The first segment is the branch, remaining segments are the subPath.
+    const firstSlash = afterTree.indexOf("/");
+    if (firstSlash === -1) {
+      return {
+        repoUrl,
+        branch: afterTree,
+      };
+    }
+
+    return {
+      repoUrl,
+      branch: afterTree.slice(0, firstSlash),
+      subPath: afterTree.slice(firstSlash),
+    };
+  }
+
+  // Heuristic 3: Bare subdirectory without /tree/
+  const cleanSubPath = rest.replace(/\/+$/, "");
+  return {
+    repoUrl,
+    subPath: cleanSubPath,
+  };
+}
+
 /**
  * Clone agent from git URL using sparse checkout
  */
@@ -212,22 +294,27 @@ async function cloneAgent(url: string): Promise<{ success: boolean; path?: strin
     return { success: false, error: e instanceof Error ? e.message : String(e) };
   }
 
+  const parsed = parseGitAgentUrl(url);
+  if (!parsed) {
+    return { success: false, error: "Invalid git URL format" };
+  }
+
   const tempDir = join(tmpdir(), `agav-agent-${randomBytes(8).toString("hex")}`);
 
   try {
     await mkdir(tempDir, { recursive: true });
 
-    const isSubdirectory = url.includes("/tree/") || url.includes("/agents/");
+    const { repoUrl, branch, subPath } = parsed;
+    const isSubdirectory = Boolean(subPath && subPath.length > 1);
 
     if (isSubdirectory) {
-      const match = url.match(/^(https?:\/\/[^\/]+\/[^\/]+\/[^\/]+)(?:\/tree\/[^\/]+)?(\/.+)$/);
-      if (!match) {
-        return { success: false, error: "Invalid git URL format" };
+      const cloneArgs = ["clone", "--depth=1", "--filter=blob:none", "--sparse"];
+      if (branch) {
+        cloneArgs.push("--branch", branch);
       }
+      cloneArgs.push(repoUrl, ".");
 
-      const [, repoUrl, subPath] = match;
-
-      await gitExec(["clone", "--depth=1", "--filter=blob:none", "--sparse", repoUrl!, "."], tempDir);
+      await gitExec(cloneArgs, tempDir);
       await gitExec(["sparse-checkout", "set", subPath!.slice(1)], tempDir);
 
       // Copy agent out of the clone, then clean up (avoids dragging .git into the install)
@@ -242,7 +329,12 @@ async function cloneAgent(url: string): Promise<{ success: boolean; path?: strin
       await rm(tempDir, { recursive: true, force: true }).catch(() => {});
       return { success: true, path: outDir };
     } else {
-      await gitExec(["clone", "--depth=1", url, "."], tempDir);
+      const cloneArgs = ["clone", "--depth=1"];
+      if (branch) {
+        cloneArgs.push("--branch", branch);
+      }
+      cloneArgs.push(repoUrl, ".");
+      await gitExec(cloneArgs, tempDir);
 
       const entries = await readdir(tempDir);
       if (entries.includes("AGENT.md")) {

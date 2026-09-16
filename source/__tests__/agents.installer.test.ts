@@ -29,11 +29,73 @@ import { execFile } from "node:child_process";
 import { stat, readFile, cp, mkdir } from "node:fs/promises";
 import { registerAgent } from "../agents/agent-registry.js";
 import { loadAgent } from "../agents/loader.js";
-import { installAgent, uninstallAgent } from "../agents/installer.js";
+import { installAgent, uninstallAgent, parseGitAgentUrl } from "../agents/installer.js";
 
 describe("agents/installer", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe("parseGitAgentUrl", () => {
+    it("parses single-segment branch with agents subdirectory", () => {
+      const parsed = parseGitAgentUrl("https://github.com/owner/repo/tree/main/agents/my-agent");
+      expect(parsed).toEqual({
+        repoUrl: "https://github.com/owner/repo",
+        branch: "main",
+        subPath: "/agents/my-agent",
+      });
+    });
+
+    it("parses slashed branch with agents subdirectory", () => {
+      const parsed = parseGitAgentUrl("https://github.com/owner/repo/tree/feature/cool-agent/agents/my-agent");
+      expect(parsed).toEqual({
+        repoUrl: "https://github.com/owner/repo",
+        branch: "feature/cool-agent",
+        subPath: "/agents/my-agent",
+      });
+    });
+
+    it("parses slashed branch ending in AGENT.md", () => {
+      const parsed = parseGitAgentUrl("https://github.com/owner/repo/tree/feature/cool-agent/AGENT.md");
+      expect(parsed).toEqual({
+        repoUrl: "https://github.com/owner/repo",
+        branch: "feature/cool-agent",
+        subPath: "/AGENT.md",
+      });
+    });
+
+    it("parses single-segment branch with custom (non-agents) subdirectory", () => {
+      const parsed = parseGitAgentUrl("https://github.com/owner/repo/tree/main/tools/foo");
+      expect(parsed).toEqual({
+        repoUrl: "https://github.com/owner/repo",
+        branch: "main",
+        subPath: "/tools/foo",
+      });
+    });
+
+    it("parses bare /agents/ URL without /tree/", () => {
+      const parsed = parseGitAgentUrl("https://github.com/owner/repo/agents/my-agent");
+      expect(parsed).toEqual({
+        repoUrl: "https://github.com/owner/repo",
+        branch: undefined,
+        subPath: "/agents/my-agent",
+      });
+    });
+
+    it("parses bare repo URL", () => {
+      const parsed = parseGitAgentUrl("https://github.com/owner/repo");
+      expect(parsed).toEqual({
+        repoUrl: "https://github.com/owner/repo",
+      });
+    });
+
+    it("parses repo URL with only branch in /tree/", () => {
+      const parsed = parseGitAgentUrl("https://github.com/owner/repo/tree/main");
+      expect(parsed).toEqual({
+        repoUrl: "https://github.com/owner/repo",
+        branch: "main",
+      });
+    });
   });
 
   describe("subPath traversal in sparse-checkout URLs", () => {
