@@ -1,6 +1,7 @@
-import type { AgavConfig } from "./config.js";
+import { type AgavConfig } from "./config.js";
 import type { SessionRecord } from "./history.js";
 import { agavHomePath, examplePath, setEnvHint } from "../utils/shell-hints.js";
+import { listSessions } from "./history.js";
 
 export type ProviderName = AgavConfig["provider"];
 
@@ -43,10 +44,10 @@ interface StartupSelectionOptions {
 }
 
 /** Resolve provider/model precedence before validating any provider credentials. */
-export function resolveStartupSelection(
+export async function resolveStartupSelection(
   config: AgavConfig,
   options: StartupSelectionOptions,
-): AgavConfig {
+): Promise<AgavConfig> {
   const result = { ...config };
   const sessionProvider = isProviderName(options.session?.provider)
     ? options.session.provider
@@ -78,6 +79,13 @@ export function resolveStartupSelection(
     result.model = options.cliModel ?? (options.session.model || defaultModelForProvider(sessionProvider));
   } else if (options.cliModel !== undefined) {
     result.model = options.cliModel;
+  } else {
+    const recentSessions = (await listSessions()) || [];
+    const lastSession = recentSessions.length ? recentSessions[0] : undefined
+    if (lastSession && isProviderName(lastSession.provider)) {
+      result.provider = lastSession.provider;
+      result.model = lastSession.model;
+    }
   }
 
   return result;
