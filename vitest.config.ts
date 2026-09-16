@@ -3,6 +3,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["source/**/*.test.ts", "source/**/__tests__/**/*.test.ts"],
+    maxConcurrency: 1,
+    sequence: { concurrent: false },
     // Bound the worker pool. Vitest defaults to one fork per CPU core, and each
     // fork is a full Node process that can reserve a multi-GB V8 heap. On a
     // high-core dev machine that meant ~10 heavy processes; interrupted or
