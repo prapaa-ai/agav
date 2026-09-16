@@ -87,6 +87,13 @@ describe("FallbackMeshProvider & Model Tier Mapping", () => {
         expect(isRecoverableProviderError(err400)).toBe(true);
       });
 
+      it("recognizes Gemini 400 thought_signature missing error as recoverable", () => {
+        const err400 = new Error(
+          'Gemini API error 400: {"error":{"code":400,"message":"Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly...","status":"INVALID_ARGUMENT"}}',
+        );
+        expect(isRecoverableProviderError(err400)).toBe(true);
+      });
+
       it("recognizes 429 rate limit / quota exhaustion as recoverable", () => {
         const err429 = { status: 429, message: "Rate limit exceeded" };
         expect(isRecoverableProviderError(err429)).toBe(true);
@@ -324,6 +331,64 @@ describe("FallbackMeshProvider & Model Tier Mapping", () => {
         .map((e) => (e as any).text)
         .join("");
       expect(texts).toContain("Successfully recovered on NVIDIA NIM!");
+      expect(mesh.getActiveServingProvider()).toBe("nvidia");
+    });
+
+    it("automatically cascades from Gemini HTTP 400 thought_signature error to next healthy provider", async () => {
+      const keyPool = KeyPoolManager.getInstance();
+      keyPool.registerKeys("gemini", ["gem-1"]);
+      keyPool.registerKeys("nvidia", ["nv-1"]);
+
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const config: AgavConfig = {
+        provider: "gemini",
+        model: "gemini-flash-lite-latest",
+        effort: "medium",
+        maxTokens: 1024,
+        maxIterations: 10,
+        errorRetries: 3,
+        permissionMode: "ask",
+        geminiApiKey: "gem-1",
+        nvidiaApiKey: "nv-1",
+      };
+
+      const attempts: string[] = [];
+      const mockFactory = (provider: string): LLMProvider | null => {
+        if (provider === "gemini") {
+          return createMockProvider("gemini", async function* () {
+            attempts.push("gemini");
+            const err = new Error(
+              'Gemini API error 400: {"error":{"code":400,"message":"Function call is missing a thought_signature in functionCall parts. This is required for tools to work correctly...","status":"INVALID_ARGUMENT"}}',
+            );
+            throw err;
+          });
+        }
+        if (provider === "nvidia") {
+          return createMockProvider("nvidia", async function* () {
+            attempts.push("nvidia");
+            yield { type: "text_delta", text: "Successfully recovered from 400 via NVIDIA NIM!" };
+          });
+        }
+        return null;
+      };
+
+      const mesh = new FallbackMeshProvider(config, keyPool, {
+        customFactory: mockFactory,
+        customFallbackOrder: ["nvidia"],
+      });
+
+      const events: StreamEvent[] = [];
+      for await (const ev of mesh.stream(dummyParams)) {
+        events.push(ev);
+      }
+
+      expect(attempts).toEqual(["gemini", "nvidia"]);
+      const texts = events
+        .filter((e) => e.type === "text_delta")
+        .map((e) => (e as any).text)
+        .join("");
+      expect(texts).toContain("Successfully recovered from 400 via NVIDIA NIM!");
       expect(mesh.getActiveServingProvider()).toBe("nvidia");
     });
 

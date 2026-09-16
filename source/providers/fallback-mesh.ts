@@ -99,6 +99,17 @@ export function isRecoverableProviderError(err: unknown): boolean {
       msg.includes("incorrect api key") ||
       msg.includes("tool calling is not supported") ||
       (msg.includes("tool") && msg.includes("not supported")) ||
+      msg.includes("thought_signature") ||
+      msg.includes("thought signature") ||
+      msg.includes("invalid_argument") ||
+      msg.includes("gemini api error") ||
+      msg.includes("api error 400") ||
+      msg.includes("api error 404") ||
+      msg.includes("api error 401") ||
+      msg.includes("api error 403") ||
+      msg.includes("api error 500") ||
+      msg.includes("api error 502") ||
+      msg.includes("api error 503") ||
       msg.includes("econnrefused") ||
       msg.includes("fetch failed") ||
       msg.includes("resource has been exhausted")

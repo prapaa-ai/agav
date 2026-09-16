@@ -250,4 +250,37 @@ describe("GeminiProvider history replay", () => {
 
     expect(callId).toBe("gemini_call_8");
   });
+
+  it("injects skip_thought_signature_validator on reconstructed or cross-provider tool calls", async () => {
+    let capturedBody: any;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url, opts: any) => {
+        capturedBody = JSON.parse(opts.body);
+        return { ok: true, body: sseBody([{ candidates: [{ content: { parts: [{ text: "ok" }] } }] }]) };
+      }),
+    );
+
+    const provider = new GeminiProvider("test-key");
+    const foreignMessages: Message[] = [
+      { role: "user", content: [{ type: "text", text: "create script" }] },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", toolCallId: "nvidia_call_1", toolName: "default_api:write_file", toolInput: { path: "script.js" } }],
+      },
+      { role: "user", content: [{ type: "tool_result", toolCallId: "nvidia_call_1", toolResult: "Created" }] },
+      { role: "user", content: [{ type: "text", text: "what happened?" }] },
+    ];
+
+    for await (const _ of provider.stream({ model: "gemini-flash-lite-latest", messages: foreignMessages, systemPrompt: "s" })) {
+      /* drain */
+    }
+
+    const modelTurn = capturedBody.contents.find((c: any) => c.role === "model");
+    expect(modelTurn).toBeDefined();
+    const funcCallPart = modelTurn.parts.find((p: any) => p.functionCall);
+    expect(funcCallPart).toBeDefined();
+    expect(funcCallPart.thought_signature).toBe("skip_thought_signature_validator");
+    expect(funcCallPart.functionCall.thought_signature).toBe("skip_thought_signature_validator");
+  });
 });
