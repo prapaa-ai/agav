@@ -62,6 +62,7 @@ export interface CommandContext {
   suspendTerminal: () => () => void
   showAgentsTUI: (onDone: () => void) => void
   showSkillsTUI: (onDone: () => void) => void
+  showRepoMapTUI?: (onDone: () => void, options?: { budget?: number; focus?: string }) => void
 }
 
 /** Represents the result of executing a slash command. */

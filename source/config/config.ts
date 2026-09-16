@@ -33,13 +33,20 @@ export interface AgavHooks {
 }
 
 export interface AgavConfig {
-  provider: "anthropic" | "openai" | "openrouter" | "nvidia" | "deepseek" | "ollama" | "gemini" | "vertex-ai";
+  provider: "anthropic" | "openai" | "openrouter" | "nvidia" | "deepseek" | "ollama" | "gemini" | "vertex-ai" | "groq";
   model: string;
   anthropicApiKey?: string;
+  anthropicApiKeys?: string[];
   openaiApiKey?: string;
+  openaiApiKeys?: string[];
   openrouterApiKey?: string;
+  openrouterApiKeys?: string[];
   nvidiaApiKey?: string;
+  nvidiaApiKeys?: string[];
   deepseekApiKey?: string;
+  deepseekApiKeys?: string[];
+  groqApiKey?: string;
+  groqApiKeys?: string[];
   openaiApi?: "chat" | "responses";
   // Override the OpenAI provider's base URL to target an OpenAI-compatible
   // endpoint (self-hosted gateway, private deployment, or any vendor that
@@ -50,6 +57,7 @@ export interface AgavConfig {
   // (e.g. an "x-api-key" or a tenant selector) alongside the base URL.
   openaiHeaders?: Record<string, string>;
   geminiApiKey?: string;
+  geminiApiKeys?: string[];
   vertexAICredentialsPath?: string;
   vertexAILocation?: string;
   ollamaEndpoint?: string;  // e.g. "http://192.168.1.5:11434" — takes precedence over host+port
@@ -69,6 +77,9 @@ export interface AgavConfig {
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
   showThinking?: boolean;
+  whisperBinPath?: string;
+  whisperModelPath?: string;
+  whisperLanguage?: string;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -89,7 +100,7 @@ export function expandHome(path: string): string {
 const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
-    enum: ["openai", "openrouter", "nvidia", "ollama", "anthropic", "gemini", "vertex-ai"],
+    enum: ["openai", "openrouter", "nvidia", "ollama", "anthropic", "gemini", "vertex-ai", "deepseek"],
     type: "string",
     eg: "openai",
   },
@@ -310,13 +321,114 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "ollamaPort",
   "ollamaApiKey",
   "anthropicApiKey",
+  "anthropicApiKeys",
   "openaiApiKey",
+  "openaiApiKeys",
   "openrouterApiKey",
+  "openrouterApiKeys",
   "nvidiaApiKey",
+  "nvidiaApiKeys",
   "deepseekApiKey",
+  "deepseekApiKeys",
   "geminiApiKey",
+  "geminiApiKeys",
   "permissionMode",
 ]);
+
+export function resolveApiKeys(
+  envBaseName: string,
+  sources: {
+    single?: string;
+    multiple?: string[];
+  }[] = [],
+): string[] {
+  const envKeys: string[] = [];
+
+  // 1. Primary env var e.g. ANTHROPIC_API_KEY (supports comma-separated)
+  const primaryEnv = process.env[envBaseName];
+  if (primaryEnv) {
+    for (const part of primaryEnv.split(",")) {
+      const trimmed = part.trim();
+      if (trimmed) envKeys.push(decrypt(trimmed));
+    }
+  }
+
+  // Also check plural env var e.g. ANTHROPIC_API_KEYS (supports comma-separated)
+  const pluralEnv = process.env[`${envBaseName}S`];
+  if (pluralEnv) {
+    for (const part of pluralEnv.split(",")) {
+      const trimmed = part.trim();
+      if (trimmed) envKeys.push(decrypt(trimmed));
+    }
+  }
+
+  // 2. Numbered env vars e.g. ANTHROPIC_API_KEY_1, ANTHROPIC_API_KEY_2...
+  const numberedPattern = new RegExp(`^${envBaseName}_(\\d+)$`);
+  const numberedEntries: { index: number; value: string }[] = [];
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!value) continue;
+    const match = key.match(numberedPattern);
+    if (match) {
+      numberedEntries.push({ index: parseInt(match[1], 10), value: value.trim() });
+    }
+  }
+  numberedEntries.sort((a, b) => a.index - b.index);
+  for (const entry of numberedEntries) {
+    for (const part of entry.value.split(",")) {
+      const trimmed = part.trim();
+      if (trimmed) envKeys.push(decrypt(trimmed));
+    }
+  }
+
+  // Deduplicate environment keys
+  const uniqueEnvKeys: string[] = [];
+  const seenEnv = new Set<string>();
+  for (const k of envKeys) {
+    if (k && !seenEnv.has(k)) {
+      seenEnv.add(k);
+      uniqueEnvKeys.push(k);
+    }
+  }
+
+  // Environment keys strictly override configured project, global, and default keys
+  if (uniqueEnvKeys.length > 0) {
+    return uniqueEnvKeys;
+  }
+
+  // 3. If no environment keys exist, evaluate non-environment tiers in precedence order
+  for (const src of sources) {
+    const tierKeys: string[] = [];
+    if (src.multiple && Array.isArray(src.multiple)) {
+      for (const k of src.multiple) {
+        if (typeof k === "string") {
+          const trimmed = k.trim();
+          if (trimmed) tierKeys.push(decrypt(trimmed));
+        }
+      }
+    }
+    if (src.single && typeof src.single === "string") {
+      for (const part of src.single.split(",")) {
+        const trimmed = part.trim();
+        if (trimmed) tierKeys.push(decrypt(trimmed));
+      }
+    }
+
+    const uniqueTierKeys: string[] = [];
+    const seenTier = new Set<string>();
+    for (const k of tierKeys) {
+      if (k && !seenTier.has(k)) {
+        seenTier.add(k);
+        uniqueTierKeys.push(k);
+      }
+    }
+
+    if (uniqueTierKeys.length > 0) {
+      return uniqueTierKeys;
+    }
+  }
+
+  return [];
+}
 
 /** Load config from global and project files, then apply environment-derived overrides. */
 export async function loadConfig(): Promise<AgavConfig> {
@@ -364,42 +476,61 @@ export async function loadConfig(): Promise<AgavConfig> {
     ];
   }
 
-  merged.anthropicApiKey = decrypt(
-    process.env["ANTHROPIC_API_KEY"] ??
-    projectConfig.anthropicApiKey ??
-    globalConfig.anthropicApiKey ??
-    DEFAULT_CONFIG.anthropicApiKey ?? "",
-  ) || undefined;
-  merged.openaiApiKey = decrypt(
-    process.env["OPENAI_API_KEY"] ??
-    projectConfig.openaiApiKey ??
-    globalConfig.openaiApiKey ??
-    DEFAULT_CONFIG.openaiApiKey ?? "",
-  ) || undefined;
-  merged.openrouterApiKey = decrypt(
-    process.env["OPENROUTER_API_KEY"] ??
-    projectConfig.openrouterApiKey ??
-    globalConfig.openrouterApiKey ??
-    DEFAULT_CONFIG.openrouterApiKey ?? "",
-  ) || undefined;
-  merged.nvidiaApiKey = decrypt(
-    process.env["NVIDIA_API_KEY"] ??
-    projectConfig.nvidiaApiKey ??
-    globalConfig.nvidiaApiKey ??
-    DEFAULT_CONFIG.nvidiaApiKey ?? "",
-  ) || undefined;
-  merged.deepseekApiKey = decrypt(
-    process.env["DEEPSEEK_API_KEY"] ??
-    projectConfig.deepseekApiKey ??
-    globalConfig.deepseekApiKey ??
-    DEFAULT_CONFIG.deepseekApiKey ?? "",
-  ) || undefined;
-  merged.geminiApiKey = decrypt(
-    process.env["GEMINI_API_KEY"] ??
-    projectConfig.geminiApiKey ??
-    globalConfig.geminiApiKey ??
-    DEFAULT_CONFIG.geminiApiKey ?? "",
-  ) || undefined;
+  const anthropicKeys = resolveApiKeys("ANTHROPIC_API_KEY", [
+    { single: projectConfig.anthropicApiKey, multiple: projectConfig.anthropicApiKeys },
+    { single: globalConfig.anthropicApiKey, multiple: globalConfig.anthropicApiKeys },
+    { single: DEFAULT_CONFIG.anthropicApiKey },
+  ]);
+  merged.anthropicApiKeys = anthropicKeys.length > 0 ? anthropicKeys : undefined;
+  merged.anthropicApiKey = anthropicKeys[0] || undefined;
+
+  const openaiKeys = resolveApiKeys("OPENAI_API_KEY", [
+    { single: projectConfig.openaiApiKey, multiple: projectConfig.openaiApiKeys },
+    { single: globalConfig.openaiApiKey, multiple: globalConfig.openaiApiKeys },
+    { single: DEFAULT_CONFIG.openaiApiKey },
+  ]);
+  merged.openaiApiKeys = openaiKeys.length > 0 ? openaiKeys : undefined;
+  merged.openaiApiKey = openaiKeys[0] || undefined;
+
+  const openrouterKeys = resolveApiKeys("OPENROUTER_API_KEY", [
+    { single: projectConfig.openrouterApiKey, multiple: projectConfig.openrouterApiKeys },
+    { single: globalConfig.openrouterApiKey, multiple: globalConfig.openrouterApiKeys },
+    { single: DEFAULT_CONFIG.openrouterApiKey },
+  ]);
+  merged.openrouterApiKeys = openrouterKeys.length > 0 ? openrouterKeys : undefined;
+  merged.openrouterApiKey = openrouterKeys[0] || undefined;
+
+  const nvidiaKeys = resolveApiKeys("NVIDIA_API_KEY", [
+    { single: projectConfig.nvidiaApiKey, multiple: projectConfig.nvidiaApiKeys },
+    { single: globalConfig.nvidiaApiKey, multiple: globalConfig.nvidiaApiKeys },
+    { single: DEFAULT_CONFIG.nvidiaApiKey },
+  ]);
+  merged.nvidiaApiKeys = nvidiaKeys.length > 0 ? nvidiaKeys : undefined;
+  merged.nvidiaApiKey = nvidiaKeys[0] || undefined;
+
+  const deepseekKeys = resolveApiKeys("DEEPSEEK_API_KEY", [
+    { single: projectConfig.deepseekApiKey, multiple: projectConfig.deepseekApiKeys },
+    { single: globalConfig.deepseekApiKey, multiple: globalConfig.deepseekApiKeys },
+    { single: DEFAULT_CONFIG.deepseekApiKey },
+  ]);
+  merged.deepseekApiKeys = deepseekKeys.length > 0 ? deepseekKeys : undefined;
+  merged.deepseekApiKey = deepseekKeys[0] || undefined;
+
+  const geminiKeys = resolveApiKeys("GEMINI_API_KEY", [
+    { single: projectConfig.geminiApiKey, multiple: projectConfig.geminiApiKeys },
+    { single: globalConfig.geminiApiKey, multiple: globalConfig.geminiApiKeys },
+    { single: DEFAULT_CONFIG.geminiApiKey },
+  ]);
+  merged.geminiApiKeys = geminiKeys.length > 0 ? geminiKeys : undefined;
+  merged.geminiApiKey = geminiKeys[0] || undefined;
+
+  const groqKeys = resolveApiKeys("GROQ_API_KEY", [
+    { single: (projectConfig as any).groqApiKey, multiple: (projectConfig as any).groqApiKeys },
+    { single: (globalConfig as any).groqApiKey, multiple: (globalConfig as any).groqApiKeys },
+    { single: (DEFAULT_CONFIG as any).groqApiKey },
+  ]);
+  merged.groqApiKeys = groqKeys.length > 0 ? groqKeys : undefined;
+  merged.groqApiKey = groqKeys[0] || undefined;
 
   // Vertex AI — the credentials path alone enables the provider; there is no
   // separate on/off flag to keep in sync with it.
@@ -433,22 +564,149 @@ export async function loadConfig(): Promise<AgavConfig> {
     DEFAULT_CONFIG.ollamaApiKey ?? "",
   ) || undefined;
 
+  if (merged.openaiHeaders && typeof merged.openaiHeaders === "object") {
+    const decryptedHeaders: Record<string, string> = {};
+    for (const [key, value] of Object.entries(merged.openaiHeaders)) {
+      decryptedHeaders[key] = typeof value === "string" ? decrypt(value) : value;
+    }
+    merged.openaiHeaders = decryptedHeaders;
+  }
+
   return merged;
 }
 
 /** Persist config to the global config file, encrypting any API keys present. */
 export async function saveConfig(config: AgavConfig): Promise<void> {
   await ensureDir(AGAV_DIR);
-  const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
+  const {
+    anthropicApiKey,
+    anthropicApiKeys,
+    openaiApiKey,
+    openaiApiKeys,
+    openrouterApiKey,
+    openrouterApiKeys,
+    nvidiaApiKey,
+    nvidiaApiKeys,
+    deepseekApiKey,
+    deepseekApiKeys,
+    geminiApiKey,
+    geminiApiKeys,
+    groqApiKey,
+    groqApiKeys,
+    ollamaApiKey,
+    openaiHeaders,
+    ...safe
+  } = config;
   const out: Record<string, unknown> = { ...safe };
   if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
+  if (anthropicApiKeys && Array.isArray(anthropicApiKeys)) {
+    out.anthropicApiKeys = anthropicApiKeys.map((k) => encrypt(k));
+  }
   if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
+  if (openaiApiKeys && Array.isArray(openaiApiKeys)) {
+    out.openaiApiKeys = openaiApiKeys.map((k) => encrypt(k));
+  }
   if (openrouterApiKey) out.openrouterApiKey = encrypt(openrouterApiKey);
+  if (openrouterApiKeys && Array.isArray(openrouterApiKeys)) {
+    out.openrouterApiKeys = openrouterApiKeys.map((k) => encrypt(k));
+  }
   if (nvidiaApiKey) out.nvidiaApiKey = encrypt(nvidiaApiKey);
+  if (nvidiaApiKeys && Array.isArray(nvidiaApiKeys)) {
+    out.nvidiaApiKeys = nvidiaApiKeys.map((k) => encrypt(k));
+  }
   if (deepseekApiKey) out.deepseekApiKey = encrypt(deepseekApiKey);
+  if (deepseekApiKeys && Array.isArray(deepseekApiKeys)) {
+    out.deepseekApiKeys = deepseekApiKeys.map((k) => encrypt(k));
+  }
   if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
+  if (geminiApiKeys && Array.isArray(geminiApiKeys)) {
+    out.geminiApiKeys = geminiApiKeys.map((k) => encrypt(k));
+  }
+  if (groqApiKey) out.groqApiKey = encrypt(groqApiKey);
+  if (groqApiKeys && Array.isArray(groqApiKeys)) {
+    out.groqApiKeys = groqApiKeys.map((k) => encrypt(k));
+  }
   if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
+  if (openaiHeaders && typeof openaiHeaders === "object") {
+    const encryptedHeaders: Record<string, string> = {};
+    for (const [key, value] of Object.entries(openaiHeaders)) {
+      encryptedHeaders[key] = typeof value === "string" ? encrypt(value) : value;
+    }
+    out.openaiHeaders = encryptedHeaders;
+  }
   await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
+}
+
+/**
+ * Assigns or appends API keys to an AgavConfig for a given provider.
+ */
+export function assignKeysToConfig(
+  config: AgavConfig,
+  provider: string,
+  keys: string[],
+  append: boolean = false,
+): void {
+  const norm = provider.toLowerCase().trim();
+  const cleanKeys = keys.map((k) => k.trim()).filter((k) => k.length > 0);
+  if (cleanKeys.length === 0) return;
+
+  const update = (
+    currentSingle?: string,
+    currentMultiple?: string[],
+  ): { single: string; multiple: string[] } => {
+    let finalKeys = cleanKeys;
+    if (append && currentMultiple && currentMultiple.length > 0) {
+      const existing = new Set(currentMultiple);
+      const toAdd = cleanKeys.filter((k) => !existing.has(k));
+      finalKeys = [...currentMultiple, ...toAdd];
+    }
+    return { single: finalKeys[0], multiple: finalKeys };
+  };
+
+  switch (norm) {
+    case "nvidia": {
+      const res = update(config.nvidiaApiKey, config.nvidiaApiKeys);
+      config.nvidiaApiKey = res.single;
+      config.nvidiaApiKeys = res.multiple;
+      break;
+    }
+    case "gemini": {
+      const res = update(config.geminiApiKey, config.geminiApiKeys);
+      config.geminiApiKey = res.single;
+      config.geminiApiKeys = res.multiple;
+      break;
+    }
+    case "groq": {
+      const res = update(config.groqApiKey, config.groqApiKeys);
+      config.groqApiKey = res.single;
+      config.groqApiKeys = res.multiple;
+      break;
+    }
+    case "openrouter": {
+      const res = update(config.openrouterApiKey, config.openrouterApiKeys);
+      config.openrouterApiKey = res.single;
+      config.openrouterApiKeys = res.multiple;
+      break;
+    }
+    case "deepseek": {
+      const res = update(config.deepseekApiKey, config.deepseekApiKeys);
+      config.deepseekApiKey = res.single;
+      config.deepseekApiKeys = res.multiple;
+      break;
+    }
+    case "openai": {
+      const res = update(config.openaiApiKey, config.openaiApiKeys);
+      config.openaiApiKey = res.single;
+      config.openaiApiKeys = res.multiple;
+      break;
+    }
+    case "anthropic": {
+      const res = update(config.anthropicApiKey, config.anthropicApiKeys);
+      config.anthropicApiKey = res.single;
+      config.anthropicApiKeys = res.multiple;
+      break;
+    }
+  }
 }
 
 /** Return the root directory used for Agav's global state files. */

@@ -63,4 +63,18 @@ describe("tools/registry", () => {
     await expect(registry.execute("ok", { value: 3 })).resolves.toEqual({ output: "ok:3", isError: false });
     await expect(registry.execute("bad", {})).resolves.toEqual({ output: "boom", isError: true });
   });
+
+  it("handles pseudo completion tools (finish, done, complete_task) gracefully as success", async () => {
+    const registry = new ToolRegistry();
+
+    const finishRes = await registry.execute("finish", {});
+    expect(finishRes.isError).toBe(false);
+    expect(finishRes.output).toContain("Task completed successfully");
+
+    const doneRes = await registry.execute("done", {});
+    expect(doneRes.isError).toBe(false);
+
+    const completeRes = await registry.execute("complete_task", {});
+    expect(completeRes.isError).toBe(false);
+  });
 });

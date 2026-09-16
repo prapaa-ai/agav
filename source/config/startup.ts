@@ -14,6 +14,7 @@ export const PROVIDERS: readonly ProviderName[] = [
   "gemini",
   "vertex-ai",
   "ollama",
+  "groq",
 ];
 
 const DEFAULT_MODELS: Record<ProviderName, string> = {
@@ -22,9 +23,10 @@ const DEFAULT_MODELS: Record<ProviderName, string> = {
   openrouter: "openrouter/auto",
   nvidia: "nvidia/nemotron-3.5-lightning-30b-a3b",
   deepseek: "deepseek-v4-pro",
-  gemini: "gemini-3.5-flash-lite",
+  gemini: "gemini-flash-lite-latest",
   "vertex-ai": "vertex/gemini-3.5-flash",
   ollama: "",
+  groq: "openai/gpt-oss-120b",
 };
 
 export function isProviderName(value: unknown): value is ProviderName {
@@ -91,12 +93,13 @@ export async function resolveStartupSelection(
 
 export function hasProviderConfiguration(config: AgavConfig, provider: ProviderName): boolean {
   switch (provider) {
-    case "anthropic": return Boolean(config.anthropicApiKey);
-    case "openai": return Boolean(config.openaiApiKey);
-    case "openrouter": return Boolean(config.openrouterApiKey);
-    case "nvidia": return Boolean(config.nvidiaApiKey);
-    case "deepseek": return Boolean(config.deepseekApiKey);
-    case "gemini": return Boolean(config.geminiApiKey);
+    case "anthropic": return Boolean(config.anthropicApiKey || config.anthropicApiKeys?.length);
+    case "openai": return Boolean(config.openaiApiKey || config.openaiApiKeys?.length);
+    case "openrouter": return Boolean(config.openrouterApiKey || config.openrouterApiKeys?.length);
+    case "nvidia": return Boolean(config.nvidiaApiKey || config.nvidiaApiKeys?.length);
+    case "deepseek": return Boolean(config.deepseekApiKey || config.deepseekApiKeys?.length);
+    case "gemini": return Boolean(config.geminiApiKey || config.geminiApiKeys?.length);
+    case "groq": return Boolean(config.groqApiKey || config.groqApiKeys?.length);
     case "vertex-ai": return Boolean(config.vertexAICredentialsPath);
     case "ollama": return true;
   }
@@ -142,6 +145,7 @@ export function providerSetupHints(): string {
     `    ${setEnvHint("NVIDIA_API_KEY", "nvapi-...")}`,
     `    ${setEnvHint("DEEPSEEK_API_KEY", "sk-...")}`,
     `    ${setEnvHint("GEMINI_API_KEY", "...")}`,
+    `    ${setEnvHint("GROQ_API_KEY", "gsk_...")}`,
     `    ${setEnvHint("VERTEX_AI_CREDENTIALS_PATH", examplePath("path", "to", "service-account.json"))}`,
     "  Or start Ollama: agav --provider ollama",
   ].join("\n");
@@ -155,23 +159,26 @@ export function noProviderCredentialsError(): string {
 export function providerConfigurationError(config: AgavConfig): string | null {
   switch (config.provider) {
     case "anthropic":
-      return config.anthropicApiKey ? null
+      return (config.anthropicApiKey || config.anthropicApiKeys?.length) ? null
         : `Anthropic API key not found. Run ${setEnvHint("ANTHROPIC_API_KEY", "sk-ant-...")} or add it to ${agavHomePath("config.json")}`;
     case "openai":
-      return config.openaiApiKey ? null
+      return (config.openaiApiKey || config.openaiApiKeys?.length) ? null
         : `OpenAI API key not found. Run ${setEnvHint("OPENAI_API_KEY", "sk-...")} or add it to ${agavHomePath("config.json")}`;
     case "openrouter":
-      return config.openrouterApiKey ? null
+      return (config.openrouterApiKey || config.openrouterApiKeys?.length) ? null
         : `OpenRouter API key not found. Run ${setEnvHint("OPENROUTER_API_KEY", "sk-or-v1-...")} or add it to ${agavHomePath("config.json")}`;
     case "nvidia":
-      return config.nvidiaApiKey ? null
+      return (config.nvidiaApiKey || config.nvidiaApiKeys?.length) ? null
         : `NVIDIA API key not found. Run ${setEnvHint("NVIDIA_API_KEY", "nvapi-...")} or add it to ${agavHomePath("config.json")}`;
     case "deepseek":
-      return config.deepseekApiKey ? null
+      return (config.deepseekApiKey || config.deepseekApiKeys?.length) ? null
         : `DeepSeek API key not found. Run ${setEnvHint("DEEPSEEK_API_KEY", "sk-...")} or add it to ${agavHomePath("config.json")}`;
     case "gemini":
-      return config.geminiApiKey ? null
+      return (config.geminiApiKey || config.geminiApiKeys?.length) ? null
         : `Gemini API key not found. Run ${setEnvHint("GEMINI_API_KEY", "...")} or add it to ${agavHomePath("config.json")}`;
+    case "groq":
+      return (config.groqApiKey || config.groqApiKeys?.length) ? null
+        : `Groq API key not found. Run ${setEnvHint("GROQ_API_KEY", "gsk_...")} or add it to ${agavHomePath("config.json")}`;
     case "vertex-ai":
       return config.vertexAICredentialsPath ? null
         : `Vertex AI service account credentials not found. Run ${setEnvHint("VERTEX_AI_CREDENTIALS_PATH", examplePath("path", "to", "service-account.json"))} or add it to ${agavHomePath("config.json")}`;

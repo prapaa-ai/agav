@@ -1,4 +1,6 @@
 import type { Message, ContentBlock, InvocationReason } from "../providers/types.js";
+
+export type { ContentBlock };
 import { COMPACTION_PLACEHOLDER_PREFIX } from "./internal-prompts.js";
 import {
   estimateConversationTokens,
@@ -149,10 +151,7 @@ export class ConversationState {
   }
 
   get tokenCount(): number {
-    if (this._cachedTokenCount === undefined) {
-      this._cachedTokenCount = estimateConversationTokens(this.messages);
-    }
-    return this._cachedTokenCount;
+    return estimateConversationTokens(this.messages);
   }
 
   private invalidateTokenCache(): void {

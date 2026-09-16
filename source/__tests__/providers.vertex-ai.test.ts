@@ -62,6 +62,7 @@ describe("VertexAIProvider", () => {
     // iat must sit strictly in the past relative to "now", never in the future.
     expect(claims.iat).toBeLessThan(nowSeconds);
     expect(nowSeconds - claims.iat).toBeGreaterThanOrEqual(10);
+    expect(claims.exp).toBe(claims.iat + 3600);
   });
 
   it("retries token minting once when a skewed clock triggers invalid_grant", async () => {

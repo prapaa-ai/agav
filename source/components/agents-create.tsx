@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Box, Text, useInput, usePaste } from "../ink/index.js";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile, rm, mkdtemp } from "node:fs/promises";
 import { stringify as yamlStringify } from "yaml";
 import type { LLMProvider } from "../providers/types.js";
 import type { AgavConfig } from "../config/config.js";
@@ -226,13 +226,17 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
     setSaveError(null);
     const agentDir = join(homedir(), ".agav", "agents", agentName);
     const toolsDir = join(agentDir, "tools");
+    let stageDir: string | null = null;
+    let backupContent: string | null = null;
+    const destAgentMd = join(agentDir, "AGENT.md");
 
     try {
-      setSaveStatus("Creating agent directory...");
       const agentsRoot = join(homedir(), ".agav", "agents");
       await assertPathContained(agentDir, agentsRoot);
-      await mkdir(agentDir, { recursive: true });
-      await mkdir(toolsDir, { recursive: true });
+
+      setSaveStatus("Staging agent...");
+      stageDir = await mkdtemp(join(tmpdir(), "agav-agent-stage-"));
+      await mkdir(join(stageDir, "tools"), { recursive: true });
 
       const mcpServerEntries: Array<{ key: string; command: string; args?: string[]; env?: Record<string, string> }> = [];
       for (const key of mcpSelectedKeys) {
@@ -263,10 +267,25 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
         manifest["mcp-servers"] = mcpServerEntries;
       }
 
-      setSaveStatus("Writing AGENT.md...");
       const yaml = yamlStringify(manifest);
       const agentMd = `---\n${yaml}---\n\n${systemPrompt}\n`;
-      await writeFile(join(agentDir, "AGENT.md"), agentMd, "utf-8");
+      await writeFile(join(stageDir, "AGENT.md"), agentMd, "utf-8");
+
+      setSaveStatus("Validating...");
+      const loaded = await loadAgent(stageDir, "global");
+      if (!loaded) {
+        throw new Error("Agent validation failed: invalid AGENT.md manifest or system prompt");
+      }
+
+      setSaveStatus("Saving agent...");
+      await mkdir(agentDir, { recursive: true });
+      await mkdir(toolsDir, { recursive: true });
+
+      try {
+        backupContent = await readFile(destAgentMd, "utf-8");
+      } catch {}
+
+      await writeFile(destAgentMd, agentMd, "utf-8");
 
       setSaveStatus("Registering agent...");
       const registryOpts: Record<string, unknown> = {
@@ -278,12 +297,16 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       if (editingAgent?.alias) {
         registryOpts.alias = editingAgent.alias;
       }
-      await registerAgent(registryOpts as any);
 
-      setSaveStatus("Validating...");
-      const loaded = await loadAgent(agentDir, "global");
-      if (!loaded) {
-        throw new Error("Agent validation failed after writing to disk");
+      try {
+        await registerAgent(registryOpts as any);
+      } catch (regErr) {
+        if (backupContent !== null) {
+          await writeFile(destAgentMd, backupContent, "utf-8");
+        } else {
+          await rm(destAgentMd, { force: true });
+        }
+        throw regErr;
       }
 
       setSaveStatus("Reloading agents...");
@@ -299,6 +322,10 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err));
       setSaving(false);
+    } finally {
+      if (stageDir) {
+        await rm(stageDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
   }, [agentName, agentDescription, systemPrompt, nativeToolNames, mcpSelectedKeys, config, onReloadAgents, onCreateComplete, editingAgent]);
 

@@ -37,7 +37,13 @@ export const fileWriteTool: ToolDefinition = {
         // New file
       }
 
-      await mkdir(dirname(filePath), { recursive: true });
+      try {
+        await mkdir(dirname(filePath), { recursive: true });
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException | null)?.code !== "EEXIST") {
+          throw err;
+        }
+      }
       await pushUndo(filePath, "write_file");
       await writeFile(filePath, content, "utf-8");
 

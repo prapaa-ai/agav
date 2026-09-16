@@ -241,4 +241,81 @@ describe("config", () => {
     expect(body).toContain("enc:g");
     expect(body).toContain("enc:l");
   });
+
+  it("encrypts openaiHeaders on save and excludes them from safe plaintext", async () => {
+    const mod = await import("../config/config.js");
+    await mod.saveConfig({
+      provider: "openai",
+      model: "gpt-5.4-mini",
+      effort: "low",
+      maxTokens: 1,
+      maxIterations: 2,
+      errorRetries: 3,
+      permissionMode: "ask",
+      openaiHeaders: {
+        "x-api-key": "gateway-secret-token",
+        "Authorization": "Bearer custom-jwt",
+      },
+    });
+
+    const body = JSON.parse(String(writeFile.mock.calls.at(-1)?.[1]));
+    expect(body.openaiHeaders).toEqual({
+      "x-api-key": "enc:gateway-secret-token",
+      "Authorization": "enc:Bearer custom-jwt",
+    });
+    expect(body.openaiHeaders["x-api-key"]).not.toBe("gateway-secret-token");
+    expect(body.openaiHeaders["Authorization"]).not.toBe("Bearer custom-jwt");
+  });
+
+  it("decrypts encrypted openaiHeaders on loadConfig", async () => {
+    const mod = await import("../config/config.js");
+    const { join } = await import("node:path");
+    const globalConfigPath = join(mod.getAgavDir(), "config.json");
+
+    readFile.mockImplementation(async (path: any) => {
+      const s = String(path);
+      if (s === globalConfigPath) {
+        return JSON.stringify({
+          openaiHeaders: {
+            "x-api-key": "enc:gateway-secret-token",
+            "Authorization": "enc:Bearer custom-jwt",
+          },
+        });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const loaded = await mod.loadConfig();
+
+    expect(loaded.openaiHeaders).toEqual({
+      "x-api-key": "gateway-secret-token",
+      "Authorization": "Bearer custom-jwt",
+    });
+  });
+
+  it("leaves unencrypted openaiHeaders intact on loadConfig", async () => {
+    const mod = await import("../config/config.js");
+    const { join } = await import("node:path");
+    const globalConfigPath = join(mod.getAgavDir(), "config.json");
+
+    readFile.mockImplementation(async (path: any) => {
+      const s = String(path);
+      if (s === globalConfigPath) {
+        return JSON.stringify({
+          openaiHeaders: {
+            "x-api-key": "plaintext-gateway-token",
+            "x-custom-tenant": "tenant-123",
+          },
+        });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const loaded = await mod.loadConfig();
+
+    expect(loaded.openaiHeaders).toEqual({
+      "x-api-key": "plaintext-gateway-token",
+      "x-custom-tenant": "tenant-123",
+    });
+  });
 });

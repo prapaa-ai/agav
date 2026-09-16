@@ -1,25 +1,27 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
 
-/** Default fast-model choices keyed by provider name. */
+/** Default fast-model choices keyed by provider name (verified online). */
 const FAST_MODELS: Record<string, string> = {
   anthropic: "claude-haiku-4-5-20251001",
   openai: "gpt-4o-mini",
   openrouter: "~google/gemini-flash-latest",
   nvidia: "nvidia/nemotron-3.5-lightning-30b-a3b",
   deepseek: "deepseek-v4-flash",
-  gemini: "gemini-3.5-flash-lite",
+  gemini: "gemini-flash-lite-latest",
   "vertex-ai": "vertex/gemini-3.5-flash-lite",
+  groq: "qwen/qwen3.8-27b",
 }
 
-/** Default deep-model choices keyed by provider name. */
+/** Default deep-model choices keyed by provider name (verified online). */
 const DEEP_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-20250514",
   openai: "gpt-4o",
   openrouter: "~anthropic/claude-sonnet-latest",
   nvidia: "nvidia/nemotron-3.5-lightning-30b-a3b",
   deepseek: "deepseek-v4-pro",
-  gemini: "gemini-3.5-pro",
+  gemini: "gemini-flash-latest",
   "vertex-ai": "vertex/gemini-3.5-pro",
+  groq: "openai/gpt-oss-120b",
 }
 
 /** Switch to the configured fast model for the active provider. */

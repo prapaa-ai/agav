@@ -195,8 +195,10 @@ const DESTRUCTIVE_PATTERNS = [
   /\bgit\s+reset\s+--hard/,
   /\bgit\s+push\s+--force/,
   /\bgit\s+push\s+-f\b/,
-  /\bgit\s+clean\s+-[a-z]*f/,
-  /\bgit\s+branch\s+-D\b/,
+  /\bgit\s+clean\s+-[a-zA-Z]*f/,
+  /\bgit\s+branch\s+-[dD]\b/,
+  /\bgit\s+checkout\s+--\s+\./,
+  /\bgit\s+restore\s+(?:--staged\s+)?\.\s*$/,
   /\bsudo\s+rm\b/,
   /\bsudo\s+dd\b/,
   /\bdd\s+if=/,
@@ -206,6 +208,16 @@ const DESTRUCTIVE_PATTERNS = [
   /\b>\s*\/dev\/sd/,
   /\bdropdb\b/i,
   /\bdrop\s+database\b/i,
+  /\bdrop\s+table\b/i,
+  /\bdrop\s+schema\b/i,
+  /\btruncate\s+(?:table\s+)?\w+/i,
+  /\bdelete\s+from\s+\w+\s*(?:;|\s*$|\s*where\s+1\s*=\s*1)/i,
+  /\b(?:Remove-Item|ri)\b.*-(?:Recurse|r)\b.*-(?:Force|f)\b/i,
+  /\b(?:Remove-Item|ri)\b.*-(?:Force|f)\b.*-(?:Recurse|r)\b/i,
+  /\b(?:rmdir|rd)\b.*?\s+\/s(?:\s|$)/i,
+  /\b(?:del|erase)\b.*?\s+\/s(?:\s|$)/i,
+  /\bformat\s+[a-zA-Z]:/i,
+  /\bdiskpart\b/i,
   /\bkillall\b/,
   /\bpkill\s+-9/,
   /\bcurl\s+.*\|\s*sh\b/,
@@ -267,8 +279,10 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
  * Throw if no OS-level sandbox backend is available. Used when
  * `sandboxRequired` is enabled in config or via `--sandbox-required`.
  */
-export function requireSandbox(): void {
-  const backend = detectSandboxBackend();
+export function requireSandbox(configuredBackend?: SandboxBackend): void {
+  const backend = configuredBackend && configuredBackend !== "none"
+    ? configuredBackend
+    : detectSandboxBackend();
   if (backend === "none") {
     throw new Error(
       "Sandbox required but no sandbox backend is available. " +

@@ -106,6 +106,7 @@ export class MCPClient {
   // the POST URL, and stream all responses/notifications over the same GET connection.
   private async connectSse(urlStr: string): Promise<void> {
     this.activeTransport = "sse";
+    this.postUrl = null;
     const signal = this.abortController!.signal;
 
     const response = await fetch(urlStr, {

@@ -46,6 +46,8 @@ export type ConfirmToolFn = (
 import type { PermissionMode } from "../config/config.js";
 import { runHook, getHookForTool } from "./hooks.js";
 import { isDestructiveCommand } from "../utils/sandbox.js";
+import { repairAndParseJson } from "../utils/json-repair.js";
+import { startTurnSnapshot, commitTurnSnapshot } from "../utils/undo.js";
 
 interface LoopParams {
   provider: LLMProvider;
@@ -125,6 +127,7 @@ export async function* runAgentLoop(
   params: LoopParams,
 ): AsyncGenerator<AgentEvent> {
   const { provider, conversation, toolRegistry, model, systemPrompt, effort, maxTokens, signal, confirmTool } = params;
+  startTurnSnapshot();
   let permissionMode = params.permissionMode ?? "ask";
   let testRepairAttempts = 0;
   const MAX_REPAIR_ATTEMPTS = 3;
@@ -312,12 +315,7 @@ export async function* runAgentLoop(
     }
     const parsedInputs = new Map<string, Record<string, unknown>>();
     for (const [id, call] of toolCalls) {
-      let input: Record<string, unknown> = {};
-      try {
-        input = JSON.parse(call.argsJson);
-      } catch {
-        input = { raw: call.argsJson };
-      }
+      const input = repairAndParseJson(call.argsJson);
       parsedInputs.set(id, input);
       assistantContent.push({
         type: "tool_use",
@@ -350,6 +348,7 @@ export async function* runAgentLoop(
       if (lateSteers.length > 0) {
         yield { type: "steer_applied", directives: lateSteers };
       }
+      commitTurnSnapshot();
       yield { type: "turn_complete" };
       return;
     }

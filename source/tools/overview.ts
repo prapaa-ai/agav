@@ -1,6 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, extname } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
+import { RepoMapEngine } from "../repomap/engine.js";
 
 const SKIP_DIRS = new Set([
   "node_modules", ".git", "build", "dist", ".next", ".agav",
@@ -145,14 +146,27 @@ export const overviewTool: ToolDefinition = {
           type: "number",
           description: "Max directory depth to traverse (default: 6).",
         },
+        budget: {
+          type: "number",
+          description: "Token budget for the repository map (default: 1200).",
+        },
+        focus: {
+          type: "array",
+          items: {
+            type: "string",
+          },
+          description: "Optional list of file paths to focus the map around using personalized PageRank.",
+        },
       },
     },
   },
 
   async execute(input): Promise<ToolResult> {
     const searchPath = String(input.path ?? ".");
-    const maxFiles = 200;
-    const results: FileSymbols[] = [];
+    const budget = typeof input.budget === "number" ? input.budget : 1200;
+    const focusFiles = Array.isArray(input.focus)
+      ? input.focus.filter((f): f is string => typeof f === "string")
+      : undefined;
 
     const absPath = join(process.cwd(), searchPath);
 
@@ -162,6 +176,26 @@ export const overviewTool: ToolDefinition = {
       return { output: `Directory not found: ${searchPath}`, isError: true };
     }
 
+    try {
+      const engine = RepoMapEngine.getInstance();
+      const result = await engine.generateOverview({
+        path: searchPath,
+        budget,
+        focusFiles,
+      });
+
+      if (result && result.fileCount > 0 && result.text) {
+        return {
+          output: `${result.fileCount} files, ${result.symbolCount} symbols, ~${result.tokenCount} tokens\n\n${result.text}`,
+          isError: false,
+        };
+      }
+    } catch {
+      // Fall back to original simple walk
+    }
+
+    const maxFiles = 200;
+    const results: FileSymbols[] = [];
     await walkDir(absPath, absPath, results, maxFiles);
 
     if (results.length === 0) {

@@ -47,16 +47,18 @@ describe("commands/model-routing", () => {
     await expect(route(fastCommand, "anthropic")).resolves.toBe("claude-haiku-4-5-20251001");
     await expect(route(fastCommand, "openai")).resolves.toBe("gpt-4o-mini");
     await expect(route(fastCommand, "openrouter")).resolves.toBe("~google/gemini-flash-latest");
-    await expect(route(fastCommand, "gemini")).resolves.toBe("gemini-3.5-flash-lite");
+    await expect(route(fastCommand, "gemini")).resolves.toBe("gemini-flash-lite-latest");
     await expect(route(fastCommand, "vertex-ai")).resolves.toBe("vertex/gemini-3.5-flash-lite");
+    await expect(route(fastCommand, "groq")).resolves.toBe("qwen/qwen3.8-27b");
   });
 
   it("/deep routes each provider to its own model", async () => {
     await expect(route(deepCommand, "anthropic")).resolves.toBe("claude-sonnet-4-20250514");
     await expect(route(deepCommand, "openai")).resolves.toBe("gpt-4o");
     await expect(route(deepCommand, "openrouter")).resolves.toBe("~anthropic/claude-sonnet-latest");
-    await expect(route(deepCommand, "gemini")).resolves.toBe("gemini-3.5-pro");
+    await expect(route(deepCommand, "gemini")).resolves.toBe("gemini-flash-latest");
     await expect(route(deepCommand, "vertex-ai")).resolves.toBe("vertex/gemini-3.5-pro");
+    await expect(route(deepCommand, "groq")).resolves.toBe("openai/gpt-oss-120b");
   });
 
   it("never silently falls back to an OpenAI model for another provider", async () => {
