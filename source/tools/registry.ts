@@ -22,6 +22,12 @@ export class ToolRegistry {
   ): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) {
+      if (name === "finish" || name === "complete_task" || name === "done") {
+        return {
+          output: "Task completed successfully. Please present your final response directly in text to the user.",
+          isError: false,
+        };
+      }
       return { output: `Unknown tool: ${name}`, isError: true };
     }
     try {

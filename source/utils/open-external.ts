@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { rmSync } from "node:fs";
-import { mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join, isAbsolute } from "node:path";
+import { join, isAbsolute, dirname } from "node:path";
 
 /** Matches a URI scheme prefix, e.g. "https:", "vscode:", "file:". */
 const URL_SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
@@ -80,6 +80,7 @@ function installSpooledImageCleanupHooks(): void {
     for (const path of spooledImagePaths) {
       try {
         rmSync(path, { force: true });
+        rmSync(dirname(path), { recursive: true, force: true });
       } catch {
         // Process-exit cleanup is best-effort.
       }
@@ -87,35 +88,30 @@ function installSpooledImageCleanupHooks(): void {
     spooledImagePaths.clear();
   };
   process.once("exit", cleanup);
-  process.once("SIGINT", () => {
-    cleanup();
-    process.exit(130);
-  });
-  process.once("SIGTERM", () => {
-    cleanup();
-    process.exit(143);
-  });
+  // Clean up only. A listener that exits here would pre-empt every signal
+  // listener registered after this one, including terminal restore.
+  process.once("SIGINT", cleanup);
+  process.once("SIGTERM", cleanup);
 }
 
 /** Remove one image file created by this process. Cleanup is best-effort. */
 export async function cleanupSpooledImage(path: string): Promise<void> {
   if (!spooledImagePaths.delete(path)) return;
-  await rm(path, { force: true }).catch(() => {});
+  await rm(dirname(path), { recursive: true, force: true }).catch(() => {});
 }
 
 /** Remove all image files created by this process. Cleanup is best-effort. */
 export async function cleanupSpooledImages(): Promise<void> {
   const paths = [...spooledImagePaths];
   spooledImagePaths.clear();
-  await Promise.all(paths.map((path) => rm(path, { force: true }).catch(() => {})));
+  await Promise.all(paths.map((path) => rm(dirname(path), { recursive: true, force: true }).catch(() => {})));
 }
 
 /** Persist image data to a temporary file for a native image viewer. */
 export async function spoolImageToTempFile(base64: string, mediaType: string | undefined): Promise<string> {
-  const directory = join(tmpdir(), "agav-images");
-  await mkdir(directory, { recursive: true });
+  const directory = await mkdtemp(join(tmpdir(), "agav-images-"));
   const path = join(directory, `image-${Date.now()}-${randomBytes(4).toString("hex")}${extensionForImage(mediaType)}`);
-  await writeFile(path, Buffer.from(base64, "base64"));
+  await writeFile(path, Buffer.from(base64, "base64"), { mode: 0o600 });
   spooledImagePaths.add(path);
   installSpooledImageCleanupHooks();
   return path;

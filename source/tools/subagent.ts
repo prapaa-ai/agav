@@ -10,6 +10,7 @@ import { runAgentLoop } from "../agent/loop.js";
 import { ToolRegistry as ToolRegistryClass } from "./registry.js";
 import { createWorktree, removeWorktree, applyWorktreeChanges } from "../utils/worktree.js";
 import { formatSteersForPrompt } from "../commands/steer.js";
+import { KeyPoolManager, type KeySlot } from "../providers/key-pool.js";
 
 const MAX_CONCURRENT = 5;
 export interface SubagentToolDeps {
@@ -108,7 +109,20 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       }
 
       const id = `sa-${++counter}`;
+      const subagentWorkerIndex = counter - 1;
       const config = deps.getConfig();
+
+      // Key sharding: partition key indices across concurrent subagents to avoid rate limit contention
+      const currentProvider = (deps.provider as any).providerName ?? deps.provider.name;
+      const keyPool = KeyPoolManager.getInstance();
+      const keys = currentProvider ? keyPool.getKeys(currentProvider) : [];
+      let subagentProvider = deps.provider;
+      if (keys.length > 1) {
+        const keyIndex = subagentWorkerIndex % keys.length;
+        if (typeof (deps.provider as any).withPinnedKeyIndex === "function") {
+          subagentProvider = (deps.provider as any).withPinnedKeyIndex(keyIndex);
+        }
+      }
 
       const childRegistry = new ToolRegistryClass();
       for (const tool of deps.parentToolRegistry.list()) {
@@ -203,7 +217,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         };
 
         const loop = runAgentLoop({
-          provider: deps.provider,
+          provider: subagentProvider,
           conversation,
           toolRegistry: childRegistry,
           model: config.model,
@@ -390,3 +404,111 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
     },
   };
 }
+
+export interface SubagentTaskInput {
+  title: string;
+  task: string;
+  id?: string;
+}
+
+export interface SubagentExecutionResult {
+  id: string;
+  title: string;
+  task: string;
+  output: string;
+  isError: boolean;
+  keyIndex?: number;
+}
+
+export interface ParallelExecutionOptions {
+  currentProvider?: string;
+  maxConcurrent?: number;
+}
+
+/**
+ * Helper to compute the partitioned key shard for a worker index.
+ */
+export function getSubagentKeyShard(
+  workerIndex: number,
+  providerName: string,
+): { keyIndex: number; keySlot?: KeySlot } {
+  const keys = KeyPoolManager.getInstance().getKeys(providerName);
+  if (keys.length === 0) {
+    return { keyIndex: 0 };
+  }
+  const keyIndex = ((workerIndex % keys.length) + keys.length) % keys.length;
+  return {
+    keyIndex,
+    keySlot: keys[keyIndex],
+  };
+}
+
+/**
+ * Execute multiple subagent tasks in parallel with linear multi-key sharding.
+ *
+ * Partitions key indices across concurrent subagent tasks so Subagent #0 uses Key #0,
+ * Subagent #1 uses Key #1, etc., eliminating rate-limit contention across concurrent subagents.
+ */
+export async function executeSubagentsParallel(
+  tasks: SubagentTaskInput[],
+  deps: SubagentToolDeps,
+  options?: ParallelExecutionOptions,
+): Promise<SubagentExecutionResult[]> {
+  const maxConcurrent = options?.maxConcurrent ?? MAX_CONCURRENT;
+  const currentProvider = options?.currentProvider ?? (deps.provider as any).providerName ?? deps.provider.name;
+
+  const keyPool = KeyPoolManager.getInstance();
+  const keys = currentProvider ? keyPool.getKeys(currentProvider) : [];
+
+  const results: SubagentExecutionResult[] = new Array(tasks.length);
+
+  const runTask = async (taskInput: SubagentTaskInput, index: number): Promise<SubagentExecutionResult> => {
+    const keyIndex = keys.length > 0 ? index % keys.length : 0;
+
+    let taskProvider = deps.provider;
+    if (keys.length > 1) {
+      if (typeof (deps.provider as any).withPinnedKeyIndex === "function") {
+        taskProvider = (deps.provider as any).withPinnedKeyIndex(keyIndex);
+      }
+    }
+
+    const subagentTool = createSubagentTool({
+      ...deps,
+      provider: taskProvider,
+    });
+
+    const result = await subagentTool.execute({
+      title: taskInput.title,
+      task: taskInput.task,
+    });
+
+    return {
+      id: taskInput.id ?? `sa-${index + 1}`,
+      title: taskInput.title,
+      task: taskInput.task,
+      output: result.output,
+      isError: result.isError,
+      keyIndex,
+    };
+  };
+
+  const poolSize = Math.min(maxConcurrent, tasks.length);
+  const executing: Promise<void>[] = [];
+  let currentIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (currentIndex < tasks.length) {
+      const idx = currentIndex++;
+      const task = tasks[idx]!;
+      results[idx] = await runTask(task, idx);
+    }
+  }
+
+  for (let i = 0; i < poolSize; i++) {
+    executing.push(worker());
+  }
+
+  await Promise.all(executing);
+  return results;
+}
+

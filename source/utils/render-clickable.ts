@@ -54,7 +54,8 @@ export function buildClickableLines(
 
   type Occurrence = { start: number; end: number; target: DetectedTarget };
   const occurrences: Occurrence[] = [];
-  for (const target of targets) {
+  const sortedTargets = [...targets].sort((a, b) => b.text.length - a.text.length);
+  for (const target of sortedTargets) {
     let idx = fullVisible.indexOf(target.text);
     while (idx !== -1) {
       occurrences.push({ start: idx, end: idx + target.text.length, target });
@@ -64,7 +65,7 @@ export function buildClickableLines(
 
   if (occurrences.length === 0) return wrapped.map((line) => [{ text: line, ...plainRunStyle }]);
 
-  occurrences.sort((a, b) => a.start - b.start);
+  occurrences.sort((a, b) => a.start - b.start || b.end - a.end);
   const merged: Occurrence[] = [];
   let lastEnd = -1;
   for (const occurrence of occurrences) {

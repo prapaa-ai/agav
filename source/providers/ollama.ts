@@ -73,6 +73,9 @@ export class OllamaProvider implements LLMProvider {
       applyOllamaEffortPrompt(params.systemPrompt, params.effort ?? "medium"),
     );
     const tools = params.tools?.length ? params.tools.map(this.toTool) : undefined;
+    if (params.signal?.aborted) {
+      return;
+    }
 
     try {
       const response = await this.client.chat({

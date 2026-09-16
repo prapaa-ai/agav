@@ -670,7 +670,17 @@ export async function main() {
     Object.assign(config, selected);
   }
 
-  const configurationError = providerConfigurationError(config);
+  let configurationError = providerConfigurationError(config);
+  if (configurationError) {
+    if (process.stdin.isTTY && !flags.print) {
+      const { runInteractiveKeySetup } = await import("./config/key-wizard.js");
+      const setupResult = await runInteractiveKeySetup(config);
+      if (setupResult.configured) {
+        configurationError = providerConfigurationError(config);
+      }
+    }
+  }
+
   if (configurationError) {
     process.stderr.write(`\n  Agav — ${configurationError}\n\n`);
     process.exit(1);

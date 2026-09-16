@@ -230,5 +230,16 @@ describe("newline keybinding", () => {
     expect(mod.requiresEnhancedKeyboard("meta+enter")).toBe(false);
     expect(mod.requiresEnhancedKeyboard("ctrl+j")).toBe(false);
     expect(mod.requiresEnhancedKeyboard("ctrl+k shift+enter")).toBe(true);
+    expect(mod.requiresEnhancedKeyboard("ctrl+m")).toBe(true);
+    expect(mod.requiresEnhancedKeyboard("ctrl+b")).toBe(false);
+  });
+
+  it("advertises Ctrl+B for voice input on legacy terminals and Ctrl+B / Ctrl+M with protocol", async () => {
+    const mod = await import("../config/keybindings.js");
+    const withoutProtocol = mod.formatUsableKeybinding(mod.DEFAULT_KEYBINDINGS, "toggleVoiceInput", false);
+    const withProtocol = mod.formatUsableKeybinding(mod.DEFAULT_KEYBINDINGS, "toggleVoiceInput", true);
+
+    expect(withoutProtocol).toBe("Ctrl+B");
+    expect(withProtocol).toBe("Ctrl+B / Ctrl+M");
   });
 });

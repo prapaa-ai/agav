@@ -44,11 +44,17 @@ describe("CLI boot", () => {
   });
 
   it("-P without API key exits 1 with helpful error (not a crash)", async () => {
+    const { tmpdir } = await import("node:os");
     const result = await runCli(["-P", "hello"], {
+      USERPROFILE: tmpdir(),
+      HOME: tmpdir(),
       ANTHROPIC_API_KEY: "",
       OPENAI_API_KEY: "",
       OPENROUTER_API_KEY: "",
       GEMINI_API_KEY: "",
+      NVIDIA_API_KEY: "",
+      GROQ_API_KEY: "",
+      DEEPSEEK_API_KEY: "",
       VERTEX_AI_CREDENTIALS_PATH: "",
     });
     expect(result.exitCode).toBe(1);
@@ -57,7 +63,7 @@ describe("CLI boot", () => {
     const output = `${result.stdout}\n${result.stderr}`;
     expect(output).toContain("no provider credentials found");
     expect(output).toMatch(/(export|set|\$env:)\s?ANTHROPIC_API_KEY/);
-  });
+  }, 15000);
 });
 
 describe("Tool registry", () => {

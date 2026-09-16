@@ -5,6 +5,10 @@ import { join } from "node:path";
 
 vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
+  spawn: vi.fn(() => ({
+    unref: vi.fn(),
+    once: vi.fn(),
+  })),
 }));
 
 vi.mock("../utils/open-external.js", () => ({

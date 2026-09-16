@@ -22,6 +22,7 @@ import { isInternalUserMessage } from "./agent/internal-prompts.js";
 import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
+import { RepoMapView } from "./components/repo-map-view.js";
 import { saveSession } from "./config/history.js";
 import {
   type Attachment,
@@ -143,6 +144,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const agentsTUIResolveRef = useRef<(() => void) | null>(null);
   const [skillsTUIActive, setSkillsTUIActive] = useState(false);
   const skillsTUIResolveRef = useRef<(() => void) | null>(null);
+  const [repoMapTUIActive, setRepoMapTUIActive] = useState(false);
+  const [repoMapOptions, setRepoMapOptions] = useState<{ budget?: number; focus?: string }>({});
+  const repoMapTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
@@ -543,7 +547,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     // while a turn is in flight.
     if (preview) {
       if (key.escape) { setPreview(null); return; }
-      if (char === "c" && ((!key.ctrl && !key.meta && !key.super) || key.super)) {
+      if (char === "c" && (key.ctrl || key.meta || key.super)) {
         if (stdout) writeClipboard(stdout, preview.text);
         showStatusLine("Copied preview to clipboard.");
         return;
@@ -776,6 +780,11 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             skillsTUIResolveRef.current = onDone;
             setSkillsTUIActive(true);
           },
+          showRepoMapTUI: (onDone: () => void, options?: { budget?: number; focus?: string }) => {
+            repoMapTUIResolveRef.current = onDone;
+            setRepoMapOptions(options ?? {});
+            setRepoMapTUIActive(true);
+          },
         });
 
         setRunningSkillName(null);
@@ -820,13 +829,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         const { getLockedAgent } = await import("./commands/agent-lock.js");
         const lock = getLockedAgent();
         if (lock) {
+          const extraBlocks: ContentBlock[] = attachments.map((attachment) => ({ ...attachment.contentBlock }));
           const llmText = trimmed || "See attached content";
+          const imageIds = attachments.filter((a) => a.kind === "image").map((a) => a.id);
+          if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => {});
           setInput("");
           setAttachments([]);
+          lastPasteRef.current = null;
           setShowToolDetail(false);
           setPsResponse(undefined);
           setSystemMessages([]);
-          submitToAgent(lock.name, llmText, trimmed, lock.full);
+          submitToAgent(lock.name, llmText, trimmed, lock.full, extraBlocks);
           return;
         }
       }
@@ -893,6 +906,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     const step = event.ctrl ? Math.max(1, Math.floor(documentHeight / 2)) : 3;
     docControls.current?.scrollBy(event.direction === "up" ? step : -step);
   }, [documentHeight]);
+
+  const copyShortcutLabel = process.platform === "darwin" ? "⌘C" : "Ctrl+C";
 
   return (
     // Pinned to the terminal height so the frame can never grow past the screen
@@ -1066,7 +1081,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         <AttachmentPreview
           content={preview}
           closeKey="Esc"
-          copyKey="c"
+          copyKey={copyShortcutLabel}
           columns={termCols}
         />
       )}
@@ -1114,6 +1129,20 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             setInput("");
             const resolve = skillsTUIResolveRef.current;
             skillsTUIResolveRef.current = null;
+            resolve?.();
+          }}
+        />
+      )}
+      {repoMapTUIActive && (
+        <RepoMapView
+          initialBudget={repoMapOptions.budget}
+          focusFile={repoMapOptions.focus}
+          onExit={() => {
+            setRepoMapTUIActive(false);
+            setPickerActive(false);
+            setInput("");
+            const resolve = repoMapTUIResolveRef.current;
+            repoMapTUIResolveRef.current = null;
             resolve?.();
           }}
         />

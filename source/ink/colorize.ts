@@ -22,15 +22,21 @@ const colorize = (
 
 	if (isNamedColor(color)) {
 		if (type === "foreground") {
-			return (chalk as unknown as Record<string, (s: string) => string>)[
-				color
-			]!(str);
+			const method = (chalk as any)[color];
+			if (typeof method === "function") {
+				return method(str);
+			}
+
+			return str;
 		}
 
 		const methodName = `bg${color[0]!.toUpperCase() + color.slice(1)}`;
-		return (chalk as unknown as Record<string, (s: string) => string>)[
-			methodName
-		]!(str);
+		const method = (chalk as any)[methodName];
+		if (typeof method === "function") {
+			return method(str);
+		}
+
+		return str;
 	}
 
 	if (color.startsWith("#")) {

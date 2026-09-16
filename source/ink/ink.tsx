@@ -376,12 +376,14 @@ export default class Ink {
 	private mount(): void {
 		const {stdout, stdin} = this.options;
 
-		if (this.alternateScreen) {
+		if (this.interactive && this.alternateScreen) {
 			stdout.write(ENTER_ALT_SCREEN);
 		}
 
-		stdout.write(ENABLE_MOUSE_TRACKING);
-		stdout.write(HIDE_CURSOR);
+		if (this.interactive) {
+			stdout.write(ENABLE_MOUSE_TRACKING);
+			stdout.write(HIDE_CURSOR);
+		}
 
 		// Pin the kitty keyboard protocol mode if requested. Only force-enable
 		// when both streams are TTYs so we don't emit escapes into pipes/files.
@@ -551,9 +553,11 @@ export default class Ink {
 		}
 
 		this.isBracketedPasteEnabled = shouldEnable;
-		this.options.stdout.write(
-			shouldEnable ? ENABLE_BRACKETED_PASTE : DISABLE_BRACKETED_PASTE,
-		);
+		if (this.interactive) {
+			this.options.stdout.write(
+				shouldEnable ? ENABLE_BRACKETED_PASTE : DISABLE_BRACKETED_PASTE,
+			);
+		}
 	};
 
 	private readonly calculateLayout = (): void => {
@@ -626,6 +630,7 @@ export default class Ink {
 			// A raw-stdout caller commonly pauses stdin on its way out, which
 			// would leave Ink deaf now that its listener is back.
 			if (this.isRawModeEnabled && stdin.isTTY) {
+				stdin.setRawMode(true);
 				stdin.resume();
 			}
 
@@ -1349,11 +1354,13 @@ export default class Ink {
 			stdout.write("\x1b[<u");
 		}
 
-		stdout.write(DISABLE_MOUSE_TRACKING);
-		stdout.write(SHOW_CURSOR);
+		if (this.interactive) {
+			stdout.write(DISABLE_MOUSE_TRACKING);
+			stdout.write(SHOW_CURSOR);
 
-		if (this.alternateScreen) {
-			stdout.write(EXIT_ALT_SCREEN);
+			if (this.alternateScreen) {
+				stdout.write(EXIT_ALT_SCREEN);
+			}
 		}
 
 		if (error) {

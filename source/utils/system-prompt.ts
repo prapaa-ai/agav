@@ -56,12 +56,14 @@ const STATIC_BASE = [
   "- NEVER edit build output files (build/, dist/ directories). They are generated artifacts.",
   "",
   "HOW TO WORK:",
-  "- EXPLORE FIRST: Before making ANY changes, thoroughly explore the entire working directory. List all files and directories, especially test/, tests/, verifier/, expected/, and any config or data files. Read test files, verifier scripts, expected output files, and constraint files (like synonyms.txt, config.yaml, etc.) to understand the EXACT success criteria before you start editing.",
-  "- Use `overview` first to understand the codebase structure before diving into specific files.",
-  "- Use `grep_search` to find where functions, classes, or patterns are defined and used.",
-  "- Read the code around the area you plan to change — understand the context, not just the line.",
-  "- If test or verifier files exist, READ THEM FIRST. They define what 'correct' means. Test assertions tell you the exact constraints, allowed inputs, expected outputs, and edge cases. Understanding these before coding prevents wasted iterations.",
-  "- MANDATORY: After EVERY code edit, run the relevant tests to verify. Detect the test framework from the project (e.g. vitest, jest, pytest, cargo test, go test) and run accordingly. Do NOT consider a fix complete until you have seen test output. If you skip this step, your fix is unverified and likely wrong.",
+  "- TASK DISCRIMINATION:",
+  "  - Determine whether the user's prompt is asking to modify/fix the existing codebase in the current working directory, OR asking to create a completely new, independent application, website, script, or tool.",
+  "  - When asked to build a NEW standalone project, website, or script that is unrelated to the current repository: DO NOT waste time searching the current codebase for unrelated domain keywords, reading unrelated repository configs, or running the current repository's test suites. Focus immediately on scaffolding and implementing the user's requested project cleanly (in a dedicated subfolder or as directed).",
+  "- EXISTING CODEBASE TASKS:",
+  "  - EXPLORE FIRST: When working on the existing codebase, explore relevant parts of the working directory before making changes. Use `overview` or `grep_search` to understand existing patterns and structure.",
+  "  - Read the code around the area you plan to change — understand the context, not just the line.",
+  "  - If test or verifier files exist for the component being changed, READ THEM FIRST. They define what 'correct' means. Test assertions tell you the exact constraints, allowed inputs, expected outputs, and edge cases.",
+  "  - MANDATORY: After modifying existing codebase files, run the relevant tests to verify.",
   "- When fixing bugs, follow this exact loop:",
   "  1) Read the failing test source to understand what it asserts.",
   "  2) Run the failing test to see the current error message.",
@@ -84,6 +86,7 @@ const STATIC_BASE = [
   "- A complex task can be broken into self-contained pieces that don't depend on each other",
   "- You need to investigate or modify different parts of the codebase simultaneously",
   "Each subagent gets its own context and can use all the same tools. Provide each subagent with a clear, self-contained task description including relevant file paths and context.",
+  "- To conclude your task, simply stop issuing tool calls and deliver your final summary directly in text. Do not invoke nonexistent tools like `finish` or `done`.",
   "",
   "COMMUNICATION:",
   "- Be concise and direct. When the user asks you to do something, do it — don't just explain how.",
@@ -129,6 +132,16 @@ export async function refreshStableContext(mcpManager?: MCPManager): Promise<str
     parts.push(skillCatalog);
   }
 
+  try {
+    const { RepoMapEngine } = await import("../repomap/engine.js");
+    const result = await RepoMapEngine.getInstance().generateStableMap(800);
+    if (result && result.text && result.text.trim()) {
+      parts.push("Repository Map (Architectural Structure & Key Symbols):\n" + result.text);
+    }
+  } catch {
+    // Ignore error if repomap generation fails
+  }
+
   return parts.join("\n\n");
 }
 
@@ -165,6 +178,22 @@ export async function refreshVolatileContext(userMessage?: string): Promise<{ co
     const agentCatalog = buildAgentCatalog(agents);
     if (agentCatalog) {
       parts.push(agentCatalog);
+    }
+  }
+
+  if (userMessage) {
+    try {
+      const { RepoMapEngine } = await import("../repomap/engine.js");
+      const engine = RepoMapEngine.getInstance();
+      const seeds = await engine.extractSeeds(userMessage);
+      if (seeds.length > 0) {
+        const focusMap = await engine.generateFocusMap(seeds, 300);
+        if (focusMap && focusMap.text && focusMap.text.trim()) {
+          parts.push("Focused Symbol Context:\n" + focusMap.text);
+        }
+      }
+    } catch {
+      // Ignore errors in volatile focus map generation
     }
   }
 

@@ -95,7 +95,7 @@ describe("startup provider and model resolution", () => {
         cliProvider: "gemini",
         session: { provider: "removed-provider", model: "old-model" },
       })
-    ).toMatchObject({ provider: "gemini", model: "gemini-3.5-flash-lite" });
+    ).toMatchObject({ provider: "gemini", model: "gemini-flash-lite-latest" });
   });
 
   it("auto-selects an available provider only for an unpinned startup", () => {

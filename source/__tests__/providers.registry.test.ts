@@ -127,6 +127,28 @@ describe("createProvider registry", () => {
     expect(provider.name).toBe("vertex-ai");
   });
 
+  it("creates Groq provider (wrapped in OpenAIProvider) for groq", () => {
+    const config: AgavConfig = {
+      ...baseConfig,
+      provider: "groq",
+      groqApiKey: "gsk_test_key_12345",
+    };
+
+    const provider = createProvider(config);
+    expect(provider).toBeInstanceOf(RetryProvider);
+    expect(provider.name).toBe("groq");
+  });
+
+  it("throws when Groq credentials are missing", () => {
+    const config: AgavConfig = {
+      ...baseConfig,
+      provider: "groq",
+      groqApiKey: undefined,
+    };
+
+    expect(() => createProvider(config)).toThrow(/Groq API key not found/);
+  });
+
   it("throws on unsupported provider", () => {
     const config: any = {
       ...baseConfig,

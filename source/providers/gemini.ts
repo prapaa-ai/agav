@@ -35,13 +35,21 @@ function debugLog(entry: Record<string, unknown>): void {
   }
 }
 
+const SKIP_THOUGHT_SIGNATURE_VALIDATOR = "skip_thought_signature_validator";
+
 interface GeminiPart {
   text?: string;
-  functionCall?: { name: string; args: Record<string, unknown> };
+  functionCall?: {
+    name: string;
+    args: Record<string, unknown>;
+    thought_signature?: string;
+    thoughtSignature?: string;
+  };
   functionResponse?: { name: string; response: Record<string, unknown> };
   inlineData?: { mimeType: string; data: string };
   thought?: boolean;
   thought_signature?: string;
+  thoughtSignature?: string;
   [key: string]: unknown;
 }
 
@@ -131,7 +139,10 @@ export class GeminiProvider implements LLMProvider {
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Gemini API error ${res.status}: ${text}`);
+      const err: any = new Error(`Gemini API error ${res.status}: ${text}`);
+      err.status = res.status;
+      err.statusCode = res.status;
+      throw err;
     }
 
     yield { type: "message_start" };
@@ -332,7 +343,7 @@ export class GeminiProvider implements LLMProvider {
           }
           this.pushContent(result, "model", rawParts);
         } else {
-          // Fallback: reconstruct from ContentBlocks (no thought signatures — may fail on resume)
+          // Fallback: reconstruct from ContentBlocks (inject official sentinel for missing thought signatures)
           const parts: GeminiPart[] = [];
           for (const block of msg.content) {
             if (block.type === "text" && block.text) {
@@ -345,7 +356,11 @@ export class GeminiProvider implements LLMProvider {
                 functionCall: {
                   name: block.toolName!,
                   args: (block.toolInput ?? {}) as Record<string, unknown>,
+                  thought_signature: SKIP_THOUGHT_SIGNATURE_VALIDATOR,
+                  thoughtSignature: SKIP_THOUGHT_SIGNATURE_VALIDATOR,
                 },
+                thought_signature: SKIP_THOUGHT_SIGNATURE_VALIDATOR,
+                thoughtSignature: SKIP_THOUGHT_SIGNATURE_VALIDATOR,
               });
             }
           }
@@ -361,6 +376,21 @@ export class GeminiProvider implements LLMProvider {
 
   // Gemini requires strict user/model alternation — merge consecutive same-role messages
   private pushContent(result: GeminiContent[], role: "user" | "model", parts: GeminiPart[]): void {
+    // Ensure any functionCall in model content has a thought signature for Gemini 2.5/3 validation
+    if (role === "model") {
+      for (const part of parts) {
+        if (part.functionCall) {
+          if (!part.thought_signature && !part.thoughtSignature) {
+            part.thought_signature = SKIP_THOUGHT_SIGNATURE_VALIDATOR;
+            part.thoughtSignature = SKIP_THOUGHT_SIGNATURE_VALIDATOR;
+          }
+          if (!(part.functionCall as any).thought_signature && !(part.functionCall as any).thoughtSignature) {
+            (part.functionCall as any).thought_signature = SKIP_THOUGHT_SIGNATURE_VALIDATOR;
+            (part.functionCall as any).thoughtSignature = SKIP_THOUGHT_SIGNATURE_VALIDATOR;
+          }
+        }
+      }
+    }
     const last = result[result.length - 1];
     if (last && last.role === role) {
       last.parts.push(...parts);

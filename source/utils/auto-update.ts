@@ -19,9 +19,10 @@ const REPO = "prapaa-ai/agav";
  * Release assets are fetched from the Cloudflare mirror first and GitHub second,
  * matching install.sh / install.ps1. The mirror (releases.agav.dev, backed by
  * R2) is a strict superset of GitHub — it proxies GitHub for anything not yet
- * mirrored — and GitHub stays as an independent second origin. The digest is
- * checked against whichever origin served the bytes, so a bad mirror can never
- * cause an unverified self-update. Set AGAV_MIRROR_BASE="" to use GitHub only.
+ * mirrored — and GitHub stays as an independent second origin. The expected
+ * SHA-256 digest is ALWAYS fetched from the trusted GitHub release origin
+ * (never from the mirror or AGAV_MIRROR_BASE), and reused to validate binary
+ * bytes downloaded from any origin. Set AGAV_MIRROR_BASE="" to use GitHub only.
  */
 const DEFAULT_MIRROR_BASE = "https://releases.agav.dev";
 const GITHUB_BASE = `https://github.com/${REPO}/releases/download`;
@@ -238,10 +239,12 @@ export async function downloadBinary(version: string, label?: string): Promise<s
   try {
     await ensureDir(AGAV_DIR);
 
-    // Try each origin in turn — the Cloudflare mirror first, then GitHub. Each
-    // origin is fully self-contained: download the binary AND verify it against
-    // that same origin's .sha256, so a mirror that serves a stale or corrupt
-    // binary is caught and we move on to GitHub rather than installing it.
+    // Try each origin in turn — the Cloudflare mirror first, then GitHub.
+    // Binary bytes may be downloaded from any configured mirror or fallback,
+    // but the expected SHA-256 digest is ALWAYS fetched from the official
+    // trusted GitHub release origin (never from a mirror or AGAV_MIRROR_BASE).
+    // The single GitHub-published digest is reused across all origin attempts.
+    let expectedHash: string | null = null;
     for (const base of assetBaseUrls(version)) {
       const url = `${base}/${binaryName}`;
 
@@ -264,9 +267,17 @@ export async function downloadBinary(version: string, label?: string): Promise<s
       // Verify against the published checksum before this ever becomes
       // executable. We are about to replace our own binary and re-exec it, so
       // an unverified download is a code-execution primitive. Fail closed: if
-      // this origin's .sha256 is missing or doesn't match, discard and try the
-      // next origin rather than installing an unverified binary.
-      if (!(await verifyChecksum(fileHash, `${url}.sha256`))) {
+      // the official GitHub .sha256 is missing or doesn't match, discard and
+      // try the next origin rather than installing an unverified binary.
+      //
+      // Security hardening (Task 1.1): The expected SHA-256 digest is ALWAYS
+      // fetched from the official trusted GitHub release origin, NEVER from
+      // `${url}.sha256` or `AGAV_MIRROR_BASE`. The single GitHub-published
+      // digest is reused to validate binary bytes from any mirror or fallback.
+      if (!expectedHash) {
+        expectedHash = await fetchExpectedChecksum(`${GITHUB_BASE}/${version}/${binaryName}.sha256`);
+      }
+      if (!expectedHash || !verifyChecksum(fileHash, expectedHash)) {
         await rm(tmpPath, { force: true }).catch(() => {});
         continue;
       }
@@ -285,27 +296,38 @@ export async function downloadBinary(version: string, label?: string): Promise<s
 }
 
 /**
- * Compare a pre-computed hash against the release's published .sha256 asset.
+ * Fetch and parse the published SHA-256 digest from the official GitHub release origin.
+ *
+ * Releases publish a `.sha256` asset for each binary. The expected digest
+ * must always originate from GitHub Releases directly, never from a mirror or
+ * user-configurable AGAV_MIRROR_BASE.
+ */
+async function fetchExpectedChecksum(checksumUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch(checksumUrl, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return null;
+    // Format is `<hex>  <filename>` (sha256sum output).
+    const expected = (await res.text()).trim().split(/\s+/)[0]?.toLowerCase();
+    if (!expected || !/^[a-f0-9]{64}$/.test(expected)) return null;
+    return expected;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compare an actual SHA-256 hex digest against the expected digest.
  *
  * Accepts the hex digest directly (computed inline during the download stream)
  * instead of re-reading the file from disk. The previous implementation ran
  * sha256File() on the ~100 MB decompressed binary, which was the main source
  * of the delay users saw after the download progress bar completed.
  */
-async function verifyChecksum(actualHex: string, checksumUrl: string): Promise<boolean> {
-  try {
-    const res = await fetch(checksumUrl, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) return false;
-    // Format is `<hex>  <filename>` (sha256sum output).
-    const expected = (await res.text()).trim().split(/\s+/)[0]?.toLowerCase();
-    if (!expected || !/^[a-f0-9]{64}$/.test(expected)) return false;
-    return actualHex.toLowerCase() === expected;
-  } catch {
-    return false;
-  }
+function verifyChecksum(actualHex: string, expectedHex: string): boolean {
+  return actualHex.toLowerCase() === expectedHex.toLowerCase();
 }
 
 export function getCurrentBinaryPath(): string | null {

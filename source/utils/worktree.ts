@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, exec } from "node:child_process";
 import { join } from "node:path";
 
 function run(args: string[], cwd?: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
@@ -9,9 +9,9 @@ function run(args: string[], cwd?: string): Promise<{ stdout: string; stderr: st
   });
 }
 
-function runShell(command: string, cwd?: string): Promise<{ stdout: string; exitCode: number }> {
+export function runShell(command: string, cwd?: string): Promise<{ stdout: string; exitCode: number }> {
   return new Promise((resolve) => {
-    execFile("/bin/sh", ["-c", command], { timeout: 15000, cwd }, (err, stdout) => {
+    exec(command, { timeout: 15000, cwd, windowsHide: true }, (err, stdout) => {
       resolve({ stdout: (stdout ?? "").trim(), exitCode: err ? 1 : 0 });
     });
   });

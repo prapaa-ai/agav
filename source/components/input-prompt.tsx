@@ -7,6 +7,7 @@ import { writeClipboard } from "../ink/termio/clipboard.js";
 import { readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { ATTACHMENT_TILE_RE, attachmentTileScanner, attachmentTileForId } from "../utils/attachments.js";
+import { VoiceInputController, type AudioRecordingState } from "../voice/index.js";
 
 /** Metadata for a slash command suggestion. */
 export interface CommandInfo {
@@ -57,6 +58,26 @@ const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules", "build", "dist"]);
 
 /** Default prompt prefix width: `"❯ "` is 2 chars. */
 const DEFAULT_PREFIX_WIDTH = 2;
+
+/** Dynamic audio activity waveform animation frames */
+const WAVEFORM_FRAMES = [
+  " ▂▃▅▆▇▆▅▃ ",
+  "▂▃▅▆▇▆▅▃ ▂",
+  "▃▅▆▇▆▅▃ ▂▃",
+  "▅▆▇▆▅▃ ▂▃▅",
+  "▆▇▆▅▃ ▂▃▅▆",
+  "▇▆▅▃ ▂▃▅▆▇",
+  "▆▅▃ ▂▃▅▆▇▆",
+  "▅▃ ▂▃▅▆▇▆▅",
+  "▃ ▂▃▅▆▇▆▅▃",
+];
+
+/** A single rendered row produced by wrapping the prompt text across terminal columns. */
+export interface WrappedLine {
+  text: string;
+  offset: number;
+  isFirst: boolean;
+}
 
 /** Describes the active @file token under the cursor. */
 interface ActiveFileToken {
@@ -279,10 +300,91 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
+  const lockPrefix = agentLock ? `${agentLock} › ` : "";
+  const prefixWidth = agentLock ? stringWidth(lockPrefix) : DEFAULT_PREFIX_WIDTH;
   /** The box holding the text rows, for turning a click into a buffer offset. */
   const linesRef = useRef<DOMElement | null>(null);
   /** Current wrapped lines, kept in a ref so container-level mouse handlers don't need new closures each render. */
-  const wrappedLinesRef = useRef<{ text: string; offset: number; isFirst: boolean }[]>([]);
+  const wrappedLinesRef = useRef<WrappedLine[]>([]);
+
+  // ---------------------------------------------------------------------------
+  // Voice recording and STT state
+  // ---------------------------------------------------------------------------
+  const [voiceState, setVoiceState] = useState<AudioRecordingState>(() => {
+    try {
+      return VoiceInputController.getInstance().getState();
+    } catch {
+      return "idle";
+    }
+  });
+  const [pulse, setPulse] = useState(false);
+  const [partialTranscript, setPartialTranscript] = useState("");
+  const [waveformIndex, setWaveformIndex] = useState(0);
+
+  useEffect(() => {
+    try {
+      const controller = VoiceInputController.getInstance();
+      setVoiceState(controller.getState());
+      const unsubState = controller.onStateChange((state) => {
+        setVoiceState(state);
+        if (state === "idle" || state === "error") {
+          setPartialTranscript("");
+        }
+      });
+      const unsubPartial = controller.onPartialTranscript((text) => {
+        setPartialTranscript(text);
+      });
+      return () => {
+        unsubState();
+        unsubPartial();
+      };
+    } catch {
+      return;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (voiceState !== "recording") {
+      setPulse(false);
+      setWaveformIndex(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setPulse((p) => !p);
+      setWaveformIndex((idx) => (idx + 1) % WAVEFORM_FRAMES.length);
+    }, 120);
+    return () => clearInterval(interval);
+  }, [voiceState]);
+
+  const voiceHotkey = formatUsableKeybinding(keybindings, "toggleVoiceInput", enhancedKeyboard) || "Ctrl+B";
+
+  const handleToggleVoice = async () => {
+    try {
+      const controller = VoiceInputController.getInstance();
+      const currentState = controller.getState();
+      if (currentState === "idle" || currentState === "error") {
+        await controller.start();
+      } else if (currentState === "recording") {
+        const text = await controller.stop();
+        if (text && text.trim()) {
+          deleteSelection();
+          const v = liveRef.current.value;
+          const c = Math.min(liveRef.current.cursor, v.length);
+          const before = v.slice(0, c);
+          const after = v.slice(c);
+          const prefix = before.length > 0 && !/\s$/.test(before) ? " " : "";
+          const suffix = after.length > 0 && !/^\s/.test(after) ? " " : "";
+          const toInsert = `${prefix}${text.trim()}${suffix}`;
+          applyEdit(before + toInsert + after, c + toInsert.length);
+          clearSelection();
+        }
+      } else if (currentState === "transcribing") {
+        // Ignore keypresses while transcribing
+      }
+    } catch {
+      // Controller transitions state to error on failure
+    }
+  };
 
   // ---------------------------------------------------------------------------
   // Text selection state.  Selection is tracked as a pair of buffer offsets
@@ -329,12 +431,17 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
   /**
    * Convert a mouse event's x coordinate into a buffer offset for the given
-   * wrapped line.
+   * wrapped line and target row number.
    */
-  const eventToOffset = (event: MouseEventData, wl: { offset: number; text: string }): number => {
+  const eventToOffset = (
+    event: MouseEventData,
+    wl: { offset: number; text: string },
+    row: number = 0,
+  ): number => {
     const rows = linesRef.current;
     if (!rows || rows.internal_x === undefined) return wl.offset;
-    const column = Math.max(0, event.x - rows.internal_x - prefixWidth);
+    const rowPrefixWidth = row === 0 ? prefixWidth : DEFAULT_PREFIX_WIDTH;
+    const column = Math.max(0, event.x - rows.internal_x - rowPrefixWidth);
     let offset = 0;
     let width = 0;
     for (const { segment, index } of segmenter.segment(wl.text)) {
@@ -361,7 +468,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     const relRow = event.y - container.internal_y;
     const idx = Math.max(0, Math.min(relRow, lines.length - 1));
     const wl = lines[idx]!;
-    return eventToOffset(event, wl);
+    return eventToOffset(event, wl, idx);
   };
 
   /**
@@ -527,6 +634,30 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       const { input, key } = normalizeKeyEvent(rawInput, rawKey);
       const match = keyResolverRef.current.feed(input, key);
       if (match.pending) return;
+
+      // Voice input toggle hotkey
+      if (match.action === "toggleVoiceInput") {
+        handleToggleVoice();
+        return;
+      }
+
+      // If transcribing, lock input until transcription completes to avoid race conditions
+      if (voiceState === "transcribing") {
+        return;
+      }
+
+      // If recording, pressing Enter stops recording and inserts transcription
+      if (voiceState === "recording" && (match.action === "submit" || key.return)) {
+        handleToggleVoice();
+        return;
+      }
+
+      if (voiceState === "recording" && match.action === "cancel") {
+        try {
+          VoiceInputController.getInstance().cancel();
+        } catch {}
+        return;
+      }
 
       // Shift+Arrow: extend or create a selection.
       if (key.shift && (key.leftArrow || key.rightArrow)) {
@@ -818,8 +949,6 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   // same wrap table. Measuring against a different width would put the caret
   // somewhere other than where the user aimed.
   const cols = stdout?.columns || 80;
-  const lockPrefix = agentLock ? `${agentLock} › ` : "";
-  const prefixWidth = agentLock ? stringWidth(lockPrefix) : DEFAULT_PREFIX_WIDTH;
   const usable = Math.max(1, cols - prefixWidth);
 
   interface WrappedLine { text: string; offset: number; isFirst: boolean }
@@ -867,8 +996,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   // ---------------------------------------------------------------------------
 
   /** Mouse-down: start a potential selection. */
-  const handleRowMouseDown = (line: WrappedLine) => (event: MouseEventData) => {
-    const offset = snapOutOfAttachment(text, eventToOffset(event, line));
+  const handleRowMouseDown = (line: WrappedLine, row: number = 0) => (event: MouseEventData) => {
+    const offset = snapOutOfAttachment(text, eventToOffset(event, line, row));
     const now = Date.now();
     const MULTI_CLICK_MS = 400;
 
@@ -938,9 +1067,9 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
    * click if there is one, otherwise positions the caret. Selection copy is
    * handled by the container-level mouseUp handler.
    */
-  const handleRowClick = (line: WrappedLine) => (event: MouseEventData) => {
+  const handleRowClick = (line: WrappedLine, row: number = 0) => (event: MouseEventData) => {
     if (!draggingRef.current && clickCountRef.current <= 1) {
-      const rawOffset = eventToOffset(event, line);
+      const rawOffset = eventToOffset(event, line, row);
       const tileId = onOpenAttachment ? attachmentTileAt(text, rawOffset) : null;
       if (tileId !== null) {
         onOpenAttachment!(tileId);
@@ -985,8 +1114,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         const hasSelection = sel !== null && selStart < selEnd;
 
         const rowHandlers = {
-          onClick: handleRowClick(wl),
-          onMouseDown: handleRowMouseDown(wl),
+          onClick: handleRowClick(wl, i),
+          onMouseDown: handleRowMouseDown(wl, i),
         };
 
         if (!text && wl.isFirst) {
@@ -995,6 +1124,11 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
               {renderPrefix(true)}
               <Text inverse> </Text>
               <Text dimColor>{agentLock ? `Ask ${agentLock}...` : "Type a message..."}</Text>
+              {voiceState === "idle" && (
+                <Box onClick={(e) => { e.stopPropagation?.(); handleToggleVoice(); }}>
+                  <Text dimColor>  [{voiceHotkey} 🎤 Mic]</Text>
+                </Box>
+              )}
             </Box>
           );
         }
@@ -1106,6 +1240,40 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       {isMultiline && (
         <Box marginTop={1}>
           <Text dimColor>  {formatKeybinding(keybindings, "submit")} to send · {formatUsableKeybinding(keybindings, "newline", enhancedKeyboard)} for newline</Text>
+        </Box>
+      )}
+      {voiceState !== "idle" && (
+        <Box marginTop={0} flexDirection="column">
+          {voiceState === "recording" ? (
+            <Box flexDirection="column" onClick={(e) => { e.stopPropagation?.(); handleToggleVoice(); }}>
+              <Box>
+                <Text bold color="red">
+                  <Text color={pulse ? "redBright" : "red"}>●</Text> [Recording... Press {voiceHotkey} or Enter to finish]
+                </Text>
+                <Text color="cyanBright"> {WAVEFORM_FRAMES[waveformIndex]}</Text>
+              </Box>
+              {partialTranscript ? (
+                <Box marginTop={0}>
+                  <Text color="greenBright">🎙️  </Text>
+                  <Text color="white" italic>"{partialTranscript}"</Text>
+                </Box>
+              ) : null}
+            </Box>
+          ) : voiceState === "transcribing" ? (
+            <Box flexDirection="column">
+              <Text bold color="yellow">⏳ [Transcribing speech locally...]</Text>
+              {partialTranscript ? (
+                <Box marginTop={0}>
+                  <Text color="greenBright">🎙️  </Text>
+                  <Text dimColor italic>"{partialTranscript}"</Text>
+                </Box>
+              ) : null}
+            </Box>
+          ) : voiceState === "error" ? (
+            <Box onClick={(e) => { e.stopPropagation?.(); handleToggleVoice(); }}>
+              <Text bold color="red">❌ [Voice input error. Press {voiceHotkey} to retry]</Text>
+            </Box>
+          ) : null}
         </Box>
       )}
     </Box>

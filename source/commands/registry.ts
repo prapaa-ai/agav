@@ -25,6 +25,10 @@ import { contextCommand } from "./context.js"
 import { agentsCommand } from "./agents.js"
 import { agentLockCommand } from "./agent-lock.js"
 import { openCommand } from "./open.js"
+import { repoMapCommand } from "./repomap.js"
+import { micCommand } from "./mic.js"
+import { keysCommand } from "./keys.js"
+import { usageCommand } from "./usage.js"
 export { MID_TURN_SAFE_COMMANDS, isCommandAllowedMidTurn } from "./mid-turn.js"
 
 /** Store slash commands and dispatch raw user input to the matching handler. */
@@ -64,6 +68,10 @@ export class CommandRegistry {
     this.register(agentsCommand)
     this.register(agentLockCommand)
     this.register(openCommand)
+    this.register(repoMapCommand)
+    this.register(micCommand)
+    this.register(keysCommand)
+    this.register(usageCommand)
   }
 
   /** Add a command to the registry by name. */

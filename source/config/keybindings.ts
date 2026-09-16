@@ -23,9 +23,37 @@ export type KeybindingAction =
   | "scrollDown"
   | "scrollTop"
   | "scrollBottom"
-  | "exit";
+  | "exit"
+  | "toggleVoiceInput";
 
 export type Keybindings = Record<KeybindingAction, string[]>;
+
+/** User-facing configurable keybindings schema. */
+export interface KeybindingsConfig {
+  cancel?: string[];
+  toggleToolDetail?: string[];
+  togglePlanDetail?: string[];
+  toggleThinking?: string[];
+  newline?: string[];
+  submit?: string[];
+  historyUp?: string[];
+  historyDown?: string[];
+  interrupt?: string[];
+  clearInput?: string[];
+  deleteWordBackward?: string[];
+  editLastPrompt?: string[];
+  retryLastTurn?: string[];
+  openCommandPalette?: string[];
+  showKeybindings?: string[];
+  clearScreen?: string[];
+  scrollUp?: string[];
+  scrollDown?: string[];
+  scrollTop?: string[];
+  scrollBottom?: string[];
+  exit?: string[];
+  /** Toggle native speech-to-text microphone voice input. */
+  toggleVoiceInput?: string[];
+}
 
 const ACTIONS: KeybindingAction[] = [
   "cancel",
@@ -49,6 +77,7 @@ const ACTIONS: KeybindingAction[] = [
   "scrollTop",
   "scrollBottom",
   "exit",
+  "toggleVoiceInput",
 ];
 
 /**
@@ -64,7 +93,7 @@ export const GLOBAL_ACTIONS: KeybindingAction[] = [
 
 export const PROMPT_ACTIONS: KeybindingAction[] = [
   "cancel", "newline", "submit", "historyUp", "historyDown", "clearInput",
-  "deleteWordBackward", "editLastPrompt", "openCommandPalette",
+  "deleteWordBackward", "editLastPrompt", "openCommandPalette", "toggleVoiceInput",
 ];
 
 export const DEFAULT_KEYBINDINGS: Keybindings = {
@@ -94,6 +123,8 @@ export const DEFAULT_KEYBINDINGS: Keybindings = {
   scrollTop: ["shift+meta+up"],
   scrollBottom: ["shift+meta+down"],
   exit: ["ctrl+q"],
+  /** Toggle native speech-to-text microphone voice input. */
+  toggleVoiceInput: ["ctrl+b", "ctrl+m"],
 };
 
 const KEYBINDINGS_PATH = join(homedir(), ".agav", "keybindings.json");
@@ -217,7 +248,10 @@ export function normalizeKeyEvent<K extends InkKey>(input: string, key: K): { in
   if (input === "\n") return { input: "j", key: patchKey(key, { ctrl: true }) };
 
   const withoutMouse = stripMouseReports(input);
-  if (withoutMouse !== input) return { input: withoutMouse, key };
+  if (withoutMouse !== input) {
+    if (!withoutMouse) return { input: "", key };
+    return normalizeKeyEvent(withoutMouse, key);
+  }
 
   const otherKey = XTERM_OTHER_KEY_RE.exec(input);
   if (!otherKey) return { input, key };
@@ -248,7 +282,14 @@ export function normalizeKeyEvent<K extends InkKey>(input: string, key: K): { in
  * Ctrl+Enter into the same bare `\r` a plain Enter sends, so the modifier is
  * unrecoverable. They only arrive when an enhanced keyboard protocol is active.
  */
-const ENHANCED_ONLY_STROKES = new Set(["shift+enter", "ctrl+enter", "ctrl+shift+enter", "shift+escape", "ctrl+escape"]);
+const ENHANCED_ONLY_STROKES = new Set([
+  "shift+enter",
+  "ctrl+enter",
+  "ctrl+shift+enter",
+  "shift+escape",
+  "ctrl+escape",
+  "ctrl+m",
+]);
 
 export function requiresEnhancedKeyboard(binding: string): boolean {
   return binding.split(" ").some((stroke) => ENHANCED_ONLY_STROKES.has(stroke));

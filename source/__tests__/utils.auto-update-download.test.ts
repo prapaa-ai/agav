@@ -95,16 +95,20 @@ afterAll(async () => {
 });
 
 describe("downloadBinary origin fallback", () => {
-  it("downloads from the mirror when it is healthy, never touching GitHub", async () => {
-    installFetch(healthyRoutes(MIRROR));
+  it("downloads from the mirror when it is healthy, verifying checksum via GitHub", async () => {
+    installFetch([
+      ...healthyRoutes(MIRROR),
+      [(u) => u === `${GITHUB}/${VERSION}/${ASSET}.sha256`, () => makeResponse(`${DIGEST}  ${ASSET}`)],
+    ]);
 
     const path = await downloadBinary(VERSION);
 
     expect(path).not.toBeNull();
     expect(await readFile(path as string)).toEqual(BINARY);
-    // Mirror .gz was fetched; no GitHub URL was ever requested.
+    // Mirror .gz was fetched; GitHub binary was NOT requested (only the checksum was verified via GitHub).
     expect(requested.some((u) => u.startsWith(MIRROR))).toBe(true);
-    expect(requested.some((u) => u.startsWith(GITHUB))).toBe(false);
+    expect(requested.some((u) => u === `${GITHUB}/${VERSION}/${ASSET}.gz` || u === `${GITHUB}/${VERSION}/${ASSET}`)).toBe(false);
+    expect(requested.some((u) => u === `${GITHUB}/${VERSION}/${ASSET}.sha256`)).toBe(true);
     await rm(path as string, { force: true });
   });
 
