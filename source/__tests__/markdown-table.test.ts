@@ -91,6 +91,47 @@ describe("wrapStyled", () => {
     expect(visible.filter((l) => l.includes("•")).length).toBe(3);
     for (const line of lines) expect(line.includes("\n")).toBe(false);
   });
+
+  it("preserves leading spaces on source line starts while trimming spaces created by soft wraps", () => {
+    const text = "    const longStatement = callSomeFunctionWithArguments(firstArg, secondArg);";
+    const lines = wrapStyled(text, 30);
+    // Source-line start must preserve its leading 4 spaces
+    expect(lines[0].startsWith("    ")).toBe(true);
+    // Continuation rows must not have leading spaces from soft wraps
+    for (let i = 1; i < lines.length; i++) {
+      expect(lines[i].startsWith(" ")).toBe(false);
+      expect(stringWidth(lines[i])).toBeLessThanOrEqual(30);
+    }
+  });
+
+  it("preserves indentation consistently for nested markdown lists and code blocks", () => {
+    const md = [
+      "* Top level item",
+      "  * Nested item with some long description that wraps across multiple lines",
+      "    * Deeply nested item with another long description that wraps across multiple lines",
+    ].join("\n");
+    const rendered = renderMarkdown(md);
+    const lines = wrapStyled(rendered, 40).map(stripAnsi);
+
+    // Find the bullet lines
+    const bulletLines = lines.filter((l) => l.includes("•"));
+    expect(bulletLines.length).toBe(3);
+
+    // Top-level item, nested item, and deeply nested item should have increasing indentation
+    const topIndent = bulletLines[0].indexOf("•");
+    const nestedIndent = bulletLines[1].indexOf("•");
+    const deeplyNestedIndent = bulletLines[2].indexOf("•");
+
+    expect(topIndent).toBeGreaterThan(0);
+    expect(nestedIndent).toBeGreaterThan(topIndent);
+    expect(deeplyNestedIndent).toBeGreaterThan(nestedIndent);
+
+    // Continuation rows should not have stray leading spaces from soft wrap breaks
+    const nonBulletLines = lines.filter((l) => !l.includes("•") && l.trim().length > 0);
+    for (const line of nonBulletLines) {
+      expect(line.startsWith(" ")).toBe(false);
+    }
+  });
 });
 
 describe("renderMarkdown does not pre-wrap prose (leaves wrapping to a single downstream pass)", () => {

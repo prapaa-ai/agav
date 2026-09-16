@@ -79,6 +79,9 @@ const render = (node: ReactNode, options?: RenderOptions): Instance => {
 			instance.render(node);
 		},
 		unmount: () => {
+			if (instances.get(inkOptions.stdout) === instance) {
+				instances.delete(inkOptions.stdout);
+			}
 			instance.unmount();
 		},
 		waitUntilExit: () => instance.waitUntilExit(),

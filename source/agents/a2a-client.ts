@@ -43,6 +43,7 @@ function parseCommandString(cmd: string): string[] {
 interface A2ARequest {
   task: string;
   context?: Record<string, unknown>;
+  blocks?: import("../agent/conversation.js").ContentBlock[];
 }
 
 /**
@@ -211,7 +212,8 @@ export function stopAllA2AAgents(): void {
 export async function executeA2AAgent(
   agent: AgentDefinition,
   task: string,
-  context?: Record<string, unknown>
+  context?: Record<string, unknown>,
+  blocks?: import("../agent/conversation.js").ContentBlock[]
 ): Promise<string> {
   const key = agent.alias || agent.manifest.name;
 
@@ -231,7 +233,7 @@ export async function executeA2AAgent(
   const endpoint = managed.endpoint;
 
   // Make A2A request
-  const request: A2ARequest = { task, context };
+  const request: A2ARequest = { task, context, ...(blocks && blocks.length > 0 ? { blocks } : {}) };
 
   try {
     const response = await fetch(`${endpoint}/execute`, {

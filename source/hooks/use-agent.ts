@@ -131,7 +131,7 @@ interface UseAgentReturn {
   activePlan: Plan | null;
   refreshPlan: () => void;
   submit: (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason) => Promise<boolean>;
-  submitToAgent: (agentName: string, query: string, displayText: string, fullAccess?: boolean) => Promise<boolean>;
+  submitToAgent: (agentName: string, query: string, displayText: string, fullAccess?: boolean, extraBlocks?: ContentBlock[]) => Promise<boolean>;
   refreshAgentCommands: () => Promise<void>;
   addDisplayMessage: (msg: DisplayMessage) => void;
   cancel: () => void;
@@ -1084,7 +1084,13 @@ export function useAgent(
 
   /** Submit a query directly to a named agent, bypassing the main LLM. */
   const submitToAgent = useCallback(
-    async (agentName: string, query: string, displayText: string, fullAccess?: boolean): Promise<boolean> => {
+    async (
+      agentName: string,
+      query: string,
+      displayText: string,
+      fullAccess?: boolean,
+      extraBlocks?: ContentBlock[],
+    ): Promise<boolean> => {
       if (!provider) {
         setError("No LLM provider configured. Check your API key.");
         return false;
@@ -1092,8 +1098,18 @@ export function useAgent(
       if (submitPendingRef.current) return false;
       submitPendingRef.current = true;
 
-      const { resolveTargetAgent, executeTargetedAgent } = await import("../agents/targeting.js");
-      const resolved = await resolveTargetAgent(agentName);
+      let resolved;
+      let executeTargetedAgent: typeof import("../agents/targeting.js").executeTargetedAgent;
+      try {
+        const targeting = await import("../agents/targeting.js");
+        executeTargetedAgent = targeting.executeTargetedAgent;
+        resolved = await targeting.resolveTargetAgent(agentName);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        submitPendingRef.current = false;
+        return false;
+      }
+
       if ("error" in resolved) {
         setError(resolved.error);
         submitPendingRef.current = false;
@@ -1107,7 +1123,7 @@ export function useAgent(
       ]);
       conversationRef.current.addUserMessage(
         `[Direct query to ${agentName} agent]: ${query}`,
-        undefined,
+        extraBlocks,
         displayText,
         displayText,
       );
@@ -1144,6 +1160,7 @@ export function useAgent(
             provider,
             config: configRef.current,
             signal: abortController.signal,
+            extraBlocks,
             onProgressUpdate: (callId, event) => {
               if (!trackerCache.has(callId)) {
                 trackerCache.set(

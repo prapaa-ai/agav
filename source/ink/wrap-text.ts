@@ -219,18 +219,22 @@ const truncate = (
 		return output;
 	};
 
+	const reverseGraphemes = (value: string): string =>
+		Array.from(graphemes.segment(value), ({segment}) => segment)
+			.reverse()
+			.join("");
+
 	if (position === "start") {
 		const budget = maxWidth - 1;
-		return ellipsis + take([...pieces].reverse(), budget).split("").reverse().join("");
+		return ellipsis + reverseGraphemes(take([...pieces].reverse(), budget));
 	}
 
 	if (position === "middle") {
 		const half = Math.floor((maxWidth - 1) / 2);
 		const start = take(pieces, half);
-		const endPart = take([...pieces].reverse(), maxWidth - 1 - half)
-			.split("")
-			.reverse()
-			.join("");
+		const endPart = reverseGraphemes(
+			take([...pieces].reverse(), maxWidth - 1 - half),
+		);
 		return start + ellipsis + endPart;
 	}
 

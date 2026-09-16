@@ -29,6 +29,7 @@ describe("MCPClient.stop() cleanup", () => {
     let chunkIndex = 0;
     let sseResolve: ((v: any) => void) | null = null;
 
+    let postCount = 0;
     const mockReader = {
       read: async () => {
         if (chunkIndex === 0) {
@@ -36,7 +37,7 @@ describe("MCPClient.stop() cleanup", () => {
           return { done: false, value: new TextEncoder().encode(chunk) };
         }
         if (chunkIndex >= sseChunks.length) {
-          // Block indefinitely — simulates a long-lived SSE stream
+          // Block indefinitely while open — simulates a long-lived SSE stream that stays open
           await new Promise<void>((resolve) => { sseResolve = resolve; });
           return { done: true, value: undefined };
         }
@@ -49,14 +50,17 @@ describe("MCPClient.stop() cleanup", () => {
 
     const fetchMock = vi.fn().mockImplementation(async (_url: string, options: any) => {
       if (options?.method === "POST") {
-        // Release the SSE reader if it's waiting
-        setTimeout(() => {
-          if (sseResolve) {
-            const r = sseResolve;
-            sseResolve = null;
-            r(undefined);
-          }
-        }, 10);
+        postCount++;
+        // Release SSE reader only for initialize (1) and tools/list (2)
+        if (postCount <= 2) {
+          setTimeout(() => {
+            if (sseResolve) {
+              const r = sseResolve;
+              sseResolve = null;
+              r(undefined);
+            }
+          }, 10);
+        }
         return { ok: true, status: 200, text: async () => "" };
       }
       return {
@@ -77,27 +81,42 @@ describe("MCPClient.stop() cleanup", () => {
 
     await client.start();
 
-    // Issue a tool call that will never get a response.
-    // The mock SSE stream will close (reader returns done:true) after 10ms,
-    // which rejects pending requests.  Capture the rejection immediately so
-    // Node doesn't flag an unhandled rejection before we reach our assertion.
+    // Issue a tool call that will never get a response while connection is open.
+    let isSettled = false;
     let rejected: Error | undefined;
-    const callPromise = client.callTool("slow_tool", {}).catch((err: Error) => {
-      rejected = err;
-    });
+    const callPromise = client.callTool("slow_tool", {})
+      .then(() => { isSettled = true; })
+      .catch((err: Error) => {
+        isSettled = true;
+        rejected = err;
+      });
 
-    // Give the POST a moment to be sent and the SSE stream to close.
+    // Give the POST a moment to be sent. The SSE stream remains open.
     await new Promise((r) => setTimeout(r, 50));
+
+    // The tool call should remain unsettled before client.stop()
+    expect(isSettled).toBe(false);
 
     // Now stop the client.
     client.stop();
 
-    // Wait for the promise chain to settle.
-    await callPromise;
+    // Verify that callPromise settles with an error via client.stop() before releasing sseResolve
+    await Promise.race([
+      callPromise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Timeout waiting for callPromise to settle")), 500),
+      ),
+    ]);
 
-    // The request should have been rejected — either by the SSE stream-close
-    // handler or by stop()'s own pending-drain.  The important thing is the
-    // promise settled promptly instead of hanging for 30 seconds.
+    // The request should have been rejected promptly by stop()'s pending-drain.
+    expect(isSettled).toBe(true);
     expect(rejected).toBeInstanceOf(Error);
+
+    // Release the SSE reader afterward for cleanup.
+    if (sseResolve) {
+      const r: (v?: any) => void = sseResolve;
+      sseResolve = null;
+      r();
+    }
   });
 });

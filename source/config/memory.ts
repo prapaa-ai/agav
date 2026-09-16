@@ -24,25 +24,27 @@ export interface MemoryEntry {
   createdAt?: string;
 }
 
-let _cachedGitRoot: string | undefined;
+const _cachedGitRoots = new Map<string, string>();
 
 async function getGitRepoRoot(): Promise<string> {
-  if (_cachedGitRoot !== undefined) return _cachedGitRoot;
+  const cwd = process.cwd();
+  const cached = _cachedGitRoots.get(cwd);
+  if (cached !== undefined) return cached;
   try {
     const root = await new Promise<string>((resolve, reject) => {
       execFile("git", ["rev-parse", "--show-toplevel"], {
         timeout: 3000,
-        cwd: process.cwd(),
+        cwd,
       }, (err, stdout) => {
         if (err) reject(err);
         else resolve(stdout.toString().trim());
       });
     });
-    _cachedGitRoot = root;
+    _cachedGitRoots.set(cwd, root);
     return root;
   } catch {
-    _cachedGitRoot = process.cwd();
-    return _cachedGitRoot;
+    _cachedGitRoots.set(cwd, cwd);
+    return cwd;
   }
 }
 

@@ -215,4 +215,34 @@ describe("session picker rename view", () => {
     stdin.send("\x1b");
     expect(await promise).toBeNull();
   });
+
+  it("drops full grapheme clusters on backspace without corrupting surrogate pairs or emoji clusters", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+
+    stdin.send("r");
+    await tick();
+    stdin.send("A");
+    stdin.send("🌍");
+    stdin.send("👨‍👩‍👧‍👦");
+    await tick();
+
+    // Backspace (\x7f) drops the entire multi-code-point emoji cluster
+    stdin.send("\x7f");
+    await tick();
+
+    // Backspace (\b) drops the surrogate pair 🌍
+    stdin.send("\b");
+    await tick();
+
+    stdin.send("B");
+    await tick();
+    stdin.send("\r");
+    await tick();
+
+    expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", "AB");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
 });

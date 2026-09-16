@@ -543,7 +543,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     // while a turn is in flight.
     if (preview) {
       if (key.escape) { setPreview(null); return; }
-      if (char === "c" && ((!key.ctrl && !key.meta && !key.super) || key.super)) {
+      if (char === "c" && (key.ctrl || key.meta || key.super)) {
         if (stdout) writeClipboard(stdout, preview.text);
         showStatusLine("Copied preview to clipboard.");
         return;
@@ -820,13 +820,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         const { getLockedAgent } = await import("./commands/agent-lock.js");
         const lock = getLockedAgent();
         if (lock) {
+          const extraBlocks: ContentBlock[] = attachments.map((attachment) => ({ ...attachment.contentBlock }));
           const llmText = trimmed || "See attached content";
+          const imageIds = attachments.filter((a) => a.kind === "image").map((a) => a.id);
+          if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => {});
           setInput("");
           setAttachments([]);
+          lastPasteRef.current = null;
           setShowToolDetail(false);
           setPsResponse(undefined);
           setSystemMessages([]);
-          submitToAgent(lock.name, llmText, trimmed, lock.full);
+          submitToAgent(lock.name, llmText, trimmed, lock.full, extraBlocks);
           return;
         }
       }
@@ -893,6 +897,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     const step = event.ctrl ? Math.max(1, Math.floor(documentHeight / 2)) : 3;
     docControls.current?.scrollBy(event.direction === "up" ? step : -step);
   }, [documentHeight]);
+
+  const copyShortcutLabel = process.platform === "darwin" ? "⌘C" : "Ctrl+C";
 
   return (
     // Pinned to the terminal height so the frame can never grow past the screen
@@ -1066,7 +1072,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         <AttachmentPreview
           content={preview}
           closeKey="Esc"
-          copyKey="c"
+          copyKey={copyShortcutLabel}
           columns={termCols}
         />
       )}

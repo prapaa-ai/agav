@@ -58,6 +58,13 @@ const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules", "build", "dist"]);
 /** Default prompt prefix width: `"❯ "` is 2 chars. */
 const DEFAULT_PREFIX_WIDTH = 2;
 
+/** A single rendered row produced by wrapping the prompt text across terminal columns. */
+export interface WrappedLine {
+  text: string;
+  offset: number;
+  isFirst: boolean;
+}
+
 /** Describes the active @file token under the cursor. */
 interface ActiveFileToken {
   start: number;
@@ -279,10 +286,12 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
+  const lockPrefix = agentLock ? `${agentLock} › ` : "";
+  const prefixWidth = agentLock ? stringWidth(lockPrefix) : DEFAULT_PREFIX_WIDTH;
   /** The box holding the text rows, for turning a click into a buffer offset. */
   const linesRef = useRef<DOMElement | null>(null);
   /** Current wrapped lines, kept in a ref so container-level mouse handlers don't need new closures each render. */
-  const wrappedLinesRef = useRef<{ text: string; offset: number; isFirst: boolean }[]>([]);
+  const wrappedLinesRef = useRef<WrappedLine[]>([]);
 
   // ---------------------------------------------------------------------------
   // Text selection state.  Selection is tracked as a pair of buffer offsets
@@ -329,12 +338,17 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
   /**
    * Convert a mouse event's x coordinate into a buffer offset for the given
-   * wrapped line.
+   * wrapped line and target row number.
    */
-  const eventToOffset = (event: MouseEventData, wl: { offset: number; text: string }): number => {
+  const eventToOffset = (
+    event: MouseEventData,
+    wl: { offset: number; text: string },
+    row: number = 0,
+  ): number => {
     const rows = linesRef.current;
     if (!rows || rows.internal_x === undefined) return wl.offset;
-    const column = Math.max(0, event.x - rows.internal_x - prefixWidth);
+    const rowPrefixWidth = row === 0 ? prefixWidth : DEFAULT_PREFIX_WIDTH;
+    const column = Math.max(0, event.x - rows.internal_x - rowPrefixWidth);
     let offset = 0;
     let width = 0;
     for (const { segment, index } of segmenter.segment(wl.text)) {
@@ -361,7 +375,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     const relRow = event.y - container.internal_y;
     const idx = Math.max(0, Math.min(relRow, lines.length - 1));
     const wl = lines[idx]!;
-    return eventToOffset(event, wl);
+    return eventToOffset(event, wl, idx);
   };
 
   /**
@@ -818,8 +832,6 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   // same wrap table. Measuring against a different width would put the caret
   // somewhere other than where the user aimed.
   const cols = stdout?.columns || 80;
-  const lockPrefix = agentLock ? `${agentLock} › ` : "";
-  const prefixWidth = agentLock ? stringWidth(lockPrefix) : DEFAULT_PREFIX_WIDTH;
   const usable = Math.max(1, cols - prefixWidth);
 
   interface WrappedLine { text: string; offset: number; isFirst: boolean }
@@ -867,8 +879,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   // ---------------------------------------------------------------------------
 
   /** Mouse-down: start a potential selection. */
-  const handleRowMouseDown = (line: WrappedLine) => (event: MouseEventData) => {
-    const offset = snapOutOfAttachment(text, eventToOffset(event, line));
+  const handleRowMouseDown = (line: WrappedLine, row: number = 0) => (event: MouseEventData) => {
+    const offset = snapOutOfAttachment(text, eventToOffset(event, line, row));
     const now = Date.now();
     const MULTI_CLICK_MS = 400;
 
@@ -938,9 +950,9 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
    * click if there is one, otherwise positions the caret. Selection copy is
    * handled by the container-level mouseUp handler.
    */
-  const handleRowClick = (line: WrappedLine) => (event: MouseEventData) => {
+  const handleRowClick = (line: WrappedLine, row: number = 0) => (event: MouseEventData) => {
     if (!draggingRef.current && clickCountRef.current <= 1) {
-      const rawOffset = eventToOffset(event, line);
+      const rawOffset = eventToOffset(event, line, row);
       const tileId = onOpenAttachment ? attachmentTileAt(text, rawOffset) : null;
       if (tileId !== null) {
         onOpenAttachment!(tileId);
@@ -985,8 +997,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         const hasSelection = sel !== null && selStart < selEnd;
 
         const rowHandlers = {
-          onClick: handleRowClick(wl),
-          onMouseDown: handleRowMouseDown(wl),
+          onClick: handleRowClick(wl, i),
+          onMouseDown: handleRowMouseDown(wl, i),
         };
 
         if (!text && wl.isFirst) {

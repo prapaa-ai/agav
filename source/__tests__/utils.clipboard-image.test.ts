@@ -124,6 +124,7 @@ describe("getClipboardImage on Linux", () => {
 
   it("downscales a capture larger than the raw-image ceiling", async () => {
     const oversized = Buffer.alloc(MAX_RAW_IMAGE_BYTES + 1, 1);
+    TINY_PNG.subarray(0, 8).copy(oversized, 0);
     const calls: string[] = [];
     mockClipboardTool(calls, "xclip", oversized);
     mockDownscaleImage.mockResolvedValue({
@@ -145,6 +146,7 @@ describe("getClipboardImage on Linux", () => {
 
   it("sends the raw capture when downscaling is unavailable", async () => {
     const oversized = Buffer.alloc(MAX_RAW_IMAGE_BYTES + 1, 1);
+    TINY_PNG.subarray(0, 8).copy(oversized, 0);
     const calls: string[] = [];
     mockClipboardTool(calls, "xclip", oversized);
     mockDownscaleImage.mockResolvedValue(null);

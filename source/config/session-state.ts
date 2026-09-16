@@ -46,6 +46,7 @@ function isValidSessionState(value: unknown): value is SessionState {
     typeof obj.provider === "string" &&
     typeof obj.cwd === "string" &&
     typeof obj.savedAt === "string" &&
+    Number.isFinite(Date.parse(obj.savedAt)) &&
     typeof obj.clean === "boolean"
   );
 }

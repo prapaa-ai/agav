@@ -14,6 +14,7 @@ export interface ClipboardImage {
 const IMAGES_DIR = join(process.cwd(), ".agav", "images");
 const CLIPBOARD_TIMEOUT_MS = 5000;
 const MAX_CLIPBOARD_IMAGE_BYTES = 10 * 1024 * 1024;
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 export async function getClipboardImage(): Promise<ClipboardImage | null> {
   await mkdir(IMAGES_DIR, { recursive: true });
@@ -120,7 +121,7 @@ async function tryLinuxClipboard(tempPath: string): Promise<boolean> {
   for (const [command, args] of readers) {
     try {
       const image = await readClipboardBytes(command, args);
-      if (image.length === 0) continue;
+      if (image.length < 8 || !image.subarray(0, 8).equals(PNG_MAGIC)) continue;
       await writeFile(tempPath, image);
       return true;
     } catch {}

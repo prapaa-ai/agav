@@ -102,13 +102,14 @@ export class VertexAIAuth {
 
   private signAssertion(credentials: ServiceAccountCredentials, tokenUri: string): string {
     const now = Math.floor(Date.now() / 1000);
+    const iat = now - JWT_CLOCK_SKEW_SECONDS;
     const header = base64Url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
     const claims = base64Url(JSON.stringify({
       iss: credentials.client_email,
       scope: CLOUD_PLATFORM_SCOPE,
       aud: tokenUri,
-      iat: now - JWT_CLOCK_SKEW_SECONDS,
-      exp: now + 3600,
+      iat,
+      exp: iat + 3600,
     }));
     const unsigned = `${header}.${claims}`;
     const signer = createSign("RSA-SHA256");
