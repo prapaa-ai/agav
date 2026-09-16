@@ -125,8 +125,8 @@ const ACRONYM_RULES: ReplacementRule[] = [
   { pattern: /(?<!(?:allkeys|volatile)[-_])\b(?:l[\s\-_]*r[\s\-_]*u|lru)\b/gi, replacement: "LRU" },
   // MRU
   { pattern: /\b(?:m[\s\-_]*r[\s\-_]*u|mru)\b/gi, replacement: "MRU" },
-  // LFU
-  { pattern: /\b(?:l[\s\-_]*f[\s\-_]*u|lfu)\b/gi, replacement: "LFU" },
+  // LFU (protect against already normalized allkeys-lfu / volatile-lfu)
+  { pattern: /(?<!(?:allkeys|volatile)[-_])\b(?:l[\s\-_]*f[\s\-_]*u|lfu)\b/gi, replacement: "LFU" },
   // TTL (protect against already normalized volatile-ttl)
   { pattern: /(?<!volatile[-_])\b(?:t[\s\-_]*t[\s\-_]*l|ttl)\b/gi, replacement: "TTL" },
   // TTFT

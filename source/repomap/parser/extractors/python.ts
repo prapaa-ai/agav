@@ -126,7 +126,7 @@ export class PythonExtractor implements LanguageExtractor {
       }
 
       // 3. Functions & Methods: def foo(...) -> ...: or async def foo(...):
-      const defMatch = rawLine.match(/^\s*(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\((.*?)(?:\)\s*(?:->\s*([^:]+))?)?\s*:/);
+      const defMatch = rawLine.match(/^\s*(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\((.*)\)\s*(?:->\s*([^:]+))?\s*:/);
       if (defMatch) {
         const name = defMatch[1]!;
         const isMethod = currentClass !== undefined && indent > currentClass.indent;

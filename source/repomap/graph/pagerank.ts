@@ -68,23 +68,23 @@ export function computeGlobalPageRank(
     }
 
     const nextP = new Map<string, number>();
-    let diff = 0;
-
+    const base = (1.0 - alpha) * v + alpha * danglingMass * v;
     for (const i of fileIds) {
-      let incomingMass = 0;
-      for (const j of fileIds) {
-        const dj = outDegrees.get(j) ?? 0;
-        if (dj > 0) {
-          const aij = adj.get(j)?.get(i) ?? 0;
-          if (aij > 0) {
-            incomingMass += (aij / dj) * (p.get(j) ?? 0);
-          }
-        }
+      nextP.set(i, base);
+    }
+    for (const [j, targets] of adj.entries()) {
+      const dj = outDegrees.get(j) ?? 0;
+      if (dj <= 0) continue;
+      const pj = p.get(j) ?? 0;
+      if (pj === 0) continue;
+      for (const [i, aij] of targets.entries()) {
+        if (aij <= 0) continue;
+        nextP.set(i, (nextP.get(i) ?? 0) + alpha * (aij / dj) * pj);
       }
-
-      const nextVal = (1.0 - alpha) * v + alpha * danglingMass * v + alpha * incomingMass;
-      nextP.set(i, nextVal);
-      diff += Math.abs(nextVal - (p.get(i) ?? 0));
+    }
+    let diff = 0;
+    for (const i of fileIds) {
+      diff += Math.abs((nextP.get(i) ?? 0) - (p.get(i) ?? 0));
     }
 
     p = nextP;
@@ -179,24 +179,23 @@ export function computePersonalizedPageRank(
       }
 
       const nextP = new Map<string, number>();
-      let diff = 0;
-
       for (const i of fileIds) {
-        let incomingMass = 0;
-        for (const j of fileIds) {
-          const dj = outDegrees.get(j) ?? 0;
-          if (dj > 0) {
-            const aij = adj.get(j)?.get(i) ?? 0;
-            if (aij > 0) {
-              incomingMass += (aij / dj) * (p.get(j) ?? 0);
-            }
-          }
-        }
-
         const vi = v.get(i) ?? 0;
-        const nextVal = (1.0 - alpha) * vi + alpha * danglingMass * vi + alpha * incomingMass;
-        nextP.set(i, nextVal);
-        diff += Math.abs(nextVal - (p.get(i) ?? 0));
+        nextP.set(i, (1.0 - alpha) * vi + alpha * danglingMass * vi);
+      }
+      for (const [j, targets] of adj.entries()) {
+        const dj = outDegrees.get(j) ?? 0;
+        if (dj <= 0) continue;
+        const pj = p.get(j) ?? 0;
+        if (pj === 0) continue;
+        for (const [i, aij] of targets.entries()) {
+          if (aij <= 0) continue;
+          nextP.set(i, (nextP.get(i) ?? 0) + alpha * (aij / dj) * pj);
+        }
+      }
+      let diff = 0;
+      for (const i of fileIds) {
+        diff += Math.abs((nextP.get(i) ?? 0) - (p.get(i) ?? 0));
       }
 
       p = nextP;

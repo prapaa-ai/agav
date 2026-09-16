@@ -521,6 +521,11 @@ export class NativeAudioRecorder implements AudioRecorder {
         return resolve();
       }
 
+      // If child already terminated, the "close" event will not fire again
+      if (child.exitCode !== null || child.signalCode !== null) {
+        return resolve();
+      }
+
       const timeout = setTimeout(() => {
         try {
           child.kill("SIGKILL");

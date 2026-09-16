@@ -229,7 +229,7 @@ export class RepoMapEngine {
         graph.addSymbolNode({ ...sym, filePath: file.relativePath });
         graph.addEdge(fileNodeId, sym.id, "containment", 1.0);
 
-        if (sym.parentId) {
+        if (sym.parentId && graph.hasNode(sym.parentId)) {
           graph.addEdge(sym.parentId, sym.id, "containment", 1.0);
         }
 
