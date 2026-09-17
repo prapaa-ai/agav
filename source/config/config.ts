@@ -33,13 +33,14 @@ export interface AgavHooks {
 }
 
 export interface AgavConfig {
-  provider: "anthropic" | "openai" | "openrouter" | "nvidia" | "deepseek" | "ollama" | "gemini" | "vertex-ai";
+  provider: "anthropic" | "openai" | "openrouter" | "nvidia" | "deepseek" | "ollama" | "gemini" | "vertex-ai" | "groq";
   model: string;
   anthropicApiKey?: string;
   openaiApiKey?: string;
   openrouterApiKey?: string;
   nvidiaApiKey?: string;
   deepseekApiKey?: string;
+  groqApiKey?: string;
   openaiApi?: "chat" | "responses";
   // Override the OpenAI provider's base URL to target an OpenAI-compatible
   // endpoint (self-hosted gateway, private deployment, or any vendor that
@@ -69,6 +70,20 @@ export interface AgavConfig {
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
   showThinking?: boolean;
+  anthropicApiKeys?: string[];
+  openaiApiKeys?: string[];
+  openrouterApiKeys?: string[];
+  nvidiaApiKeys?: string[];
+  deepseekApiKeys?: string[];
+  geminiApiKeys?: string[];
+  groqApiKeys?: string[];
+  fallbackMesh?: boolean;
+  fallbackProviders?: string[];
+  fallbackOrder?: string[];
+  maxFallbacks?: number;
+  autoReview?: boolean;
+  reviewCommand?: string;
+  maxReviewRetries?: number;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -235,6 +250,21 @@ const PROJECT_CONFIG_TEMPLATE = {
       },
     },
   },
+  autoReview: {
+    description: "Whether to automatically run project tests after the agent edits code.",
+    type: "boolean",
+    eg: false,
+  },
+  reviewCommand: {
+    description: "Custom test/verification command to run for automated review (e.g. 'pnpm test').",
+    type: "string",
+    eg: "pnpm test",
+  },
+  maxReviewRetries: {
+    description: "Maximum repair turns allowed when automated review tests fail.",
+    type: "number",
+    eg: 3,
+  },
 } as const;
 
 const DEFAULT_CONFIG: AgavConfig = {
@@ -315,6 +345,14 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "nvidiaApiKey",
   "deepseekApiKey",
   "geminiApiKey",
+  "anthropicApiKeys",
+  "openaiApiKeys",
+  "openrouterApiKeys",
+  "nvidiaApiKeys",
+  "deepseekApiKeys",
+  "geminiApiKeys",
+  "groqApiKey",
+  "groqApiKeys",
   "permissionMode",
 ]);
 
@@ -400,6 +438,12 @@ export async function loadConfig(): Promise<AgavConfig> {
     globalConfig.geminiApiKey ??
     DEFAULT_CONFIG.geminiApiKey ?? "",
   ) || undefined;
+  merged.groqApiKey = decrypt(
+    process.env["GROQ_API_KEY"] ??
+    projectConfig.groqApiKey ??
+    globalConfig.groqApiKey ??
+    DEFAULT_CONFIG.groqApiKey ?? "",
+  ) || undefined;
 
   // Vertex AI — the credentials path alone enables the provider; there is no
   // separate on/off flag to keep in sync with it.
@@ -433,13 +477,36 @@ export async function loadConfig(): Promise<AgavConfig> {
     DEFAULT_CONFIG.ollamaApiKey ?? "",
   ) || undefined;
 
+  // Decrypt multi-key arrays loaded from global config
+  if (Array.isArray(globalConfig.anthropicApiKeys)) {
+    merged.anthropicApiKeys = globalConfig.anthropicApiKeys.map((k) => decrypt(String(k))).filter(Boolean);
+  }
+  if (Array.isArray(globalConfig.openaiApiKeys)) {
+    merged.openaiApiKeys = globalConfig.openaiApiKeys.map((k) => decrypt(String(k))).filter(Boolean);
+  }
+  if (Array.isArray(globalConfig.openrouterApiKeys)) {
+    merged.openrouterApiKeys = globalConfig.openrouterApiKeys.map((k) => decrypt(String(k))).filter(Boolean);
+  }
+  if (Array.isArray(globalConfig.nvidiaApiKeys)) {
+    merged.nvidiaApiKeys = globalConfig.nvidiaApiKeys.map((k) => decrypt(String(k))).filter(Boolean);
+  }
+  if (Array.isArray(globalConfig.deepseekApiKeys)) {
+    merged.deepseekApiKeys = globalConfig.deepseekApiKeys.map((k) => decrypt(String(k))).filter(Boolean);
+  }
+  if (Array.isArray(globalConfig.geminiApiKeys)) {
+    merged.geminiApiKeys = globalConfig.geminiApiKeys.map((k) => decrypt(String(k))).filter(Boolean);
+  }
+  if (Array.isArray(globalConfig.groqApiKeys)) {
+    merged.groqApiKeys = globalConfig.groqApiKeys.map((k) => decrypt(String(k))).filter(Boolean);
+  }
+
   return merged;
 }
 
 /** Persist config to the global config file, encrypting any API keys present. */
 export async function saveConfig(config: AgavConfig): Promise<void> {
   await ensureDir(AGAV_DIR);
-  const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
+  const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, groqApiKey, ollamaApiKey, ...safe } = config;
   const out: Record<string, unknown> = { ...safe };
   if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
   if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
@@ -447,7 +514,31 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   if (nvidiaApiKey) out.nvidiaApiKey = encrypt(nvidiaApiKey);
   if (deepseekApiKey) out.deepseekApiKey = encrypt(deepseekApiKey);
   if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
+  if (groqApiKey) out.groqApiKey = encrypt(groqApiKey);
   if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
+
+  if (Array.isArray(config.anthropicApiKeys)) {
+    out.anthropicApiKeys = config.anthropicApiKeys.map((k) => encrypt(String(k)));
+  }
+  if (Array.isArray(config.openaiApiKeys)) {
+    out.openaiApiKeys = config.openaiApiKeys.map((k) => encrypt(String(k)));
+  }
+  if (Array.isArray(config.openrouterApiKeys)) {
+    out.openrouterApiKeys = config.openrouterApiKeys.map((k) => encrypt(String(k)));
+  }
+  if (Array.isArray(config.nvidiaApiKeys)) {
+    out.nvidiaApiKeys = config.nvidiaApiKeys.map((k) => encrypt(String(k)));
+  }
+  if (Array.isArray(config.deepseekApiKeys)) {
+    out.deepseekApiKeys = config.deepseekApiKeys.map((k) => encrypt(String(k)));
+  }
+  if (Array.isArray(config.geminiApiKeys)) {
+    out.geminiApiKeys = config.geminiApiKeys.map((k) => encrypt(String(k)));
+  }
+  if (Array.isArray(config.groqApiKeys)) {
+    out.groqApiKeys = config.groqApiKeys.map((k) => encrypt(String(k)));
+  }
+
   await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
 }
 

@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
+import { pushUndo } from "../utils/undo.js";
 
 interface NotebookCell {
   cell_type: string;
@@ -29,8 +30,9 @@ export const readNotebookTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
-    const filePath = resolve(String(input.path));
+  async execute(input, context): Promise<ToolResult> {
+    const cwd = context?.cwd ?? process.cwd();
+    const filePath = resolve(cwd, String(input.path));
     try {
       const raw = await readFile(filePath, "utf-8");
       const nb = JSON.parse(raw) as Notebook;
@@ -76,8 +78,9 @@ export const editNotebookTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
-    const filePath = resolve(String(input.path));
+  async execute(input, context): Promise<ToolResult> {
+    const cwd = context?.cwd ?? process.cwd();
+    const filePath = resolve(cwd, String(input.path));
     const cellIdx = Number(input.cell) - 1;
     const newSource = String(input.source);
 
@@ -103,6 +106,7 @@ export const editNotebookTool: ToolDefinition = {
         cell.outputs = [];
       }
 
+      await pushUndo(filePath, "edit_notebook");
       await writeFile(filePath, JSON.stringify(nb, null, 1), "utf-8");
       return { output: `Updated cell ${cellIdx + 1} in ${filePath}`, isError: false };
     } catch (err) {

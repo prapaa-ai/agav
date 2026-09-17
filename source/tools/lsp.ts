@@ -136,9 +136,10 @@ export const lspTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
+    const cwd = context?.cwd ?? process.cwd();
     const operation = String(input.operation);
-    const filePath = resolve(String(input.path));
+    const filePath = resolve(cwd, String(input.path));
     const line = Number(input.line ?? 0);
     const character = Number(input.character ?? 0);
 

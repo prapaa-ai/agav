@@ -1,16 +1,20 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
-import { computeEditDiff } from "../utils/diff.js";
 import { pushUndo } from "../utils/undo.js";
+import {
+  planAndValidateEdits,
+  writeAtomicFile,
+  type EditHunk,
+} from "../utils/edit-engine.js";
 
 export const editFileTool: ToolDefinition = {
   schema: {
     name: "edit_file",
     description:
-      "Make a surgical edit to a file by replacing a specific string with a new string. " +
-      "The old_string must match exactly (including whitespace and indentation). " +
-      "Only the first occurrence is replaced. Use read_file first to see the current content.",
+      "Make surgical edit(s) to a file by replacing specific target string(s) with new string(s). " +
+      "Supports single edits (old_string, new_string) or atomic multi-block edits (edits array). " +
+      "Resilient to line endings, whitespace, and minor variations. Use read_file first to see the current content.",
     inputSchema: {
       type: "object",
       properties: {
@@ -20,53 +24,105 @@ export const editFileTool: ToolDefinition = {
         },
         old_string: {
           type: "string",
-          description: "The exact string to find and replace (must be unique in the file)",
+          description: "The string to find and replace (must be unique in the file). Required if edits is not provided.",
         },
         new_string: {
           type: "string",
-          description: "The replacement string",
+          description: "The replacement string. Required if edits is not provided.",
+        },
+        edits: {
+          type: "array",
+          description: "Optional list of non-overlapping edits to apply atomically. Each item has old_string (or oldText) and new_string (or newText).",
+          items: {
+            type: "object",
+            properties: {
+              old_string: { type: "string", description: "Text to replace" },
+              new_string: { type: "string", description: "Replacement text" },
+            },
+            required: ["old_string", "new_string"],
+          },
         },
       },
-      required: ["path", "old_string", "new_string"],
+      required: ["path"],
     },
   },
 
-  async execute(input): Promise<ToolResult> {
-    const filePath = resolve(String(input.path));
-    const oldString = String(input.old_string);
-    const newString = String(input.new_string);
+  async execute(input, context): Promise<ToolResult> {
+    const cwd = context?.cwd ?? process.cwd();
+    const filePath = resolve(cwd, String(input.path));
 
-    if (!oldString) {
-      return { output: "old_string cannot be empty", isError: true };
+    let hunks: EditHunk[] = [];
+
+    if (Array.isArray(input.edits) && input.edits.length > 0) {
+      hunks = input.edits.map((e: any) => ({
+        old_string: String(e.old_string ?? e.oldText ?? ""),
+        new_string: String(e.new_string ?? e.newText ?? ""),
+      }));
+    } else if (typeof input.edits === "string") {
+      try {
+        const parsed = JSON.parse(input.edits);
+        if (Array.isArray(parsed)) {
+          hunks = parsed.map((e: any) => ({
+            old_string: String(e.old_string ?? e.oldText ?? ""),
+            new_string: String(e.new_string ?? e.newText ?? ""),
+          }));
+        } else if (parsed && typeof parsed === "object") {
+          hunks = [{
+            old_string: String(parsed.old_string ?? parsed.oldText ?? ""),
+            new_string: String(parsed.new_string ?? parsed.newText ?? ""),
+          }];
+        }
+      } catch {}
+    }
+
+    if (hunks.length === 0) {
+      if (input.old_string === undefined && input.oldText === undefined) {
+        return {
+          output: "Either old_string and new_string, or edits array must be provided",
+          isError: true,
+        };
+      }
+      const oldStr = input.old_string !== undefined ? String(input.old_string) : String(input.oldText ?? "");
+      const newStr = input.new_string !== undefined ? String(input.new_string) : String(input.newText ?? "");
+
+      if (!oldStr) {
+        return { output: "old_string cannot be empty", isError: true };
+      }
+
+      hunks = [{ old_string: oldStr, new_string: newStr }];
+    }
+
+    // Check for empty old_string across all hunks
+    for (let i = 0; i < hunks.length; i++) {
+      if (!hunks[i]!.old_string) {
+        const msg = hunks.length === 1
+          ? "old_string cannot be empty"
+          : `edits[${i}].old_string cannot be empty`;
+        return { output: msg, isError: true };
+      }
     }
 
     try {
       const content = await readFile(filePath, "utf-8");
-      const occurrences = content.split(oldString).length - 1;
+      const editResult = planAndValidateEdits(content, hunks, filePath);
 
-      if (occurrences === 0) {
+      if (!editResult.success) {
         return {
-          output: `String not found in ${filePath}. Make sure old_string matches exactly, including whitespace.`,
+          output: editResult.message,
           isError: true,
         };
       }
 
-      if (occurrences > 1) {
-        return {
-          output: `Found ${occurrences} occurrences of old_string in ${filePath}. Provide more surrounding context to make it unique.`,
-          isError: true,
-        };
-      }
-
-      const diffLines = computeEditDiff(content, oldString, newString);
-      const updated = content.replace(oldString, newString);
+      // Record undo state before modifying disk
       await pushUndo(filePath, "edit_file");
-      await writeFile(filePath, updated, "utf-8");
+
+      // Write atomically to preserve disk integrity
+      await writeAtomicFile(filePath, editResult.updatedContent);
 
       return {
         output: filePath,
         isError: false,
-        diffLines,
+        diffLines: editResult.diffLines,
       };
     } catch (err) {
       return {

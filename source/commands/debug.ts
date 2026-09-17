@@ -3,6 +3,7 @@ import { loadPlan } from "../agent/planner.js";
 import { loadMemories } from "../config/memory.js";
 import { getUndoStack } from "../utils/undo.js";
 import { getSandboxName } from "../utils/sandbox.js";
+import { getDiagnosticsSummary } from "../observability/diagnostics.js";
 
 /** Handles the /debug command. */
 export const debugCommand: SlashCommand = {
@@ -73,6 +74,41 @@ export const debugCommand: SlashCommand = {
     } else {
       for (const memory of memories) {
         lines.push(`  - ${memory.name} [${memory.type}] ${memory.description}`);
+      }
+    }
+
+    const diag = getDiagnosticsSummary();
+    lines.push("");
+    lines.push("Operational diagnostics:");
+    lines.push(`  System health: ${diag.systemHealth.toUpperCase()} (uptime: ${Math.round(diag.uptimeSeconds)}s)`);
+    lines.push(`  Active tasks: ${diag.activeTaskCount}, agents: ${diag.activeAgents}, subagents: ${diag.activeSubagents}`);
+    lines.push(
+      `  Provider calls: ${diag.metrics.counters.provider_request_count} (success: ${diag.metrics.counters.provider_success_count}, fail: ${diag.metrics.counters.provider_failure_count})`,
+    );
+    lines.push(
+      `  Retries: ${diag.metrics.counters.retry_count}, Fallbacks: ${diag.metrics.counters.fallback_count}`,
+    );
+    if (diag.metrics.latencies.provider.count > 0) {
+      lines.push(
+        `  Provider latency (ms): avg=${diag.metrics.latencies.provider.avgMs.toFixed(1)}, min=${diag.metrics.latencies.provider.minMs.toFixed(1)}, max=${diag.metrics.latencies.provider.maxMs.toFixed(1)}`,
+      );
+    }
+    if (Object.keys(diag.providerHealth).length > 0) {
+      lines.push("  Provider status:");
+      for (const [name, p] of Object.entries(diag.providerHealth)) {
+        lines.push(`    - ${name}: [${p.status}]${p.latencyMs ? ` ${p.latencyMs}ms` : ""}${p.error ? ` (${p.error})` : ""}`);
+      }
+    }
+    if (diag.keyPoolHealth.length > 0) {
+      lines.push("  Key pool status:");
+      for (const kp of diag.keyPoolHealth) {
+        lines.push(`    - ${kp.provider}: ${kp.activeKeys}/${kp.totalKeys} active (${kp.cooledDownKeys} cooled down)`);
+      }
+    }
+    if (diag.recentFailures.length > 0) {
+      lines.push("  Recent failures:");
+      for (const f of diag.recentFailures.slice(-5)) {
+        lines.push(`    - [${f.category}] ${f.message}`);
       }
     }
 

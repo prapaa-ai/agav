@@ -25,8 +25,9 @@ export const fileWriteTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
-    const filePath = resolve(String(input.path));
+  async execute(input, context): Promise<ToolResult> {
+    const cwd = context?.cwd ?? process.cwd();
+    const filePath = resolve(cwd, String(input.path));
     const content = String(input.content);
 
     try {

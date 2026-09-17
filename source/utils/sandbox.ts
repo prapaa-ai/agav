@@ -189,33 +189,21 @@ function runUnsandboxed(
   });
 }
 
-const DESTRUCTIVE_PATTERNS = [
-  /\brm\s+-rf\s+[/~]/,
-  /\brm\s+-rf\s+\.\s*$/,
-  /\bgit\s+reset\s+--hard/,
-  /\bgit\s+push\s+--force/,
-  /\bgit\s+push\s+-f\b/,
-  /\bgit\s+clean\s+-[a-z]*f/,
-  /\bgit\s+branch\s+-D\b/,
-  /\bsudo\s+rm\b/,
-  /\bsudo\s+dd\b/,
-  /\bdd\s+if=/,
-  /\bmkfs\./,
-  /\bchmod\s+-R\s+777/,
-  /\bchown\s+-R\b/,
-  /\b>\s*\/dev\/sd/,
-  /\bdropdb\b/i,
-  /\bdrop\s+database\b/i,
-  /\bkillall\b/,
-  /\bpkill\s+-9/,
-  /\bcurl\s+.*\|\s*sh\b/,
-  /\bwget\s+.*\|\s*(sh|bash)\b/,
-  /\btruncate\b.*--size\s+0/,
-];
+import {
+  isDestructiveCommand,
+  isBlockedCommand,
+  analyzeCommandSafety,
+  type CommandSafetyLevel,
+  type CommandAnalysisResult,
+} from "./sandbox-guard.js";
 
-export function isDestructiveCommand(command: string): boolean {
-  return DESTRUCTIVE_PATTERNS.some((p) => p.test(command));
-}
+export {
+  isDestructiveCommand,
+  isBlockedCommand,
+  analyzeCommandSafety,
+  type CommandSafetyLevel,
+  type CommandAnalysisResult,
+};
 
 export interface SandboxOptions {
   command: string;

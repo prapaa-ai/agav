@@ -33,6 +33,7 @@ import {
   selectConfiguredProvider,
   type ProviderName,
 } from "./config/startup.js";
+import { runInteractiveKeySetup } from "./config/key-wizard.js";
 
 const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
@@ -664,16 +665,36 @@ export async function main() {
       keepModel: typeof flags.model === "string",
     });
     if (!selected) {
-      process.stderr.write(`\n  Agav — ${noProviderCredentialsError()}\n\n`);
-      process.exit(1);
+      if (process.stdin.isTTY && !flags.print) {
+        const wizardConfig = await runInteractiveKeySetup(config);
+        if (wizardConfig) {
+          Object.assign(config, wizardConfig);
+        } else {
+          process.stderr.write(`\n  Agav — ${noProviderCredentialsError()}\n\n`);
+          process.exit(1);
+        }
+      } else {
+        process.stderr.write(`\n  Agav — ${noProviderCredentialsError()}\n\n`);
+        process.exit(1);
+      }
+    } else {
+      Object.assign(config, selected);
     }
-    Object.assign(config, selected);
   }
 
-  const configurationError = providerConfigurationError(config);
+  let configurationError = providerConfigurationError(config);
   if (configurationError) {
-    process.stderr.write(`\n  Agav — ${configurationError}\n\n`);
-    process.exit(1);
+    if (process.stdin.isTTY && !flags.print) {
+      const wizardConfig = await runInteractiveKeySetup(config, config.provider);
+      if (wizardConfig) {
+        Object.assign(config, wizardConfig);
+        configurationError = providerConfigurationError(config);
+      }
+    }
+    if (configurationError) {
+      process.stderr.write(`\n  Agav — ${configurationError}\n\n`);
+      process.exit(1);
+    }
   }
 
   // If Ollama is selected without a model, query the local server and choose one.

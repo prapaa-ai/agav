@@ -31,6 +31,8 @@ export type AgentEvent =
 
 import type { DiffLine } from "../utils/diff.js";
 import { computeEditDiff, computeDiff } from "../utils/diff.js";
+import { planAndValidateEdits, type EditHunk } from "../utils/edit-engine.js";
+import { startTurnSnapshot, commitTurnSnapshot, discardTurnSnapshot } from "../utils/undo.js";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -45,7 +47,11 @@ export type ConfirmToolFn = (
 
 import type { PermissionMode } from "../config/config.js";
 import { runHook, getHookForTool } from "./hooks.js";
-import { isDestructiveCommand } from "../utils/sandbox.js";
+import { isDestructiveCommand, isBlockedCommand, analyzeCommandSafety } from "../utils/sandbox.js";
+import { repairAndParseJson, validateToolArgs } from "../utils/json-repair.js";
+import { Reviewer } from "./reviewer.js";
+import { PermissionManager } from "../config/permissions.js";
+import { getContextLimits } from "../utils/tokens.js";
 
 interface LoopParams {
   provider: LLMProvider;
@@ -68,6 +74,13 @@ interface LoopParams {
    * the loop simply never receives mid-turn steers.
    */
   drainSteers?: () => string[];
+  cwd?: string;
+  turnId?: string;
+  parentTurnId?: string;
+  autoReview?: boolean;
+  reviewCommand?: string;
+  maxReviewRetries?: number;
+  permissionManager?: PermissionManager;
 }
 
 // Tools that never need confirmation because they cannot modify the working
@@ -125,9 +138,18 @@ export async function* runAgentLoop(
   params: LoopParams,
 ): AsyncGenerator<AgentEvent> {
   const { provider, conversation, toolRegistry, model, systemPrompt, effort, maxTokens, signal, confirmTool } = params;
+  const loopCwd = params.cwd ?? toolRegistry.getDefaultContext()?.cwd ?? process.cwd();
+  const permissionManager = params.permissionManager ?? (await PermissionManager.load(loopCwd));
+  const turnSnapshot = startTurnSnapshot({
+    id: params.turnId,
+    workspaceRoot: loopCwd,
+    parentTurnId: params.parentTurnId,
+  });
   let permissionMode = params.permissionMode ?? "ask";
   let testRepairAttempts = 0;
   const MAX_REPAIR_ATTEMPTS = 3;
+  let reviewAttempts = 0;
+  const maxReviewAttempts = params.maxReviewRetries ?? 3;
   let madeEdits = false;
   let ranShellAfterEdit = false;
   let lastShellFailed = false;
@@ -194,6 +216,15 @@ export async function* runAgentLoop(
   }
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
+    // Proactive context trimming (P2.3): condense tool outputs older than 2 turns
+    conversation.proactiveTrimToolResults(2);
+
+    // Context threshold monitoring (P2.3): verify context usage under 85% of limit
+    const limits = getContextLimits(model, conversation.getContextWindow());
+    if (conversation.tokenCount >= Math.floor(limits.maxTokens * 0.85)) {
+      await conversation.compactIfNeeded(false, summarize);
+    }
+
     // Auto-compact if conversation is getting long
     const { compacted, droppedCount } = await conversation.compactIfNeeded(false, summarize);
     if (compacted) {
@@ -281,6 +312,7 @@ export async function* runAgentLoop(
             break;
 
           case "error":
+            discardTurnSnapshot(turnSnapshot.id);
             yield { type: "error", error: event.error };
             return;
         }
@@ -298,6 +330,7 @@ export async function* runAgentLoop(
           continue;
         }
       }
+      discardTurnSnapshot(turnSnapshot.id);
       yield {
         type: "error",
         error: err instanceof Error ? err : new Error(String(err)),
@@ -312,11 +345,11 @@ export async function* runAgentLoop(
     }
     const parsedInputs = new Map<string, Record<string, unknown>>();
     for (const [id, call] of toolCalls) {
-      let input: Record<string, unknown> = {};
+      let input: Record<string, unknown>;
       try {
         input = JSON.parse(call.argsJson);
       } catch {
-        input = { raw: call.argsJson };
+        input = repairAndParseJson(call.argsJson);
       }
       parsedInputs.set(id, input);
       assistantContent.push({
@@ -338,6 +371,37 @@ export async function* runAgentLoop(
         conversation.addInternalUserMessage(needsVerify ? NEEDS_VERIFY_PROMPT : VERIFY_FAILED_PROMPT);
         continue;
       }
+
+      // Automated Verification Reviewer Loop (P2.1)
+      if (params.autoReview && madeEdits && reviewAttempts < maxReviewAttempts) {
+        const reviewResult = await Reviewer.runReview({
+          cwd: loopCwd,
+          command: params.reviewCommand,
+        });
+
+        if (!reviewResult.skipped) {
+          if (!reviewResult.passed) {
+            reviewAttempts++;
+            yield {
+              type: "tool_result",
+              toolName: "reviewer",
+              output: `Automated test verification failed (attempt ${reviewAttempts}/${maxReviewAttempts}):\n${reviewResult.failureSnippet ?? reviewResult.summary}`,
+              isError: true,
+            };
+            conversation.addInternalUserMessage(
+              Reviewer.synthesizeRepairPrompt(reviewResult, reviewAttempts, maxReviewAttempts),
+            );
+            continue;
+          } else {
+            yield {
+              type: "tool_result",
+              toolName: "reviewer",
+              output: `Automated test verification passed cleanly in ${reviewResult.durationMs}ms (\`${reviewResult.command}\`).`,
+              isError: false,
+            };
+          }
+        }
+      }
       // A directive queued after the final tool round would otherwise sit in the
       // queue forever — this is the loop's last exit before max-iterations.
       // Deliver it as a fresh user turn so it still reaches the model (and the
@@ -350,6 +414,7 @@ export async function* runAgentLoop(
       if (lateSteers.length > 0) {
         yield { type: "steer_applied", directives: lateSteers };
       }
+      commitTurnSnapshot(turnSnapshot.id);
       yield { type: "turn_complete" };
       return;
     }
@@ -373,6 +438,18 @@ export async function* runAgentLoop(
       }
 
       const tool = params.toolRegistry.get(call.name);
+
+      // Validate parsed/repaired arguments against tool schema if declared
+      if (tool?.schema.inputSchema) {
+        const validation = validateToolArgs(input, tool.schema.inputSchema);
+        if (!validation.valid) {
+          const reason = validation.error!;
+          toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+          yield { type: "tool_result", toolName: call.name, toolCallId: id, output: reason, isError: true };
+          continue;
+        }
+      }
+
       const toolDestructiveFlag = tool?.schema.destructive;
 
       // Only trust destructive:false from builtin tools (SAFE_TOOLS).
@@ -386,15 +463,40 @@ export async function* runAgentLoop(
         isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
       }
 
+      // Hard block: lethal commands are blocked unconditionally
+      if (call.name === "run_command" && isBlockedCommand(String(input.command ?? ""))) {
+        const analysis = analyzeCommandSafety(String(input.command ?? ""));
+        const reason = `Blocked: Command is critically dangerous and cannot be executed (${analysis.reason ?? "catastrophic operation"}).`;
+        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+        yield { type: "tool_result", toolName: call.name, toolCallId: id, output: reason, isError: true };
+        continue;
+      }
+
+      // Granular Persistent Permissions check (.agav/permissions.json)
+      const policyAction = permissionManager.evaluate(call.name, input);
+
+      if (policyAction === "deny") {
+        const reason = `Blocked: Tool '${call.name}' is denied by permission policy (.agav/permissions.json).`;
+        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+        yield { type: "tool_result", toolName: call.name, toolCallId: id, output: reason, isError: true };
+        continue;
+      }
+
+      const policyAllowed = policyAction === "allow";
+      const policyAsk = policyAction === "ask";
+
       const destructiveApproved = isDestructive
-        && isAllowed(call.name, input, params.allowedTools, { requirePattern: true });
+        && (policyAllowed || isAllowed(call.name, input, params.allowedTools, { requirePattern: true }));
       const denyWrites = permissionMode === "deny-writes";
       const trustedSafe = toolDestructiveFlag === false && SAFE_TOOLS.has(call.name);
-      const needsConfirm = (isDestructive && !destructiveApproved)
+      const needsConfirm = !policyAllowed && (
+        policyAsk
+        || (isDestructive && !destructiveApproved)
         || (!SAFE_TOOLS.has(call.name)
           && !trustedSafe
           && permissionMode !== "auto-accept"
-          && !isAllowed(call.name, input, params.allowedTools));
+          && !isAllowed(call.name, input, params.allowedTools))
+      );
       if ((denyWrites && (isDestructive || WRITE_TOOLS.has(call.name))) || (needsConfirm && (denyWrites || !confirmTool))) {
         const reason = denyWrites
           ? "Write operations are denied (--deny-writes mode)."
@@ -414,12 +516,33 @@ export async function* runAgentLoop(
         // Compute diff preview for file-modifying tools
         let previewDiff: DiffLine[] | undefined;
         try {
-          if (call.name === "edit_file" && input.path && input.old_string && input.new_string) {
-            const content = await readFile(resolve(String(input.path)), "utf-8");
-            previewDiff = computeEditDiff(content, String(input.old_string), String(input.new_string));
+          if (call.name === "edit_file" && input.path) {
+            try {
+              const content = await readFile(resolve(loopCwd, String(input.path)), "utf-8");
+              let hunks: EditHunk[] = [];
+              if (Array.isArray(input.edits) && input.edits.length > 0) {
+                hunks = (input.edits as Array<Record<string, unknown>>).map((e) => ({
+                  old_string: String(e["old_string"] ?? e["oldText"] ?? ""),
+                  new_string: String(e["new_string"] ?? e["newText"] ?? ""),
+                }));
+              } else if (input.old_string !== undefined || input.oldText !== undefined) {
+                hunks = [{
+                  old_string: String(input.old_string ?? input.oldText ?? ""),
+                  new_string: String(input.new_string ?? input.newText ?? ""),
+                }];
+              }
+              if (hunks.length > 0) {
+                const plan = planAndValidateEdits(content, hunks, String(input.path));
+                if (plan.success) {
+                  previewDiff = plan.diffLines;
+                } else if (input.old_string && input.new_string) {
+                  previewDiff = computeEditDiff(content, String(input.old_string), String(input.new_string));
+                }
+              }
+            } catch {}
           } else if (call.name === "write_file" && input.path && input.content) {
             try {
-              const oldContent = await readFile(resolve(String(input.path)), "utf-8");
+              const oldContent = await readFile(resolve(loopCwd, String(input.path)), "utf-8");
               previewDiff = computeDiff(oldContent, String(input.content));
             } catch {
               // New file — no diff preview
@@ -454,7 +577,14 @@ export async function* runAgentLoop(
 
       const execResults = await Promise.all(
         entries.map(async (entry) => {
-          const result = await toolRegistry.execute(entry.name, entry.input);
+          const toolContext =
+            params.cwd || (entry.name === "run_command" && approved.has(entry.id))
+              ? {
+                  ...(params.cwd ? { cwd: params.cwd } : {}),
+                  ...(entry.name === "run_command" && approved.has(entry.id) ? { confirmed: true } : {}),
+                }
+              : undefined;
+          const result = await toolRegistry.execute(entry.name, entry.input, toolContext);
           return { ...entry, result };
         }),
       );
@@ -528,5 +658,6 @@ export async function* runAgentLoop(
   if (finalSteers.length > 0) {
     yield { type: "steer_applied", directives: finalSteers };
   }
+  commitTurnSnapshot(turnSnapshot.id);
   yield { type: "turn_complete" };
 }

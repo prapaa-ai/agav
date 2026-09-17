@@ -217,6 +217,58 @@ export class ConversationState {
     return split;
   }
 
+  /**
+   * Proactively condenses large tool output blocks older than `preserveRecentTurns`
+   * into concise diagnostic summaries ([Tool result: X lines, Y bytes]) while preserving
+   * recent tool outputs, assistant turns, and user intent.
+   */
+  proactiveTrimToolResults(preserveRecentTurns = 2): number {
+    let freedTokens = 0;
+    let userTurnsSeen = 0;
+    let cutoffIndex = -1;
+
+    // Scan backwards from tail to locate the boundary of recent user turns
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      if (this.messages[i]!.role === "user") {
+        userTurnsSeen++;
+        if (userTurnsSeen > preserveRecentTurns) {
+          cutoffIndex = i;
+          break;
+        }
+      }
+    }
+
+    if (cutoffIndex < 0) {
+      return 0;
+    }
+
+    for (let i = 0; i <= cutoffIndex; i++) {
+      const msg = this.messages[i]!;
+      if (msg.role !== "user") continue;
+
+      for (const block of msg.content) {
+        if (block.type === "tool_result" && block.toolResult && block.toolResult.length > 300) {
+          const raw = block.toolResult;
+          if (!raw.includes("[Tool result:") && !raw.includes("...(trimmed)")) {
+            const before = estimateTokens(raw, this.model);
+            const lines = raw.split("\n").length;
+            const bytes = Buffer.byteLength(raw, "utf-8");
+            const preview = raw.slice(0, 150).trim();
+            block.toolResult = `${preview}\n\n[Tool result: ${lines} lines, ${bytes} bytes — trimmed to preserve context budget]`;
+            block.toolResultContent = undefined;
+            const after = estimateTokens(block.toolResult, this.model);
+            freedTokens += Math.max(0, before - after);
+          }
+        }
+      }
+    }
+
+    if (freedTokens > 0) {
+      this.invalidateTokenCache();
+    }
+    return freedTokens;
+  }
+
   private trimToolResults(targetTokens: number, preserveRecent: number): number {
     let freed = 0;
     const trimBoundary = Math.max(0, this.messages.length - preserveRecent);

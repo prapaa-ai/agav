@@ -20,8 +20,9 @@ export const listDirectoryTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
-    const dirPath = resolve(String(input.path ?? "."));
+  async execute(input, context): Promise<ToolResult> {
+    const cwd = context?.cwd ?? process.cwd();
+    const dirPath = resolve(cwd, String(input.path ?? "."));
 
     try {
       const entries = await readdir(dirPath);

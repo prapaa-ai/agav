@@ -23,7 +23,8 @@ export type KeybindingAction =
   | "scrollDown"
   | "scrollTop"
   | "scrollBottom"
-  | "exit";
+  | "exit"
+  | "toggleVoiceDictation";
 
 export type Keybindings = Record<KeybindingAction, string[]>;
 
@@ -49,6 +50,7 @@ const ACTIONS: KeybindingAction[] = [
   "scrollTop",
   "scrollBottom",
   "exit",
+  "toggleVoiceDictation",
 ];
 
 /**
@@ -64,7 +66,7 @@ export const GLOBAL_ACTIONS: KeybindingAction[] = [
 
 export const PROMPT_ACTIONS: KeybindingAction[] = [
   "cancel", "newline", "submit", "historyUp", "historyDown", "clearInput",
-  "deleteWordBackward", "editLastPrompt", "openCommandPalette",
+  "deleteWordBackward", "editLastPrompt", "openCommandPalette", "toggleVoiceDictation",
 ];
 
 export const DEFAULT_KEYBINDINGS: Keybindings = {
@@ -94,6 +96,7 @@ export const DEFAULT_KEYBINDINGS: Keybindings = {
   scrollTop: ["shift+meta+up"],
   scrollBottom: ["shift+meta+down"],
   exit: ["ctrl+q"],
+  toggleVoiceDictation: ["ctrl+b"],
 };
 
 const KEYBINDINGS_PATH = join(homedir(), ".agav", "keybindings.json");

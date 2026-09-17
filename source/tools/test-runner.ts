@@ -292,9 +292,9 @@ export const testRunnerTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const testPath = input.path ? String(input.path) : undefined;
-    const cwd = process.cwd();
+    const cwd = context?.cwd ?? process.cwd();
 
     let framework: Framework;
     if (input.framework) {

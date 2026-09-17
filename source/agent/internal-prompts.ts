@@ -56,6 +56,23 @@ export function schemaRetryPrompt(details: string): string {
 // don't display "[Earlier conversation was compacted...]" as a user message.
 export const COMPACTION_PLACEHOLDER_PREFIX = "[Earlier conversation";
 
+export const REVIEW_FAILED_PREFIX = "[AUTOMATED TEST VERIFICATION FAILED";
+
+export function reviewerFailedPrompt(
+  command: string,
+  failureSnippet: string,
+  attempt: number,
+  maxAttempts: number,
+): string {
+  return (
+    `${REVIEW_FAILED_PREFIX} (attempt ${attempt}/${maxAttempts})]\n` +
+    `Test command '${command}' failed.\n\n` +
+    `Failure Diagnostics:\n${failureSnippet}\n\n` +
+    "Carefully analyze the test failures above. Identify the root cause, fix the code, and ensure all tests pass cleanly." +
+    (attempt > 1 ? " Try an alternative fix strategy." : "")
+  );
+}
+
 /**
  * Openings of every injected prompt. Sessions saved before `internal` existed
  * carry no marker, so resuming one would still print these as if the user had
@@ -70,6 +87,7 @@ const LEGACY_PREFIXES = [
   TESTS_FAILED_PREFIX,
   SCHEMA_RETRY_PREFIX,
   COMPACTION_PLACEHOLDER_PREFIX,
+  REVIEW_FAILED_PREFIX,
 ];
 
 /**

@@ -48,7 +48,7 @@ async function nodeFind(searchPath: string, pattern: RegExp): Promise<string[]> 
 }
 
 /** Run native find and return output. Rejects if find is not found or not Unix find. */
-function nativeFind(pattern: string, searchPath: string): Promise<{ stdout: string; stderr: string }> {
+function nativeFind(pattern: string, searchPath: string, cwd?: string): Promise<{ stdout: string; stderr: string }> {
   const args = [
     searchPath,
     "-name", pattern,
@@ -60,7 +60,7 @@ function nativeFind(pattern: string, searchPath: string): Promise<{ stdout: stri
   ];
 
   return new Promise((resolve, reject) => {
-    execFile("find", args, { maxBuffer: 200_000, timeout: 15_000 }, (error, stdout, stderr) => {
+    execFile("find", args, { cwd, maxBuffer: 200_000, timeout: 15_000 }, (error, stdout, stderr) => {
       if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
         reject(error);
       } else if (error) {
@@ -100,15 +100,16 @@ export const findFilesTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
+    const cwd = context?.cwd ?? process.cwd();
     const pattern = String(input.pattern);
-    const searchPath = resolve(String(input.path ?? "."));
+    const searchPath = resolve(cwd, String(input.path ?? "."));
 
     // On Windows, always use the Node.js fallback since Unix find is not available.
     // On Unix, try native find first for speed, fall back to Node.js if not found.
     if (platform() !== "win32") {
       try {
-        const result = await nativeFind(pattern, searchPath);
+        const result = await nativeFind(pattern, searchPath, cwd);
         if (result.stdout) {
           const lines = result.stdout.split("\n").filter(Boolean);
           const truncated = lines.length > MAX_RESULTS

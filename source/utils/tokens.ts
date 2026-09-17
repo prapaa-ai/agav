@@ -1,20 +1,11 @@
 import type { Message } from "../providers/types.js";
+import { countBpeTokens } from "./bpe-tokenizer.js";
 
-export function estimateTokens(text: string): number {
+export { countBpeTokens, getBpeStats, clearBpeCache, getBpeCacheSize, detectModelFamily } from "./bpe-tokenizer.js";
+
+export function estimateTokens(text: string, model?: string): number {
   if (!text) return 0;
-
-  // BPE-aware estimation:
-  // - Common English words: ~1.3 tokens per word
-  // - Code/symbols: ~1 token per 3 chars
-  // - Whitespace is mostly free (merged with adjacent tokens)
-  // - JSON/structured text: ~1 token per 3-4 chars
-
-  // Count words and non-word segments separately
-  const words = text.match(/\b\w+\b/g)?.length ?? 0;
-  const nonWordChars = text.replace(/\b\w+\b/g, "").length;
-
-  // ~1.3 tokens per word + ~1 token per 3 non-word chars + overhead
-  return Math.ceil(words * 1.3 + nonWordChars / 3);
+  return countBpeTokens(text, model);
 }
 
 export function estimateMessageTokens(message: Message): number {

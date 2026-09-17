@@ -9,6 +9,7 @@ const FAST_MODELS: Record<string, string> = {
   deepseek: "deepseek-v4-flash",
   gemini: "gemini-3.5-flash-lite",
   "vertex-ai": "vertex/gemini-3.5-flash-lite",
+  groq: "llama-3.1-8b-instant",
 }
 
 /** Default deep-model choices keyed by provider name. */
@@ -20,6 +21,7 @@ const DEEP_MODELS: Record<string, string> = {
   deepseek: "deepseek-v4-pro",
   gemini: "gemini-3.5-pro",
   "vertex-ai": "vertex/gemini-3.5-pro",
+  groq: "llama-3.3-70b-versatile",
 }
 
 /** Switch to the configured fast model for the active provider. */

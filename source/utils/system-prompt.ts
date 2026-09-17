@@ -129,6 +129,16 @@ export async function refreshStableContext(mcpManager?: MCPManager): Promise<str
     parts.push(skillCatalog);
   }
 
+  try {
+    const { RepoMapEngine } = await import("../repomap/engine.js");
+    const result = await RepoMapEngine.getInstance().generateStableMap(800);
+    if (result && result.text && result.text.trim()) {
+      parts.push("Repository Map (Architectural Structure & Key Symbols):\n" + result.text);
+    }
+  } catch {
+    // Ignore error if repomap generation fails
+  }
+
   return parts.join("\n\n");
 }
 
@@ -165,6 +175,22 @@ export async function refreshVolatileContext(userMessage?: string): Promise<{ co
     const agentCatalog = buildAgentCatalog(agents);
     if (agentCatalog) {
       parts.push(agentCatalog);
+    }
+  }
+
+  if (userMessage) {
+    try {
+      const { RepoMapEngine } = await import("../repomap/engine.js");
+      const engine = RepoMapEngine.getInstance();
+      const seeds = await engine.extractSeeds(userMessage);
+      if (seeds.length > 0) {
+        const focusMap = await engine.generateFocusMap(seeds, 300);
+        if (focusMap && focusMap.text && focusMap.text.trim()) {
+          parts.push("Focused Symbol Context:\n" + focusMap.text);
+        }
+      }
+    } catch {
+      // Ignore error
     }
   }
 

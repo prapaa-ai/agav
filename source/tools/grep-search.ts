@@ -103,6 +103,7 @@ function nativeGrep(
   pattern: string,
   searchPath: string,
   include: string | undefined,
+  cwd?: string,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   const args = ["-rn", "--color=never", "-E"];
   if (include) {
@@ -118,7 +119,7 @@ function nativeGrep(
   );
 
   return new Promise((resolve, reject) => {
-    execFile("grep", args, { maxBuffer: 200_000, timeout: 15_000 }, (error, stdout, stderr) => {
+    execFile("grep", args, { cwd, maxBuffer: 200_000, timeout: 15_000 }, (error, stdout, stderr) => {
       if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
         reject(error);
       } else {
@@ -154,16 +155,17 @@ export const grepSearchTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
+    const cwd = context?.cwd ?? process.cwd();
     const pattern = String(input.pattern);
-    const searchPath = resolve(String(input.path ?? "."));
+    const searchPath = resolve(cwd, String(input.path ?? "."));
     const include = input.include ? String(input.include) : undefined;
 
     // On Windows, always use the Node.js fallback since grep is not available.
     // On Unix, try native grep first for speed, fall back to Node.js if not found.
     if (platform() !== "win32") {
       try {
-        const result = await nativeGrep(pattern, searchPath, include);
+        const result = await nativeGrep(pattern, searchPath, include, cwd);
         if (result.stdout) {
           const lines = result.stdout.split("\n").filter(Boolean);
           const truncated = lines.length > MAX_RESULTS

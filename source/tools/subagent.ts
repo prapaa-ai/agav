@@ -10,6 +10,8 @@ import { runAgentLoop } from "../agent/loop.js";
 import { ToolRegistry as ToolRegistryClass } from "./registry.js";
 import { createWorktree, removeWorktree, applyWorktreeChanges } from "../utils/worktree.js";
 import { formatSteersForPrompt } from "../commands/steer.js";
+import { getCurrentTurnSnapshot } from "../utils/undo.js";
+import { getGlobalTaskManager, type TaskManager } from "../tasks/task-manager.js";
 
 const MAX_CONCURRENT = 5;
 export interface SubagentToolDeps {
@@ -26,6 +28,7 @@ export interface SubagentToolDeps {
   onProgressUpdate: (subagents: SubagentProgress[]) => void;
   onTokenUsage: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   getSignal: () => AbortSignal | undefined;
+  taskManager?: TaskManager;
 }
 
 /** Build the subagent tool, including progress tracking and optional isolated worktrees. */
@@ -33,6 +36,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
   let counter = 0;
   const active = new Map<string, SubagentProgress>();
   const controllers = new Map<string, AbortController>();
+  const taskManager = deps.taskManager ?? getGlobalTaskManager();
 
   // Throttle UI updates to ~15 fps so concurrent subagents don't flood
   // React with state updates on every streaming_text delta.
@@ -110,6 +114,16 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       const id = `sa-${++counter}`;
       const config = deps.getConfig();
 
+      // Register with TaskManager as a managed task
+      const managedTask = taskManager.createTask({
+        id,
+        title,
+        task,
+        subagentId: id,
+      });
+      taskManager.startTask(id);
+      taskManager.events.emit("subagent_started", { subagentId: id, taskId: id, title, task });
+
       const childRegistry = new ToolRegistryClass();
       for (const tool of deps.parentToolRegistry.list()) {
         if (tool.schema.name !== "subagent") {
@@ -151,7 +165,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       const useWorktree = WRITE_KEYWORDS.test(task);
       let worktreePath: string | null = null;
       const branchName = `agav-sa-${id}`;
-      const originalCwd = process.cwd();
+      const inheritedCwd = deps.parentToolRegistry.getDefaultContext()?.cwd ?? process.cwd();
 
       let finalText = "";
 
@@ -160,6 +174,27 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       const signal = deps.getSignal();
       const childController = new AbortController();
       controllers.set(id, childController);
+
+      // Bi-directional cancellation link between taskManager and childController
+      managedTask.abortController.signal.addEventListener(
+        "abort",
+        () => {
+          childController.abort();
+          deps.confirmationQueue.rejectBySubagentId(id);
+        },
+        { once: true },
+      );
+
+      childController.signal.addEventListener(
+        "abort",
+        () => {
+          if (managedTask.state !== "Cancelled") {
+            taskManager.cancelTask(id, "Subagent cancelled");
+          }
+        },
+        { once: true },
+      );
+
       if (signal && !signal.aborted) {
         signal.addEventListener("abort", () => childController.abort(), { once: true });
       } else if (signal?.aborted) {
@@ -169,15 +204,14 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       try {
         if (useWorktree) {
           worktreePath = await createWorktree(id);
-          if (worktreePath) {
-            process.chdir(worktreePath);
-          }
         }
+
+        const subagentCwd = worktreePath ?? inheritedCwd;
+        childRegistry.setDefaultContext({ cwd: subagentCwd });
 
         // If cancelled during worktree setup, bail out before starting the loop.
         if (childController.signal.aborted) {
           if (worktreePath) {
-            process.chdir(originalCwd);
             await removeWorktree(worktreePath, branchName).catch(() => {});
           }
           progress.status = "error";
@@ -213,6 +247,8 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           permissionMode: config.permissionMode,
           effort: config.effort,
           maxIterations: config.maxIterations,
+          cwd: subagentCwd,
+          parentTurnId: getCurrentTurnSnapshot()?.id,
         });
 
         const MAX_RECENT_ACTIONS = 10;
@@ -247,11 +283,13 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
 
             case "streaming_text":
               progress.streamingText += event.text;
+              taskManager.updateTaskProgress(id, progress.totalToolCalls, progress.streamingText);
               broadcast();
               break;
 
             case "tool_call_start":
               progress.totalToolCalls++;
+              taskManager.updateTaskProgress(id, progress.totalToolCalls, progress.streamingText);
               progress.toolCalls = [
                 ...progress.toolCalls,
                 { toolName: event.toolName, toolCallId: event.toolCallId, input: {}, argsJson: "", status: "running" as const },
@@ -286,6 +324,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
               finalText = event.text;
               progress.streamingText = "";
               startNewReasoningSummary = true;
+              taskManager.setPartialResult(id, finalText);
               broadcastNow();
               break;
 
@@ -306,9 +345,10 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
               progress.error = event.error.message;
               active.set(id, { ...progress });
               controllers.delete(id);
+              taskManager.failTask(id, event.error.message);
+              taskManager.events.emit("subagent_failed", { subagentId: id, taskId: id, error: event.error.message });
               broadcastNow();
               if (worktreePath) {
-                process.chdir(originalCwd);
                 await removeWorktree(worktreePath, branchName).catch(() => {});
               }
               return {
@@ -320,7 +360,6 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
 
         let mergeNote = "";
         if (worktreePath) {
-          process.chdir(originalCwd);
           // Never merge partial edits from a cancelled subagent — discard the
           // worktree so incomplete, unreviewed changes cannot reach the parent.
           if (!childController.signal.aborted) {
@@ -337,6 +376,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           progress.error = "Cancelled";
           active.set(id, { ...progress });
           controllers.delete(id);
+          taskManager.cancelTask(id, "Cancelled");
           broadcastNow();
           setTimeout(() => { active.delete(id); broadcastNow(); }, 100);
           return { output: "Subagent cancelled.", isError: true };
@@ -347,6 +387,8 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         progress.streamingText = "";
         active.set(id, { ...progress });
         controllers.delete(id);
+        taskManager.completeTask(id, finalText);
+        taskManager.events.emit("subagent_completed", { subagentId: id, taskId: id, result: finalText });
         broadcastNow();
 
         setTimeout(() => {
@@ -364,10 +406,11 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         progress.error = errMsg;
         active.set(id, { ...progress });
         controllers.delete(id);
+        taskManager.failTask(id, errMsg);
+        taskManager.events.emit("subagent_failed", { subagentId: id, taskId: id, error: errMsg });
         broadcastNow();
 
         if (worktreePath) {
-          process.chdir(originalCwd);
           await removeWorktree(worktreePath, branchName).catch(() => {});
         }
 
@@ -387,6 +430,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       }
       // Unblock any confirmation the subagent is waiting on so its loop can exit.
       deps.confirmationQueue.rejectBySubagentId(id);
+      taskManager.cancelTask(id, "Subagent cancelled");
     },
   };
 }
