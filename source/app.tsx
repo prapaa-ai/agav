@@ -622,9 +622,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     if (match.action === "scrollDown") { docControls.current?.scrollBy(-5); return; }
     if (match.action === "scrollTop") { docControls.current?.scrollToTop(); return; }
     if (match.action === "scrollBottom") { docControls.current?.scrollToBottom(); return; }
-    if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && input.length === 0
-      && !messages.some((message) => message.role === "tool")) {
+    if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && input.length === 0) {
       exit();
+      return;
     }
     // These two read the raw stroke rather than a bound action, so a keybinding
     // that happens to use the same stroke would otherwise fire both. Ignoring
