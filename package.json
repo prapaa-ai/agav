@@ -46,7 +46,7 @@
     "slice-ansi": "^9.0.0",
     "string-width": "^8.2.2",
     "widest-line": "^6.0.0",
-    "yaml": "^2.3.4",
+    "yaml": "^2.9.1",
     "yoga-layout": "3.2.1"
   },
   "devDependencies": {
