@@ -162,7 +162,9 @@ export function useAgent(
   resumeTokenUsage?: import("../config/history.js").SessionTokenUsage,
   resumeCompacted?: boolean,
   resumeSessionName?: string,
+  maxTurns?: number,
 ): UseAgentReturn {
+  const effectiveMaxIterations = (maxTurns ?? config.maxIterations)
   const { resetDisplay } = useApp();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [streamingText, setStreamingText] = useState("");
@@ -327,7 +329,7 @@ export function useAgent(
           }
         }
       }
-      prunePlans().catch(() => {});
+      prunePlans().catch(() => { });
 
       // Load plugins
       const pluginTools = await loadPlugins();
@@ -435,7 +437,7 @@ export function useAgent(
     // there so the new session does not inherit a plan it never made.
     setPlanScope(null);
     setActivePlan(null);
-    clearPlan().catch(() => {});
+    clearPlan().catch(() => { });
     setTranscriptRevision((revision) => revision + 1);
   }, []);
 
@@ -447,7 +449,7 @@ export function useAgent(
   const refreshPlan = useCallback(() => {
     loadPlan()
       .then((plan) => setActivePlan(isPlanActive(plan) ? plan : null))
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   /** Resolve the oldest pending tool confirmation with the user's decision. */
@@ -472,11 +474,11 @@ export function useAgent(
     setTokenUsage((currentUsage) => {
       const merged = extraUsage
         ? {
-            inputTokens: currentUsage.inputTokens + extraUsage.inputTokens,
-            outputTokens: currentUsage.outputTokens + extraUsage.outputTokens,
-            cacheReadTokens: currentUsage.cacheReadTokens + extraUsage.cacheReadTokens,
-            cacheWriteTokens: currentUsage.cacheWriteTokens + extraUsage.cacheWriteTokens,
-          }
+          inputTokens: currentUsage.inputTokens + extraUsage.inputTokens,
+          outputTokens: currentUsage.outputTokens + extraUsage.outputTokens,
+          cacheReadTokens: currentUsage.cacheReadTokens + extraUsage.cacheReadTokens,
+          cacheWriteTokens: currentUsage.cacheWriteTokens + extraUsage.cacheWriteTokens,
+        }
         : currentUsage;
       saveSession(
         conversationRef.current.getMessages(),
@@ -490,7 +492,7 @@ export function useAgent(
         sessionIdRef.current = id;
         setSessionId(id);
         adoptPlanScope(id);
-      }).catch(() => {});
+      }).catch(() => { });
       return merged;
     });
   }, [config.model, config.provider]);
@@ -515,7 +517,7 @@ export function useAgent(
     setPlanScope(session.id);
     loadPlan()
       .then((plan) => setActivePlan(isPlanActive(plan) ? plan : null))
-      .catch(() => {});
+      .catch(() => { });
     refreshDisplay();
   }, [refreshDisplay]);
 
@@ -527,7 +529,7 @@ export function useAgent(
     setPlanScope(id);
     loadPlan()
       .then((plan) => setActivePlan(isPlanActive(plan) ? plan : null))
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   const renameSession = useCallback((name: string) => {
@@ -788,7 +790,7 @@ export function useAgent(
             systemPrompt: effectiveSystemPrompt,
             effort: config.effort,
             maxTokens: config.maxTokens,
-            maxIterations: config.maxIterations,
+            maxIterations: effectiveMaxIterations,
             signal: abortController.signal,
             confirmTool: confirmToolCallback,
             permissionMode: sessionPermissionModeRef.current ?? config.permissionMode,
@@ -849,7 +851,7 @@ export function useAgent(
                       if (tc.toolCallId) {
                         toolInputsRef.current.set(tc.toolCallId, parsed);
                       }
-                    } catch {}
+                    } catch { }
                     return { ...tc, argsJson: json, input: parsed };
                   }),
                 );
@@ -863,7 +865,7 @@ export function useAgent(
                 if (event.toolName === "update_plan") {
                   loadPlan().then((plan) => {
                     if (plan) setActivePlan(plan);
-                  }).catch(() => {});
+                  }).catch(() => { });
                 }
                 const resultToolCallId = event.toolCallId;
                 const resultToolName = event.toolName;
@@ -951,7 +953,7 @@ export function useAgent(
                     // Re-key the plan the moment this session gets an identity,
                     // so it is still findable after the session ends.
                     adoptPlanScope(id);
-                  }).catch(() => {});
+                  }).catch(() => { });
                   return currentUsage;
                 });
                 saveSessionState(
@@ -959,11 +961,11 @@ export function useAgent(
                   config.model,
                   config.provider,
                   false,
-                ).catch(() => {});
+                ).catch(() => { });
                 turnCountRef.current++;
                 maybeRunBackgroundImprovement(turnCountRef.current, getCachedSkills(), (msg) => {
                   setMessages((prev) => [...prev, { id: nextId(), role: "system", content: msg }]);
-                }).catch(() => {});
+                }).catch(() => { });
 
                 // Auto-continue if the active plan has pending steps
                 loadPlan().then(async (latestPlan) => {
@@ -973,7 +975,7 @@ export function useAgent(
                     // Plan is complete — clear display and delete the file
                     resetPlanContinue();
                     setActivePlan(null);
-                    await clearPlan().catch(() => {});
+                    await clearPlan().catch(() => { });
                     return;
                   }
 
@@ -991,7 +993,7 @@ export function useAgent(
                     latestPlan.currentStep = latestPlan.steps.findIndex(
                       (s) => s.status === "pending" || s.status === "in_progress",
                     );
-                    await savePlan(latestPlan).catch(() => {});
+                    await savePlan(latestPlan).catch(() => { });
                     resetPlanContinue();
                     setActivePlan(latestPlan);
                     setMessages((prev) => [
@@ -1007,7 +1009,7 @@ export function useAgent(
 
                   setActivePlan(latestPlan);
                   setPlanContinueMsg(`Do Step ${next.id} only: ${next.title}. Mark it in_progress, do the work, mark it done, then end your response silently — no commentary about stopping or pausing.`);
-                }).catch(() => {});
+                }).catch(() => { });
                 break;
 
               case "steer_applied": {
@@ -1124,16 +1126,16 @@ export function useAgent(
       const confirmToolCallback = fullAccess
         ? undefined
         : (
-            toolName: string,
-            toolInput: Record<string, unknown>,
-            diffPreview?: DiffLine[],
-          ): Promise<ConfirmResult> => {
-            return confirmationQueueRef.current.enqueue({
-              toolName,
-              input: toolInput,
-              diffLines: diffPreview,
-            });
-          };
+          toolName: string,
+          toolInput: Record<string, unknown>,
+          diffPreview?: DiffLine[],
+        ): Promise<ConfirmResult> => {
+          return confirmationQueueRef.current.enqueue({
+            toolName,
+            input: toolInput,
+            diffLines: diffPreview,
+          });
+        };
 
       (async () => {
         try {

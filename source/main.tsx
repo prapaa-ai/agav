@@ -424,6 +424,7 @@ export async function main() {
     --deny-writes        Block all write operations
     --help, -h           Show this help
     --version, -v        Show version
+    --max-turns          Caps the number of agentic turns in a session
 
   Agent Commands
     $ agav agents list             List installed agents
@@ -702,13 +703,19 @@ export async function main() {
   }
 
   startupFinished = true;
-
+  const maxTurns: number | undefined = (() => {
+    const raw = typeof flags.maxTurns === "string" ? flags.maxTurns.trim() : "";
+    if (!raw) return undefined;
+    const n = Number.parseInt(raw, 10);
+    return Number.isInteger(n) && n > 0 ? n : undefined
+  })();
   // Short-circuit into non-interactive mode before the Ink UI is rendered.
   if (flags.print) {
     const provider = createProvider(config);
     const exitCode = await runPipeMode(String(flags.printPrompt ?? ""), config, provider, {
       stream: flags.stream === true,
       outputSchema,
+      maxTurns: maxTurns
     });
     process.exit(exitCode);
     return;
@@ -719,6 +726,7 @@ export async function main() {
     const runOptions: Parameters<typeof runPipeMode>[3] = {
       stream: true,
       includeDynamicContext: true,
+      maxTurns: maxTurns
     };
 
     // Parse permission from --permission flag or AGAV_PERMISSION env var
@@ -743,11 +751,6 @@ export async function main() {
         process.stderr.write("Error: Invalid JSON in --permission / AGAV_PERMISSION\n");
         process.exit(1);
       }
-    }
-
-    if (typeof flags.maxTurns === "string" && flags.maxTurns) {
-      const n = parseInt(flags.maxTurns, 10);
-      if (!isNaN(n) && n > 0) runOptions.maxTurns = n;
     }
 
     const exitCode = await runPipeMode(String(flags.runPrompt ?? ""), config, provider, runOptions);
@@ -807,7 +810,7 @@ export async function main() {
   // rather than adding its timeout to startup. Both settle rather than reject.
   const [gitContext, enhancedKeyboard] = await Promise.all([getGitContext(), detectKittyKeyboard()]);
 
-  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={resumeSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} />, {
+  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={resumeSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} maxTurns={maxTurns} />, {
     exitOnCtrlC: true,
     // Alt-screen keeps the UI self-contained (no scrollback pollution, no
     // flicker on terminals without DEC 2026). In-app scrolling is handled by
