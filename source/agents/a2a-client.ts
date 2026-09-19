@@ -82,12 +82,20 @@ const managedAgents = new Map<string, ManagedA2AAgent>();
 /**
  * Start an A2A agent process if it has a start-command
  */
-export async function startA2AAgent(agent: AgentDefinition): Promise<{ success: boolean; error?: string }> {
+export async function startA2AAgent(
+  agent: AgentDefinition,
+  confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<any>
+): Promise<{ success: boolean; error?: string }> {
   const key = agent.alias || agent.manifest.name;
 
   // Already running
   if (managedAgents.has(key)) {
     return { success: true };
+  }
+
+  const { checkA2AExecutionApproval } = await import("./a2a-approval.js");
+  if (!await checkA2AExecutionApproval(agent, confirmTool)) {
+    return { success: false, error: "User denied execution of A2A agent process." };
   }
 
   const startCommand = agent.manifest["start-command"];
@@ -112,8 +120,6 @@ export async function startA2AAgent(agent: AgentDefinition): Promise<{ success: 
   const args = parts.slice(1);
 
   try {
-    // TODO: start-command is unreviewed execution from a downloaded manifest.
-    // Add user confirmation at install or first run.
     const proc = spawn(command, args, {
       cwd: agent.path,
       stdio: ["ignore", "pipe", "pipe"],
@@ -211,14 +217,15 @@ export function stopAllA2AAgents(): void {
 export async function executeA2AAgent(
   agent: AgentDefinition,
   task: string,
-  context?: Record<string, unknown>
+  context?: Record<string, unknown>,
+  confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<any>
 ): Promise<string> {
   const key = agent.alias || agent.manifest.name;
 
   // Ensure agent is started
   let managed = managedAgents.get(key);
   if (!managed || !managed.ready) {
-    const startResult = await startA2AAgent(agent);
+    const startResult = await startA2AAgent(agent, confirmTool);
     if (!startResult.success) {
       throw new Error(startResult.error || "Failed to start A2A agent");
     }
@@ -265,14 +272,15 @@ export async function executeA2AAgent(
 export async function* executeA2AAgentStreaming(
   agent: AgentDefinition,
   task: string,
-  context?: Record<string, unknown>
+  context?: Record<string, unknown>,
+  confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<any>
 ): AsyncGenerator<A2AEvent> {
   const key = agent.alias || agent.manifest.name;
 
   // Ensure agent is started
   let managed = managedAgents.get(key);
   if (!managed || !managed.ready) {
-    const startResult = await startA2AAgent(agent);
+    const startResult = await startA2AAgent(agent, confirmTool);
     if (!startResult.success) {
       yield { type: "error", error: startResult.error || "Failed to start A2A agent" };
       return;

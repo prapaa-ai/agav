@@ -102,4 +102,133 @@ describe("utils/sandbox", () => {
 
     expect(() => sandbox.requireSandbox()).not.toThrow();
   });
+
+  it("runInSandbox maps current user uid/gid for docker containers", async () => {
+    vi.resetModules();
+    const cp = await import("node:child_process");
+    const os = await import("node:os");
+    const sandbox = await import("../utils/sandbox.js");
+    
+    // Mock os.userInfo to return specific uid/gid
+    (os as any).userInfo = vi.fn(() => ({ uid: 501, gid: 20 }));
+    
+    // Mock execFile to instantly resolve
+    vi.mocked(cp.execFile).mockImplementation((...args: any[]) => {
+      const callback = args[args.length - 1];
+      callback(null, "success", "");
+      return {} as any;
+    });
+
+    await sandbox.runInSandbox({
+      command: "echo test",
+      cwd: "/test/dir",
+      timeout: 1000,
+      maxBuffer: 1024,
+      forceBackend: "docker"
+    });
+
+    // Extract the execFile calls
+    const calls = vi.mocked(cp.execFile).mock.calls;
+    
+    // Verify the main execution container
+    const runCall = calls.find(call => 
+      call[0] === "docker" && 
+      call[1]?.includes("node:22-slim") &&
+      call[1]?.includes("echo test")
+    );
+
+    expect(runCall).toBeDefined();
+    expect(runCall![1]).toContain("-e");
+    expect(runCall![1]).toContain("HOME=/workspace");
+    expect(runCall![1]).toContain("-u");
+    expect(runCall![1]).toContain("501:20");
+  });
+
+  it("runInSandbox omits UID mapping if actual rootless Docker is detected", async () => {
+    vi.resetModules();
+    const cp = await import("node:child_process");
+    const os = await import("node:os");
+    const sandbox = await import("../utils/sandbox.js");
+    
+    (os as any).userInfo = vi.fn(() => ({ uid: 501, gid: 20 }));
+    
+    vi.mocked(cp.execFile).mockImplementation((...args: any[]) => {
+      const commandArgs = args[1] as string[];
+      const callback = args[args.length - 1];
+      
+      // Simulate actual rootless docker response for 'docker info'
+      if (commandArgs && commandArgs.includes("info")) {
+        callback(null, "SecurityOptions:\n name=rootless\n", "");
+      } else {
+        callback(null, "success", "");
+      }
+      return {} as any;
+    });
+
+    await sandbox.runInSandbox({
+      command: "echo test",
+      cwd: "/test/dir",
+      timeout: 1000,
+      maxBuffer: 1024,
+      forceBackend: "docker"
+    });
+
+    const calls = vi.mocked(cp.execFile).mock.calls;
+    const runCall = calls.find(call => 
+      call[0] === "docker" && 
+      call[1]?.includes("node:22-slim") &&
+      call[1]?.includes("echo test")
+    );
+
+    expect(runCall).toBeDefined();
+    expect(runCall![1]).toContain("HOME=/workspace");
+    expect(runCall![1]).toContain("USER=agav");
+    // MUST NOT contain -u mapping
+    expect(runCall![1]).not.toContain("-u");
+    expect(runCall![1]).not.toContain("501:20");
+  });
+
+  it("runInSandbox preserves UID mapping and disables userns isolation if daemon-level userns-remap is detected instead of rootless", async () => {
+    vi.resetModules();
+    const cp = await import("node:child_process");
+    const os = await import("node:os");
+    const sandbox = await import("../utils/sandbox.js");
+    
+    (os as any).userInfo = vi.fn(() => ({ uid: 501, gid: 20 }));
+    
+    vi.mocked(cp.execFile).mockImplementation((...args: any[]) => {
+      const commandArgs = args[1] as string[];
+      const callback = args[args.length - 1];
+      
+      // Simulate standard daemon userns-remap (not rootless)
+      if (commandArgs && commandArgs.includes("info")) {
+        callback(null, "SecurityOptions:\n name=userns\n", "");
+      } else {
+        callback(null, "success", "");
+      }
+      return {} as any;
+    });
+
+    await sandbox.runInSandbox({
+      command: "echo test",
+      cwd: "/test/dir",
+      timeout: 1000,
+      maxBuffer: 1024,
+      forceBackend: "docker"
+    });
+
+    const calls = vi.mocked(cp.execFile).mock.calls;
+    const runCall = calls.find(call => 
+      call[0] === "docker" && 
+      call[1]?.includes("node:22-slim") &&
+      call[1]?.includes("echo test")
+    );
+
+    expect(runCall).toBeDefined();
+    // MUST bypass the daemon's user namespace remapping
+    expect(runCall![1]).toContain("--userns=host");
+    // MUST contain -u mapping because userns is not rootless
+    expect(runCall![1]).toContain("-u");
+    expect(runCall![1]).toContain("501:20");
+  });
 });
