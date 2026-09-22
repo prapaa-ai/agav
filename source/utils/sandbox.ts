@@ -2,7 +2,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { platform } from "node:os";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 
 export type SandboxBackend = "seatbelt" | "bubblewrap" | "docker" | "none";
 
@@ -61,7 +61,8 @@ function filterEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, val] of Object.entries(process.env)) {
     if (val === undefined) continue;
-    if (/KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH/i.test(key)) continue;
+    if (/KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH|(?:^|_)PAT(?:$|_)|NODE_OPTIONS|LD_PRELOAD|BASH_ENV|PROMPT_COMMAND/i.test(key)) continue;
+    if (typeof val === "string" && val.match(/:\/\/[^:]+:[^@]+@/)) continue;
     env[key] = val;
   }
   return env;
@@ -74,6 +75,8 @@ const SEATBELT_PROFILE = `
 (deny file-write* (subpath "/usr"))
 (deny file-write* (subpath "/Library"))
 (deny file-write* (subpath "/Applications"))
+(deny file-write* (subpath (param "HOME")))
+(allow file-write* (subpath (param "CWD")))
 (deny file-read* (subpath (param "HOME_SSH")))
 (deny file-read* (subpath (param "HOME_AWS")))
 (deny file-read* (subpath (param "HOME_GPG")))
@@ -95,6 +98,8 @@ function runSeatbelt(
       "sandbox-exec",
       [
         "-f", profilePath,
+        "-D", `HOME=${home}`,
+        "-D", `CWD=${cwd}`,
         "-D", `HOME_SSH=${home}/.ssh`,
         "-D", `HOME_AWS=${home}/.aws`,
         "-D", `HOME_GPG=${home}/.gnupg`,
@@ -122,7 +127,7 @@ function runBubblewrap(
       [
         "--ro-bind", "/", "/",
         "--bind", cwd, cwd,
-        "--bind", "/tmp", "/tmp",
+        "--tmpfs", "/tmp",
         "--dev", "/dev",
         "--proc", "/proc",
         "--tmpfs", home + "/.ssh",
@@ -141,30 +146,84 @@ function runBubblewrap(
   });
 }
 
+interface DockerSecurity {
+  isRootless: boolean;
+  isUserns: boolean;
+}
+
+let dockerSecurity: DockerSecurity | null = null;
+
+function checkDockerSecurity(): Promise<DockerSecurity> {
+  if (dockerSecurity !== null) return Promise.resolve(dockerSecurity);
+  return new Promise((resolve) => {
+    execFile(
+      "docker",
+      ["info", "--format", "{{.SecurityOptions}}"],
+      { timeout: 2000 },
+      (err, stdout) => {
+        dockerSecurity = {
+          isRootless: stdout ? stdout.includes("name=rootless") : false,
+          isUserns: stdout ? stdout.includes("name=userns") : false,
+        };
+        resolve(dockerSecurity);
+      }
+    );
+  });
+}
+
 function runDocker(
   command: string,
   cwd: string,
   timeout: number,
   maxBuffer: number,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
+  let uid = 1000;
+  let gid = 1000;
+  try {
+    const info = userInfo();
+    uid = info.uid >= 0 ? info.uid : 1000;
+    gid = info.gid >= 0 ? info.gid : 1000;
+  } catch {}
+
   return new Promise((resolve) => {
-    execFile(
-      "docker",
-      [
+    checkDockerSecurity().then((security) => {
+      const dockerArgs = [
         "run", "--rm",
         "--network=none",
         "--memory=512m",
         "--cpus=1",
+        "-e", "HOME=/workspace",
+        "-e", "USER=agav",
+      ];
+
+      // If daemon-level userns-remap is active (and not rootless), we must explicitly
+      // bypass user namespaces to allow -u uid:gid to map to the real host user 
+      // instead of a subordinate host UID.
+      if (security.isUserns && !security.isRootless) {
+        dockerArgs.push("--userns=host");
+      }
+
+      // Omit UID mapping only if true rootless Docker is handling user namespaces
+      if (!security.isRootless) {
+        dockerArgs.push("-u", `${uid}:${gid}`);
+      }
+
+      dockerArgs.push(
         "-v", `${cwd}:/workspace`,
         "-w", "/workspace",
         "node:22-slim",
-        "/bin/sh", "-c", command,
-      ],
-      { timeout: timeout + 10_000, maxBuffer },
-      (error, stdout, stderr) => {
-        resolve({ stdout, stderr, error });
-      },
-    );
+        "/bin/sh", "-c", command
+      );
+
+      execFile(
+        "docker",
+        dockerArgs,
+        { timeout: timeout + 10_000, maxBuffer },
+        (error, stdout, stderr) => {
+          resolve({ stdout, stderr, error });
+        }
+      );
+    });
   });
 }
 
