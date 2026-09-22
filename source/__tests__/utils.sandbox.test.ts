@@ -280,4 +280,96 @@ describe("utils/sandbox", () => {
       }
     }
   });
+
+  it("seatbelt allows cache/config dirs but keeps credential dirs denied", async () => {
+    vi.resetModules();
+    const cp = await import("node:child_process");
+    const fs = await import("node:fs");
+    const sandbox = await import("../utils/sandbox.js");
+
+    const prevHome = process.env.HOME;
+    process.env.HOME = "/Users/tester";
+    try {
+      vi.mocked(cp.execFile).mockImplementation((...args: any[]) => {
+        const callback = args[args.length - 1];
+        callback(null, "success", "");
+        return {} as any;
+      });
+
+      await sandbox.runInSandbox({
+        command: "echo test",
+        cwd: "/Users/tester/project",
+        timeout: 1000,
+        maxBuffer: 1024,
+        forceBackend: "seatbelt",
+      });
+
+      // The profile written to disk must restore writes to cache/config dirs
+      // while still blocking the credential directories.
+      const profile = vi.mocked(fs.writeFileSync).mock.calls[0]?.[1] as string;
+      expect(profile).toContain('(allow file-write* (subpath (param "HOME_CACHE")))');
+      expect(profile).toContain('(allow file-write* (subpath (param "HOME_CONFIG")))');
+      expect(profile).toContain('(allow file-write* (subpath (param "HOME_NPM")))');
+      expect(profile).toContain('(deny file-write* (subpath (param "HOME_SSH")))');
+      expect(profile).toContain('(deny file-read* (subpath (param "HOME_SSH")))');
+      // The blanket home deny must appear before the carve-out allows so
+      // last-match-wins can re-enable the cache dirs.
+      expect(profile.indexOf('(deny file-write* (subpath (param "HOME")))'))
+        .toBeLessThan(profile.indexOf('(allow file-write* (subpath (param "HOME_CACHE")))'));
+
+      const runArgs = vi.mocked(cp.execFile).mock.calls.find(
+        (call) => call[0] === "sandbox-exec",
+      )?.[1] as string[];
+      expect(runArgs).toContain("HOME_CACHE=/Users/tester/.cache");
+      expect(runArgs).toContain("HOME_CONFIG=/Users/tester/.config");
+      expect(runArgs).toContain("HOME_NPM=/Users/tester/.npm");
+      expect(runArgs).toContain("HOME_SSH=/Users/tester/.ssh");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+    }
+  });
+
+  it("bubblewrap mounts writable tmpfs over cache/config dirs and empty tmpfs over credential dirs", async () => {
+    vi.resetModules();
+    const cp = await import("node:child_process");
+    const sandbox = await import("../utils/sandbox.js");
+
+    const prevHome = process.env.HOME;
+    process.env.HOME = "/home/tester";
+    try {
+      vi.mocked(cp.execFile).mockImplementation((...args: any[]) => {
+        const callback = args[args.length - 1];
+        callback(null, "success", "");
+        return {} as any;
+      });
+
+      await sandbox.runInSandbox({
+        command: "echo test",
+        cwd: "/home/tester/project",
+        timeout: 1000,
+        maxBuffer: 1024,
+        forceBackend: "bubblewrap",
+      });
+
+      const args = vi.mocked(cp.execFile).mock.calls.find(
+        (call) => call[0] === "bwrap",
+      )?.[1] as string[];
+      const joined = args.join(" ");
+      // Writable scratch for tooling caches.
+      expect(joined).toContain("--tmpfs /home/tester/.cache");
+      expect(joined).toContain("--tmpfs /home/tester/.config");
+      expect(joined).toContain("--tmpfs /home/tester/.npm");
+      expect(joined).toContain("--tmpfs /home/tester/.cargo");
+      // Credential dirs are still masked with tmpfs.
+      expect(joined).toContain("--tmpfs /home/tester/.ssh");
+      expect(joined).toContain("--tmpfs /home/tester/.gnupg");
+      // Host /tmp is not bind-mounted (no socket leakage).
+      expect(joined).not.toContain("--bind /tmp /tmp");
+      expect(joined).toContain("--tmpfs /tmp");
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+    }
+  });
 });

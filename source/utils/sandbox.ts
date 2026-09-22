@@ -68,6 +68,12 @@ function filterEnv(): Record<string, string> {
   return env;
 }
 
+// Rules use last-match-wins semantics. The blanket $HOME write deny protects
+// the user's home, then targeted allows restore the well-known cache/config
+// directories that ordinary tooling (npm, pip, git, language version managers)
+// must write to — otherwise those commands fail with "Operation not permitted".
+// The credential-directory denies are listed last so a broad allow can never
+// re-expose ~/.ssh, ~/.aws, or ~/.gnupg.
 const SEATBELT_PROFILE = `
 (version 1)
 (allow default)
@@ -77,6 +83,14 @@ const SEATBELT_PROFILE = `
 (deny file-write* (subpath "/Applications"))
 (deny file-write* (subpath (param "HOME")))
 (allow file-write* (subpath (param "CWD")))
+(allow file-write* (subpath (param "HOME_CACHE")))
+(allow file-write* (subpath (param "HOME_CONFIG")))
+(allow file-write* (subpath (param "HOME_LOCAL")))
+(allow file-write* (subpath (param "HOME_NPM")))
+(allow file-write* (subpath (param "HOME_CARGO")))
+(deny file-write* (subpath (param "HOME_SSH")))
+(deny file-write* (subpath (param "HOME_AWS")))
+(deny file-write* (subpath (param "HOME_GPG")))
 (deny file-read* (subpath (param "HOME_SSH")))
 (deny file-read* (subpath (param "HOME_AWS")))
 (deny file-read* (subpath (param "HOME_GPG")))
@@ -100,6 +114,11 @@ function runSeatbelt(
         "-f", profilePath,
         "-D", `HOME=${home}`,
         "-D", `CWD=${cwd}`,
+        "-D", `HOME_CACHE=${home}/.cache`,
+        "-D", `HOME_CONFIG=${home}/.config`,
+        "-D", `HOME_LOCAL=${home}/.local`,
+        "-D", `HOME_NPM=${home}/.npm`,
+        "-D", `HOME_CARGO=${home}/.cargo`,
         "-D", `HOME_SSH=${home}/.ssh`,
         "-D", `HOME_AWS=${home}/.aws`,
         "-D", `HOME_GPG=${home}/.gnupg`,
@@ -130,10 +149,21 @@ function runBubblewrap(
         "--tmpfs", "/tmp",
         "--dev", "/dev",
         "--proc", "/proc",
+        // Empty, writable tmpfs over the credential directories hides their
+        // contents from the sandbox while still letting a tool that probes them
+        // succeed against an empty dir.
         "--tmpfs", home + "/.ssh",
         "--tmpfs", home + "/.aws",
         "--tmpfs", home + "/.gnupg",
+        // The rest of $HOME is read-only via the root ro-bind, which breaks
+        // tooling that must write to its cache/config dirs (npm, pip, cargo,
+        // git). Give each a writable scratch tmpfs so those commands work
+        // without exposing or persisting anything on the host.
+        "--tmpfs", home + "/.cache",
         "--tmpfs", home + "/.config",
+        "--tmpfs", home + "/.local",
+        "--tmpfs", home + "/.npm",
+        "--tmpfs", home + "/.cargo",
         "--die-with-parent",
         "--chdir", cwd,
         "/bin/sh", "-c", command,
