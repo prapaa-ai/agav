@@ -1137,7 +1137,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       {!pendingConfirmation && (
         <Box marginTop={1}><InputPrompt
           value={input}
-          onChange={setInput}
+          onChange={(value) => {
+            // A matching paste only expands the tile it just created. Once
+            // the prompt has changed, an identical paste elsewhere is a new
+            // attachment rather than an instruction to replace that tile.
+            lastPasteRef.current = null;
+            setInput(value);
+          }}
           onSubmit={handleSubmit}
           onPaste={handlePaste}
           onRemoveAttachment={() => {
