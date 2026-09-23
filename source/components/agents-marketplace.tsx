@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Box, Text, useInput } from "../ink/index.js";
 import type { MarketplaceAgent } from "../agents/types.js";
 import { installAgent, uninstallAgent } from "../agents/installer.js";
+import { loadAgent } from "../agents/loader.js";
 import { getDefaultMarketplaceUrl } from "../config/config.js";
 import { agavHomePath } from "../utils/shell-hints.js";
 import { parseFileUrl } from "./agents-types.js";
@@ -87,43 +88,76 @@ export function MarketplaceTab({
     }
   };
 
-  const doInstall = async (agent: MarketplaceAgent, destination: "global" | "project") => {
-    setInstalling(true);
-    setInstallStatus("Installing...");
+  const stageMarketplaceAgent = async (agent: MarketplaceAgent): Promise<
+    | { success: true; agentUrl: string; marketplaceSourceUrl: string; httpTempPath?: string }
+    | { success: false; error: string }
+  > => {
     const { loadConfig } = await import("../config/config.js");
     const config = await loadConfig();
     const marketplaceUrl =
       config.agentMarketplace || getDefaultMarketplaceUrl();
     let agentUrl: string;
-    let httpTempPath: string | undefined;
     let marketplaceSourceUrl: string;
+    let httpTempPath: string | undefined;
+
     if (marketplaceUrl.startsWith("file://")) {
       const basePath = parseFileUrl(marketplaceUrl);
       agentUrl = `${basePath}/${agent.path}`;
       marketplaceSourceUrl = `${marketplaceUrl}/${agent.path}`;
     } else {
       if (!agent.files || agent.files.length === 0) {
-        setInstallStatus("✗ Failed: marketplace agent has no file manifest");
-        setInstalling(false);
-        setPendingInstallAgent(null);
-        return;
+        return { success: false, error: "marketplace agent has no file manifest" };
       }
       const { downloadAgentFiles } = await import("../agents/installer.js");
       const agentBaseUrl = `${marketplaceUrl}/${agent.path}`;
       setInstallStatus("Downloading agent files...");
       const downloadResult = await downloadAgentFiles(agentBaseUrl, agent.files);
       if (!downloadResult.success || !downloadResult.path) {
-        setInstallStatus(`✗ Failed: ${downloadResult.error || "Download failed"}`);
+        return { success: false, error: downloadResult.error || "Download failed" };
+      }
+      agentUrl = downloadResult.path;
+      marketplaceSourceUrl = agentBaseUrl;
+      httpTempPath = downloadResult.path;
+    }
+
+    const stagedAgent = await loadAgent(agentUrl, "global");
+    if (!stagedAgent) {
+      if (httpTempPath) {
+        const { rm } = await import("node:fs/promises");
+        await rm(httpTempPath, { recursive: true, force: true }).catch(() => {});
+      }
+      return { success: false, error: "Failed to validate staged agent: invalid or missing AGENT.md" };
+    }
+
+    return {
+      success: true,
+      agentUrl,
+      marketplaceSourceUrl,
+      httpTempPath,
+    };
+  };
+
+  const doInstall = async (
+    agent: MarketplaceAgent,
+    destination: "global" | "project",
+    staged?: { agentUrl: string; marketplaceSourceUrl: string; httpTempPath?: string },
+  ) => {
+    setInstalling(true);
+    let stageInfo = staged;
+    if (!stageInfo) {
+      const stagedRes = await stageMarketplaceAgent(agent);
+      if (!stagedRes.success) {
+        setInstallStatus(`✗ Failed: ${stagedRes.error}`);
         setInstalling(false);
         setPendingInstallAgent(null);
         return;
       }
-      agentUrl = downloadResult.path;
-      httpTempPath = downloadResult.path;
-      marketplaceSourceUrl = agentBaseUrl;
+      stageInfo = stagedRes;
     }
+
+    const { agentUrl, marketplaceSourceUrl, httpTempPath } = stageInfo;
     const result = await installAgent(agentUrl, { destination, sourceUrl: marketplaceSourceUrl });
-    if (httpTempPath) {
+    if (httpTempPath && !staged) {
       const { rm } = await import("node:fs/promises");
       await rm(httpTempPath, { recursive: true, force: true }).catch(() => {});
     }
@@ -152,19 +186,38 @@ export function MarketplaceTab({
     const { agent, destination } = reinstallCandidate;
     setReinstallCandidate(null);
     setInstalling(true);
-    setInstallStatus(`Reinstalling ${agent.name}...`);
+    setInstallStatus(`Staging ${agent.name}...`);
+    const stagedRes = await stageMarketplaceAgent(agent);
+    if (!stagedRes.success) {
+      setInstallStatus(`✗ Failed: ${stagedRes.error}`);
+      setInstalling(false);
+      return;
+    }
     try {
       await uninstallAgent(agent.name, destination === "project" ? "project" : "global");
     } catch {
       // If uninstall fails, proceed anyway
     }
-    await doInstall(agent, destination);
+    await doInstall(agent, destination, stagedRes);
+    if (stagedRes.httpTempPath) {
+      const { rm } = await import("node:fs/promises");
+      await rm(stagedRes.httpTempPath, { recursive: true, force: true }).catch(() => {});
+    }
   };
 
   const doUpdate = async (agent: MarketplaceAgent) => {
     const installed = installedAgents.get(agent.name);
     if (!installed) return;
     setInstalling(true);
+
+    // Validate and stage the files first before removing the existing agent
+    setInstallStatus(`Downloading update for ${agent.name}...`);
+    const stagedRes = await stageMarketplaceAgent(agent);
+    if (!stagedRes.success) {
+      setInstallStatus(`✗ Failed: ${stagedRes.error}`);
+      setInstalling(false);
+      return;
+    }
 
     // Update in all installed locations (global and/or project)
     const locations: Array<"global" | "project"> = [];
@@ -181,7 +234,11 @@ export function MarketplaceTab({
       } catch {
         // Continue even if uninstall fails
       }
-      await doInstall(agent, loc);
+      await doInstall(agent, loc, stagedRes);
+    }
+    if (stagedRes.httpTempPath) {
+      const { rm } = await import("node:fs/promises");
+      await rm(stagedRes.httpTempPath, { recursive: true, force: true }).catch(() => {});
     }
   };
 

@@ -16,7 +16,7 @@ const DEEP_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-20250514",
   openai: "gpt-4o",
   openrouter: "~anthropic/claude-sonnet-latest",
-  nvidia: "nvidia/nemotron-3.5-lightning-30b-a3b",
+  nvidia: "meta/llama-3.1-405b-instruct",
   deepseek: "deepseek-v4-pro",
   gemini: "gemini-3.5-pro",
   "vertex-ai": "vertex/gemini-3.5-pro",

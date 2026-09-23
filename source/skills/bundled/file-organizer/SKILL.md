@@ -20,9 +20,9 @@ Reorganize a messy folder (Downloads, Desktop, Documents) with user approval at 
 3. Rules for the plan:
    - Never move files the user is likely actively using (modified today) without asking.
    - Detect duplicates by name and size; list them for the user to decide, never delete on your own initiative.
-   - Do not touch hidden files, dotfiles, system files, or anything outside the folder the user named.
+   - Do not touch hidden files, dotfiles, system files, or anything outside the folder the user named. Moving files in user-named folders outside the working directory requires a path-aware move operation with explicitly user-approved access to that folder.
    - Suggest installers (.exe, .msi, .dmg) and archives for deletion review rather than filing them.
 4. On ambiguous files (no extension, cryptic names like `IMG_0001`), inspect content with read_file where possible and say what you found; otherwise ask.
-5. Wait for explicit approval of the plan. Execute moves with `mv` (or `Move-Item` on Windows), one category at a time, so partial runs stay coherent.
+5. Wait for explicit approval of the plan. Execute moves using a no-clobber move mode (`mv -n` on Unix, or `Move-Item` with destination existence checks on Windows) to preserve existing files and report conflicts rather than overwriting, one category at a time, so partial runs stay coherent.
 6. After moving, print a summary: how many files moved where, and anything left in place and why. If a move fails (file in use, permission denied), report it and continue with the rest rather than aborting.
 7. This skill moves files; it never deletes. If the user asks for deletion, propose the list and let them run it themselves or approve each step.

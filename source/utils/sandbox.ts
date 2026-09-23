@@ -356,8 +356,10 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
  * Throw if no OS-level sandbox backend is available. Used when
  * `sandboxRequired` is enabled in config or via `--sandbox-required`.
  */
-export function requireSandbox(): void {
-  const backend = detectSandboxBackend();
+export function requireSandbox(configuredBackend?: SandboxBackend): void {
+  const backend = configuredBackend && configuredBackend !== "none"
+    ? configuredBackend
+    : detectSandboxBackend();
   if (backend === "none") {
     throw new Error(
       "Sandbox required but no sandbox backend is available. " +

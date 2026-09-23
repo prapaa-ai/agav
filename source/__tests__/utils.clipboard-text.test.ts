@@ -48,7 +48,7 @@ describe("getClipboardText", () => {
 
     const { getClipboardText } = await import("../utils/clipboard-text.js");
     const result = await getClipboardText();
-    expect(result).toBe("windows clipboard text\r\n");
+    expect(result).toBe("windows clipboard text");
     expect(mockExecFile).toHaveBeenCalledWith(
       "powershell.exe",
       ["-NoProfile", "-Command", "Get-Clipboard"],

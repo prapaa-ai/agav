@@ -78,6 +78,46 @@ describe("buildClickableLines", () => {
     expect(plain.map((r) => stripAnsi(r.text)).join("")).toBe("gh");
   });
 
+  it("prioritizes longer specific targets over shorter prefixes when targets overlap (prefix first in targets)", () => {
+    const styled = "See /app/build/index.js for details";
+    const prefixTarget = makeTarget("/app");
+    const specificTarget = makeTarget("/app/build/index.js");
+    const result = buildClickableLines(styled, 80, [prefixTarget, specificTarget], (t) => `id:${t.text}`, {});
+
+    const clickable = result.flat().filter((r) => r.targetId !== undefined);
+    expect(clickable).toHaveLength(1);
+    expect(clickable[0]!.targetId).toBe("id:/app/build/index.js");
+    expect(stripAnsi(clickable[0]!.text)).toBe("/app/build/index.js");
+  });
+
+  it("prioritizes longer specific targets over shorter prefixes when targets overlap (longer target first in targets)", () => {
+    const styled = "See /app/build/index.js for details";
+    const prefixTarget = makeTarget("/app");
+    const specificTarget = makeTarget("/app/build/index.js");
+    const result = buildClickableLines(styled, 80, [specificTarget, prefixTarget], (t) => `id:${t.text}`, {});
+
+    const clickable = result.flat().filter((r) => r.targetId !== undefined);
+    expect(clickable).toHaveLength(1);
+    expect(clickable[0]!.targetId).toBe("id:/app/build/index.js");
+    expect(stripAnsi(clickable[0]!.text)).toBe("/app/build/index.js");
+  });
+
+  it("associates each occurrence with exactly one target in source order with exclusive bounding ranges", () => {
+    const styled = "check /app then /app/build/index.js and finally /app again";
+    const prefixTarget = makeTarget("/app");
+    const specificTarget = makeTarget("/app/build/index.js");
+    const result = buildClickableLines(styled, 100, [prefixTarget, specificTarget], (t) => `id:${t.text}`, {});
+
+    const clickable = result.flat().filter((r) => r.targetId !== undefined);
+    expect(clickable).toHaveLength(3);
+    expect(stripAnsi(clickable[0]!.text)).toBe("/app");
+    expect(clickable[0]!.targetId).toBe("id:/app");
+    expect(stripAnsi(clickable[1]!.text)).toBe("/app/build/index.js");
+    expect(clickable[1]!.targetId).toBe("id:/app/build/index.js");
+    expect(stripAnsi(clickable[2]!.text)).toBe("/app");
+    expect(clickable[2]!.targetId).toBe("id:/app");
+  });
+
   it("applies plainRunStyle to plain runs but not to clickable runs' plain fields", () => {
     const styled = `See ${chalk.bold("source/app.ts")} for details`;
     const target = makeTarget("source/app.ts");

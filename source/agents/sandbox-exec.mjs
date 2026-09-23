@@ -8,15 +8,21 @@
  *
  * Protocol (over stdin/stdout):
  *   stdin  ← JSON: { toolPath: string, input: Record<string, unknown> }
- *   stdout → JSON: { output: string, isError: boolean } | { error: string }
+ *   stdout → delimited JSON: __AGAV_RESULT__\n{ output: string, isError: boolean } | { error: string }
  *
  * The tool module is loaded via dynamic import() — but because this process
  * runs inside the OS sandbox, the tool code cannot:
- *   - access ~/.ssh, ~/.aws, ~/.gnupg
+ *   - access ~/.ssh, ~/.aws, ~/.gnupg, ~/.agav
  *   - write outside CWD or /tmp
  *   - make network connections
  *   - read credentials from the parent process's memory
  */
+
+const RESULT_DELIMITER = "__AGAV_RESULT__";
+
+function writeResult(data) {
+  process.stdout.write(`\n${RESULT_DELIMITER}\n${JSON.stringify(data)}\n`);
+}
 
 async function main() {
   let raw = "";
@@ -28,14 +34,16 @@ async function main() {
   try {
     request = JSON.parse(raw);
   } catch {
-    process.stdout.write(JSON.stringify({ error: "Invalid JSON on stdin" }));
-    process.exit(1);
+    writeResult({ error: "Invalid JSON on stdin" });
+    process.exitCode = 1;
+    return;
   }
 
   const { toolPath, input } = request;
   if (!toolPath || typeof toolPath !== "string") {
-    process.stdout.write(JSON.stringify({ error: "Missing toolPath" }));
-    process.exit(1);
+    writeResult({ error: "Missing toolPath" });
+    process.exitCode = 1;
+    return;
   }
 
   try {
@@ -45,10 +53,8 @@ async function main() {
     const toolDef = mod.default || mod;
 
     if (!toolDef.execute || typeof toolDef.execute !== "function") {
-      process.stdout.write(
-        JSON.stringify({ output: `Tool at ${toolPath} has no execute function`, isError: true }),
-      );
-      process.exit(0);
+      writeResult({ output: `Tool at ${toolPath} has no execute function`, isError: true });
+      return;
     }
 
     const result = await toolDef.execute(input || {});
@@ -61,18 +67,17 @@ async function main() {
           isError: Boolean(result?.isError),
         };
 
-    process.stdout.write(JSON.stringify(output));
+    writeResult(output);
   } catch (err) {
-    process.stdout.write(
-      JSON.stringify({
-        output: `Sandboxed tool execution failed: ${err instanceof Error ? err.message : String(err)}`,
-        isError: true,
-      }),
-    );
+    writeResult({
+      output: `Sandboxed tool execution failed: ${err instanceof Error ? err.message : String(err)}`,
+      isError: true,
+    });
   }
 }
 
 main().catch((err) => {
-  process.stdout.write(JSON.stringify({ error: String(err) }));
-  process.exit(1);
+  writeResult({ error: String(err) });
+  process.exitCode = 1;
 });
+

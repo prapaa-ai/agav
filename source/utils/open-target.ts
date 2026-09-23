@@ -1,6 +1,6 @@
 import { access, constants, realpath } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { openExternal } from "./open-external.js";
 import { checkPathBoundary } from "./path-guard.js";
@@ -184,8 +184,15 @@ export async function openTarget(request: OpenRequest): Promise<OpenOutcome> {
         const hasUrlPlaceholder = browserCommand.some((argument) => argument.includes("%s"));
         const browserArgs = browserCommand.slice(1).map((argument) => argument.replaceAll("%s", request.url));
         if (!hasUrlPlaceholder) browserArgs.push(request.url);
-        await execFileAsync(browserCommand[0]!, browserArgs, { timeout: 10_000 });
-        return { ok: true, message: `Opened ${request.url} via $BROWSER.` };
+        const child = spawn(browserCommand[0]!, browserArgs, { detached: true, stdio: "ignore" });
+        child.unref();
+        const spawned = await new Promise<boolean>((resolve) => {
+          child.once("error", () => resolve(false));
+          setImmediate(() => resolve(true));
+        });
+        if (spawned) {
+          return { ok: true, message: `Opened ${request.url} via $BROWSER.` };
+        }
       } catch {
         // Fall through to the platform opener.
       }
