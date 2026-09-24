@@ -9,10 +9,11 @@ interface Props {
   thinkingText: string;
   isLoading: boolean;
   showThinking?: boolean;
+  isPaused?: boolean;
 }
 
 /** Displays streaming output, including thinking and typing states. */
-export default function StreamingResponse({ text, thinkingText, isLoading, showThinking }: Props) {
+export default function StreamingResponse({ text, thinkingText, isLoading, showThinking, isPaused }: Props) {
   // Hooks run before any early return — bailing out first would change the hook
   // count between renders and crash the reconciler.
   const rendered = useMemo(() => {
@@ -39,20 +40,20 @@ export default function StreamingResponse({ text, thinkingText, isLoading, showT
       {isLoading && !text && !thinkingText ? (
         <Box>
           <Text dimColor>{"  "}</Text>
-          <Text color="cyan">
-            <Spinner />
+          <Text color={isPaused ? "yellow" : "cyan"}>
+            {isPaused ? "⏸" : <Spinner />}
           </Text>
-          <Text dimColor> Thinking...</Text>
+          <Text dimColor> {isPaused ? "Paused..." : "Thinking..."}</Text>
         </Box>
       ) : null}
       {isThinking ? (
         <Box flexDirection="column">
           <Box>
             <Text dimColor>{"  "}</Text>
-            <Text color="cyan">
-              <Spinner />
+            <Text color={isPaused ? "yellow" : "cyan"}>
+              {isPaused ? "⏸" : <Spinner />}
             </Text>
-            <Text dimColor> Thinking ({thinkingText.length} chars)...</Text>
+            <Text dimColor> {isPaused ? `Paused (${thinkingText.length} chars)...` : `Thinking (${thinkingText.length} chars)...`}</Text>
           </Box>
           {showThinking ? (
             <Box paddingLeft={2} marginTop={1}>
@@ -65,7 +66,7 @@ export default function StreamingResponse({ text, thinkingText, isLoading, showT
       ) : null}
       {rendered ? <Text>{"  "}{rendered}</Text> : null}
       {isLoading && text ? (
-        <Text dimColor>{"  "}▊</Text>
+        <Text dimColor>{"  "}{isPaused ? "[PAUSED]" : "▊"}</Text>
       ) : null}
     </Box>
   );

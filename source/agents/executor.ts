@@ -74,7 +74,7 @@ export async function executeNativeAgent(
     hooks?: AgavHooks;
     signal?: AbortSignal;
     /** Called for each AgentEvent emitted by the child loop, keyed by a per-invocation callId. */
-    onProgressUpdate?: (callId: string, event: import("../agent/loop.js").AgentEvent) => void;
+    onProgressUpdate?: (callId: string, event: import("../agent/loop.js").AgentEvent) => void | Promise<void>;
     /** Parent's confirmTool — when provided, agent sub-tools that are marked
      *  destructive will pause and surface HITL confirmation to the user. */
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<import("../agent/loop.js").ConfirmResult>;
@@ -161,7 +161,7 @@ export async function executeNativeAgent(
     });
 
     for await (const event of loopGenerator) {
-      deps.onProgressUpdate?.(callId, event);
+      await deps.onProgressUpdate?.(callId, event);
 
       if (event.type === "streaming_text") {
         output += event.text;
