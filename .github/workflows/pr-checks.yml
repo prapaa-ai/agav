@@ -346,24 +346,27 @@ jobs:
         run: |
           echo "Scanning for dangerous patterns in source..."
           FAIL=0
+          # Strip comment lines (leading * / // / /*) so doc comments that merely
+          # mention a pattern (e.g. "never use eval()") don't trigger false positives.
+          STRIP_COMMENTS='grep -vE :[[:space:]]*(\*|//|/\*)'
           if grep -rn --include='*.ts' --include='*.tsx' \
-            -E '\beval\s*\(|new\s+Function\s*\(' source/ 2>/dev/null | grep -v 'node_modules' | grep -v '\.test\.'; then
+            -E '\beval\s*\(|new\s+Function\s*\(' source/ 2>/dev/null | grep -v 'node_modules' | grep -v '\.test\.' | $STRIP_COMMENTS; then
             echo "::error::eval() or new Function() found — code injection risk"
             FAIL=1
           fi
           if grep -rn --include='*.ts' --include='*.tsx' \
-            -E 'exec(File|Sync|Async)?\s*\(\s*`' source/ 2>/dev/null | grep -v 'node_modules'; then
+            -E 'exec(File|Sync|Async)?\s*\(\s*`' source/ 2>/dev/null | grep -v 'node_modules' | $STRIP_COMMENTS; then
             echo "::error::Shell exec with template literal — command injection risk"
             FAIL=1
           fi
           if grep -rn --include='*.ts' --include='*.tsx' \
             -E 'rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED.*0' source/ 2>/dev/null \
-            | grep -v 'cli.tsx'; then
+            | grep -v 'cli.tsx' | $STRIP_COMMENTS; then
             echo "::error::TLS verification disabled — MITM risk"
             FAIL=1
           fi
           if grep -rn --include='*.ts' --include='*.tsx' \
-            -E 'innerHTML|dangerouslySetInnerHTML' source/ 2>/dev/null; then
+            -E 'innerHTML|dangerouslySetInnerHTML' source/ 2>/dev/null | $STRIP_COMMENTS; then
             echo "::error::innerHTML usage found — XSS risk"
             FAIL=1
           fi
