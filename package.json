@@ -43,7 +43,7 @@
     "react": "^19.2.0",
     "react-reconciler": "0.33.0",
     "scheduler": "^0.27.0",
-    "slice-ansi": "^9.0.0",
+    "slice-ansi": "^9.0.1",
     "string-width": "^8.2.2",
     "widest-line": "^6.0.0",
     "yaml": "^2.3.4",
