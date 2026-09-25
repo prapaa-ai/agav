@@ -256,6 +256,44 @@ describe("VertexAIProvider", () => {
     expect(body.tools[0]).toMatchObject({ name: "lookup", cache_control: { type: "ephemeral" } });
   });
 
+  it("flattens top-level oneOf/anyOf/allOf in Claude tool input schemas", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response([
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+        "",
+      ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+
+    for await (const _event of new VertexAIProvider(credentialsPath).stream({
+      model: "vertex/claude-sonnet-4-5@20250929",
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      tools: [{
+        name: "fetch_resource",
+        description: "Fetch by url or path",
+        inputSchema: {
+          description: "resource locator",
+          anyOf: [
+            { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+            { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          ],
+        },
+      }],
+    })) {}
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    const schema = body.tools[0].input_schema;
+    expect(schema.type).toBe("object");
+    expect(schema.anyOf).toBeUndefined();
+    expect(schema.oneOf).toBeUndefined();
+    expect(schema.allOf).toBeUndefined();
+    expect(schema.properties).toEqual({
+      url: { type: "string" },
+      path: { type: "string" },
+    });
+    expect(schema.description).toBe("resource locator");
+  });
+
   it("lists and normalizes Gemini and Claude publisher models", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))

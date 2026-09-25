@@ -179,6 +179,56 @@ function vertexClaudeModelName(model: string): string {
     .replace(/^publishers\/anthropic\/models\//i, "");
 }
 
+// Vertex's Anthropic (Claude) endpoint rejects a tool whose top-level
+// `input_schema` uses `oneOf`, `allOf`, or `anyOf` (unlike Anthropic's own API,
+// which tolerates it). MCP servers frequently emit such schemas, so tool index
+// N in the request can trip this 400 depending on which MCP tools are loaded —
+// hence the intermittent "tools.N.custom.input_schema does not support oneOf,
+// allOf, or anyOf at the top level" failures. Normalize the schema so the top
+// level is always a plain `type: "object"` schema, folding any top-level
+// combinator branches into a single (relaxed) property set.
+function claudeToolInputSchema(inputSchema: Record<string, unknown>): Record<string, unknown> {
+  const TOP_LEVEL_COMBINATORS = ["oneOf", "allOf", "anyOf"] as const;
+  const hasCombinator = TOP_LEVEL_COMBINATORS.some((key) => Array.isArray(inputSchema[key]));
+  if (!hasCombinator) return inputSchema;
+
+  const merged: Record<string, unknown> = { type: "object" };
+  const properties: Record<string, unknown> = {};
+
+  // Carry over any properties already declared alongside the combinator.
+  if (inputSchema.properties && typeof inputSchema.properties === "object") {
+    Object.assign(properties, inputSchema.properties as Record<string, unknown>);
+  }
+
+  // Fold each combinator branch's object properties into the flat property set.
+  // Branches are alternatives (oneOf/anyOf) or partial (allOf), so we drop
+  // per-branch `required` to avoid over-constraining the flattened schema.
+  for (const key of TOP_LEVEL_COMBINATORS) {
+    const branches = inputSchema[key];
+    if (!Array.isArray(branches)) continue;
+    for (const branch of branches) {
+      if (branch && typeof branch === "object") {
+        const branchProps = (branch as Record<string, unknown>).properties;
+        if (branchProps && typeof branchProps === "object") {
+          Object.assign(properties, branchProps as Record<string, unknown>);
+        }
+      }
+    }
+  }
+
+  if (Object.keys(properties).length > 0) merged.properties = properties;
+
+  // Preserve unrelated top-level keys (e.g. `description`, `$schema`) but never
+  // the combinators themselves.
+  for (const [k, v] of Object.entries(inputSchema)) {
+    if ((TOP_LEVEL_COMBINATORS as readonly string[]).includes(k)) continue;
+    if (k === "properties" || k === "type" || k === "required") continue;
+    merged[k] = v;
+  }
+
+  return merged;
+}
+
 function vertexClaudeUrl(projectId: string, model: string, location: string): string {
   return `${vertexHost(location)}/v1/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(location)}/publishers/anthropic/models/${encodeURIComponent(vertexClaudeModelName(model))}:streamRawPredict`;
 }
@@ -382,7 +432,7 @@ export class VertexAIProvider implements LLMProvider {
     const tools = params.tools?.map((tool, index, all) => ({
       name: tool.name,
       description: tool.description,
-      input_schema: tool.inputSchema,
+      input_schema: claudeToolInputSchema(tool.inputSchema),
       ...(index === all.length - 1 ? { cache_control: { type: "ephemeral" } } : {}),
     }));
     const body: Record<string, unknown> = {
