@@ -82,8 +82,8 @@ export const DEFAULT_KEYBINDINGS: Keybindings = {
   // the fallbacks every terminal can send. See normalizeKeyEvent below.
   newline: ["shift+enter", "meta+enter", "ctrl+j"],
   submit: ["enter"],
-  historyUp: ["up"],
-  historyDown: ["down"],
+  historyUp: ["up", "ctrl+up"],
+  historyDown: ["down", "ctrl+down"],
   interrupt: ["ctrl+c"],
   clearInput: ["ctrl+u"],
   deleteWordBackward: ["ctrl+w"],
@@ -92,8 +92,8 @@ export const DEFAULT_KEYBINDINGS: Keybindings = {
   openCommandPalette: ["ctrl+k ctrl+p"],
   showKeybindings: ["ctrl+k ctrl+s"],
   clearScreen: ["ctrl+l"],
-  scrollUp: ["ctrl+up", "shift+up"],
-  scrollDown: ["ctrl+down", "shift+down"],
+  scrollUp: ["shift+up"],
+  scrollDown: ["shift+down"],
   scrollTop: ["shift+meta+up"],
   scrollBottom: ["shift+meta+down"],
   exit: ["ctrl+q"],
@@ -165,6 +165,9 @@ interface InkKey {
 /** `CSI 27 ; modifiers ; codepoint ~` — xterm's `modifyOtherKeys=2` encoding. */
 const XTERM_OTHER_KEY_RE = /^\x1b?\[27;(\d+);(\d+)~$/;
 
+/** Common xterm encoding for Ctrl+Up / Ctrl+Down when Kitty parsing is off. */
+const CTRL_ARROW_RE = /^\x1b?\[1;5([AB])$/;
+
 /**
  * Mouse reports leak in when the terminal (or a multiplexer above it) has mouse
  * tracking on. Ink cannot parse them, so they would land in the prompt as text.
@@ -223,7 +226,18 @@ export function normalizeKeyEvent<K extends InkKey>(input: string, key: K): { in
   if (withoutMouse !== input) return { input: withoutMouse, key };
 
   const otherKey = XTERM_OTHER_KEY_RE.exec(input);
-  if (!otherKey) return { input, key };
+  if (!otherKey) {
+    const ctrlArrow = CTRL_ARROW_RE.exec(input);
+    if (!ctrlArrow) return { input, key };
+    return {
+      input: "",
+      key: patchKey(key, {
+        ctrl: true,
+        upArrow: ctrlArrow[1] === "A",
+        downArrow: ctrlArrow[1] === "B",
+      }),
+    };
+  }
 
   // The protocol sends modifiers biased by one; bits are shift/alt/ctrl.
   const modifiers = Math.max(0, Number(otherKey[1]) - 1);

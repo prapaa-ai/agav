@@ -26,6 +26,7 @@ import { saveSession } from "./config/history.js";
 import {
   type Attachment,
   createTextAttachment,
+  createImageAttachment,
   createImageAttachmentFromData,
 } from "./utils/attachments.js";
 import { getAttachment, clearAttachmentRegistry, compactImageAttachments, unregisterAttachment, wasEvicted } from "./utils/attachment-registry.js";
@@ -716,6 +717,19 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
       if (!trimmed && attachments.length === 0) return;
 
+      if (trimmed.startsWith("/attach ")) {
+        const imagePath = trimmed.slice("/attach ".length).trim().replace(/^("|')|("|')$/g, "");
+        const attachment = await createImageAttachment(imagePath);
+        if (!attachment) {
+          setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: "Could not attach that image. Use a PNG, JPG, GIF, WEBP, or BMP file.", isError: true }]);
+          return;
+        }
+        setAttachments((prev) => [...prev, attachment]);
+        setInput(attachment.label);
+        setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: `Attached ${imagePath}. Press Enter to send it.` }]);
+        return;
+      }
+
       const commandName = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
       const isSlashCommand = trimmed.startsWith("/")
         && attachments.length === 0
@@ -753,6 +767,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           config,
           provider: activeProvider ?? undefined,
           setModel: (model: string) => {
+            conversation.setModel(model);
             setConfig((prev) => ({ ...prev, model }));
           },
           setProvider: (provider) => {
