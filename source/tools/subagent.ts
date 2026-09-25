@@ -169,15 +169,12 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       try {
         if (useWorktree) {
           worktreePath = await createWorktree(id);
-          if (worktreePath) {
-            process.chdir(worktreePath);
-          }
         }
+        const effectiveCwd = worktreePath || originalCwd;
 
         // If cancelled during worktree setup, bail out before starting the loop.
         if (childController.signal.aborted) {
           if (worktreePath) {
-            process.chdir(originalCwd);
             await removeWorktree(worktreePath, branchName).catch(() => {});
           }
           progress.status = "error";
@@ -213,6 +210,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           permissionMode: config.permissionMode,
           effort: config.effort,
           maxIterations: config.maxIterations,
+          cwd: effectiveCwd,
         });
 
         const MAX_RECENT_ACTIONS = 10;
@@ -308,7 +306,6 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
               controllers.delete(id);
               broadcastNow();
               if (worktreePath) {
-                process.chdir(originalCwd);
                 await removeWorktree(worktreePath, branchName).catch(() => {});
               }
               return {
@@ -320,7 +317,6 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
 
         let mergeNote = "";
         if (worktreePath) {
-          process.chdir(originalCwd);
           // Never merge partial edits from a cancelled subagent — discard the
           // worktree so incomplete, unreviewed changes cannot reach the parent.
           if (!childController.signal.aborted) {
@@ -367,7 +363,6 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         broadcastNow();
 
         if (worktreePath) {
-          process.chdir(originalCwd);
           await removeWorktree(worktreePath, branchName).catch(() => {});
         }
 

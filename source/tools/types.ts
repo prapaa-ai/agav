@@ -11,6 +11,8 @@ export interface ToolResult {
 
 export interface ToolContext {
   env?: Record<string, string>;
+  cwd?: string;
+  confirmed?: boolean;
 }
 
 export interface ToolDefinition {

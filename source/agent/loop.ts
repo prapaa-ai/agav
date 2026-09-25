@@ -45,7 +45,8 @@ export type ConfirmToolFn = (
 
 import type { PermissionMode } from "../config/config.js";
 import { runHook, getHookForTool } from "./hooks.js";
-import { isDestructiveCommand } from "../utils/sandbox.js";
+import { isDestructiveCommand, isBlockedCommand, analyzeCommandSafety } from "../utils/sandbox.js";
+import { repairAndParseJson, validateToolArgs } from "../utils/json-repair.js";
 
 interface LoopParams {
   provider: LLMProvider;
@@ -68,6 +69,7 @@ interface LoopParams {
    * the loop simply never receives mid-turn steers.
    */
   drainSteers?: () => string[];
+  cwd?: string;
 }
 
 // Tools that never need confirmation because they cannot modify the working
@@ -312,11 +314,11 @@ export async function* runAgentLoop(
     }
     const parsedInputs = new Map<string, Record<string, unknown>>();
     for (const [id, call] of toolCalls) {
-      let input: Record<string, unknown> = {};
+      let input: Record<string, unknown>;
       try {
         input = JSON.parse(call.argsJson);
       } catch {
-        input = { raw: call.argsJson };
+        input = repairAndParseJson(call.argsJson);
       }
       parsedInputs.set(id, input);
       assistantContent.push({
@@ -373,6 +375,26 @@ export async function* runAgentLoop(
       }
 
       const tool = params.toolRegistry.get(call.name);
+
+      // Validate parsed/repaired arguments against tool schema if declared
+      if (tool?.schema.inputSchema) {
+        const validation = validateToolArgs(input, tool.schema.inputSchema);
+        if (!validation.valid) {
+          const reason = validation.error!;
+          toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+          yield { type: "tool_result", toolName: call.name, toolCallId: id, output: reason, isError: true };
+          continue;
+        }
+      }
+
+      // Hard block: lethal commands are blocked unconditionally
+      if ((call.name === "run_command" || call.name === "shell") && isBlockedCommand(String(input.command ?? ""))) {
+        const analysis = analyzeCommandSafety(String(input.command ?? ""));
+        const reason = `Blocked: Command is critically dangerous and cannot be executed (${analysis.reason ?? "catastrophic operation"}).`;
+        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
+        yield { type: "tool_result", toolName: call.name, toolCallId: id, output: reason, isError: true };
+        continue;
+      }
       const toolDestructiveFlag = tool?.schema.destructive;
 
       // Only trust destructive:false from builtin tools (SAFE_TOOLS).
@@ -454,7 +476,16 @@ export async function* runAgentLoop(
 
       const execResults = await Promise.all(
         entries.map(async (entry) => {
-          const result = await toolRegistry.execute(entry.name, entry.input);
+          const toolContext =
+            params.cwd || (entry.name === "run_command" && approved.has(entry.id))
+              ? {
+                  ...(params.cwd ? { cwd: params.cwd } : {}),
+                  ...(entry.name === "run_command" && approved.has(entry.id) ? { confirmed: true } : {}),
+                }
+              : undefined;
+          const result = toolContext
+            ? await toolRegistry.execute(entry.name, entry.input, toolContext)
+            : await toolRegistry.execute(entry.name, entry.input);
           return { ...entry, result };
         }),
       );

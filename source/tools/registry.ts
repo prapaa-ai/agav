@@ -19,13 +19,14 @@ export class ToolRegistry {
   async execute(
     name: string,
     input: Record<string, unknown>,
+    context?: import("./types.js").ToolContext,
   ): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) {
       return { output: `Unknown tool: ${name}`, isError: true };
     }
     try {
-      return await tool.execute(input);
+      return await (context ? tool.execute(input, context) : tool.execute(input));
     } catch (err) {
       return {
         output: err instanceof Error ? err.message : String(err),

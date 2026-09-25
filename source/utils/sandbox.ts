@@ -302,9 +302,13 @@ const DESTRUCTIVE_PATTERNS = [
   /\btruncate\b.*--size\s+0/,
 ];
 
-export function isDestructiveCommand(command: string): boolean {
-  return DESTRUCTIVE_PATTERNS.some((p) => p.test(command));
-}
+export {
+  analyzeCommandSafety,
+  isDestructiveCommand,
+  isBlockedCommand,
+  type CommandAnalysisResult,
+  type SafetyLevel,
+} from "./sandbox-guard.js";
 
 export interface SandboxOptions {
   command: string;
