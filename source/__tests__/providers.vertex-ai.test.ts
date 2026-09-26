@@ -256,6 +256,149 @@ describe("VertexAIProvider", () => {
     expect(body.tools[0]).toMatchObject({ name: "lookup", cache_control: { type: "ephemeral" } });
   });
 
+  it("flattens top-level oneOf/anyOf/allOf in Claude tool input schemas", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response([
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+        "",
+      ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+
+    for await (const _event of new VertexAIProvider(credentialsPath).stream({
+      model: "vertex/claude-sonnet-4-5@20250929",
+      messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+      tools: [{
+        name: "fetch_resource",
+        description: "Fetch by url or path",
+        inputSchema: {
+          description: "resource locator",
+          anyOf: [
+            { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+            { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+          ],
+        },
+      }],
+    })) {}
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    const schema = body.tools[0].input_schema;
+    expect(schema.type).toBe("object");
+    expect(schema.anyOf).toBeUndefined();
+    expect(schema.oneOf).toBeUndefined();
+    expect(schema.allOf).toBeUndefined();
+    expect(schema.properties).toEqual({
+      url: { type: "string" },
+      path: { type: "string" },
+    });
+    expect(schema.description).toBe("resource locator");
+    // anyOf branches are alternatives — their required fields become optional so
+    // the flattened schema does not reject valid single-branch calls.
+    expect(schema.required).toBeUndefined();
+  });
+
+  // Sends one tool with the given inputSchema through the Claude path and
+  // returns the flattened input_schema seen by Vertex.
+  async function flattenClaudeSchema(inputSchema: Record<string, unknown>): Promise<any> {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response([
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+        "",
+      ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+
+    for await (const _ of new VertexAIProvider(credentialsPath).stream({
+      model: "vertex/claude-sonnet-4-5@20250929",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      tools: [{ name: "t", description: "d", inputSchema }],
+    })) { /* drain */ }
+
+    return JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).tools[0].input_schema;
+  }
+
+  it("preserves top-level required when flattening a Claude combinator schema", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      properties: { projectId: { type: "string" } },
+      required: ["projectId"],
+      anyOf: [
+        { properties: { region: { type: "string" } }, required: ["region"] },
+        { properties: { zone: { type: "string" } }, required: ["zone"] },
+      ],
+    });
+
+    expect(schema.oneOf).toBeUndefined();
+    expect(schema.anyOf).toBeUndefined();
+    expect(schema.allOf).toBeUndefined();
+    // Always-required arg survives; alternative-branch requireds do not.
+    expect(schema.required).toEqual(["projectId"]);
+    expect(schema.properties).toMatchObject({
+      projectId: { type: "string" },
+      region: { type: "string" },
+      zone: { type: "string" },
+    });
+  });
+
+  it("keeps allOf branch required fields mandatory when flattening", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      allOf: [
+        { properties: { a: { type: "string" } }, required: ["a"] },
+        { properties: { b: { type: "number" } }, required: ["b"] },
+      ],
+    });
+
+    expect(schema.allOf).toBeUndefined();
+    // allOf is an intersection — every branch matches — so both stay required.
+    expect(new Set(schema.required)).toEqual(new Set(["a", "b"]));
+    expect(schema.properties).toMatchObject({
+      a: { type: "string" },
+      b: { type: "number" },
+    });
+  });
+
+  it("merges overlapping property definitions into an anyOf union instead of overwriting", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      oneOf: [
+        { properties: { action: { const: "read" } } },
+        { properties: { action: { const: "write" } } },
+      ],
+    });
+
+    expect(schema.oneOf).toBeUndefined();
+    // Both discriminator values remain expressible — no valid operation lost.
+    expect(schema.properties.action).toEqual({
+      anyOf: [{ const: "read" }, { const: "write" }],
+    });
+  });
+
+  it("does not duplicate identical overlapping property definitions", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      anyOf: [
+        { properties: { id: { type: "string" } } },
+        { properties: { id: { type: "string" } } },
+      ],
+    });
+
+    // Identical defs collapse to one — no spurious anyOf wrapper.
+    expect(schema.properties.id).toEqual({ type: "string" });
+  });
+
+  it("drops required entries with no matching property after flattening", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      required: ["ghost"],
+      anyOf: [{ properties: { real: { type: "string" } } }],
+    });
+
+    // A required name with no property would be an invalid schema on its own.
+    expect(schema.required).toBeUndefined();
+    expect(schema.properties).toMatchObject({ real: { type: "string" } });
+  });
+
   it("lists and normalizes Gemini and Claude publisher models", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
