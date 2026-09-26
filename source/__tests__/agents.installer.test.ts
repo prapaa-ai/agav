@@ -26,7 +26,7 @@ vi.mock("../agents/agent-registry.js", () => ({
 }));
 
 import { execFile } from "node:child_process";
-import { stat, readFile, cp, mkdir } from "node:fs/promises";
+import { stat, readFile, cp, mkdir, readdir } from "node:fs/promises";
 import { registerAgent } from "../agents/agent-registry.js";
 import { loadAgent } from "../agents/loader.js";
 import { installAgent, uninstallAgent } from "../agents/installer.js";
@@ -157,5 +157,60 @@ describe("agents/installer", () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain("Invalid agent name");
     });
+  describe("GitHub tree URL branch parsing", () => {
+    it("resolves branch names with slashes using ls-remote", async () => {
+      vi.mocked(execFile).mockImplementation((...args: any[]) => {
+        const gitArgs = args[1];
+        const cb = args[args.length - 1];
+        if (gitArgs && gitArgs[0] === "ls-remote") {
+          cb(null, "hash123\trefs/heads/feature/new-agent\nhash456\trefs/heads/main\n", "");
+        } else {
+          cb(null, "", "");
+        }
+        return undefined as any;
+      });
+
+      // We just want to check the git clone calls, so mock the extraction parts
+      vi.mocked(readdir).mockResolvedValue(["AGENT.md"] as any);
+      vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as any);
+      // To prevent cleanup failure from failing the test
+      vi.mocked(loadAgent).mockResolvedValue({ manifest: { name: "test", version: "1" }, tools: [] } as any);
+
+      await installAgent("https://github.com/owner/repo/tree/feature/new-agent/custom/dir");
+
+      // Verify git clone was called with correct branch
+      expect(vi.mocked(execFile)).toHaveBeenCalledWith(
+        "git",
+        expect.arrayContaining(["clone", "--branch", "feature/new-agent", "https://github.com/owner/repo"]),
+        expect.anything(),
+        expect.anything()
+      );
+
+      // Verify sparse-checkout was called with correct path
+      expect(vi.mocked(execFile)).toHaveBeenCalledWith(
+        "git",
+        expect.arrayContaining(["sparse-checkout", "set", "custom/dir"]),
+        expect.anything(),
+        expect.anything()
+      );
+    });
+
+    it("rejects ambiguous URLs if branch cannot be resolved from remote refs", async () => {
+      vi.mocked(execFile).mockImplementation((...args: any[]) => {
+        const gitArgs = args[1];
+        const cb = args[args.length - 1];
+        if (gitArgs && gitArgs[0] === "ls-remote") {
+          cb(null, "hash123\trefs/heads/main\n", ""); // remote only has 'main'
+        } else {
+          cb(null, "", "");
+        }
+        return undefined as any;
+      });
+
+      const result = await installAgent("https://github.com/owner/repo/tree/feature/new-agent/custom/dir");
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Ambiguous or invalid URL: could not resolve branch/tag");
+    });
+  });
   });
 });
