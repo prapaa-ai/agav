@@ -77,6 +77,22 @@ const STDIN_RESUME_GAP_MS = 5000;
 // are indistinguishable from user input in isolation are almost certainly tails
 // of split SGR mouse reports. This window defines how long after the last mouse
 // consumption we should suppress those fragments.
+//
+// The window is refreshed on *every* mouse-shaped consumption — full reports,
+// orphaned CSI tails, and bare terminator fragments alike — so a flood stays
+// "in burst" as long as reports keep draining. That matters during a UI hang:
+// the event loop can be blocked while the terminal floods scroll reports, and
+// when it unblocks the piled-up reads drain back to back. Refreshing on every
+// drop re-arms the window at each drained fragment, so a rapid drain never
+// lapses mid-flood and the collapsed tails (`11MMMMMM`) are suppressed — while
+// a lone report followed by real silence still lets deliberately typed text
+// (`26M`) through once the window elapses.
+//
+// The window alone is not enough to safely drop a *lone* `M`/`m` terminator,
+// which collides with the first letter of `man`/`mkdir`/`More`. That case adds
+// a stricter condition — a mouse fragment consumed earlier in the SAME buffered
+// read (`mouseResidueInChunk`) — so a keystroke that arrives as a later,
+// separate read keeps its leading letter even inside the window.
 const MOUSE_BURST_WINDOW_MS = 150;
 
 const noop = (): void => {};
@@ -782,6 +798,15 @@ export default class Ink {
 			}
 		};
 
+		// True once a mouse fragment has been consumed earlier in THIS chunk and
+		// no real input byte has followed it. A hung scroll flood is delivered
+		// as one buffered read with reports and their collapsed tails adjacent,
+		// so a lone `M`/`m` terminator is only residue while this holds. Human
+		// typing that starts with `M`/`m` (`man`, `mkdir`) always arrives as a
+		// later, separate read, so it never sees this set — its leading letter
+		// is preserved.
+		let mouseResidueInChunk = false;
+
 		while (chunk.length > 0) {
 			if (chunk.startsWith(PASTE_START)) {
 				flushInput();
@@ -806,6 +831,7 @@ export default class Ink {
 			if (match) {
 				flushInput();
 				this.lastMouseConsumedAt = now;
+				mouseResidueInChunk = true;
 				const parsed = parseMouseEvent(match.sequence);
 				if (parsed) {
 					this.handleMouseEvent(parsed);
@@ -855,14 +881,24 @@ export default class Ink {
 			// leading ESC was already consumed (split across reads, or
 			// stripped upstream). Drop it silently — it is never real input.
 			const inMouseBurst = (now - this.lastMouseConsumedAt) < MOUSE_BURST_WINDOW_MS;
-			const orphanedLen = matchOrphanedCSI(chunk, inMouseBurst);
+			// A lone `M`/`m` terminator is only residue when a mouse fragment was
+			// already consumed earlier in THIS chunk — the back-to-back shape of
+			// a buffered flood. It is NOT enough to be within the wall-clock
+			// window: `man`/`mkdir`/`M` typed after a scroll arrives as a later,
+			// separate read where `mouseResidueInChunk` is false, so its leading
+			// letter is preserved.
+			const orphanedLen = matchOrphanedCSI(chunk, inMouseBurst, mouseResidueInChunk);
 			if (orphanedLen > 0) {
 				flushInput();
 				this.lastMouseConsumedAt = now;
+				mouseResidueInChunk = true;
 				chunk = chunk.slice(orphanedLen);
 				continue;
 			}
 
+			// A real input byte ends the same-chunk residue run: anything that
+			// follows in this chunk is deliberate typing, not flood residue.
+			mouseResidueInChunk = false;
 			pendingInput += chunk[0];
 			chunk = chunk.slice(1);
 		}
@@ -1525,15 +1561,54 @@ const ORPHANED_X10_MOUSE_RE =
 	/^\[M[\s\S]{3}/;
 
 /**
- * Matches a bare `digit(s)M` or `digit(s)m` fragment — the final numeric field
- * plus terminator of a split SGR mouse report. Without any semicolons these are
- * indistinguishable from user-typed text like "26M" or "100M", so this pattern
- * is ONLY checked during a mouse burst (when we recently consumed another mouse
- * sequence) to avoid false positives during normal typing.
+ * Matches a bare `digit(s)M`/`m` fragment — the final numeric field plus
+ * terminator of a split SGR mouse report whose earlier fields were consumed at
+ * a prior read boundary. Without any semicolons these are indistinguishable
+ * from user-typed text like "26M" or "100M", so this pattern is ONLY checked
+ * during a mouse burst (when we recently consumed another mouse sequence) to
+ * avoid false positives during normal typing.
+ *
+ * At least one digit is required. A bare `M`/`m` with no digits is handled
+ * separately (see LONE_MOUSE_TERMINATOR_RE), under a stricter gate, because it
+ * collides with the first letter of ordinary commands (`man`, `mkdir`, `More`).
  */
 const BARE_MOUSE_TAIL_RE = /^\d{1,4}[Mm]/;
 
-const matchOrphanedCSI = (chunk: string, inMouseBurst = false): number => {
+/**
+ * Matches a lone `M`/`m` terminator — the last byte of a split SGR mouse report
+ * whose entire body was consumed at a prior read boundary. This is the tail of
+ * the `11MMMMMM` collapse under a scroll flood.
+ *
+ * A lone `M`/`m` is byte-identical to the first letter a user types in `man`,
+ * `mkdir`, `More`, or a literal `M`. Two guards keep those intact:
+ *
+ *   1. It is only matched when a mouse fragment was already consumed earlier in
+ *      the same buffered read (`allowLoneTerminator`) — the back-to-back shape
+ *      of a flood.
+ *   2. Even then, it is only residue when it is at the END of the chunk or is
+ *      immediately followed by another headless-mouse-residue byte — another
+ *      `M`/`m`, or the `<`/`;`/digit that begins the next *collapsed* report. A
+ *      lone `M`/`m` followed by any other character (a letter, space, `\x1b`)
+ *      is the start of typed input and is left untouched, so `man`/`mkdir`, and
+ *      a typed `M` before an arrow key / Alt-combo, keep their leading letter.
+ *
+ * `\x1b` is deliberately NOT a continuation byte. A lone `M` abutting a full
+ * ESC-introduced report (`M\x1b[<…M`) is near-impossible in a real flood — a
+ * full report is consumed atomically with its own ESC — whereas typing `M` then
+ * pressing Escape/arrow/Alt is common. Excluding `\x1b` trades that impossible
+ * cosmetic edge for not corrupting a real, frequent keystroke sequence.
+ *
+ * The lookahead is a positive whitelist (mouse-continuation bytes) rather than
+ * a negative one, so it can never accidentally admit a stray typed character:
+ * anything not explicitly a headless-mouse byte ends the run.
+ */
+const LONE_MOUSE_TERMINATOR_RE = /^[Mm](?=$|[Mm<;0-9])/;
+
+const matchOrphanedCSI = (
+	chunk: string,
+	inMouseBurst = false,
+	allowLoneTerminator = false,
+): number => {
 	// Full orphaned SGR CSI: `[<button;col;rowM`
 	if (chunk.length >= 6 && chunk[0] === "[" && chunk[1] === "<") {
 		const m = ORPHANED_SGR_MOUSE_RE.exec(chunk);
@@ -1564,6 +1639,16 @@ const matchOrphanedCSI = (chunk: string, inMouseBurst = false): number => {
 	// read boundaries split sequences at arbitrary points.
 	if (inMouseBurst && ch !== undefined && ch >= "0" && ch <= "9") {
 		const m = BARE_MOUSE_TAIL_RE.exec(chunk);
+		if (m) return m[0].length;
+	}
+
+	// Lone `M`/`m` terminator — a report body fully consumed at a prior read
+	// boundary (`11MMMMMM`). Gated more strictly than the numeric case: the
+	// same-read residue flag AND a lookahead that requires the next byte to be
+	// more mouse residue (or end-of-chunk). A lone `M`/`m` followed by a typed
+	// character (`man`, `mkdir`) fails the lookahead and is kept.
+	if (allowLoneTerminator && (ch === "M" || ch === "m")) {
+		const m = LONE_MOUSE_TERMINATOR_RE.exec(chunk);
 		if (m) return m[0].length;
 	}
 
