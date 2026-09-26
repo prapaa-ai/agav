@@ -112,10 +112,26 @@ export class AnthropicProvider implements LLMProvider {
   private toMessages(
     messages: Message[],
   ): Anthropic.Messages.MessageParam[] {
-    return messages.map((msg) => ({
-      role: msg.role,
-      content: msg.content.map((block) => this.toContentBlock(block)),
-    }));
+    // Cache the conversation prefix. The system prompt and tool list already
+    // carry breakpoints; this adds one on the last block of the second-to-last
+    // message so the growing history reads from cache instead of being re-billed
+    // in full on every iteration. The breakpoint sits on the second-to-last
+    // (not the last) message because the last message changes every turn, while
+    // the prefix up to the previous turn is stable and only grows at the tail —
+    // so each turn the previous turn's tokens become a cache hit. Anthropic
+    // allows up to 4 breakpoints; system + tools + this = 3.
+    const cacheIndex = messages.length - 2;
+    return messages.map((msg, msgIndex) => {
+      const content = msg.content.map((block) => this.toContentBlock(block));
+      if (msgIndex === cacheIndex && content.length > 0) {
+        const last = content[content.length - 1]!;
+        content[content.length - 1] = {
+          ...last,
+          cache_control: { type: "ephemeral" as const },
+        } as Anthropic.Messages.ContentBlockParam;
+      }
+      return { role: msg.role, content };
+    });
   }
 
   private toContentBlock(

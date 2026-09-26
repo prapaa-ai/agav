@@ -477,10 +477,25 @@ export class VertexAIProvider implements LLMProvider {
   }
 
   private toClaudeMessages(messages: Message[]): Record<string, unknown>[] {
-    return messages.map((message) => ({
-      role: message.role,
-      content: message.content.map((block) => this.toClaudeContentBlock(block)),
-    }));
+    // Cache the conversation prefix. The system prompt and tool list already
+    // carry breakpoints; this adds one on the last block of the second-to-last
+    // message so the growing history reads from cache instead of being re-billed
+    // in full on every iteration. The breakpoint sits on the second-to-last
+    // (not the last) message because the last message changes every turn, while
+    // the prefix up to the previous turn is stable and only grows at the tail —
+    // so each turn the previous turn's tokens become a cache hit. Anthropic
+    // allows up to 4 breakpoints; system + tools + this = 3.
+    const cacheIndex = messages.length - 2;
+    return messages.map((message, msgIndex) => {
+      const content = message.content.map((block) => this.toClaudeContentBlock(block));
+      if (msgIndex === cacheIndex && content.length > 0) {
+        content[content.length - 1] = {
+          ...content[content.length - 1],
+          cache_control: { type: "ephemeral" },
+        };
+      }
+      return { role: message.role, content };
+    });
   }
 
   private toClaudeContentBlock(block: ContentBlock): Record<string, unknown> {
