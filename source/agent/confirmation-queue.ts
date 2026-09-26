@@ -24,7 +24,8 @@ export class ConfirmationQueue {
   }
 
   enqueue(item: Omit<QueuedConfirmation, "resolve">): Promise<ConfirmResult> {
-    if (this.autoAccept) {
+    // If auto-accept is on, approve automatically EXCEPT for security warnings
+    if (this.autoAccept && !item.input["WARNING"]) {
       return Promise.resolve("always" as ConfirmResult);
     }
 

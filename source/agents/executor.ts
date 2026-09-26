@@ -193,10 +193,13 @@ export async function executeNativeAgent(
  */
 export async function executeA2AAgent(
   agent: AgentDefinition,
-  task: string
+  task: string,
+  deps?: {
+    confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<any>;
+  }
 ): Promise<string> {
   const { executeA2AAgent: a2aExecute } = await import("./a2a-client.js");
 
-  const output = await a2aExecute(agent, task);
+  const output = await a2aExecute(agent, task, undefined, deps?.confirmTool);
   return output;
 }
