@@ -397,13 +397,18 @@ describe("VertexAIProvider", () => {
     expect(schema.anyOf).toBeUndefined();
     expect(schema.oneOf).toBeUndefined();
     expect(schema.allOf).toBeUndefined();
+    // Each property appears in only one alternative branch. The other branch
+    // omits it and therefore permits any value, so the sound flattened union is
+    // unconstrained ({}) for each — enforcing `type:"string"` globally would
+    // reject a call that satisfies the *other* branch (e.g. `{url:123}` matching
+    // the path branch, which never constrains `url`). Both stay discoverable.
     expect(schema.properties).toEqual({
-      url: { type: "string" },
-      path: { type: "string" },
+      url: {},
+      path: {},
     });
     expect(schema.description).toBe("resource locator");
-    // anyOf branches are alternatives — their required fields become optional so
-    // the flattened schema does not reject valid single-branch calls.
+    // anyOf branches are alternatives — required fields shared by every branch
+    // stay required, but here `url`/`path` differ per branch, so none are.
     expect(schema.required).toBeUndefined();
   });
 
@@ -441,12 +446,15 @@ describe("VertexAIProvider", () => {
     expect(schema.oneOf).toBeUndefined();
     expect(schema.anyOf).toBeUndefined();
     expect(schema.allOf).toBeUndefined();
-    // Always-required arg survives; alternative-branch requireds do not.
+    // Always-required arg survives; per-branch requireds (region/zone) are not
+    // shared by every branch, so they cannot be enforced globally.
     expect(schema.required).toEqual(["projectId"]);
+    // projectId keeps its mandatory constraint; region/zone appear in only one
+    // branch each, so their union is unconstrained ({}) but still discoverable.
     expect(schema.properties).toMatchObject({
       projectId: { type: "string" },
-      region: { type: "string" },
-      zone: { type: "string" },
+      region: {},
+      zone: {},
     });
   });
 
@@ -544,15 +552,17 @@ describe("VertexAIProvider", () => {
   it("handles tool argument names that collide with Object.prototype", async () => {
     const schema = await flattenClaudeSchema({
       type: "object",
+      // Prototype-colliding names as mandatory (own) properties so their
+      // constraints are enforced and we can assert they survive intact. A
+      // trailing allOf forces the combinator path that previously leaked
+      // inherited Object methods into an anyOf branch (serializing to null).
+      properties: { constructor: { type: "string" }, toString: { type: "number" } },
       required: ["constructor"],
-      anyOf: [
-        { properties: { constructor: { type: "string" }, toString: { type: "number" } } },
-        { properties: { hasOwnProperty: { type: "boolean" } } },
-      ],
+      allOf: [{ properties: { hasOwnProperty: { type: "boolean" } } }],
     });
 
-    // Inherited method names must be treated as ordinary, own properties — no
-    // function leaking into an anyOf branch and serializing to null.
+    // Inherited method names are treated as ordinary, own properties — no
+    // function leaking into a combinator branch and serializing to null.
     expect(schema.properties.constructor).toEqual({ type: "string" });
     expect(schema.properties.toString).toEqual({ type: "number" });
     expect(schema.properties.hasOwnProperty).toEqual({ type: "boolean" });
@@ -590,28 +600,45 @@ describe("VertexAIProvider", () => {
 
     expect(schema.allOf).toBeUndefined();
     expect(schema.anyOf).toBeUndefined();
-    // Inner alternative-branch props survive (would be lost if only immediate
-    // properties were read) and become optional; the outer allOf branch's own
-    // required stays mandatory.
-    expect(schema.properties).toMatchObject({
-      a: { type: "string" },
-      b: { type: "number" },
+    // Inner alternative-branch props survive discovery (would be lost if only
+    // immediate properties were read). `a`/`b` each appear in only one anyOf
+    // branch, so their union is unconstrained ({}); `c` comes from the sibling
+    // allOf branch and keeps both its constraint and its required status.
+    expect(schema.properties).toEqual({
+      a: {},
+      b: {},
       c: { type: "boolean" },
     });
     expect(schema.required).toEqual(["c"]);
   });
 
-  it("marks required optional once an alternative branch is crossed in a nested combinator", async () => {
+  it("keeps a field required when it is required by every alternative branch", async () => {
+    // Two alternatives that both require `x`. Since x is required no matter which
+    // branch matches, it stays mandatory at the flattened top level. x is also
+    // constrained in every branch, so its constraint is enforceable.
     const schema = await flattenClaudeSchema({
       type: "object",
       anyOf: [
-        { allOf: [{ properties: { x: { type: "string" } }, required: ["x"] }] },
+        { properties: { x: { type: "string" } }, required: ["x"] },
+        { properties: { x: { type: "string" }, y: { type: "number" } }, required: ["x"] },
       ],
     });
 
-    // The allOf is reached *through* an anyOf, so x is only conditionally
-    // required -> must not be enforced at the flattened top level.
     expect(schema.properties).toMatchObject({ x: { type: "string" } });
+    // Required by both branches -> preserved.
+    expect(schema.required).toEqual(["x"]);
+  });
+
+  it("drops a field required by only some alternative branches", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      anyOf: [
+        { properties: { x: { type: "string" } }, required: ["x"] },
+        { properties: { y: { type: "number" } }, required: ["y"] },
+      ],
+    });
+
+    // Neither x nor y is required by *every* branch, so neither can be enforced.
     expect(schema.required).toBeUndefined();
   });
 
@@ -638,14 +665,37 @@ describe("VertexAIProvider", () => {
     });
   });
 
-  it("intersects a mandatory constraint with a single alternative contribution", async () => {
+  it("does not globally enforce a constraint that only some alternative branches impose", async () => {
+    // Reviewer's canonical case: top-level integer `count`, plus an anyOf whose
+    // first branch constrains `count>=1` and whose second branch only requires
+    // `mode`. {count:-1, mode:"bypass"} satisfies the second branch, so `count`
+    // must NOT be globally forced to minimum:1 — only its mandatory integer
+    // constraint is enforceable.
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      properties: { count: { type: "integer" } },
+      anyOf: [
+        { properties: { count: { minimum: 1 } } },
+        { properties: { mode: { const: "bypass" } }, required: ["mode"] },
+      ],
+    });
+
+    // count keeps only its mandatory integer constraint (no global minimum:1).
+    expect(schema.properties.count).toEqual({ type: "integer" });
+    // mode appears in only one branch -> unconstrained, and not globally required.
+    expect(schema.properties.mode).toEqual({});
+    expect(schema.required).toBeUndefined();
+  });
+
+  it("intersects a mandatory constraint with a single alternative contribution present in all branches", async () => {
     const schema = await flattenClaudeSchema({
       type: "object",
       properties: { count: { type: "integer" } },
       anyOf: [{ properties: { count: { minimum: 1 } } }],
     });
 
-    // Single alternative -> no redundant anyOf wrapper, still AND-ed with integer.
+    // Sole branch constrains count, so minimum:1 IS enforceable and AND-ed with
+    // the mandatory integer constraint.
     expect(schema.properties.count).toEqual({
       allOf: [{ type: "integer" }, { minimum: 1 }],
     });

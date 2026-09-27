@@ -206,15 +206,33 @@ function schemaEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** True for a schema that imposes no constraint at all (`{}` / non-object). */
+function isEmptySchema(def: unknown): boolean {
+  return !def || typeof def !== "object" || Object.keys(def as Record<string, unknown>).length === 0;
+}
+
 /**
  * Combine two property definitions with a combinator, flattening a same-kind
  * wrapper only when it is a *pure* wrapper (the combinator is its sole key).
  * A wrapper that also carries sibling keys (e.g. `{type:"integer", allOf:[...]}`)
  * is kept whole as one branch so no sibling constraint is dropped. Structurally
  * identical definitions collapse to one.
+ *
+ * The empty schema `{}` is handled per combinator: it is the identity for
+ * `allOf` (intersecting with "anything" changes nothing, so drop it) and the
+ * absorbing element for `anyOf` (a union that includes "anything" is just
+ * "anything", so collapse to `{}`).
  */
 function combineDefs(a: unknown, b: unknown, combinator: "allOf" | "anyOf"): unknown {
   if (schemaEqual(a, b)) return a;
+  const aEmpty = isEmptySchema(a);
+  const bEmpty = isEmptySchema(b);
+  if (combinator === "allOf") {
+    if (aEmpty) return b;
+    if (bEmpty) return a;
+  } else {
+    if (aEmpty || bEmpty) return {};
+  }
   const branchesOf = (def: unknown): unknown[] => {
     if (def && typeof def === "object") {
       const obj = def as Record<string, unknown>;
@@ -293,27 +311,60 @@ function flattenNode(node: unknown): FlatNode {
     }
   }
 
-  // oneOf/anyOf: flatten each branch independently and union the branches into a
-  // single alternative property map. The alternatives are then combined with the
-  // node's mandatory content: a property already present here is mandatory
-  // (from own props / allOf), so it must be INTERSECTED with the alternatives
-  // (`allOf: [mandatory, {anyOf:[...]}]`) rather than unioned — unioning would
-  // relax a mandatory constraint like `type:"integer"`. Purely-alternative
-  // properties are taken as-is.
+  // oneOf/anyOf: alternatives. Only one branch applies, so a constraint may be
+  // enforced globally ONLY when *every* branch imposes it — a branch that omits
+  // a property permits any value for it, which makes the union unconstrained for
+  // that property. Enforcing a single branch's constraint globally would wrongly
+  // reject calls that satisfy a different branch (e.g. `count:-1` under a
+  // `mode:"bypass"` branch that never mentions `count`).
   for (const key of ["oneOf", "anyOf"] as const) {
     const branches = schema[key];
     if (!Array.isArray(branches)) continue;
-    const alt: Record<string, unknown> = Object.create(null);
-    for (const branch of branches) {
-      const sub = flattenNode(branch);
-      mergeProperties(alt, sub.properties, "anyOf");
-    }
-    for (const name of Object.keys(alt)) {
-      if (hasOwn(result.properties, name)) {
-        result.properties[name] = combineDefs(result.properties[name], alt[name], "allOf");
-      } else {
-        result.properties[name] = alt[name];
+    const subs = branches.map((branch) => flattenNode(branch));
+    if (subs.length === 0) continue;
+
+    // Union of property *names* seen across branches (so each stays discoverable)
+    // and the anyOf of each name's definitions from the branches that define it.
+    const altUnion: Record<string, unknown> = Object.create(null);
+    // Names constrained in every branch -> their union may be enforced.
+    const inAllBranches = new Set<string>(Object.keys(subs[0]!.properties));
+    for (const sub of subs) {
+      for (const name of Object.keys(sub.properties)) {
+        if (!hasOwn(altUnion, name)) altUnion[name] = sub.properties[name];
+        else altUnion[name] = combineDefs(altUnion[name], sub.properties[name], "anyOf");
       }
+    }
+    for (const name of [...inAllBranches]) {
+      if (!subs.every((sub) => hasOwn(sub.properties, name))) inAllBranches.delete(name);
+    }
+
+    for (const name of Object.keys(altUnion)) {
+      // A property not present in every branch is unconstrained by the union:
+      // advertise it as allowed (empty schema) but attach no branch constraint.
+      const altDef = inAllBranches.has(name) ? altUnion[name] : {};
+      if (hasOwn(result.properties, name)) {
+        // Mandatory content (own/allOf) still applies; intersect with the union.
+        result.properties[name] = combineDefs(result.properties[name], altDef, "allOf");
+      } else {
+        result.properties[name] = altDef;
+      }
+    }
+
+    // A field required by *every* alternative (or the sole alternative) is
+    // required regardless of which branch matches -> keep it mandatory. Fields
+    // required by only some branches cannot be enforced and are dropped.
+    let sharedRequired: Set<string> | undefined;
+    for (const sub of subs) {
+      if (sharedRequired === undefined) {
+        sharedRequired = new Set(sub.requiredMandatory);
+      } else {
+        for (const name of [...sharedRequired]) {
+          if (!sub.requiredMandatory.has(name)) sharedRequired.delete(name);
+        }
+      }
+    }
+    if (sharedRequired) {
+      for (const name of sharedRequired) result.requiredMandatory.add(name);
     }
   }
 
