@@ -15,6 +15,9 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Plan detail panel | `Ctrl+G` |
 | Toggle thinking text | `Ctrl+T` |
 | Toggle compaction summary | `Ctrl+O` |
+| Pause / resume generation | `Ctrl+B`, or `Alt+P` |
+| Scroll up / down | `Ctrl+Up` / `Ctrl+Down`, or `Shift+Up` / `Shift+Down` |
+| Scroll to top / bottom | `Shift+Cmd+Up` / `Shift+Cmd+Down` |
 | Select subagent | `↑` / `↓` |
 | Inspect subagent | `Enter` |
 | Back to overview | `Tab` |
@@ -44,6 +47,20 @@ Values can be a string or an array. Chords separate strokes with spaces:
 ```
 
 Names are case-insensitive. `esc`, `return`, and `cmd` normalize to `escape`, `enter`, and `meta`.
+
+## Pause and intervene mid-turn
+
+While the agent is streaming or running tools, press **Ctrl+B** (or **Alt+P**) to pause generation, and press it again to resume. Pausing does not cancel the turn — it holds the loop so you can read what has happened so far.
+
+While paused you can also **redirect the turn without cancelling it**: type a message and press Enter, and it is injected into the in-flight turn as additional direction. This is distinct from `Ctrl+C`, which interrupts and ends the current turn.
+
+The default binding is `["ctrl+b", "meta+p"]`; override it like any other action, for example:
+
+```json
+{
+  "togglePause": ["ctrl+b"]
+}
+```
 
 Terminal protocols determine which key combinations Agav can distinguish. Many terminals encode `Ctrl+M` as Enter and do not distinguish `Shift+Enter`; use `Option+Return`/`Alt+Enter` (`meta+enter`) when your terminal supports it.
 
