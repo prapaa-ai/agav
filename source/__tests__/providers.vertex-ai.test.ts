@@ -615,6 +615,103 @@ describe("VertexAIProvider", () => {
     expect(schema.required).toBeUndefined();
   });
 
+  it("keeps a mandatory constraint intersected even when alternatives add to the same property", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      properties: { count: { type: "integer" } }, // mandatory (intersection)
+      anyOf: [
+        { properties: { count: { minimum: 1 } } }, // alternative
+        { properties: { count: { minimum: 5 } } }, // alternative
+      ],
+    });
+
+    expect(schema.anyOf).toBeUndefined();
+    expect(schema.allOf).toBeUndefined();
+    // type:"integer" is mandatory, so it must remain an AND-ed conjunct — a plain
+    // anyOf of all three would let non-integers through. The alternatives are
+    // OR-ed inside their own anyOf, then intersected with the integer constraint.
+    expect(schema.properties.count).toEqual({
+      allOf: [
+        { type: "integer" },
+        { anyOf: [{ minimum: 1 }, { minimum: 5 }] },
+      ],
+    });
+  });
+
+  it("intersects a mandatory constraint with a single alternative contribution", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      properties: { count: { type: "integer" } },
+      anyOf: [{ properties: { count: { minimum: 1 } } }],
+    });
+
+    // Single alternative -> no redundant anyOf wrapper, still AND-ed with integer.
+    expect(schema.properties.count).toEqual({
+      allOf: [{ type: "integer" }, { minimum: 1 }],
+    });
+  });
+
+  it("preserves sibling keys when a property already carries a combinator", async () => {
+    // Same property contributed three times under allOf: {type} then {minimum:1}
+    // then {maximum:10}. The intermediate composed value has both a combinator
+    // and sibling data; none of it may be dropped when the third arrives.
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      allOf: [
+        { properties: { count: { type: "integer" } } },
+        { properties: { count: { minimum: 1 } } },
+        { properties: { count: { maximum: 10 } } },
+      ],
+    });
+
+    // All three intersection constraints survive — type is NOT lost.
+    expect(schema.properties.count).toEqual({
+      allOf: [{ type: "integer" }, { minimum: 1 }, { maximum: 10 }],
+    });
+  });
+
+  it("does not merge an allOf nested inside an alternative as anyOf", async () => {
+    // Inside a single anyOf branch, an allOf contributes two constraints to the
+    // same property; those two must stay intersected with each other.
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      anyOf: [
+        { allOf: [
+          { properties: { count: { type: "integer" } } },
+          { properties: { count: { minimum: 1 } } },
+        ] },
+      ],
+    });
+
+    // Reached through anyOf so it is an "alternative" contribution overall, but
+    // the two allOf pieces within it must remain AND-ed, not unioned.
+    expect(schema.properties.count).toEqual({
+      allOf: [{ type: "integer" }, { minimum: 1 }],
+    });
+  });
+
+  it("does not drop sibling keys of a non-pure combinator wrapper when extending it", async () => {
+    // A branch supplies a property whose value already carries BOTH a sibling
+    // key and a combinator: {type:"integer", allOf:[{minimum:1}]}. A later allOf
+    // branch adds {maximum:10}. type:"integer" must not be lost.
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      allOf: [
+        { properties: { count: { type: "integer", allOf: [{ minimum: 1 }] } } },
+        { properties: { count: { maximum: 10 } } },
+      ],
+    });
+
+    // The impure wrapper is kept whole as one conjunct; nothing dropped.
+    expect(schema.properties.count).toEqual({
+      allOf: [
+        { type: "integer", allOf: [{ minimum: 1 }] },
+        { maximum: 10 },
+      ],
+    });
+    expect(JSON.stringify(schema)).toContain('"type":"integer"');
+  });
+
   it("lists and normalizes Gemini and Claude publisher models", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))

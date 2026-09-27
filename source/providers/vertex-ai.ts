@@ -187,93 +187,137 @@ function hasOwn(obj: Record<string, unknown>, key: string): boolean {
 }
 
 /**
- * Merge a property definition into the accumulating (null-prototype) property
- * set. When two branches declare the same property with *different* definitions
- * a plain overwrite would silently drop one, so the definitions are combined
- * with the caller-chosen combinator:
- *   - `"anyOf"` for alternative branches (oneOf/anyOf): both remain expressible,
- *     e.g. a discriminated union keeping `action: "read"` and `action: "write"`.
- *   - `"allOf"` for intersection branches (allOf): both constraints must hold,
- *     e.g. `{type: "integer"}` ∩ `{minimum: 1}` -> a positive integer. Using
- *     anyOf here would *relax* the schema and advertise inputs the tool rejects.
- * Identical definitions collapse to one; a brand-new property is taken verbatim.
- * A null-prototype map plus own-property checks keep names like `constructor`,
- * `toString`, and `__proto__` from colliding with Object.prototype.
+ * The result of flattening one schema node: a per-property composed definition
+ * (null-prototype so names like `__proto__`/`constructor` stay safe own keys),
+ * and the property names that are mandatory-required *within this node's own
+ * subtree* through an unbroken intersection chain.
  */
-function mergeProperty(
-  properties: Record<string, unknown>,
-  name: string,
-  definition: unknown,
-  combinator: "anyOf" | "allOf",
-): void {
-  if (!hasOwn(properties, name)) {
-    properties[name] = definition;
-    return;
-  }
-  const existing = properties[name];
-  // Identical definitions — nothing to reconcile.
-  if (JSON.stringify(existing) === JSON.stringify(definition)) return;
-
-  // Extend an existing union of the same combinator, otherwise start a new one.
-  const existingBranches =
-    existing && typeof existing === "object" && Array.isArray((existing as Record<string, unknown>)[combinator])
-      ? ((existing as Record<string, unknown>)[combinator] as unknown[])
-      : [existing];
-  const alreadyPresent = existingBranches.some(
-    (b) => JSON.stringify(b) === JSON.stringify(definition),
-  );
-  properties[name] = {
-    [combinator]: alreadyPresent ? existingBranches : [...existingBranches, definition],
-  };
-}
-
-interface CollectedSchema {
+interface FlatNode {
   properties: Record<string, unknown>;
   requiredMandatory: Set<string>;
 }
 
+function emptyFlatNode(): FlatNode {
+  return { properties: Object.create(null) as Record<string, unknown>, requiredMandatory: new Set() };
+}
+
+/** Structural equality via canonical JSON — good enough for schema fragments. */
+function schemaEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /**
- * Recursively collect object properties (and mandatory required names) from a
- * schema node, folding away any inline `oneOf`/`allOf`/`anyOf` it contains.
- *
- * `mandatory` tracks whether the current branch is reached through an unbroken
- * chain of intersections (`allOf`): only then are its `required` fields still
- * enforceable at the flattened top level. As soon as an alternative combinator
- * (`oneOf`/`anyOf`) is crossed, required fields become optional (only one branch
- * applies) and the flag flips off for that subtree. Overlapping property
- * definitions merge with the combinator that matches the branch relationship so
- * intersections stay intersections and alternatives stay alternatives.
- *
- * This handles inline nested combinators (which are fully traversable). It does
- * NOT resolve `$ref` — that needs an external resolver and is out of scope;
- * such branches simply contribute nothing rather than producing bad output.
+ * Combine two property definitions with a combinator, flattening a same-kind
+ * wrapper only when it is a *pure* wrapper (the combinator is its sole key).
+ * A wrapper that also carries sibling keys (e.g. `{type:"integer", allOf:[...]}`)
+ * is kept whole as one branch so no sibling constraint is dropped. Structurally
+ * identical definitions collapse to one.
  */
-function collectSchema(node: unknown, mandatory: boolean, acc: CollectedSchema): void {
-  if (!node || typeof node !== "object") return;
+function combineDefs(a: unknown, b: unknown, combinator: "allOf" | "anyOf"): unknown {
+  if (schemaEqual(a, b)) return a;
+  const branchesOf = (def: unknown): unknown[] => {
+    if (def && typeof def === "object") {
+      const obj = def as Record<string, unknown>;
+      // Pure wrapper: only the matching combinator key -> safe to unwrap.
+      if (Array.isArray(obj[combinator]) && Object.keys(obj).length === 1) {
+        return obj[combinator] as unknown[];
+      }
+    }
+    return [def];
+  };
+  const merged: unknown[] = [...branchesOf(a)];
+  for (const branch of branchesOf(b)) {
+    if (!merged.some((m) => schemaEqual(m, branch))) merged.push(branch);
+  }
+  return merged.length === 1 ? merged[0] : { [combinator]: merged };
+}
+
+/** Merge `incoming` property maps into `target` using the given combinator. */
+function mergeProperties(
+  target: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+  combinator: "allOf" | "anyOf",
+): void {
+  for (const name of Object.keys(incoming)) {
+    if (!hasOwn(target, name)) {
+      target[name] = incoming[name];
+    } else {
+      target[name] = combineDefs(target[name], incoming[name], combinator);
+    }
+  }
+}
+
+/**
+ * Recursively flatten a schema node, folding away any inline
+ * `oneOf`/`allOf`/`anyOf` it contains while preserving intersection-vs-
+ * alternative structure per property:
+ *   - The node's own `properties` and every `allOf` child are INTERSECTED into
+ *     the node's result (overlaps combined with `allOf`), and their required
+ *     fields stay mandatory.
+ *   - Each `oneOf`/`anyOf` is flattened branch-by-branch (each branch is its own
+ *     sub-result so intra-branch intersections are preserved) and the branches
+ *     are UNIONED (overlaps combined with `anyOf`). Required fields inside an
+ *     alternative are dropped — only one branch applies.
+ *
+ * This keeps a mandatory `{type:"integer"}` intersected even when an alternative
+ * later adds a `{minimum:1}` for the same property, and keeps an `allOf` nested
+ * inside an alternative intersected (not unioned) internally.
+ *
+ * Does NOT resolve `$ref` — that needs an external resolver and is out of scope;
+ * such branches contribute nothing rather than producing bad output.
+ */
+function flattenNode(node: unknown): FlatNode {
+  const result = emptyFlatNode();
+  if (!node || typeof node !== "object") return result;
   const schema = node as Record<string, unknown>;
 
+  // Own properties are mandatory intersection contributions.
   const props = schema.properties;
   if (props && typeof props === "object") {
-    for (const [name, def] of Object.entries(props as Record<string, unknown>)) {
-      // Object.entries only returns own enumerable keys, so inherited names are
-      // already excluded here; the null-prototype target keeps them safe on write.
-      mergeProperty(acc.properties, name, def, mandatory ? "allOf" : "anyOf");
-    }
+    // Object.entries only returns own enumerable keys, so inherited names are
+    // already excluded; the null-prototype target keeps them safe on write.
+    mergeProperties(result.properties, Object.fromEntries(Object.entries(props as Record<string, unknown>)), "allOf");
   }
-
-  if (mandatory && Array.isArray(schema.required)) {
+  if (Array.isArray(schema.required)) {
     for (const name of schema.required as unknown[]) {
-      if (typeof name === "string") acc.requiredMandatory.add(name);
+      if (typeof name === "string") result.requiredMandatory.add(name);
     }
   }
 
-  for (const key of SCHEMA_COMBINATORS) {
+  // allOf: intersect each branch's flattened result into this node.
+  if (Array.isArray(schema.allOf)) {
+    for (const branch of schema.allOf) {
+      const sub = flattenNode(branch);
+      mergeProperties(result.properties, sub.properties, "allOf");
+      for (const name of sub.requiredMandatory) result.requiredMandatory.add(name);
+    }
+  }
+
+  // oneOf/anyOf: flatten each branch independently and union the branches into a
+  // single alternative property map. The alternatives are then combined with the
+  // node's mandatory content: a property already present here is mandatory
+  // (from own props / allOf), so it must be INTERSECTED with the alternatives
+  // (`allOf: [mandatory, {anyOf:[...]}]`) rather than unioned — unioning would
+  // relax a mandatory constraint like `type:"integer"`. Purely-alternative
+  // properties are taken as-is.
+  for (const key of ["oneOf", "anyOf"] as const) {
     const branches = schema[key];
     if (!Array.isArray(branches)) continue;
-    // allOf keeps the intersection semantics; oneOf/anyOf break it.
-    const childMandatory = mandatory && key === "allOf";
-    for (const branch of branches) collectSchema(branch, childMandatory, acc);
+    const alt: Record<string, unknown> = Object.create(null);
+    for (const branch of branches) {
+      const sub = flattenNode(branch);
+      mergeProperties(alt, sub.properties, "anyOf");
+    }
+    for (const name of Object.keys(alt)) {
+      if (hasOwn(result.properties, name)) {
+        result.properties[name] = combineDefs(result.properties[name], alt[name], "allOf");
+      } else {
+        result.properties[name] = alt[name];
+      }
+    }
   }
+
+  return result;
 }
 
 // Vertex's Anthropic (Claude) endpoint rejects a tool whose top-level
@@ -300,29 +344,23 @@ function claudeToolInputSchema(inputSchema: Record<string, unknown>): Record<str
   const hasCombinator = SCHEMA_COMBINATORS.some((key) => Array.isArray(inputSchema[key]));
   if (!hasCombinator) return inputSchema;
 
-  const acc: CollectedSchema = {
-    properties: Object.create(null) as Record<string, unknown>,
-    requiredMandatory: new Set<string>(),
-  };
-
-  // The top-level node itself is an unbroken intersection point: its own
-  // properties/required are mandatory. collectSchema recurses into any inline
-  // combinators, flipping the flag off once an alternative branch is crossed.
-  collectSchema(inputSchema, true, acc);
+  // The top-level node is an unbroken intersection point, so flattenNode treats
+  // its own properties/required as mandatory and recurses through inline
+  // combinators, preserving intersection-vs-alternative structure per property.
+  const flat = flattenNode(inputSchema);
 
   const merged: Record<string, unknown> = { type: "object" };
 
-  // Keep the null-prototype map as the property set. JSON.stringify emits a
-  // normal `{...}` for it, and it is the only representation that safely carries
-  // a property literally named `__proto__` as data (a plain-object assignment
-  // would hit the prototype setter and drop it).
-  if (Object.keys(acc.properties).length > 0) {
-    merged.properties = acc.properties;
+  // Keep the null-prototype property map as output: it safely carries a property
+  // literally named `__proto__` as an own data key (a plain-object assignment
+  // would hit the prototype setter and drop it); JSON.stringify emits `{...}`.
+  if (Object.keys(flat.properties).length > 0) {
+    merged.properties = flat.properties;
   }
 
   // Only keep required entries that actually exist as properties — a stray
   // required name with no matching property would itself be an invalid schema.
-  const required = [...acc.requiredMandatory].filter((name) => hasOwn(acc.properties, name));
+  const required = [...flat.requiredMandatory].filter((name) => hasOwn(flat.properties, name));
   if (required.length > 0) merged.required = required;
 
   // Preserve unrelated top-level keys (e.g. `description`, `$schema`) but never
