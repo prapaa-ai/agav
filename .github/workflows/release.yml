@@ -247,8 +247,14 @@ jobs:
           # against it would pull in every commit HEAD has that the tag lacks —
           # dumping unrelated, long-since-shipped PRs into the notes. Skipping
           # non-ancestors keeps the range to just what is new on this line.
+          # Note: git refnames cannot contain whitespace, so iterating the tag
+          # list with word-splitting is safe. An empty CANDIDATE_TAGS collapses
+          # to an empty list here, so the loop simply runs zero times and PREV_TAG
+          # stays empty (handled by the fallback below). The `[ -n "$tag" ]` guard
+          # is belt-and-suspenders against a stray blank line ever reaching this.
           PREV_TAG=""
           for tag in $(printf '%s\n' "$CANDIDATE_TAGS" | grep -v -Fx "$CURRENT_TAG"); do
+            [ -n "$tag" ] || continue
             if git merge-base --is-ancestor "$tag" HEAD 2>/dev/null; then
               PREV_TAG="$tag"
               break
