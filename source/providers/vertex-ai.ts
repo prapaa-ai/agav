@@ -179,39 +179,101 @@ function vertexClaudeModelName(model: string): string {
     .replace(/^publishers\/anthropic\/models\//i, "");
 }
 
+const SCHEMA_COMBINATORS = ["oneOf", "allOf", "anyOf"] as const;
+
+/** True when `obj` owns `key` directly, ignoring the prototype chain. */
+function hasOwn(obj: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
 /**
- * Merge a property definition into the accumulating property set. When two
- * branches declare the same property with *different* definitions, a plain
- * overwrite would silently drop one valid alternative (e.g. a discriminated
- * union where branches set `action: "read"` vs `action: "write"` would end up
- * advertising only the last one). Instead, combine the differing definitions
- * into an `anyOf` union so both remain expressible. Identical definitions are
- * left as-is; a brand-new property is taken verbatim.
+ * Merge a property definition into the accumulating (null-prototype) property
+ * set. When two branches declare the same property with *different* definitions
+ * a plain overwrite would silently drop one, so the definitions are combined
+ * with the caller-chosen combinator:
+ *   - `"anyOf"` for alternative branches (oneOf/anyOf): both remain expressible,
+ *     e.g. a discriminated union keeping `action: "read"` and `action: "write"`.
+ *   - `"allOf"` for intersection branches (allOf): both constraints must hold,
+ *     e.g. `{type: "integer"}` ∩ `{minimum: 1}` -> a positive integer. Using
+ *     anyOf here would *relax* the schema and advertise inputs the tool rejects.
+ * Identical definitions collapse to one; a brand-new property is taken verbatim.
+ * A null-prototype map plus own-property checks keep names like `constructor`,
+ * `toString`, and `__proto__` from colliding with Object.prototype.
  */
 function mergeProperty(
   properties: Record<string, unknown>,
   name: string,
   definition: unknown,
+  combinator: "anyOf" | "allOf",
 ): void {
-  const existing = properties[name];
-  if (existing === undefined) {
+  if (!hasOwn(properties, name)) {
     properties[name] = definition;
     return;
   }
+  const existing = properties[name];
   // Identical definitions — nothing to reconcile.
   if (JSON.stringify(existing) === JSON.stringify(definition)) return;
 
-  // Fold into (or extend) an anyOf union of the distinct definitions.
+  // Extend an existing union of the same combinator, otherwise start a new one.
   const existingBranches =
-    existing && typeof existing === "object" && Array.isArray((existing as Record<string, unknown>).anyOf)
-      ? ((existing as Record<string, unknown>).anyOf as unknown[])
+    existing && typeof existing === "object" && Array.isArray((existing as Record<string, unknown>)[combinator])
+      ? ((existing as Record<string, unknown>)[combinator] as unknown[])
       : [existing];
   const alreadyPresent = existingBranches.some(
     (b) => JSON.stringify(b) === JSON.stringify(definition),
   );
   properties[name] = {
-    anyOf: alreadyPresent ? existingBranches : [...existingBranches, definition],
+    [combinator]: alreadyPresent ? existingBranches : [...existingBranches, definition],
   };
+}
+
+interface CollectedSchema {
+  properties: Record<string, unknown>;
+  requiredMandatory: Set<string>;
+}
+
+/**
+ * Recursively collect object properties (and mandatory required names) from a
+ * schema node, folding away any inline `oneOf`/`allOf`/`anyOf` it contains.
+ *
+ * `mandatory` tracks whether the current branch is reached through an unbroken
+ * chain of intersections (`allOf`): only then are its `required` fields still
+ * enforceable at the flattened top level. As soon as an alternative combinator
+ * (`oneOf`/`anyOf`) is crossed, required fields become optional (only one branch
+ * applies) and the flag flips off for that subtree. Overlapping property
+ * definitions merge with the combinator that matches the branch relationship so
+ * intersections stay intersections and alternatives stay alternatives.
+ *
+ * This handles inline nested combinators (which are fully traversable). It does
+ * NOT resolve `$ref` — that needs an external resolver and is out of scope;
+ * such branches simply contribute nothing rather than producing bad output.
+ */
+function collectSchema(node: unknown, mandatory: boolean, acc: CollectedSchema): void {
+  if (!node || typeof node !== "object") return;
+  const schema = node as Record<string, unknown>;
+
+  const props = schema.properties;
+  if (props && typeof props === "object") {
+    for (const [name, def] of Object.entries(props as Record<string, unknown>)) {
+      // Object.entries only returns own enumerable keys, so inherited names are
+      // already excluded here; the null-prototype target keeps them safe on write.
+      mergeProperty(acc.properties, name, def, mandatory ? "allOf" : "anyOf");
+    }
+  }
+
+  if (mandatory && Array.isArray(schema.required)) {
+    for (const name of schema.required as unknown[]) {
+      if (typeof name === "string") acc.requiredMandatory.add(name);
+    }
+  }
+
+  for (const key of SCHEMA_COMBINATORS) {
+    const branches = schema[key];
+    if (!Array.isArray(branches)) continue;
+    // allOf keeps the intersection semantics; oneOf/anyOf break it.
+    const childMandatory = mandatory && key === "allOf";
+    for (const branch of branches) collectSchema(branch, childMandatory, acc);
+  }
 }
 
 // Vertex's Anthropic (Claude) endpoint rejects a tool whose top-level
@@ -220,75 +282,53 @@ function mergeProperty(
 // N in the request can trip this 400 depending on which MCP tools are loaded —
 // hence the intermittent "tools.N.custom.input_schema does not support oneOf,
 // allOf, or anyOf at the top level" failures. Normalize the schema so the top
-// level is always a plain `type: "object"` schema, folding any top-level
-// combinator branches into a single property set.
+// level is always a plain `type: "object"` schema, folding any (possibly nested,
+// inline) combinator branches into a single property set.
 //
 // Correctness rules while flattening (the top level must end up combinator-free,
 // but we preserve as much of the original contract as that allows):
 //   - Top-level `required` always applies regardless of which branch matches,
 //     so it is preserved unconditionally.
 //   - `allOf` branches are intersections — every branch must match — so their
-//     `required` fields are mandatory too and are unioned into `required`.
+//     `required` fields are mandatory too and are unioned into `required`, and
+//     overlapping property definitions are combined with `allOf` (not relaxed).
 //   - `oneOf`/`anyOf` branches are alternatives; only one applies, so their
 //     `required` fields cannot be enforced at the flattened top level and are
-//     left optional (over-constraining them would reintroduce rejected calls).
-//   - Overlapping property definitions across branches are merged into an
-//     `anyOf` union rather than overwritten, so no valid alternative is lost.
+//     left optional (over-constraining them would reintroduce rejected calls),
+//     and overlapping property definitions are combined with `anyOf`.
 function claudeToolInputSchema(inputSchema: Record<string, unknown>): Record<string, unknown> {
-  const TOP_LEVEL_COMBINATORS = ["oneOf", "allOf", "anyOf"] as const;
-  const hasCombinator = TOP_LEVEL_COMBINATORS.some((key) => Array.isArray(inputSchema[key]));
+  const hasCombinator = SCHEMA_COMBINATORS.some((key) => Array.isArray(inputSchema[key]));
   if (!hasCombinator) return inputSchema;
 
+  const acc: CollectedSchema = {
+    properties: Object.create(null) as Record<string, unknown>,
+    requiredMandatory: new Set<string>(),
+  };
+
+  // The top-level node itself is an unbroken intersection point: its own
+  // properties/required are mandatory. collectSchema recurses into any inline
+  // combinators, flipping the flag off once an alternative branch is crossed.
+  collectSchema(inputSchema, true, acc);
+
   const merged: Record<string, unknown> = { type: "object" };
-  const properties: Record<string, unknown> = {};
-  const requiredSet = new Set<string>();
 
-  // Carry over any properties/required declared alongside the combinator.
-  if (inputSchema.properties && typeof inputSchema.properties === "object") {
-    for (const [name, def] of Object.entries(inputSchema.properties as Record<string, unknown>)) {
-      mergeProperty(properties, name, def);
-    }
-  }
-  // Top-level `required` holds regardless of branch — always preserve it.
-  if (Array.isArray(inputSchema.required)) {
-    for (const name of inputSchema.required as unknown[]) {
-      if (typeof name === "string") requiredSet.add(name);
-    }
+  // Keep the null-prototype map as the property set. JSON.stringify emits a
+  // normal `{...}` for it, and it is the only representation that safely carries
+  // a property literally named `__proto__` as data (a plain-object assignment
+  // would hit the prototype setter and drop it).
+  if (Object.keys(acc.properties).length > 0) {
+    merged.properties = acc.properties;
   }
 
-  for (const key of TOP_LEVEL_COMBINATORS) {
-    const branches = inputSchema[key];
-    if (!Array.isArray(branches)) continue;
-    // allOf = intersection (every branch mandatory) -> its required fields stay
-    // mandatory. oneOf/anyOf = alternatives -> required fields become optional.
-    const branchRequiredIsMandatory = key === "allOf";
-    for (const branch of branches) {
-      if (!branch || typeof branch !== "object") continue;
-      const branchObj = branch as Record<string, unknown>;
-      const branchProps = branchObj.properties;
-      if (branchProps && typeof branchProps === "object") {
-        for (const [name, def] of Object.entries(branchProps as Record<string, unknown>)) {
-          mergeProperty(properties, name, def);
-        }
-      }
-      if (branchRequiredIsMandatory && Array.isArray(branchObj.required)) {
-        for (const name of branchObj.required as unknown[]) {
-          if (typeof name === "string") requiredSet.add(name);
-        }
-      }
-    }
-  }
-
-  if (Object.keys(properties).length > 0) merged.properties = properties;
   // Only keep required entries that actually exist as properties — a stray
   // required name with no matching property would itself be an invalid schema.
-  const required = [...requiredSet].filter((name) => name in properties);
+  const required = [...acc.requiredMandatory].filter((name) => hasOwn(acc.properties, name));
   if (required.length > 0) merged.required = required;
 
   // Preserve unrelated top-level keys (e.g. `description`, `$schema`) but never
   // the combinators themselves or the keys we handled explicitly above.
   for (const [k, v] of Object.entries(inputSchema)) {
-    if ((TOP_LEVEL_COMBINATORS as readonly string[]).includes(k)) continue;
+    if ((SCHEMA_COMBINATORS as readonly string[]).includes(k)) continue;
     if (k === "properties" || k === "type" || k === "required") continue;
     merged[k] = v;
   }

@@ -399,6 +399,112 @@ describe("VertexAIProvider", () => {
     expect(schema.properties).toMatchObject({ real: { type: "string" } });
   });
 
+  it("intersects (allOf) overlapping allOf property constraints instead of relaxing them", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      allOf: [
+        { properties: { count: { type: "integer" } } },
+        { properties: { count: { minimum: 1 } } },
+      ],
+    });
+
+    expect(schema.allOf).toBeUndefined();
+    // Both constraints must hold -> allOf, not anyOf. An anyOf here would permit
+    // e.g. negative integers, which the original schema rejects.
+    expect(schema.properties.count).toEqual({
+      allOf: [{ type: "integer" }, { minimum: 1 }],
+    });
+  });
+
+  it("unions (anyOf) overlapping alternative-branch property definitions", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      oneOf: [
+        { properties: { action: { const: "read" } } },
+        { properties: { action: { const: "write" } } },
+      ],
+    });
+
+    expect(schema.oneOf).toBeUndefined();
+    expect(schema.properties.action).toEqual({
+      anyOf: [{ const: "read" }, { const: "write" }],
+    });
+  });
+
+  it("handles tool argument names that collide with Object.prototype", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      required: ["constructor"],
+      anyOf: [
+        { properties: { constructor: { type: "string" }, toString: { type: "number" } } },
+        { properties: { hasOwnProperty: { type: "boolean" } } },
+      ],
+    });
+
+    // Inherited method names must be treated as ordinary, own properties — no
+    // function leaking into an anyOf branch and serializing to null.
+    expect(schema.properties.constructor).toEqual({ type: "string" });
+    expect(schema.properties.toString).toEqual({ type: "number" });
+    expect(schema.properties.hasOwnProperty).toEqual({ type: "boolean" });
+    // Serialized payload must not contain any null property branch.
+    expect(JSON.stringify(schema)).not.toContain("null");
+    // Top-level required for an own property survives.
+    expect(schema.required).toEqual(["constructor"]);
+  });
+
+  it("preserves __proto__ as an ordinary property name", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      anyOf: [{ properties: { ["__proto__"]: { type: "string" } } }],
+    });
+
+    // __proto__ must round-trip as data through serialization, not mutate any
+    // object's prototype. (The property map is a null-prototype object, which is
+    // what lets __proto__ live as an own key.)
+    const roundTripped = JSON.parse(JSON.stringify(schema));
+    expect(Object.prototype.hasOwnProperty.call(roundTripped.properties, "__proto__")).toBe(true);
+    expect(roundTripped.properties["__proto__"]).toEqual({ type: "string" });
+  });
+
+  it("recurses into nested inline combinators instead of losing their properties", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      allOf: [
+        { anyOf: [
+          { properties: { a: { type: "string" } } },
+          { properties: { b: { type: "number" } } },
+        ] },
+        { properties: { c: { type: "boolean" } }, required: ["c"] },
+      ],
+    });
+
+    expect(schema.allOf).toBeUndefined();
+    expect(schema.anyOf).toBeUndefined();
+    // Inner alternative-branch props survive (would be lost if only immediate
+    // properties were read) and become optional; the outer allOf branch's own
+    // required stays mandatory.
+    expect(schema.properties).toMatchObject({
+      a: { type: "string" },
+      b: { type: "number" },
+      c: { type: "boolean" },
+    });
+    expect(schema.required).toEqual(["c"]);
+  });
+
+  it("marks required optional once an alternative branch is crossed in a nested combinator", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      anyOf: [
+        { allOf: [{ properties: { x: { type: "string" } }, required: ["x"] }] },
+      ],
+    });
+
+    // The allOf is reached *through* an anyOf, so x is only conditionally
+    // required -> must not be enforced at the flattened top level.
+    expect(schema.properties).toMatchObject({ x: { type: "string" } });
+    expect(schema.required).toBeUndefined();
+  });
+
   it("lists and normalizes Gemini and Claude publisher models", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
