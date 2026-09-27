@@ -119,14 +119,18 @@ export class AnthropicProvider implements LLMProvider {
     // on each read — this discounts the re-sent history, it does not make it
     // free.
     //
-    // The breakpoint is placed on the second-to-last (not the last) message so
-    // the cached prefix stays byte-identical from one request to the next: the
-    // last message is the freshest content and the loop keeps appending after
-    // it, so anchoring on the prior message guarantees the marked prefix has
-    // already been seen. The tradeoff is a one-turn lag — the newest turn's
-    // tokens are not covered by this breakpoint until the following request. A
-    // single-message request gets no conversation breakpoint (cacheIndex = -1);
-    // the system+tools breakpoints still cache in that case.
+    // The breakpoint is placed on the second-to-last (not the last) message to
+    // maximize how much of the prefix stays byte-identical from one request to
+    // the next. The last message is the freshest content, so anchoring on the
+    // message before it keeps the marked prefix as close as possible to a stable
+    // historical boundary. It is not always previously-sent content: the agent
+    // loop appends a newly generated assistant message and its tool results, so
+    // a just-created assistant turn can become second-to-last without having
+    // appeared in any earlier request's input. In that case the breakpoint acts
+    // as a cache *write* on this turn and only becomes a *hit* on the following
+    // one — a one-turn lag, not a guaranteed same-turn hit. A single-message
+    // request gets no conversation breakpoint (cacheIndex = -1); the
+    // system+tools breakpoints still cache in that case.
     //
     // Anthropic allows up to 4 breakpoints; system + tools + this = 3.
     const cacheIndex = messages.length - 2;
