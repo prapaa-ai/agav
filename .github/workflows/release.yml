@@ -241,7 +241,19 @@ jobs:
             CANDIDATE_TAGS=$(git tag --list 'v*' --sort=-version:refname | grep -E "$STABLE_TAG_PATTERN" || true)
           fi
 
-          PREV_TAG=$(printf '%s\n' "$CANDIDATE_TAGS" | grep -v -Fx "$CURRENT_TAG" | head -n 1 || true)
+          # Pick the newest candidate tag that is actually an ANCESTOR of HEAD.
+          # A tag on a divergent line (e.g. a stable vX.Y.Z tagged off a
+          # different branch than this beta) is not an ancestor, and diffing
+          # against it would pull in every commit HEAD has that the tag lacks —
+          # dumping unrelated, long-since-shipped PRs into the notes. Skipping
+          # non-ancestors keeps the range to just what is new on this line.
+          PREV_TAG=""
+          for tag in $(printf '%s\n' "$CANDIDATE_TAGS" | grep -v -Fx "$CURRENT_TAG"); do
+            if git merge-base --is-ancestor "$tag" HEAD 2>/dev/null; then
+              PREV_TAG="$tag"
+              break
+            fi
+          done
           BASE_REF=${PREV_TAG:-$(git rev-list --max-parents=0 HEAD)}
           NOTES=$(git log "$BASE_REF"..HEAD --pretty=format:"- %s (%h)" --no-merges)
           echo "previous_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
