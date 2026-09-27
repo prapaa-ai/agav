@@ -505,16 +505,63 @@ describe("VertexAIProvider", () => {
     expect(schema.properties.id).toEqual({ type: "string" });
   });
 
-  it("drops required entries with no matching property after flattening", async () => {
+  it("preserves a mandatory required name without a property definition by adding a permissive stub", async () => {
     const schema = await flattenClaudeSchema({
       type: "object",
+      // `ghost` is top-level required but never given a `properties` entry (JSON
+      // Schema permits this — e.g. constrained via patternProperties). It must
+      // stay required; a permissive {} stub keeps the schema valid for Vertex.
       required: ["ghost"],
       anyOf: [{ properties: { real: { type: "string" } } }],
     });
 
-    // A required name with no property would be an invalid schema on its own.
-    expect(schema.required).toBeUndefined();
-    expect(schema.properties).toMatchObject({ real: { type: "string" } });
+    expect(schema.required).toEqual(["ghost"]);
+    expect(schema.properties.ghost).toEqual({});
+    // `real` appears in the sole branch, so its constraint is enforceable.
+    expect(schema.properties.real).toEqual({ type: "string" });
+  });
+
+  it("preserves a required field constrained only via patternProperties", async () => {
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      required: ["cfg"],
+      patternProperties: { "^cfg$": { type: "string" } },
+      anyOf: [{ properties: { other: { type: "number" } } }],
+    });
+
+    // `cfg` has no `properties` entry but is validly required via
+    // patternProperties -> the requirement must survive.
+    expect(schema.required).toEqual(["cfg"]);
+    // patternProperties is an unrelated top-level key -> carried through as-is.
+    expect(schema.patternProperties).toEqual({ "^cfg$": { type: "string" } });
+  });
+
+  it("treats a boolean false alternative branch as the empty set (union identity)", async () => {
+    // In JSON Schema `false` means "no value allowed"; under anyOf it contributes
+    // nothing (X OR nothing = X), so a sibling {type:"string"} must be preserved
+    // — NOT collapsed to {} (anything).
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      anyOf: [
+        { properties: { val: { type: "string" } } },
+        { properties: { val: false } },
+      ],
+    });
+
+    expect(schema.properties.val).toEqual({ type: "string" });
+  });
+
+  it("treats a boolean false intersection as absorbing (nothing validates)", async () => {
+    // Under allOf, `false` is absorbing: X AND nothing = nothing -> false.
+    const schema = await flattenClaudeSchema({
+      type: "object",
+      allOf: [
+        { properties: { val: { type: "string" } } },
+        { properties: { val: false } },
+      ],
+    });
+
+    expect(schema.properties.val).toBe(false);
   });
 
   it("intersects (allOf) overlapping allOf property constraints instead of relaxing them", async () => {

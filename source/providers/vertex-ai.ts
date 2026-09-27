@@ -206,9 +206,21 @@ function schemaEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** True for a schema that imposes no constraint at all (`{}` / non-object). */
-function isEmptySchema(def: unknown): boolean {
+/**
+ * True for the *universal* schema — one that allows any value. That is `{}`,
+ * `true`, or a non-object/nullish node treated as no constraint. NOTE: boolean
+ * `false` is NOT universal; in JSON Schema `false` means "no value is allowed"
+ * (the empty set), the exact opposite. See `isFalseSchema`.
+ */
+function isUniversalSchema(def: unknown): boolean {
+  if (def === true) return true;
+  if (def === false) return false;
   return !def || typeof def !== "object" || Object.keys(def as Record<string, unknown>).length === 0;
+}
+
+/** True for the JSON Schema `false` (empty set — nothing validates). */
+function isFalseSchema(def: unknown): boolean {
+  return def === false;
 }
 
 /**
@@ -218,20 +230,27 @@ function isEmptySchema(def: unknown): boolean {
  * is kept whole as one branch so no sibling constraint is dropped. Structurally
  * identical definitions collapse to one.
  *
- * The empty schema `{}` is handled per combinator: it is the identity for
- * `allOf` (intersecting with "anything" changes nothing, so drop it) and the
- * absorbing element for `anyOf` (a union that includes "anything" is just
- * "anything", so collapse to `{}`).
+ * Boolean/empty schemas follow set algebra, keeping `{}`/`true` (universal set)
+ * and `false` (empty set) distinct:
+ *   - allOf (intersection): `{}`/`true` is the identity (drop it); `false` is
+ *     absorbing (the whole intersection becomes `false`).
+ *   - anyOf (union): `{}`/`true` is absorbing (the whole union becomes `{}`);
+ *     `false` is the identity (drop it — X OR nothing = X).
  */
 function combineDefs(a: unknown, b: unknown, combinator: "allOf" | "anyOf"): unknown {
   if (schemaEqual(a, b)) return a;
-  const aEmpty = isEmptySchema(a);
-  const bEmpty = isEmptySchema(b);
+  const aUniversal = isUniversalSchema(a);
+  const bUniversal = isUniversalSchema(b);
+  const aFalse = isFalseSchema(a);
+  const bFalse = isFalseSchema(b);
   if (combinator === "allOf") {
-    if (aEmpty) return b;
-    if (bEmpty) return a;
+    if (aFalse || bFalse) return false;      // X ∩ ∅ = ∅
+    if (aUniversal) return b;                 // ⊤ ∩ X = X
+    if (bUniversal) return a;
   } else {
-    if (aEmpty || bEmpty) return {};
+    if (aUniversal || bUniversal) return {};  // ⊤ ∪ X = ⊤
+    if (aFalse) return b;                     // ∅ ∪ X = X
+    if (bFalse) return a;
   }
   const branchesOf = (def: unknown): unknown[] => {
     if (def && typeof def === "object") {
@@ -402,6 +421,17 @@ function claudeToolInputSchema(inputSchema: Record<string, unknown>): Record<str
 
   const merged: Record<string, unknown> = { type: "object" };
 
+  // A field may legitimately be `required` without an explicit `properties`
+  // entry (JSON Schema allows this — e.g. it is constrained via
+  // `patternProperties`, or simply required with any value). Dropping such a
+  // requirement would silently make a mandatory tool argument optional. Instead,
+  // preserve every mandatory required name and, when it lacks a property
+  // definition, add a permissive `{}` stub so the requirement holds and the
+  // flattened schema stays valid.
+  for (const name of flat.requiredMandatory) {
+    if (!hasOwn(flat.properties, name)) flat.properties[name] = {};
+  }
+
   // Keep the null-prototype property map as output: it safely carries a property
   // literally named `__proto__` as an own data key (a plain-object assignment
   // would hit the prototype setter and drop it); JSON.stringify emits `{...}`.
@@ -409,9 +439,7 @@ function claudeToolInputSchema(inputSchema: Record<string, unknown>): Record<str
     merged.properties = flat.properties;
   }
 
-  // Only keep required entries that actually exist as properties — a stray
-  // required name with no matching property would itself be an invalid schema.
-  const required = [...flat.requiredMandatory].filter((name) => hasOwn(flat.properties, name));
+  const required = [...flat.requiredMandatory];
   if (required.length > 0) merged.required = required;
 
   // Preserve unrelated top-level keys (e.g. `description`, `$schema`) but never
