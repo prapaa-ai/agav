@@ -262,9 +262,13 @@ jobs:
           #     in a subshell and would silently lose the assignment.
           #   - An empty list iterates zero times, leaving PREV_TAG empty for the
           #     fallback below; `[ -n "$tag" ]` guards a stray blank line.
+          # `|| true`: grep exits 1 when it prints nothing (e.g. the only tag is
+          # CURRENT_TAG, or the list is empty). GitHub Actions runs steps with
+          # `set -o pipefail`, so guard the pipeline explicitly rather than rely
+          # on the command substitution failing silently in for-list context.
           PREV_TAG=""
           set -f
-          for tag in $(printf '%s\n' "$CANDIDATE_TAGS" | grep -v -Fx "$CURRENT_TAG"); do
+          for tag in $(printf '%s\n' "$CANDIDATE_TAGS" | grep -v -Fx "$CURRENT_TAG" || true); do
             [ -n "$tag" ] || continue
             if git merge-base --is-ancestor "$tag" HEAD 2>/dev/null; then
               PREV_TAG="$tag"
