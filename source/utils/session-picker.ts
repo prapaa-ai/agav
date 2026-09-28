@@ -287,39 +287,51 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       stdin.on("data", onRenameInput);
     }
 
-    // Parse an SGR mouse report (mode 1006): "\x1b[<b;x;yM" (press) or
-    // "...m" (release). Returns the decoded event, or null if the chunk isn't
-    // a mouse report. Only the low button bits and the Y coordinate matter
-    // here — X is ignored since a click anywhere on a row selects it.
-    function parseMouse(
+    // Parse every SGR mouse report (mode 1006) in a chunk: "\x1b[<b;x;yM"
+    // (press) or "...m" (release). Returns them in order. During rapid wheel
+    // scrolling the terminal batches several reports into a single stdin chunk
+    // (e.g. "\x1b[<65;1;1M\x1b[<65;1;1M"), so a global, un-anchored scan is
+    // required — an anchored single-match regex would drop all but nothing.
+    // Only the low button bits and the Y coordinate matter here; X is ignored
+    // since a click anywhere on a row selects it.
+    function parseMouseEvents(
       seq: string,
-    ): { button: number; y: number; release: boolean } | null {
-      const m = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(seq);
-      if (!m) return null;
-      return {
-        button: Number(m[1]),
-        y: Number(m[3]),
-        release: m[4] === "m",
-      };
+    ): { button: number; y: number; release: boolean }[] {
+      const events: { button: number; y: number; release: boolean }[] = [];
+      const re = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(seq)) !== null) {
+        events.push({
+          button: Number(m[1]),
+          y: Number(m[3]),
+          release: m[4] === "m",
+        });
+      }
+      return events;
     }
 
-    function handleMouse(ev: {
+    // Apply a single mouse event to the selection. Returns true if the
+    // selection changed so the caller can coalesce one render for a batch of
+    // events instead of repainting per report during rapid scrolling.
+    function applyMouseEvent(ev: {
       button: number;
       y: number;
       release: boolean;
-    }): void {
+    }): boolean {
       // Wheel events set bit 6 (button codes 64 = up, 65 = down) and report on
       // press only. Scroll moves the selection so the viewport follows it,
       // reusing the same scrolling math as the arrow keys.
       if (ev.button === 64) {
-        selected = Math.max(0, selected - 1);
-        render();
-        return;
+        const next = Math.max(0, selected - 1);
+        if (next === selected) return false;
+        selected = next;
+        return true;
       }
       if (ev.button === 65) {
-        selected = Math.min(items.length - 1, selected + 1);
-        render();
-        return;
+        const next = Math.min(items.length - 1, selected + 1);
+        if (next === selected) return false;
+        selected = next;
+        return true;
       }
 
       // Left-button press (code 0) on a session row selects it. Ignore the
@@ -328,22 +340,30 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       // visible window.
       if (ev.button === 0 && !ev.release) {
         const rowIndex = ev.y - 1 - HEADER_LINES; // 0-based offset into visible rows
-        if (rowIndex < 0) return;
+        if (rowIndex < 0) return false;
         const idx = visibleStart + rowIndex;
-        if (idx < visibleStart || idx >= visibleEnd) return;
+        if (idx < visibleStart || idx >= visibleEnd) return false;
+        if (idx === selected) return false;
         selected = idx;
-        render();
+        return true;
       }
+
+      return false;
     }
 
     function onData(data: Buffer) {
       const key = data.toString();
 
-      // Mouse reports arrive as their own chunk and start with "\x1b[<". Handle
-      // them first so their bytes are never mistaken for keyboard input.
-      const mouse = parseMouse(key);
-      if (mouse) {
-        handleMouse(mouse);
+      // Mouse reports start with "\x1b[<" and may be batched several-per-chunk
+      // during rapid scrolling. Handle them first so their bytes are never
+      // mistaken for keyboard input, applying every event and repainting once.
+      if (key.startsWith("\x1b[<")) {
+        const events = parseMouseEvents(key);
+        let changed = false;
+        for (const ev of events) {
+          if (applyMouseEvent(ev)) changed = true;
+        }
+        if (changed) render();
         return;
       }
 

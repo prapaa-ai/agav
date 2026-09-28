@@ -329,6 +329,34 @@ describe("session picker mouse support", () => {
     expect(picked?.id).toBe(sessions[3]!.id);
   });
 
+  it("processes batched wheel reports delivered in a single chunk", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    // Rapid scrolling batches several SGR reports into one stdin chunk.
+    stdin.send(wheelDown() + wheelDown() + wheelDown() + wheelDown());
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[4]!.id);
+  });
+
+  it("processes a batched chunk mixing wheel up and down", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    stdin.send(wheelDown() + wheelDown() + wheelDown()); // → 3
+    stdin.send(wheelDown() + wheelUp()); // net +0 within the chunk → 3
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[3]!.id);
+  });
+
   it("wheel up moves the selection backward and clamps at the top", async () => {
     const sessions = makeManySessions(50);
     const promise = pickSession(sessions);
