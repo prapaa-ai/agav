@@ -25,6 +25,17 @@ const CONVERT_TIMEOUT_MS = 60_000;
 /** Rasterised page and preview buffers stay well inside provider limits. */
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 
+/** Long edge, in pixels, of a downscaled preview. */
+export const IMAGE_LONG_EDGE = 1600;
+/** JPEG quality (0-100) for a downscaled preview. */
+export const IMAGE_QUALITY = 80;
+/**
+ * Ceiling for an image forwarded without downscaling. Base64 inflates by a
+ * third, and providers reject attachments past roughly 5MB encoded, so a
+ * larger original has to be resized or refused rather than sent and bounced.
+ */
+export const MAX_RAW_IMAGE_BYTES = 3.5 * 1024 * 1024;
+
 export interface RasterImage {
   data: Buffer;
   mediaType: "image/jpeg";

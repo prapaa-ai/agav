@@ -1,4 +1,5 @@
 import type { SlashCommand, CommandResult } from "./types.js";
+import { formatMidTurnSafeCommands } from "./mid-turn.js";
 
 const CATEGORIES: Record<string, string[]> = {
   "Chat": ["clear", "new", "model", "effort", "fast", "deep", "compact", "ps", "export"],
@@ -79,6 +80,7 @@ export function createHelpCommand(
         sections.push(`  Skill commands\n${lines.join("\n")}`);
       }
 
+      sections.push(`  While Agav is working: ${formatMidTurnSafeCommands()}`);
       sections.push("\n  Tip: /help <command> for detailed usage");
 
       return {

@@ -39,6 +39,10 @@ export interface AgentManifest {
   prerequisites?: string[];
   enabled?: boolean; // defaults to true
 
+  // Explicit allowlist of Agav built-in tools available to this native agent.
+  // Native agents otherwise receive only their agent-local tools and MCP tools.
+  "native-tools"?: string[];
+
   // Tool schemas declared in the manifest (avoids importing tool modules for schema)
   tools?: Array<{
     name: string;

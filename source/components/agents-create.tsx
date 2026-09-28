@@ -14,12 +14,14 @@ import { registerAgent } from "../agents/agent-registry.js";
 import { assertPathContained } from "../agents/installer.js";
 import { loadTemplates, saveTemplate, removeTemplate, type AgentTemplate } from "../agents/templates.js";
 import { deleteAgentWithTemplate } from "../agents/agent-lifecycle.js";
+import { createToolRegistry } from "../tools/registry-factory.js";
 
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
-const STEP_LABELS = ["Name & Description", "System Prompt", "MCP Servers", "Review & Save"];
+const STEP_LABELS = ["Name & Description", "System Prompt", "Native Tools", "MCP Servers", "Review & Save"];
+const NATIVE_TOOLS = createToolRegistry().list().map((tool) => tool.schema);
 
-type WizardStep = 1 | 2 | 3 | 4;
+type WizardStep = 1 | 2 | 3 | 4 | 5;
 
 interface MCPCredItem {
   serverKey: string;
@@ -75,6 +77,8 @@ export function CreateTab({
   const [promptGenerating, setPromptGenerating] = useState(false);
   const [promptGenerated, setPromptGenerated] = useState(false);
   const [promptError, setPromptError] = useState<string | null>(null);
+  const [nativeToolNames, setNativeToolNames] = useState<Set<string>>(new Set());
+  const [nativeToolsScrollIndex, setNativeToolsScrollIndex] = useState(0);
   const [mcpSelectedKeys, setMcpSelectedKeys] = useState<Set<string>>(new Set());
   const [mcpScrollIndex, setMcpScrollIndex] = useState(0);
   const [mcpCredPhase, setMcpCredPhase] = useState<"select" | "credentials">("select");
@@ -185,6 +189,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       setAgentDescription(agent.manifest.description);
       setSystemPrompt(agent.systemPrompt);
       setPromptGenerated(true);
+      setNativeToolNames(new Set(agent.manifest["native-tools"] ?? []));
       const agentMcpKeys = new Set(
         (agent.manifest["mcp-servers"] ?? []).map((s) => s.key),
       );
@@ -195,6 +200,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       setAgentDescription(template.description);
       setSystemPrompt(template.systemPrompt);
       setPromptGenerated(true);
+      setNativeToolNames(new Set(template.nativeTools ?? []));
       const templateMcpKeys = new Set(
         (template.mcpServers ?? []).map((s) => s.key),
       );
@@ -205,12 +211,14 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       setAgentDescription("");
       setSystemPrompt("");
       setPromptGenerated(false);
+      setNativeToolNames(new Set());
       setMcpSelectedKeys(new Set());
     }
     setNameError(null);
     setActiveField("name");
     setPromptError(null);
     setPromptGenerating(false);
+    setNativeToolsScrollIndex(0);
     setMcpScrollIndex(0);
     setMcpCredPhase("select");
     setMcpCredItems([]);
@@ -267,6 +275,9 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
         enabled: true,
       };
 
+      if (nativeToolNames.size > 0) {
+        manifest["native-tools"] = [...nativeToolNames];
+      }
       if (mcpServerEntries.length > 0) {
         manifest["mcp-servers"] = mcpServerEntries;
       }
@@ -321,7 +332,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       setSaveError(err instanceof Error ? err.message : String(err));
       setSaving(false);
     }
-  }, [agentName, agentDescription, systemPrompt, mcpSelectedKeys, config, onReloadAgents, onCreateComplete, editingAgent, destination]);
+  }, [agentName, agentDescription, systemPrompt, nativeToolNames, mcpSelectedKeys, config, onReloadAgents, onCreateComplete, editingAgent, destination]);
 
   // --- Delete agent ---
   const doRemove = useCallback(async () => {
@@ -401,7 +412,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
     }
 
     // === WIZARD MODE ===
-    if (wizardStep === 4 && saving) return;
+    if (wizardStep === 5 && saving) return;
 
     // Step 1: Name & Description
     if (wizardStep === 1) {
@@ -442,12 +453,38 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       return;
     }
 
-    // Step 3: MCP Server Selection
+    // Step 3: Native Tool Selection
     if (wizardStep === 3) {
+      if (key.escape || input === "b") { setWizardStep(2); return; }
+      if (key.return) { setWizardStep(4); return; }
+      if (input === " " && NATIVE_TOOLS.length > 0) {
+        const tool = NATIVE_TOOLS[nativeToolsScrollIndex];
+        if (tool) {
+          setNativeToolNames((prev) => {
+            const next = new Set(prev);
+            if (next.has(tool.name)) next.delete(tool.name);
+            else next.add(tool.name);
+            return next;
+          });
+        }
+        return;
+      }
+      if (key.upArrow && NATIVE_TOOLS.length > 0) {
+        setNativeToolsScrollIndex((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (key.downArrow && NATIVE_TOOLS.length > 0) {
+        setNativeToolsScrollIndex((i) => Math.min(NATIVE_TOOLS.length - 1, i + 1));
+        return;
+      }
+      return;
+    }
+
+    // Step 4: MCP Server Selection
+    if (wizardStep === 4) {
       if (mcpCredPhase === "select") {
-        if (key.escape || input === "b") { setWizardStep(2); return; }
+        if (key.escape || input === "b") { setWizardStep(3); return; }
         if (key.return) {
-          // Compute credential items for selected servers
           const credItems: MCPCredItem[] = [];
           for (const k of mcpSelectedKeys) {
             const serverConfig = config?.mcpServers?.[k];
@@ -460,7 +497,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
           }
           const hasMissing = credItems.some((item) => !item.configured);
           if (!hasMissing) {
-            setWizardStep(4);
+            setWizardStep(5);
           } else {
             setMcpCredItems(credItems);
             setMcpCredIndex(0);
@@ -500,7 +537,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
           else { setMcpCredPhase("select"); }
           return;
         }
-        if (key.rightArrow && !mcpCredEditing) { setWizardStep(4); return; }
+        if (key.rightArrow && !mcpCredEditing) { setWizardStep(5); return; }
         if (key.return) {
           if (mcpCredEditing) {
             const item = mcpCredItems[mcpCredIndex];
@@ -536,9 +573,9 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       return;
     }
 
-    // Step 4: Review & Save
-    if (wizardStep === 4) {
-      if (key.escape || input === "b") { setMcpCredPhase("select"); setWizardStep(3); return; }
+    // Step 5: Review & Save
+    if (wizardStep === 5) {
+      if (key.escape || input === "b") { setMcpCredPhase("select"); setWizardStep(4); return; }
       if (input === "1" && !saving) { setDestination("global"); return; }
       if (input === "2" && !saving) { setDestination("project"); return; }
       if (key.return && !saving && !saveError) { saveAgent(); return; }
@@ -552,7 +589,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       const cleaned = text.replace(/\n/g, "").trim();
       if (activeField === "name" && !editingAgent) setAgentName((v) => v + cleaned);
       else if (activeField === "description") setAgentDescription((v) => v + cleaned);
-    } else if (wizardStep === 3 && mcpCredPhase === "credentials" && mcpCredEditing) {
+    } else if (wizardStep === 4 && mcpCredPhase === "credentials" && mcpCredEditing) {
       const cleaned = text.replace(/\n/g, "").trim();
       setMcpCredBuffer((v) => v + cleaned);
     }
@@ -638,7 +675,15 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
         />
       )}
 
-      {wizardStep === 3 && mcpCredPhase === "select" && (
+      {wizardStep === 3 && (
+        <NativeToolsStep
+          tools={NATIVE_TOOLS}
+          selectedNames={nativeToolNames}
+          scrollIndex={nativeToolsScrollIndex}
+        />
+      )}
+
+      {wizardStep === 4 && mcpCredPhase === "select" && (
         <MCPServerStep
           entries={workspaceMcpEntries}
           selectedKeys={mcpSelectedKeys}
@@ -646,7 +691,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
         />
       )}
 
-      {wizardStep === 3 && mcpCredPhase === "credentials" && (
+      {wizardStep === 4 && mcpCredPhase === "credentials" && (
         <MCPCredentialsStep
           items={mcpCredItems}
           currentIndex={mcpCredIndex}
@@ -655,11 +700,12 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
         />
       )}
 
-      {wizardStep === 4 && (
+      {wizardStep === 5 && (
         <ReviewSaveStep
           agentName={agentName}
           agentDescription={agentDescription}
           systemPrompt={systemPrompt}
+          nativeTools={NATIVE_TOOLS.filter((tool) => nativeToolNames.has(tool.name))}
           mcpEntries={workspaceMcpEntries.filter(([k]) => mcpSelectedKeys.has(k))}
           saving={saving}
           saveStatus={saveStatus}
@@ -779,6 +825,48 @@ function SystemPromptStep({
   );
 }
 
+function NativeToolsStep({
+  tools, selectedNames, scrollIndex,
+}: {
+  tools: Array<{ name: string; description: string }>;
+  selectedNames: Set<string>;
+  scrollIndex: number;
+}) {
+  const maxVisible = 8;
+  const scrollStart = Math.max(0, Math.min(
+    scrollIndex - Math.floor(maxVisible / 2),
+    tools.length - maxVisible,
+  ));
+  const visibleTools = tools.slice(scrollStart, scrollStart + maxVisible);
+
+  return (
+    <Box flexDirection="column">
+      <Text bold>Select Native Tools:</Text>
+      <Text dimColor>Choose the built-in Agav tools this agent can use</Text>
+      <Box flexDirection="column" marginY={1}>
+        <Text dimColor>{tools.length} tool(s) available — {selectedNames.size} selected</Text>
+        {visibleTools.map((tool, visibleIndex) => {
+          const index = scrollStart + visibleIndex;
+          const selected = selectedNames.has(tool.name);
+          const isCursor = index === scrollIndex;
+          return (
+            <Box key={tool.name}>
+              <Text color={isCursor ? "cyan" : undefined} bold={isCursor}>
+                {isCursor ? "› " : "  "}{selected ? "[x]" : "[ ]"} {tool.name}
+              </Text>
+              <Text dimColor> — {tool.description}</Text>
+            </Box>
+          );
+        })}
+        {tools.length > maxVisible && (
+          <Text dimColor>{scrollStart + 1}-{Math.min(scrollStart + maxVisible, tools.length)} of {tools.length}</Text>
+        )}
+      </Box>
+      <Text dimColor>SPACE: Toggle | ENTER: Next | ESC/b: Back</Text>
+    </Box>
+  );
+}
+
 function MCPServerStep({
   entries, selectedKeys, scrollIndex,
 }: {
@@ -874,10 +962,11 @@ function MCPCredentialsStep({
 }
 
 function ReviewSaveStep({
-  agentName, agentDescription, systemPrompt, mcpEntries,
+  agentName, agentDescription, systemPrompt, nativeTools, mcpEntries,
   saving, saveStatus, saveError, isEdit, destination,
 }: {
   agentName: string; agentDescription: string; systemPrompt: string;
+  nativeTools: Array<{ name: string; description: string }>;
   mcpEntries: [string, MCPServerConfig][];
   saving: boolean; saveStatus: string; saveError: string | null;
   isEdit: boolean;
@@ -914,6 +1003,12 @@ function ReviewSaveStep({
         <Box marginTop={1} flexDirection="column">
           <Text bold>System Prompt:</Text>
           <Text dimColor>{promptPreview}{hasMore ? "\n..." : ""}</Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column">
+          <Text bold>Native Tools ({nativeTools.length}):</Text>
+          {nativeTools.length > 0
+            ? nativeTools.map((tool) => <Text key={tool.name}>  {tool.name}</Text>)
+            : <Text dimColor>None</Text>}
         </Box>
         {mcpEntries.length > 0 && (
           <Box marginTop={1} flexDirection="column">

@@ -8,6 +8,8 @@ order: 3
 
 Type `/` in an interactive session to autocomplete commands. Run `/help` to see the commands loaded in the current session, or `/help <command>` for detailed usage. Skills and MCP servers can add commands at runtime, so they are not listed individually here.
 
+Most slash commands run when Agav is idle. These commands can also run while Agav is streaming, executing tools, or otherwise doing in-flight work: `/help`, `/exit`, `/loop`, `/steer`, `/context`, `/memory`, `/remember`, and `/forget`.
+
 ## Chat and models
 
 | Command | Purpose |
@@ -64,7 +66,7 @@ Type `/` in an interactive session to autocomplete commands. Run `/help` to see 
 
 | Command | Purpose |
 | --- | --- |
-| `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor. `[2]` Marketplace tab browses, searches, and installs community agents. `[3]` Create tab lists user-created agents and templates, and opens a 4-step wizard to create or edit agents. |
+| `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor, including native-tool selection for editable native agents. `[2]` Marketplace tab browses, searches, and installs community agents. `[3]` Create tab lists user-created agents and templates, and opens a 5-step wizard to create or edit agents. |
 
 ## Diagnostics and exit
 

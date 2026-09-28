@@ -21,6 +21,7 @@ required-config:
   - MY_API_KEY
   - MY_API_BASE_URL
 tools-dir: ./tools
+native-tools: [read_file, web_search]
 model: claude-sonnet-4-5
 effort: medium
 tags: [my-api, records]
@@ -59,6 +60,7 @@ System prompt content here.
 | --- | --- | --- | --- | --- |
 | `required-config` | string[] | no | — | Environment variable names the agent needs. Agav collects these in the config editor and stores them encrypted in `~/.agav/agents/<name>/config.json` (`%USERPROFILE%\.agav\agents\<name>\config.json` on Windows). Injected into `process.env` during the agent's execution only. |
 | `tools-dir` | string | no | `./tools` | Relative path to the directory containing `.mjs` tool files. |
+| `native-tools` | string[] | no | none | Explicit allowlist of built-in Agav tools available to a **native** agent. Each value is a built-in tool schema name, such as `read_file` or `web_search`. When omitted or empty, no built-in Agav tools are added; the agent can still use its agent-local tools and declared MCP tools. |
 
 ### Model and effort
 

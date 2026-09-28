@@ -44,24 +44,37 @@ export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /** Register the default built-in tool set used by interactive and print-mode sessions. */
-export function createToolRegistry(): ToolRegistry {
+const BUILTIN_TOOLS = [
+  fileReadTool,
+  fileWriteTool,
+  editFileTool,
+  shellTool,
+  grepSearchTool,
+  findFilesTool,
+  listDirectoryTool,
+  webSearchTool,
+  lspTool,
+  readNotebookTool,
+  editNotebookTool,
+  fetchUrlTool,
+  updatePlanTool,
+  githubTool,
+  overviewTool,
+  testRunnerTool,
+  memoryTool,
+];
+
+/** Create a registry containing the named Agav built-in tools. */
+export function createBuiltinToolRegistry(toolNames: Iterable<string>): ToolRegistry {
+  const requested = new Set(toolNames);
   const registry = new ToolRegistry();
-  registry.register(fileReadTool);
-  registry.register(fileWriteTool);
-  registry.register(editFileTool);
-  registry.register(shellTool);
-  registry.register(grepSearchTool);
-  registry.register(findFilesTool);
-  registry.register(listDirectoryTool);
-  registry.register(webSearchTool);
-  registry.register(lspTool);
-  registry.register(readNotebookTool);
-  registry.register(editNotebookTool);
-  registry.register(fetchUrlTool);
-  registry.register(updatePlanTool);
-  registry.register(githubTool);
-  registry.register(overviewTool);
-  registry.register(testRunnerTool);
-  registry.register(memoryTool);
+  for (const tool of BUILTIN_TOOLS) {
+    if (requested.has(tool.schema.name)) registry.register(tool);
+  }
   return registry;
+}
+
+/** Register the default built-in tool set used by interactive and print-mode sessions. */
+export function createToolRegistry(): ToolRegistry {
+  return createBuiltinToolRegistry(KNOWN_TOOL_NAMES);
 }

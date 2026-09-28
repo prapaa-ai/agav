@@ -19,7 +19,7 @@ import { createProvider } from "./providers/registry.js";
 import type { ContentBlock, InvocationReason } from "./providers/types.js";
 import { useAgent } from "./hooks/use-agent.js";
 import { isInternalUserMessage } from "./agent/internal-prompts.js";
-import { CommandRegistry } from "./commands/registry.js";
+import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { saveSession } from "./config/history.js";
@@ -144,10 +144,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [skillsTUIActive, setSkillsTUIActive] = useState(false);
   const skillsTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
-  const exit = useCallback(() => {
-    stopActiveLoop();
-    exitInk();
-  }, [exitInk]);
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
   /** Lets handleSubmit re-sync InputPrompt's caret after rewriting its buffer. */
@@ -192,6 +188,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     turnStartTime,
     lastTurnDurationMs,
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
+
+  /**
+   * Exit cleanly. Aborts any in-flight agent turn (streaming/tool call) and
+   * stops the repeating prompt loop before tearing down Ink, so `/exit` works
+   * mid-turn instead of being ignored until the CLI is idle.
+   */
+  const exit = useCallback(() => {
+    cancel();
+    stopActiveLoop();
+    exitInk();
+  }, [cancel, exitInk]);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
   const { stdout } = useStdout();
@@ -703,10 +710,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       if (!trimmed && attachments.length === 0) return;
 
       const commandName = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
-      const midTurnSafe = new Set(["steer", "help", "loop"]);
       const isSlashCommand = trimmed.startsWith("/")
         && attachments.length === 0
-        && (!isLoading || midTurnSafe.has(commandName));
+        && (!isLoading || isCommandAllowedMidTurn(commandName));
       if (!isSlashCommand && isLoading) return;
 
       if (isSlashCommand) {

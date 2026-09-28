@@ -224,9 +224,27 @@ jobs:
           ls -lh release/
       - name: Generate release notes
         id: notes
+        env:
+          CURRENT_TAG: v${{ needs.check-version.outputs.version }}
+          PRERELEASE: ${{ needs.check-version.outputs.prerelease }}
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)
-          NOTES=$(git log "$PREV_TAG"..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          RELEASE_TAG_PATTERN='^v[0-9]+[.][0-9]+[.][0-9]+(-[A-Za-z0-9.-]+)?$'
+          STABLE_TAG_PATTERN='^v[0-9]+[.][0-9]+[.][0-9]+$'
+
+          if [ "$PRERELEASE" = "true" ]; then
+            # Pre-releases compare against the immediately previous release,
+            # whether that release was stable or another pre-release.
+            CANDIDATE_TAGS=$(git tag --list 'v*' --sort=-creatordate | grep -E "$RELEASE_TAG_PATTERN" || true)
+          else
+            # Stable releases accumulate everything since the last stable tag,
+            # ignoring any beta/rc tags in between.
+            CANDIDATE_TAGS=$(git tag --list 'v*' --sort=-version:refname | grep -E "$STABLE_TAG_PATTERN" || true)
+          fi
+
+          PREV_TAG=$(printf '%s\n' "$CANDIDATE_TAGS" | grep -v -Fx "$CURRENT_TAG" | head -n 1 || true)
+          BASE_REF=${PREV_TAG:-$(git rev-list --max-parents=0 HEAD)}
+          NOTES=$(git log "$BASE_REF"..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          echo "previous_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
           echo "notes<<EOF" >> "$GITHUB_OUTPUT"
           echo "$NOTES" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -237,6 +255,7 @@ jobs:
           name: v${{ needs.check-version.outputs.version }}
           prerelease: ${{ needs.check-version.outputs.prerelease == 'true' }}
           target_commitish: ${{ github.sha }}
+          previous_tag: ${{ steps.notes.outputs.previous_tag }}
           body: |
             ## Changes
 

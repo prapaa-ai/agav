@@ -8,6 +8,7 @@ export interface AgentTemplate {
   description: string;
   systemPrompt: string;
   mcpServers?: Array<{ key: string; command: string; args?: string[]; env?: Record<string, string> }>;
+  nativeTools?: string[];
   tags?: string[];
   savedAt: string;
 }
