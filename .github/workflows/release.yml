@@ -241,7 +241,41 @@ jobs:
             CANDIDATE_TAGS=$(git tag --list 'v*' --sort=-version:refname | grep -E "$STABLE_TAG_PATTERN" || true)
           fi
 
-          PREV_TAG=$(printf '%s\n' "$CANDIDATE_TAGS" | grep -v -Fx "$CURRENT_TAG" | head -n 1 || true)
+          # Pick the newest candidate tag that is actually an ANCESTOR of HEAD.
+          # A tag on a divergent line (e.g. a stable vX.Y.Z tagged off a
+          # different branch than this beta) is not an ancestor, and diffing
+          # against it would pull in every commit HEAD has that the tag lacks —
+          # dumping unrelated, long-since-shipped PRs into the notes. Skipping
+          # non-ancestors keeps the range to just what is new on this line.
+          # Iterate the filtered tag list to find the newest ancestor. Notes on
+          # safety of the word-split `for`:
+          #   - Word-splitting only splits on IFS and (without noglob) applies
+          #     pathname expansion. It does NOT re-run command substitution, so a
+          #     tag like `v$(...)` is inert text, not a command — there is no
+          #     injection here.
+          #   - `set -f` disables globbing for the loop so a metacharacter could
+          #     never expand to filenames (git already forbids `* ? [` and
+          #     whitespace in refnames, and the grep filters above only pass
+          #     `[0-9.A-Za-z-]`; this is defence in depth).
+          #   - A `for` (not `printf | while`) keeps the loop in the current
+          #     shell, so `PREV_TAG` set inside it survives; a piped `while` runs
+          #     in a subshell and would silently lose the assignment.
+          #   - An empty list iterates zero times, leaving PREV_TAG empty for the
+          #     fallback below; `[ -n "$tag" ]` guards a stray blank line.
+          # `|| true`: grep exits 1 when it prints nothing (e.g. the only tag is
+          # CURRENT_TAG, or the list is empty). GitHub Actions runs steps with
+          # `set -o pipefail`, so guard the pipeline explicitly rather than rely
+          # on the command substitution failing silently in for-list context.
+          PREV_TAG=""
+          set -f
+          for tag in $(printf '%s\n' "$CANDIDATE_TAGS" | grep -v -Fx "$CURRENT_TAG" || true); do
+            [ -n "$tag" ] || continue
+            if git merge-base --is-ancestor "$tag" HEAD 2>/dev/null; then
+              PREV_TAG="$tag"
+              break
+            fi
+          done
+          set +f
           BASE_REF=${PREV_TAG:-$(git rev-list --max-parents=0 HEAD)}
           NOTES=$(git log "$BASE_REF"..HEAD --pretty=format:"- %s (%h)" --no-merges)
           echo "previous_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"

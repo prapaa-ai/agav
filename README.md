@@ -115,7 +115,7 @@ We’re building the alternative, an AI that works for you, runs on your terms, 
 ## Community
 
 Email: contact@agav.dev  
-Discord: [discord.gg/6u3m2JN6k](https://discord.gg/6u3m2JN6k)
+Discord: [discord.com/invite/qD7xBaRVT](https://discord.com/invite/qD7xBaRVT)
 
 ## License
 

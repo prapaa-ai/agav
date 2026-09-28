@@ -231,4 +231,19 @@ describe("newline keybinding", () => {
     expect(mod.requiresEnhancedKeyboard("ctrl+j")).toBe(false);
     expect(mod.requiresEnhancedKeyboard("ctrl+k shift+enter")).toBe(true);
   });
+
+  it("resolves togglePause from both ctrl+b and meta+p defaults", async () => {
+    const mod = await import("../config/keybindings.js");
+    const resolver = new mod.KeybindingResolver(mod.DEFAULT_KEYBINDINGS, mod.GLOBAL_ACTIONS);
+
+    const ctrlB = resolver.feed("b", { ...NO_KEY, ctrl: true });
+    expect(ctrlB).toMatchObject({ action: "togglePause" });
+
+    const metaP = resolver.feed("p", { ...NO_KEY, meta: true });
+    expect(metaP).toMatchObject({ action: "togglePause" });
+
+    const formatted = mod.formatKeybinding(mod.DEFAULT_KEYBINDINGS, "togglePause");
+    expect(formatted).toContain("Ctrl+B");
+    expect(formatted).toContain(process.platform === "darwin" ? "Option+P" : "Alt+P");
+  });
 });
