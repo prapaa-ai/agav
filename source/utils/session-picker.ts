@@ -4,7 +4,11 @@ import { deleteSession, renameSession } from "../config/history.js";
 export async function pickSession(sessions: SessionRecord[]): Promise<SessionRecord | null> {
   if (sessions.length === 0) return null;
 
-  const items = sessions.slice(0, 20);
+  // Keep the full list navigable. Older builds capped this to the 20 most
+  // recent sessions, which silently hid everything else with no way to reach
+  // it. The viewport below already scrolls through more items than fit on
+  // screen, so there's no reason to truncate the backing list.
+  const items = sessions.slice();
   let selected = 0;
   const pageSize = Math.min(items.length, process.stdout.rows ? process.stdout.rows - 6 : 15);
   const cols = process.stdout.columns || 80;
@@ -21,7 +25,35 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
   // session. The caller suspends Ink around this, so the screen is ours.
   process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
 
+  // Enable mouse reporting so users can scroll the list and click a row to
+  // select it. 1000 = button press/release events, 1006 = SGR extended
+  // coordinates (avoids the 223-column limit of the legacy encoding). Both
+  // MUST be disabled on every exit path (see disableMouse) or the host
+  // terminal keeps emitting mouse escape sequences into whatever runs next.
+  let mouseEnabled = false;
+  function enableMouse() {
+    process.stdout.write("\x1b[?1000h\x1b[?1006h");
+    mouseEnabled = true;
+  }
+  function disableMouse() {
+    if (!mouseEnabled) return;
+    process.stdout.write("\x1b[?1006l\x1b[?1000l");
+    mouseEnabled = false;
+  }
+  enableMouse();
+
   let totalLinesRendered = 0;
+
+  // The three header lines (title, hint, blank) sit above the first session
+  // row. Mouse clicks map a 1-based terminal row to an item index using this
+  // offset, so it must match the number of header lines pushed in render().
+  const HEADER_LINES = 3;
+
+  // Index of the first session row currently drawn on screen. Tracked in the
+  // outer scope so the mouse handler can translate a click's Y coordinate into
+  // the item it landed on. Kept in sync at the end of every render().
+  let visibleStart = 0;
+  let visibleEnd = 0;
 
   function render() {
     // Move cursor up to overwrite previous output
@@ -29,13 +61,17 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       process.stdout.write(`\x1b[${totalLinesRendered}A\x1b[G`);
     }
 
+    const total = items.length;
+    const countLabel = `${total} session${total === 1 ? "" : "s"}`;
     const lines: string[] = [];
-    lines.push("\x1b[1;36m  Resume Session\x1b[0m");
-    lines.push("\x1b[2m  ↑↓ navigate · Enter select · D delete · M/R rename · Esc cancel\x1b[0m");
+    lines.push(`\x1b[1;36m  Resume Session\x1b[0m \x1b[2m(${countLabel})\x1b[0m`);
+    lines.push("\x1b[2m  ↑↓/scroll/click select · Enter resume · D delete · M/R rename · Esc cancel\x1b[0m");
     lines.push("");
 
     const scrollStart = Math.max(0, Math.min(selected - Math.floor(pageSize / 2), items.length - pageSize));
     const scrollEnd = Math.min(scrollStart + pageSize, items.length);
+    visibleStart = scrollStart;
+    visibleEnd = scrollEnd;
 
     const msgsCol = 8;  // "999 msgs"
     const dateCol = 22; // "7/29/2026, 12:28 PM"
@@ -84,8 +120,20 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
     }
 
     if (items.length > pageSize) {
+      const more = items.length - scrollEnd;
+      const above = scrollStart;
+      const hint =
+        above > 0 && more > 0
+          ? `  ↑ ${above} more · ${more} more ↓`
+          : more > 0
+            ? `  ${more} more ↓`
+            : above > 0
+              ? `  ↑ ${above} more`
+              : "";
       lines.push("");
-      lines.push(`\x1b[2m  ${scrollStart + 1}-${scrollEnd} of ${items.length}\x1b[0m`);
+      lines.push(
+        `\x1b[2m  showing ${scrollStart + 1}-${scrollEnd} of ${items.length}${hint}\x1b[0m`,
+      );
     }
 
     // Pad to a fixed height so cursor math is stable across re-renders
@@ -131,6 +179,9 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
 
     function cleanup(drainLF = false) {
       stdin.removeListener("data", onData);
+      // Turn mouse reporting off before Ink resumes; otherwise the terminal
+      // keeps sending mouse escape sequences that would leak into the app.
+      disableMouse();
       if (drainLF) {
         // Defer raw mode restoration until the trailing \n is drained
         drainTrailingNewline();
@@ -181,6 +232,7 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
         // Ctrl-C exits the whole picker, matching the list handler.
         if (input === "\x03") {
           stdin.removeListener("data", onRenameInput);
+          disableMouse();
           restoreRawMode();
           process.stdout.write("\x1b[2J\x1b[H");
           process.exit(0);
@@ -235,8 +287,65 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       stdin.on("data", onRenameInput);
     }
 
+    // Parse an SGR mouse report (mode 1006): "\x1b[<b;x;yM" (press) or
+    // "...m" (release). Returns the decoded event, or null if the chunk isn't
+    // a mouse report. Only the low button bits and the Y coordinate matter
+    // here — X is ignored since a click anywhere on a row selects it.
+    function parseMouse(
+      seq: string,
+    ): { button: number; y: number; release: boolean } | null {
+      const m = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(seq);
+      if (!m) return null;
+      return {
+        button: Number(m[1]),
+        y: Number(m[3]),
+        release: m[4] === "m",
+      };
+    }
+
+    function handleMouse(ev: {
+      button: number;
+      y: number;
+      release: boolean;
+    }): void {
+      // Wheel events set bit 6 (button codes 64 = up, 65 = down) and report on
+      // press only. Scroll moves the selection so the viewport follows it,
+      // reusing the same scrolling math as the arrow keys.
+      if (ev.button === 64) {
+        selected = Math.max(0, selected - 1);
+        render();
+        return;
+      }
+      if (ev.button === 65) {
+        selected = Math.min(items.length - 1, selected + 1);
+        render();
+        return;
+      }
+
+      // Left-button press (code 0) on a session row selects it. Ignore the
+      // release event so a single click doesn't fire twice. Map the 1-based
+      // terminal row to an item index via the header offset and the currently
+      // visible window.
+      if (ev.button === 0 && !ev.release) {
+        const rowIndex = ev.y - 1 - HEADER_LINES; // 0-based offset into visible rows
+        if (rowIndex < 0) return;
+        const idx = visibleStart + rowIndex;
+        if (idx < visibleStart || idx >= visibleEnd) return;
+        selected = idx;
+        render();
+      }
+    }
+
     function onData(data: Buffer) {
       const key = data.toString();
+
+      // Mouse reports arrive as their own chunk and start with "\x1b[<". Handle
+      // them first so their bytes are never mistaken for keyboard input.
+      const mouse = parseMouse(key);
+      if (mouse) {
+        handleMouse(mouse);
+        return;
+      }
 
       if (key === "\x1b" || key === "q") {
         cleanup();

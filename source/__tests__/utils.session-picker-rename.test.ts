@@ -216,3 +216,173 @@ describe("session picker rename view", () => {
     expect(await promise).toBeNull();
   });
 });
+
+describe("session picker pagination", () => {
+  const makeManySessions = (n: number): SessionRecord[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `id${String(i).padStart(8, "0")}`,
+      createdAt: new Date(2024, 0, 1, 0, 0, i).toISOString(),
+      model: "m",
+      provider: "p",
+      title: `Session ${i}`,
+      messages: [],
+    }));
+
+  it("shows the total session count in the header", async () => {
+    const promise = pickSession(makeManySessions(50));
+    await tick();
+
+    const out = allOutput(stdout);
+    expect(out).toContain("50 sessions");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
+  it("keeps sessions beyond the old 20-item cap reachable", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    // Navigate down past the 20th session to prove nothing was truncated.
+    for (let i = 0; i < 30; i++) stdin.send("\x1b[B");
+    await tick();
+
+    const out = allOutput(stdout);
+    // The 31st session (index 30) must have been rendered at some point.
+    expect(out).toContain("Session 30");
+
+    stdin.send("\r");
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[30]!.id);
+  });
+
+  it("reports how many sessions remain above and below the viewport", async () => {
+    const promise = pickSession(makeManySessions(50));
+    await tick();
+
+    const out = allOutput(stdout);
+    expect(out).toContain("of 50");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
+  it("advertises mouse scroll/click support and Enter-to-resume in the help hint", async () => {
+    const promise = pickSession(makeManySessions(50));
+    await tick();
+
+    const out = allOutput(stdout);
+    expect(out).toContain("scroll");
+    expect(out).toContain("click");
+    expect(out).toContain("Enter resume");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
+  it("enables and disables SGR mouse reporting around the picker", async () => {
+    const promise = pickSession(makeManySessions(50));
+    await tick();
+
+    // Mouse modes are turned on while the picker is open.
+    expect(stdout.chunks.join("")).toContain("\x1b[?1000h");
+    expect(stdout.chunks.join("")).toContain("\x1b[?1006h");
+
+    stdin.send("\x1b"); // cancel
+    await promise;
+
+    // ...and turned back off on exit so they don't leak into Ink.
+    const full = stdout.chunks.join("");
+    expect(full).toContain("\x1b[?1000l");
+    expect(full).toContain("\x1b[?1006l");
+  });
+});
+
+describe("session picker mouse support", () => {
+  const makeManySessions = (n: number): SessionRecord[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `id${String(i).padStart(8, "0")}`,
+      createdAt: new Date(2024, 0, 1, 0, 0, i).toISOString(),
+      model: "m",
+      provider: "p",
+      title: `Session ${i}`,
+      messages: [],
+    }));
+
+  // SGR mouse report helpers. Button 0 = left click, 64 = wheel up, 65 = wheel
+  // down. Header occupies 3 lines, so the first session row is terminal row 4.
+  const wheelDown = () => "\x1b[<65;1;1M";
+  const wheelUp = () => "\x1b[<64;1;1M";
+  const click = (row: number) => `\x1b[<0;5;${row}M`;
+
+  it("wheel down moves the selection forward", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    for (let i = 0; i < 3; i++) stdin.send(wheelDown());
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[3]!.id);
+  });
+
+  it("wheel up moves the selection backward and clamps at the top", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    for (let i = 0; i < 5; i++) stdin.send(wheelDown()); // → 5
+    for (let i = 0; i < 10; i++) stdin.send(wheelUp()); // overshoot back to 0
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[0]!.id);
+  });
+
+  it("clicking a session row selects that session", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    // First session row is terminal row 4 (after 3 header lines). Clicking
+    // row 6 targets the third visible session (index 2).
+    stdin.send(click(6));
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[2]!.id);
+  });
+
+  it("clicks in the header area are ignored", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    stdin.send(click(1)); // title line — not a session row
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    // Selection stays on the first session.
+    expect(picked?.id).toBe(sessions[0]!.id);
+  });
+
+  it("a mouse release event does not re-fire the selection", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    stdin.send("\x1b[<0;5;6M"); // press on row 6 → index 2
+    stdin.send("\x1b[<0;5;6m"); // release — must be ignored
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[2]!.id);
+  });
+});
