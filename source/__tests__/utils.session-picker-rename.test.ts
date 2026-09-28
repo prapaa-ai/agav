@@ -263,6 +263,50 @@ describe("session picker rename view", () => {
     expect(await promise).toBeNull();
   });
 
+  it("handles a complete + partial report in the rename-trigger chunk", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+
+    // "r" opens the editor; a WHOLE report then a PARTIAL report follow in the
+    // same chunk. The whole report is dropped, the partial one buffered.
+    stdin.send("r\x1b[<65;1;1M\x1b[<65;1;");
+    await tick();
+    stdin.send("1M"); // completes the partial report — must not become text
+    for (const ch of "Name") stdin.send(ch);
+    await tick();
+    stdin.send("\r");
+    await tick();
+
+    expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", "Name");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
+  it("recovers from an abandoned mouse report and stays cancellable", async () => {
+    // Short recovery window so the test doesn't wait the 2s production default.
+    const promise = pickSession(makeSessions(), { mouseRecoveryMs: 20 });
+    await tick();
+
+    stdin.send("r"); // enter rename view
+    await tick();
+    // A report that begins and then dribbles pure continuation bytes but never
+    // terminates — without recovery this keeps the buffer in the incomplete
+    // state indefinitely, swallowing subsequent input.
+    stdin.send("\x1b[<65;1;");
+    stdin.send("1;"); // more continuation, still no "M"
+    await wait(40); // recovery timer fires and discards the abandoned report
+
+    // Editor is not stuck: a bare Esc now cancels back to the list.
+    stdin.send("\x1b");
+    await tick();
+    expect(renameSession).not.toHaveBeenCalled();
+
+    // And the list itself is responsive again.
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
   it("does not leak a split mouse report's tail into the rename buffer", async () => {
     const promise = pickSession(makeSessions());
     await tick();
@@ -650,6 +694,27 @@ describe("session picker narrow terminal", () => {
     for (const chunk of stdout.chunks) {
       for (const line of chunk.split("\n")) {
         expect(visibleWidth(line)).toBeLessThan(stdout.columns);
+      }
+    }
+
+    stdin.send("\x1b");
+    await promise;
+  });
+
+  it("re-clamps to the current width after the terminal shrinks", async () => {
+    stdout.columns = 80; // open wide
+    const promise = pickSession(makeManySessions(50));
+    await tick();
+
+    // Shrink, isolate the post-resize frame, then nudge to force a render.
+    stdout.columns = 40;
+    stdout.chunks.length = 0;
+    stdin.send("\x1b[B"); // ↓
+    await tick();
+
+    for (const chunk of stdout.chunks) {
+      for (const line of chunk.split("\n")) {
+        expect(visibleWidth(line)).toBeLessThan(40);
       }
     }
 

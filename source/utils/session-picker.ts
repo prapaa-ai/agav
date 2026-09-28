@@ -1,7 +1,19 @@
 import type { SessionRecord } from "../config/history.js";
 import { deleteSession, renameSession } from "../config/history.js";
 
-export async function pickSession(sessions: SessionRecord[]): Promise<SessionRecord | null> {
+export interface PickSessionOptions {
+  /**
+   * Bounded recovery window (ms) for a mouse report that begins but never sends
+   * its terminator, after which the buffered bytes are discarded so input never
+   * wedges. Exposed mainly so tests can shorten it. Defaults to 2000ms.
+   */
+  mouseRecoveryMs?: number;
+}
+
+export async function pickSession(
+  sessions: SessionRecord[],
+  options: PickSessionOptions = {},
+): Promise<SessionRecord | null> {
   if (sessions.length === 0) return null;
 
   // Keep the full list navigable. Older builds capped this to the 20 most
@@ -10,7 +22,12 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
   // screen, so there's no reason to truncate the backing list.
   const items = sessions.slice();
   let selected = 0;
-  const cols = process.stdout.columns || 80;
+
+  // Current terminal width. Read on every render (not cached at startup) so a
+  // mid-session shrink still clamps lines to the live width instead of wrapping.
+  function currentCols(): number {
+    return process.stdout.columns || 80;
+  }
 
   // Number of session rows that fit given the current terminal height. Recomputed
   // on every render (not cached at startup) so a mid-session resize keeps the
@@ -109,6 +126,7 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
     }
 
     const pageSize = currentPageSize();
+    const cols = currentCols();
 
     const total = items.length;
     const countLabel = `${total} session${total === 1 ? "" : "s"}`;
@@ -218,6 +236,22 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
   render();
 
   return new Promise((resolve) => {
+    // Repaint immediately when the terminal is resized (SIGWINCH). Only active
+    // while the list is on screen — the rename editor toggles this off so a
+    // resize there doesn't paint the list over the prompt. A resize can scramble
+    // the cursor, so reset the overwrite counter and re-home before repainting.
+    let listActive = true;
+    function onResize() {
+      if (!listActive) return;
+      totalLinesRendered = 0;
+      process.stdout.write("\x1b[2J\x1b[H");
+      render();
+    }
+    process.stdout.on("resize", onResize);
+    function removeResizeListener() {
+      process.stdout.removeListener("resize", onResize);
+    }
+
     function restoreRawMode() {
       stdin.setRawMode(wasRaw ?? false);
     }
@@ -249,6 +283,7 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
 
     function cleanup(drainLF = false) {
       stdin.removeListener("data", onData);
+      removeResizeListener();
       // Cancel any armed Esc-flush timer so it can't fire after we've torn down.
       clearPendingTimer();
       // Turn mouse reporting off before Ink resumes; otherwise the terminal
@@ -270,21 +305,32 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
     // partial mouse report) that the editor must consume rather than drop.
     function openRenameEditor(session: SessionRecord, carryOver = "") {
       let buffer = "";
-      // True while the tail of a mouse report split across chunks is still
-      // expected. Disabling mouse reporting (below) stops new reports, but a
-      // report already in flight when the editor opened can still arrive split
-      // — we must swallow its trailing bytes (up to the "M"/"m" terminator)
-      // instead of appending them to the proposed name.
-      let awaitingMouseTail = false;
+      // Holds the incomplete tail of a mouse report split across chunks. Mouse
+      // reporting is disabled below so no NEW reports start, but a report already
+      // in flight when the editor opened (or carried over from the trigger
+      // chunk) can still arrive fragmented — we buffer the head and swallow the
+      // continuation instead of appending it to the proposed name.
+      let pendingRenameSeq = "";
+      let renameRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 
-      // Turn mouse reporting off for the duration of the editor. Otherwise the
-      // terminal keeps emitting SGR reports while the user types, and a report
-      // split across chunks (e.g. "\x1b[<65;1;" then "1M") would leak its tail
-      // bytes into the proposed name. Re-enabled on every path back to the list.
+      // The list is no longer on screen: stop the resize handler from painting
+      // it over the rename prompt.
+      listActive = false;
+
+      // Turn mouse reporting off for the duration of the editor.
       disableMouse();
 
+      function clearRenameRecoveryTimer() {
+        if (renameRecoveryTimer !== null) {
+          clearTimeout(renameRecoveryTimer);
+          renameRecoveryTimer = null;
+        }
+      }
+
       function returnToList() {
+        clearRenameRecoveryTimer();
         stdin.removeListener("data", onRenameInput);
+        listActive = true;
         enableMouse();
         process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
         totalLinesRendered = 0;
@@ -303,35 +349,22 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
         );
       }
 
-      function onRenameInput(renameData: Buffer) {
-        let input = renameData.toString();
-
-        // Swallow the trailing bytes of a mouse report that was split across
-        // chunks before it could be fully dropped. Everything up to and
-        // including the "M"/"m" terminator belongs to the report, not the name.
-        if (awaitingMouseTail) {
-          const term = /[Mm]/.exec(input);
-          if (!term) return; // whole chunk is still report body
-          awaitingMouseTail = false;
-          input = input.slice(term.index + 1);
-          if (input.length === 0) return;
-        }
-
-        // A chunk starting with ESC is either the Esc key or a terminal
-        // escape sequence (arrow keys, function keys, mouse reports, etc.). A
-        // bare ESC cancels and returns to the list; longer sequences are
-        // control input, not text, so drop them instead of appending their
-        // bytes (e.g. "[A") as literal characters into the rename buffer. An
-        // unterminated SGR mouse report ("\x1b[<...") means the rest is still
-        // coming — remember to swallow that tail from the next chunk.
-        if (input[0] === "\x1b") {
-          if (input.length === 1) returnToList();
-          else if (/^\x1b\[<[\d;]*$/.test(input)) awaitingMouseTail = true;
-          return;
+      // Dispatch one keyboard token (mouse reports already stripped upstream).
+      // Returns true if the editor closed so the caller stops draining.
+      function handleRenameToken(token: string): boolean {
+        // A lone ESC cancels; any other escape sequence (arrow keys, etc.) is
+        // control input, not text, and is dropped.
+        if (token[0] === "\x1b") {
+          if (token.length === 1) {
+            returnToList();
+            return true;
+          }
+          return false;
         }
 
         // Ctrl-C exits the whole picker, matching the list handler.
-        if (input === "\x03") {
+        if (token === "\x03") {
+          clearRenameRecoveryTimer();
           stdin.removeListener("data", onRenameInput);
           disableMouse();
           restoreRawMode();
@@ -341,12 +374,13 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
 
         // Enter (\r, \n, or \r\n) submits. An empty/whitespace name is treated
         // as a cancel since renameSession rejects blank names anyway.
-        if (input === "\r" || input === "\n" || input === "\r\n") {
+        if (token === "\r" || token === "\n" || token === "\r\n") {
           const name = buffer.trim();
+          clearRenameRecoveryTimer();
           stdin.removeListener("data", onRenameInput);
           if (!name) {
             returnToList();
-            return;
+            return true;
           }
           void renameSession(session.id, name)
             .then((renamed) => {
@@ -354,28 +388,29 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
             })
             .catch(() => {})
             .finally(() => {
+              listActive = true;
               enableMouse();
               process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
               totalLinesRendered = 0;
               stdin.on("data", onData);
               render();
             });
-          return;
+          return true;
         }
 
         // Backspace / Delete removes the last character.
-        if (input === "\x7f" || input === "\b") {
+        if (token === "\x7f" || token === "\b") {
           if (buffer.length > 0) {
             buffer = buffer.slice(0, -1);
             renderRenamePrompt();
           }
-          return;
+          return false;
         }
 
         // Append printable characters only. Control bytes (< 0x20) and DEL are
         // skipped; escape sequences were already handled above.
         let appended = false;
-        for (const ch of input) {
+        for (const ch of token) {
           const code = ch.codePointAt(0)!;
           if (code >= 0x20 && code !== 0x7f) {
             buffer += ch;
@@ -383,14 +418,54 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
           }
         }
         if (appended) renderRenamePrompt();
+        return false;
+      }
+
+      function onRenameInput(renameData: Buffer) {
+        // A continuation arrived — stand down the abandoned-report timer.
+        clearRenameRecoveryTimer();
+        let input = pendingRenameSeq + renameData.toString();
+        pendingRenameSeq = "";
+
+        // Walk the input, discarding complete mouse reports (mouse actions do
+        // nothing in the editor) and dispatching keyboard tokens in between.
+        // Multiple reports and a report immediately followed by a keypress are
+        // all handled; an incomplete trailing report is buffered for later.
+        while (input.length > 0) {
+          const mouseMatch = mouseAtStart.exec(input);
+          if (mouseMatch) {
+            input = input.slice(mouseMatch[0].length); // drop the whole report
+            continue;
+          }
+
+          // A recognized but unfinished mouse report: buffer it and wait. Never
+          // append it as text. A bounded recovery timer drops an abandoned
+          // report so the editor can't get stuck; cancellation (Esc/Ctrl-C)
+          // still works because those arrive as their own, non-mouse tokens.
+          if (incompleteMouse.test(input) && input.length <= MAX_PENDING) {
+            pendingRenameSeq = input;
+            renameRecoveryTimer = setTimeout(() => {
+              renameRecoveryTimer = null;
+              pendingRenameSeq = ""; // discard the abandoned report
+            }, MOUSE_RECOVERY_MS);
+            return;
+          }
+
+          // Otherwise take everything up to the next mouse report (or the end)
+          // as a keyboard token and dispatch it.
+          const nextMouse = input.indexOf("\x1b[<", input.startsWith("\x1b[<") ? 1 : 0);
+          const token = nextMouse === -1 ? input : input.slice(0, nextMouse);
+          input = nextMouse === -1 ? "" : input.slice(nextMouse);
+          if (handleRenameToken(token)) return; // editor closed
+        }
       }
 
       renderRenamePrompt();
       stdin.on("data", onRenameInput);
 
       // Feed any bytes carried over from the chunk that triggered the rename
-      // through the same handler, so a partial mouse report there (e.g.
-      // "\x1b[<65;1;") arms awaitingMouseTail instead of leaking into the name.
+      // through the same handler, so complete/partial mouse reports there are
+      // consumed rather than leaking into the name.
       if (carryOver.length > 0) onRenameInput(Buffer.from(carryOver));
     }
 
@@ -554,7 +629,7 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
     // parsed as a command); we simply keep waiting for the terminator. This
     // longer window only guards against a peer that starts a report and never
     // finishes it, so a malformed stream can't wedge the buffer permanently.
-    const MOUSE_RECOVERY_MS = 2000;
+    const MOUSE_RECOVERY_MS = options.mouseRecoveryMs ?? 2000;
     const MAX_PENDING = 64; // drop obviously malformed/oversized buffers
 
     // A complete SGR mouse report anchored at the start of the string.
