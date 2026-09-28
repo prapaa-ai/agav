@@ -56,15 +56,15 @@ The same sandbox backends also protect agent tool execution. When an agent runs 
 The Seatbelt profile uses **deny-default** with targeted allows:
 
 - **Reads** — allowed across the filesystem, except `~/.ssh`, `~/.aws`, and `~/.gnupg`
-- **Writes** — allowed only in the working directory and system temp directory
+- **Writes** — allowed in the working directory and system temp directory. `$HOME` is denied by default, with write carve-outs for the standard cache/config directories that ordinary tooling needs — `~/.cache`, `~/.config`, `~/.local`, `~/.npm`, and `~/.cargo` — so `npm`, `pip`, `cargo`, and `git` work inside the sandbox. Writes to `~/.ssh`, `~/.aws`, and `~/.gnupg` are explicitly denied so no broad allow can re-expose them.
 - **Network** — fully denied
 - **Process execution** — allowed, except `/System/Library/CoreServices`
 - **IPC** — Mach lookup, sysctl reads, and POSIX shared memory are allowed for basic process operation
 
 ### Bubblewrap (Linux)
 
-- **Filesystem** — root is mounted read-only (`--ro-bind / /`); only the working directory and `/tmp` are writable
-- **Credentials** — `~/.ssh`, `~/.aws`, `~/.gnupg`, and `~/.config` are replaced with empty tmpfs mounts
+- **Filesystem** — root is mounted read-only (`--ro-bind / /`); the working directory and `/tmp` are writable. Because the read-only root also covers `$HOME`, each standard cache/config directory — `~/.cache`, `~/.config`, `~/.local`, `~/.npm`, and `~/.cargo` — is given a writable scratch `tmpfs` so `npm`, `pip`, `cargo`, and `git` work. These tmpfs mounts are throwaway: nothing persists to or leaks from the host.
+- **Credentials** — `~/.ssh`, `~/.aws`, and `~/.gnupg` are replaced with empty tmpfs mounts, hiding their contents
 - **Network** — fully isolated (`--unshare-net`)
 - **Lifecycle** — child processes are killed when Agav exits (`--die-with-parent`)
 
@@ -72,7 +72,8 @@ The Seatbelt profile uses **deny-default** with targeted allows:
 
 - **Network** — disabled (`--network=none`)
 - **Resources** — 512 MB memory, 1 CPU
-- **Filesystem** — only the working directory is mounted into the container
+- **Filesystem** — only the working directory is mounted into the container (at `/workspace`)
+- **User** — the container runs as your host UID/GID (`-u uid:gid`) so files written to the working directory stay owned by you. Agav detects the daemon's security mode: under **rootless** Docker (which already maps you to the host user via user namespaces) the explicit UID mapping is omitted, and under daemon-level **userns-remap** it adds `--userns=host` so the mapping resolves to the real host user rather than a subordinate UID.
 
 ### Windows
 
