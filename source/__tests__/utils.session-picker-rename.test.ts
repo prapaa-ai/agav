@@ -63,6 +63,13 @@ const stripAnsi = (s: string): string =>
 const allOutput = (stdout: FakeStdout): string => stripAnsi(stdout.chunks.join(""));
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Strip visible (non-escape) characters count from a styled line: copies out
+// only printable chars so tests can assert on-screen width independent of ANSI
+// color codes. Mirrors the picker's own width accounting.
+const visibleWidth = (line: string): number =>
+  line.replaceAll(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").length;
 
 const makeSessions = (): SessionRecord[] => [
   {
@@ -504,6 +511,25 @@ describe("session picker mouse support", () => {
     expect(picked?.id).toBe(sessions[1]!.id);
   });
 
+  it("preserves a recognized mouse report across a delayed tail", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    // Recognized-but-incomplete report; the terminator is delayed well past the
+    // 40ms Esc-flush window. It must NOT be flushed as a keypress — the tail "M"
+    // must complete the wheel-down, not open the rename editor.
+    stdin.send("\x1b[<65;1;1");
+    await wait(80); // longer than ESC_FLUSH_MS, shorter than MOUSE_RECOVERY_MS
+    stdin.send("M");
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[1]!.id); // scrolled down one, not renamed
+    expect(renameSession).not.toHaveBeenCalled();
+  });
+
   it("reassembles a mouse report split across two chunks", async () => {
     const sessions = makeManySessions(50);
     const promise = pickSession(sessions);
@@ -576,6 +602,50 @@ describe("session picker mouse support", () => {
 
     stdin.send("\x1b[<0;5;6M"); // press on row 6 → index 2
     stdin.send("\x1b[<0;5;6m"); // release — must be ignored
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[2]!.id);
+  });
+});
+
+describe("session picker narrow terminal", () => {
+  const makeManySessions = (n: number): SessionRecord[] =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `id${String(i).padStart(8, "0")}`,
+      createdAt: new Date(2024, 0, 1, 0, 0, i).toISOString(),
+      model: "m",
+      provider: "p",
+      title: `A rather long session title number ${i} that would overflow`,
+      messages: [],
+    }));
+
+  it("never renders a line wider than the terminal", async () => {
+    stdout.columns = 40; // narrow — long titles/hints would otherwise wrap
+    const promise = pickSession(makeManySessions(50));
+    await tick();
+
+    // Every chunk written is a rendered block; check each visible line fits.
+    for (const chunk of stdout.chunks) {
+      for (const line of chunk.split("\n")) {
+        expect(visibleWidth(line)).toBeLessThan(stdout.columns);
+      }
+    }
+
+    stdin.send("\x1b");
+    await promise;
+  });
+
+  it("keeps click-to-row mapping intact on a narrow terminal", async () => {
+    stdout.columns = 40;
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    // With no wrap, the first session still sits at terminal row 4; clicking
+    // row 6 selects the third visible session (index 2).
+    stdin.send("\x1b[<0;3;6M");
     await tick();
     stdin.send("\r");
 

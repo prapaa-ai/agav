@@ -55,6 +55,45 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
   let visibleStart = 0;
   let visibleEnd = 0;
 
+  // Truncate a styled line so its VISIBLE width never exceeds maxWidth,
+  // preventing wrap onto a second physical row. ANSI escape sequences (SGR
+  // colors, etc.) contribute zero width and are copied through verbatim; when
+  // the visible budget runs out a reset ("\x1b[0m") is appended so truncation
+  // never leaves color bleeding into later rows. maxWidth is reduced by one so
+  // a line exactly as wide as the terminal cannot trip last-column autowrap.
+  function clampVisibleWidth(line: string, terminalCols: number): string {
+    const budget = Math.max(1, terminalCols - 1);
+    let out = "";
+    let visible = 0;
+    let sawEscape = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]!;
+      if (ch === "\x1b") {
+        // Copy the whole CSI sequence: ESC [ ... final-byte (0x40–0x7E).
+        let j = i + 1;
+        if (line[j] === "[") {
+          j++;
+          while (j < line.length) {
+            const code = line.charCodeAt(j);
+            if (code >= 0x40 && code <= 0x7e) break;
+            j++;
+          }
+        }
+        out += line.slice(i, j + 1);
+        i = j;
+        sawEscape = true;
+        continue;
+      }
+      if (visible >= budget) {
+        // Out of visible room; stop before adding more printable characters.
+        return sawEscape ? out + "\x1b[0m" : out;
+      }
+      out += ch;
+      visible++;
+    }
+    return out;
+  }
+
   function render() {
     // Move cursor up to overwrite previous output
     if (totalLinesRendered > 0) {
@@ -136,6 +175,14 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       );
     }
 
+    // Clamp every line to the terminal width BEFORE writing. A line wider than
+    // the terminal wraps onto a second physical row, which both scrolls the
+    // supposedly height-limited frame and desyncs the click-to-row mapping
+    // (one logical line would no longer equal one screen row). ANSI SGR codes
+    // are zero-width, so truncate by visible characters while copying escape
+    // sequences through untouched, then reset styling at the cut.
+    const clamped = lines.map((l) => clampVisibleWidth(l, cols));
+
     // Pad to a fixed height so cursor math is stable across re-renders. The
     // block is written WITHOUT a trailing newline: emitting one after the last
     // line would push the cursor past the bottom of the terminal and scroll
@@ -144,10 +191,10 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
     // the height at the terminal size for the same reason.
     const rows = process.stdout.rows ?? pageSize + 6;
     const fixedHeight = Math.min(pageSize + 6, rows);
-    while (lines.length < fixedHeight) lines.push("");
-    if (lines.length > fixedHeight) lines.length = fixedHeight;
+    while (clamped.length < fixedHeight) clamped.push("");
+    if (clamped.length > fixedHeight) clamped.length = fixedHeight;
 
-    const output = lines.map((l) => `\x1b[2K${l}`).join("\n");
+    const output = clamped.map((l) => `\x1b[2K${l}`).join("\n");
     process.stdout.write(output);
     // The block spans `fixedHeight` lines joined by `fixedHeight - 1` newlines,
     // so the cursor now rests `fixedHeight - 1` rows below the top. Move back
@@ -470,24 +517,31 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
     // Buffer for an escape sequence split across stdin chunks. A mouse report
     // (or arrow key) can arrive in pieces at ANY boundary — "\x1b" | "[<65;1;1M",
     // "\x1b[" | "<65;1;1M", "\x1b[<65;1;" | "1M" — so we hold the incomplete
-    // head here and prepend it to the next chunk. A bare "\x1b" is ambiguous
-    // (it could be the Esc key OR the start of a split sequence), so instead of
-    // deciding immediately we arm a short flush timer: if a continuation chunk
-    // arrives first it is combined and reprocessed; if the timer fires the
-    // buffered bytes are dispatched as-is (a lone "\x1b" then cancels).
+    // head here and prepend it to the next chunk.
     let pendingSeq = "";
     let pendingTimer: ReturnType<typeof setTimeout> | null = null;
-    // Escape-key disambiguation window. Terminals deliver the rest of a real
-    // escape sequence within a few ms; a human pressing Esc pauses far longer.
+    // Escape-key disambiguation window. A bare "\x1b" / "\x1b[" is ambiguous
+    // (Esc key vs. the start of an arrow key or a mouse report). Terminals send
+    // the rest of a real sequence within a few ms; a human pressing Esc pauses
+    // far longer, so on expiry we treat the buffered prefix as a keypress.
     const ESC_FLUSH_MS = 40;
+    // Recovery bound for a RECOGNIZED-but-unfinished mouse report ("\x1b[<...").
+    // We never flush such a report into handleKey (its tail could otherwise be
+    // parsed as a command); we simply keep waiting for the terminator. This
+    // longer window only guards against a peer that starts a report and never
+    // finishes it, so a malformed stream can't wedge the buffer permanently.
+    const MOUSE_RECOVERY_MS = 2000;
+    const MAX_PENDING = 64; // drop obviously malformed/oversized buffers
 
     // A complete SGR mouse report anchored at the start of the string.
     const mouseAtStart = /^\x1b\[<\d+;\d+;\d+[Mm]/;
-    // The entire remaining input is a strict prefix of a still-arriving escape
-    // sequence (mouse report or arrow key): "\x1b", "\x1b[", "\x1b[<", or a
-    // partially-numbered mouse report. When this matches we wait for more bytes
-    // rather than committing to an interpretation.
-    const incompleteSeq = /^\x1b(\[(<[\d;]*)?)?$/;
+    // A recognized but still-incomplete SGR mouse report: the "\x1b[<"
+    // introducer has arrived but the terminator ("M"/"m") has not. These are
+    // preserved until the terminator (never timed out into a keypress).
+    const incompleteMouse = /^\x1b\[<[\d;]*$/;
+    // An ambiguous escape prefix that is NOT yet identifiable as a mouse report:
+    // a lone "\x1b" or a bare CSI "\x1b[". Subject to the short Esc flush.
+    const ambiguousEscPrefix = /^\x1b\[?$/;
 
     function clearPendingTimer() {
       if (pendingTimer !== null) {
@@ -518,10 +572,26 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
           continue;
         }
 
-        // The remaining input is an unfinished escape sequence. Stash it and
-        // wait: either the rest lands in the next chunk, or the flush timer
-        // fires and we dispatch it as-is (so a lone Esc still cancels).
-        if (incompleteSeq.test(input)) {
+        // A recognized-but-unfinished mouse report: keep it until the
+        // terminator arrives. Never flush it as a keypress — its tail (e.g. a
+        // trailing "M") would otherwise be parsed as a command. A generous
+        // recovery timer only drops a report a peer starts but never finishes.
+        if (incompleteMouse.test(input) && input.length <= MAX_PENDING) {
+          if (mouseChanged) render();
+          pendingSeq = input;
+          pendingTimer = setTimeout(() => {
+            pendingTimer = null;
+            pendingSeq = ""; // discard the abandoned report; do NOT dispatch it
+          }, MOUSE_RECOVERY_MS);
+          return;
+        }
+
+        // An ambiguous escape prefix ("\x1b" or "\x1b["): could be the Esc key,
+        // an arrow key, or the start of a mouse report. Wait briefly — a real
+        // sequence's continuation lands within a few ms; otherwise the short
+        // timer fires and we dispatch the prefix as a keypress (a lone Esc then
+        // cancels; a bare CSI is a no-op in handleKey).
+        if (ambiguousEscPrefix.test(input)) {
           if (mouseChanged) render();
           pendingSeq = input;
           pendingTimer = setTimeout(() => {
