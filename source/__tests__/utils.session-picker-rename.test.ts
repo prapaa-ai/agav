@@ -307,6 +307,143 @@ describe("session picker rename view", () => {
     expect(await promise).toBeNull();
   });
 
+  it("cancels rename before an incomplete report's recovery timeout", async () => {
+    vi.useFakeTimers();
+    const promise = pickSession(makeSessions());
+    try {
+      stdin.send("r");
+      stdin.send("Draft");
+      stdin.send("\x1b[<65;1;");
+      stdout.chunks.length = 0;
+      stdin.send("\x1b");
+      await vi.advanceTimersByTimeAsync(50); // Esc disambiguation, not 2s recovery
+
+      expect(allOutput(stdout)).toContain("Resume Session");
+      expect(renameSession).not.toHaveBeenCalled();
+      stdin.send("\n");
+      expect((await promise)?.id).toBe("aaaaaaaa1111");
+      expect(renameSession).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stdin.send("\x1b");
+      await vi.advanceTimersByTimeAsync(50);
+      stdin.send("q");
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["\x1b", "\x1b[", "\x1b[<65;1;"])(
+    "honors Ctrl-C while rename is buffering %j",
+    async (prefix) => {
+      vi.useFakeTimers();
+      const exited = new Error("process.exit");
+      const exit = vi.spyOn(process, "exit").mockImplementation(() => {
+        throw exited;
+      });
+      void pickSession(makeSessions());
+      try {
+        stdin.send("r");
+        stdin.send(prefix);
+        expect(() => stdin.send("\x03")).toThrow(exited);
+        expect(exit).toHaveBeenCalledWith(0);
+        expect(stdin.isRaw).toBe(false);
+        expect(stdin.listenerCount("data")).toBe(0);
+        expect(stdout.listenerCount("resize")).toBe(0);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(renameSession).not.toHaveBeenCalled();
+      } finally {
+        stdin.send("\x1b");
+        await vi.advanceTimersByTimeAsync(50);
+        stdin.send("q");
+        exit.mockRestore();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([
+    ["bare Esc", "", 1],
+    ["CSI", "", 2],
+    ["bare Esc after a complete report", "\x1b[<65;1;1M", 1],
+    ["CSI after a complete report", "\x1b[<65;1;1M", 2],
+    ["bare Esc after text", "A", 1],
+    ["CSI after text", "A", 2],
+  ])("buffers a rename report split at %s", async (_label, before, split) => {
+    vi.useFakeTimers();
+    const promise = pickSession(makeSessions());
+    const report = "\x1b[<65;1;1M";
+    try {
+      stdin.send("r");
+      stdin.send(before + report.slice(0, split));
+      await vi.advanceTimersByTimeAsync(10);
+      stdin.send(report.slice(split));
+      stdin.send("Name");
+      stdin.send("\r");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(renameSession).toHaveBeenCalledWith(
+        "aaaaaaaa1111", before === "A" ? "AName" : "Name",
+      );
+      // No stale Esc timer may cancel the list after returning from rename.
+      await vi.advanceTimersByTimeAsync(50);
+      stdin.send("\n");
+      expect((await promise)?.id).toBe("aaaaaaaa1111");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stdin.send("\x1b");
+      await vi.advanceTimersByTimeAsync(50);
+      stdin.send("q");
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([1, 2])("carries a %i-byte escape prefix from the rename trigger", async (split) => {
+    vi.useFakeTimers();
+    const promise = pickSession(makeSessions());
+    const report = "\x1b[<65;1;1M";
+    try {
+      stdin.send("r" + report.slice(0, split));
+      await vi.advanceTimersByTimeAsync(10);
+      stdin.send(report.slice(split));
+      stdin.send("Name");
+      stdin.send("\r");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", "Name");
+      stdin.send("q");
+      expect(await promise).toBeNull();
+    } finally {
+      stdin.send("\x1b");
+      await vi.advanceTimersByTimeAsync(50);
+      stdin.send("q");
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears rename input and timers if a pending delete closes the picker", async () => {
+    vi.useFakeTimers();
+    let finishDelete!: (ok: boolean) => void;
+    deleteSession.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      finishDelete = resolve;
+    }));
+    const promise = pickSession(makeSessions().slice(0, 1));
+    try {
+      stdin.send("d");
+      stdin.send("r");
+      stdin.send("\x1b"); // Esc disambiguation is still pending
+      finishDelete(true);
+      expect(await promise).toBeNull();
+      stdout.chunks.length = 0;
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(stdout.chunks).toEqual([]);
+      expect(stdin.listenerCount("data")).toBe(0);
+      expect(stdout.listenerCount("resize")).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stdin.send("q");
+      vi.useRealTimers();
+    }
+  });
+
   it("does not leak a split mouse report's tail into the rename buffer", async () => {
     const promise = pickSession(makeSessions());
     await tick();

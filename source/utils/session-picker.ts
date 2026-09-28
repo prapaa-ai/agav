@@ -281,7 +281,10 @@ export async function pickSession(
       stdin.once("data", onDrain);
     }
 
+    let disposeRenameEditor: (() => void) | null = null;
+
     function cleanup(drainLF = false) {
+      disposeRenameEditor?.();
       stdin.removeListener("data", onData);
       removeResizeListener();
       // Cancel any armed Esc-flush timer so it can't fire after we've torn down.
@@ -327,9 +330,16 @@ export async function pickSession(
         }
       }
 
-      function returnToList() {
+      function disposeEditor() {
         clearRenameRecoveryTimer();
+        pendingRenameSeq = "";
         stdin.removeListener("data", onRenameInput);
+        disposeRenameEditor = null;
+      }
+      disposeRenameEditor = disposeEditor;
+
+      function returnToList() {
+        disposeEditor();
         listActive = true;
         enableMouse();
         process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
@@ -364,11 +374,7 @@ export async function pickSession(
 
         // Ctrl-C exits the whole picker, matching the list handler.
         if (token === "\x03") {
-          clearRenameRecoveryTimer();
-          stdin.removeListener("data", onRenameInput);
-          disableMouse();
-          restoreRawMode();
-          process.stdout.write("\x1b[2J\x1b[H");
+          cleanup();
           process.exit(0);
         }
 
@@ -376,8 +382,7 @@ export async function pickSession(
         // as a cancel since renameSession rejects blank names anyway.
         if (token === "\r" || token === "\n" || token === "\r\n") {
           const name = buffer.trim();
-          clearRenameRecoveryTimer();
-          stdin.removeListener("data", onRenameInput);
+          disposeEditor();
           if (!name) {
             returnToList();
             return true;
@@ -424,7 +429,14 @@ export async function pickSession(
       function onRenameInput(renameData: Buffer) {
         // A continuation arrived — stand down the abandoned-report timer.
         clearRenameRecoveryTimer();
-        let input = pendingRenameSeq + renameData.toString();
+        const incoming = renameData.toString();
+        // Ctrl-C cannot be part of a mouse report, even if a prefix is pending.
+        if (incoming.includes("\x03")) {
+          pendingRenameSeq = "";
+          handleRenameToken("\x03");
+          return;
+        }
+        let input = pendingRenameSeq + incoming;
         pendingRenameSeq = "";
 
         // Walk the input, discarding complete mouse reports (mouse actions do
@@ -432,6 +444,19 @@ export async function pickSession(
         // Multiple reports and a report immediately followed by a keypress are
         // all handled; an incomplete trailing report is buffered for later.
         while (input.length > 0) {
+          // A new escape interrupts an abandoned report; do not swallow the
+          // cancellation key (or the start of a fresh report) with its prefix.
+          const interrupted = /^\x1b\[<[\d;]*(?=\x1b)/.exec(input);
+          if (interrupted) input = input.slice(interrupted[0].length);
+
+          // Two Esc presses cancel the editor, then the list. The second one
+          // may arrive before the first one's disambiguation timer expires.
+          if (input.startsWith("\x1b\x1b")) {
+            returnToList();
+            onData(Buffer.from(input.slice(1)));
+            return;
+          }
+
           const mouseMatch = mouseAtStart.exec(input);
           if (mouseMatch) {
             input = input.slice(mouseMatch[0].length); // drop the whole report
@@ -440,8 +465,7 @@ export async function pickSession(
 
           // A recognized but unfinished mouse report: buffer it and wait. Never
           // append it as text. A bounded recovery timer drops an abandoned
-          // report so the editor can't get stuck; cancellation (Esc/Ctrl-C)
-          // still works because those arrive as their own, non-mouse tokens.
+          // report; cancellation is handled separately from its continuation.
           if (incompleteMouse.test(input) && input.length <= MAX_PENDING) {
             pendingRenameSeq = input;
             renameRecoveryTimer = setTimeout(() => {
@@ -451,11 +475,24 @@ export async function pickSession(
             return;
           }
 
-          // Otherwise take everything up to the next mouse report (or the end)
-          // as a keyboard token and dispatch it.
-          const nextMouse = input.indexOf("\x1b[<", input.startsWith("\x1b[<") ? 1 : 0);
-          const token = nextMouse === -1 ? input : input.slice(0, nextMouse);
-          input = nextMouse === -1 ? "" : input.slice(nextMouse);
+          // As in the list, distinguish a real Esc press from a report split
+          // after ESC or CSI. Reuse the timer so every editor exit clears it.
+          if (ambiguousEscPrefix.test(input)) {
+            pendingRenameSeq = input;
+            renameRecoveryTimer = setTimeout(() => {
+              renameRecoveryTimer = null;
+              const pending = pendingRenameSeq;
+              pendingRenameSeq = "";
+              handleRenameToken(pending);
+            }, ESC_FLUSH_MS);
+            return;
+          }
+
+          // Split before any escape prefix, including one following text, so
+          // a fragmented report need not already contain the full ESC[< head.
+          const nextEscape = input.indexOf("\x1b", input.startsWith("\x1b") ? 1 : 0);
+          const token = nextEscape === -1 ? input : input.slice(0, nextEscape);
+          input = nextEscape === -1 ? "" : input.slice(nextEscape);
           if (handleRenameToken(token)) return; // editor closed
         }
       }
@@ -702,11 +739,11 @@ export async function pickSession(
           return;
         }
 
-        // Otherwise take everything up to the next mouse report (or the end)
-        // as a single keyboard token and dispatch it.
-        const nextMouse = input.indexOf("\x1b[<", input.startsWith("\x1b[<") ? 1 : 0);
-        const key = nextMouse === -1 ? input : input.slice(0, nextMouse);
-        input = nextMouse === -1 ? "" : input.slice(nextMouse);
+        // Split before escape prefixes too, so a rename key can hand even a
+        // bare ESC or CSI remainder to the editor for disambiguation.
+        const nextEscape = input.indexOf("\x1b", input.startsWith("\x1b") ? 1 : 0);
+        const key = nextEscape === -1 ? input : input.slice(0, nextEscape);
+        input = nextEscape === -1 ? "" : input.slice(nextEscape);
         if (mouseChanged) {
           render();
           mouseChanged = false;
