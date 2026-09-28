@@ -243,6 +243,26 @@ describe("session picker rename view", () => {
     expect(await promise).toBeNull();
   });
 
+  it("carries a partial mouse report from the rename-trigger chunk into the editor", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+
+    // "r" opens the editor; the trailing "\x1b[<65;1;" is a partial mouse report
+    // left in the SAME chunk and must be consumed by the editor, not dropped.
+    stdin.send("r\x1b[<65;1;");
+    await tick();
+    stdin.send("1M"); // the report's tail — must be swallowed, not typed
+    for (const ch of "cd") stdin.send(ch);
+    await tick();
+    stdin.send("\r");
+    await tick();
+
+    expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", "cd");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
   it("does not leak a split mouse report's tail into the rename buffer", async () => {
     const promise = pickSession(makeSessions());
     await tick();
@@ -651,5 +671,41 @@ describe("session picker narrow terminal", () => {
 
     const picked = await promise;
     expect(picked?.id).toBe(sessions[2]!.id);
+  });
+
+  it("keeps the selection visible after the terminal shrinks", async () => {
+    stdout.rows = 24;
+    // Short, index-first titles so the selected row is identifiable in the frame
+    // even after width truncation.
+    const sessions = Array.from({ length: 50 }, (_, i) => ({
+      id: `id${String(i).padStart(8, "0")}`,
+      createdAt: new Date(2024, 0, 1, 0, 0, i).toISOString(),
+      model: "m",
+      provider: "p",
+      title: `S${i}-item`,
+      messages: [],
+    }));
+    const promise = pickSession(sessions);
+    await tick();
+
+    // Move down to index 10 (within the original 18-row page).
+    for (let i = 0; i < 10; i++) stdin.send("\x1b[B");
+    await tick();
+
+    // Shrink the terminal, then force a re-render with a no-op nudge.
+    stdout.rows = 10;
+    stdout.chunks.length = 0; // isolate the post-resize frame
+    stdin.send("\x1b[B"); // → index 11
+    stdin.send("\x1b[A"); // → back to 10; net no move but two re-renders
+    await tick();
+
+    // The selected session must appear in the freshly rendered (shrunk) frame,
+    // and the selection marker must be on it.
+    const frame = stripAnsi(stdout.chunks.join(""));
+    expect(frame).toContain("❯ S10-item");
+
+    stdin.send("\r");
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[10]!.id);
   });
 });

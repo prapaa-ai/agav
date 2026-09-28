@@ -10,8 +10,16 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
   // screen, so there's no reason to truncate the backing list.
   const items = sessions.slice();
   let selected = 0;
-  const pageSize = Math.min(items.length, process.stdout.rows ? process.stdout.rows - 6 : 15);
   const cols = process.stdout.columns || 80;
+
+  // Number of session rows that fit given the current terminal height. Recomputed
+  // on every render (not cached at startup) so a mid-session resize keeps the
+  // viewport — and the selected row — within what is actually drawn. The 6-line
+  // reserve covers the 3 header lines, the 2-line footer, and one pad line.
+  function currentPageSize(): number {
+    const rows = process.stdout.rows || 21;
+    return Math.min(items.length, Math.max(1, rows - 6));
+  }
 
   const stdin = process.stdin;
   const wasRaw = stdin.isRaw;
@@ -100,6 +108,8 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       process.stdout.write(`\x1b[${totalLinesRendered}A\x1b[G`);
     }
 
+    const pageSize = currentPageSize();
+
     const total = items.length;
     const countLabel = `${total} session${total === 1 ? "" : "s"}`;
     const lines: string[] = [];
@@ -107,6 +117,9 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
     lines.push("\x1b[2m  ↑↓/scroll/click select · Enter resume · D delete · M/R rename · Esc cancel\x1b[0m");
     lines.push("");
 
+    // Center the selection in the viewport, clamped so we never scroll past the
+    // ends. Because pageSize tracks the live terminal height, the selected row
+    // is always inside [scrollStart, scrollEnd) even after the window shrinks.
     const scrollStart = Math.max(0, Math.min(selected - Math.floor(pageSize / 2), items.length - pageSize));
     const scrollEnd = Math.min(scrollStart + pageSize, items.length);
     visibleStart = scrollStart;
@@ -253,7 +266,9 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
 
     // Raw-mode line editor for renaming a session. Unlike cooked input, this
     // lets Esc cancel and return to the list without applying any change.
-    function openRenameEditor(session: SessionRecord) {
+    // `carryOver` holds bytes left in the same chunk after the M/R key (e.g. a
+    // partial mouse report) that the editor must consume rather than drop.
+    function openRenameEditor(session: SessionRecord, carryOver = "") {
       let buffer = "";
       // True while the tail of a mouse report split across chunks is still
       // expected. Disabling mouse reporting (below) stops new reports, but a
@@ -372,6 +387,11 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
 
       renderRenamePrompt();
       stdin.on("data", onRenameInput);
+
+      // Feed any bytes carried over from the chunk that triggered the rename
+      // through the same handler, so a partial mouse report there (e.g.
+      // "\x1b[<65;1;") arms awaitingMouseTail instead of leaking into the name.
+      if (carryOver.length > 0) onRenameInput(Buffer.from(carryOver));
     }
 
     // Parse every SGR mouse report (mode 1006) in a chunk: "\x1b[<b;x;yM"
@@ -497,12 +517,12 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       if (key === "m" || key === "M" || key === "r" || key === "R") {
         const selectedSession = items[selected];
         if (!selectedSession) return false;
-        // Hand input over to the raw-mode rename editor. Staying in raw mode
-        // (instead of switching to cooked line input) lets us intercept Esc as
-        // a discrete cancel key so the user can return to the list without
-        // being forced to submit a name change.
+        // Request the rename editor. onData actually opens it so it can hand
+        // over any input left in the current chunk after this key (e.g. the
+        // start of a mouse report), which the editor must consume rather than
+        // leak into the name. Staying in raw mode lets Esc cancel discretely.
         stdin.removeListener("data", onData);
-        openRenameEditor(selectedSession);
+        renameRequested = selectedSession;
         return true;
       }
 
@@ -520,6 +540,10 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
     // head here and prepend it to the next chunk.
     let pendingSeq = "";
     let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+    // Set by handleKey when the M/R key requests the rename editor. onData reads
+    // it after dispatch so it can hand any remaining bytes in the chunk to the
+    // editor instead of dropping them (see the rename carry-over below).
+    let renameRequested: SessionRecord | null = null;
     // Escape-key disambiguation window. A bare "\x1b" / "\x1b[" is ambiguous
     // (Esc key vs. the start of an arrow key or a mouse report). Terminals send
     // the rest of a real sequence within a few ms; a human pressing Esc pauses
@@ -612,7 +636,18 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
           render();
           mouseChanged = false;
         }
-        if (handleKey(key)) return; // control handed off; stop draining
+        if (handleKey(key)) {
+          // Control handed off. If the M/R key opened the rename editor, pass
+          // any bytes remaining in this chunk to it — e.g. "r\x1b[<65;1;" leaves
+          // a partial mouse report that the editor must consume, not leak into
+          // the name.
+          if (renameRequested) {
+            const session = renameRequested;
+            renameRequested = null;
+            openRenameEditor(session, input);
+          }
+          return; // stop draining
+        }
       }
 
       if (mouseChanged) render();
