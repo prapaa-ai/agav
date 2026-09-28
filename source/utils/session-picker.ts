@@ -136,13 +136,23 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       );
     }
 
-    // Pad to a fixed height so cursor math is stable across re-renders
-    const fixedHeight = pageSize + 6;
+    // Pad to a fixed height so cursor math is stable across re-renders. The
+    // block is written WITHOUT a trailing newline: emitting one after the last
+    // line would push the cursor past the bottom of the terminal and scroll
+    // the whole display up a row, which then breaks the click-to-row mapping
+    // below (the first session would no longer sit at HEADER_LINES + 1). Cap
+    // the height at the terminal size for the same reason.
+    const rows = process.stdout.rows ?? pageSize + 6;
+    const fixedHeight = Math.min(pageSize + 6, rows);
     while (lines.length < fixedHeight) lines.push("");
+    if (lines.length > fixedHeight) lines.length = fixedHeight;
 
-    const output = lines.map((l) => `\x1b[2K${l}`).join("\n") + "\n";
+    const output = lines.map((l) => `\x1b[2K${l}`).join("\n");
     process.stdout.write(output);
-    totalLinesRendered = fixedHeight + 1;
+    // The block spans `fixedHeight` lines joined by `fixedHeight - 1` newlines,
+    // so the cursor now rests `fixedHeight - 1` rows below the top. Move back
+    // up exactly that many on the next render to overwrite in place.
+    totalLinesRendered = fixedHeight - 1;
   }
 
   render();
@@ -351,57 +361,46 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       return false;
     }
 
-    function onData(data: Buffer) {
-      const key = data.toString();
-
-      // Mouse reports start with "\x1b[<" and may be batched several-per-chunk
-      // during rapid scrolling. Handle them first so their bytes are never
-      // mistaken for keyboard input, applying every event and repainting once.
-      if (key.startsWith("\x1b[<")) {
-        const events = parseMouseEvents(key);
-        let changed = false;
-        for (const ev of events) {
-          if (applyMouseEvent(ev)) changed = true;
-        }
-        if (changed) render();
-        return;
-      }
-
+    // Handle one logical keyboard token (already separated from any mouse
+    // reports). Returns true if control was handed off — the picker resolved,
+    // exited, or switched to the rename editor — so the caller stops draining
+    // any remaining input in the current chunk.
+    function handleKey(key: string): boolean {
       if (key === "\x1b" || key === "q") {
         cleanup();
         resolve(null);
-        return;
+        return true;
       }
 
-      // Handle Enter: \r, \n, or \r\n as a single chunk.
+      // Handle Enter: \r, \n, or \r\n as a single token.
       // Only drain a trailing \n when we got a bare \r — if the terminal
       // delivered \r\n together the newline is already consumed.
       if (key === "\r") {
         cleanup(true);
         resolve(items[selected]!);
-        return;
+        return true;
       }
 
       if (key === "\n" || key === "\r\n") {
         cleanup();
         resolve(items[selected]!);
-        return;
+        return true;
       }
 
       if (key === "\x1b[A" || key === "k") {
         selected = Math.max(0, selected - 1);
         render();
-        return;
+        return false;
       }
 
       if (key === "\x1b[B" || key === "j") {
         selected = Math.min(items.length - 1, selected + 1);
         render();
-        return;
+        return false;
       }
 
       if (key === "d" || key === "D") {
-        if (items.length === 0) return;
+        if (items.length === 0) return false;
         const toDelete = items[selected]!;
         deleteSession(toDelete.id).then((ok) => {
           if (ok) {
@@ -415,25 +414,84 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
             render();
           }
         });
-        return;
+        return false;
       }
 
       if (key === "m" || key === "M" || key === "r" || key === "R") {
         const selectedSession = items[selected];
-        if (!selectedSession) return;
+        if (!selectedSession) return false;
         // Hand input over to the raw-mode rename editor. Staying in raw mode
         // (instead of switching to cooked line input) lets us intercept Esc as
         // a discrete cancel key so the user can return to the list without
         // being forced to submit a name change.
         stdin.removeListener("data", onData);
         openRenameEditor(selectedSession);
-        return;
+        return true;
       }
 
       if (key === "\x03") {
         cleanup();
         process.exit(0);
       }
+
+      return false;
+    }
+
+    // Buffer for a mouse report split across stdin chunks. A report can arrive
+    // in pieces (e.g. "\x1b[<65;1;" then "1M"); we hold the incomplete tail
+    // here and prepend it to the next chunk so no scroll/click is lost.
+    let pendingMouse = "";
+
+    // A complete SGR mouse report anchored at the start of the string.
+    const mouseAtStart = /^\x1b\[<\d+;\d+;\d+[Mm]/;
+    // An incomplete SGR mouse report at the start of the string: the "\x1b[<"
+    // introducer is already present but the numeric parameters / final byte
+    // have not fully arrived. Deliberately requires the full "\x1b[<" prefix so
+    // a lone Esc ("\x1b") or a bare CSI ("\x1b[" / arrow-key prefix) is NOT
+    // mistaken for a pending mouse report and swallowed.
+    const partialMouseAtStart = /^\x1b\[<\d*;?\d*;?\d*$/;
+
+    function onData(data: Buffer) {
+      let input = pendingMouse + data.toString();
+      pendingMouse = "";
+
+      // Walk the combined input left to right, peeling off complete mouse
+      // reports and dispatching runs of keyboard bytes in between. This keeps
+      // batched scroll reports, reports split across chunks, and a report
+      // immediately followed by a keypress (e.g. click then Enter) all working.
+      let mouseChanged = false;
+      while (input.length > 0) {
+        const mouseMatch = mouseAtStart.exec(input);
+        if (mouseMatch) {
+          const events = parseMouseEvents(mouseMatch[0]);
+          for (const ev of events) {
+            if (applyMouseEvent(ev)) mouseChanged = true;
+          }
+          input = input.slice(mouseMatch[0].length);
+          continue;
+        }
+
+        // An unfinished mouse report at the front: stash it and wait for the
+        // rest to arrive in a later chunk.
+        if (partialMouseAtStart.test(input)) {
+          pendingMouse = input;
+          input = "";
+          break;
+        }
+
+        // Otherwise take everything up to the next mouse report (or the end)
+        // as a single keyboard token and dispatch it.
+        const nextMouse = input.indexOf("\x1b[<", input.startsWith("\x1b[<") ? 1 : 0);
+        const key = nextMouse === -1 ? input : input.slice(0, nextMouse);
+        input = nextMouse === -1 ? "" : input.slice(nextMouse);
+        if (mouseChanged) {
+          render();
+          mouseChanged = false;
+        }
+        if (handleKey(key)) return; // control handed off; stop draining
+      }
+
+      if (mouseChanged) render();
     }
 
     stdin.on("data", onData);

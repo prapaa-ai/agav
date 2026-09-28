@@ -329,6 +329,23 @@ describe("session picker mouse support", () => {
     expect(picked?.id).toBe(sessions[3]!.id);
   });
 
+  it("renders within the terminal height without a trailing newline", async () => {
+    // rows=24 in the fake stdout. A trailing newline after a full-height block
+    // would scroll the display up one row and desync the click-to-row mapping.
+    const promise = pickSession(makeManySessions(50));
+    await tick();
+
+    // The most recent full render is the last chunk that draws session rows.
+    const frame = stdout.chunks[stdout.chunks.length - 1] ?? "";
+    expect(frame.endsWith("\n")).toBe(false);
+    // Newlines join the lines, so line count = newlines + 1 must be <= rows.
+    const lineCount = frame.split("\n").length;
+    expect(lineCount).toBeLessThanOrEqual(stdout.rows);
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
   it("processes batched wheel reports delivered in a single chunk", async () => {
     const sessions = makeManySessions(50);
     const promise = pickSession(sessions);
@@ -384,6 +401,85 @@ describe("session picker mouse support", () => {
 
     const picked = await promise;
     expect(picked?.id).toBe(sessions[2]!.id);
+  });
+
+  it("maps the first session row (terminal row 4) to index 0", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    // Move off index 0 first so a click landing on it is an observable change.
+    stdin.send(wheelDown()); // → 1
+    stdin.send(click(4)); // first session row → back to index 0
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[0]!.id);
+  });
+
+  it("maps the second session row (terminal row 5) to index 1", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    stdin.send(click(5)); // second visible session → index 1
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[1]!.id);
+  });
+
+  it("reassembles a mouse report split across two chunks", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    // Wheel-down report "\x1b[<65;1;1M" arrives in two pieces.
+    stdin.send("\x1b[<65;1;");
+    stdin.send("1M");
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[1]!.id);
+  });
+
+  it("reassembles a report split immediately after the introducer", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    stdin.send("\x1b[<"); // just the introducer
+    stdin.send("65;1;1M"); // the rest
+    stdin.send("\x1b[<65;1;1M"); // a second, whole report
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[2]!.id);
+  });
+
+  it("processes a click followed by Enter in the same chunk", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    // Click row 6 (index 2) and the Enter keypress batched into one chunk.
+    stdin.send(click(6) + "\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[2]!.id);
+  });
+
+  it("still treats a lone Esc as cancel (not a pending mouse report)", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    stdin.send("\x1b"); // bare Esc must cancel, not be buffered
+    expect(await promise).toBeNull();
   });
 
   it("clicks in the header area are ignored", async () => {
