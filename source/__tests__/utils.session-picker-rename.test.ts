@@ -215,6 +215,49 @@ describe("session picker rename view", () => {
     stdin.send("\x1b");
     expect(await promise).toBeNull();
   });
+
+  it("disables mouse reporting while renaming and re-enables it after", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+
+    stdin.send("r"); // enter rename view
+    await tick();
+    // Entering the editor should emit the mouse-disable sequence.
+    expect(stdout.chunks.join("")).toContain("\x1b[?1000l");
+
+    const before = stdout.chunks.length;
+    stdin.send("\r"); // empty name → cancel back to list
+    await tick();
+    // Returning to the list re-enables mouse reporting.
+    const afterReturn = stdout.chunks.slice(before).join("");
+    expect(afterReturn).toContain("\x1b[?1000h");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
+  it("does not leak a split mouse report's tail into the rename buffer", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+
+    stdin.send("r"); // enter rename view (mouse now disabled)
+    await tick();
+    for (const ch of "Ab") stdin.send(ch);
+    // A stray split mouse report: tail "1M" arrives as its own chunk. With
+    // mouse reporting disabled in the editor the escape head is dropped, but
+    // the tail must not be appended as literal "1M".
+    stdin.send("\x1b[<65;1;");
+    stdin.send("1M");
+    for (const ch of "cd") stdin.send(ch);
+    await tick();
+    stdin.send("\r");
+    await tick();
+
+    expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", "Abcd");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
 });
 
 describe("session picker pagination", () => {
@@ -424,6 +467,36 @@ describe("session picker mouse support", () => {
     await tick();
 
     stdin.send(click(5)); // second visible session → index 1
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[1]!.id);
+  });
+
+  it("reassembles a report split right after the bare Esc byte", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    // The report is fragmented at the very first byte: "\x1b" then "[<65;1;1M".
+    // The lone "\x1b" must NOT be treated as Esc/cancel here.
+    stdin.send("\x1b");
+    stdin.send("[<65;1;1M"); // completes a wheel-down → index 1
+    await tick();
+    stdin.send("\r");
+
+    const picked = await promise;
+    expect(picked?.id).toBe(sessions[1]!.id);
+  });
+
+  it("reassembles a report split after the CSI introducer", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    stdin.send("\x1b["); // Esc + '[' — ambiguous CSI head
+    stdin.send("<65;1;1M"); // rest of the wheel-down report → index 1
     await tick();
     stdin.send("\r");
 

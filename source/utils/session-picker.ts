@@ -189,6 +189,8 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
 
     function cleanup(drainLF = false) {
       stdin.removeListener("data", onData);
+      // Cancel any armed Esc-flush timer so it can't fire after we've torn down.
+      clearPendingTimer();
       // Turn mouse reporting off before Ink resumes; otherwise the terminal
       // keeps sending mouse escape sequences that would leak into the app.
       disableMouse();
@@ -206,9 +208,22 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
     // lets Esc cancel and return to the list without applying any change.
     function openRenameEditor(session: SessionRecord) {
       let buffer = "";
+      // True while the tail of a mouse report split across chunks is still
+      // expected. Disabling mouse reporting (below) stops new reports, but a
+      // report already in flight when the editor opened can still arrive split
+      // — we must swallow its trailing bytes (up to the "M"/"m" terminator)
+      // instead of appending them to the proposed name.
+      let awaitingMouseTail = false;
+
+      // Turn mouse reporting off for the duration of the editor. Otherwise the
+      // terminal keeps emitting SGR reports while the user types, and a report
+      // split across chunks (e.g. "\x1b[<65;1;" then "1M") would leak its tail
+      // bytes into the proposed name. Re-enabled on every path back to the list.
+      disableMouse();
 
       function returnToList() {
         stdin.removeListener("data", onRenameInput);
+        enableMouse();
         process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
         totalLinesRendered = 0;
         stdin.on("data", onData);
@@ -227,15 +242,29 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       }
 
       function onRenameInput(renameData: Buffer) {
-        const input = renameData.toString();
+        let input = renameData.toString();
+
+        // Swallow the trailing bytes of a mouse report that was split across
+        // chunks before it could be fully dropped. Everything up to and
+        // including the "M"/"m" terminator belongs to the report, not the name.
+        if (awaitingMouseTail) {
+          const term = /[Mm]/.exec(input);
+          if (!term) return; // whole chunk is still report body
+          awaitingMouseTail = false;
+          input = input.slice(term.index + 1);
+          if (input.length === 0) return;
+        }
 
         // A chunk starting with ESC is either the Esc key or a terminal
-        // escape sequence (arrow keys, function keys, etc.). A bare ESC cancels
-        // and returns to the list; longer sequences are control input, not
-        // text, so drop them instead of appending their bytes (e.g. "[A") as
-        // literal characters into the rename buffer.
+        // escape sequence (arrow keys, function keys, mouse reports, etc.). A
+        // bare ESC cancels and returns to the list; longer sequences are
+        // control input, not text, so drop them instead of appending their
+        // bytes (e.g. "[A") as literal characters into the rename buffer. An
+        // unterminated SGR mouse report ("\x1b[<...") means the rest is still
+        // coming — remember to swallow that tail from the next chunk.
         if (input[0] === "\x1b") {
           if (input.length === 1) returnToList();
+          else if (/^\x1b\[<[\d;]*$/.test(input)) awaitingMouseTail = true;
           return;
         }
 
@@ -263,6 +292,7 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
             })
             .catch(() => {})
             .finally(() => {
+              enableMouse();
               process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
               totalLinesRendered = 0;
               stdin.on("data", onData);
@@ -437,23 +467,40 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
       return false;
     }
 
-    // Buffer for a mouse report split across stdin chunks. A report can arrive
-    // in pieces (e.g. "\x1b[<65;1;" then "1M"); we hold the incomplete tail
-    // here and prepend it to the next chunk so no scroll/click is lost.
-    let pendingMouse = "";
+    // Buffer for an escape sequence split across stdin chunks. A mouse report
+    // (or arrow key) can arrive in pieces at ANY boundary — "\x1b" | "[<65;1;1M",
+    // "\x1b[" | "<65;1;1M", "\x1b[<65;1;" | "1M" — so we hold the incomplete
+    // head here and prepend it to the next chunk. A bare "\x1b" is ambiguous
+    // (it could be the Esc key OR the start of a split sequence), so instead of
+    // deciding immediately we arm a short flush timer: if a continuation chunk
+    // arrives first it is combined and reprocessed; if the timer fires the
+    // buffered bytes are dispatched as-is (a lone "\x1b" then cancels).
+    let pendingSeq = "";
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+    // Escape-key disambiguation window. Terminals deliver the rest of a real
+    // escape sequence within a few ms; a human pressing Esc pauses far longer.
+    const ESC_FLUSH_MS = 40;
 
     // A complete SGR mouse report anchored at the start of the string.
     const mouseAtStart = /^\x1b\[<\d+;\d+;\d+[Mm]/;
-    // An incomplete SGR mouse report at the start of the string: the "\x1b[<"
-    // introducer is already present but the numeric parameters / final byte
-    // have not fully arrived. Deliberately requires the full "\x1b[<" prefix so
-    // a lone Esc ("\x1b") or a bare CSI ("\x1b[" / arrow-key prefix) is NOT
-    // mistaken for a pending mouse report and swallowed.
-    const partialMouseAtStart = /^\x1b\[<\d*;?\d*;?\d*$/;
+    // The entire remaining input is a strict prefix of a still-arriving escape
+    // sequence (mouse report or arrow key): "\x1b", "\x1b[", "\x1b[<", or a
+    // partially-numbered mouse report. When this matches we wait for more bytes
+    // rather than committing to an interpretation.
+    const incompleteSeq = /^\x1b(\[(<[\d;]*)?)?$/;
+
+    function clearPendingTimer() {
+      if (pendingTimer !== null) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
+      }
+    }
 
     function onData(data: Buffer) {
-      let input = pendingMouse + data.toString();
-      pendingMouse = "";
+      // A continuation arrived before the flush timer — combine and reprocess.
+      clearPendingTimer();
+      let input = pendingSeq + data.toString();
+      pendingSeq = "";
 
       // Walk the combined input left to right, peeling off complete mouse
       // reports and dispatching runs of keyboard bytes in between. This keeps
@@ -471,12 +518,19 @@ export async function pickSession(sessions: SessionRecord[]): Promise<SessionRec
           continue;
         }
 
-        // An unfinished mouse report at the front: stash it and wait for the
-        // rest to arrive in a later chunk.
-        if (partialMouseAtStart.test(input)) {
-          pendingMouse = input;
-          input = "";
-          break;
+        // The remaining input is an unfinished escape sequence. Stash it and
+        // wait: either the rest lands in the next chunk, or the flush timer
+        // fires and we dispatch it as-is (so a lone Esc still cancels).
+        if (incompleteSeq.test(input)) {
+          if (mouseChanged) render();
+          pendingSeq = input;
+          pendingTimer = setTimeout(() => {
+            pendingTimer = null;
+            const pending = pendingSeq;
+            pendingSeq = "";
+            if (pending.length > 0) handleKey(pending);
+          }, ESC_FLUSH_MS);
+          return;
         }
 
         // Otherwise take everything up to the next mouse report (or the end)
