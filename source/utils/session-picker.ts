@@ -307,7 +307,13 @@ export async function pickSession(
     // `carryOver` holds bytes left in the same chunk after the M/R key (e.g. a
     // partial mouse report) that the editor must consume rather than drop.
     function openRenameEditor(session: SessionRecord, carryOver = "") {
-      let buffer = "";
+      // The proposed name as an array of characters (grapheme-agnostic; good
+      // enough for a session name) and the caret position within it. Editing
+      // happens AT the caret so left/right arrows, Home/End, and mid-string
+      // insert/delete all work — not just append/backspace at the end.
+      const chars: string[] = [];
+      let cursor = 0;
+      const nameOf = () => chars.join("");
       // Holds the incomplete tail of a mouse report split across chunks. Mouse
       // reporting is disabled below so no NEW reports start, but a report already
       // in flight when the editor opened (or carried over from the trigger
@@ -348,6 +354,13 @@ export async function pickSession(
         render();
       }
 
+      // "  New name: " prefix — the name text begins at column 13 (1-based).
+      const NAME_PREFIX = "  New name: ";
+      const NAME_COL = NAME_PREFIX.length + 1;
+      const NAME_ROW = 4; // rows 1-3 are the two header lines + a blank line
+
+      // Full-screen paint. Used only once when the editor opens (and after a
+      // resize); per-keystroke updates use renderNameLine to avoid flicker.
       function renderRenamePrompt() {
         process.stdout.write("\x1b[2J\x1b[H\x1b[?25h");
         totalLinesRendered = 0;
@@ -355,21 +368,63 @@ export async function pickSession(
           `\x1b[1;36m  Rename session\x1b[0m "${session.title}"\r\n` +
             `\x1b[2m  Enter save · Esc cancel / back\x1b[0m\r\n` +
             `\r\n` +
-            `  New name: ${buffer}`,
+            NAME_PREFIX,
+        );
+        renderNameLine();
+      }
+
+      // Redraw ONLY the name line in place and reposition the caret. Rewriting a
+      // single line (instead of clearing and repainting the whole screen on
+      // every key) removes the flicker. Absolute addressing is safe because the
+      // frame always starts at terminal row 1 (renderRenamePrompt homed it).
+      function renderNameLine() {
+        const name = nameOf();
+        process.stdout.write(
+          `\x1b[${NAME_ROW};1H` + // move to the name row, column 1
+            "\x1b[2K" + // clear the line
+            NAME_PREFIX +
+            name +
+            `\x1b[${NAME_ROW};${NAME_COL + cursor}H`, // place caret at the edit point
         );
       }
 
       // Dispatch one keyboard token (mouse reports already stripped upstream).
       // Returns true if the editor closed so the caller stops draining.
       function handleRenameToken(token: string): boolean {
-        // A lone ESC cancels; any other escape sequence (arrow keys, etc.) is
-        // control input, not text, and is dropped.
+        // Escape sequences: a lone ESC cancels; cursor-movement/edit sequences
+        // are handled here; anything else (function keys, etc.) is ignored so
+        // its bytes never land in the name.
         if (token[0] === "\x1b") {
           if (token.length === 1) {
             returnToList();
             return true;
           }
-          return false;
+          // Left / right arrows move the caret; Home/End jump to the ends;
+          // Delete (CSI 3~) removes the character AT the caret. Support both the
+          // CSI-with-final-letter forms and the numeric "~" forms terminals send.
+          switch (token) {
+            case "\x1b[D": // ←
+              if (cursor > 0) { cursor--; renderNameLine(); }
+              return false;
+            case "\x1b[C": // →
+              if (cursor < chars.length) { cursor++; renderNameLine(); }
+              return false;
+            case "\x1b[H": // Home
+            case "\x1b[1~":
+            case "\x1bOH":
+              if (cursor !== 0) { cursor = 0; renderNameLine(); }
+              return false;
+            case "\x1b[F": // End
+            case "\x1b[4~":
+            case "\x1bOF":
+              if (cursor !== chars.length) { cursor = chars.length; renderNameLine(); }
+              return false;
+            case "\x1b[3~": // Delete (forward)
+              if (cursor < chars.length) { chars.splice(cursor, 1); renderNameLine(); }
+              return false;
+            default:
+              return false; // unknown escape sequence — ignore
+          }
         }
 
         // Ctrl-C exits the whole picker, matching the list handler.
@@ -381,7 +436,7 @@ export async function pickSession(
         // Enter (\r, \n, or \r\n) submits. An empty/whitespace name is treated
         // as a cancel since renameSession rejects blank names anyway.
         if (token === "\r" || token === "\n" || token === "\r\n") {
-          const name = buffer.trim();
+          const name = nameOf().trim();
           disposeEditor();
           if (!name) {
             returnToList();
@@ -403,26 +458,28 @@ export async function pickSession(
           return true;
         }
 
-        // Backspace / Delete removes the last character.
+        // Backspace / Delete removes the character BEFORE the caret.
         if (token === "\x7f" || token === "\b") {
-          if (buffer.length > 0) {
-            buffer = buffer.slice(0, -1);
-            renderRenamePrompt();
+          if (cursor > 0) {
+            chars.splice(cursor - 1, 1);
+            cursor--;
+            renderNameLine();
           }
           return false;
         }
 
-        // Append printable characters only. Control bytes (< 0x20) and DEL are
-        // skipped; escape sequences were already handled above.
-        let appended = false;
+        // Insert printable characters AT the caret. Control bytes (< 0x20) and
+        // DEL are skipped; escape sequences were already handled above.
+        let inserted = false;
         for (const ch of token) {
           const code = ch.codePointAt(0)!;
           if (code >= 0x20 && code !== 0x7f) {
-            buffer += ch;
-            appended = true;
+            chars.splice(cursor, 0, ch);
+            cursor++;
+            inserted = true;
           }
         }
-        if (appended) renderRenamePrompt();
+        if (inserted) renderNameLine();
         return false;
       }
 

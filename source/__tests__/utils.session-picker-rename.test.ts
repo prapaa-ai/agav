@@ -182,23 +182,104 @@ describe("session picker rename view", () => {
     expect(await promise).toBeNull();
   });
 
-  it("ignores arrow keys / escape sequences instead of inserting garbage", async () => {
+  it("ignores up/down and never inserts escape-sequence bytes as text", async () => {
     const promise = pickSession(makeSessions());
     await tick();
 
     stdin.send("r");
     await tick();
     stdin.send("A");
-    stdin.send("\x1b[A"); // up arrow — must not append "[A"
-    stdin.send("\x1b[B"); // down arrow
-    stdin.send("\x1b[C"); // right arrow
-    stdin.send("\x1b[D"); // left arrow
+    stdin.send("\x1b[A"); // up arrow — no-op, must not append "[A"
+    stdin.send("\x1b[B"); // down arrow — no-op
     stdin.send("b");
     await tick();
     stdin.send("\r");
     await tick();
 
+    // Up/down are ignored and their bytes never leak into the name.
     expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", "Ab");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
+  it("does not clear the whole screen on every keystroke (no flicker)", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+
+    stdin.send("r"); // open editor (one full paint expected here)
+    await tick();
+
+    // Typing should update only the name line, never repaint the full screen.
+    stdout.chunks.length = 0;
+    for (const ch of "hello") stdin.send(ch);
+    await tick();
+
+    const perKeyOutput = stdout.chunks.join("");
+    expect(perKeyOutput).not.toContain("\x1b[2J"); // no full-screen clear
+    expect(perKeyOutput).not.toContain("Rename session"); // header not repainted
+
+    stdin.send("\x1b"); // Esc → back to list
+    await tick();
+    stdin.send("\x1b"); // Esc → cancel the picker
+    expect(await promise).toBeNull();
+  });
+
+  it("moves the caret with left/right arrows and inserts at that point", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+
+    stdin.send("r");
+    await tick();
+    for (const ch of "ac") stdin.send(ch); // "ac", caret after 'c'
+    stdin.send("\x1b[D"); // ← caret between 'a' and 'c'
+    stdin.send("b"); // insert 'b' → "abc"
+    await tick();
+    stdin.send("\r");
+    await tick();
+
+    expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", "abc");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
+  it("supports Home/End and forward Delete in the rename editor", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+
+    stdin.send("r");
+    await tick();
+    for (const ch of "bcd") stdin.send(ch); // "bcd"
+    stdin.send("\x1b[H"); // Home → caret before 'b'
+    stdin.send("a"); // "abcd", caret after 'a'
+    stdin.send("\x1b[3~"); // forward Delete removes 'b' → "acd"
+    stdin.send("\x1b[F"); // End → caret after 'd'
+    stdin.send("e"); // "acde"
+    await tick();
+    stdin.send("\r");
+    await tick();
+
+    expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", "acde");
+
+    stdin.send("\x1b");
+    expect(await promise).toBeNull();
+  });
+
+  it("backspace deletes before the caret, not just at the end", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+
+    stdin.send("r");
+    await tick();
+    for (const ch of "abXc") stdin.send(ch); // "abXc"
+    stdin.send("\x1b[D"); // ← caret between 'X' and 'c'
+    stdin.send("\x7f"); // backspace removes 'X' → "abc"
+    await tick();
+    stdin.send("\r");
+    await tick();
+
+    expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", "abc");
 
     stdin.send("\x1b");
     expect(await promise).toBeNull();
