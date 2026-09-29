@@ -1,3 +1,6 @@
+import { StringDecoder } from "node:string_decoder";
+import stringWidth from "string-width";
+import { writeClipboard } from "../ink/termio/clipboard.js";
 import type { SessionRecord } from "../config/history.js";
 import { deleteSession, renameSession } from "../config/history.js";
 
@@ -241,8 +244,12 @@ export async function pickSession(
     // resize there doesn't paint the list over the prompt. A resize can scramble
     // the cursor, so reset the overwrite counter and re-home before repainting.
     let listActive = true;
+    let resizeRenameEditor: (() => void) | null = null;
     function onResize() {
-      if (!listActive) return;
+      if (!listActive) {
+        resizeRenameEditor?.();
+        return;
+      }
       totalLinesRendered = 0;
       process.stdout.write("\x1b[2J\x1b[H");
       render();
@@ -307,18 +314,46 @@ export async function pickSession(
     // `carryOver` holds bytes left in the same chunk after the M/R key (e.g. a
     // partial mouse report) that the editor must consume rather than drop.
     function openRenameEditor(session: SessionRecord, carryOver = "") {
-      // The proposed name as an array of characters (grapheme-agnostic; good
-      // enough for a session name) and the caret position within it. Editing
-      // happens AT the caret so left/right arrows, Home/End, and mid-string
-      // insert/delete all work — not just append/backspace at the end.
+      // Caret, selection and viewport use grapheme indices, never UTF-16 or
+      // terminal columns. The same cell widths drive rendering and hit testing.
+      const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+      const graphemes = (text: string) => Array.from(segmenter.segment(text), (s) => s.segment);
+      const decoder = new StringDecoder("utf8");
       const chars: string[] = [];
       let cursor = 0;
+      let viewStart = 0;
+      let viewEnd = 0;
+      let anchor: number | null = null;
+      let mouseDown = false;
+      let pointerX = -1;
+      let pointerY = -1;
+      let lastClickTime = -Infinity;
+      let lastClickX = -1;
+      let clickCount = 0;
+      let editorActive = true;
       const nameOf = () => chars.join("");
-      // Holds the incomplete tail of a mouse report split across chunks. Mouse
-      // reporting is disabled below so no NEW reports start, but a report already
-      // in flight when the editor opened (or carried over from the trigger
-      // chunk) can still arrive fragmented — we buffer the head and swallow the
-      // continuation instead of appending it to the proposed name.
+      const selection = (): [number, number] | null =>
+        anchor === null || anchor === cursor ? null : [Math.min(anchor, cursor), Math.max(anchor, cursor)];
+      function clearSelection() {
+        anchor = null;
+        mouseDown = false;
+        lastClickTime = -Infinity;
+      }
+      function deleteSelection(): boolean {
+        const range = selection();
+        if (!range) return false;
+        chars.splice(range[0], range[1] - range[0]);
+        cursor = range[0];
+        clearSelection();
+        return true;
+      }
+      function moveCursor(next: number) {
+        clearSelection();
+        cursor = next;
+        renderNameLine();
+      }
+      // Preserve fragmented mouse/keyboard reports without leaking their bytes
+      // into the proposed name.
       let pendingRenameSeq = "";
       let renameRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -326,8 +361,9 @@ export async function pickSession(
       // it over the rename prompt.
       listActive = false;
 
-      // Turn mouse reporting off for the duration of the editor.
-      disableMouse();
+      // Button-motion tracking is needed for drag selection, but only while
+      // editing. Keep SGR coordinates and restore list-only tracking on exit.
+      process.stdout.write("\x1b[?1002h");
 
       function clearRenameRecoveryTimer() {
         if (renameRecoveryTimer !== null) {
@@ -337,6 +373,9 @@ export async function pickSession(
       }
 
       function disposeEditor() {
+        editorActive = false;
+        resizeRenameEditor = null;
+        process.stdout.write("\x1b[?1002l");
         clearRenameRecoveryTimer();
         pendingRenameSeq = "";
         stdin.removeListener("data", onRenameInput);
@@ -354,38 +393,137 @@ export async function pickSession(
         render();
       }
 
-      // "  New name: " prefix — the name text begins at column 13 (1-based).
       const NAME_PREFIX = "  New name: ";
-      const NAME_COL = NAME_PREFIX.length + 1;
-      const NAME_ROW = 4; // rows 1-3 are the two header lines + a blank line
+      const nameRow = () => Math.min(4, Math.max(1, process.stdout.rows || 24));
+      // Leave room for a caret even in a terminal narrower than the label.
+      const namePrefix = () => NAME_PREFIX.slice(0, Math.max(0, currentCols() - 3));
+      const nameCol = () => namePrefix().length + 1;
+      const cellWidth = (start: number, end: number) =>
+        chars.slice(start, end).reduce((width, ch) => width + stringWidth(ch), 0);
+      function fitText(text: string, budget: number): string {
+        let result = "";
+        let width = 0;
+        for (const ch of graphemes(text)) {
+          const cells = stringWidth(ch);
+          if (width + cells > budget) break;
+          result += ch;
+          width += cells;
+        }
+        return result;
+      }
 
-      // Full-screen paint. Used only once when the editor opens (and after a
-      // resize); per-keystroke updates use renderNameLine to avoid flicker.
+      // Full-screen paints happen only on entry/resize, never per keystroke.
       function renderRenamePrompt() {
-        process.stdout.write("\x1b[2J\x1b[H\x1b[?25h");
+        const budget = Math.max(0, currentCols() - 1);
+        const title = session.title.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+        const headers = [
+          `  Rename session "${title}"`,
+          "  Enter save · Esc cancel / back · click/drag select · release copies",
+          "",
+        ];
+        let output = "\x1b[2J\x1b[H\x1b[?25h";
+        for (let row = 1; row < nameRow(); row++) {
+          output += `${fitText(headers[row - 1]!, budget)}\r\n`;
+        }
+        process.stdout.write(output);
         totalLinesRendered = 0;
+        renderNameLine();
+      }
+      resizeRenameEditor = renderRenamePrompt;
+
+      // Horizontal scrolling keeps the input on one physical row. Overwrite
+      // first, then erase the suffix: avoid a visible blank line between keys.
+      function renderNameLine() {
+        const capacity = Math.max(0, currentCols() - nameCol());
+        viewStart = Math.min(viewStart, cursor);
+        while (viewStart < cursor && cellWidth(viewStart, cursor) >= capacity) viewStart++;
+        viewEnd = viewStart;
+        let width = 0;
+        let text = "";
+        const range = selection();
+        while (viewEnd < chars.length) {
+          const ch = chars[viewEnd]!;
+          const cells = stringWidth(ch);
+          if (width + cells > capacity) break;
+          text += range && viewEnd >= range[0] && viewEnd < range[1]
+            ? `\x1b[7m${ch}\x1b[27m` : ch;
+          width += cells;
+          viewEnd++;
+        }
+        const col = Math.min(currentCols(), nameCol() + cellWidth(viewStart, cursor));
         process.stdout.write(
-          `\x1b[1;36m  Rename session\x1b[0m "${session.title}"\r\n` +
-            `\x1b[2m  Enter save · Esc cancel / back\x1b[0m\r\n` +
-            `\r\n` +
-            NAME_PREFIX,
+          `\x1b[${nameRow()};1H${namePrefix()}${text}\x1b[0m\x1b[K` +
+          `\x1b[${nameRow()};${col}H`,
         );
+      }
+
+      function mouseOffset(x: number): number {
+        let column = Math.max(0, x - nameCol());
+        for (let i = viewStart; i < viewEnd; i++) {
+          const cells = stringWidth(chars[i]!);
+          if (column < cells) return column < cells - column ? i : i + 1;
+          column -= cells;
+        }
+        return viewEnd;
+      }
+
+      function handleRenameMouse(report: string) {
+        const match = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(report)!;
+        const button = Number(match[1]);
+        const x = Number(match[2]);
+        const y = Number(match[3]);
+        const release = match[4] === "m";
+        // Ignore wheels and non-left buttons; modifiers don't change the button.
+        if ((button & 3) !== 0 || (button & 64) !== 0) return;
+        if (release) {
+          if (!mouseDown) return;
+          // Some terminals coalesce motion reports. Use the release position
+          // if it differs from the last press/motion, but leave multi-click
+          // selections intact on a stationary release. Do not advance an
+          // auto-scrolled viewport twice for the same pointer position.
+          if (x !== pointerX || y !== pointerY) {
+            updateDrag(x, y);
+            renderNameLine();
+          }
+          mouseDown = false;
+          const range = selection();
+          if (range) writeClipboard(process.stdout, chars.slice(...range).join(""));
+          return;
+        }
+        if (button & 32) {
+          if (!mouseDown) return;
+          updateDrag(x, y);
+        } else {
+          if (y !== nameRow()) return;
+          const offset = mouseOffset(x);
+          const now = Date.now();
+          clickCount = now - lastClickTime < 400 && x === lastClickX ? clickCount % 3 + 1 : 1;
+          lastClickTime = now;
+          lastClickX = x;
+          mouseDown = true;
+          anchor = cursor = offset;
+          if (clickCount === 2) {
+            const word = (ch: string) => /[\p{L}\p{N}_]/u.test(ch);
+            if (offset < chars.length && word(chars[offset]!)) {
+              while (anchor > 0 && word(chars[anchor - 1]!)) anchor--;
+              while (cursor < chars.length && word(chars[cursor]!)) cursor++;
+            }
+          } else if (clickCount === 3) {
+            anchor = 0;
+            cursor = chars.length;
+          }
+        }
+        pointerX = x;
+        pointerY = y;
         renderNameLine();
       }
 
-      // Redraw ONLY the name line in place and reposition the caret. Rewriting a
-      // single line (instead of clearing and repainting the whole screen on
-      // every key) removes the flicker. Absolute addressing is safe because the
-      // frame always starts at terminal row 1 (renderRenamePrompt homed it).
-      function renderNameLine() {
-        const name = nameOf();
-        process.stdout.write(
-          `\x1b[${NAME_ROW};1H` + // move to the name row, column 1
-            "\x1b[2K" + // clear the line
-            NAME_PREFIX +
-            name +
-            `\x1b[${NAME_ROW};${NAME_COL + cursor}H`, // place caret at the edit point
-        );
+      function updateDrag(x: number, y: number) {
+        // Drag beyond the visible edge to reveal more of a long name.
+        if (y < nameRow() || x < nameCol()) cursor = Math.max(0, viewStart - 1);
+        else if (y > nameRow() || x >= currentCols() - 1) cursor = Math.min(chars.length, viewEnd + 1);
+        else cursor = mouseOffset(x);
+        lastClickTime = -Infinity;
       }
 
       // Dispatch one keyboard token (mouse reports already stripped upstream).
@@ -404,23 +542,25 @@ export async function pickSession(
           // CSI-with-final-letter forms and the numeric "~" forms terminals send.
           switch (token) {
             case "\x1b[D": // ←
-              if (cursor > 0) { cursor--; renderNameLine(); }
+              moveCursor(selection()?.[0] ?? Math.max(0, cursor - 1));
               return false;
             case "\x1b[C": // →
-              if (cursor < chars.length) { cursor++; renderNameLine(); }
+              moveCursor(selection()?.[1] ?? Math.min(chars.length, cursor + 1));
               return false;
             case "\x1b[H": // Home
             case "\x1b[1~":
             case "\x1bOH":
-              if (cursor !== 0) { cursor = 0; renderNameLine(); }
+              moveCursor(0);
               return false;
             case "\x1b[F": // End
             case "\x1b[4~":
             case "\x1bOF":
-              if (cursor !== chars.length) { cursor = chars.length; renderNameLine(); }
+              moveCursor(chars.length);
               return false;
             case "\x1b[3~": // Delete (forward)
-              if (cursor < chars.length) { chars.splice(cursor, 1); renderNameLine(); }
+              if (!deleteSelection() && cursor < chars.length) chars.splice(cursor, 1);
+              clearSelection();
+              renderNameLine();
               return false;
             default:
               return false; // unknown escape sequence — ignore
@@ -437,17 +577,22 @@ export async function pickSession(
         // as a cancel since renameSession rejects blank names anyway.
         if (token === "\r" || token === "\n" || token === "\r\n") {
           const name = nameOf().trim();
-          disposeEditor();
           if (!name) {
             returnToList();
             return true;
           }
+          clearRenameRecoveryTimer();
+          stdin.removeListener("data", onRenameInput);
+          resizeRenameEditor = null;
           void renameSession(session.id, name)
             .then((renamed) => {
-              if (renamed) items[selected] = renamed;
+              const index = items.findIndex((item) => item.id === session.id);
+              if (editorActive && renamed && index !== -1) items[index] = renamed;
             })
             .catch(() => {})
             .finally(() => {
+              if (!editorActive) return;
+              disposeEditor();
               listActive = true;
               enableMouse();
               process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
@@ -460,33 +605,36 @@ export async function pickSession(
 
         // Backspace / Delete removes the character BEFORE the caret.
         if (token === "\x7f" || token === "\b") {
-          if (cursor > 0) {
+          if (!deleteSelection() && cursor > 0) {
             chars.splice(cursor - 1, 1);
             cursor--;
-            renderNameLine();
           }
+          clearSelection();
+          renderNameLine();
           return false;
         }
 
-        // Insert printable characters AT the caret. Control bytes (< 0x20) and
-        // DEL are skipped; escape sequences were already handled above.
-        let inserted = false;
-        for (const ch of token) {
-          const code = ch.codePointAt(0)!;
-          if (code >= 0x20 && code !== 0x7f) {
-            chars.splice(cursor, 0, ch);
-            cursor++;
-            inserted = true;
-          }
+        const printable = token.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+        if (printable) {
+          deleteSelection();
+          clearSelection();
+          const before = chars.slice(0, cursor).join("") + printable;
+          const next = graphemes(before + chars.slice(cursor).join(""));
+          // Re-segment after insertion: a combining mark or ZWJ may join the
+          // neighbouring grapheme even when it arrived in a separate chunk.
+          let offset = 0;
+          cursor = 0;
+          while (cursor < next.length && offset < before.length) offset += next[cursor++]!.length;
+          chars.splice(0, chars.length, ...next);
+          renderNameLine();
         }
-        if (inserted) renderNameLine();
         return false;
       }
 
       function onRenameInput(renameData: Buffer) {
         // A continuation arrived — stand down the abandoned-report timer.
         clearRenameRecoveryTimer();
-        const incoming = renameData.toString();
+        const incoming = decoder.write(renameData);
         // Ctrl-C cannot be part of a mouse report, even if a prefix is pending.
         if (incoming.includes("\x03")) {
           pendingRenameSeq = "";
@@ -496,8 +644,7 @@ export async function pickSession(
         let input = pendingRenameSeq + incoming;
         pendingRenameSeq = "";
 
-        // Walk the input, discarding complete mouse reports (mouse actions do
-        // nothing in the editor) and dispatching keyboard tokens in between.
+        // Walk mouse reports and keyboard tokens in stream order.
         // Multiple reports and a report immediately followed by a keypress are
         // all handled; an incomplete trailing report is buffered for later.
         while (input.length > 0) {
@@ -516,7 +663,8 @@ export async function pickSession(
 
           const mouseMatch = mouseAtStart.exec(input);
           if (mouseMatch) {
-            input = input.slice(mouseMatch[0].length); // drop the whole report
+            handleRenameMouse(mouseMatch[0]);
+            input = input.slice(mouseMatch[0].length);
             continue;
           }
 
@@ -545,11 +693,19 @@ export async function pickSession(
             return;
           }
 
-          // Split before any escape prefix, including one following text, so
-          // a fragmented report need not already contain the full ESC[< head.
-          const nextEscape = input.indexOf("\x1b", input.startsWith("\x1b") ? 1 : 0);
-          const token = nextEscape === -1 ? input : input.slice(0, nextEscape);
-          input = nextEscape === -1 ? "" : input.slice(nextEscape);
+          // Consume a single escape/control token, not the text following it.
+          // Batched arrow + text + Enter must behave like separate keypresses.
+          const escape = /^(?:\x1b\[[0-?]*[ -/]*[@-~]|\x1bO.)/.exec(input);
+          if (/^\x1b(?:\[[0-?]*[ -/]*|O)$/.test(input) && input.length <= MAX_PENDING) {
+            pendingRenameSeq = input;
+            renameRecoveryTimer = setTimeout(() => {
+              renameRecoveryTimer = null;
+              pendingRenameSeq = "";
+            }, ESC_FLUSH_MS);
+            return;
+          }
+          const token = escape?.[0] ?? /^\r\n|^[^\x00-\x1f\x7f]+|^[\s\S]/.exec(input)![0];
+          input = input.slice(token.length);
           if (handleRenameToken(token)) return; // editor closed
         }
       }

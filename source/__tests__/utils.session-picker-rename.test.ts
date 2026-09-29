@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import stringWidth from "string-width";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock the history layer so the picker's rename/delete calls don't touch disk.
@@ -12,6 +13,12 @@ const renameSession = vi.fn(async (id: string, name: string) => ({
   messages: [],
 }));
 const deleteSession = vi.fn(async () => true);
+const writeClipboard = vi.fn();
+
+// Replace the entire module: never resolve or invoke a native clipboard command.
+vi.mock("../ink/termio/clipboard.js", () => ({
+  writeClipboard: (...args: unknown[]) => writeClipboard(...args),
+}));
 
 vi.mock("../config/history.js", () => ({
   renameSession: (...args: unknown[]) =>
@@ -98,6 +105,7 @@ let stdout: FakeStdout;
 beforeEach(() => {
   renameSession.mockClear();
   deleteSession.mockClear();
+  writeClipboard.mockReset();
   origStdin = process.stdin;
   origStdout = process.stdout;
   stdin = makeStdin();
@@ -304,14 +312,15 @@ describe("session picker rename view", () => {
     expect(await promise).toBeNull();
   });
 
-  it("disables mouse reporting while renaming and re-enables it after", async () => {
+  it("enables drag reporting while renaming and restores list mouse modes after", async () => {
     const promise = pickSession(makeSessions());
     await tick();
 
     stdin.send("r"); // enter rename view
     await tick();
-    // Entering the editor should emit the mouse-disable sequence.
-    expect(stdout.chunks.join("")).toContain("\x1b[?1000l");
+    // The editor needs button motion; SGR coordinates remain enabled.
+    expect(stdout.chunks.join("")).toContain("\x1b[?1002h");
+    expect(stdout.chunks.join("")).not.toContain("\x1b[?1006l");
 
     const before = stdout.chunks.length;
     stdin.send("\r"); // empty name → cancel back to list
@@ -319,6 +328,8 @@ describe("session picker rename view", () => {
     // Returning to the list re-enables mouse reporting.
     const afterReturn = stdout.chunks.slice(before).join("");
     expect(afterReturn).toContain("\x1b[?1000h");
+    expect(afterReturn).toContain("\x1b[?1002l");
+    expect(afterReturn).not.toContain("\x1b[?1006l");
 
     stdin.send("\x1b");
     expect(await promise).toBeNull();
@@ -427,6 +438,8 @@ describe("session picker rename view", () => {
         stdin.send(prefix);
         expect(() => stdin.send("\x03")).toThrow(exited);
         expect(exit).toHaveBeenCalledWith(0);
+        expect(stdout.chunks.join("")).toContain("\x1b[?1002l");
+        expect(stdout.chunks.join("")).toContain("\x1b[?1006l");
         expect(stdin.isRaw).toBe(false);
         expect(stdin.listenerCount("data")).toBe(0);
         expect(stdout.listenerCount("resize")).toBe(0);
@@ -513,6 +526,9 @@ describe("session picker rename view", () => {
       stdin.send("\x1b"); // Esc disambiguation is still pending
       finishDelete(true);
       expect(await promise).toBeNull();
+      expect(stdout.chunks.join("")).toContain("\x1b[?1002l");
+      expect(stdout.chunks.join("")).toContain("\x1b[?1006l");
+      expect(stdin.isRaw).toBe(false);
       stdout.chunks.length = 0;
       await vi.advanceTimersByTimeAsync(2100);
       expect(stdout.chunks).toEqual([]);
@@ -529,11 +545,11 @@ describe("session picker rename view", () => {
     const promise = pickSession(makeSessions());
     await tick();
 
-    stdin.send("r"); // enter rename view (mouse now disabled)
+    stdin.send("r"); // enter rename view
     await tick();
     for (const ch of "Ab") stdin.send(ch);
     // A stray split mouse report: tail "1M" arrives as its own chunk. With
-    // mouse reporting disabled in the editor the escape head is dropped, but
+    // wheel reports ignored in the editor the escape head is buffered, and
     // the tail must not be appended as literal "1M".
     stdin.send("\x1b[<65;1;");
     stdin.send("1M");
@@ -546,6 +562,359 @@ describe("session picker rename view", () => {
 
     stdin.send("\x1b");
     expect(await promise).toBeNull();
+  });
+});
+
+describe("session picker prompt-style mouse rename", () => {
+  // SGR coordinates are 1-based: the literal prefix has 12 characters,
+  // so derive the first editable column (13) from the prefix itself.
+  const prefix = "  New name: ";
+  const nameCol = prefix.length + 1;
+  const report = (button: number, column: number, end = "M", row = 4) =>
+    `\x1b[<${button};${column};${row}${end}`;
+  const click = (offset: number) => {
+    stdin.send(report(0, nameCol + offset));
+    stdin.send(report(0, nameCol + offset, "m"));
+  };
+  const drag = (from: number, to: number) => {
+    stdin.send(report(0, nameCol + from));
+    stdin.send(report(32, nameCol + to));
+    stdin.send(report(0, nameCol + to, "m"));
+  };
+  const nameLine = () => stdout.chunks.filter((chunk) => chunk.includes(prefix)).at(-1) ?? "";
+  const caretColumn = () => {
+    const positions = [...stdout.chunks.join("").matchAll(/\x1b\[4;(\d+)H/g)];
+    return Number(positions.at(-1)?.[1]);
+  };
+  // Read inverse text independently of any additional foreground colors.
+  const inverseText = (line: string) => {
+    let inverse = false;
+    let selected = "";
+    for (const token of line.split(/(\x1b\[[0-9;?]*[a-zA-Z])/g)) {
+      if (token.startsWith("\x1b")) {
+        if (token.endsWith("m")) {
+          for (const code of token.slice(2, -1).split(";").map(Number)) {
+            if (code === 7) inverse = true;
+            if (code === 0 || code === 27) inverse = false;
+          }
+        }
+      } else if (inverse) selected += token;
+    }
+    return selected;
+  };
+  const open = (name: string) => {
+    const promise = pickSession(makeSessions());
+    stdin.send("r");
+    stdin.send(name);
+    return promise;
+  };
+  const save = async (promise: ReturnType<typeof pickSession>, expected: string) => {
+    stdin.send("\r");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(renameSession).toHaveBeenCalledTimes(1);
+    expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", expected);
+    stdin.send("q");
+    expect(await promise).toBeNull();
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+  });
+  afterEach(async () => {
+    // Tear down even when a feature assertion fails against the old editor.
+    stdin.send("\x1b\x1b");
+    await vi.advanceTimersByTimeAsync(50);
+    stdin.send("q");
+    vi.useRealTimers();
+  });
+
+  it.each([
+    [0, "Xabcd"],
+    [2, "abXcd"],
+    [30, "abcdX"],
+    [-nameCol + 1, "Xabcd"],
+  ])("clicks cell offset %i to position the caret", async (offset, expected) => {
+    const promise = open("abcd");
+    click(offset);
+    expect(writeClipboard).not.toHaveBeenCalled();
+    stdin.send("X");
+    await save(promise, expected);
+  });
+
+  it.each([[1, 4], [4, 1]])("highlights drag %i → %i and copies only on release", async (from, to) => {
+    const promise = open("abcdef");
+    stdout.chunks.length = 0;
+    stdin.send(report(0, nameCol + from));
+    stdin.send(report(32, nameCol + to));
+    expect(inverseText(nameLine())).toBe("bcd");
+    expect(writeClipboard).not.toHaveBeenCalled();
+    expect(stdout.chunks.join("")).not.toContain("\x1b[2J");
+    stdin.send(report(0, nameCol + to, "m"));
+    expect(writeClipboard).toHaveBeenCalledTimes(1);
+    expect(writeClipboard).toHaveBeenCalledWith(stdout, "bcd");
+    // A duplicate release must not copy again.
+    stdin.send(report(0, nameCol + to, "m"));
+    expect(writeClipboard).toHaveBeenCalledTimes(1);
+    await save(promise, "abcdef");
+  });
+
+  it("double-clicks a word and triple-clicks all text within 400ms", async () => {
+    const promise = open("hello world again");
+    click(7);
+    expect(writeClipboard).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(100);
+    click(7);
+    expect(inverseText(nameLine())).toBe("world");
+    expect(writeClipboard).toHaveBeenLastCalledWith(stdout, "world");
+    await vi.advanceTimersByTimeAsync(100);
+    click(7);
+    expect(inverseText(nameLine())).toBe("hello world again");
+    expect(writeClipboard).toHaveBeenLastCalledWith(stdout, "hello world again");
+    expect(writeClipboard).toHaveBeenCalledTimes(2);
+    stdin.send("New");
+    await save(promise, "New");
+  });
+
+  it.each(["timeout", "different coordinate"])("resets multi-click on %s", async (reason) => {
+    const promise = open("hello world");
+    click(1);
+    await vi.advanceTimersByTimeAsync(reason === "timeout" ? 401 : 100);
+    click(reason === "timeout" ? 1 : 7);
+    expect(writeClipboard).not.toHaveBeenCalled();
+    expect(inverseText(nameLine())).toBe("");
+    stdin.send("X");
+    await save(promise, reason === "timeout" ? "hXello world" : "hello wXorld");
+  });
+
+  it.each([
+    ["typing", "XY", "aXYef"],
+    ["backspace", "\x7f", "aef"],
+    ["Ctrl-H", "\b", "aef"],
+    ["forward delete", "\x1b[3~", "aef"],
+  ])("%s replaces or removes the selection", async (_label, key, expected) => {
+    const promise = open("abcdef");
+    drag(4, 1);
+    stdin.send(key);
+    expect(inverseText(nameLine())).toBe("");
+    await save(promise, expected);
+  });
+
+  it("clears a selection when a later single click places the caret", async () => {
+    const promise = open("abcdef");
+    drag(1, 4);
+    await vi.advanceTimersByTimeAsync(401);
+    click(5);
+    expect(inverseText(nameLine())).toBe("");
+    stdin.send("X");
+    await save(promise, "abcdeXf");
+  });
+
+  it("ignores wheel, non-left buttons, and clicks outside the name row", async () => {
+    const promise = open("abc");
+    for (const button of [64, 65, 1, 2, 32]) stdin.send(report(button, nameCol));
+    stdin.send(report(0, nameCol, "M", 1));
+    stdin.send(report(0, nameCol, "m", 1));
+    stdin.send("X");
+    expect(writeClipboard).not.toHaveBeenCalled();
+    await save(promise, "abcX");
+  });
+
+  it("maps combining marks and the second cell of emoji to grapheme boundaries", async () => {
+    const promise = open("Ae\u0301👩‍💻Z");
+    expect(caretColumn()).toBe(nameCol + 5);
+    click(3); // second cell of the two-cell emoji: snap after the whole cluster
+    stdin.send("X");
+    await save(promise, "Ae\u0301👩‍💻XZ");
+  });
+
+  it("copies Unicode selections without splitting grapheme clusters", async () => {
+    const promise = open("Ae\u0301👩‍💻Z");
+    drag(1, 4);
+    expect(inverseText(nameLine())).toBe("e\u0301👩‍💻");
+    expect(writeClipboard).toHaveBeenCalledTimes(1);
+    expect(writeClipboard).toHaveBeenCalledWith(stdout, "e\u0301👩‍💻");
+    stdin.send("X");
+    await save(promise, "AXZ");
+  });
+
+  it.each(["e\u0301", "👩‍💻", "🇮🇳"])("arrows and deletion treat %s as one grapheme", async (grapheme) => {
+    const promise = open(`A${grapheme}Z`);
+    stdin.send("\x1b[D");
+    stdin.send("\x7f");
+    expect(caretColumn()).toBe(nameCol + 1);
+    stdin.send(grapheme);
+    stdin.send("\x1b[D");
+    stdin.send("\x1b[3~");
+    await save(promise, "AZ");
+  });
+
+  it("scrolls long names horizontally and maps clicks into the visible slice", async () => {
+    stdout.columns = 32;
+    const name = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    const promise = open(name);
+    const line = stripAnsi(nameLine());
+    const visible = line.slice(line.indexOf(prefix) + prefix.length);
+    expect(visible.length).toBeGreaterThan(3);
+    expect(visible).not.toContain(name);
+    expect(visible.endsWith("z")).toBe(true);
+    const start = name.indexOf(visible);
+    expect(start).toBeGreaterThan(0);
+    expect(caretColumn()).toBeLessThan(stdout.columns);
+    click(2);
+    stdin.send("!");
+    for (const chunk of stdout.chunks) {
+      for (const row of chunk.split(/\r?\n/)) expect(stringWidth(row)).toBeLessThan(stdout.columns);
+    }
+    await save(promise, name.slice(0, start + 2) + "!" + name.slice(start + 2));
+  });
+
+  it("repaints the editor on resize, preserving text, selection, and caret", async () => {
+    const promise = open("hello world");
+    drag(1, 4);
+    stdout.columns = 28;
+    stdout.chunks.length = 0;
+    stdout.emit("resize");
+    expect(allOutput(stdout)).toContain("Rename session");
+    expect(allOutput(stdout)).not.toContain("Resume Session");
+    expect(inverseText(nameLine())).toBe("ell");
+    expect(caretColumn()).toBe(nameCol + 4);
+    for (const chunk of stdout.chunks) {
+      for (const row of chunk.split(/\r?\n/)) expect(stringWidth(row)).toBeLessThan(stdout.columns);
+    }
+    expect(writeClipboard).toHaveBeenCalledTimes(1); // repaint does not recopy
+    stdin.send("X");
+    await save(promise, "hXo world");
+  });
+
+  it("keeps wide Unicode names within the viewport and Home/End reachable", async () => {
+    stdout.columns = 26;
+    const name = "e\u0301界👩‍💻".repeat(12);
+    const promise = open(name);
+    for (const key of ["\x1b[H", "\x1b[F"]) {
+      stdout.chunks.length = 0;
+      stdin.send(key);
+      expect(stringWidth(nameLine())).toBeLessThan(stdout.columns);
+      expect(caretColumn()).toBeLessThan(stdout.columns);
+      if (key === "\x1b[H") expect(caretColumn()).toBe(nameCol);
+    }
+    await save(promise, name);
+  });
+
+  it.each([1, 2, 3, 7, 10])("reassembles a drag report split after byte %i", async (split) => {
+    const promise = open("abcdef");
+    stdin.send(report(0, nameCol + 1));
+    const motion = report(32, nameCol + 4);
+    stdin.send(motion.slice(0, split));
+    await vi.advanceTimersByTimeAsync(10);
+    stdin.send(motion.slice(split));
+    const release = report(0, nameCol + 4, "m");
+    stdin.send(release.slice(0, split));
+    await vi.advanceTimersByTimeAsync(10);
+    stdin.send(release.slice(split));
+    expect(writeClipboard).toHaveBeenCalledTimes(1);
+    expect(writeClipboard).toHaveBeenCalledWith(stdout, "bcd");
+    stdin.send("X");
+    await save(promise, "aXef");
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("uses the release position when the final drag motion was not delivered", async () => {
+    const promise = open("abcdef");
+    stdin.send(report(0, nameCol + 1));
+    stdin.send(report(0, nameCol + 4, "m"));
+    expect(writeClipboard).toHaveBeenCalledWith(stdout, "bcd");
+    stdin.send("X");
+    await save(promise, "aXef");
+  });
+
+  it("accepts UTF-8 and combining sequences split across reads", async () => {
+    const promise = open("A");
+    for (const byte of Buffer.from("e\u0301👩‍💻")) {
+      stdin.emit("data", Buffer.from([byte]));
+    }
+    expect(caretColumn()).toBe(nameCol + 4);
+    stdin.send("\x7f");
+    stdin.send("\x7f");
+    await save(promise, "A");
+  });
+
+  it("keeps the input reachable when resized to a tiny terminal", async () => {
+    const promise = open("abc界");
+    stdout.columns = 8;
+    stdout.rows = 2;
+    stdout.chunks.length = 0;
+    stdout.emit("resize");
+    for (const chunk of stdout.chunks) {
+      for (const row of chunk.split(/\r?\n/)) expect(stringWidth(row)).toBeLessThan(8);
+    }
+    expect(stdout.chunks.join("")).not.toMatch(/\x1b\[[34];\d+H/);
+    stdin.send("\x1b[H");
+    stdin.send("X");
+    await save(promise, "Xabc界");
+  });
+
+  it("does not reopen after a save finishes following picker cleanup", async () => {
+    let finishDelete!: (ok: boolean) => void;
+    let finishRename!: (value: Awaited<ReturnType<typeof renameSession>>) => void;
+    deleteSession.mockImplementationOnce(() => new Promise((resolve) => { finishDelete = resolve; }));
+    renameSession.mockImplementationOnce(() => new Promise((resolve) => { finishRename = resolve; }));
+    const sessions = makeSessions().slice(0, 1);
+    const promise = pickSession(sessions);
+    stdin.send("d");
+    stdin.send("r");
+    stdin.send("Name\r");
+    finishDelete(true);
+    expect(await promise).toBeNull();
+    stdout.chunks.length = 0;
+    finishRename({ ...sessions[0]!, name: "Name", title: "Name", messages: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(stdout.chunks).toEqual([]);
+    expect(stdin.listenerCount("data")).toBe(0);
+    expect(stdout.listenerCount("resize")).toBe(0);
+  });
+
+  it("processes batched mouse, text, arrows, Delete and Enter in order", async () => {
+    const promise = open("abcdef");
+    stdin.send(
+      report(0, nameCol + 1) + report(32, nameCol + 4) +
+      report(0, nameCol + 4, "m") + "XY\x1b[D\x1b[3~!\r",
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(writeClipboard).toHaveBeenCalledTimes(1);
+    expect(writeClipboard).toHaveBeenCalledWith(stdout, "bcd");
+    expect(renameSession).toHaveBeenCalledTimes(1);
+    expect(renameSession).toHaveBeenCalledWith("aaaaaaaa1111", "aX!ef");
+    stdin.send("q");
+    expect(await promise).toBeNull();
+  });
+
+  it.each(["Esc", "empty", "save", "failed save"])("cleans up editor modes and listeners after %s", async (exit) => {
+    if (exit === "failed save") renameSession.mockRejectedValueOnce(new Error("disk unavailable"));
+    const promise = open(exit === "empty" ? "" : "Draft");
+    stdout.chunks.length = 0;
+    stdin.send(exit === "Esc" ? "\x1b" : "\r");
+    await vi.advanceTimersByTimeAsync(50);
+    const output = stdout.chunks.join("");
+    expect(output).toContain("\x1b[?1002l");
+    expect(output).toContain("\x1b[?1000h");
+    expect(output).not.toContain("\x1b[?1006l");
+    expect(allOutput(stdout)).toContain("Resume Session");
+    expect(stdin.listenerCount("data")).toBe(1);
+    expect(stdout.listenerCount("resize")).toBe(1);
+    stdin.send("q");
+    expect(await promise).toBeNull();
+    expect(stdout.chunks.join("")).toContain("\x1b[?1006l");
+    expect(stdout.chunks.join("")).toContain("\x1b[?1000l");
+    expect(stdin.isRaw).toBe(false);
+    expect(stdin.listenerCount("data")).toBe(0);
+    expect(stdout.listenerCount("resize")).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    stdout.chunks.length = 0;
+    stdout.emit("resize");
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(stdout.chunks).toEqual([]);
   });
 });
 
