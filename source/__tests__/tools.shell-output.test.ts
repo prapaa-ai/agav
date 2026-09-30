@@ -6,6 +6,7 @@ vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return {
     ...actual,
+    readFileSync: vi.fn(actual.readFileSync),
     mkdtempSync: vi.fn(actual.mkdtempSync),
     writeSync: vi.fn(actual.writeSync),
     renameSync: vi.fn(actual.renameSync),
@@ -30,6 +31,26 @@ import { runInSandbox } from "../utils/sandbox.js";
 const directories = new Set<string>();
 const command = (code: string) => `"${process.execPath}" -e ${JSON.stringify(code).replace(/\$/g, "\\$")}`;
 const execute = (code: string) => shellTool.execute({ command: command(code), sandbox: "none" });
+function isProcessRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+  if (platform() === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      // comm is parenthesized and may itself contain spaces or parentheses.
+      // A zombie has exited, but its PID exists until its parent reaps it.
+      return stat.slice(stat.lastIndexOf(")") + 1).trimStart().split(" ")[0] !== "Z";
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+  return true;
+}
 function savedPath(output: string): string {
   const path = output.match(/Full output saved to: (.+)\n/)?.[1];
   expect(path).toBeDefined();
@@ -201,6 +222,50 @@ describe("bounded streamed shell output", () => {
   });
 });
 
+describe("process cleanup liveness check", () => {
+  it.each(["R", "S", "D", "T", "Z"])("only treats Linux zombie state as exited (%s)", (state) => {
+    vi.mocked(platform).mockReturnValue("linux");
+    vi.spyOn(process, "kill").mockReturnValue(true);
+    vi.mocked(readFileSync).mockReturnValueOnce(`12345 (command with ) parentheses) ${state} 1 12345`);
+    expect(isProcessRunning(12345)).toBe(state !== "Z");
+    expect(readFileSync).toHaveBeenCalledWith("/proc/12345/stat", "utf8");
+  });
+
+  it("accepts ESRCH and a process reaped between the PID probe and stat read", () => {
+    vi.mocked(platform).mockReturnValue("linux");
+    const kill = vi.spyOn(process, "kill").mockImplementationOnce(() => {
+      throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+    });
+    expect(isProcessRunning(12345)).toBe(false);
+    expect(readFileSync).not.toHaveBeenCalled();
+    kill.mockReturnValue(true);
+    vi.mocked(readFileSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error("reaped"), { code: "ENOENT" });
+    });
+    expect(isProcessRunning(12345)).toBe(false);
+  });
+
+  it("does not mistake permission failures for process exit", () => {
+    vi.mocked(platform).mockReturnValue("linux");
+    const kill = vi.spyOn(process, "kill").mockImplementationOnce(() => {
+      throw Object.assign(new Error("probe denied"), { code: "EPERM" });
+    });
+    expect(() => isProcessRunning(12345)).toThrow("probe denied");
+    kill.mockReturnValue(true);
+    vi.mocked(readFileSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error("stat denied"), { code: "EACCES" });
+    });
+    expect(() => isProcessRunning(12345)).toThrow("stat denied");
+  });
+
+  it("requires PID disappearance outside Linux", () => {
+    vi.mocked(platform).mockReturnValue("darwin");
+    vi.spyOn(process, "kill").mockReturnValue(true);
+    expect(isProcessRunning(12345)).toBe(true);
+    expect(readFileSync).not.toHaveBeenCalled();
+  });
+});
+
 describe("sandbox streaming option", () => {
   it.skipIf(process.platform === "win32")("kills inherited descendants rather than waiting for their pipes", async () => {
     const started = Date.now();
@@ -227,7 +292,11 @@ describe("sandbox streaming option", () => {
     expect(Date.now() - started).toBeLessThan(650);
     const pids = Buffer.concat(chunks).toString().split(",").map(Number);
     expect(pids).toHaveLength(2);
-    for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();
+    for (const pid of pids) {
+      expect(Number.isInteger(pid) && pid > 0).toBe(true);
+      // Stay well below the fixture's 1500ms natural exit: a missed kill must fail.
+      await vi.waitFor(() => expect(isProcessRunning(pid)).toBe(false), { timeout: 100, interval: 10 });
+    }
     expect(vi.mocked(spawn).mock.calls[0]?.[2]?.detached).toBe(true);
   });
 
