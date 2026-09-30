@@ -46,6 +46,7 @@ export type ConfirmToolFn = (
 import type { PermissionMode } from "../config/config.js";
 import { runHook, getHookForTool } from "./hooks.js";
 import { isDestructiveCommand } from "../utils/sandbox.js";
+import { boundToolResult } from "../utils/tool-output.js";
 
 interface LoopParams {
   provider: LLMProvider;
@@ -459,7 +460,8 @@ export async function* runAgentLoop(
         }),
       );
 
-      for (const { id, name, input, result } of execResults) {
+      for (const { id, name, input, result: initialResult } of execResults) {
+        let result = initialResult;
         if (name === "run_tests") {
           hasTestRun = true;
           if (result.isError) hasTestFailure = true;
@@ -477,7 +479,14 @@ export async function* runAgentLoop(
         if (hookDef && !result.isError) {
           const hookOutput = await runHook(hookDef.hook, hookDef.vars);
           if (hookOutput) {
-            result.output += `\n\n[Hook output]: ${hookOutput}`;
+            const hookText = `\n\n[Hook output]: ${hookOutput}`;
+            result = await boundToolResult({
+              ...result,
+              output: result.output + hookText,
+              contentBlocks: result.contentBlocks?.length
+                ? [...result.contentBlocks, { type: "text", text: hookText }]
+                : result.contentBlocks,
+            });
           }
         }
         yield { type: "tool_result", toolName: name, toolCallId: id, output: result.output, isError: result.isError, diffLines: result.diffLines };
