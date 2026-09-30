@@ -1,4 +1,5 @@
-import { chmodSync, closeSync, fsyncSync, mkdtempSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, mkdtempSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
@@ -12,6 +13,7 @@ import {
 const DEFAULT_TIMEOUT = 30_000;
 const MAX_OUTPUT = 40_000;
 const PREVIEW_HALF = 19_000;
+const MAX_LOG_BYTES = 16 * 1024 * 1024;
 
 function utf8Prefix(buffer: Buffer, bytes: number): string {
   // Streaming decode omits an incomplete final codepoint rather than replacing it.
@@ -34,6 +36,9 @@ class ShellOutput {
   private directory?: string;
   private fd?: number;
   private unavailable = false;
+  private written = 0;
+  private partial = false;
+  private decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
 
   private discardLog(): void {
     this.unavailable = true;
@@ -48,16 +53,46 @@ class ShellOutput {
   }
 
   private write(chunk: Buffer): void {
+    if (this.partial) return;
+    const remaining = MAX_LOG_BYTES - this.written;
+    if (chunk.length > remaining) {
+      this.partial = true;
+      // Keep the partial UTF8 log valid even at the quota boundary.
+      chunk = Buffer.from(utf8Prefix(chunk, remaining));
+    }
     // writeSync may write fewer bytes than requested (e.g. a nearly full disk).
     let offset = 0;
     while (offset < chunk.length) {
       const written = writeSync(this.fd!, chunk, offset, chunk.length - offset);
       if (written === 0) throw new Error("Unable to write shell output");
       offset += written;
+      this.written += written;
     }
   }
 
+  private spill(): void {
+    try {
+      if (!this.directory && !this.unavailable) {
+        this.directory = mkdtempSync(join(tmpdir(), "agav-shell-"));
+        chmodSync(this.directory, 0o700);
+        this.fd = openSync(join(this.directory, "output.tmp"), "wx", 0o600);
+        for (const previous of this.small) this.write(previous);
+      }
+    } catch {
+      this.discardLog();
+    }
+    this.small = [];
+    this.stdout = [];
+    this.stderr = [];
+  }
+
   capture = (chunk: Buffer, stream: "stdout" | "stderr"): void => {
+    this.captureDecoded(this.decoders[stream].write(chunk), stream);
+  };
+
+  private captureDecoded(text: string, stream: "stdout" | "stderr"): void {
+    if (!text) return;
+    const chunk = Buffer.from(text, "utf8");
     this.total += chunk.length;
     if (this.first.length < PREVIEW_HALF) {
       this.first = Buffer.concat([this.first, chunk.subarray(0, PREVIEW_HALF - this.first.length)]);
@@ -74,37 +109,18 @@ class ShellOutput {
       return;
     }
 
+    this.spill();
     try {
-      if (!this.directory && !this.unavailable) {
-        this.directory = mkdtempSync(join(tmpdir(), "agav-shell-"));
-        chmodSync(this.directory, 0o700);
-        this.fd = openSync(join(this.directory, "output.tmp"), "wx", 0o600);
-        for (const previous of this.small) this.write(previous);
-      }
       if (this.fd !== undefined) this.write(chunk);
     } catch {
       // Saving logs must never change command execution or trigger a retry.
       this.discardLog();
     }
-    this.small = [];
-    this.stdout = [];
-    this.stderr = [];
-  };
+  }
 
   finish(error: Error | null): string {
-    let path: string | undefined;
-    if (this.fd !== undefined && this.directory) {
-      try {
-        fsyncSync(this.fd);
-        closeSync(this.fd);
-        this.fd = undefined;
-        path = join(this.directory, "output.log");
-        renameSync(join(this.directory, "output.tmp"), path);
-      } catch {
-        path = undefined;
-        this.discardLog();
-      }
-    }
+    this.captureDecoded(this.decoders.stdout.end(), "stdout");
+    this.captureDecoded(this.decoders.stderr.end(), "stderr");
     const status = error
       ? `\nCommand failed: ${utf8Prefix(Buffer.from(error.message), 1_000)}`
       : "";
@@ -114,10 +130,26 @@ class ShellOutput {
       const output = stdout + (stdout && stderr ? "\n" : "") + stderr;
       const result = output ? output + status : status.trimStart() || "Command completed with no output.";
       if (Buffer.byteLength(result) <= MAX_OUTPUT) return result;
-      return utf8Prefix(Buffer.from(output), MAX_OUTPUT - Buffer.byteLength(status) - 20) + "\n...(truncated)" + status;
+      // Formatting can cross the cap even when raw output did not. Persist the
+      // chronological capture before switching to the same head/tail preview.
+      this.spill();
+    }
+    let path: string | undefined;
+    if (this.fd !== undefined && this.directory) {
+      try {
+        closeSync(this.fd);
+        this.fd = undefined;
+        path = join(this.directory, "output.log");
+        renameSync(join(this.directory, "output.tmp"), path);
+      } catch {
+        path = undefined;
+        this.discardLog();
+      }
     }
     const retrieval = path
-      ? `\nFull output saved to: ${path}\nUse read_file with path and line ranges, or grep_search with path and a pattern, to retrieve more.`
+      ? (this.partial
+        ? `\nWarning: partial output capture (16 MiB log limit reached); the log is not complete.\nPartial output saved to: ${path}`
+        : `\nFull output saved to: ${path}`) + `\nUse read_file with path and line ranges, or grep_search with path and a pattern, to retrieve more.`
       : "\nWarning: full output log unavailable (could not save); only the bounded preview is retained.";
     const marker = `\n...(${this.total} bytes total; middle omitted)...\n`;
     const suffix = retrieval + status;

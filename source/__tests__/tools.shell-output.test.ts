@@ -11,6 +11,10 @@ vi.mock("node:fs", async (importOriginal) => {
     renameSync: vi.fn(actual.renameSync),
   };
 });
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return { ...actual, platform: vi.fn(actual.platform) };
+});
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, spawn: vi.fn(actual.spawn), execFile: vi.fn(actual.execFile) };
@@ -19,6 +23,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { spawn, execFile } from "node:child_process";
 import { dirname } from "node:path";
+import { platform } from "node:os";
 import { shellTool } from "../tools/shell.js";
 import { runInSandbox } from "../utils/sandbox.js";
 
@@ -121,6 +126,64 @@ describe("bounded streamed shell output", () => {
     expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(40_000);
   });
 
+  it("decodes split Unicode independently across interleaved streams", async () => {
+    vi.mocked(spawn).mockImplementationOnce((() => {
+      const child = new EventEmitter() as any;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      setImmediate(() => {
+        child.stdout.write(Buffer.from([0xf0, 0x9f]));
+        child.stderr.write(Buffer.from([0xc3]));
+        child.stdout.write(Buffer.from([0x98, 0x80]));
+        child.stderr.write(Buffer.from([0xa9]));
+        child.stdout.write("x".repeat(41000));
+        child.stdout.end(Buffer.from([0xc3])); // Flush an incomplete final sequence.
+        child.stderr.end();
+        setImmediate(() => child.emit("close", 0, null));
+      });
+      return child;
+    }) as typeof spawn);
+    const result = await execute("");
+    expect(readFileSync(savedPath(result.output), "utf8")).toBe("😀é" + "x".repeat(41000) + "�");
+    expect(result.output).toMatch(/^😀é/);
+  });
+
+  it("persists chronological output when only the formatted failure crosses the cap", async () => {
+    const result = await execute("process.stdout.write('HEAD' + 'x'.repeat(39972) + 'TAIL'); process.exitCode = 7;");
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("HEAD");
+    expect(result.output).toContain("TAIL");
+    expect(result.output).toContain("Command exited with code 7");
+    expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(40_000);
+    expect(readFileSync(savedPath(result.output), "utf8")).toBe("HEAD" + "x".repeat(39972) + "TAIL");
+  });
+
+  it("spills when the stdout/stderr separator alone crosses the cap", async () => {
+    const result = await execute("process.stdout.write('x'.repeat(20000)); setTimeout(() => process.stderr.write('y'.repeat(20000)), 40);");
+    expect(readFileSync(savedPath(result.output), "utf8")).toBe("x".repeat(20000) + "y".repeat(20000));
+    expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(40_000);
+  });
+
+  it("caps saved logs at 16MiB without stopping or rerunning the command and retains the final tail", async () => {
+    const quota = 16 * 1024 * 1024;
+    const result = await execute("process.stdout.write('HEAD' + 'x'.repeat(16 * 1024 * 1024) + 'TAIL'); setTimeout(() => { process.stdout.write('FINISHED'); process.exitCode = 7; }, 40);");
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("HEAD");
+    expect(result.output).toContain("TAILFINISHED");
+    expect(result.output).toContain("Command exited with code 7");
+    expect(result.output).toContain("16 MiB");
+    expect(result.output).toContain("partial");
+    expect(result.output).not.toContain("Full output saved to:");
+    const path = result.output.match(/Partial output saved to: (.+)\n/)?.[1];
+    expect(path).toBeDefined();
+    directories.add(dirname(path!));
+    expect(statSync(path!).size).toBe(quota);
+    expect(readFileSync(path!, "utf8")).toBe("HEAD" + "x".repeat(quota - 4));
+    expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(40_000);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
   it("handles short writes without losing complete log bytes", async () => {
     const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
     vi.mocked(writeSync).mockImplementation(((fd: number, buffer: Buffer, offset: number, length: number) =>
@@ -139,6 +202,73 @@ describe("bounded streamed shell output", () => {
 });
 
 describe("sandbox streaming option", () => {
+  it.skipIf(process.platform === "win32")("kills inherited descendants rather than waiting for their pipes", async () => {
+    const started = Date.now();
+    const chunks: Buffer[] = [];
+    const result = await runInSandbox({
+      command: command("require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], { stdio: ['ignore', 'inherit', 'inherit'] }).unref();"),
+      cwd: process.cwd(), timeout: 100, maxBuffer: 1, forceBackend: "none",
+      onOutput: (chunk) => chunks.push(chunk),
+    });
+    expect(result.error?.message).toContain("timed out");
+    expect(Date.now() - started).toBeLessThan(650);
+  });
+
+  it.skipIf(process.platform === "win32")("escalates when the actual command and descendant ignore SIGTERM", async () => {
+    const started = Date.now();
+    const chunks: Buffer[] = [];
+    const code = "process.on('SIGTERM', () => {}); const child = require('node:child_process').spawn(process.execPath, ['-e', 'process.on(\"SIGTERM\", () => {}); setTimeout(() => {}, 1500)'], { stdio: ['ignore', 'inherit', 'inherit'] }); process.stdout.write(process.pid + ',' + child.pid); setTimeout(() => {}, 1500);";
+    const result = await runInSandbox({
+      command: `exec ${command(code)}`,
+      cwd: process.cwd(), timeout: 100, maxBuffer: 1, forceBackend: "none",
+      onOutput: (chunk) => chunks.push(chunk),
+    });
+    expect(result.error?.message).toContain("timed out");
+    expect(Date.now() - started).toBeLessThan(650);
+    const pids = Buffer.concat(chunks).toString().split(",").map(Number);
+    expect(pids).toHaveLength(2);
+    for (const pid of pids) expect(() => process.kill(pid, 0)).toThrow();
+    expect(vi.mocked(spawn).mock.calls[0]?.[2]?.detached).toBe(true);
+  });
+
+  it("terminates Windows process trees and escalates with taskkill /F", async () => {
+    vi.mocked(platform).mockReturnValue("win32");
+    vi.mocked(execFile).mockImplementation(((_file: string, _args: string[], _options: object, callback: Function) => {
+      callback(null, "", "");
+      return {};
+    }) as typeof execFile);
+    vi.mocked(spawn).mockImplementationOnce((() => {
+      const child = new EventEmitter() as any;
+      child.pid = 12345;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      return child;
+    }) as typeof spawn);
+    const result = await runInSandbox({ command: "echo hi", cwd: process.cwd(), timeout: 20, maxBuffer: 1, forceBackend: "none", onOutput: () => {} });
+    expect(result.error?.message).toContain("timed out");
+    expect(spawn).toHaveBeenCalledWith("cmd.exe", ["/c", "echo hi"], expect.objectContaining({ detached: false }));
+    expect(execFile).toHaveBeenCalledWith("taskkill", ["/PID", "12345", "/T"], { timeout: 150 }, expect.any(Function));
+    expect(execFile).toHaveBeenCalledWith("taskkill", ["/PID", "12345", "/T", "/F"], { timeout: 150 }, expect.any(Function));
+  });
+
+  it("bounds pipe drainage even if a descendant escapes the process group", async () => {
+    vi.mocked(spawn).mockImplementationOnce((() => {
+      const child = new EventEmitter() as any;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      return child; // Neither close nor exit is delivered.
+    }) as typeof spawn);
+    const started = Date.now();
+    const result = await runInSandbox({ command: "echo hi", cwd: process.cwd(), timeout: 20, maxBuffer: 1, forceBackend: "none", onOutput: () => {} });
+    expect(result.error?.message).toContain("timed out");
+    expect(Date.now() - started).toBeLessThan(650);
+    const child = vi.mocked(spawn).mock.results[0]!.value;
+    expect(child.stdout.destroyed).toBe(true);
+    expect(child.stderr.destroyed).toBe(true);
+  });
+
   it("returns timeout errors and streamed partial output without buffered copies", async () => {
     const chunks: Buffer[] = [];
     const result = await runInSandbox({

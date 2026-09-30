@@ -114,37 +114,77 @@ function executeProcess(
     return;
   }
 
+  const windows = platform() === "win32";
   const child = spawn(file, args, {
     cwd: options.cwd,
     env: options.env,
     stdio: ["ignore", "pipe", "pipe"],
+    // A separate Unix process group lets timeout terminate inherited descendants,
+    // even after the shell has exited while its children still hold the pipes.
+    detached: !windows,
   });
   let error: Error | null = null;
   let timedOut = false;
-  const timer = options.timeout > 0 ? setTimeout(() => {
-    timedOut = true;
-    child.kill();
-  }, options.timeout) : undefined;
-  const emit = (chunk: Buffer, stream: "stdout" | "stderr") => {
-    try {
-      onOutput(chunk, stream);
-    } catch (cause) {
-      error = cause instanceof Error ? cause : new Error(String(cause));
-      child.kill();
+  let completed = false;
+  let stopping = false;
+  let escalation: ReturnType<typeof setTimeout> | undefined;
+  let drainage: ReturnType<typeof setTimeout> | undefined;
+  const killTree = (force: boolean) => {
+    if (windows && child.pid !== undefined) {
+      // cmd.exe kill alone leaves descendants alive. taskkill /T handles the tree.
+      execFile("taskkill", ["/PID", String(child.pid), "/T", ...(force ? ["/F"] : [])],
+        { timeout: 150 }, () => {});
+    } else if (!windows && child.pid !== undefined) {
+      try { process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM"); } catch {}
+    } else {
+      try { child.kill(force ? "SIGKILL" : "SIGTERM"); } catch {}
     }
   };
-  child.stdout.on("data", (chunk: Buffer) => emit(chunk, "stdout"));
-  child.stderr.on("data", (chunk: Buffer) => emit(chunk, "stderr"));
-  child.on("error", (cause) => { error = cause; });
-  child.on("close", (code, signal) => {
+  const finish = (code: number | null, signal: NodeJS.Signals | null) => {
+    if (completed) return;
+    completed = true;
     if (timer) clearTimeout(timer);
+    if (escalation) clearTimeout(escalation);
+    if (drainage) clearTimeout(drainage);
+    if (stopping) killTree(true);
     if (timedOut) error = new Error(`Command timed out after ${options.timeout}ms`);
     else if (!error && (code !== 0 || signal)) {
       error = new Error(signal ? `Command terminated by signal ${signal}` : `Command exited with code ${code}`);
     }
     // Streaming callers own output capture; do not retain a second copy here.
     callback(error, "", "");
-  });
+  };
+  const stop = () => {
+    if (stopping || completed) return;
+    stopping = true;
+    killTree(false);
+    escalation = setTimeout(() => killTree(true), 150);
+    // Escaped descendants may retain pipes even after the group is killed. Give
+    // pending output a bounded chance to drain, then close our pipe handles.
+    drainage = setTimeout(() => {
+      child.stdout.destroy();
+      child.stderr.destroy();
+      finish(null, null);
+    }, 300);
+  };
+  const timer = options.timeout > 0 ? setTimeout(() => {
+    timedOut = true;
+    stop();
+  }, options.timeout) : undefined;
+  const emit = (chunk: Buffer, stream: "stdout" | "stderr") => {
+    if (completed) return;
+    try {
+      onOutput(chunk, stream);
+    } catch (cause) {
+      error = cause instanceof Error ? cause : new Error(String(cause));
+      stop();
+    }
+  };
+  child.stdout.on("data", (chunk: Buffer) => emit(chunk, "stdout"));
+  child.stderr.on("data", (chunk: Buffer) => emit(chunk, "stderr"));
+  child.on("error", (cause) => { error = cause; stop(); });
+  child.on("close", finish);
+
 }
 
 function runSeatbelt(
