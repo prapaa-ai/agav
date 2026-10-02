@@ -81,7 +81,7 @@ export function agentToTool(
         if (agentType === "native") {
           output = await executeNativeAgent(agent, task, deps);
         } else if (agentType === "a2a") {
-          output = await executeA2AAgent(agent, task);
+          output = await executeA2AAgent(agent, task, deps);
         } else {
           throw new Error(`Unknown agent type: ${agentType}`);
         }
