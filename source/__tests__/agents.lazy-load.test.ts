@@ -52,6 +52,18 @@ describe("agents/loader lazy loading", () => {
     expect(result.output).toBe("ran");
   });
 
+  it.each(["bundled", "global"] as const)("forwards cancellation through the lazy %s wrapper", async (origin) => {
+    await writeFile(join(agentDir, "AGENT.md"), "---\nname: cancellation-test\ndescription: test\nversion: 1.0.0\n---\ntest");
+    await mkdir(join(agentDir, "tools"));
+    await writeFile(join(agentDir, "tools", "slow.schema.json"), JSON.stringify({ name: "slow", description: "test", inputSchema: { type: "object", properties: {} } }));
+    await writeFile(join(agentDir, "tools", "slow.mjs"), `export default { async execute(input, context) { return { output: String(context?.signal?.aborted), isError: false }; } };`);
+    const agent = await loadAgent(agentDir, origin);
+    const controller = new AbortController();
+    controller.abort();
+    const result = await agent!.tools[0]!.execute({}, { signal: controller.signal });
+    expect(result.output).toBe(origin === "bundled" ? "true" : "Tool cancelled.");
+  });
+
   it("non-bundled agents execute tools in a sandboxed subprocess — no in-process side effects", async () => {
     await writeFile(join(agentDir, "AGENT.md"), [
       "---",

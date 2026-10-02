@@ -115,6 +115,19 @@ describe("utils/sandbox", () => {
     expect(() => sandbox.requireSandbox()).not.toThrow();
   });
 
+  it("forwards cancellation to the buffered Docker CLI", async () => {
+    vi.resetModules();
+    const cp = await import("node:child_process");
+    const sandbox = await import("../utils/sandbox.js");
+    vi.mocked(cp.execFile).mockImplementation((...args: any[]) => {
+      args.at(-1)(null, "", "");
+      return {} as any;
+    });
+    const controller = new AbortController();
+    await sandbox.runInSandbox({ command: "echo test", cwd: "/tmp", timeout: 1000, maxBuffer: 1024, forceBackend: "docker", signal: controller.signal });
+    expect(cp.execFile).toHaveBeenCalledWith("docker", expect.arrayContaining(["run"]), expect.objectContaining({ signal: controller.signal }), expect.any(Function));
+  });
+
   it("runInSandbox maps current user uid/gid for docker containers", async () => {
     vi.resetModules();
     const cp = await import("node:child_process");

@@ -28,11 +28,9 @@ export class ToolRegistry {
     }
     let result: ToolResult;
     try {
-      if (context?.signal?.aborted) return { output: "Tool cancelled.", isError: true };
-      // Preserve the legacy call shape when no execution context is supplied.
-      result = await (context?.signal || context?.env
-        ? tool.execute(input, context)
-        : tool.execute(input));
+      result = context?.signal?.aborted
+        ? { output: "Tool cancelled.", isError: true }
+        : await (context?.signal || context?.env ? tool.execute(input, context) : tool.execute(input));
     } catch (err) {
       result = {
         output: err instanceof Error ? err.message : String(err),

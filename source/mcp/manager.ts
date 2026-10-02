@@ -1,6 +1,6 @@
 import { MCPClient } from "./client.js";
 import type { MCPServerConfig, MCPTool, MCPResource, MCPPrompt, MCPResourceContent } from "./types.js";
-import type { ToolDefinition, ToolResult } from "../tools/types.js";
+import type { ToolContext, ToolDefinition, ToolResult } from "../tools/types.js";
 
 // Coordinates multiple MCP server clients and exposes them as Agav tools.
 export class MCPManager {
@@ -62,13 +62,13 @@ export class MCPManager {
         inputSchema: mcpTool.inputSchema,
       },
       mcpServerName: mcpTool.serverName,
-      execute: async (input: Record<string, unknown>): Promise<ToolResult> => {
+      execute: async (input: Record<string, unknown>, context?: ToolContext): Promise<ToolResult> => {
         const client = this.clients.get(mcpTool.serverName);
         if (!client) {
           return { output: `MCP server ${mcpTool.serverName} is not running`, isError: true };
         }
         try {
-          const output = await client.callTool(mcpTool.name, input);
+          const output = await client.callTool(mcpTool.name, input, context?.signal);
           return { output, isError: false };
         } catch (err) {
           return {

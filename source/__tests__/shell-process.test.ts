@@ -69,12 +69,31 @@ describe.skipIf(process.platform === "win32")("shell process ownership", () => {
     expect(Buffer.byteLength(result.stdout)).toBeLessThanOrEqual(128);
   });
 
-  it("cleans up background children when the shell finishes", async () => {
-    const started = Date.now();
-    const result = await run("sleep 2 & printf done", 1000);
+  it.each([false, true])("preserves late descendant output (streaming: %s)", async (streaming) => {
+    const chunks: Buffer[] = [];
+    const result = await runInSandbox({
+      command: "( sleep 0.4; printf LATE ) & printf EARLY",
+      cwd: process.cwd(), timeout: 1500, maxBuffer: 1024, forceBackend: "none",
+      onOutput: streaming ? chunk => chunks.push(chunk) : undefined,
+    });
     expect(result.error).toBeNull();
-    expect(result.stdout).toBe("done");
-    expect(Date.now() - started).toBeLessThan(1000);
+    expect(streaming ? Buffer.concat(chunks).toString() : result.stdout).toBe("EARLYLATE");
+  });
+
+  it.each([false, true])("preserves redirected background children (streaming: %s)", async (streaming) => {
+    const dir = await mkdtemp(join(tmpdir(), "agav-background-test-"));
+    const marker = join(dir, "late");
+    try {
+      const result = await runInSandbox({
+        command: `( sleep 0.4; printf survived > '${marker}' ) >/dev/null 2>&1 & printf started`,
+        cwd: dir, timeout: 1500, maxBuffer: 1024, forceBackend: "none",
+        onOutput: streaming ? () => {} : undefined,
+      });
+      expect(result.error).toBeNull();
+      expect(await waitForFile(marker)).toBe("survived");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it.skipIf(process.platform !== "darwin")("cancels the macOS Seatbelt process group", async () => {
@@ -94,6 +113,16 @@ describe.skipIf(process.platform === "win32")("shell process ownership", () => {
       controller.abort();
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it.each([false, true])("retains failed leader status without exposing argv (streaming: %s)", async (streaming) => {
+    const result = await runInSandbox({
+      command: "sleep 2 & echo /private/secret-path; exit 7",
+      cwd: process.cwd(), timeout: 1500, maxBuffer: 1024, forceBackend: "none",
+      onOutput: streaming ? () => {} : undefined,
+    });
+    expect(result.error?.message).toBe("Command exited with code 7");
+    expect(result.error?.message).not.toContain("secret-path");
   });
 
   it("cleans up owned commands when the host exits", async () => {

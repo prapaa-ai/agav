@@ -128,6 +128,20 @@ describe("permission gate: destructive flag trust", () => {
     expect(tool.execute).toHaveBeenCalled();
   });
 
+  it("preserves the turn signal when injecting native agent credentials", async () => {
+    const controller = new AbortController();
+    const tool: ToolDefinition = {
+      schema: { name: "inspect", description: "test", inputSchema: { type: "object", properties: {} } },
+      execute: vi.fn(async () => ({ output: "done", isError: false })),
+    };
+    const provider = new MockProvider([makeToolCallStream("inspect", {}), [{ type: "text_delta", text: "Done" }]]);
+    await executeNativeAgent({
+      manifest: { name: "signal-test", description: "test", version: "1.0.0" },
+      systemPrompt: "test", tools: [tool], origin: "bundled", path: cwd,
+    }, "inspect", { provider, config: { model: "mock", effort: "low", maxTokens: 1000 } as any, signal: controller.signal, permissionMode: "auto-accept" });
+    expect(tool.execute).toHaveBeenCalledWith({}, { env: {}, signal: controller.signal });
+  });
+
   it("deny-writes mode blocks non-builtin tool regardless of destructive flag", async () => {
     const agentTool: ToolDefinition = {
       schema: {

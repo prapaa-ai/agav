@@ -46,7 +46,7 @@ import {
 import {type MouseEventData} from "./types.js";
 import {resolveFlags, type KittyFlagName} from "./kitty-keyboard.js";
 import {writeClipboard} from "./termio/clipboard.js";
-import parseKeypress, {splitCoalescedKeys} from "./parse-keypress.js";
+import parseKeypress from "./parse-keypress.js";
 import {
 	type SelectionRange,
 	normalizeSelection,
@@ -762,7 +762,8 @@ export default class Ink {
 		// to the input emitter as a group.
 		let pendingInput = "";
 
-		const flushInput = (): void => {
+		// Return false when teardown must stop the entire chunk drain.
+		const flushInput = (): boolean => {
 			if (pendingInput.length > 0) {
 				// Ctrl+Shift+C is an explicit copy fallback for terminals (notably
 				// Windows Terminal) that do not automatically copy a selection.
@@ -775,7 +776,9 @@ export default class Ink {
 				}
 
 				if (this.exitOnCtrlC && pendingInput.length > 0) {
-					const keys = splitCoalescedKeys(pendingInput) ?? [pendingInput];
+					// Tokenize bounded escape sequences amid text without splitting pasted
+					// text into input events. CSI 3;5u is ETX, not CSI 3;5~ Delete.
+					const keys = pendingInput.match(/\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e])|[^\x1b]+|\x1b/g) ?? [pendingInput];
 					const remainingKeys = keys.filter((input) => {
 						const key = parseKeypress(input);
 						return !(key.name === "c" && key.ctrl && !key.shift && !key.meta && !key.super && key.eventType !== "release");
@@ -787,7 +790,7 @@ export default class Ink {
 						} else {
 							this.unmount();
 							pendingInput = "";
-							return;
+							return false;
 						}
 					}
 				}
@@ -799,11 +802,12 @@ export default class Ink {
 				}
 				pendingInput = "";
 			}
+			return true;
 		};
 
 		while (chunk.length > 0) {
 			if (chunk.startsWith(PASTE_START)) {
-				flushInput();
+				if (!flushInput()) return;
 
 				const rest = chunk.slice(PASTE_START.length);
 				const endIndex = rest.indexOf(PASTE_END);
@@ -823,7 +827,7 @@ export default class Ink {
 
 			const match = matchMouseAt(chunk);
 			if (match) {
-				flushInput();
+				if (!flushInput()) return;
 				this.lastMouseConsumedAt = now;
 				const parsed = parseMouseEvent(match.sequence);
 				if (parsed) {
@@ -838,7 +842,7 @@ export default class Ink {
 			// that was split across reads.  Buffer it for the next read.
 			const partialLen = mouseSequencePrefixLength(chunk);
 			if (partialLen > 0) {
-				flushInput();
+				if (!flushInput()) return;
 				this.mouseBuffer = chunk.slice(0, partialLen);
 				chunk = chunk.slice(partialLen);
 				continue;
@@ -852,7 +856,7 @@ export default class Ink {
 			// as literal text (e.g. the SGR mouse body `[<65;44;18M` appears
 			// in the prompt).
 			if (chunk.length <= 2 && chunk[0] === "\x1b") {
-				flushInput();
+				if (!flushInput()) return;
 				this.mouseBuffer = chunk;
 				// If no follow-up bytes arrive within 50ms, this is a real
 				// Escape keypress (or Alt+[ on some terminals) — flush it as
@@ -876,7 +880,7 @@ export default class Ink {
 			const inMouseBurst = (now - this.lastMouseConsumedAt) < MOUSE_BURST_WINDOW_MS;
 			const orphanedLen = matchOrphanedCSI(chunk, inMouseBurst);
 			if (orphanedLen > 0) {
-				flushInput();
+				if (!flushInput()) return;
 				this.lastMouseConsumedAt = now;
 				chunk = chunk.slice(orphanedLen);
 				continue;

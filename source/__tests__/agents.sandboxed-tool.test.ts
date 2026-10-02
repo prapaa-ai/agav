@@ -15,6 +15,27 @@ describe("agents/sandboxed-tool", () => {
     await rm(toolDir, { recursive: true, force: true });
   });
 
+  it("cancels an executing subprocess tool", async () => {
+    const toolPath = join(toolDir, "slow.mjs");
+    await writeFile(toolPath, `export default { async execute() { await new Promise(r => setTimeout(r, 2000)); return { output: 'late', isError: false }; } };`);
+    const controller = new AbortController();
+    const pending = executeSandboxedTool(toolPath, {}, undefined, "none", controller.signal);
+    setTimeout(() => controller.abort(), 100);
+    const started = Date.now();
+    const result = await pending;
+    expect(result.isError).toBe(true);
+    expect(result.output).toMatch(/abort/i);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("does not spawn a pre-cancelled tool", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await executeSandboxedTool("/nonexistent.mjs", {}, undefined, "none", controller.signal);
+    expect(result.output).toBe("Tool cancelled.");
+    expect(result.isError).toBe(true);
+  });
+
   it("executes a simple tool and returns its output", async () => {
     const toolPath = join(toolDir, "echo.mjs");
     await writeFile(toolPath, [

@@ -6,6 +6,7 @@ const {writeClipboard} = vi.hoisted(() => ({writeClipboard: vi.fn()}));
 vi.mock("../ink/termio/clipboard.js", () => ({writeClipboard}));
 
 import render from "../ink/render.js";
+import Ink from "../ink/ink.js";
 import Text from "../ink/components/Text.js";
 import {DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING} from "../ink/termio/dec.js";
 
@@ -38,7 +39,7 @@ const makeStdin = (): NodeJS.ReadStream => {
 describe("global text selection", () => {
 	beforeEach(() => writeClipboard.mockClear());
 
-	it.each(["\x03", "\x1b[99;5u", "\x1b[3;5u"])("exits on Ctrl+C (%j) without a selection", async (input) => {
+	it.each(["\x03", "\x1b[99;5u", "\x1b[3;5u", "a\x1b[99;5ub", "\x1b[99;5utext", "text\x1b[3;5u"])("exits on Ctrl+C (%j) without a selection", async (input) => {
 		const stdout = makeStdout();
 		const stdin = makeStdin();
 		const instance = render(createElement(Text, null, "hello"), {
@@ -95,7 +96,7 @@ describe("global text selection", () => {
 		}
 	});
 
-	it.each(["\x1b", "\x1b[99;9u", "\x1b[99;5:3u", "\x1b[3;5:3u"])("does not exit on Esc, Cmd+C, or key release (%j)", async (input) => {
+	it.each(["\x1b", "\x1b[99;9u", "\x1b[99;13u", "\x1b[99;6u", "\x1b[3;5~", "\x1b[99;5:3u", "\x1b[3;5:3u"])("does not exit on Esc, Cmd+C, or key release (%j)", async (input) => {
 		const stdout = makeStdout();
 		const stdin = makeStdin();
 		const instance = render(createElement(Text, null, "hello"), {
@@ -105,6 +106,34 @@ describe("global text selection", () => {
 		try {
 			stdin.emit("data", input);
 			expect(stdin.listenerCount("data")).toBe(1);
+		} finally {
+			instance.unmount();
+		}
+	});
+
+	it.each(["\x1b[200~paste\x1b[201~", "\x1b[200~partial", "\x1b[<0;1;1M\x1b[<0;6;1m", "\x1b["])("stops the whole input drain on enhanced Ctrl+C before %j", async (rest) => {
+		const stdout = makeStdout();
+		const stdin = makeStdin();
+		const instance = new Ink({
+			stdout, stdin, stderr: stdout, patchConsole: false, exitOnCtrlC: true,
+			alternateScreen: false, maxFps: 30,
+		});
+		instance.render(createElement(Text, null, "hello"));
+		await instance.waitUntilRenderFlush();
+		const ink = instance as any;
+		// Observe the bus directly: components may unsubscribe on unmount.
+		const events: string[] = [];
+		ink.internalEventEmitter.on("input", () => events.push("input"));
+		ink.internalEventEmitter.on("paste", () => events.push("paste"));
+		try {
+			stdin.emit("data", "\x1b[99;5u" + rest + "after");
+			const writes = stdout.chunks.length;
+			await new Promise(resolve => setTimeout(resolve, 60));
+			expect(events).toEqual([]);
+			expect(writeClipboard).not.toHaveBeenCalled();
+			expect(stdout.chunks).toHaveLength(writes);
+			expect(ink.pasteBuffer).toBeUndefined();
+			expect(ink.mouseBuffer).toBeUndefined();
 		} finally {
 			instance.unmount();
 		}

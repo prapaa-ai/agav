@@ -16,67 +16,19 @@ function execCommand(
     callback(new Error("Command cancelled."), "", "");
     return;
   }
-  const posix = platform() !== "win32";
-  // execFile does not forward `detached` to spawn, so use spawn explicitly.
-  const child = spawn(file, args, {
-    cwd: options.cwd,
-    env: options.env,
-    detached: posix,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let failure: Error | null = null;
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  const kill = () => {
-    if (posix && child.pid) {
-      try { process.kill(-child.pid, "SIGKILL"); } catch {}
-    } else {
-      child.kill("SIGKILL");
-    }
-  };
-  const onAbort = () => {
-    failure = new Error("Command cancelled.");
-    kill();
-  };
-  const timer = options.timeout > 0 ? setTimeout(() => {
-    failure = new Error(`Command timed out after ${options.timeout}ms.`);
-    kill();
-  }, options.timeout) : undefined;
-  const collect = (chunks: Buffer[], chunk: Buffer, bytes: number) => {
-    const remaining = Math.max(0, options.maxBuffer - bytes);
-    chunks.push(chunk.subarray(0, remaining));
-    if (chunk.length > remaining) {
-      failure ??= new Error("Command output exceeded maxBuffer.");
-      kill();
-    }
-    return bytes + chunk.length;
-  };
-  child.stdout?.on("data", (chunk: Buffer) => { stdoutBytes = collect(stdout, chunk, stdoutBytes); });
-  child.stderr?.on("data", (chunk: Buffer) => { stderrBytes = collect(stderr, chunk, stderrBytes); });
-  child.once("error", (error) => { failure = error; });
-  // A background child may retain the pipes after the shell exits.
-  child.once("exit", kill);
-  child.once("close", (code, exitSignal) => {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", onAbort);
-    activeCommands.delete(kill);
-    // Also remove background descendants left behind by a completed shell.
-    kill();
-    if (!failure && code !== 0) {
-      failure = new Error(`Command failed: ${file} ${args.join(" ")} (${exitSignal ?? code})`);
-    }
-    callback(failure, Buffer.concat(stdout).toString(), Buffer.concat(stderr).toString());
-  });
-  activeCommands.add(kill);
-  signal?.addEventListener("abort", onAbort, { once: true });
-  if (signal?.aborted) onAbort();
-  if (!exitCleanupInstalled) {
-    exitCleanupInstalled = true;
-    // Ctrl+C in raw mode unmounts Ink and ultimately calls process.exit().
-    process.once("exit", () => { for (const stop of activeCommands) stop(); });
-  }
+  const bytes = { stdout: 0, stderr: 0 };
+  // Share process ownership, graceful termination and pipe drainage with the
+  // streaming runner; only output retention differs.
+  executeProcess(file, args, options, (chunk, stream) => {
+    const remaining = Math.max(0, options.maxBuffer - bytes[stream]);
+    (stream === "stdout" ? stdout : stderr).push(chunk.subarray(0, remaining));
+    bytes[stream] += chunk.length;
+    if (chunk.length > remaining) throw new Error("Command output exceeded maxBuffer.");
+  }, error => {
+    callback(error, Buffer.concat(stdout).toString(), Buffer.concat(stderr).toString());
+  }, signal);
 }
 import { platform } from "node:os";
 import { writeFileSync, unlinkSync } from "node:fs";
@@ -203,8 +155,8 @@ function executeProcess(
     cwd: options.cwd,
     env: options.env,
     stdio: ["ignore", "pipe", "pipe"],
-    // A separate Unix process group lets timeout terminate inherited descendants,
-    // even after the shell has exited while its children still hold the pipes.
+    // Noninteractive commands intentionally have no controlling terminal.
+    // Own a Unix process group so cancellation also reaches inherited children.
     detached: !windows,
   });
   let error: Error | null = null;
@@ -277,10 +229,10 @@ function executeProcess(
   child.stderr.on("data", (chunk: Buffer) => emit(chunk, "stderr"));
   child.on("error", (cause) => { error = cause; stop(); });
   child.once("exit", (code, exitSignal) => {
-    // Clean up inherited pipes without turning a successful shell exit into an error.
     exitStatus = { code, signal: exitSignal };
-    if (timer) clearTimeout(timer);
-    stop();
+    // Successful background children may still produce output. Keep the timeout
+    // until close, but terminate descendants when their leader fails.
+    if (code !== 0 || exitSignal) stop();
   });
   child.on("close", finish);
   activeCommands.add(cleanup);
@@ -422,6 +374,10 @@ function runDocker(
 
   return new Promise((resolve) => {
     checkDockerSecurity().then((security) => {
+      if (signal?.aborted) {
+        resolve({ stdout: "", stderr: "", error: new Error("Command cancelled.") });
+        return;
+      }
       const dockerArgs = [
         "run", "--rm",
         "--network=none",
@@ -457,7 +413,9 @@ function runDocker(
       if (onOutput) {
         executeProcess("docker", dockerArgs, options, onOutput, callback, signal);
       } else {
-        execFile("docker", dockerArgs, options, callback);
+        // Abort the local CLI promptly. Docker daemon-side/container cleanup is
+        // not guaranteed by killing the CLI (including the streaming path).
+        execFile("docker", dockerArgs, { ...options, signal }, callback);
       }
     });
   });
