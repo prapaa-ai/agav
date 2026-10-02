@@ -1,6 +1,4 @@
-import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { tempOutputManager, MAX_SAVED_OUTPUT_BYTES } from "./temp-output.js";
 import type { ToolResult } from "../tools/types.js";
 
 // Approximate 10k tokens for ordinary code/logs, not a tokenizer-exact limit.
@@ -31,16 +29,19 @@ export function truncateToolText(text: string, notice: string): string {
 }
 
 /** Persist before advertising a path. Files may contain private command/API data. */
-async function saveToolOutput(text: string): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "agav-tool-output-"));
-  const pending = join(directory, "output.pending");
-  const path = join(directory, "output.txt");
+function saveToolOutput(text: string): { path: string; partial: boolean } {
+  const capture = tempOutputManager.create(Math.min(Buffer.byteLength(text), MAX_SAVED_OUTPUT_BYTES));
   try {
-    await writeFile(pending, text, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await rename(pending, path);
-    return path;
+    // Encode bounded chunks rather than allocating an unbounded second copy.
+    for (let start = 0; start < text.length && !capture.partial;) {
+      let end = Math.min(start + 8192, text.length);
+      if (end < text.length && text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff) end--;
+      capture.write(Buffer.from(text.slice(start, end)));
+      start = end;
+    }
+    return { path: capture.publish(), partial: capture.partial };
   } catch (error) {
-    await rm(directory, { recursive: true, force: true }).catch(() => {});
+    capture.discard();
     throw error;
   }
 }
@@ -58,11 +59,14 @@ async function boundText(text: string): Promise<string> {
   if (!oversized(text)) return text;
   let notice: string;
   try {
-    const path = await saveToolOutput(text);
-    notice = `[Output truncated. Complete returned text: ${JSON.stringify(path)}. Use read_file with start_line/end_line or grep_search on this path to retrieve specific sections.]`;
-  } catch {
+    const { path, partial } = saveToolOutput(text);
+    notice = partial
+      ? `[Output truncated. Partial returned text (16 MiB storage limit): ${JSON.stringify(path)}. Only the prefix is saved; remaining omitted content is unavailable. Use read_file with start_line/end_line or grep_search on this path to retrieve saved sections.]`
+      : `[Output truncated. Complete returned text: ${JSON.stringify(path)}. Use read_file with start_line/end_line or grep_search on this path to retrieve specific sections.]`;
+  } catch (error) {
     // Disk-full/permissions must not change tool success or repeat side effects.
-    notice = "[Output truncated. Could not save the complete returned text; omitted content is unavailable. Narrow the query if more detail is needed.]";
+    const reason = error instanceof Error && error.message.includes("quota") ? " (retention quota reached)" : "";
+    notice = `[Output truncated. Could not save the complete returned text${reason}; omitted content is unavailable. Narrow the query if more detail is needed.]`;
   }
   return truncateToolText(text, notice);
 }

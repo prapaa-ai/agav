@@ -1,7 +1,5 @@
-import { chmodSync, closeSync, mkdtempSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { tempOutputManager, type TemporaryOutput } from "../utils/temp-output.js";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import {
   runInSandbox,
@@ -33,53 +31,26 @@ class ShellOutput {
   private stderr: Buffer[] = [];
   private first = Buffer.alloc(0);
   private last = Buffer.alloc(0);
-  private directory?: string;
-  private fd?: number;
+  private log?: TemporaryOutput;
   private unavailable = false;
-  private written = 0;
-  private partial = false;
+  private failure = "could not save";
   private decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
 
-  private discardLog(): void {
+  private discardLog(error?: unknown): void {
     this.unavailable = true;
-    if (this.fd !== undefined) {
-      try { closeSync(this.fd); } catch {}
-      this.fd = undefined;
-    }
-    if (this.directory) {
-      try { rmSync(this.directory, { recursive: true, force: true }); } catch {}
-      this.directory = undefined;
-    }
-  }
-
-  private write(chunk: Buffer): void {
-    if (this.partial) return;
-    const remaining = MAX_LOG_BYTES - this.written;
-    if (chunk.length > remaining) {
-      this.partial = true;
-      // Keep the partial UTF8 log valid even at the quota boundary.
-      chunk = Buffer.from(utf8Prefix(chunk, remaining));
-    }
-    // writeSync may write fewer bytes than requested (e.g. a nearly full disk).
-    let offset = 0;
-    while (offset < chunk.length) {
-      const written = writeSync(this.fd!, chunk, offset, chunk.length - offset);
-      if (written === 0) throw new Error("Unable to write shell output");
-      offset += written;
-      this.written += written;
-    }
+    if (error instanceof Error && error.message.includes("quota")) this.failure = "retention quota reached";
+    this.log?.discard();
+    this.log = undefined;
   }
 
   private spill(): void {
     try {
-      if (!this.directory && !this.unavailable) {
-        this.directory = mkdtempSync(join(tmpdir(), "agav-shell-"));
-        chmodSync(this.directory, 0o700);
-        this.fd = openSync(join(this.directory, "output.tmp"), "wx", 0o600);
-        for (const previous of this.small) this.write(previous);
+      if (!this.log && !this.unavailable) {
+        this.log = tempOutputManager.create(MAX_LOG_BYTES);
+        for (const previous of this.small) this.log.write(previous);
       }
-    } catch {
-      this.discardLog();
+    } catch (error) {
+      this.discardLog(error);
     }
     this.small = [];
     this.stdout = [];
@@ -111,7 +82,7 @@ class ShellOutput {
 
     this.spill();
     try {
-      if (this.fd !== undefined) this.write(chunk);
+      this.log?.write(chunk);
     } catch {
       // Saving logs must never change command execution or trigger a retry.
       this.discardLog();
@@ -135,22 +106,16 @@ class ShellOutput {
       this.spill();
     }
     let path: string | undefined;
-    if (this.fd !== undefined && this.directory) {
-      try {
-        closeSync(this.fd);
-        this.fd = undefined;
-        path = join(this.directory, "output.log");
-        renameSync(join(this.directory, "output.tmp"), path);
-      } catch {
-        path = undefined;
-        this.discardLog();
-      }
+    const partial = this.log?.partial;
+    if (this.log) {
+      try { path = this.log.publish(); }
+      catch (error) { this.discardLog(error); }
     }
     const retrieval = path
-      ? (this.partial
+      ? (partial
         ? `\nWarning: partial output capture (16 MiB log limit reached); the log is not complete.\nPartial output saved to: ${path}`
         : `\nFull output saved to: ${path}`) + `\nUse read_file with path and line ranges, or grep_search with path and a pattern, to retrieve more.`
-      : "\nWarning: full output log unavailable (could not save); only the bounded preview is retained.";
+      : `\nWarning: full output log unavailable (${this.failure}); omitted content is unavailable; only the bounded preview is retained.`;
     const marker = `\n...(${this.total} bytes total; middle omitted)...\n`;
     const suffix = retrieval + status;
     const budget = Math.max(0, MAX_OUTPUT - Buffer.byteLength(marker + suffix));

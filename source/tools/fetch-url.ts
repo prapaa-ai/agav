@@ -1,6 +1,4 @@
-import { chmodSync, closeSync, mkdtempSync, openSync, renameSync, rmSync, writeSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { tempOutputManager, type TemporaryOutput } from "../utils/temp-output.js";
 import type { ToolDefinition, ToolResult } from "./types.js";
 
 const MAX_OUTPUT = 40_000;
@@ -23,42 +21,26 @@ class ResponseCapture {
   private small: Buffer[] = [];
   private first = Buffer.alloc(0);
   private last = Buffer.alloc(0);
-  private directory?: string;
-  private fd?: number;
+  private log?: TemporaryOutput;
   private unavailable = false;
+  private failure = "could not save";
   partial = false;
 
-  private discardLog(): void {
+  private discardLog(error?: unknown): void {
     this.unavailable = true;
-    if (this.fd !== undefined) {
-      try { closeSync(this.fd); } catch {}
-      this.fd = undefined;
-    }
-    if (this.directory) {
-      try { rmSync(this.directory, { recursive: true, force: true }); } catch {}
-      this.directory = undefined;
-    }
-  }
-
-  private write(chunk: Buffer): void {
-    let offset = 0;
-    while (offset < chunk.length) {
-      const written = writeSync(this.fd!, chunk, offset, chunk.length - offset);
-      if (written <= 0) throw new Error("Unable to write HTTP response");
-      offset += written;
-    }
+    if (error instanceof Error && error.message.includes("quota")) this.failure = "retention quota reached";
+    this.log?.discard();
+    this.log = undefined;
   }
 
   private spill(): void {
     try {
-      if (!this.directory && !this.unavailable) {
-        this.directory = mkdtempSync(join(tmpdir(), "agav-fetch-"));
-        chmodSync(this.directory, 0o700);
-        this.fd = openSync(join(this.directory, "output.tmp"), "wx", 0o600);
-        for (const previous of this.small) this.write(previous);
+      if (!this.log && !this.unavailable) {
+        this.log = tempOutputManager.create(MAX_RESPONSE_BYTES);
+        for (const previous of this.small) this.log.write(previous);
       }
-    } catch {
-      this.discardLog();
+    } catch (error) {
+      this.discardLog(error);
     }
     this.small = [];
   }
@@ -87,7 +69,7 @@ class ResponseCapture {
     }
     this.spill();
     try {
-      if (this.fd !== undefined) this.write(chunk);
+      this.log?.write(chunk);
     } catch {
       // Disk failures must not turn an HTTP success into a failed request.
       this.discardLog();
@@ -105,20 +87,13 @@ class ResponseCapture {
       this.spill();
     }
     let path: string | undefined;
-    if (this.fd !== undefined && this.directory) {
-      try {
-        closeSync(this.fd);
-        this.fd = undefined;
-        const finalPath = join(this.directory, "output.log");
-        renameSync(join(this.directory, "output.tmp"), finalPath);
-        path = finalPath;
-      } catch {
-        this.discardLog();
-      }
+    if (this.log) {
+      try { path = this.log.publish(); }
+      catch (error) { this.discardLog(error); }
     }
     const retrieval = path
       ? `\n${this.partial || readError ? "Partial" : "Full"} response saved to: ${path}\nUse read_file with path and line ranges, or grep_search with path and a pattern, to retrieve more.`
-      : "\nWarning: full response log unavailable (could not save); only the bounded preview is retained.";
+      : `\nWarning: full response log unavailable (${this.failure}); omitted content is unavailable; only the bounded preview is retained.`;
     const marker = `\n...(${this.total} captured bytes; middle omitted)...\n`;
     const suffix = warning + retrieval;
     const budget = Math.max(0, MAX_OUTPUT - Buffer.byteLength(prefix + marker + suffix));

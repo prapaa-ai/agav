@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFile, rm, stat } from "node:fs/promises";
-import * as fs from "node:fs/promises";
+import * as fs from "node:fs";
 import { dirname } from "node:path";
 import { ToolRegistry } from "../tools/registry.js";
 import { boundToolResult, MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_LINES } from "../utils/tool-output.js";
 import type { ToolResult } from "../tools/types.js";
 
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, mkdtemp: vi.fn(actual.mkdtemp), writeFile: vi.fn(actual.writeFile) };
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, mkdtempSync: vi.fn(actual.mkdtempSync), writeSync: vi.fn(actual.writeSync) };
 });
 
 const directories: string[] = [];
@@ -31,7 +31,7 @@ afterEach(async () => {
 describe("shared tool output boundary", () => {
   it("leaves small results untouched, including content and metadata", async () => {
     const result: ToolResult = { output: "hello", isError: false, contentBlocks: [{ type: "text", text: "hello" }] };
-    const spy = vi.spyOn(fs, "mkdtemp");
+    const spy = vi.spyOn(fs, "mkdtempSync");
     expect(await boundToolResult(result)).toBe(result);
     expect(spy).not.toHaveBeenCalled();
   });
@@ -84,7 +84,7 @@ describe("shared tool output boundary", () => {
   });
 
   it("returns a bounded warning on persistence failure without changing success", async () => {
-    vi.spyOn(fs, "mkdtemp").mockRejectedValueOnce(new Error("disk full"));
+    vi.spyOn(fs, "mkdtempSync").mockImplementationOnce(() => { throw new Error("disk full"); });
     const result = await boundToolResult({ output: "a".repeat(80_000), isError: false });
     expectBounded(result.output);
     expect(result.output).toContain("Could not save");
@@ -93,8 +93,8 @@ describe("shared tool output boundary", () => {
   });
 
   it("cleans failed writes before publication", async () => {
-    const mkdir = vi.spyOn(fs, "mkdtemp");
-    vi.spyOn(fs, "writeFile").mockRejectedValueOnce(new Error("disk full"));
+    const mkdir = vi.spyOn(fs, "mkdtempSync");
+    vi.spyOn(fs, "writeSync").mockImplementationOnce(() => { throw new Error("disk full"); });
     const result = await boundToolResult({ output: "a".repeat(80_000), isError: true });
     const path = await mkdir.mock.results[0].value;
     await expect(stat(path)).rejects.toThrow();
