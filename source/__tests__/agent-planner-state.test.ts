@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, mkdir, rm, readFile, readdir, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse as parsePath } from "node:path";
 import {
   savePlan,
   loadPlan,
@@ -31,7 +31,7 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
   };
 }
 
-describe("plan state", () => {
+describe.sequential("plan state", () => {
   let originalCwd: string;
   let root: string;
 
@@ -39,7 +39,11 @@ describe("plan state", () => {
     originalCwd = process.cwd();
     // Resolve symlinks (macOS maps /var to /private/var) so the paths the
     // planner derives from process.cwd() compare equal to the ones built here.
-    root = await realpath(await mkdtemp(join(tmpdir(), "agav-plan-state-")));
+    // Keep the sandbox outside the user's home repository. Some developer
+    // environments have a .git directory at %USERPROFILE%, and the planner
+    // correctly anchors plans at the nearest repository root.
+    const sandboxParent = process.platform === "win32" ? parsePath(tmpdir()).root : tmpdir();
+    root = await realpath(await mkdtemp(join(sandboxParent, "agav-plan-state-")));
     process.chdir(root);
     setPlanScope(null);
   });

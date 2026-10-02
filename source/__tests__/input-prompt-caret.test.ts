@@ -115,6 +115,8 @@ const type = async (
 const BACKSPACE = Buffer.from("\x7f");
 const ENTER = Buffer.from("\r");
 const LEFT = Buffer.from("\x1b[D");
+const UP = Buffer.from("\x1b[A");
+const CTRL_DOWN = Buffer.from("\x1b[1;5B");
 
 const press = async (
   instance: { waitUntilRenderFlush: () => Promise<void> },
@@ -213,6 +215,24 @@ describe("InputPrompt caret vs. a parent that rewrites the value", () => {
     await press(instance, stdin, BACKSPACE, 4);
 
     expect(currentValue).toBe("");
+    instance.unmount();
+  });
+
+  it("moves the caret vertically through multiline input", async () => {
+    const { instance, stdin } = await mount();
+
+    await type(instance, stdin, "abc");
+    stdin.emit("data", Buffer.from("\n"));
+    await settle(instance);
+    await type(instance, stdin, "def");
+
+    await press(instance, stdin, UP);
+    await type(instance, stdin, "X");
+    expect(currentValue).toBe("abcX\ndef");
+
+    await press(instance, stdin, CTRL_DOWN);
+    await type(instance, stdin, "Y");
+    expect(currentValue).toBe("abcX\ndefY");
     instance.unmount();
   });
 });

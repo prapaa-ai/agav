@@ -73,6 +73,12 @@ interface FileSuggestion {
   isDirectory: boolean;
 }
 
+interface WrappedPromptLine {
+  text: string;
+  offset: number;
+  isFirst: boolean;
+}
+
 /** Finds the current @file token being edited, if any. */
 function getActiveFileToken(value: string, cursorPos: number): ActiveFileToken | null {
   const before = value.slice(0, cursorPos);
@@ -276,13 +282,15 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const historyIndexRef = useRef(-1);
   /** Saves the in-progress input when the user first presses Up, so Down can restore it. */
   const draftRef = useRef<string | null>(null);
+  /** Keeps the preferred visual column while moving through wrapped prompt rows. */
+  const verticalColumnRef = useRef<number | null>(null);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
   /** The box holding the text rows, for turning a click into a buffer offset. */
   const linesRef = useRef<DOMElement | null>(null);
   /** Current wrapped lines, kept in a ref so container-level mouse handlers don't need new closures each render. */
-  const wrappedLinesRef = useRef<{ text: string; offset: number; isFirst: boolean }[]>([]);
+  const wrappedLinesRef = useRef<WrappedPromptLine[]>([]);
 
   // ---------------------------------------------------------------------------
   // Text selection state.  Selection is tracked as a pair of buffer offsets
@@ -354,7 +362,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
    * onMouseMove and onMouseUp handlers so that drags crossing row boundaries
    * still resolve to the right buffer position.
    */
-  const eventToOffsetAuto = (event: MouseEventData, lines: WrappedLine[]): number => {
+  const eventToOffsetAuto = (event: MouseEventData, lines: WrappedPromptLine[]): number => {
     const container = linesRef.current;
     if (!container || container.internal_y === undefined) return 0;
     // Each wrapped line is one row tall, starting at container.internal_y.
@@ -665,9 +673,49 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         }
       }
 
-      // Up arrow — message history (suppressed during agent runs to prevent
-      // mouse-wheel-as-arrow-key from triggering costly re-renders).
-      if (match.action === "historyUp" && !value.includes("\n") && !suppressHistory) {
+      const moveVertically = (direction: -1 | 1): boolean => {
+        const lines = wrappedLinesRef.current;
+        if (lines.length < 2) return false;
+
+        const current = lines.findIndex((line, index) => {
+          const end = line.offset + line.text.length;
+          const isLast = index === lines.length - 1;
+          const endsWithNewline = value[end] === "\n" && lines[index + 1]?.offset === end + 1;
+          return cursorPos >= line.offset && (isLast || cursorPos < end || (cursorPos === end && endsWithNewline));
+        });
+        if (current < 0) return false;
+
+        const currentLine = lines[current]!;
+        const currentColumn = stringWidth(value.slice(currentLine.offset, cursorPos));
+        const desiredColumn = verticalColumnRef.current ?? currentColumn;
+        const targetIndex = current + direction;
+        const target = lines[targetIndex];
+        if (!target) {
+          verticalColumnRef.current = desiredColumn;
+          return true;
+        }
+
+        let targetOffset = target.offset;
+        let width = 0;
+        for (const { segment, index } of segmenter.segment(target.text)) {
+          const segmentWidth = stringWidth(segment);
+          if (width + segmentWidth > desiredColumn) break;
+          width += segmentWidth;
+          targetOffset = target.offset + index + segment.length;
+        }
+
+        verticalColumnRef.current = desiredColumn;
+        clearSelection();
+        moveCaret(targetOffset);
+        return true;
+      };
+
+      // Up arrow — message history. Mouse reports are filtered during key
+      // normalization, so wheel input cannot accidentally enter history.
+      if (match.action === "historyUp" && moveVertically(-1)) return;
+      if (match.action === "historyDown" && moveVertically(1)) return;
+
+      if (match.action === "historyUp" && !value.includes("\n")) {
         const history = historyRef.current;
         if (history.length === 0) return;
         // Save the in-progress input the first time the user enters history,
@@ -686,7 +734,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       // browsing history (historyIndexRef >= 0). Without this guard, pressing
       // Down while typing (historyIndexRef === -1) would wipe the input
       // because draftRef is null and the fallback is an empty string.
-      if (match.action === "historyDown" && historyIndexRef.current >= 0 && !value.includes("\n") && !suppressHistory) {
+      if (match.action === "historyDown" && historyIndexRef.current >= 0 && !value.includes("\n")) {
         const history = historyRef.current;
         if (historyIndexRef.current <= 0) {
           historyIndexRef.current = -1;
@@ -703,6 +751,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       }
 
       if (match.action === "newline" || match.action === "submit") {
+        verticalColumnRef.current = null;
         if (match.action === "newline") {
           // Replace selected text with the newline.
           deleteSelection();
@@ -822,8 +871,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const prefixWidth = agentLock ? stringWidth(lockPrefix) : DEFAULT_PREFIX_WIDTH;
   const usable = Math.max(1, cols - prefixWidth);
 
-  interface WrappedLine { text: string; offset: number; isFirst: boolean }
-  const wrappedLines: WrappedLine[] = [];
+  const wrappedLines: WrappedPromptLine[] = [];
   const rawLines = text.split("\n");
   let globalOffset = 0;
   for (let li = 0; li < rawLines.length; li++) {
@@ -867,7 +915,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   // ---------------------------------------------------------------------------
 
   /** Mouse-down: start a potential selection. */
-  const handleRowMouseDown = (line: WrappedLine) => (event: MouseEventData) => {
+  const handleRowMouseDown = (line: WrappedPromptLine) => (event: MouseEventData) => {
     const offset = snapOutOfAttachment(text, eventToOffset(event, line));
     const now = Date.now();
     const MULTI_CLICK_MS = 400;
@@ -938,7 +986,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
    * click if there is one, otherwise positions the caret. Selection copy is
    * handled by the container-level mouseUp handler.
    */
-  const handleRowClick = (line: WrappedLine) => (event: MouseEventData) => {
+  const handleRowClick = (line: WrappedPromptLine) => (event: MouseEventData) => {
     if (!draggingRef.current && clickCountRef.current <= 1) {
       const rawOffset = eventToOffset(event, line);
       const tileId = onOpenAttachment ? attachmentTileAt(text, rawOffset) : null;
@@ -970,7 +1018,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         const lineStart = wl.offset;
         const lineEnd = lineStart + wl.text.length;
         const isLastLine = i === wrappedLines.length - 1;
-        const cursorInLine = cursorPos >= lineStart && (isLastLine ? cursorPos <= lineEnd : cursorPos < lineEnd);
+        const endsWithNewline = text[lineEnd] === "\n" && wrappedLines[i + 1]?.offset === lineEnd + 1;
+        const cursorInLine = cursorPos >= lineStart && (isLastLine || cursorPos < lineEnd || (cursorPos === lineEnd && endsWithNewline));
 
         const renderPrefix = (isFirst: boolean) => {
           if (!isFirst) return <Text dimColor>{"  "}</Text>;

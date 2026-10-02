@@ -125,6 +125,7 @@ export default function StatusBar({
       <Text dimColor>
         {provider}/{model} · effort: {effort} · {messageCount} msgs · {parts.join(" ")}{durationSegment}{sandboxBackend ? ` · ${sandboxBackend}` : ""}{branchName ? ` · session: ${branchName}` : ""}
       </Text>
+      {isLoading && !isPaused && <Text color="yellow">Press Esc or Ctrl+C to stop the response.</Text>}
       {agentLock && (
         <Text color={agentLock.full ? "red" : "yellow"} dimColor>
           {"🔒 agent: "}{agentLock.name}{agentLock.full ? " (full)" : " (read-only)"}

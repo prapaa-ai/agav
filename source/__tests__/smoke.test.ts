@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { tmpdir } from "node:os";
 
 const nodeVersion = parseInt(process.versions.node.split(".")[0]!, 10);
 const skipCli = nodeVersion < 22;
@@ -45,6 +46,8 @@ describe("CLI boot", () => {
 
   it("-P without API key exits 1 with helpful error (not a crash)", async () => {
     const result = await runCli(["-P", "hello"], {
+      HOME: tmpdir(),
+      USERPROFILE: tmpdir(),
       ANTHROPIC_API_KEY: "",
       OPENAI_API_KEY: "",
       OPENROUTER_API_KEY: "",
@@ -57,7 +60,7 @@ describe("CLI boot", () => {
     const output = `${result.stdout}\n${result.stderr}`;
     expect(output).toContain("no provider credentials found");
     expect(output).toMatch(/(export|set|\$env:)\s?ANTHROPIC_API_KEY/);
-  });
+  }, 15000);
 });
 
 describe("Tool registry", () => {

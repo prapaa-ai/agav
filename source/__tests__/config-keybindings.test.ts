@@ -201,6 +201,17 @@ describe("newline keybinding", () => {
     expect(mod.normalizeKeyEvent("\x1b[27;5;97~", NO_KEY)).toMatchObject({ input: "a", key: expect.objectContaining({ ctrl: true }) });
   });
 
+  it("decodes raw Ctrl+Up and Ctrl+Down sequences", async () => {
+    const mod = await import("../config/keybindings.js");
+    const up = mod.normalizeKeyEvent("\x1b[1;5A", NO_KEY);
+    const down = mod.normalizeKeyEvent("\x1b[1;5B", NO_KEY);
+    expect(up).toMatchObject({ input: "", key: { ctrl: true, upArrow: true } });
+    expect(down).toMatchObject({ input: "", key: { ctrl: true, downArrow: true } });
+    const resolver = new mod.KeybindingResolver(mod.DEFAULT_KEYBINDINGS, ["historyUp", "historyDown"]);
+    expect(resolver.feed(up.input, up.key).action).toBe("historyUp");
+    expect(resolver.feed(down.input, down.key).action).toBe("historyDown");
+  });
+
   it("leaves ordinary input untouched", async () => {
     const mod = await import("../config/keybindings.js");
     expect(mod.normalizeKeyEvent("a", NO_KEY)).toEqual({ input: "a", key: NO_KEY });
