@@ -266,6 +266,13 @@ Example:
 
 Agav can also store provider API keys directly in `config.json` — they are **encrypted at rest** with AES-256-GCM, so the file never contains plaintext secrets. Even so, environment variables are the safer choice on shared machines and less likely to end up in version control.
 
+Two rules apply to keys stored in `config.json`:
+
+- **Global only.** Keys must live in `~/.agav/config.json`, not a project's `./.agav/config.json`. Agav strips API keys (and endpoint overrides) from project config before using it, so a key placed in a repository is silently ignored. This protects you from a cloned repo redirecting your credentials.
+- **Environment variables win.** If both the environment variable (e.g. `OPENAI_API_KEY`) and the `config.json` field are set, the environment variable is used. So `export OPENAI_API_KEY=...` in your shell always overrides whatever is saved in the file.
+
+See [Provider credentials](/reference/configuration) in the configuration reference for the full field-to-variable mapping.
+
 ## Verify the connection
 
 Start a read-only session in any repository:

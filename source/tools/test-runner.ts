@@ -102,14 +102,12 @@ function parsePytest(output: string): TestResults {
   let failed = 0;
   let errors = 0;
 
-  const summaryMatch = output.match(/(\d+)\s+passed/);
-  if (summaryMatch) passed = parseInt(summaryMatch[1]!, 10);
-
-  const failMatch = output.match(/(\d+)\s+failed/);
-  if (failMatch) failed = parseInt(failMatch[1]!, 10);
-
-  const errMatch = output.match(/(\d+)\s+error/);
-  if (errMatch) errors = parseInt(errMatch[1]!, 10);
+  // Counts must come from pytest's result summary, not warnings or captured logs.
+  const summaries = output.match(/^[ \t]*(?:=+[ \t]*)?\d+[ \t]+(?:passed|failed|errors?|skipped|deselected|warnings?|xfailed|xpassed)(?:,[ \t]*\d+[ \t]+(?:passed|failed|errors?|skipped|deselected|warnings?|xfailed|xpassed))*[ \t]+in[ \t]+\d+(?:\.\d+)?s(?:[ \t]+\([^\n]*\))?[ \t]*(?:=+)?[ \t]*$/gm);
+  const summary = summaries?.at(-1) ?? "";
+  passed = Number(summary.match(/(\d+)\s+passed/)?.[1] ?? 0);
+  failed = Number(summary.match(/(\d+)\s+failed/)?.[1] ?? 0);
+  errors = Number(summary.match(/(\d+)\s+errors?/)?.[1] ?? 0);
 
   const failureBlocks = output.split(/^FAILED\s+/m).slice(1);
   for (const block of failureBlocks) {
@@ -149,13 +147,16 @@ function parseJsTest(output: string, framework: string): TestResults {
   let passed = 0;
   let failed = 0;
 
-  const passMatch = output.match(/(\d+)\s+(?:passing|passed)/);
-  if (passMatch) passed = parseInt(passMatch[1]!, 10);
+  // Suite/file counts are not evidence that any actual tests passed.
+  const testSummaries = output.match(/^\s*Tests\s*:?[ \t]+.*$/gm) ?? [];
+  for (const summary of testSummaries) {
+    const passMatch = summary.match(/(\d+)\s+passed/);
+    if (passMatch) passed += parseInt(passMatch[1]!, 10);
+    const failMatch = summary.match(/(\d+)\s+failed/);
+    if (failMatch) failed += parseInt(failMatch[1]!, 10);
+  }
 
-  const failMatch = output.match(/(\d+)\s+(?:failing|failed)/);
-  if (failMatch) failed = parseInt(failMatch[1]!, 10);
-
-  const failBlocks = output.split(/(?:✗|✕|×|FAIL)\s+/);
+  const failBlocks = output.split(/^[ \t]*(?:✗|✕|×|FAIL)\s+/m);
   for (let i = 1; i < failBlocks.length; i++) {
     const block = failBlocks[i]!;
     const lines = block.split("\n");
@@ -202,10 +203,9 @@ function parseCargoTest(output: string): TestResults {
   let passed = 0;
   let failed = 0;
 
-  const summaryMatch = output.match(/test result:.*?(\d+)\s+passed.*?(\d+)\s+failed/);
-  if (summaryMatch) {
-    passed = parseInt(summaryMatch[1]!, 10);
-    failed = parseInt(summaryMatch[2]!, 10);
+  for (const summaryMatch of output.matchAll(/^test result:.*?(\d+)\s+passed.*?(\d+)\s+failed/gm)) {
+    passed += parseInt(summaryMatch[1]!, 10);
+    failed += parseInt(summaryMatch[2]!, 10);
   }
 
   const failSection = output.split("failures:").slice(1);
@@ -312,23 +312,41 @@ export const testRunnerTool: ToolDefinition = {
 
     const { cmd, args } = getCommand(framework, testPath);
 
-    const output = await new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-      execFile(cmd, args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd }, (err, stdout, stderr) => {
-        resolve({
-          stdout: stdout ?? "",
-          stderr: stderr ?? "",
-          exitCode: err ? (err as { code?: number }).code ?? 1 : 0,
+    const output = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; diagnostic?: string }>((resolve) => {
+      try {
+        execFile(cmd, args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd }, (err, stdout, stderr) => {
+          resolve({
+            stdout: stdout ?? "",
+            stderr: stderr ?? "",
+            exitCode: !err ? 0 : typeof err.code === "number" && !err.signal && !err.killed ? err.code : null,
+            diagnostic: err?.message,
+          });
         });
-      });
+      } catch (err) {
+        resolve({ stdout: "", stderr: "", exitCode: null, diagnostic: err instanceof Error ? err.message : String(err) });
+      }
     });
 
     const combined = output.stdout + "\n" + output.stderr;
-    const results = parseOutput(framework, combined);
+    const results = parseOutput(framework, combined.replace(/\u001b\[[0-9;]*m/g, ""));
+    const isError = output.exitCode !== 0 || !!output.diagnostic || results.failed > 0 || results.errors > 0 || results.failures.length > 0;
+    const status = isError ? "failed" : results.passed > 0 ? "passed" : "inconclusive";
+    // Keep process diagnostics even when the framework parser finds no failures.
+    if (isError || status === "inconclusive") {
+      results.raw = combined;
+    }
     const formatted = formatResults(results);
 
     return {
-      output: formatted,
-      isError: results.failed > 0 || results.errors > 0,
+      output: formatted + (output.diagnostic ? `\n\nProcess error: ${output.diagnostic}` : ""),
+      isError,
+      verification: {
+        status,
+        passed: results.passed,
+        failed: results.failed,
+        errors: results.errors,
+        exitCode: output.exitCode,
+      },
     };
   },
 };
