@@ -46,6 +46,7 @@ import {
 import {type MouseEventData} from "./types.js";
 import {resolveFlags, type KittyFlagName} from "./kitty-keyboard.js";
 import {writeClipboard} from "./termio/clipboard.js";
+import parseKeypress, {splitCoalescedKeys} from "./parse-keypress.js";
 import {
 	type SelectionRange,
 	normalizeSelection,
@@ -771,6 +772,24 @@ export default class Ink {
 				if (pendingInput.includes("\x1b[99;6u") || pendingInput.includes("\x1b[99;9u")) {
 					this.copyGlobalSelection();
 					pendingInput = pendingInput.replaceAll("\x1b[99;6u", "").replaceAll("\x1b[99;9u", "");
+				}
+
+				if (this.exitOnCtrlC && pendingInput.length > 0) {
+					const keys = splitCoalescedKeys(pendingInput) ?? [pendingInput];
+					const remainingKeys = keys.filter((input) => {
+						const key = parseKeypress(input);
+						return !(key.name === "c" && key.ctrl && !key.shift && !key.meta && !key.super && key.eventType !== "release");
+					});
+					if (remainingKeys.length !== keys.length) {
+						if (this.selectionRange) {
+							this.copyGlobalSelection();
+							pendingInput = remainingKeys.join("");
+						} else {
+							this.unmount();
+							pendingInput = "";
+							return;
+						}
+					}
 				}
 
 				if (pendingInput.length > 0) {

@@ -20,6 +20,7 @@ export interface ToolResult {
 
 export interface ToolContext {
   env?: Record<string, string>;
+  signal?: AbortSignal;
 }
 
 export interface ToolDefinition {

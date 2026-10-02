@@ -1,4 +1,83 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+
+const activeCommands = new Set<() => void>();
+let exitCleanupInstalled = false;
+
+/** Own the whole POSIX process group, not just the shell at its head. */
+function execCommand(
+  file: string,
+  args: string[],
+  options: { timeout: number; maxBuffer: number; cwd?: string; env?: Record<string, string> },
+  callback: (error: Error | null, stdout: string, stderr: string) => void,
+  signal?: AbortSignal,
+): void {
+  if (signal?.aborted) {
+    callback(new Error("Command cancelled."), "", "");
+    return;
+  }
+  const posix = platform() !== "win32";
+  // execFile does not forward `detached` to spawn, so use spawn explicitly.
+  const child = spawn(file, args, {
+    cwd: options.cwd,
+    env: options.env,
+    detached: posix,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let failure: Error | null = null;
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  const kill = () => {
+    if (posix && child.pid) {
+      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+    } else {
+      child.kill("SIGKILL");
+    }
+  };
+  const onAbort = () => {
+    failure = new Error("Command cancelled.");
+    kill();
+  };
+  const timer = options.timeout > 0 ? setTimeout(() => {
+    failure = new Error(`Command timed out after ${options.timeout}ms.`);
+    kill();
+  }, options.timeout) : undefined;
+  const collect = (chunks: Buffer[], chunk: Buffer, bytes: number) => {
+    const remaining = Math.max(0, options.maxBuffer - bytes);
+    chunks.push(chunk.subarray(0, remaining));
+    if (chunk.length > remaining) {
+      failure ??= new Error("Command output exceeded maxBuffer.");
+      kill();
+    }
+    return bytes + chunk.length;
+  };
+  child.stdout?.on("data", (chunk: Buffer) => { stdoutBytes = collect(stdout, chunk, stdoutBytes); });
+  child.stderr?.on("data", (chunk: Buffer) => { stderrBytes = collect(stderr, chunk, stderrBytes); });
+  child.once("error", (error) => { failure = error; });
+  // A background child may retain the pipes after the shell exits.
+  child.once("exit", kill);
+  child.once("close", (code, exitSignal) => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
+    activeCommands.delete(kill);
+    // Also remove background descendants left behind by a completed shell.
+    kill();
+    if (!failure && code !== 0) {
+      failure = new Error(`Command failed: ${file} ${args.join(" ")} (${exitSignal ?? code})`);
+    }
+    callback(failure, Buffer.concat(stdout).toString(), Buffer.concat(stderr).toString());
+  });
+  activeCommands.add(kill);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  if (!exitCleanupInstalled) {
+    exitCleanupInstalled = true;
+    // Ctrl+C in raw mode unmounts Ink and ultimately calls process.exit().
+    process.once("exit", () => { for (const stop of activeCommands) stop(); });
+  }
+}
 import { platform } from "node:os";
 import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -102,13 +181,14 @@ function runSeatbelt(
   cwd: string,
   timeout: number,
   maxBuffer: number,
+  signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const home = process.env.HOME ?? "/tmp";
-  const profilePath = join(tmpdir(), `agav-sandbox-${process.pid}.sb`);
+  const profilePath = join(tmpdir(), `agav-sandbox-${process.pid}-${randomUUID()}.sb`);
   writeFileSync(profilePath, SEATBELT_PROFILE);
 
   return new Promise((resolve) => {
-    execFile(
+    execCommand(
       "sandbox-exec",
       [
         "-f", profilePath,
@@ -129,6 +209,7 @@ function runSeatbelt(
         try { unlinkSync(profilePath); } catch {}
         resolve({ stdout, stderr, error });
       },
+      signal,
     );
   });
 }
@@ -138,10 +219,11 @@ function runBubblewrap(
   cwd: string,
   timeout: number,
   maxBuffer: number,
+  signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const home = process.env.HOME ?? "/tmp";
   return new Promise((resolve) => {
-    execFile(
+    execCommand(
       "bwrap",
       [
         "--ro-bind", "/", "/",
@@ -172,6 +254,7 @@ function runBubblewrap(
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });
       },
+      signal,
     );
   });
 }
@@ -262,18 +345,20 @@ function runUnsandboxed(
   cwd: string,
   timeout: number,
   maxBuffer: number,
+  signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const isWindows = platform() === "win32";
   const shell = isWindows ? "cmd.exe" : "/bin/sh";
   const shellArgs = isWindows ? ["/c", command] : ["-c", command];
   return new Promise((resolve) => {
-    execFile(
+    execCommand(
       shell,
       shellArgs,
       { timeout, maxBuffer, cwd, env: filterEnv() },
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });
       },
+      signal,
     );
   });
 }
@@ -312,6 +397,7 @@ export interface SandboxOptions {
   timeout: number;
   maxBuffer: number;
   forceBackend?: SandboxBackend;
+  signal?: AbortSignal;
 }
 
 export async function runInSandbox(opts: SandboxOptions): Promise<{
@@ -321,23 +407,26 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
   backend: SandboxBackend;
 }> {
   const backend = opts.forceBackend ?? detectSandboxBackend();
+  if (opts.signal?.aborted) {
+    return { stdout: "", stderr: "", error: new Error("Command cancelled."), backend };
+  }
 
   let result: { stdout: string; stderr: string; error: Error | null };
 
   switch (backend) {
     case "seatbelt":
-      result = await runSeatbelt(opts.command, opts.cwd, opts.timeout, opts.maxBuffer);
+      result = await runSeatbelt(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.signal);
       if (result.error && /ENOENT|sandbox-exec.*not found/i.test(result.error.message ?? "")) {
         detectedBackend = "none";
-        result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer);
+        result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.signal);
         return { ...result, backend: "none" };
       }
       break;
     case "bubblewrap":
-      result = await runBubblewrap(opts.command, opts.cwd, opts.timeout, opts.maxBuffer);
+      result = await runBubblewrap(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.signal);
       if (result.error && /ENOENT|bwrap.*not found/i.test(result.error.message ?? "")) {
         detectedBackend = "none";
-        result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer);
+        result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.signal);
         return { ...result, backend: "none" };
       }
       break;
@@ -345,7 +434,7 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
       result = await runDocker(opts.command, opts.cwd, opts.timeout, opts.maxBuffer);
       break;
     default:
-      result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer);
+      result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.signal);
       break;
   }
 

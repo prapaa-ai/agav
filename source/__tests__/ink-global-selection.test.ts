@@ -38,6 +38,78 @@ const makeStdin = (): NodeJS.ReadStream => {
 describe("global text selection", () => {
 	beforeEach(() => writeClipboard.mockClear());
 
+	it.each(["\x03", "\x1b[99;5u", "\x1b[3;5u"])("exits on Ctrl+C (%j) without a selection", async (input) => {
+		const stdout = makeStdout();
+		const stdin = makeStdin();
+		const instance = render(createElement(Text, null, "hello"), {
+			stdout, stdin, patchConsole: false, exitOnCtrlC: true,
+		});
+		await instance.waitUntilRenderFlush();
+		try {
+			stdin.emit("data", input);
+			expect(stdin.listenerCount("data")).toBe(0);
+		} finally {
+			instance.unmount();
+		}
+	});
+
+	it.each(["\x1b[99;5u", "\x1b[3;5u"])("copies and keeps the active selection on enhanced Ctrl+C (%j)", async (input) => {
+		const stdout = makeStdout();
+		const stdin = makeStdin();
+		const instance = render(createElement(Text, null, "hello"), {
+			stdout, stdin, patchConsole: false, exitOnCtrlC: true,
+		});
+		await instance.waitUntilRenderFlush();
+		try {
+			stdin.emit("data", "\x1b[<0;1;1M");
+			stdin.emit("data", "\x1b[<0;6;1m");
+			writeClipboard.mockClear();
+
+			stdin.emit("data", input);
+			expect(writeClipboard).toHaveBeenCalledTimes(1);
+			expect(writeClipboard).toHaveBeenCalledWith(stdout, "hello");
+			expect(stdin.listenerCount("data")).toBe(1);
+
+			stdin.emit("data", input + input);
+			expect(writeClipboard).toHaveBeenCalledTimes(2);
+			expect(writeClipboard).toHaveBeenLastCalledWith(stdout, "hello");
+			expect(stdin.listenerCount("data")).toBe(1);
+		} finally {
+			instance.unmount();
+		}
+	});
+
+	it.each(["\x03", "\x1b[99;5u", "\x1b[3;5u"])("does not exit on Ctrl+C when exitOnCtrlC is false (%j)", async (input) => {
+		const stdout = makeStdout();
+		const stdin = makeStdin();
+		const instance = render(createElement(Text, null, "hello"), {
+			stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+		});
+		await instance.waitUntilRenderFlush();
+		try {
+			stdin.emit("data", input);
+			expect(stdin.listenerCount("data")).toBe(1);
+			expect(writeClipboard).not.toHaveBeenCalled();
+		} finally {
+			instance.unmount();
+		}
+	});
+
+	it.each(["\x1b", "\x1b[99;9u", "\x1b[99;5:3u", "\x1b[3;5:3u"])("does not exit on Esc, Cmd+C, or key release (%j)", async (input) => {
+		const stdout = makeStdout();
+		const stdin = makeStdin();
+		const instance = render(createElement(Text, null, "hello"), {
+			stdout, stdin, patchConsole: false, exitOnCtrlC: true,
+		});
+		await instance.waitUntilRenderFlush();
+		try {
+			stdin.emit("data", input);
+			expect(stdin.listenerCount("data")).toBe(1);
+		} finally {
+			instance.unmount();
+		}
+	});
+
 	it("copies a normal left-button drag when it is released", async () => {
 		const stdout = makeStdout();
 		const stdin = makeStdin();
@@ -57,23 +129,29 @@ describe("global text selection", () => {
 		instance.unmount();
 	});
 
-	it("copies the active selection with Kitty Ctrl+Shift+C", async () => {
+	it.each([
+		["\x1b[99;6u", false], ["\x1b[99;6u", true],
+		["\x1b[99;9u", false], ["\x1b[99;9u", true],
+	] as const)("copies the active selection with Kitty copy shortcut (%j, exitOnCtrlC: %j)", async (input, exitOnCtrlC) => {
 		const stdout = makeStdout();
 		const stdin = makeStdin();
 		const instance = render(createElement(Text, null, "hello"), {
 			stdout,
 			stdin,
 			patchConsole: false,
-			exitOnCtrlC: false,
+			exitOnCtrlC,
 		});
 		await instance.waitUntilRenderFlush();
+		try {
+			stdin.emit("data", "\x1b[<0;1;1M");
+			stdin.emit("data", "\x1b[<32;6;1M");
+			stdin.emit("data", input);
 
-		stdin.emit("data", "\x1b[<0;1;1M");
-		stdin.emit("data", "\x1b[<32;6;1M");
-		stdin.emit("data", "\x1b[99;6u");
-
-		expect(writeClipboard).toHaveBeenCalledWith(stdout, "hello");
-		instance.unmount();
+			expect(writeClipboard).toHaveBeenCalledWith(stdout, "hello");
+			expect(stdin.listenerCount("data")).toBe(1);
+		} finally {
+			instance.unmount();
+		}
 	});
 
 	it("uses a release-only mouse report to copy a drag", async () => {

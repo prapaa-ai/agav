@@ -1,5 +1,5 @@
 import type { ToolSchema } from "../providers/types.js";
-import type { ToolDefinition, ToolResult } from "./types.js";
+import type { ToolContext, ToolDefinition, ToolResult } from "./types.js";
 
 export class ToolRegistry {
   private tools = new Map<string, ToolDefinition>();
@@ -19,13 +19,18 @@ export class ToolRegistry {
   async execute(
     name: string,
     input: Record<string, unknown>,
+    context?: ToolContext,
   ): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) {
       return { output: `Unknown tool: ${name}`, isError: true };
     }
     try {
-      return await tool.execute(input);
+      if (context?.signal?.aborted) return { output: "Tool cancelled.", isError: true };
+      // Preserve the legacy call shape when no execution context is supplied.
+      return await (context?.signal || context?.env
+        ? tool.execute(input, context)
+        : tool.execute(input));
     } catch (err) {
       return {
         output: err instanceof Error ? err.message : String(err),
