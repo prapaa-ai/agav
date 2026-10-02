@@ -40,6 +40,15 @@ agav update [version]        # Update the installed release
 
 Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, and max turns.
 
+## Startup provider and model selection
+
+When you start a plain `agav` session, the provider and model are resolved in this order:
+
+1. **Explicit flags** — `--provider` and `--model` always win. If you pass `--provider` without `--model`, Agav reuses the saved model only when it belongs to that provider, otherwise it falls back to the provider's default model.
+2. **Resumed session** — with `--resume`, the session's own provider and model are used unless overridden by a flag.
+3. **Last used** — with no flags and no resume, Agav reuses the provider and model from your most recent session, so a new session opens with the same model you last worked in.
+4. **Config defaults** — if there is no prior session, the `provider`/`model` in `~/.agav/config.json` (or the built-in default) apply.
+
 ## Environment variables
 
 | Variable | Purpose |

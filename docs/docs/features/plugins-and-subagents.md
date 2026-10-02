@@ -42,6 +42,8 @@ The `subagent` tool delegates a clear, self-contained task with a short UI title
 - report streaming progress and token usage
 - allow up to five concurrent tasks
 
+While subagents run, the terminal shows a live overview. Use `↑`/`↓` to select a subagent and `Enter` to inspect it. Press the cancel key (`Esc` by default) to cancel just the focused subagent while inspecting it, or to cancel all running subagents from the overview. See [Keybindings](/reference/keybindings) for the subagent navigation shortcuts.
+
 Tasks whose description indicates file changes attempt to use an isolated Git worktree. Agav applies the resulting changes back to the original checkout and reports a warning if that merge step fails. Read-only tasks use the current working directory directly.
 
 Give a subagent all necessary paths, constraints, and expected output because it is instructed to work without follow-up questions.

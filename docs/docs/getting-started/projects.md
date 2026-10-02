@@ -62,6 +62,8 @@ MCP servers can be declared in project config so every session in the repository
 
 Do not commit API keys. Use provider environment variables or secure user-level configuration for credentials. See the [configuration reference](/reference/configuration) for every field and the full precedence rules.
 
+API keys, endpoint overrides, and `permissionMode` cannot be set from project config at all — Agav strips them before use — so a committed `./.agav/config.json` can never carry a working secret or redirect your requests. This protection comes from that deny-list, **not** from gitignore: ignoring `.agav/` only guards against committing your own config by accident, and a cloned repo can ship a `./.agav/config.json` regardless (even `git add -f` overrides `.gitignore`). See [project config restrictions](/reference/configuration) for details.
+
 ## Know what is shared
 
 | Item | Scope |
