@@ -112,10 +112,39 @@ export class AnthropicProvider implements LLMProvider {
   private toMessages(
     messages: Message[],
   ): Anthropic.Messages.MessageParam[] {
-    return messages.map((msg) => ({
-      role: msg.role,
-      content: msg.content.map((block) => this.toContentBlock(block)),
-    }));
+    // Cache the conversation prefix. The system prompt and tool list already
+    // carry breakpoints; this adds one on the last block of the second-to-last
+    // message so history reads from cache (~0.1x input price) instead of being
+    // billed at full price on every iteration. Cached tokens are still billed
+    // on each read — this discounts the re-sent history, it does not make it
+    // free.
+    //
+    // The breakpoint is placed on the second-to-last (not the last) message to
+    // maximize how much of the prefix stays byte-identical from one request to
+    // the next. The last message is the freshest content, so anchoring on the
+    // message before it keeps the marked prefix as close as possible to a stable
+    // historical boundary. It is not always previously-sent content: the agent
+    // loop appends a newly generated assistant message and its tool results, so
+    // a just-created assistant turn can become second-to-last without having
+    // appeared in any earlier request's input. In that case the breakpoint acts
+    // as a cache *write* on this turn and only becomes a *hit* on the following
+    // one — a one-turn lag, not a guaranteed same-turn hit. A single-message
+    // request gets no conversation breakpoint (cacheIndex = -1); the
+    // system+tools breakpoints still cache in that case.
+    //
+    // Anthropic allows up to 4 breakpoints; system + tools + this = 3.
+    const cacheIndex = messages.length - 2;
+    return messages.map((msg, msgIndex) => {
+      const content = msg.content.map((block) => this.toContentBlock(block));
+      if (msgIndex === cacheIndex && content.length > 0) {
+        const last = content[content.length - 1]!;
+        content[content.length - 1] = {
+          ...last,
+          cache_control: { type: "ephemeral" as const },
+        } as Anthropic.Messages.ContentBlockParam;
+      }
+      return { role: msg.role, content };
+    });
   }
 
   private toContentBlock(

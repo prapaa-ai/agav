@@ -41,7 +41,7 @@ LibreOffice improves Office handling when it is installed locally, and you can p
 
 ## Paste content
 
-Large text pastes become numbered attachments so the prompt stays readable. Text of roughly 50 or more characters is converted into a pasted attachment; shorter text stays inline. Paste an image from the clipboard to attach it when the terminal and operating system integration supports clipboard image extraction. Clipboard images are currently saved under `.agav/images/` in the working directory and rely on macOS clipboard helpers such as `pngpaste` or `osascript`. Backspace immediately after an attachment label removes it before submission.
+Large text pastes become numbered attachments so the prompt stays readable. Text of roughly 50 or more characters is converted into a pasted attachment; shorter text stays inline. Paste an image from the clipboard to attach it when the terminal and operating system integration supports clipboard image extraction. Clipboard images are saved under `.agav/images/` in the working directory and rely on platform clipboard helpers: on macOS, `pngpaste` or `osascript`; on Linux, `wl-paste` (Wayland) or `xclip` (X11). Backspace immediately after an attachment label removes it before submission.
 
 ## Ask a side question
 
