@@ -459,19 +459,31 @@ export async function* runAgentLoop(
         }),
       );
 
+      // Promise.all gives no ordering guarantee between edits and checks.
+      // Any successful edit invalidates old evidence and all checks in this batch.
+      const batchEdited = execResults.some(({ name, result }) =>
+        (name === "edit_file" || name === "write_file") && !result.isError,
+      );
+      if (batchEdited) {
+        madeEdits = true;
+        ranShellAfterEdit = false;
+        lastShellFailed = false;
+      } else if (madeEdits) {
+        const checks = execResults.filter(({ name, result }) =>
+          name === "run_command" || (name === "run_tests"
+            && (result.isError || result.verification?.status === "failed" || result.verification?.status === "passed")),
+        );
+        if (checks.length > 0) {
+          ranShellAfterEdit = true;
+          // Failure wins regardless of input-array or completion order.
+          lastShellFailed = checks.some(({ result }) => result.isError || result.verification?.status === "failed");
+        }
+      }
+
       for (const { id, name, input, result } of execResults) {
         if (name === "run_tests") {
           hasTestRun = true;
           if (result.isError) hasTestFailure = true;
-        }
-        if (name === "edit_file" || name === "write_file") {
-          madeEdits = true;
-          ranShellAfterEdit = false;
-          lastShellFailed = false;
-        }
-        if (name === "run_command" && madeEdits) {
-          ranShellAfterEdit = true;
-          lastShellFailed = result.isError;
         }
         const hookDef = getHookForTool(name, input, params.hooks);
         if (hookDef && !result.isError) {
