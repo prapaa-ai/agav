@@ -176,11 +176,128 @@ const SEATBELT_PROFILE = `
 (deny process-exec (subpath "/System/Library/CoreServices"))
 `;
 
+type OutputCallback = (chunk: Buffer, stream: "stdout" | "stderr") => void;
+
+// Streaming callers own output capture; buffered non-Docker callers retain
+// process-group ownership and cancellation through execCommand.
+function executeProcess(
+  file: string,
+  args: string[],
+  options: { timeout: number; maxBuffer: number; cwd?: string; env?: Record<string, string> },
+  onOutput: OutputCallback | undefined,
+  callback: (error: Error | null, stdout: string, stderr: string) => void,
+  signal?: AbortSignal,
+): void {
+  if (!onOutput) {
+    execCommand(file, args, options, callback, signal);
+    return;
+  }
+
+  if (signal?.aborted) {
+    callback(new Error("Command cancelled."), "", "");
+    return;
+  }
+
+  const windows = platform() === "win32";
+  const child = spawn(file, args, {
+    cwd: options.cwd,
+    env: options.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    // A separate Unix process group lets timeout terminate inherited descendants,
+    // even after the shell has exited while its children still hold the pipes.
+    detached: !windows,
+  });
+  let error: Error | null = null;
+  let timedOut = false;
+  let completed = false;
+  let stopping = false;
+  let exitStatus: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+  let escalation: ReturnType<typeof setTimeout> | undefined;
+  let drainage: ReturnType<typeof setTimeout> | undefined;
+  const killTree = (force: boolean) => {
+    if (windows && child.pid !== undefined) {
+      // cmd.exe kill alone leaves descendants alive. taskkill /T handles the tree.
+      execFile("taskkill", ["/PID", String(child.pid), "/T", ...(force ? ["/F"] : [])],
+        { timeout: 150 }, () => {});
+    } else if (!windows && child.pid !== undefined) {
+      try { process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM"); } catch {}
+    } else {
+      try { child.kill(force ? "SIGKILL" : "SIGTERM"); } catch {}
+    }
+  };
+  const finish = (code: number | null, exitSignal: NodeJS.Signals | null) => {
+    if (completed) return;
+    completed = true;
+    signal?.removeEventListener("abort", onAbort);
+    activeCommands.delete(cleanup);
+    if (exitStatus) { code = exitStatus.code; exitSignal = exitStatus.signal; }
+    if (timer) clearTimeout(timer);
+    if (escalation) clearTimeout(escalation);
+    if (drainage) clearTimeout(drainage);
+    if (stopping) killTree(true);
+    if (timedOut) error = new Error(`Command timed out after ${options.timeout}ms`);
+    else if (!error && (code !== 0 || exitSignal)) {
+      error = new Error(exitSignal ? `Command terminated by signal ${exitSignal}` : `Command exited with code ${code}`);
+    }
+    // Streaming callers own output capture; do not retain a second copy here.
+    callback(error, "", "");
+  };
+  const stop = () => {
+    if (stopping || completed) return;
+    stopping = true;
+    killTree(false);
+    escalation = setTimeout(() => killTree(true), 150);
+    // Escaped descendants may retain pipes even after the group is killed. Give
+    // pending output a bounded chance to drain, then close our pipe handles.
+    drainage = setTimeout(() => {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      finish(null, null);
+    }, 300);
+  };
+  const cleanup = () => killTree(true);
+  const onAbort = () => {
+    error = new Error("Command cancelled.");
+    stop();
+  };
+  const timer = options.timeout > 0 ? setTimeout(() => {
+    timedOut = true;
+    stop();
+  }, options.timeout) : undefined;
+  const emit = (chunk: Buffer, stream: "stdout" | "stderr") => {
+    if (completed) return;
+    try {
+      onOutput(chunk, stream);
+    } catch (cause) {
+      error = cause instanceof Error ? cause : new Error(String(cause));
+      stop();
+    }
+  };
+  child.stdout.on("data", (chunk: Buffer) => emit(chunk, "stdout"));
+  child.stderr.on("data", (chunk: Buffer) => emit(chunk, "stderr"));
+  child.on("error", (cause) => { error = cause; stop(); });
+  child.once("exit", (code, exitSignal) => {
+    // Clean up inherited pipes without turning a successful shell exit into an error.
+    exitStatus = { code, signal: exitSignal };
+    if (timer) clearTimeout(timer);
+    stop();
+  });
+  child.on("close", finish);
+  activeCommands.add(cleanup);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  if (!exitCleanupInstalled) {
+    exitCleanupInstalled = true;
+    process.once("exit", () => { for (const stop of activeCommands) stop(); });
+  }
+}
+
 function runSeatbelt(
   command: string,
   cwd: string,
   timeout: number,
   maxBuffer: number,
+  onOutput?: OutputCallback,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const home = process.env.HOME ?? "/tmp";
@@ -188,7 +305,7 @@ function runSeatbelt(
   writeFileSync(profilePath, SEATBELT_PROFILE);
 
   return new Promise((resolve) => {
-    execCommand(
+    executeProcess(
       "sandbox-exec",
       [
         "-f", profilePath,
@@ -205,6 +322,7 @@ function runSeatbelt(
         "/bin/sh", "-c", command,
       ],
       { timeout, maxBuffer, cwd, env: filterEnv() },
+      onOutput,
       (error, stdout, stderr) => {
         try { unlinkSync(profilePath); } catch {}
         resolve({ stdout, stderr, error });
@@ -219,11 +337,12 @@ function runBubblewrap(
   cwd: string,
   timeout: number,
   maxBuffer: number,
+  onOutput?: OutputCallback,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const home = process.env.HOME ?? "/tmp";
   return new Promise((resolve) => {
-    execCommand(
+    executeProcess(
       "bwrap",
       [
         "--ro-bind", "/", "/",
@@ -251,6 +370,7 @@ function runBubblewrap(
         "/bin/sh", "-c", command,
       ],
       { timeout, maxBuffer, env: filterEnv() },
+      onOutput,
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });
       },
@@ -289,6 +409,8 @@ function runDocker(
   cwd: string,
   timeout: number,
   maxBuffer: number,
+  onOutput?: OutputCallback,
+  signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   let uid = 1000;
   let gid = 1000;
@@ -328,14 +450,15 @@ function runDocker(
         "/bin/sh", "-c", command
       );
 
-      execFile(
-        "docker",
-        dockerArgs,
-        { timeout: timeout + 10_000, maxBuffer },
-        (error, stdout, stderr) => {
-          resolve({ stdout, stderr, error });
-        }
-      );
+      const callback = (error: Error | null, stdout: string, stderr: string) => {
+        resolve({ stdout, stderr, error });
+      };
+      const options = { timeout: timeout + 10_000, maxBuffer };
+      if (onOutput) {
+        executeProcess("docker", dockerArgs, options, onOutput, callback, signal);
+      } else {
+        execFile("docker", dockerArgs, options, callback);
+      }
     });
   });
 }
@@ -345,16 +468,18 @@ function runUnsandboxed(
   cwd: string,
   timeout: number,
   maxBuffer: number,
+  onOutput?: OutputCallback,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const isWindows = platform() === "win32";
   const shell = isWindows ? "cmd.exe" : "/bin/sh";
   const shellArgs = isWindows ? ["/c", command] : ["-c", command];
   return new Promise((resolve) => {
-    execCommand(
+    executeProcess(
       shell,
       shellArgs,
       { timeout, maxBuffer, cwd, env: filterEnv() },
+      onOutput,
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });
       },
@@ -398,6 +523,8 @@ export interface SandboxOptions {
   maxBuffer: number;
   forceBackend?: SandboxBackend;
   signal?: AbortSignal;
+  /** Streams raw output in observed arrival order; stdout/stderr results are empty. */
+  onOutput?: OutputCallback;
 }
 
 export async function runInSandbox(opts: SandboxOptions): Promise<{
@@ -415,26 +542,26 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
 
   switch (backend) {
     case "seatbelt":
-      result = await runSeatbelt(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.signal);
+      result = await runSeatbelt(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
       if (result.error && /ENOENT|sandbox-exec.*not found/i.test(result.error.message ?? "")) {
         detectedBackend = "none";
-        result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.signal);
+        result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
         return { ...result, backend: "none" };
       }
       break;
     case "bubblewrap":
-      result = await runBubblewrap(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.signal);
+      result = await runBubblewrap(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
       if (result.error && /ENOENT|bwrap.*not found/i.test(result.error.message ?? "")) {
         detectedBackend = "none";
-        result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.signal);
+        result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
         return { ...result, backend: "none" };
       }
       break;
     case "docker":
-      result = await runDocker(opts.command, opts.cwd, opts.timeout, opts.maxBuffer);
+      result = await runDocker(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
       break;
     default:
-      result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.signal);
+      result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
       break;
   }
 

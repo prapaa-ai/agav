@@ -14,6 +14,7 @@ import { runAgentLoop } from "./agent/loop.js";
 import { NO_EDITS_PROMPT, schemaRetryPrompt } from "./agent/internal-prompts.js";
 import { createToolRegistry } from "./tools/registry-factory.js";
 import { getToolLabel } from "./utils/tool-labels.js";
+import { tempOutputManager } from "./utils/temp-output.js";
 import { loadKeybindings } from "./config/keybindings.js";
 import { dim, icons } from "./utils/color.js";
 import { stopAllA2AAgents } from "./agents/a2a-client.js";
@@ -391,6 +392,7 @@ export function hasStartupFinished(): boolean {
 }
 
 export async function main() {
+  tempOutputManager.pruneStale();
   const flags = parseArgs(process.argv.slice(2));
 
   if (flags.help) {
