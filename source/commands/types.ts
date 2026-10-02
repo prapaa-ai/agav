@@ -49,6 +49,7 @@ export interface CommandContext {
   toolRegistry: ToolRegistry
   addTokenUsage: (usage: TokenUsage) => void
   setRunningSkill: (name: string | null) => void
+  createSkillProgressTracker?: (title: string, task: string) => (event: import("../agent/loop.js").AgentEvent) => void
   setPickerActive: (active: boolean) => void
   /**
    * Hand the terminal to a picker that writes to stdout directly, and get back

@@ -6,7 +6,7 @@ import type { ToolRegistry } from "../tools/registry.js";
 import { ToolRegistry as ToolRegistryClass } from "../tools/registry.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
-import type { ConfirmResult } from "../agent/loop.js";
+import type { AgentEvent, ConfirmResult } from "../agent/loop.js";
 import type { PermissionMode, EffortLevel } from "../config/config.js";
 import { recordSkillTrace } from "./improvement.js";
 import { formatSteersForPrompt } from "../commands/steer.js";
@@ -21,10 +21,11 @@ interface SkillExecDeps {
   effort: EffortLevel;
   maxIterations: number;
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
-  // Optional nested-skill accounting callback: /skill-name continues to use _tokenUsage on the
-  // returned command result, while activate_skill uses this to merge usage into the parent turn.
+  // Reports usage deltas as they arrive. The returned tokenUsage is the total;
+  // callers using this callback must not add that total again.
   onTokenUsage?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   signal?: AbortSignal;
+  onEvent?: (event: AgentEvent) => void;
 }
 
 function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolRegistry {
@@ -159,10 +160,11 @@ export async function executeSkill(
   let failed = false;
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
-  // Report usage and record the trace from a finally so an abort or provider
-  // error part-way through still accounts for the tokens already spent.
+  // Account for each usage event immediately, including tokens spent before
+  // an abort or provider error. Keep the aggregate only for the result/trace.
   try {
     for await (const event of loop) {
+      deps.onEvent?.(event);
       switch (event.type) {
         case "streaming_text":
           result += event.text;
@@ -175,14 +177,25 @@ export async function executeSkill(
           usage.outputTokens += event.outputTokens;
           usage.cacheReadTokens += event.cacheReadTokens ?? 0;
           usage.cacheWriteTokens += event.cacheWriteTokens ?? 0;
+          deps.onTokenUsage?.({
+            inputTokens: event.inputTokens,
+            outputTokens: event.outputTokens,
+            cacheReadTokens: event.cacheReadTokens ?? 0,
+            cacheWriteTokens: event.cacheWriteTokens ?? 0,
+          });
           break;
+        case "error":
+          failed = true;
+          throw event.error;
       }
     }
   } catch (err) {
+    // Emitted errors were already forwarded; thrown errors still need to
+    // terminate the progress entry.
+    if (!failed) deps.onEvent?.({ type: "error", error: err instanceof Error ? err : new Error(String(err)) });
     failed = true;
     throw err;
   } finally {
-    deps.onTokenUsage?.(usage);
     recordSkillTrace(skill.name, args, usage.inputTokens + usage.outputTokens, !failed).catch(() => {});
   }
 
