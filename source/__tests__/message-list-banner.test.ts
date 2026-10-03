@@ -43,17 +43,21 @@ describe("compact startup banner", () => {
     expect(frame).toContain(`v${VERSION}`);
     expect(frame).toContain("Stay in the Shell.");
     expect(frame).not.toContain("██╔══██╗");
-    expect(rows).toHaveLength(3);
+    expect(rows).toHaveLength(5);
     const iconRows = rows.filter((row) => /[\u2800-\u28ff]/.test(row));
-    expect(iconRows).toHaveLength(3);
-    expect(iconRows.map((row) => row.slice(3, 11).trimEnd())).toEqual([
-      "⣰⠚⢍⡍⠲⡒⠒⢢", "⡇⣉⢎⣘⡰⡃⠄⡸", "⠙⠦⣘⣀⣃⡩⠞⠁",
+    expect(iconRows).toHaveLength(5);
+    expect(iconRows.map((row) => row.slice(3, 15).trimEnd())).toEqual([
+      "⠀⡠⢞⡋⠉⠙⠢⡤⠴⠦⢤⡀",
+      "⡾⠤⡄⢡⠟⣆⠀⢹⠀⠀⠀⢸",
+      "⡇⠀⠀⣞⠀⠘⢂⡞⠰⣄⠀⡞",
+      "⠹⣔⠉⠈⡍⠋⣍⠘⠆⢀⡼⠁",
+      "⠀⠈⠳⢬⣅⣀⣈⣤⠔⠋⠀⠀",
     ]);
     for (const row of iconRows) {
-      const icon = row.slice(3, 11);
+      const icon = row.slice(3, 15);
       // The renderer trims trailing spaces on the final row.
-      expect(stringWidth(icon)).toBeLessThanOrEqual(8);
-      expect(row.slice(11)).not.toMatch(/[\u2800-\u28ff]/);
+      expect(stringWidth(icon)).toBeLessThanOrEqual(12);
+      expect(row.slice(15)).not.toMatch(/[\u2800-\u28ff]/);
     }
     expect(rows.some((row) => /[\u2800-\u28ff].*Agav/.test(row))).toBe(true);
   });
@@ -62,7 +66,7 @@ describe("compact startup banner", () => {
     const rows = await renderMessages(32);
     expect(rows.join("\n")).toContain(`Agav v${VERSION}`);
     expect(rows.join("\n")).toContain("Stay in the Shell.");
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(7);
     for (const row of rows) expect(stringWidth(row)).toBeLessThanOrEqual(32);
   });
 
