@@ -1,9 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 
 vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
   execFileSync: vi.fn(),
+  spawn: vi.fn(),
 }));
+
+function successfulChild(): any {
+  const child = new EventEmitter() as any;
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = vi.fn();
+  queueMicrotask(() => child.emit("close", 0, null));
+  return child;
+}
 vi.mock("node:os", () => ({
   platform: vi.fn(),
   tmpdir: vi.fn(() => "/tmp"),
@@ -18,7 +29,7 @@ vi.mock("node:path", () => ({
   join: vi.fn((...parts: string[]) => parts.join("/")),
 }));
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { isDestructiveCommand, requireSandbox } from "../utils/sandbox.js";
 
 const execFileSyncMock = vi.mocked(execFileSync);
@@ -27,6 +38,7 @@ describe("utils/sandbox", () => {
   beforeEach(() => {
     delete process.env.AGAV_NO_SANDBOX;
     vi.clearAllMocks();
+    vi.mocked(spawn).mockImplementation(successfulChild);
   });
 
   it("detects seatbelt when sandbox-exec is available", async () => {
@@ -101,6 +113,19 @@ describe("utils/sandbox", () => {
     });
 
     expect(() => sandbox.requireSandbox()).not.toThrow();
+  });
+
+  it("forwards cancellation to the buffered Docker CLI", async () => {
+    vi.resetModules();
+    const cp = await import("node:child_process");
+    const sandbox = await import("../utils/sandbox.js");
+    vi.mocked(cp.execFile).mockImplementation((...args: any[]) => {
+      args.at(-1)(null, "", "");
+      return {} as any;
+    });
+    const controller = new AbortController();
+    await sandbox.runInSandbox({ command: "echo test", cwd: "/tmp", timeout: 1000, maxBuffer: 1024, forceBackend: "docker", signal: controller.signal });
+    expect(cp.execFile).toHaveBeenCalledWith("docker", expect.arrayContaining(["run"]), expect.objectContaining({ signal: controller.signal }), expect.any(Function));
   });
 
   it("runInSandbox maps current user uid/gid for docker containers", async () => {
@@ -261,7 +286,7 @@ describe("utils/sandbox", () => {
         forceBackend: "none",
       });
 
-      const call = vi.mocked(cp.execFile).mock.calls.find((args) => args[0] === "/bin/sh");
+      const call = vi.mocked(cp.spawn).mock.calls.find((args) => args[0] === "/bin/sh");
       const env = call?.[2]?.env as Record<string, string>;
       expect(env).toMatchObject({
         PATH: "/usr/local/bin:/usr/bin",
@@ -317,7 +342,7 @@ describe("utils/sandbox", () => {
       expect(profile.indexOf('(deny file-write* (subpath (param "HOME")))'))
         .toBeLessThan(profile.indexOf('(allow file-write* (subpath (param "HOME_CACHE")))'));
 
-      const runArgs = vi.mocked(cp.execFile).mock.calls.find(
+      const runArgs = vi.mocked(cp.spawn).mock.calls.find(
         (call) => call[0] === "sandbox-exec",
       )?.[1] as string[];
       expect(runArgs).toContain("HOME_CACHE=/Users/tester/.cache");
@@ -352,7 +377,7 @@ describe("utils/sandbox", () => {
         forceBackend: "bubblewrap",
       });
 
-      const args = vi.mocked(cp.execFile).mock.calls.find(
+      const args = vi.mocked(cp.spawn).mock.calls.find(
         (call) => call[0] === "bwrap",
       )?.[1] as string[];
       const joined = args.join(" ");

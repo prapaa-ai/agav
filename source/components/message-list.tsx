@@ -259,8 +259,15 @@ const MessageBubble = React.memo(function MessageBubble({ message, prevRole, too
   if (message.role === "banner") {
     return (
       <Box flexDirection={columns >= 48 ? "row" : "column"} marginTop={1} marginBottom={1} paddingLeft={columns >= 48 ? 3 : 0}>
-        <Box flexDirection="column" flexShrink={0} width={8}>
-          <Text color="#0891B2">{["⣰⠚⢍⡍⠲⡒⠒⢢", "⡇⣉⢎⣘⡰⡃⠄⡸", "⠙⠦⣘⣀⣃⡩⠞⠁"].join("\n")}</Text>
+        <Box flexDirection="column" flexShrink={0} width={12}>
+          {/* Cropped test.svg paths fitted to 24×20 dots; ~30% coverage keeps strokes distinct. */}
+          <Text color="#0891B2">{[
+            "⠀⡠⢞⡋⠉⠙⠢⡤⠴⠦⢤⡀",
+            "⡾⠤⡄⢡⠟⣆⠀⢹⠀⠀⠀⢸",
+            "⡇⠀⠀⣞⠀⠘⢂⡞⠰⣄⠀⡞",
+            "⠹⣔⠉⠈⡍⠋⣍⠘⠆⢀⡼⠁",
+            "⠀⠈⠳⢬⣅⣀⣈⣤⠔⠋⠀⠀",
+          ].join("\n")}</Text>
         </Box>
         <Box flexDirection="column" justifyContent="center" marginLeft={columns >= 48 ? 2 : 0}>
           <Text><Text bold>Agav</Text><Text dimColor>{` v${VERSION}`}</Text></Text>

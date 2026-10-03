@@ -455,7 +455,7 @@ export async function* runAgentLoop(
 
       const execResults = await Promise.all(
         entries.map(async (entry) => {
-          const result = await toolRegistry.execute(entry.name, entry.input);
+          const result = await toolRegistry.execute(entry.name, entry.input, { signal });
           return { ...entry, result };
         }),
       );

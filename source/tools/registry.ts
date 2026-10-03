@@ -1,5 +1,5 @@
 import type { ToolSchema } from "../providers/types.js";
-import type { ToolDefinition, ToolResult } from "./types.js";
+import type { ToolContext, ToolDefinition, ToolResult } from "./types.js";
 import { boundToolResult } from "../utils/tool-output.js";
 
 export class ToolRegistry {
@@ -20,6 +20,7 @@ export class ToolRegistry {
   async execute(
     name: string,
     input: Record<string, unknown>,
+    context?: ToolContext,
   ): Promise<ToolResult> {
     const tool = this.tools.get(name);
     if (!tool) {
@@ -27,7 +28,9 @@ export class ToolRegistry {
     }
     let result: ToolResult;
     try {
-      result = await tool.execute(input);
+      result = context?.signal?.aborted
+        ? { output: "Tool cancelled.", isError: true }
+        : await (context?.signal || context?.env ? tool.execute(input, context) : tool.execute(input));
     } catch (err) {
       result = {
         output: err instanceof Error ? err.message : String(err),

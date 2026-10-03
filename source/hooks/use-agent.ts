@@ -1061,6 +1061,8 @@ export function useAgent(
               }
 
               case "error": {
+                // Cancellation (including retry backoff) is not a hard UI error.
+                if (abortController.signal.aborted) throw event.error;
                 const errorMsg = event.error.message || "Unknown error";
                 setMessages((prev) => [
                   ...prev,

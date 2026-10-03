@@ -96,6 +96,27 @@ describe("RetryProvider stream and error retries", () => {
     expect(events.some((e) => e.type === "text_delta" && e.text === "recovered")).toBe(true);
   });
 
+  it("cancels retry backoff without starting another request", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const inner = createMockProvider({
+      stream: vi.fn(async function* (): AsyncGenerator<StreamEvent> {
+        throw Object.assign(new Error("Rate limited"), { status: 429 });
+      }),
+    });
+    const stream = new RetryProvider(inner).stream({ ...dummyParams, signal: controller.signal })[Symbol.asyncIterator]();
+    try {
+      expect((await stream.next()).value?.type).toBe("error");
+      const pending = stream.next();
+      controller.abort();
+      await expect(pending).rejects.toThrow();
+      expect(inner.stream).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("throws non-retryable error immediately", async () => {
     let attempts = 0;
     const inner = createMockProvider({
