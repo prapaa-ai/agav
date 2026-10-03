@@ -66,6 +66,22 @@ Skills can be invoked in two ways depending on their `invocation` setting:
 /explain src/config/config.ts
 ```
 
+### Watch a running skill
+
+Skills activated through `activate_skill` appear in the live subagent overview as **Skill: <name>**, including when you invoke a `both` skill such as `/explain`. While the main turn is running, use **↑ / ↓** to select the skill, **Enter** to inspect it, and **Tab** to return to the overview.
+
+Manual-only (`invocation: user`) skills such as `/security-scan` display their detail panel directly while running; you do not need to press Enter. Before the first activity event, this path shows a “Running skill” spinner.
+
+The detail panel shows the task, reasoning summary when the provider emits one, streaming text, and **Recent actions (up to 10)**. Recent actions retain tool inputs, statuses, and available edit diffs across model messages — they do not disappear just because the model starts its next response. This is a recent-activity view, not a complete tool log.
+
+The session footer includes skill token usage as provider usage events arrive: **↑** input, **↓** output, **⇢** cache reads, and **⇠** cache writes when present. Completion does not add the skill total a second time. If a run fails or is interrupted, usage already reported is retained and the run is recorded as unsuccessful; unreported provider usage cannot be counted.
+
+### Permissions still apply
+
+A live progress panel does not approve actions. Tool-activated skills inherit the session's permission mode and route sensitive-action approvals to the main terminal. Review the tool input and available diff before approving; `--deny-writes` continues to block mutations.
+
+Manual-only slash-command skills currently run without an interactive confirmation handler. In `ask` mode, operations requiring confirmation are refused and fenced shell blocks are skipped rather than approved silently. Use a read-only task in this mode; do not switch to `--auto-accept` merely to bypass a refusal. See [Security](/reference/security) for permission modes and [Shell blocks](#shell-blocks) for their specific behavior.
+
 ### Automatic dispatch
 
 When a user message starts with `[skill:<name>]`, Agav immediately activates that skill without planning. This is used internally by the LLM for automatic skill selection.
@@ -243,7 +259,7 @@ The `allowed-tools` and `disallowed-tools` fields accept both Agav tool names an
 Skill bodies can contain fenced shell blocks (`` ```sh ``) that execute at runtime. Execution respects the active permission mode:
 
 - **`deny-writes`** — shell blocks are always skipped
-- **`ask`** — each block requires explicit user confirmation
+- **`ask`** — each block requires explicit user confirmation; if no confirmation handler is available (as with manual-only slash-command skills), it is skipped
 - **`auto-accept`** — blocks execute without prompting
 
 Shell blocks have a 10-second timeout. On Windows, they run via `cmd.exe /c`; on other platforms, `/bin/sh -c`.

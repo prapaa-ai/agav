@@ -26,6 +26,8 @@ agav --provider openai --model gpt-5.4-mini --deny-writes
 
 `--deny-writes` lets Agav inspect the repository while blocking edits. Replace the provider and model if you configured a different one.
 
+The interactive session opens with a compact Unicode braille shell logo, **Agav v<version>**, and **Stay in the Shell.** The name and tagline sit beside the logo on wider terminals and stack below it on narrow ones. The footer shows your provider, model, effort, and session token usage; the logo is a static banner, not a new thinking animation.
+
 ## 3. Ask a focused first question
 
 Paste this prompt:
@@ -56,6 +58,10 @@ Do not change anything.
 ```
 
 Focused follow-ups are easier to verify than repeatedly asking for a complete repository summary.
+
+If Agav activates a skill or delegates work to subagents, their live progress appears below the transcript. While the main turn is running, use **↑ / ↓** to select a worker, **Enter** to inspect its task and recent tool actions, and **Tab** to return to the overview. Manual-only skills show their detail panel directly. See [Skills](/features/skills#watch-a-running-skill) and [Coordinate Parallel Subagents](/guides/parallel-agents) for the differences.
+
+Markdown links in terminal replies display as `label (URL)`, with a bare URL shown only once. Long URLs wrap with the terminal width, and detected URL fragments remain clickable across wrapped lines. Click the visible URL to open it in a browser where one is available. On a remote or headless terminal, copy the URL into your local browser if opening it is unavailable; see [Troubleshooting](/reference/troubleshooting).
 
 ## 5. Make one controlled change
 
