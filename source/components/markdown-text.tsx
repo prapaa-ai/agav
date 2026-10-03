@@ -356,6 +356,19 @@ function getMarked(): Marked {
     code: chalk.yellow,
     listitem: (s: string) => s,
   }) as any);
+  // marked-terminal emits OSC8 on capable terminals (e.g. Cursor), but our
+  // sanitizer and SGR-only wrapping/slicing cannot preserve those sequences.
+  // Emit the readable fallback at the source instead; visible URLs also stay
+  // available to the transcript's own click detection, as with image paths.
+  instance.use({
+    renderer: {
+      link({ href, tokens }) {
+        const text = this.parser.parseInline(tokens);
+        const url = chalk.blue.underline(href);
+        return chalk.blue(text && stripAnsi(text) !== href ? `${text} (${url})` : url);
+      },
+    },
+  });
   cachedWidth = width;
   cachedMarked = instance;
   return instance;
