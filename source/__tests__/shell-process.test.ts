@@ -170,7 +170,7 @@ describe.skipIf(process.platform === "win32")("shell process ownership", () => {
     try {
       const started = Date.now();
       const pending = (async () => {
-        for await (const _ of runAgentLoop({ provider, conversation, toolRegistry: registry, model: "mock", permissionMode: "auto-accept", maxIterations: 1, signal: controller.signal })) {}
+        for await (const _ of runAgentLoop({ provider, conversation, toolRegistry: registry, model: "mock", permissionMode: "auto-accept", iterationsBudget:{remaining : 1,total :1}, signal: controller.signal })) {}
       })();
       await waitForFile(marker);
       controller.abort();

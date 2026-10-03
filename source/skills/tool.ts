@@ -14,7 +14,7 @@ interface SkillToolDeps {
     systemPrompt: string;
     permissionMode: PermissionMode;
     effort: EffortLevel;
-    maxIterations: number;
+    iterationsBudget: { remaining: number, total: number };
   };
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
   onTokenUsage?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
@@ -67,7 +67,7 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
           systemPrompt: config.systemPrompt,
           permissionMode: config.permissionMode,
           effort: config.effort,
-          maxIterations: config.maxIterations,
+          iterationsBudget: config.iterationsBudget,
           confirmTool: deps.confirmTool,
           onTokenUsage: deps.onTokenUsage,
           signal: deps.getSignal(),

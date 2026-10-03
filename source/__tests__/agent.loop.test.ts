@@ -91,7 +91,7 @@ describe("runAgentLoop", () => {
     const toolRegistry = new ToolRegistry();
 
     const events = await collectEvents(
-      runAgentLoop({ provider, conversation, toolRegistry, model: "gpt-4" }),
+      runAgentLoop({ provider, conversation, toolRegistry, model: "gpt-4", iterationsBudget:{remaining:5,total:5} }),
     );
 
     expect(events).toEqual([
@@ -143,7 +143,7 @@ describe("runAgentLoop", () => {
     const tools = new ToolRegistry();
     tools.register(createTool("lookup", async () => ({ output: "result", isError: false })));
 
-    await collectEvents(runAgentLoop({ provider, conversation, toolRegistry: tools, model: "m" }));
+    await collectEvents(runAgentLoop({ provider, conversation, toolRegistry: tools, model: "m", iterationsBudget:{remaining:5,total:5} }));
 
     const toolUse = conversation.getMessages()[1]?.content[0];
     expect(toolUse).toMatchObject({
@@ -188,7 +188,7 @@ describe("runAgentLoop", () => {
     toolRegistry.register(createTool("read_file", execute));
 
     const events = await collectEvents(
-      runAgentLoop({ provider, conversation, toolRegistry, model: "gpt-4" }),
+      runAgentLoop({ provider, conversation, toolRegistry, model: "gpt-4", iterationsBudget:{remaining:5,total:5} }),
     );
 
     expect(events).toEqual([
@@ -316,6 +316,7 @@ describe("runAgentLoop", () => {
         toolRegistry,
         model: "gpt-4",
         confirmTool,
+        iterationsBudget:{remaining:5,total:5},
       }),
     );
 
@@ -407,6 +408,7 @@ describe("runAgentLoop", () => {
         toolRegistry,
         model: "gpt-4",
         permissionMode: "deny-writes",
+        iterationsBudget:{remaining:5,total:5},
       }),
     );
 
@@ -461,6 +463,7 @@ describe("runAgentLoop", () => {
         conversation,
         toolRegistry,
         model: "gpt-4",
+        iterationsBudget:{remaining:5,total:5},
         // confirmTool intentionally omitted (headless mode)
       }),
     );
@@ -506,7 +509,7 @@ describe("runAgentLoop", () => {
 
       // confirmTool intentionally omitted throughout — this is headless mode.
       return collectEvents(
-        runAgentLoop({ provider, conversation, toolRegistry, model: "gpt-4", ...params }),
+        runAgentLoop({ provider, conversation, toolRegistry, model: "gpt-4",iterationsBudget:{remaining:5,total:5}, ...params }),
       );
     };
 
@@ -595,6 +598,7 @@ describe("runAgentLoop", () => {
         toolRegistry,
         model: "gpt-4",
         confirmTool: vi.fn().mockResolvedValue("yes"),
+        iterationsBudget:{remaining:5,total:5},
       }),
     );
 
@@ -624,6 +628,7 @@ describe("runAgentLoop", () => {
         conversation,
         toolRegistry,
         model: "gpt-4",
+        iterationsBudget:{remaining:5,total:5},
       }),
     );
     expect(providerErrorEvents).toEqual([
@@ -639,6 +644,7 @@ describe("runAgentLoop", () => {
         conversation: conversation2,
         toolRegistry,
         model: "gpt-4",
+        iterationsBudget:{remaining:5,total:5},
       }),
     );
     expect(thrownEvents).toEqual([
@@ -667,6 +673,7 @@ describe("runAgentLoop", () => {
         toolRegistry,
         model: "gpt-4",
         signal: controller.signal,
+        iterationsBudget:{remaining:5,total:5},
       }),
     );
 
@@ -757,6 +764,7 @@ describe("runAgentLoop", () => {
         conversation,
         toolRegistry,
         model: "gpt-4",
+        iterationsBudget:{remaining:5,total:5},
       }),
     );
 
@@ -827,6 +835,7 @@ describe("runAgentLoop", () => {
         toolRegistry,
         model: "gpt-4",
         confirmTool,
+        iterationsBudget:{remaining:5,total:5},
       }),
     );
 

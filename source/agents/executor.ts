@@ -80,6 +80,7 @@ export async function executeNativeAgent(
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<import("../agent/loop.js").ConfirmResult>;
     /** Explicit mode for direct executions such as a full-access agent lock. */
     permissionMode?: PermissionMode;
+    iterationsBudget?: { remaining: number, total: number }
   }
 ): Promise<string> {
   const callId = `${agent.manifest.name}-${randomUUID().slice(0, 8)}`;
@@ -88,7 +89,7 @@ export async function executeNativeAgent(
   // Priority: config.json > AGENT.md manifest > session config.
   const runtimeConfig = await loadAgentCredentials(agent.path, agent.manifest.name);
 
-  const model  = runtimeConfig["model"]  || agent.manifest.model  || deps.config.model;
+  const model = runtimeConfig["model"] || agent.manifest.model || deps.config.model;
   const effort = (runtimeConfig["effort"] || agent.manifest.effort || deps.config.effort) as import("../config/config.js").EffortLevel;
 
   // Start per-agent MCP servers (credentials passed via subprocess env, not process.env)
@@ -155,7 +156,7 @@ export async function executeNativeAgent(
       signal: deps.signal,
       confirmTool: deps.confirmTool ?? (deps.permissionMode === "auto-accept" ? async () => "yes" : undefined),
       permissionMode: deps.permissionMode ?? (deps.confirmTool ? "ask" : "deny-writes"),
-      maxIterations: 50,
+      iterationsBudget: deps.iterationsBudget ?? { remaining: deps.config.maxIterations, total: deps.config.maxIterations },
       allowedTools: nativeTools,
       hooks: deps.hooks,
     });

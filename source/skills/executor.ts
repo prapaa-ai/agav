@@ -19,7 +19,7 @@ interface SkillExecDeps {
   systemPrompt: string;
   permissionMode: PermissionMode;
   effort: EffortLevel;
-  maxIterations: number;
+  iterationsBudget: { remaining: number, total: number };
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
   // Reports usage deltas as they arrive. The returned tokenUsage is the total;
   // callers using this callback must not add that total again.
@@ -121,12 +121,15 @@ export async function executeSkill(
   args: string,
   deps: SkillExecDeps,
 ): Promise<SkillExecResult> {
+  if (!deps.iterationsBudget) {
+    throw new Error("iterationsBudget is required");
+  }
   let prompt = processDynamicContext(skill.body, args);
   prompt = await processShellBlocks(prompt, {
     permissionMode: deps.permissionMode,
     confirmTool: deps.confirmTool,
   });
-
+ 
   const registry = buildSkillRegistry(deps.parentRegistry, skill);
   const conversation = new ConversationState();
   conversation.setModel(deps.model);
@@ -153,7 +156,7 @@ export async function executeSkill(
     signal: deps.signal,
     confirmTool: deps.confirmTool,
     permissionMode: deps.permissionMode,
-    maxIterations: deps.maxIterations,
+    iterationsBudget: deps.iterationsBudget,
   });
 
   let result = "";

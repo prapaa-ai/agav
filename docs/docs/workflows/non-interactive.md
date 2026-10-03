@@ -35,6 +35,8 @@ agav --stream -P "review the current diff"
 
 Print mode accepts cwd-relative `@file` mentions, but it does not add dynamic repository context such as git state, project instructions, memories, or skills.
 
+`--max-turns <number>` caps agent iterations for the print prompt. The cap applies per prompt; when reached the agent summarizes its work and stops.
+
 ## Run mode
 
 | Command | Intent |

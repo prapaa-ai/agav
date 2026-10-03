@@ -48,7 +48,7 @@ async function scenario(batches: Call[][], permissionMode: "auto-accept" | "deny
   const conversation = new ConversationState();
   conversation.addUserMessage("Fix the bug");
   const events = [];
-  for await (const event of runAgentLoop({ provider, conversation, toolRegistry: tools, model: "mock", permissionMode, hooks })) events.push(event);
+  for await (const event of runAgentLoop({ provider, conversation, toolRegistry: tools, model: "mock", permissionMode, hooks, iterationsBudget: {remaining: 50, total: 50} })) events.push(event);
   const prompts = conversation.getMessages().filter((m) => m.internal).flatMap((m) => m.content.map((b) => b.text ?? ""));
   return { requests: stream.mock.calls.length, prompts, events, tools };
 }
