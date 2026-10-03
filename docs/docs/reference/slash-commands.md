@@ -10,6 +10,10 @@ Type `/` in an interactive session to autocomplete commands. Run `/help` to see 
 
 Most slash commands run when Agav is idle. These commands can also run while Agav is streaming, executing tools, or otherwise doing in-flight work: `/help`, `/exit`, `/loop`, `/steer`, `/context`, `/memory`, `/remember`, and `/forget`.
 
+Other commands, such as `/model` and `/clear`, are not dispatched while a turn is busy. Their text stays in the prompt; submit it again once Agav is idle, or press **Esc** to cancel the turn first. They are not queued for automatic execution. While generation is paused, input that is not an allowed mid-turn command is treated as new direction for the turn, so wait until idle to run other slash commands. Mid-turn command dispatch also requires no pending attachments.
+
+`/exit` works mid-turn: it cancels the active turn and stops the repeating `/loop` before closing the terminal UI. To cancel without leaving Agav, use **Esc** instead. **Ctrl+C** exits unless an Agav text selection is active, in which case it copies the selection.
+
 ## Chat and models
 
 | Command | Purpose |
@@ -66,7 +70,7 @@ Most slash commands run when Agav is idle. These commands can also run while Aga
 
 | Command | Purpose |
 | --- | --- |
-| `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor. `[2]` Marketplace tab browses, searches, and installs community agents. `[3]` Create tab lists user-created agents and templates, and opens a 4-step wizard to create or edit agents. |
+| `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor, including native-tool selection for editable native agents. `[2]` Marketplace tab browses, searches, and installs community agents. `[3]` Create tab lists user-created agents and templates, and opens a 5-step wizard to create or edit agents. |
 
 ## Diagnostics and exit
 

@@ -46,6 +46,7 @@ export type ConfirmToolFn = (
 import type { PermissionMode } from "../config/config.js";
 import { runHook, getHookForTool } from "./hooks.js";
 import { isDestructiveCommand } from "../utils/sandbox.js";
+import { boundToolResult } from "../utils/tool-output.js";
 
 interface LoopParams {
   provider: LLMProvider;
@@ -454,30 +455,50 @@ export async function* runAgentLoop(
 
       const execResults = await Promise.all(
         entries.map(async (entry) => {
-          const result = await toolRegistry.execute(entry.name, entry.input);
+          const result = await toolRegistry.execute(entry.name, entry.input, { signal });
           return { ...entry, result };
         }),
       );
 
-      for (const { id, name, input, result } of execResults) {
+      // Promise.all gives no ordering guarantee between edits and checks.
+      // Any successful edit invalidates old evidence and all checks in this batch.
+      const batchEdited = execResults.some(({ name, result }) =>
+        (name === "edit_file" || name === "write_file") && !result.isError,
+      );
+      if (batchEdited) {
+        madeEdits = true;
+        ranShellAfterEdit = false;
+        lastShellFailed = false;
+      } else if (madeEdits) {
+        const checks = execResults.filter(({ name, result }) =>
+          name === "run_command" || (name === "run_tests"
+            && (result.isError || result.verification?.status === "failed" || result.verification?.status === "passed")),
+        );
+        if (checks.length > 0) {
+          ranShellAfterEdit = true;
+          // Failure wins regardless of input-array or completion order.
+          lastShellFailed = checks.some(({ result }) => result.isError || result.verification?.status === "failed");
+        }
+      }
+
+      for (const { id, name, input, result: initialResult } of execResults) {
+        let result = initialResult;
         if (name === "run_tests") {
           hasTestRun = true;
           if (result.isError) hasTestFailure = true;
-        }
-        if (name === "edit_file" || name === "write_file") {
-          madeEdits = true;
-          ranShellAfterEdit = false;
-          lastShellFailed = false;
-        }
-        if (name === "run_command" && madeEdits) {
-          ranShellAfterEdit = true;
-          lastShellFailed = result.isError;
         }
         const hookDef = getHookForTool(name, input, params.hooks);
         if (hookDef && !result.isError) {
           const hookOutput = await runHook(hookDef.hook, hookDef.vars);
           if (hookOutput) {
-            result.output += `\n\n[Hook output]: ${hookOutput}`;
+            const hookText = `\n\n[Hook output]: ${hookOutput}`;
+            result = await boundToolResult({
+              ...result,
+              output: result.output + hookText,
+              contentBlocks: result.contentBlocks?.length
+                ? [...result.contentBlocks, { type: "text", text: hookText }]
+                : result.contentBlocks,
+            });
           }
         }
         yield { type: "tool_result", toolName: name, toolCallId: id, output: result.output, isError: result.isError, diffLines: result.diffLines };

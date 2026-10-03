@@ -224,9 +224,61 @@ jobs:
           ls -lh release/
       - name: Generate release notes
         id: notes
+        env:
+          CURRENT_TAG: v${{ needs.check-version.outputs.version }}
+          PRERELEASE: ${{ needs.check-version.outputs.prerelease }}
         run: |
-          PREV_TAG=$(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)
-          NOTES=$(git log "$PREV_TAG"..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          RELEASE_TAG_PATTERN='^v[0-9]+[.][0-9]+[.][0-9]+(-[A-Za-z0-9.-]+)?$'
+          STABLE_TAG_PATTERN='^v[0-9]+[.][0-9]+[.][0-9]+$'
+
+          if [ "$PRERELEASE" = "true" ]; then
+            # Pre-releases compare against the immediately previous release,
+            # whether that release was stable or another pre-release.
+            CANDIDATE_TAGS=$(git tag --list 'v*' --sort=-creatordate | grep -E "$RELEASE_TAG_PATTERN" || true)
+          else
+            # Stable releases accumulate everything since the last stable tag,
+            # ignoring any beta/rc tags in between.
+            CANDIDATE_TAGS=$(git tag --list 'v*' --sort=-version:refname | grep -E "$STABLE_TAG_PATTERN" || true)
+          fi
+
+          # Pick the newest candidate tag that is actually an ANCESTOR of HEAD.
+          # A tag on a divergent line (e.g. a stable vX.Y.Z tagged off a
+          # different branch than this beta) is not an ancestor, and diffing
+          # against it would pull in every commit HEAD has that the tag lacks —
+          # dumping unrelated, long-since-shipped PRs into the notes. Skipping
+          # non-ancestors keeps the range to just what is new on this line.
+          # Iterate the filtered tag list to find the newest ancestor. Notes on
+          # safety of the word-split `for`:
+          #   - Word-splitting only splits on IFS and (without noglob) applies
+          #     pathname expansion. It does NOT re-run command substitution, so a
+          #     tag like `v$(...)` is inert text, not a command — there is no
+          #     injection here.
+          #   - `set -f` disables globbing for the loop so a metacharacter could
+          #     never expand to filenames (git already forbids `* ? [` and
+          #     whitespace in refnames, and the grep filters above only pass
+          #     `[0-9.A-Za-z-]`; this is defence in depth).
+          #   - A `for` (not `printf | while`) keeps the loop in the current
+          #     shell, so `PREV_TAG` set inside it survives; a piped `while` runs
+          #     in a subshell and would silently lose the assignment.
+          #   - An empty list iterates zero times, leaving PREV_TAG empty for the
+          #     fallback below; `[ -n "$tag" ]` guards a stray blank line.
+          # `|| true`: grep exits 1 when it prints nothing (e.g. the only tag is
+          # CURRENT_TAG, or the list is empty). GitHub Actions runs steps with
+          # `set -o pipefail`, so guard the pipeline explicitly rather than rely
+          # on the command substitution failing silently in for-list context.
+          PREV_TAG=""
+          set -f
+          for tag in $(printf '%s\n' "$CANDIDATE_TAGS" | grep -v -Fx "$CURRENT_TAG" || true); do
+            [ -n "$tag" ] || continue
+            if git merge-base --is-ancestor "$tag" HEAD 2>/dev/null; then
+              PREV_TAG="$tag"
+              break
+            fi
+          done
+          set +f
+          BASE_REF=${PREV_TAG:-$(git rev-list --max-parents=0 HEAD)}
+          NOTES=$(git log "$BASE_REF"..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          echo "previous_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
           echo "notes<<EOF" >> "$GITHUB_OUTPUT"
           echo "$NOTES" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
@@ -237,6 +289,7 @@ jobs:
           name: v${{ needs.check-version.outputs.version }}
           prerelease: ${{ needs.check-version.outputs.prerelease == 'true' }}
           target_commitish: ${{ github.sha }}
+          previous_tag: ${{ steps.notes.outputs.previous_tag }}
           body: |
             ## Changes
 
@@ -354,5 +407,10 @@ jobs:
             echo "R2 credentials not configured — skipping R2 mirror."
             exit 0
           fi
-          npm install --no-save @aws-sdk/client-s3@3
-          node scripts/mirror-release-to-r2.mjs "$TAG" release
+          # Do not resolve the application's pnpm-managed peer graph with npm.
+          MIRROR_DIR=$(mktemp -d "${RUNNER_TEMP}/agav-r2-mirror.XXXXXX")
+          trap 'rm -rf "$MIRROR_DIR"' EXIT
+          npm install --prefix "$MIRROR_DIR" --no-save --package-lock=false --ignore-scripts @aws-sdk/client-s3@3.1146.0
+          # ESM resolves packages relative to the script, not the working dir.
+          cp scripts/mirror-release-to-r2.mjs "$MIRROR_DIR/"
+          node "$MIRROR_DIR/mirror-release-to-r2.mjs" "$TAG" "$PWD/release"

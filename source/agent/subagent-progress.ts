@@ -92,6 +92,10 @@ export function makeAgentProgressTracker(
     seed();
 
     switch (event.type) {
+      case "thinking":
+        update((e) => ({ ...e, thinkingText: e.thinkingText + event.text }));
+        break;
+
       case "streaming_text":
         update((e) => ({ ...e, streamingText: e.streamingText + event.text }));
         break;
@@ -100,23 +104,49 @@ export function makeAgentProgressTracker(
         update((e) => ({
           ...e,
           totalToolCalls: e.totalToolCalls + 1,
-          toolCalls: [...e.toolCalls, { toolName: event.toolName, input: {}, status: "running" }],
+          toolCalls: [...e.toolCalls, { toolName: event.toolName, toolCallId: event.toolCallId, input: {}, argsJson: "", status: "running" as const }].slice(-10),
+        }));
+        break;
+
+      case "tool_call_input_delta":
+        update((e) => ({
+          ...e,
+          toolCalls: e.toolCalls.map((tc) => {
+            if (tc.toolCallId !== event.toolCallId) return tc;
+            const argsJson = (tc.argsJson ?? "") + event.argsJson;
+            try {
+              return { ...tc, argsJson, input: JSON.parse(argsJson) };
+            } catch {
+              return { ...tc, argsJson };
+            }
+          }),
+        }));
+        break;
+
+      case "tool_confirmation_request":
+        update((e) => ({
+          ...e,
+          toolCalls: e.toolCalls.map((tc) => tc.toolCallId === event.toolCallId
+            ? { ...tc, input: event.input, diffLines: event.diffLines } : tc),
         }));
         break;
 
       case "tool_result":
-        update((e) => ({
-          ...e,
-          toolCalls: e.toolCalls.map((tc) =>
-            tc.toolName === event.toolName && tc.status === "running"
-              ? { ...tc, status: event.isError ? "error" : "done" }
-              : tc
-          ),
-        }));
+        update((e) => {
+          const index = event.toolCallId
+            ? e.toolCalls.findIndex((tc) => tc.toolCallId === event.toolCallId)
+            : e.toolCalls.map((tc, i) => ({ tc, i })).reverse()
+              .find(({ tc }) => tc.toolName === event.toolName && tc.status === "running")?.i ?? -1;
+          return {
+            ...e,
+            toolCalls: e.toolCalls.map((tc, i) => i === index
+              ? { ...tc, status: event.isError ? "error" : "done", result: event.output, diffLines: event.diffLines } : tc),
+          };
+        });
         break;
 
       case "assistant_message_complete":
-        updateNow((e) => ({ ...e, streamingText: "", toolCalls: [] }));
+        updateNow((e) => ({ ...e, streamingText: "" }));
         break;
 
       case "turn_complete":

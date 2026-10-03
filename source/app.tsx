@@ -13,6 +13,8 @@ import ToolConfirm from "./components/tool-confirm.js";
 import ToolDetailPanel from "./components/tool-detail-panel.js";
 import PlanDetailPanel from "./components/plan-detail-panel.js";
 import SubagentDisplay from "./components/subagent-display.js";
+import { makeAgentProgressTracker } from "./agent/subagent-progress.js";
+import type { SubagentProgress } from "./agent/subagent-types.js";
 import type { AgavConfig } from "./config/config.js";
 import type { LLMProvider } from "./providers/types.js";
 import { createProvider } from "./providers/registry.js";
@@ -138,6 +140,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, []);
   const [showCompactionSummary, setShowCompactionSummary] = useState(false);
   const [runningSkillName, setRunningSkillName] = useState<string | null>(null);
+  const [skillProgress, setSkillProgress] = useState<SubagentProgress[]>([]);
   const [pickerActive, setPickerActive] = useState(false);
   const [agentsTUIActive, setAgentsTUIActive] = useState(false);
   const agentsTUIResolveRef = useRef<(() => void) | null>(null);
@@ -187,6 +190,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     sessionName,
     turnStartTime,
     lastTurnDurationMs,
+    isGenerationPaused,
+    togglePause,
+    interveneWhilePaused,
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
   /**
@@ -550,6 +556,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
     }
     const match = keyResolverRef.current.feed(char, key);
+    if (match.action === "togglePause" && isLoading && !pendingConfirmation) {
+      togglePause();
+      return;
+    }
     if (match.action === "interrupt" && isLoading && !pendingConfirmation) {
       cancel();
       return;
@@ -622,9 +632,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     if (match.action === "scrollDown") { docControls.current?.scrollBy(-5); return; }
     if (match.action === "scrollTop") { docControls.current?.scrollToTop(); return; }
     if (match.action === "scrollBottom") { docControls.current?.scrollToBottom(); return; }
-    if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && input.length === 0
-      && !messages.some((message) => message.role === "tool")) {
+    if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && input.length === 0) {
       exit();
+      return;
     }
     // These two read the raw stroke rather than a bound action, so a keybinding
     // that happens to use the same stroke would otherwise fire both. Ignoring
@@ -713,7 +723,28 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       const isSlashCommand = trimmed.startsWith("/")
         && attachments.length === 0
         && (!isLoading || isCommandAllowedMidTurn(commandName));
-      if (!isSlashCommand && isLoading) return;
+      if (!isSlashCommand && isLoading) {
+        if (isGenerationPaused && (trimmed || attachments.length > 0)) {
+          const extraBlocks: ContentBlock[] = attachments.map((attachment) => ({ ...attachment.contentBlock }));
+          const llmText = trimmed || "See attached content";
+          const imageIds = attachments.filter((a) => a.kind === "image").map((a) => a.id);
+          if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => {});
+          setInput("");
+          setAttachments([]);
+          lastPasteRef.current = null;
+          setShowToolDetail(false);
+          setPsResponse(undefined);
+          setSystemMessages([]);
+          void interveneWhilePaused(
+            llmText,
+            extraBlocks.length > 0 ? extraBlocks : undefined,
+            undefined,
+            undefined,
+            invocationReason,
+          );
+        }
+        return;
+      }
 
       if (isSlashCommand) {
         setInput("");
@@ -765,7 +796,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           handleSubmit,
           toolRegistry,
           addTokenUsage,
-          setRunningSkill: setRunningSkillName,
+          setRunningSkill: (name) => {
+            setSkillProgress([]);
+            setRunningSkillName(name);
+          },
+          createSkillProgressTracker: (title, task) => makeAgentProgressTracker(
+            `skill-${++sysMessageId}`, title, task, setSkillProgress,
+          ),
           setPickerActive,
           suspendTerminal: suspendTerminalSync,
           showAgentsTUI: (onDone: () => void) => {
@@ -855,7 +892,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setPsResponse(undefined);
       setSystemMessages([]);
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, isLoading, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
+    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, isLoading, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
   );
 
   const displayError = error;
@@ -945,10 +982,18 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       )}
 
       {runningSkillName && (
-        <Box marginBottom={1}>
-          <Text dimColor>{"  "}</Text>
-          <Text color="cyan"><Spinner /></Text>
-          <Text dimColor> Running skill: {runningSkillName}...</Text>
+        <Box marginBottom={1} flexDirection="column">
+          {skillProgress.length > 0 ? (
+            skillProgress.map((progress) => (
+              <SubagentDisplay key={progress.id} progress={progress} mode="detail" />
+            ))
+          ) : (
+            <Box>
+              <Text dimColor>{"  "}</Text>
+              <Text color="cyan"><Spinner /></Text>
+              <Text dimColor> Running skill: {runningSkillName}...</Text>
+            </Box>
+          )}
         </Box>
       )}
 
@@ -1040,7 +1085,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               }
               return null;
             })()}
-            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} />
+            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} isPaused={isGenerationPaused} />
             {hasSubagents && (
               <Text dimColor>{"\n  "}↑↓: select · Enter: inspect · {formatKeybinding(keybindings, "cancel")}: cancel all</Text>
             )}
@@ -1122,7 +1167,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       {!pendingConfirmation && (
         <Box marginTop={1}><InputPrompt
           value={input}
-          onChange={setInput}
+          onChange={(value) => {
+            // A matching paste only expands the tile it just created. Once
+            // the prompt has changed, an identical paste elsewhere is a new
+            // attachment rather than an instruction to replace that tile.
+            lastPasteRef.current = null;
+            setInput(value);
+          }}
           onSubmit={handleSubmit}
           onPaste={handlePaste}
           onRemoveAttachment={() => {
@@ -1158,6 +1209,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       )}
 
       <StatusBar
+        isPaused={isGenerationPaused || !!pendingConfirmation}
         model={config.model}
         provider={config.provider}
         effort={config.effort}
@@ -1175,7 +1227,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         turnStartTime={turnStartTime}
         lastTurnDurationMs={lastTurnDurationMs}
         isLoading={isLoading}
-        isPaused={!!pendingConfirmation}
         agentLock={agentLockState ?? undefined}
       />
       </Box>

@@ -1,4 +1,5 @@
 import type { LLMProvider, StreamParams, StreamEvent } from "./types.js";
+import { setTimeout as delayWithSignal } from "node:timers/promises";
 
 const DEFAULT_MAX_RETRIES = 5;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
@@ -70,12 +71,13 @@ export class RetryProvider implements LLMProvider {
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
+        params.signal?.throwIfAborted();
         yield* this.inner.stream(params);
         return;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
 
-        if (attempt < this.maxRetries && isRetryable(err)) {
+        if (!params.signal?.aborted && attempt < this.maxRetries && isRetryable(err)) {
           const delay = getRetryDelay(attempt, err);
           yield {
             type: "error" as const,
@@ -83,7 +85,7 @@ export class RetryProvider implements LLMProvider {
               `Request failed (${lastError.message}). Retrying in ${Math.ceil(delay / 1000)}s... (attempt ${attempt + 1}/${this.maxRetries})`,
             ),
           };
-          await new Promise((r) => setTimeout(r, delay));
+          await delayWithSignal(delay, undefined, { signal: params.signal });
           continue;
         }
 

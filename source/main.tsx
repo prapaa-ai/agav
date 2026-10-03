@@ -14,6 +14,7 @@ import { runAgentLoop } from "./agent/loop.js";
 import { NO_EDITS_PROMPT, schemaRetryPrompt } from "./agent/internal-prompts.js";
 import { createToolRegistry } from "./tools/registry-factory.js";
 import { getToolLabel } from "./utils/tool-labels.js";
+import { tempOutputManager } from "./utils/temp-output.js";
 import { loadKeybindings } from "./config/keybindings.js";
 import { dim, icons } from "./utils/color.js";
 import { stopAllA2AAgents } from "./agents/a2a-client.js";
@@ -391,6 +392,7 @@ export function hasStartupFinished(): boolean {
 }
 
 export async function main() {
+  tempOutputManager.pruneStale();
   const flags = parseArgs(process.argv.slice(2));
 
   if (flags.help) {
@@ -624,7 +626,7 @@ export async function main() {
     }
   }
 
-  Object.assign(config, resolveStartupSelection(config, {
+  Object.assign(config, await resolveStartupSelection(config, {
     cliProvider,
     cliModel: typeof flags.model === "string" ? flags.model : undefined,
     session: resumeSelection,
@@ -686,7 +688,7 @@ export async function main() {
         const data = await res.json() as { models?: { name: string }[] };
         models = (data.models ?? []).map((model) => model.name).filter(Boolean);
       }
-    } catch {}
+    } catch { }
     if (models.length === 0) {
       process.stderr.write("\n  Agav — no Ollama models found. Specify --model or run `ollama pull <model>`.\n\n");
       process.exit(1);
@@ -762,10 +764,10 @@ export async function main() {
   if (!process.stdin.isTTY) {
     process.stderr.write(
       "\n  Agav's interactive UI needs a terminal, but stdin is not a TTY.\n\n" +
-        "    • Run `agav` directly from your shell.\n" +
-        "    • For piped or scripted use:  agav -P \"your prompt\"\n" +
-        "    • Just installed through a pipe? That pipe is still attached —\n" +
-        "      open your terminal and run `agav`.\n\n",
+      "    • Run `agav` directly from your shell.\n" +
+      "    • For piped or scripted use:  agav -P \"your prompt\"\n" +
+      "    • Just installed through a pipe? That pipe is still attached —\n" +
+      "      open your terminal and run `agav`.\n\n",
     );
     process.exit(1);
   }
@@ -780,7 +782,7 @@ export async function main() {
         const shortId = latest.id;
         process.stderr.write(`\n${dim(`To resume: agav --resume ${shortId}`)}\n\n`);
       }
-    } catch {}
+    } catch { }
   }
 
   // Mark clean exits so crash recovery only offers truly interrupted sessions.

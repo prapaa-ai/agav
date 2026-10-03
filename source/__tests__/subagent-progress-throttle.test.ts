@@ -46,6 +46,44 @@ describe("makeAgentProgressTracker throttling", () => {
     expect(entry!.streamingText).toBe("Hello" + ".".repeat(50));
   });
 
+  it("shows reasoning while the child model has not emitted text or tools yet", () => {
+    let state: SubagentProgress[] = [];
+    const onEvent = makeAgentProgressTracker("skill-1", "Skill", "inspect", (updater) => {
+      state = updater(state);
+    });
+
+    onEvent({ type: "thinking", text: "Inspecting" });
+    onEvent({ type: "thinking", text: " the code" });
+    vi.advanceTimersByTime(70);
+
+    expect(state[0]!.thinkingText).toBe("Inspecting the code");
+    expect(state[0]!.status).toBe("running");
+  });
+
+  it("retains recent tools across model messages and matches concurrent calls by ID", () => {
+    let state: SubagentProgress[] = [];
+    const onEvent = makeAgentProgressTracker("skill-1", "Skill", "inspect", (updater) => {
+      state = updater(state);
+    });
+    for (let i = 0; i < 19; i++) {
+      onEvent({ type: "tool_call_start", toolName: "read_file", toolCallId: `call-${i}` });
+      onEvent({ type: "tool_call_input_delta", toolCallId: `call-${i}`, argsJson: '{"path":' });
+      onEvent({ type: "tool_call_input_delta", toolCallId: `call-${i}`, argsJson: `"file-${i}"}` });
+      onEvent({ type: "assistant_message_complete", text: "" });
+      onEvent({ type: "tool_result", toolName: "read_file", toolCallId: `call-${i}`, output: "contents", isError: false });
+    }
+    onEvent({ type: "tool_call_start", toolName: "read_file", toolCallId: "parallel" });
+    onEvent({ type: "assistant_message_complete", text: "" });
+    expect(state[0]!.totalToolCalls).toBe(20);
+    expect(state[0]!.toolCalls).toHaveLength(10);
+    expect(state[0]!.toolCalls[0]).toMatchObject({ input: { path: "file-10" }, status: "done" });
+    expect(state[0]!.toolCalls.at(-1)).toMatchObject({ toolCallId: "parallel", status: "running" });
+    onEvent({ type: "tool_result", toolName: "read_file", toolCallId: "call-18", output: "failed", isError: true });
+    vi.advanceTimersByTime(70);
+    expect(state[0]!.toolCalls.at(-2)!.status).toBe("error");
+    expect(state[0]!.toolCalls.at(-1)!.status).toBe("running");
+  });
+
   it("flushes immediately on terminal events (turn_complete, error)", () => {
     let state: SubagentProgress[] = [];
     const setState = vi.fn((updater: (prev: SubagentProgress[]) => SubagentProgress[]) => {

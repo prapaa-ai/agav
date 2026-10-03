@@ -44,6 +44,16 @@ describe("tools/registry", () => {
     });
   });
 
+  it("does not execute a pre-cancelled tool", async () => {
+    const registry = new ToolRegistry();
+    const execute = vi.fn();
+    registry.register({ schema: { name: "cancelled", description: "test", inputSchema: { type: "object", properties: {} } }, execute });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(registry.execute("cancelled", {}, { signal: controller.signal })).resolves.toEqual({ output: "Tool cancelled.", isError: true });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("executes tools and wraps thrown errors", async () => {
     const registry = new ToolRegistry();
     const okTool: ToolDefinition = {

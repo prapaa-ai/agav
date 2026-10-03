@@ -217,21 +217,60 @@ async function cloneAgent(url: string): Promise<{ success: boolean; path?: strin
   try {
     await mkdir(tempDir, { recursive: true });
 
-    const isSubdirectory = url.includes("/tree/") || url.includes("/agents/");
+    let repoUrl = url;
+    let branch: string | undefined;
+    let subPath = "";
 
-    if (isSubdirectory) {
-      const match = url.match(/^(https?:\/\/[^\/]+\/[^\/]+\/[^\/]+)(?:\/tree\/[^\/]+)?(\/.+)$/);
-      if (!match) {
-        return { success: false, error: "Invalid git URL format" };
+    // Parse URL into repo, and optional path components
+    const cleanUrl = url.replace(/\/+$/, "");
+    const match = cleanUrl.match(/^(https?:\/\/[^\/]+\/[^\/]+\/[^\/]+)(?:\/(.*))?$/);
+    
+    if (match && match[2]) {
+      repoUrl = match[1]!;
+      const remainder = match[2];
+
+      if (remainder.startsWith("tree/")) {
+        const treePath = remainder.slice("tree/".length);
+        
+        // Resolve branch via git ls-remote to handle branches with slashes correctly
+        const { stdout } = await gitExec(["ls-remote", repoUrl], tempDir);
+        const refs = stdout
+          .split("\n")
+          .map(line => line.split("\t")[1])
+          .filter(Boolean)
+          .map(ref => ref.replace(/^refs\/(heads|tags)\//, "").replace(/\^\{\}$/, ""));
+
+        let matchedRef: string | undefined;
+        for (const ref of refs) {
+          if (treePath === ref || treePath.startsWith(ref + "/")) {
+            if (!matchedRef || ref.length > matchedRef.length) {
+              matchedRef = ref;
+            }
+          }
+        }
+
+        if (!matchedRef) {
+          throw new Error(`Ambiguous or invalid URL: could not resolve branch/tag from '${treePath}' in remote refs.`);
+        }
+
+        branch = matchedRef;
+        subPath = treePath === branch ? "" : treePath.slice(branch.length);
+      } else {
+        // No /tree/, so remainder is treated as a sub-path on the default branch
+        subPath = "/" + remainder;
       }
+    }
 
-      const [, repoUrl, subPath] = match;
-
-      await gitExec(["clone", "--depth=1", "--filter=blob:none", "--sparse", repoUrl!, "."], tempDir);
-      await gitExec(["sparse-checkout", "set", subPath!.slice(1)], tempDir);
+    if (subPath && subPath.length > 1) {
+      const cloneArgs = ["clone", "--depth=1", "--filter=blob:none", "--sparse"];
+      if (branch) cloneArgs.push("--branch", branch);
+      cloneArgs.push(repoUrl, ".");
+      await gitExec(cloneArgs, tempDir);
+      
+      await gitExec(["sparse-checkout", "set", subPath.slice(1)], tempDir);
 
       // Copy agent out of the clone, then clean up (avoids dragging .git into the install)
-      const agentSrc = join(tempDir, subPath!.slice(1));
+      const agentSrc = join(tempDir, subPath.slice(1));
       await assertPathContained(agentSrc, tempDir);
       const outDir = join(tmpdir(), `agav-agent-${randomBytes(8).toString("hex")}`);
       await mkdir(outDir, { recursive: true });
@@ -242,7 +281,10 @@ async function cloneAgent(url: string): Promise<{ success: boolean; path?: strin
       await rm(tempDir, { recursive: true, force: true }).catch(() => {});
       return { success: true, path: outDir };
     } else {
-      await gitExec(["clone", "--depth=1", url, "."], tempDir);
+      const cloneArgs = ["clone", "--depth=1"];
+      if (branch) cloneArgs.push("--branch", branch);
+      cloneArgs.push(repoUrl, ".");
+      await gitExec(cloneArgs, tempDir);
 
       const entries = await readdir(tempDir);
       if (entries.includes("AGENT.md")) {

@@ -81,8 +81,9 @@ export async function executeTargetedAgent(
     config: AgavConfig;
     hooks?: { afterEdit?: string; afterShell?: string; preCommit?: string };
     signal?: AbortSignal;
-    onProgressUpdate?: (callId: string, event: AgentEvent) => void;
+    onProgressUpdate?: (callId: string, event: AgentEvent) => void | Promise<void>;
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<any>;
+    permissionMode?: import("../config/config.js").PermissionMode;
   },
 ): Promise<AgentTargetResult> {
   const { executeNativeAgent, executeA2AAgent } = await import("./executor.js");

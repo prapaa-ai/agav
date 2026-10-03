@@ -10,18 +10,21 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 
 | Action | Default |
 | --- | --- |
-| Cancel | `Esc` |
+| Cancel current turn / focused subagent, or dismiss active UI | `Esc` |
 | Expand tool detail | `Ctrl+D` |
 | Plan detail panel | `Ctrl+G` |
 | Toggle thinking text | `Ctrl+T` |
 | Toggle compaction summary | `Ctrl+O` |
+| Pause / resume generation | `Ctrl+B`, or `Alt+P` |
+| Scroll up / down | `Ctrl+Up` / `Ctrl+Down`, or `Shift+Up` / `Shift+Down` |
+| Scroll to top / bottom | `Shift+Cmd+Up` / `Shift+Cmd+Down` |
 | Select subagent | `↑` / `↓` |
 | Inspect subagent | `Enter` |
 | Back to overview | `Tab` |
 | Insert newline | `Shift+Enter`, or `Option+Return` on macOS terminals that support it |
 | Submit | `Enter` |
 | Prompt history | `Up` / `Down` |
-| Interrupt | `Ctrl+C` |
+| Exit, or copy an active Agav selection | `Ctrl+C` |
 | Clear input | `Ctrl+U` |
 | Delete previous word | `Ctrl+W` |
 | Edit last prompt | `Ctrl+P` |
@@ -29,7 +32,15 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Command palette | `Ctrl+K Ctrl+P` |
 | Show keybindings | `Ctrl+K Ctrl+S` |
 | Clear screen | `Ctrl+L` |
-| Exit | `Ctrl+Q` |
+| Exit while idle with an empty prompt | `Ctrl+Q` |
+
+## Cancel versus exit
+
+Press **Esc** to cancel the active turn and stay in Agav. In an actual `subagent` detail view it cancels only that worker; from the overview it cancels the whole turn. Skill and named-agent progress entries share that UI but have no individual focused-cancel handler: return to the overview with Tab before cancelling their parent turn. Manual-only slash-command skills receive no turn cancellation signal. An open picker or preview handles Esc locally. At a tool confirmation, Esc means **No** for that tool call, not cancel the whole turn.
+
+Press **Ctrl+C** with no text selected in Agav to exit, whether idle or busy. If an Agav output selection is active, Ctrl+C copies it and keeps Agav open; clear the selection before pressing Ctrl+C to exit. **Cmd+C** on macOS and **Ctrl+Shift+C** where supported are copy shortcuts, not exit shortcuts. Terminal-native copy behavior takes precedence when your terminal intercepts a shortcut.
+
+The `cancel` action is configurable. Ctrl+C is also handled by the terminal UI before configurable actions, so rebinding `interrupt` does not turn Ctrl+C into a stay-in-session cancel shortcut. Use Esc for that.
 
 ## Override bindings
 
@@ -44,6 +55,20 @@ Values can be a string or an array. Chords separate strokes with spaces:
 ```
 
 Names are case-insensitive. `esc`, `return`, and `cmd` normalize to `escape`, `enter`, and `meta`.
+
+## Pause and intervene mid-turn
+
+While the agent is streaming or running tools, press **Ctrl+B** (or **Alt+P**) to pause generation, and press it again to resume. Pausing does not cancel the turn — it holds the loop so you can read what has happened so far.
+
+While paused you can also **redirect the task**: type a message and press Enter. Agav cancels the paused request, waits for its pending state to clear, and starts a new request with your direction in the same conversation. This is distinct from **Esc**, which cancels the current turn while keeping Agav open, and **Ctrl+C**, which exits when no Agav text selection is active.
+
+The default binding is `["ctrl+b", "meta+p"]`; override it like any other action, for example:
+
+```json
+{
+  "togglePause": ["ctrl+b"]
+}
+```
 
 Terminal protocols determine which key combinations Agav can distinguish. Many terminals encode `Ctrl+M` as Enter and do not distinguish `Shift+Enter`; use `Option+Return`/`Alt+Enter` (`meta+enter`) when your terminal supports it.
 
@@ -61,10 +86,8 @@ The prompt footer only advertises the bindings your terminal can actually send, 
 
 ## Copying output
 
-Agav runs inside your terminal, so copying uses your terminal's own selection mechanism:
+Drag across Agav output to select text; releasing the drag copies it. While an Agav selection remains active, **Ctrl+C** copies it without exiting, even during a running turn. **Cmd+C** on macOS and **Ctrl+Shift+C** also copy an active selection when the terminal sends those keys to Agav.
 
-- **macOS** — select text with the mouse, then `Cmd+C`.
-- **Linux** — select text, then `Ctrl+Shift+C` (or middle-click to paste a selection).
-- **Windows Terminal** — select text, then `Ctrl+C` (when nothing is running) or `Ctrl+Shift+C`.
+Your terminal may instead manage its own selection and intercept copy shortcuts. Use **Cmd+C** on macOS or **Ctrl+Shift+C** on Linux and Windows Terminal for terminal-native copy, as supported by your terminal. In legacy encodings Ctrl+Shift+C may arrive as Ctrl+C; without an Agav selection, that exits.
 
 To save a full conversation to a file, use `/export` — it writes the entire session as Markdown.

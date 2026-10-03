@@ -258,24 +258,21 @@ const ToolResultLine = React.memo(function ToolResultLine({ message }: { message
 const MessageBubble = React.memo(function MessageBubble({ message, prevRole, toolDetailKey, columns, onOpenRef }: { message: DisplayMessage; prevRole?: string; toolDetailKey: string; columns: number; onOpenRef?: (ref: OpenRef) => void }) {
   if (message.role === "banner") {
     return (
-      <Box flexDirection="column" marginBottom={1}>
-        <Box flexDirection="row">
-          <Box flexDirection="column" marginLeft={3}>
-            <Text bold color="#0891B2">{`
- █████╗   ██████╗   █████╗  ██╗   ██╗      
-██╔══██╗ ██╔════╝  ██╔══██╗ ██║   ██║      
-███████║ ██║  ███╗ ███████║ ██║   ██║      
-██╔══██║ ██║   ██║ ██╔══██║ ╚██╗ ██╔╝      
-██║  ██║ ╚██████╔╝ ██║  ██║  ╚████╔╝       
-╚═╝  ╚═╝  ╚═════╝  ╚═╝  ╚═╝   ╚═══╝        
-`}</Text>
-</Box>
-          </Box>
-<Box flexDirection="row" marginLeft={3}>
-
-        <Text color={"#0891B2"}>{`Stay in the Shell.   `}</Text> 
-        <Text dimColor>{`Version: v${VERSION}`}</Text>
-</Box>
+      <Box flexDirection={columns >= 48 ? "row" : "column"} marginTop={1} marginBottom={1} paddingLeft={columns >= 48 ? 3 : 0}>
+        <Box flexDirection="column" flexShrink={0} width={12}>
+          {/* Cropped test.svg paths fitted to 24×20 dots; ~30% coverage keeps strokes distinct. */}
+          <Text color="#0891B2">{[
+            "⠀⡠⢞⡋⠉⠙⠢⡤⠴⠦⢤⡀",
+            "⡾⠤⡄⢡⠟⣆⠀⢹⠀⠀⠀⢸",
+            "⡇⠀⠀⣞⠀⠘⢂⡞⠰⣄⠀⡞",
+            "⠹⣔⠉⠈⡍⠋⣍⠘⠆⢀⡼⠁",
+            "⠀⠈⠳⢬⣅⣀⣈⣤⠔⠋⠀⠀",
+          ].join("\n")}</Text>
+        </Box>
+        <Box flexDirection="column" justifyContent="center" marginLeft={columns >= 48 ? 2 : 0}>
+          <Text><Text bold>Agav</Text><Text dimColor>{` v${VERSION}`}</Text></Text>
+          <Text color="#0891B2">Stay in the Shell.</Text>
+        </Box>
       </Box>
     );
   }

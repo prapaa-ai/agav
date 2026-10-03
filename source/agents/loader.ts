@@ -153,12 +153,12 @@ async function scanAgentTools(
         schema,
         async execute(input, context?) {
           const { executeSandboxedTool } = await import("./sandboxed-tool.js");
-          return await executeSandboxedTool(toolPath, input, context?.env);
+          return await executeSandboxedTool(toolPath, input, context?.env, undefined, context?.signal);
         },
       });
     } else {
       // Bundled (trusted) path — lazy in-process import
-      let loadedExecute: ((input: Record<string, unknown>) => Promise<any>) | null = null;
+      let loadedExecute: ToolDefinition["execute"] | null = null;
 
       tools.push({
         schema,
@@ -186,7 +186,7 @@ async function scanAgentTools(
               }
               loadedExecute = toolDef.execute;
             }
-            return await loadedExecute!(input);
+            return await loadedExecute!(input, context);
           } finally {
             for (const [k, v] of Object.entries(envToRestore)) {
               if (v === undefined) delete process.env[k];

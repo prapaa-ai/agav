@@ -19,6 +19,7 @@ export interface ConfigItem {
   key: string;
   label: string;
   secret: boolean;
+  type?: "native-tools";
 }
 
 export const EFFORT_VALUES = ["low", "medium", "high", "max"] as const;
@@ -44,6 +45,9 @@ export function getConfigItems(agent: AgentDefinition): ConfigItem[] {
     ...credItems,
     { key: "model",  label: "Model  (blank = inherit session)", secret: false },
     { key: "effort", label: "Effort (blank = inherit session)", secret: false },
+    ...(agent.origin !== "bundled" && agent.manifest.type !== "a2a"
+      ? [{ key: "native-tools", label: "Native Tools", secret: false, type: "native-tools" as const }]
+      : []),
   ];
 }
 

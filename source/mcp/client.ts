@@ -511,7 +511,7 @@ export class MCPClient {
   }
 
   // Calls a discovered MCP tool and flattens its content blocks into a single string.
-  async callTool(toolName: string, args: Record<string, unknown>): Promise<string> {
+  async callTool(toolName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
     // Strip server prefix
     const actualName = toolName.startsWith(`${this.serverName}__`)
       ? toolName.slice(this.serverName.length + 2)
@@ -520,7 +520,7 @@ export class MCPClient {
     const result = (await this.request("tools/call", {
       name: actualName,
       arguments: args,
-    })) as {
+    }, signal)) as {
       content?: Array<{
         type: string;
         text?: string;
@@ -584,20 +584,32 @@ export class MCPClient {
   }
 
   // Sends a JSON-RPC request and resolves when the matching response arrives.
-  private request(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private request(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    if (signal?.aborted) return Promise.reject(new Error("MCP request cancelled."));
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
-      this.pending.set(id, { resolve, reject });
-      this.send({ jsonrpc: "2.0", id, method, params });
-
-      // unref() so the timer doesn't keep the process alive during shutdown.
-      const timer = setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new Error(`MCP request ${method} timed out`));
-        }
-      }, 30000);
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        this.pending.delete(id);
+      };
+      const fail = (error: Error) => { cleanup(); reject(error); };
+      // Cancel only this wait, never the shared server/transport. Servers may
+      // finish their work later; responses for removed request IDs are ignored.
+      const onAbort = () => fail(new Error("MCP request cancelled."));
+      const timer = setTimeout(() => fail(new Error(`MCP request ${method} timed out`)), 30000);
       if (typeof timer === "object" && "unref" in timer) timer.unref();
+      this.pending.set(id, {
+        resolve: value => { cleanup(); resolve(value); },
+        reject: fail,
+      });
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) { onAbort(); return; }
+      try {
+        this.send({ jsonrpc: "2.0", id, method, params });
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 

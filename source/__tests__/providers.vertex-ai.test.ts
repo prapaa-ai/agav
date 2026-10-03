@@ -256,6 +256,116 @@ describe("VertexAIProvider", () => {
     expect(body.tools[0]).toMatchObject({ name: "lookup", cache_control: { type: "ephemeral" } });
   });
 
+  it("marks the conversation prefix cacheable on the second-to-last Claude message", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response([
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+        "",
+      ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+
+    for await (const _ of new VertexAIProvider(credentialsPath).stream({
+      model: "vertex/claude-sonnet-4-5@20250929",
+      systemPrompt: "system",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "first" }] },
+        { role: "assistant", content: [{ type: "text", text: "reply" }] },
+        { role: "user", content: [{ type: "text", text: "second" }] },
+      ],
+    })) { /* drain */ }
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    // Breakpoint on the last block of the second-to-last message...
+    expect(body.messages[1].content[0]).toMatchObject({ text: "reply", cache_control: { type: "ephemeral" } });
+    // ...but not on the first or last message (last changes every turn).
+    expect(body.messages[0].content[0].cache_control).toBeUndefined();
+    expect(body.messages[2].content[0].cache_control).toBeUndefined();
+  });
+
+  it("places the Claude cache breakpoint on the last block of a multi-block tool-cycle turn", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response([
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+        "",
+      ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+
+    for await (const _ of new VertexAIProvider(credentialsPath).stream({
+      model: "vertex/claude-sonnet-4-5@20250929",
+      systemPrompt: "system",
+      messages: [
+        { role: "user", content: [{ type: "text", text: "read the file" }] },
+        // Second-to-last message: multiple blocks (text + tool_use).
+        { role: "assistant", content: [
+          { type: "text", text: "Reading it now" },
+          { type: "tool_use", toolCallId: "call_1", toolName: "read_file", toolInput: { path: "a.ts" } },
+        ] },
+        { role: "user", content: [{ type: "tool_result", toolCallId: "call_1", toolResult: "file contents" }] },
+      ],
+    })) { /* drain */ }
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    const secondToLast = body.messages[1].content;
+    // Only the LAST block of the second-to-last message carries the breakpoint.
+    expect(secondToLast[0].cache_control).toBeUndefined();
+    expect(secondToLast[secondToLast.length - 1]).toMatchObject({
+      type: "tool_use",
+      cache_control: { type: "ephemeral" },
+    });
+    // The trailing tool_result turn stays uncached (it is the freshest content).
+    expect(body.messages[2].content[0].cache_control).toBeUndefined();
+  });
+
+  it("adds no Claude conversation breakpoint for a single-message request", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response([
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+        "",
+      ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+
+    for await (const _ of new VertexAIProvider(credentialsPath).stream({
+      model: "vertex/claude-sonnet-4-5@20250929",
+      systemPrompt: "system",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    })) { /* drain */ }
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    // cacheIndex = -1 -> no message-level breakpoint; system+tools still cache.
+    expect(body.messages[0].content[0].cache_control).toBeUndefined();
+    expect(body.system[0]).toMatchObject({ cache_control: { type: "ephemeral" } });
+  });
+
+  it("does not mutate the input message history when adding the Claude breakpoint", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response([
+        'event: message_delta',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
+        "",
+      ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+
+    const messages = [
+      { role: "user" as const, content: [{ type: "text" as const, text: "first" }] },
+      { role: "assistant" as const, content: [{ type: "text" as const, text: "reply" }] },
+      { role: "user" as const, content: [{ type: "text" as const, text: "second" }] },
+    ];
+    const snapshot = JSON.stringify(messages);
+
+    for await (const _ of new VertexAIProvider(credentialsPath).stream({
+      model: "vertex/claude-sonnet-4-5@20250929",
+      systemPrompt: "system",
+      messages,
+    })) { /* drain */ }
+
+    // The provider must build a new payload, never annotate stored history.
+    expect(JSON.stringify(messages)).toBe(snapshot);
+    expect((messages[1].content[0] as Record<string, unknown>).cache_control).toBeUndefined();
+  });
+
   it("lists and normalizes Gemini and Claude publisher models", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token" }), { status: 200 }))
