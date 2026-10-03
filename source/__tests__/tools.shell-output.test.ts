@@ -1,4 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../utils/temp-output.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../utils/temp-output.js")>();
+  const { isolatedTempOutputManager } = await import("./helpers/temp-output.js");
+  return { ...actual, tempOutputManager: await isolatedTempOutputManager(actual.TempOutputManager) };
+});
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
@@ -65,7 +71,7 @@ afterEach(() => {
   for (const directory of directories) rmSync(directory, { recursive: true, force: true });
   directories.clear();
   vi.restoreAllMocks();
-  vi.clearAllMocks();
+  vi.resetAllMocks();
 });
 
 describe("bounded streamed shell output", () => {
