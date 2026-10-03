@@ -187,7 +187,9 @@ function executeProcess(
     if (escalation) clearTimeout(escalation);
     if (drainage) clearTimeout(drainage);
     if (stopping) killTree(true);
-    if (timedOut) error = new Error(`Command timed out after ${options.timeout}ms`);
+    // Bound inherited pipes without turning a successful leader into a timeout.
+    const leaderSucceeded = exitStatus?.code === 0 && !exitStatus.signal;
+    if (timedOut && !leaderSucceeded) error = new Error(`Command timed out after ${options.timeout}ms`);
     else if (!error && (code !== 0 || exitSignal)) {
       error = new Error(exitSignal ? `Command terminated by signal ${exitSignal}` : `Command exited with code ${code}`);
     }

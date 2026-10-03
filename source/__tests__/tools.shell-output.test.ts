@@ -267,7 +267,7 @@ describe("process cleanup liveness check", () => {
 });
 
 describe("sandbox streaming option", () => {
-  it.skipIf(process.platform === "win32")("times out inherited descendants that keep their pipes open", async () => {
+  it.skipIf(process.platform === "win32")("keeps successful commands successful while descendants hold their pipes", async () => {
     const started = Date.now();
     const chunks: Buffer[] = [];
     const result = await runInSandbox({
@@ -276,8 +276,41 @@ describe("sandbox streaming option", () => {
       onOutput: (chunk) => chunks.push(chunk),
     });
     // Descendants retaining output pipes remain bounded by the command timeout.
-    expect(result.error?.message).toContain("timed out");
+    expect(result.error).toBeNull();
     expect(Date.now() - started).toBeLessThan(650);
+  });
+
+  it.skipIf(process.platform === "win32")("keeps buffered success bounded while descendants hold their pipes", async () => {
+    const started = Date.now();
+    const result = await runInSandbox({
+      command: "sleep 1.5 & printf OK",
+      cwd: process.cwd(), timeout: 100, maxBuffer: 1024, forceBackend: "none",
+    });
+    expect(result.error).toBeNull();
+    expect(result.stdout).toBe("OK");
+    expect(Date.now() - started).toBeLessThan(650);
+  });
+
+  it.each(["abort", "maxBuffer"])("retains %s errors after successful leader exit and pipe-drain timeout", async (reason) => {
+    const controller = new AbortController();
+    vi.mocked(spawn).mockImplementationOnce((() => {
+      const child = new EventEmitter() as any;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      setImmediate(() => {
+        child.emit("exit", 0, null);
+        if (reason === "abort") controller.abort();
+        else child.stdout.write("overflow");
+      });
+      return child; // Retain pipes until bounded drainage forces completion.
+    }) as typeof spawn);
+    const result = await runInSandbox({
+      command: "echo hi", cwd: process.cwd(), timeout: 20, maxBuffer: 1,
+      forceBackend: "none", signal: controller.signal,
+    });
+    expect(result.error?.message).toBe(reason === "abort"
+      ? "Command cancelled." : "Command output exceeded maxBuffer.");
   });
 
   it.skipIf(process.platform === "win32")("escalates when the actual command and descendant ignore SIGTERM", async () => {
