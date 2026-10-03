@@ -64,6 +64,8 @@ async function walkDir(
   basePath: string,
   results: FileSymbols[],
   maxFiles: number,
+  maxDepth: number,
+  depth = 0,
 ): Promise<void> {
   if (results.length >= maxFiles) return;
 
@@ -84,8 +86,8 @@ async function walkDir(
     if (results.length >= maxFiles) return;
 
     if (entry.isDirectory()) {
-      if (SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
-      await walkDir(join(dir, entry.name), basePath, results, maxFiles);
+      if (depth >= maxDepth || SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
+      await walkDir(join(dir, entry.name), basePath, results, maxFiles, maxDepth, depth + 1);
     } else if (SOURCE_EXTS.has(extname(entry.name))) {
       const filePath = relative(basePath, join(dir, entry.name));
       try {
@@ -142,14 +144,20 @@ export const overviewTool: ToolDefinition = {
           description: "Directory to map (default: current directory). Use a subdirectory to focus on a specific area.",
         },
         depth: {
-          type: "number",
-          description: "Max directory depth to traverse (default: 6).",
+          type: "integer",
+          minimum: 0,
+          description: "Max subdirectory depth: 0 reads root files only, 1 includes immediate subdirectories. Omit for unrestricted depth (up to 200 files).",
         },
       },
     },
   },
 
   async execute(input): Promise<ToolResult> {
+    if (input.depth !== undefined &&
+        (typeof input.depth !== "number" || !Number.isSafeInteger(input.depth) || input.depth < 0)) {
+      return { output: "Depth must be a non-negative safe integer.", isError: true };
+    }
+    const maxDepth = input.depth === undefined ? Infinity : input.depth as number;
     const searchPath = String(input.path ?? ".");
     const maxFiles = 200;
     const results: FileSymbols[] = [];
@@ -162,7 +170,7 @@ export const overviewTool: ToolDefinition = {
       return { output: `Directory not found: ${searchPath}`, isError: true };
     }
 
-    await walkDir(absPath, absPath, results, maxFiles);
+    await walkDir(absPath, absPath, results, maxFiles, maxDepth);
 
     if (results.length === 0) {
       return { output: "No source files found.", isError: false };
@@ -171,8 +179,12 @@ export const overviewTool: ToolDefinition = {
     const tree = formatTree(results);
     const summary = `${results.length} files, ${results.reduce((n, f) => n + f.symbols.length, 0)} symbols`;
 
+    const notice = results.length >= maxFiles
+      ? `\n\n[File limit reached (${maxFiles}); this map may be incomplete. Use overview with a narrower path or depth to focus the map.]`
+      : "";
+
     return {
-      output: `${summary}\n\n${tree}`,
+      output: `${summary}\n\n${tree}${notice}`,
       isError: false,
     };
   },

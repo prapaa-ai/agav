@@ -36,6 +36,7 @@ import type { SubagentProgress } from "../agent/subagent-types.js";
 import { expandFileMentions } from "../utils/file-mentions.js";
 import { loadSkills, getCachedSkills } from "../skills/loader.js";
 import { createSkillTool } from "../skills/tool.js";
+import { makeAgentProgressTracker } from "../agent/subagent-progress.js";
 import { createSkillSlashCommand } from "../skills/commands.js";
 import { maybeRunBackgroundImprovement } from "../skills/improvement.js";
 import { drainSteers } from "../commands/steer.js";
@@ -390,6 +391,9 @@ export function useAgent(
             cacheWriteTokens: prev.cacheWriteTokens + usage.cacheWriteTokens,
           })),
           getSignal: () => abortRef.current?.signal,
+          createProgressTracker: (title, task) => makeAgentProgressTracker(
+            nextId(), title, task, setSubagentStates,
+          ),
         });
         toolRegistryRef.current.register(skillTool);
       }
