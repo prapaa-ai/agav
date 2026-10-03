@@ -136,6 +136,12 @@ describe("structured verification loop", () => {
 });
 
 describe("built-in test runner", () => {
+  it("forwards the turn cancellation signal to the test subprocess", async () => {
+    childOutput(" Tests  2 passed (2)");
+    const controller = new AbortController();
+    await testRunnerTool.execute({ framework: "vitest" }, { signal: controller.signal });
+    expect(execFile).toHaveBeenCalledWith("npx", expect.any(Array), expect.objectContaining({ signal: controller.signal }), expect.any(Function));
+  });
   it("does not credit pytest warning text when the actual summary is skipped-only", async () => {
     childOutput("s [100%]\n================ warnings summary ================\ntest_value.py:3: UserWarning: previously 2 passed\n  warnings.warn('previously 2 passed')\n1 skipped, 1 warning in 0.01s\n");
     const result = await testRunnerTool.execute({ framework: "pytest" });

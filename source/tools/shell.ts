@@ -147,7 +147,7 @@ export const shellTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const command = String(input.command);
     const forceBackend = typeof input.sandbox === "string"
       ? input.sandbox as SandboxBackend
@@ -170,6 +170,7 @@ export const shellTool: ToolDefinition = {
         maxBuffer: MAX_OUTPUT * 2,
         forceBackend,
         onOutput: capture.capture,
+        signal: context?.signal,
       });
       error = result.error;
     } catch (cause) {

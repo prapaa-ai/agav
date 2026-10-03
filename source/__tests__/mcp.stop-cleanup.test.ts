@@ -16,6 +16,42 @@ describe("MCPClient.stop() cleanup", () => {
     globalThis.fetch = originalFetch;
   });
 
+  it("cancels only a tool wait and removes its timer and abort listener", async () => {
+    vi.useFakeTimers();
+    const client = new MCPClient("test", { command: "test", args: [] });
+    const internal = client as any;
+    const send = vi.spyOn(internal, "send").mockImplementation(() => {});
+    const stop = vi.spyOn(client, "stop");
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    try {
+      const pending = client.callTool("slow", {}, controller.signal);
+      const rejection = expect(pending).rejects.toThrow("cancelled");
+      controller.abort();
+      await rejection;
+      expect(internal.pending.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+      expect(stop).not.toHaveBeenCalled();
+      await expect(client.callTool("slow", {}, controller.signal)).rejects.toThrow("cancelled");
+      expect(send).toHaveBeenCalledTimes(1);
+      const next = client.callTool("fast", {});
+      internal.pending.values().next().value.resolve({ content: [{ type: "text", text: "ok" }] });
+      await expect(next).resolves.toBe("ok");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("cleans up a request when sending throws synchronously", async () => {
+    const client = new MCPClient("test", { command: "test", args: [] });
+    const controller = new AbortController();
+    await expect(client.callTool("slow", {}, controller.signal)).rejects.toThrow("not running");
+    expect((client as any).pending.size).toBe(0);
+  });
+
   it("rejects pending requests when stop() is called", async () => {
     // Set up a remote client that will hang on tool calls (no response ever comes).
     const sseChunks = [

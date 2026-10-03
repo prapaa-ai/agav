@@ -125,7 +125,7 @@ export async function executeNativeAgent(
     for (const tool of agent.tools) {
       childRegistry.register({
         schema: tool.schema,
-        execute: (input) => tool.execute(input, { env: runtimeConfig }),
+        execute: (input, context) => tool.execute(input, { ...context, env: runtimeConfig }),
       });
     }
 

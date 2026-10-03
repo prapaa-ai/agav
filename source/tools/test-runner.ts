@@ -292,7 +292,7 @@ export const testRunnerTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const testPath = input.path ? String(input.path) : undefined;
     const cwd = process.cwd();
 
@@ -314,7 +314,7 @@ export const testRunnerTool: ToolDefinition = {
 
     const output = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; diagnostic?: string }>((resolve) => {
       try {
-        execFile(cmd, args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd }, (err, stdout, stderr) => {
+        execFile(cmd, args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd, signal: context?.signal }, (err, stdout, stderr) => {
           resolve({
             stdout: stdout ?? "",
             stderr: stderr ?? "",
