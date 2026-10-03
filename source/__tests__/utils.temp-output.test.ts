@@ -1,4 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../utils/temp-output.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../utils/temp-output.js")>();
+  const { isolatedTempOutputManager } = await import("./helpers/temp-output.js");
+  return { ...actual, tempOutputManager: await isolatedTempOutputManager(actual.TempOutputManager) };
+});
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";

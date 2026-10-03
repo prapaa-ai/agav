@@ -26,7 +26,7 @@ agav --provider openai --model gpt-5.4-mini --deny-writes
 
 `--deny-writes` lets Agav inspect the repository while blocking edits. Replace the provider and model if you configured a different one.
 
-The interactive session opens with a compact Unicode braille shell logo, **Agav v<version>**, and **Stay in the Shell.** The name and tagline sit beside the logo on wider terminals and stack below it on narrow ones. The footer shows your provider, model, effort, and session token usage; the logo is a static banner, not a new thinking animation.
+The interactive session opens with a compact Unicode braille shell logo, `Agav v<version>`, and **Stay in the Shell.** The name and tagline sit beside the logo on wider terminals and stack below it on narrow ones. The footer shows your provider, model, effort, and session token usage; the logo is a static banner, not a new thinking animation.
 
 ## 3. Ask a focused first question
 

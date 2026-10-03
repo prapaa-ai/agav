@@ -36,7 +36,7 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 
 ## Cancel versus exit
 
-Press **Esc** to cancel the active turn and stay in Agav. In the subagent detail view it cancels only the focused subagent; from the overview it cancels the whole turn. An open picker or preview handles Esc locally. At a tool confirmation, Esc means **No** for that tool call, not cancel the whole turn.
+Press **Esc** to cancel the active turn and stay in Agav. In an actual `subagent` detail view it cancels only that worker; from the overview it cancels the whole turn. Skill and named-agent progress entries share that UI but have no individual focused-cancel handler: return to the overview with Tab before cancelling their parent turn. Manual-only slash-command skills receive no turn cancellation signal. An open picker or preview handles Esc locally. At a tool confirmation, Esc means **No** for that tool call, not cancel the whole turn.
 
 Press **Ctrl+C** with no text selected in Agav to exit, whether idle or busy. If an Agav output selection is active, Ctrl+C copies it and keeps Agav open; clear the selection before pressing Ctrl+C to exit. **Cmd+C** on macOS and **Ctrl+Shift+C** where supported are copy shortcuts, not exit shortcuts. Terminal-native copy behavior takes precedence when your terminal intercepts a shortcut.
 

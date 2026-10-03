@@ -56,7 +56,7 @@ Agav writes `output.tmp` first and publishes `output.log` by atomic rename. On U
 
 If storage is full, unavailable, unsafe, or over quota, Agav returns a bounded warning rather than advertising a nonexistent log. Saving failure does not change the original tool's success/error status or rerun its side effects; omitted content may be unavailable.
 
-Use the path in the notice with `read_file` and `start_line`/`end_line`, or `grep_search` with a targeted pattern. Recovery calls are bounded too. A saved “complete returned text” file contains what the tool returned, not data the tool already excluded or summarized. In particular, the test runner's raw diagnostic excerpt is not a complete test-process transcript.
+Use the path in the notice with `read_file` and `start_line`/`end_line`, or `grep_search` with a targeted pattern. Recovery calls are bounded too. If `grep_search` uses its JavaScript fallback (always used on Windows), it skips files larger than 1 MiB; use line-range reads or a targeted shell search for larger logs. A saved “complete returned text” file contains what the tool returned, not data the tool already excluded or summarized. In particular, the test runner's raw diagnostic excerpt is not a complete test-process transcript.
 
 ## File reads and repository maps
 
@@ -151,9 +151,17 @@ Shell commands have a 30-second default timeout and [bounded output](#output-lim
 
 The saved log stops at 16 MiB, but the command continues and its final output tail and exit status remain visible in the preview. A “partial output” notice therefore does not mean the command was stopped or that the log contains its final lines. Nonzero exits, signals, and timeouts remain errors even when stdout exists. Timeout handling attempts to terminate the process tree, escalates termination, and bounds pipe drainage rather than waiting indefinitely for inherited pipes. Storage failure does not rerun a command.
 
+Commands are non-interactive: stdin is closed and there is no controlling terminal. Commands that need passwords, SSH prompts, or terminal interaction should be run in your own shell instead.
+
+On Unix, native, Seatbelt, and Bubblewrap shell runners own a process group. Failure, cancellation, timeout, buffered-output overflow, and orderly host exit trigger termination, with forced escalation if needed and bounded pipe drainage. Windows uses `taskkill /T` with forced escalation. This is best-effort cleanup, not rollback: descendants that escape the group and external side effects may remain.
+
+Successful background children are not killed merely because the shell leader finishes. Output from children sharing the inherited pipes is collected until the pipes close or the command timeout bounds that wait. A successful leader can still be reported as successful when only pipe drainage reaches the timeout; do not interpret that status as proof that every background job completed. Manage persistent services explicitly.
+
+The buffered runners used by some integrations still enforce their own output-buffer limits. Test and agent subprocesses receive cancellation signals but do not inherit the shell runner's process-tree cleanup guarantees. MCP cancellation stops Agav's request wait without killing the shared server; server-side work may continue. Docker cancellation signals the local CLI but does **not** guarantee daemon/container cleanup. See [Security](/reference/security#cancellation-is-not-isolation).
+
 ## HTTP responses
 
-`fetch_url` supports GET (default), POST, PUT, DELETE, and PATCH, with optional headers and body. It streams the response as decoded text, including raw HTML, with a 30-second request timeout. Small results include the HTTP status and body unchanged; above **38,000 decoded UTF-8 bytes**, a response log and bounded head/tail preview are used.
+`fetch_url` supports GET (default), POST, PUT, DELETE, and PATCH, with optional headers and body. It streams the response as decoded text, including raw HTML, with a 30-second request timeout. Once started, it does not consume the turn cancellation signal; Esc does not immediately stop that request or undo a POST or other server-side action. Small results include the HTTP status and body unchanged; above **38,000 decoded UTF-8 bytes**, a response log and bounded head/tail preview are used.
 
 Unlike shell capture, HTTP capture **cancels the remaining response** when its 16 MiB incoming-byte or decoded-storage limit is exceeded. The notice marks the saved response as partial; the preview tail is from the captured prefix, not necessarily the end of the server's body. Reaching this size limit alone does not turn a successful HTTP status into an error. Non-success HTTP statuses and network/stream-read failures do remain errors, with the captured status/body retained where available. Log-storage failures do not repeat the request or change HTTP success status. The [shared text limits and retention rules](#output-limits-and-recovery) apply to these results too.
 
@@ -163,8 +171,8 @@ Each sandbox backend has different isolation properties:
 
 | Backend | Filesystem writes | Network | Credential dirs |
 | --- | --- | --- | --- |
-| Seatbelt (macOS) | Allowed except `/System`, `/usr`, `/Library`, `/Applications` | Allowed | `~/.ssh`, `~/.aws`, `~/.gnupg` reads denied |
-| Bubblewrap (Linux) | Read-only root, writable working directory and `/tmp` | Allowed | `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config` masked |
+| Seatbelt (macOS) | System directories and home writes denied, with working-directory and standard cache/config carve-outs | Allowed | `~/.ssh`, `~/.aws`, `~/.gnupg` reads denied |
+| Bubblewrap (Linux) | Read-only root; writable working directory and scratch tmpfs for `/tmp` and standard caches/config | Allowed | `~/.ssh`, `~/.aws`, `~/.gnupg` masked |
 | Docker | Mounted working directory only | Denied (`--network=none`) | Not mounted |
 
 When no backend is available, the command runs unsandboxed with secret-like environment variables (`KEY`, `TOKEN`, `SECRET`, …) filtered out. Set `AGAV_NO_SANDBOX=1` to opt out of sandboxing deliberately. Review [security](/reference/security) before using auto-accept mode.
