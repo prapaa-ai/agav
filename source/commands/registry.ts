@@ -23,6 +23,7 @@ import { steerCommand } from "./steer.js"
 import { changelogCommand } from "./changelog.js"
 import { contextCommand } from "./context.js"
 import { agentsCommand } from "./agents.js"
+import { workflowsCommand } from "./workflows.js"
 import { agentLockCommand } from "./agent-lock.js"
 import { openCommand } from "./open.js"
 export { MID_TURN_SAFE_COMMANDS, isCommandAllowedMidTurn } from "./mid-turn.js"
@@ -62,6 +63,7 @@ export class CommandRegistry {
     this.register(changelogCommand)
     this.register(contextCommand)
     this.register(agentsCommand)
+    this.register(workflowsCommand)
     this.register(agentLockCommand)
     this.register(openCommand)
   }

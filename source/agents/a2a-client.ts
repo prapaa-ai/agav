@@ -54,6 +54,129 @@ interface A2AResponse {
   metadata?: Record<string, unknown>;
 }
 
+/** Token accounting reported by an A2A agent, when it provides it. */
+export interface A2AUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+/**
+ * Token budget an A2A agent reports for itself.
+ *
+ * External agents run outside this process, so their consumption cannot be
+ * measured directly. An agent that wants to surface a budget may report it; one
+ * that does not is left with `undefined` so the gap is visible rather than
+ * silently treated as zero.
+ */
+export interface A2ATokenBudget {
+  /** Total token allowance the agent is operating under. */
+  limit?: number;
+  /** Tokens consumed so far, if the agent tracks it. */
+  used?: number;
+  /** Tokens left, if the agent can compute it. */
+  remaining?: number;
+  /** Budget window, e.g. "run", "day", "session". */
+  period?: string;
+}
+
+export const EMPTY_A2A_USAGE: A2AUsage = Object.freeze({
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+});
+
+/**
+ * Extract usage from A2A response metadata when the agent reports it.
+ * Returns zeroed usage when absent, so callers can always accumulate safely.
+ */
+export function readA2AUsage(metadata: Record<string, unknown> | undefined): A2AUsage {
+  const source = a2aUsageSource(metadata);
+  if (!source) return { ...EMPTY_A2A_USAGE };
+  return {
+    inputTokens: readNumber(source.inputTokens),
+    outputTokens: readNumber(source.outputTokens),
+    cacheReadTokens: readNumber(source.cacheReadTokens),
+    cacheWriteTokens: readNumber(source.cacheWriteTokens),
+  };
+}
+
+/**
+ * Whether the agent actually reported usage.
+ *
+ * This matters because a missing report and a reported zero are different
+ * facts. Callers should not present unreported external usage as a real zero.
+ */
+export function hasA2AUsage(metadata: Record<string, unknown> | undefined): boolean {
+  return a2aUsageSource(metadata) !== undefined;
+}
+
+/**
+ * Read an optional token budget reported by an external agent.
+ *
+ * Returns `undefined` when the agent reports no budget, so callers can show an
+ * explicit "no budget returned" state instead of inventing a number.
+ */
+export function readA2ATokenBudget(metadata: Record<string, unknown> | undefined): A2ATokenBudget | undefined {
+  if (!metadata) return undefined;
+
+  const candidates = [metadata.tokenBudget, metadata.budget, metadata.token_budget];
+  const raw = candidates.find((value) => value && typeof value === "object");
+  if (!raw) return undefined;
+
+  const source = raw as Record<string, unknown>;
+  const budget: A2ATokenBudget = {};
+  const limit = readOptionalNumber(source.limit ?? source.maxTokens ?? source.total);
+  const used = readOptionalNumber(source.used ?? source.consumed ?? source.spent);
+  const remaining = readOptionalNumber(source.remaining ?? source.left);
+  const period = typeof source.period === "string" ? source.period : undefined;
+
+  if (limit !== undefined) budget.limit = limit;
+  if (used !== undefined) budget.used = used;
+  if (remaining !== undefined) budget.remaining = remaining;
+  if (period !== undefined) budget.period = period;
+
+  // An object with no usable numbers is treated as no budget rather than an
+  // empty budget, so the caller can flag it.
+  if (budget.limit === undefined && budget.used === undefined && budget.remaining === undefined) {
+    return undefined;
+  }
+  return budget;
+}
+
+/** Render a budget for display, or an explicit marker when none was returned. */
+export function formatA2ATokenBudget(budget: A2ATokenBudget | undefined): string {
+  if (!budget) return "No token budget returned";
+  const parts: string[] = [];
+  if (budget.limit !== undefined) parts.push(`limit ${budget.limit}`);
+  if (budget.used !== undefined) parts.push(`used ${budget.used}`);
+  if (budget.remaining !== undefined) parts.push(`remaining ${budget.remaining}`);
+  if (parts.length === 0) return "No token budget returned";
+  const summary = parts.join(", ");
+  return budget.period ? `${summary} (${budget.period})` : summary;
+}
+
+function a2aUsageSource(metadata: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!metadata) return undefined;
+  const explicit = metadata.usage ?? metadata.tokenUsage ?? metadata.token_usage;
+  if (explicit && typeof explicit === "object") return explicit as Record<string, unknown>;
+
+  // Fall back to flat metadata, but only when it actually carries token fields
+  // so unrelated metadata is not mistaken for usage.
+  const flatKeys = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens"];
+  return flatKeys.some((key) => key in metadata) ? metadata : undefined;
+}
+
+function readNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function readOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 /**
  * A2A event types for streaming
  */
@@ -206,13 +329,14 @@ export function stopAllA2AAgents(): void {
 }
 
 /**
- * Execute a task on an A2A agent
+ * Execute a task on an A2A agent, returning output and any reported usage.
  */
-export async function executeA2AAgent(
+export async function executeA2AAgentDetailed(
   agent: AgentDefinition,
   task: string,
-  context?: Record<string, unknown>
-): Promise<string> {
+  context?: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<{ output: string; usage: A2AUsage; usageReported: boolean; tokenBudget?: A2ATokenBudget }> {
   const key = agent.alias || agent.manifest.name;
 
   // Ensure agent is started
@@ -238,7 +362,7 @@ export async function executeA2AAgent(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(30_000),
+      signal: signal ?? AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {
@@ -251,7 +375,15 @@ export async function executeA2AAgent(
       throw new Error(result.output);
     }
 
-    return result.output;
+    // External agents are out of process, so their consumption is whatever
+    // they choose to report. Both facts are surfaced so a missing report is
+    // never mistaken for genuinely zero usage.
+    return {
+      output: result.output,
+      usage: readA2AUsage(result.metadata),
+      usageReported: hasA2AUsage(result.metadata),
+      tokenBudget: readA2ATokenBudget(result.metadata),
+    };
   } catch (error) {
     throw new Error(
       `A2A execution failed: ${error instanceof Error ? error.message : String(error)}`

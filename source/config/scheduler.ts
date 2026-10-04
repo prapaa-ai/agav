@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import crypto from "node:crypto";
 import { getAgavDir } from "./config.js";
@@ -12,6 +12,47 @@ export interface ScheduledTask {
   enabled: boolean;
   createdAt: string;
   lastRunAt?: string;
+  kind?: "prompt" | "process" | "workflow";
+  command?: string;
+  cwd?: string;
+  /** Workflow name or path, when `kind` is `workflow`. */
+  workflow?: string;
+  /** Serialized inputs for the run. */
+  input?: Record<string, unknown>;
+  /**
+   * The most recent minute this task fired, as `minutesSinceMidnight`.
+   *
+   * `lastRunAt` records when a run *started*; this records which scheduled
+   * minute was consumed. Keeping them apart is what lets a task that was down
+   * at 03:00 be recognised as missed rather than silently skipped.
+   */
+  lastFiredMinute?: number;
+  /**
+   * Local day the consumed minute belonged to, as days since the epoch.
+   *
+   * `lastFiredMinute` is time-of-day only, so it cannot distinguish "fired this
+   * minute" from "fired at the same minute yesterday". Pairing it with the day
+   * keeps a daily task due again the next day instead of being skipped.
+   */
+  lastFiredDay?: number;
+  /**
+   * Refuse to start a new run while the previous one is still going.
+   *
+   * Default true. Without it, a five-minute cron on a twenty-minute workflow
+   * starts four concurrent runs against the same external systems.
+   */
+  skipIfRunning?: boolean;
+  /**
+   * Catch up a fire missed while nothing was running, within this many minutes.
+   *
+   * Bounded on purpose: a machine off for a week should not fire a hundred
+   * times on restart. Unset means missed fires are only recorded, not replayed.
+   */
+  catchUpWithinMinutes?: number;
+  /** Minutes whose fires were skipped because the task was not running. */
+  missedRuns?: number;
+  /** Last reason a fire was skipped, for operator visibility. */
+  lastSkipReason?: string;
 }
 
 function getSchedulerPath(): string {
@@ -28,7 +69,12 @@ export async function loadScheduledTasks(): Promise<ScheduledTask[]> {
 
 async function saveTasks(tasks: ScheduledTask[]): Promise<void> {
   await ensureDir(getAgavDir());
-  await writeFile(getSchedulerPath(), JSON.stringify(tasks, null, 2));
+  // Write to a temp file and rename, so a reader never sees a half-written
+  // array and two writers cannot silently clobber each other.
+  const path = getSchedulerPath();
+  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+  await writeFile(tmp, JSON.stringify(tasks, null, 2), "utf-8");
+  await rename(tmp, path);
 }
 
 export async function addScheduledTask(
@@ -44,6 +90,62 @@ export async function addScheduledTask(
     cron,
     enabled: true,
     createdAt: new Date().toISOString(),
+    kind: "prompt",
+  };
+  tasks.push(task);
+  await saveTasks(tasks);
+  return task;
+}
+
+export async function addScheduledProcessTask(
+  name: string,
+  cron: string,
+  command: string,
+  cwd?: string,
+): Promise<ScheduledTask> {
+  const tasks = await loadScheduledTasks();
+  const task: ScheduledTask = {
+    id: crypto.randomUUID().slice(0, 8),
+    name,
+    prompt: command,
+    command,
+    cwd,
+    cron,
+    enabled: true,
+    createdAt: new Date().toISOString(),
+    kind: "process",
+  };
+  tasks.push(task);
+  await saveTasks(tasks);
+  return task;
+}
+
+export async function addScheduledWorkflowTask(
+  name: string,
+  cron: string,
+  workflow: string,
+  options: { input?: Record<string, unknown>; cwd?: string; skipIfRunning?: boolean; catchUpWithinMinutes?: number } = {},
+): Promise<ScheduledTask> {
+  const tasks = await loadScheduledTasks();
+  const task: ScheduledTask = {
+    id: crypto.randomUUID().slice(0, 8),
+    name,
+    // `prompt` is required by the schema; the workflow is the meaningful field
+    // here, and mirroring it keeps older readers working.
+    prompt: workflow,
+    workflow,
+    cron,
+    enabled: true,
+    createdAt: new Date().toISOString(),
+    kind: "workflow",
+    // Overlapping runs are refused by default: two runs of the same workflow
+    // against the same external systems is the failure mode that matters.
+    skipIfRunning: options.skipIfRunning ?? true,
+    ...(options.input ? { input: options.input } : {}),
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+    ...(options.catchUpWithinMinutes !== undefined
+      ? { catchUpWithinMinutes: options.catchUpWithinMinutes }
+      : {}),
   };
   tasks.push(task);
   await saveTasks(tasks);
@@ -52,6 +154,16 @@ export async function addScheduledTask(
 
 function findTask(tasks: ScheduledTask[], idOrPrefix: string): ScheduledTask | undefined {
   return tasks.find((t) => t.id === idOrPrefix) ?? tasks.find((t) => t.id.startsWith(idOrPrefix));
+}
+
+/** Insert or replace a single task, leaving the rest of the file untouched. */
+export async function saveScheduledTask(task: ScheduledTask): Promise<ScheduledTask> {
+  const tasks = await loadScheduledTasks();
+  const index = tasks.findIndex((entry) => entry.id === task.id);
+  if (index === -1) tasks.push(task);
+  else tasks[index] = task;
+  await saveTasks(tasks);
+  return task;
 }
 
 export async function removeScheduledTask(id: string): Promise<boolean> {
@@ -83,7 +195,9 @@ export async function markTaskRun(id: string): Promise<void> {
 
 export function cronMatches(cron: string, date: Date): boolean {
   const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) return false;
+  if (parts.length !== 5) {
+    throw new Error(`Invalid cron expression "${cron}": expected 5 fields, got ${parts.length}`);
+  }
 
   const minute = date.getMinutes();
   const hour = date.getHours();

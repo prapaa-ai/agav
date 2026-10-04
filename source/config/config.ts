@@ -69,9 +69,21 @@ export interface AgavConfig {
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
   showThinking?: boolean;
+  /**
+   * Show a desktop notification when a workflow finishes with nobody watching.
+   *
+   * Off by default on a shared or remote session, where a banner is noise. The
+   * durable notification log is written regardless of this setting.
+   */
+  desktopNotifications?: boolean;
 }
 
-const AGAV_DIR = join(homedir(), ".agav");
+// Overridable so a test, an alternate install, or a detached child can target a
+// specific directory. Both ends of a stop request must resolve to the same path,
+// so this is read once at startup and shared by everything below.
+const AGAV_DIR = process.env["AGAV_CONFIG_DIR"]
+  ? join(process.env["AGAV_CONFIG_DIR"]!.replace(/^~(?=$|[\\/])/, homedir()))
+  : join(homedir(), ".agav");
 const CONFIG_PATH = join(AGAV_DIR, "config.json");
 
 /**

@@ -37,7 +37,7 @@ import { getClipboardText } from "./utils/clipboard-text.js";
 import { useClipboardImageDetector } from "./hooks/use-paste-handler.js";
 import { KeybindingResolver, GLOBAL_ACTIONS, formatKeybinding, formatKeybindings, normalizeKeyEvent, type Keybindings } from "./config/keybindings.js";
 import { getLoopStatus, stopActiveLoop } from "./commands/loop.js";
-import { loadScheduledTasks, cronMatches, markTaskRun } from "./config/scheduler.js";
+import { tick } from "./workflows/schedule-run.js";
 import { getSandboxName } from "./utils/sandbox.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
 import { terminalRelativePaths } from "./utils/display-path.js";
@@ -47,6 +47,7 @@ import type { OpenRef } from "./utils/open-ref.js";
 import AttachmentPreview, { type PreviewContent } from "./components/attachment-preview.js";
 import { readFileContext } from "./utils/file-context.js";
 import { spoolImageToTempFile } from "./utils/open-external.js";
+import { processTool } from "./tools/process.js";
 
 import type { Message } from "./providers/types.js";
 
@@ -494,28 +495,36 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [resumeMessages]);
 
   useEffect(() => {
+    // Delegate to the shared ticker so an interactive session and a headless
+    // `agav scheduler tick` apply identical rules. Only the minute granularity
+    // stays local: polling every 30s is cheap, and the decision layer already
+    // knows whether this minute was consumed.
     let lastCheckedMinute = -1;
-    const checker = setInterval(async () => {
+    const checker = setInterval(() => {
       const now = new Date();
       const currentMinute = now.getHours() * 60 + now.getMinutes();
       if (currentMinute === lastCheckedMinute) return;
       lastCheckedMinute = currentMinute;
-      try {
-        const tasks = await loadScheduledTasks();
-        for (const task of tasks) {
-          if (!task.enabled) continue;
-          if (cronMatches(task.cron, now)) {
-            await markTaskRun(task.id);
-            submit(task.prompt, undefined, undefined, undefined, {
-              source: "schedule",
-              detail: `${task.name} · cron ${task.cron}`,
-            });
-          }
-        }
-      } catch {}
+      void tick({
+        now: () => now,
+        submitPrompt: (task) => {
+          submit(task.prompt, undefined, undefined, undefined, {
+            source: "schedule",
+            detail: `${task.name} · cron ${task.cron}`,
+          });
+        },
+        report: (message, isError) => {
+          addDisplayMessage({
+            id: `sys-${++sysMessageId}`,
+            role: "system",
+            content: message,
+            isError,
+          });
+        },
+      }).catch(() => {});
     }, 30_000);
     return () => clearInterval(checker);
-  }, [submit]);
+  }, [addDisplayMessage, submit]);
 
   const hasSubagents = isLoading && subagentStates.length > 0;
 

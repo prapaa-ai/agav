@@ -32,6 +32,8 @@ These tools are treated as safe by the permission gate and normally do not requi
 
 `read_file`, `grep_search`, `find_files`, `list_directory`, `web_search`, `lsp_query`, `read_notebook`, `fetch_url`, `overview`, `activate_skill`, `save_memory`, `update_plan`
 
+For the daemon-backed `process` tool, `list`, `poll`, `log`, and `wait` are treated as safe. `start` and `kill` are sensitive process-control actions and follow confirmation, allowlist, and `deny-writes` behavior.
+
 ### External tool trust
 
 External agents and MCP tools **cannot** mark themselves as non-destructive to skip confirmation. Only built-in safe tools are trusted with the `destructive: false` flag. All other tools require confirmation in `ask` mode regardless of their declared destructive status.
@@ -50,6 +52,16 @@ Agav auto-detects the best available OS-level sandbox at startup:
 If no backend is available, commands run unsandboxed. Set `AGAV_NO_SANDBOX=1` to intentionally disable sandbox detection.
 
 The Seatbelt and Bubblewrap sections below describe **shell `run_command` execution**. Agent `.mjs` tool processes use separate profiles: their Seatbelt profile is deny-default, blocks network, and allows writes only in the working directory and temp; their Bubblewrap runner uses `--unshare-net`, binds host `/tmp`, and masks existing credential and `.config` directories. Do not assume shell and agent-tool network policies are identical. Bundled agents are trusted and run unsandboxed; global and project agent tools use the available agent sandbox backend.
+
+### Background process commands
+
+The `process` tool starts daemon-backed commands through a detached Node runner and stores records and logs under `~/.agav/background-processes/` by default. Set `AGAV_BACKGROUND_PROCESS_DIR` before starting Agav to use a different storage directory, and use the same value across restarts to reattach to those jobs. If a packaged runtime cannot execute the generated runner script, set `AGAV_NODE=/path/to/node` before starting Agav.
+
+Background process commands are not routed through the normal `run_command` timeout and sandbox path.
+
+Use trusted, non-interactive commands for `process start` and `/schedule background`. In `ask` mode, `process start` and `process kill` require confirmation unless an `allowedTools` rule applies. The confirmation prompt for `process start` warns that the daemon job can continue after Agav exits and may write files, use network, and consume CPU, memory, or disk. The `process kill` prompt warns that it may stop work currently in progress. `process list`, `process poll`, `process log`, and `process wait` are safe. Prefer narrow allowlist entries such as `process:pnpm test*` over a bare `process` rule. Commands that match Agav's destructive-command blocklist are blocked before the background process starts.
+
+Scheduled process tasks created by `/schedule background`, `/schedule bg`, or `/schedule process` start the configured command directly when the cron matches, without an LLM turn or confirmation prompt, because creating the slash-command schedule is treated as explicit user consent for that command. Schedule only commands you trust.
 
 ### Seatbelt (macOS)
 
@@ -98,7 +110,7 @@ Large tool results may be saved outside the repository in private OS temporary f
 
 ### MCP command validation
 
-On Windows, MCP server subprocesses use `shell: true` for `.cmd` shim compatibility. Before spawning, Agav validates both the command and all arguments against a set of blocked shell metacharacters: `` & | < > ^ ; \` $ ( ) { } [ ] ! % " \n \r ``. If any metacharacter is found, the server startup is rejected immediately — preventing shell injection attacks through crafted MCP server configurations.
+On Windows, MCP server subprocesses use `shell: true` for `.cmd` shim compatibility. Before spawning, Agav validates both the command and all arguments against a set of blocked shell metacharacters: `` & | < > ^ ; ` $ ( ) { } [ ] ! % " \n \r ``. If any metacharacter is found, the server startup is rejected immediately — preventing shell injection attacks through crafted MCP server configurations.
 
 Single quotes (`'`) are explicitly allowed since they are not dangerous in `cmd.exe`.
 
@@ -106,7 +118,7 @@ On macOS and Linux, `shell: false` is used, so arguments are passed directly to 
 
 ### Credential filtering
 
-Across **all** sandbox backends (including unsandboxed), environment variables whose names match `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL`, or `AUTH` are stripped before spawning child processes.
+Across **all** sandbox backends (including unsandboxed), environment variables whose names match `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL`, or `AUTH` are stripped before spawning child processes. The background process runner applies the same filtering before launching daemon jobs.
 
 ### Requiring a sandbox
 
@@ -160,6 +172,8 @@ High-risk patterns are blocked by the shell tool before they reach the sandbox, 
 - Process killing: `killall`, `pkill -9`
 - Remote code execution: `curl ... | sh`, `wget ... | sh/bash`
 - File truncation: `truncate --size 0`
+
+The same destructive-command check is applied by `process start` before launching a daemon-backed command.
 
 ## Secrets and extensions
 

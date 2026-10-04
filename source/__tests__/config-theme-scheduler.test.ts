@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../utils/fs.js", () => ({ ensureDir: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("node:fs/promises", () => ({ readFile: vi.fn(), writeFile: vi.fn() }));
+vi.mock("node:fs/promises", () => ({
+  readFile: vi.fn(),
+  writeFile: vi.fn(),
+  // scheduler.saveTasks writes to a temp file and renames, matching the rest of
+  // the store. The rename is part of the contract under test.
+  rename: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("node:crypto", () => ({ default: { randomUUID: () => "12345678-aaaa-bbbb-cccc-1234567890ab" } }));
 
 const fs = await import("node:fs/promises");
@@ -49,11 +55,46 @@ describe("scheduler cronMatches", () => {
     const { cronMatches } = await import("../config/scheduler.js");
     const date = new Date(2024, 0, 8, 10, 15, 0);
 
-    expect(cronMatches("* * * *", date)).toBe(false);
+    // A malformed expression throws rather than returning false, so a typo'd cron
+    // is rejected at `scheduler add` instead of silently never firing.
+    expect(() => cronMatches("* * * *", date)).toThrow();
     expect(cronMatches("61 * * * *", date)).toBe(false);
     expect(cronMatches("15 25 * * *", date)).toBe(false);
     expect(cronMatches("15 10 40 * *", date)).toBe(false);
     expect(cronMatches("15 10 * 13 *", date)).toBe(false);
     expect(cronMatches("15 10 * * 7", date)).toBe(false);
+  });
+});
+
+describe("scheduler process tasks", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    readFile.mockRejectedValue(new Error("missing"));
+    writeFile.mockResolvedValue(undefined as never);
+  });
+
+  it("creates scheduled background process tasks", async () => {
+    const { addScheduledProcessTask } = await import("../config/scheduler.js");
+
+    const task = await addScheduledProcessTask("run tests", "0 9 * * *", "pnpm test", "C:/repo");
+
+    expect(task).toMatchObject({
+      id: "12345678",
+      kind: "process",
+      prompt: "pnpm test",
+      command: "pnpm test",
+      cwd: "C:/repo",
+      cron: "0 9 * * *",
+      enabled: true,
+    });
+    const rename = vi.mocked(fs.rename);
+    expect(rename).toHaveBeenCalledWith(expect.stringContaining(".tmp"), expect.stringContaining("scheduled-tasks.json"));
+    // The serialized content (including the new `kind` field) must land in the
+    // file that gets renamed into place. writeFile is called with a third
+    // encoding argument, so find the content-bearing call explicitly.
+    const writeCall = writeFile.mock.calls.find(
+      ([, content]) => String(content).includes('"kind": "process"'),
+    );
+    expect(writeCall).toBeDefined();
   });
 });

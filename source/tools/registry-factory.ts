@@ -15,6 +15,7 @@ import { githubTool } from "./github.js";
 import { overviewTool } from "./overview.js";
 import { testRunnerTool } from "./test-runner.js";
 import { memoryTool } from "./memory.js";
+import { processTool } from "./process.js";
 
 /**
  * The set of tool names that ship with agav. Exported so that skill validation
@@ -39,6 +40,7 @@ export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
   "overview",
   "run_tests",
   "save_memory",
+  "process",
   "subagent",
   "activate_skill",
 ]);
@@ -62,6 +64,7 @@ const BUILTIN_TOOLS = [
   overviewTool,
   testRunnerTool,
   memoryTool,
+  processTool,
 ];
 
 /** Create a registry containing the named Agav built-in tools. */

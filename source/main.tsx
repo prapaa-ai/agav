@@ -39,7 +39,7 @@ const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
-  "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns",
+  "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--input",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -195,6 +195,30 @@ export function parseArgs(argv: string[]) {
       flags.skills = true;
       if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
         flags.skillsCommand = argv[++i]!;
+      }
+    } else if (arg === "scheduler" && i === 0) {
+      flags.scheduler = true;
+      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
+        flags.schedulerCommand = argv[++i]!;
+      }
+      // Subcommand flags belong to the subcommand: the dispatcher slices argv
+      // itself, so skip the rest of the parse rather than rejecting flags like
+      // --cron as unknown here.
+      if (flags.schedulerCommand) {
+        i = argv.length;
+        break;
+      }
+    } else if (arg === "workflows" && i === 0) {
+      flags.workflows = true;
+      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
+        flags.workflowsCommand = argv[++i]!;
+      }
+      // Everything after the subcommand belongs to it: the dispatcher slices argv
+      // itself. Skip the rest of the parse so flags like --run-id or
+      // --input-json are not rejected here as unknown.
+      if (flags.workflowsCommand) {
+        i = argv.length;
+        break;
       }
     } else if (arg === "run" && i === 0) {
       flags.run = true;
@@ -405,6 +429,7 @@ export async function main() {
     $ agav update                  Update to the latest version
     $ agav agents [command]        Manage service agents
     $ agav skills [command]        Manage skills
+    $ agav workflows [command]     Manage workflow runs
     $ agav --print "prompt"
     $ cat file | agav -P "explain this"
 
@@ -441,6 +466,12 @@ export async function main() {
     $ agav skills disable <name>   Disable a skill (bundled skills included)
     $ agav skills enable <name>    Re-enable a disabled skill
     $ agav skills clear            Remove all user-installed skills
+
+  Workflow Commands
+    $ agav workflows list          List workflow definitions
+    $ agav workflows run <name>    Run a workflow
+    $ agav workflows status <id>   Show workflow run status
+    $ agav workflows resume <id>   Resume a workflow run
 
   Examples
     $ agav
@@ -498,6 +529,76 @@ export async function main() {
     const exitCode = await runSkillsCommand(skillsCommand, process.argv.slice(argsStartIndex));
     process.exit(exitCode);
     return;
+  }
+
+  // Scheduling: agav scheduler <command>
+  if (flags.scheduler) {
+    const { runSchedulerCommand } = await import("./cli/scheduler-cli.js");
+    const schedulerCommand = typeof flags.schedulerCommand === "string" ? flags.schedulerCommand : undefined;
+    const schedulerIdx = process.argv.indexOf("scheduler");
+    const schedulerArgsStart = schedulerIdx >= 0 ? schedulerIdx + (schedulerCommand ? 2 : 1) : 2;
+    const schedulerExit = await runSchedulerCommand(schedulerCommand, process.argv.slice(schedulerArgsStart));
+    process.exit(schedulerExit);
+    return;
+  }
+
+  // Workflow management: agav workflows <command>
+  if (flags.workflows) {
+    const { runWorkflowsCommand } = await import("./cli/workflows-cli.js");
+    const workflowsCommand = typeof flags.workflowsCommand === "string" ? flags.workflowsCommand : undefined;
+    const workflowsIdx = process.argv.indexOf("workflows");
+    const argsStartIndex = workflowsIdx >= 0
+      ? workflowsIdx + (workflowsCommand ? 2 : 1)
+      : (workflowsCommand ? 4 : 3);
+
+    // A detached run is stopped with SIGTERM so it can checkpoint instead of
+    // dying mid-node. Convert that into an abort the runtime understands, and
+    // give it a moment to settle before exiting.
+    const stopController = new AbortController();
+    let stopping = false;
+    const requestStop = (signal: NodeJS.Signals | "stop request") => {
+      if (stopping) return;
+      stopping = true;
+      console.error(`\nReceived ${signal}; stopping the run and checkpointing...`);
+      stopController.abort(new Error("Workflow stopped by signal"));
+    };
+    process.on("SIGTERM", requestStop);
+    process.on("SIGINT", requestStop);
+
+
+
+    // A detached run is stopped by a file request, because SIGTERM cannot be
+    // delivered on Windows. The child polls for it, so the request reaches a
+    // process whose parent has long since exited.
+    const { clearStopRequest, watchForStopRequest } = await import("./workflows/jobs.js");
+    const runIdFlag = process.argv.indexOf("--run-id");
+    const watchedRunId = runIdFlag >= 0 ? process.argv[runIdFlag + 1] : undefined;
+    const stopWatching = watchedRunId
+      ? watchForStopRequest(watchedRunId, () => requestStop("stop request"))
+      : () => {};
+
+    // The child outlives its parent, so it must close its own job record out. A
+    // record left `running` blocks the task's overlap guard forever, because the
+    // guard trusts the pid check and the pid gets reused on Windows.
+    const { markWorkflowJobFinishedByRunId } = await import("./workflows/jobs.js");
+
+    try {
+      const exitCode = await runWorkflowsCommand(workflowsCommand, process.argv.slice(argsStartIndex), {
+        signal: stopController.signal,
+      });
+      stopWatching();
+      if (watchedRunId) {
+      // Awaited rather than fire-and-forget: an exit handler would not complete
+      // before the process is gone, and a record left `running` blocks the task's
+      // overlap guard forever.
+      await markWorkflowJobFinishedByRunId(watchedRunId, {}).catch(() => {});
+      clearStopRequest(watchedRunId);
+      }
+      process.exit(exitCode);
+      return;
+    } finally {
+      stopWatching();
+    }
   }
 
   // Auto-update check (silent on failure, skipped in CI/pipe mode)
