@@ -6,7 +6,7 @@ const CATEGORIES: Record<string, string[]> = {
   "Sessions": ["resume", "search", "branch", "name"],
   "Agents": ["agents", "agent"],
   "Skills": ["skills"],
-  "Workflow": ["plan", "steer", "loop", "schedule", "watch"],
+  "Workflow": ["plan", "steer", "loop", "schedule", "watch", "workflows"],
   "Memory": ["memory", "remember", "forget"],
   "Safety": ["undo"],
   "Debug": ["context", "debug", "changelog", "exit", "help"],

@@ -40,6 +40,7 @@ describe("plan state", () => {
     // Resolve symlinks (macOS maps /var to /private/var) so the paths the
     // planner derives from process.cwd() compare equal to the ones built here.
     root = await realpath(await mkdtemp(join(tmpdir(), "agav-plan-state-")));
+    await mkdir(join(root, ".git"));
     process.chdir(root);
     setPlanScope(null);
   });
@@ -69,7 +70,7 @@ describe("plan state", () => {
   });
 
   it("resolves the plan file from the repo root, not the launch directory", async () => {
-    await mkdir(join(root, ".git"));
+    await mkdir(join(root, ".git"), { recursive: true });
     await savePlan(makePlan());
 
     const nested = join(root, "packages", "api");

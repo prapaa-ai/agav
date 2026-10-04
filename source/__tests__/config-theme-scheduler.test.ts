@@ -57,3 +57,28 @@ describe("scheduler cronMatches", () => {
     expect(cronMatches("15 10 * * 7", date)).toBe(false);
   });
 });
+
+describe("scheduler process tasks", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    readFile.mockRejectedValue(new Error("missing"));
+    writeFile.mockResolvedValue(undefined as never);
+  });
+
+  it("creates scheduled background process tasks", async () => {
+    const { addScheduledProcessTask } = await import("../config/scheduler.js");
+
+    const task = await addScheduledProcessTask("run tests", "0 9 * * *", "pnpm test", "C:/repo");
+
+    expect(task).toMatchObject({
+      id: "12345678",
+      kind: "process",
+      prompt: "pnpm test",
+      command: "pnpm test",
+      cwd: "C:/repo",
+      cron: "0 9 * * *",
+      enabled: true,
+    });
+    expect(writeFile).toHaveBeenCalledWith(expect.stringContaining("scheduled-tasks.json"), expect.stringContaining('"kind": "process"'));
+  });
+});

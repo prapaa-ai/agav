@@ -13,6 +13,30 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { decrypt } from "../utils/encrypt.js";
 
+/** Token accounting for a single agent invocation. */
+export interface AgentRunUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+export interface AgentRunResult {
+  output: string;
+  usage: AgentRunUsage;
+  /**
+   * For external (A2A) agents: whether the agent actually reported usage.
+   * False means the agent returned nothing, not that it used zero tokens.
+   */
+  usageReported?: boolean;
+  /** Token budget the external agent reported for itself, when provided. */
+  tokenBudget?: { limit?: number; used?: number; remaining?: number; period?: string };
+}
+
+export function emptyAgentUsage(): AgentRunUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+}
+
 // AgavHooks type - defined locally since it's not exported from hooks.js
 interface AgavHooks {
   afterEdit?: string;
@@ -63,9 +87,9 @@ async function loadAgentCredentials(agentPath: string, agentName?: string): Prom
 }
 
 /**
- * Execute a native agent (JS/TS in-process)
+ * Execute a native agent and report token usage alongside the output.
  */
-export async function executeNativeAgent(
+export async function executeNativeAgentDetailed(
   agent: AgentDefinition,
   task: string,
   deps: {
@@ -80,8 +104,10 @@ export async function executeNativeAgent(
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<import("../agent/loop.js").ConfirmResult>;
     /** Explicit mode for direct executions such as a full-access agent lock. */
     permissionMode?: PermissionMode;
+    /** Deduplicates a retried invocation of the same logical unit of work. */
+    idempotencyKey?: string;
   }
-): Promise<string> {
+): Promise<AgentRunResult> {
   const callId = `${agent.manifest.name}-${randomUUID().slice(0, 8)}`;
 
   // Load per-agent runtime config: credentials + optional model/effort overrides.
@@ -125,7 +151,17 @@ export async function executeNativeAgent(
     for (const tool of agent.tools) {
       childRegistry.register({
         schema: tool.schema,
-        execute: (input, context) => tool.execute(input, { ...context, env: runtimeConfig }),
+        // Forward the whole context so signal and any future fields reach the tool.
+        // The idempotency key is scoped per tool so distinct calls within one node
+        // cannot collide with each other.
+        execute: (input, context) =>
+          tool.execute(input, {
+            ...context,
+            env: runtimeConfig,
+            idempotencyKey: deps.idempotencyKey
+              ? `${deps.idempotencyKey}:${tool.schema.name}`
+              : undefined,
+          }),
       });
     }
 
@@ -143,6 +179,7 @@ export async function executeNativeAgent(
 
     let output = "";
     let loopError: Error | null = null;
+    const usage = emptyAgentUsage();
 
     const loopGenerator = runAgentLoop({
       provider: deps.provider,
@@ -171,6 +208,11 @@ export async function executeNativeAgent(
         }
       } else if (event.type === "error") {
         loopError = event.error;
+      } else if (event.type === "usage") {
+        usage.inputTokens += event.inputTokens;
+        usage.outputTokens += event.outputTokens;
+        usage.cacheReadTokens += event.cacheReadTokens ?? 0;
+        usage.cacheWriteTokens += event.cacheWriteTokens ?? 0;
       }
     }
 
@@ -178,7 +220,7 @@ export async function executeNativeAgent(
       throw loopError;
     }
 
-    return output || "Agent completed with no output.";
+    return { output: output || "Agent completed with no output.", usage };
   } finally {
     deps.onProgressUpdate?.(callId, { type: "turn_complete" });
 
@@ -189,14 +231,46 @@ export async function executeNativeAgent(
 }
 
 /**
- * Execute an A2A agent (external process via HTTP)
+ * Execute a native agent, returning only its output text.
+ *
+ * Callers that need token accounting should use executeNativeAgentDetailed.
+ */
+export async function executeNativeAgent(
+  agent: AgentDefinition,
+  task: string,
+  deps: Parameters<typeof executeNativeAgentDetailed>[2],
+): Promise<string> {
+  const result = await executeNativeAgentDetailed(agent, task, deps);
+  return result.output;
+}
+
+/**
+ * Execute an A2A agent and report any usage the agent returned.
+ */
+export async function executeA2AAgentDetailed(
+  agent: AgentDefinition,
+  task: string,
+  options: { signal?: AbortSignal; context?: Record<string, unknown> } = {},
+): Promise<AgentRunResult> {
+  const { executeA2AAgentDetailed: a2aExecute } = await import("./a2a-client.js");
+
+  const result = await a2aExecute(agent, task, options.context, options.signal);
+  return {
+    output: result.output,
+    usage: result.usage,
+    usageReported: result.usageReported,
+    tokenBudget: result.tokenBudget,
+  };
+}
+
+/**
+ * Execute an A2A agent, returning only its output text.
  */
 export async function executeA2AAgent(
   agent: AgentDefinition,
-  task: string
+  task: string,
+  options: { signal?: AbortSignal; context?: Record<string, unknown> } = {},
 ): Promise<string> {
-  const { executeA2AAgent: a2aExecute } = await import("./a2a-client.js");
-
-  const output = await a2aExecute(agent, task);
-  return output;
+  const result = await executeA2AAgentDetailed(agent, task, options);
+  return result.output;
 }
