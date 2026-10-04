@@ -211,7 +211,8 @@ export function stopAllA2AAgents(): void {
 export async function executeA2AAgent(
   agent: AgentDefinition,
   task: string,
-  context?: Record<string, unknown>
+  context?: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<string> {
   const key = agent.alias || agent.manifest.name;
 
@@ -238,7 +239,7 @@ export async function executeA2AAgent(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(request),
-      signal: AbortSignal.timeout(30_000),
+      signal: signal ?? AbortSignal.timeout(30_000),
     });
 
     if (!response.ok) {

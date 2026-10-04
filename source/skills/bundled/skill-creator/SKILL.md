@@ -39,7 +39,7 @@ Create a new skill for agav: a directory containing a SKILL.md file with YAML fr
 
 5. Rules that matter:
    - `description` is the trigger — write it as "does X for Y situations", not marketing copy.
-   - Allowed tools are validated against agav's known tools: read_file, write_file, edit_file, run_command, grep_search, find_files, list_directory, web_search, lsp_query, read_notebook, edit_notebook, fetch_url, update_plan, github, overview, run_tests, save_memory, subagent, activate_skill. An unknown name silently drops that tool.
+   - Allowed tools are validated against agav's known tools: read_file, write_file, edit_file, run_command, grep_search, find_files, list_directory, web_search, lsp_query, read_notebook, edit_notebook, fetch_url, update_plan, github, overview, run_tests, save_memory, process, subagent, activate_skill. An unknown name silently drops that tool.
    - The body is instructions to the agent. Number the steps. State what to do when inputs are missing, and what NOT to do (never invent data, never overwrite originals).
    - The body must not contain prompt-injection phrasing or destructive shell patterns (e.g. force-deleting from filesystem root, piping downloads into a shell) — validation rejects those patterns and such examples trip the scanner even in prose.
    - Keep the whole file under 64KB; a focused skill beats a sprawling one.

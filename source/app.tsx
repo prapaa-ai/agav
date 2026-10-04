@@ -47,6 +47,7 @@ import type { OpenRef } from "./utils/open-ref.js";
 import AttachmentPreview, { type PreviewContent } from "./components/attachment-preview.js";
 import { readFileContext } from "./utils/file-context.js";
 import { spoolImageToTempFile } from "./utils/open-external.js";
+import { processTool } from "./tools/process.js";
 
 import type { Message } from "./providers/types.js";
 
@@ -506,16 +507,30 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           if (!task.enabled) continue;
           if (cronMatches(task.cron, now)) {
             await markTaskRun(task.id);
-            submit(task.prompt, undefined, undefined, undefined, {
-              source: "schedule",
-              detail: `${task.name} · cron ${task.cron}`,
-            });
+            if (task.kind === "process") {
+              const result = await processTool.execute({
+                action: "start",
+                command: task.command ?? task.prompt,
+                cwd: task.cwd ?? process.cwd(),
+              });
+              addDisplayMessage({
+                id: `sys-${++sysMessageId}`,
+                role: "system",
+                content: `Scheduled background process "${task.name}" · cron ${task.cron}\n${result.output}`,
+                isError: result.isError,
+              });
+            } else {
+              submit(task.prompt, undefined, undefined, undefined, {
+                source: "schedule",
+                detail: `${task.name} · cron ${task.cron}`,
+              });
+            }
           }
         }
       } catch {}
     }, 30_000);
     return () => clearInterval(checker);
-  }, [submit]);
+  }, [addDisplayMessage, submit]);
 
   const hasSubagents = isLoading && subagentStates.length > 0;
 

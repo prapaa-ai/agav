@@ -80,6 +80,8 @@ export async function executeNativeAgent(
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<import("../agent/loop.js").ConfirmResult>;
     /** Explicit mode for direct executions such as a full-access agent lock. */
     permissionMode?: PermissionMode;
+    /** Deduplicates a retried invocation of the same logical unit of work. */
+    idempotencyKey?: string;
   }
 ): Promise<string> {
   const callId = `${agent.manifest.name}-${randomUUID().slice(0, 8)}`;
@@ -193,10 +195,11 @@ export async function executeNativeAgent(
  */
 export async function executeA2AAgent(
   agent: AgentDefinition,
-  task: string
+  task: string,
+  options: { signal?: AbortSignal; context?: Record<string, unknown> } = {},
 ): Promise<string> {
   const { executeA2AAgent: a2aExecute } = await import("./a2a-client.js");
 
-  const output = await a2aExecute(agent, task);
+  const output = await a2aExecute(agent, task, options.context, options.signal);
   return output;
 }

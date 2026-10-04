@@ -39,7 +39,7 @@ const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
-  "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns",
+  "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--input",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -195,6 +195,11 @@ export function parseArgs(argv: string[]) {
       flags.skills = true;
       if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
         flags.skillsCommand = argv[++i]!;
+      }
+    } else if (arg === "workflows" && i === 0) {
+      flags.workflows = true;
+      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
+        flags.workflowsCommand = argv[++i]!;
       }
     } else if (arg === "run" && i === 0) {
       flags.run = true;
@@ -405,6 +410,7 @@ export async function main() {
     $ agav update                  Update to the latest version
     $ agav agents [command]        Manage service agents
     $ agav skills [command]        Manage skills
+    $ agav workflows [command]     Manage workflow runs
     $ agav --print "prompt"
     $ cat file | agav -P "explain this"
 
@@ -441,6 +447,12 @@ export async function main() {
     $ agav skills disable <name>   Disable a skill (bundled skills included)
     $ agav skills enable <name>    Re-enable a disabled skill
     $ agav skills clear            Remove all user-installed skills
+
+  Workflow Commands
+    $ agav workflows list          List workflow definitions
+    $ agav workflows run <name>    Run a workflow
+    $ agav workflows status <id>   Show workflow run status
+    $ agav workflows resume <id>   Resume a workflow run
 
   Examples
     $ agav
@@ -496,6 +508,19 @@ export async function main() {
       ? skillsIdx + (skillsCommand ? 2 : 1)
       : (skillsCommand ? 4 : 3);
     const exitCode = await runSkillsCommand(skillsCommand, process.argv.slice(argsStartIndex));
+    process.exit(exitCode);
+    return;
+  }
+
+  // Workflow management: agav workflows <command>
+  if (flags.workflows) {
+    const { runWorkflowsCommand } = await import("./cli/workflows-cli.js");
+    const workflowsCommand = typeof flags.workflowsCommand === "string" ? flags.workflowsCommand : undefined;
+    const workflowsIdx = process.argv.indexOf("workflows");
+    const argsStartIndex = workflowsIdx >= 0
+      ? workflowsIdx + (workflowsCommand ? 2 : 1)
+      : (workflowsCommand ? 4 : 3);
+    const exitCode = await runWorkflowsCommand(workflowsCommand, process.argv.slice(argsStartIndex));
     process.exit(exitCode);
     return;
   }
