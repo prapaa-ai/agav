@@ -1,5 +1,4 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
-import { basename } from "node:path";
 import { Box, Text, ScrollBox, Spinner, useInput, useApp, useStdout, measureElement } from "./ink/index.js";
 import type { DOMElement, ScrollBoxControls, WheelEventData } from "./ink/index.js";
 import MessageList from "./components/message-list.js";
@@ -24,7 +23,6 @@ import { isInternalUserMessage } from "./agent/internal-prompts.js";
 import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
-import { saveSession } from "./config/history.js";
 import {
   type Attachment,
   createTextAttachment,
@@ -193,6 +191,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     isGenerationPaused,
     togglePause,
     interveneWhilePaused,
+    iterationsBudget
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
   /**
@@ -512,7 +511,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             });
           }
         }
-      } catch {}
+      } catch { }
     }, 30_000);
     return () => clearInterval(checker);
   }, [submit]);
@@ -728,7 +727,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           const extraBlocks: ContentBlock[] = attachments.map((attachment) => ({ ...attachment.contentBlock }));
           const llmText = trimmed || "See attached content";
           const imageIds = attachments.filter((a) => a.kind === "image").map((a) => a.id);
-          if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => {});
+          if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => { });
           setInput("");
           setAttachments([]);
           lastPasteRef.current = null;
@@ -813,7 +812,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             skillsTUIResolveRef.current = onDone;
             setSkillsTUIActive(true);
           },
-        });
+          iterationsBudget: iterationsBudget
+        },);
 
         setRunningSkillName(null);
 
@@ -881,7 +881,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       // rest of the session. Image bytes are spooled to disk and dropped from
       // memory now that the base64 payload has already gone to the provider.
       const imageIds = attachments.filter((a) => a.kind === "image").map((a) => a.id);
-      if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => {});
+      if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => { });
       setInput("");
       setAttachments([]);
       // The tile a tracked paste made is gone now that the buffer is cleared;
@@ -947,39 +947,39 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         put instead of drifting.
       */}
       <ScrollBox height={documentHeight} stickToBottom={false} controls={docControls}>
-      {displayError && (
-        <Box marginBottom={1} flexShrink={0}>
-          <Text color="red">Error: {terminalRelativePaths(displayError)}</Text>
-        </Box>
-      )}
+        {displayError && (
+          <Box marginBottom={1} flexShrink={0}>
+            <Text color="red">Error: {terminalRelativePaths(displayError)}</Text>
+          </Box>
+        )}
 
-      <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} columns={termCols} onOpenRef={handleOpenRef} />
+        <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} columns={termCols} onOpenRef={handleOpenRef} />
 
-      {systemMessages.length > 0 && (
-        <Box marginBottom={1} flexDirection="column">
-          {systemMessages.map((msg) => {
-            const displayContent = terminalRelativePaths(msg.content);
-            const hasMarkdown = /^#{1,3}\s|^\*\*|\*\*$|^- \*\*|```/.test(displayContent);
-            if (hasMarkdown && displayContent.length > 200) {
+        {systemMessages.length > 0 && (
+          <Box marginBottom={1} flexDirection="column">
+            {systemMessages.map((msg) => {
+              const displayContent = terminalRelativePaths(msg.content);
+              const hasMarkdown = /^#{1,3}\s|^\*\*|\*\*$|^- \*\*|```/.test(displayContent);
+              if (hasMarkdown && displayContent.length > 200) {
+                return (
+                  <Box key={msg.id} flexDirection="column">
+                    <Text dimColor>{renderMarkdown(displayContent)}</Text>
+                  </Box>
+                );
+              }
+              const lines = displayContent.split("\n");
               return (
                 <Box key={msg.id} flexDirection="column">
-                  <Text dimColor>{renderMarkdown(displayContent)}</Text>
+                  {lines.map((line, i) => (
+                    <Text key={i} dimColor={!msg.isError} color={msg.isError ? "red" : undefined}>
+                      {line || " "}
+                    </Text>
+                  ))}
                 </Box>
               );
-            }
-            const lines = displayContent.split("\n");
-            return (
-              <Box key={msg.id} flexDirection="column">
-                {lines.map((line, i) => (
-                  <Text key={i} dimColor={!msg.isError} color={msg.isError ? "red" : undefined}>
-                    {line || " "}
-                  </Text>
-                ))}
-              </Box>
-            );
-          })}
-        </Box>
-      )}
+            })}
+          </Box>
+        )}
 
       {runningSkillName && (
         <Box marginBottom={1} flexDirection="column">
@@ -997,124 +997,124 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         </Box>
       )}
 
-      {activePlan && activePlan.steps.length > 0 && (
-        <Box flexDirection="column" marginBottom={1} marginLeft={2}>
-          <Text bold dimColor>Plan: {terminalRelativePaths(activePlan.goal)}</Text>
-          {activePlan.steps.map((step) => {
-            const icon = step.status === "done" ? "\x1b[32m✓\x1b[0m"
-              : step.status === "in_progress" ? "\x1b[36m◉\x1b[0m"
-              : step.status === "failed" ? "\x1b[31m✗\x1b[0m"
-              : "○";
-            const textColor = step.status === "done" ? "green"
-              : step.status === "in_progress" ? "cyan"
-              : step.status === "failed" ? "red"
-              : undefined;
-            return (
-              <Text key={step.id} dimColor={step.status === "done"} color={textColor as any}>
-                {`  ${icon} Step ${step.id}: ${terminalRelativePaths(step.title)}`}
-              </Text>
-            );
-          })}
-          {(() => {
-            const done = activePlan.steps.filter((s) => s.status === "done").length;
-            const total = activePlan.steps.length;
-            const progress = done === total
-              ? <Text color="green">{`  ✓ All ${total} steps complete`}</Text>
-              : <Text dimColor>{`  ${done}/${total} complete`}</Text>;
-            if (showPlanDetail) return progress;
-            return (
-              <>
-                {progress}
-                <Text dimColor italic>{`  ${formatKeybinding(keybindings, "togglePlanDetail")}: full plan`}</Text>
-              </>
-            );
-          })()}
-        </Box>
-      )}
-
-      {showCompactionSummary && conversation.lastCompactionSummary && (
-        <Box flexDirection="column" marginBottom={1} marginLeft={2} borderStyle="single" borderColor="gray" paddingX={1}>
-          <Text bold dimColor>Compaction Summary</Text>
-          <Text dimColor>{terminalRelativePaths(conversation.lastCompactionSummary)}</Text>
-          <Text dimColor italic>{"\n"}Ctrl+O to close</Text>
-        </Box>
-      )}
-
-      {isLoading && (() => {
-        const focusedSubagent = focusedSubagentId
-          ? subagentStates.find((s) => s.id === focusedSubagentId)
-          : null;
-
-        if (focusedSubagent) {
-          return (
-            <Box flexDirection="column" marginBottom={1}>
-              <SubagentDisplay progress={focusedSubagent} mode="detail" />
-              <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cancel")}: cancel this subagent · Tab: back to overview</Text>
-            </Box>
-          );
-        }
-
-        return (
-          <Box flexDirection="column" marginBottom={1}>
-            {toolCalls
-              .filter((tc) => tc.toolName !== "subagent")
-              .map((tc, i) => (
-                <ToolCallDisplay key={`${tc.toolName}-${i}`} toolCall={tc} />
-              ))}
-            {subagentStates.map((sa, i) => {
-              const isSelected = i === selectedSubagentIdx;
+        {activePlan && activePlan.steps.length > 0 && (
+          <Box flexDirection="column" marginBottom={1} marginLeft={2}>
+            <Text bold dimColor>Plan: {terminalRelativePaths(activePlan.goal)}</Text>
+            {activePlan.steps.map((step) => {
+              const icon = step.status === "done" ? "\x1b[32m✓\x1b[0m"
+                : step.status === "in_progress" ? "\x1b[36m◉\x1b[0m"
+                  : step.status === "failed" ? "\x1b[31m✗\x1b[0m"
+                    : "○";
+              const textColor = step.status === "done" ? "green"
+                : step.status === "in_progress" ? "cyan"
+                  : step.status === "failed" ? "red"
+                    : undefined;
               return (
-                <Box key={sa.id}>
-                  {isSelected ? <Text color="cyan">{"▸ "}</Text> : <Text>{"  "}</Text>}
-                  <SubagentDisplay progress={sa} mode="compact" index={i} />
-                </Box>
+                <Text key={step.id} dimColor={step.status === "done"} color={textColor as any}>
+                  {`  ${icon} Step ${step.id}: ${terminalRelativePaths(step.title)}`}
+                </Text>
               );
             })}
             {(() => {
-              const pendingSubagents = toolCalls.filter((tc) => tc.toolName === "subagent" && tc.status === "running");
-              const spawning = pendingSubagents.length > 0 && subagentStates.length === 0;
-              if (spawning) {
-                const count = pendingSubagents.length;
+              const done = activePlan.steps.filter((s) => s.status === "done").length;
+              const total = activePlan.steps.length;
+              const progress = done === total
+                ? <Text color="green">{`  ✓ All ${total} steps complete`}</Text>
+                : <Text dimColor>{`  ${done}/${total} complete`}</Text>;
+              if (showPlanDetail) return progress;
+              return (
+                <>
+                  {progress}
+                  <Text dimColor italic>{`  ${formatKeybinding(keybindings, "togglePlanDetail")}: full plan`}</Text>
+                </>
+              );
+            })()}
+          </Box>
+        )}
+
+        {showCompactionSummary && conversation.lastCompactionSummary && (
+          <Box flexDirection="column" marginBottom={1} marginLeft={2} borderStyle="single" borderColor="gray" paddingX={1}>
+            <Text bold dimColor>Compaction Summary</Text>
+            <Text dimColor>{terminalRelativePaths(conversation.lastCompactionSummary)}</Text>
+            <Text dimColor italic>{"\n"}Ctrl+O to close</Text>
+          </Box>
+        )}
+
+        {isLoading && (() => {
+          const focusedSubagent = focusedSubagentId
+            ? subagentStates.find((s) => s.id === focusedSubagentId)
+            : null;
+
+          if (focusedSubagent) {
+            return (
+              <Box flexDirection="column" marginBottom={1}>
+                <SubagentDisplay progress={focusedSubagent} mode="detail" />
+                <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cancel")}: cancel this subagent · Tab: back to overview</Text>
+              </Box>
+            );
+          }
+
+          return (
+            <Box flexDirection="column" marginBottom={1}>
+              {toolCalls
+                .filter((tc) => tc.toolName !== "subagent")
+                .map((tc, i) => (
+                  <ToolCallDisplay key={`${tc.toolName}-${i}`} toolCall={tc} />
+                ))}
+              {subagentStates.map((sa, i) => {
+                const isSelected = i === selectedSubagentIdx;
                 return (
-                  <Box>
-                    <Text dimColor>{"  "}</Text>
-                    <Text color="cyan"><Spinner />{" "}</Text>
-                    <Text dimColor>Spawning {count} subagent{count !== 1 ? "s" : ""}...</Text>
+                  <Box key={sa.id}>
+                    {isSelected ? <Text color="cyan">{"▸ "}</Text> : <Text>{"  "}</Text>}
+                    <SubagentDisplay progress={sa} mode="compact" index={i} />
                   </Box>
                 );
-              }
-              return null;
-            })()}
-            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} isPaused={isGenerationPaused} />
-            {hasSubagents && (
-              <Text dimColor>{"\n  "}↑↓: select · Enter: inspect · {formatKeybinding(keybindings, "cancel")}: cancel all</Text>
-            )}
-          </Box>
-        );
-      })()}
+              })}
+              {(() => {
+                const pendingSubagents = toolCalls.filter((tc) => tc.toolName === "subagent" && tc.status === "running");
+                const spawning = pendingSubagents.length > 0 && subagentStates.length === 0;
+                if (spawning) {
+                  const count = pendingSubagents.length;
+                  return (
+                    <Box>
+                      <Text dimColor>{"  "}</Text>
+                      <Text color="cyan"><Spinner />{" "}</Text>
+                      <Text dimColor>Spawning {count} subagent{count !== 1 ? "s" : ""}...</Text>
+                    </Box>
+                  );
+                }
+                return null;
+              })()}
+              <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} isPaused={isGenerationPaused} />
+              {hasSubagents && (
+                <Text dimColor>{"\n  "}↑↓: select · Enter: inspect · {formatKeybinding(keybindings, "cancel")}: cancel all</Text>
+              )}
+            </Box>
+          );
+        })()}
 
-      {showToolDetail && toolMessages.length > 0 && (
-        <ToolDetailPanel
-          tools={toolMessages}
-          closeKey={formatKeybinding(keybindings, "toggleToolDetail")}
-        />
-      )}
+        {showToolDetail && toolMessages.length > 0 && (
+          <ToolDetailPanel
+            tools={toolMessages}
+            closeKey={formatKeybinding(keybindings, "toggleToolDetail")}
+          />
+        )}
 
-      {showPlanDetail && activePlan && (
-        <PlanDetailPanel
-          plan={activePlan}
-          closeKey={formatKeybinding(keybindings, "togglePlanDetail")}
-        />
-      )}
+        {showPlanDetail && activePlan && (
+          <PlanDetailPanel
+            plan={activePlan}
+            closeKey={formatKeybinding(keybindings, "togglePlanDetail")}
+          />
+        )}
 
-      {preview && (
-        <AttachmentPreview
-          content={preview}
-          closeKey="Esc"
-          copyKey="c"
-          columns={termCols}
-        />
-      )}
+        {preview && (
+          <AttachmentPreview
+            content={preview}
+            closeKey="Esc"
+            copyKey="c"
+            columns={termCols}
+          />
+        )}
       </ScrollBox>
 
       {/*
@@ -1124,111 +1124,111 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         they can't see.
       */}
       <Box flexDirection="column" flexShrink={0} ref={footerRef}>
-      {pendingConfirmation && (
-        <ToolConfirm
-          toolName={pendingConfirmation.toolName}
-          input={pendingConfirmation.input}
-          diffLines={pendingConfirmation.diffLines}
-          mcpServerName={pendingConfirmation.mcpServerName}
-          onConfirm={confirmTool}
-          subagentTask={pendingConfirmation.subagentTask}
-          keybindings={keybindings}
-        />
-      )}
+        {pendingConfirmation && (
+          <ToolConfirm
+            toolName={pendingConfirmation.toolName}
+            input={pendingConfirmation.input}
+            diffLines={pendingConfirmation.diffLines}
+            mcpServerName={pendingConfirmation.mcpServerName}
+            onConfirm={confirmTool}
+            subagentTask={pendingConfirmation.subagentTask}
+            keybindings={keybindings}
+          />
+        )}
 
-      {agentsTUIActive && (
-        <AgentsTUI
-          onExit={() => {
-            setAgentsTUIActive(false);
-            setPickerActive(false);
-            setInput(""); // clear any paste that leaked into InputPrompt while wizard was active
-            const resolve = agentsTUIResolveRef.current;
-            agentsTUIResolveRef.current = null;
-            resolve?.();
-            refreshAgentCommands();
-          }}
-          provider={activeProvider}
-          config={config}
-        />
-      )}
-      {skillsTUIActive && (
-        <SkillsTUI
-          onExit={() => {
-            setSkillsTUIActive(false);
-            setPickerActive(false);
-            setInput("");
-            const resolve = skillsTUIResolveRef.current;
-            skillsTUIResolveRef.current = null;
-            resolve?.();
-          }}
-        />
-      )}
+        {agentsTUIActive && (
+          <AgentsTUI
+            onExit={() => {
+              setAgentsTUIActive(false);
+              setPickerActive(false);
+              setInput(""); // clear any paste that leaked into InputPrompt while wizard was active
+              const resolve = agentsTUIResolveRef.current;
+              agentsTUIResolveRef.current = null;
+              resolve?.();
+              refreshAgentCommands();
+            }}
+            provider={activeProvider}
+            config={config}
+          />
+        )}
+        {skillsTUIActive && (
+          <SkillsTUI
+            onExit={() => {
+              setSkillsTUIActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = skillsTUIResolveRef.current;
+              skillsTUIResolveRef.current = null;
+              resolve?.();
+            }}
+          />
+        )}
 
-      {!pendingConfirmation && (
-        <Box marginTop={1}><InputPrompt
-          value={input}
-          onChange={(value) => {
-            // A matching paste only expands the tile it just created. Once
-            // the prompt has changed, an identical paste elsewhere is a new
-            // attachment rather than an instruction to replace that tile.
-            lastPasteRef.current = null;
-            setInput(value);
-          }}
-          onSubmit={handleSubmit}
-          onPaste={handlePaste}
-          onRemoveAttachment={() => {
-            setAttachments((prev) => prev.slice(0, -1));
-            lastPasteRef.current = null;
-          }}
-          onClearAttachments={() => {
-            setAttachments([]);
-            lastPasteRef.current = null;
-          }}
-          onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
-          onRegisterExpand={(fn) => { expandTileRef.current = fn; }}
-          onOpenAttachment={handleOpenAttachment}
-          disabled={pickerActive}
-          suppressHistory={isLoading}
-          commands={[
-            { name: "ps", description: "Side query while agent is working" },
-            ...commandRegistryRef.current.list().map((c) => ({
+        {!pendingConfirmation && (
+          <Box marginTop={1}><InputPrompt
+            value={input}
+            onChange={(value) => {
+              // A matching paste only expands the tile it just created. Once
+              // the prompt has changed, an identical paste elsewhere is a new
+              // attachment rather than an instruction to replace that tile.
+              lastPasteRef.current = null;
+              setInput(value);
+            }}
+            onSubmit={handleSubmit}
+            onPaste={handlePaste}
+            onRemoveAttachment={() => {
+              setAttachments((prev) => prev.slice(0, -1));
+              lastPasteRef.current = null;
+            }}
+            onClearAttachments={() => {
+              setAttachments([]);
+              lastPasteRef.current = null;
+            }}
+            onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
+            onRegisterExpand={(fn) => { expandTileRef.current = fn; }}
+            onOpenAttachment={handleOpenAttachment}
+            disabled={pickerActive}
+            suppressHistory={isLoading}
+            commands={[
+              { name: "ps", description: "Side query while agent is working" },
+              ...commandRegistryRef.current.list().map((c) => ({
+                name: c.name,
+                description: c.description,
+                category: c.description.startsWith("[agent]") ? "agent" as const : "command" as const,
+              })),
+            ]}
+            keybindings={keybindings}
+            enhancedKeyboard={enhancedKeyboard}
+            resumeUserMessages={resumeUserMessages}
+            agentLock={agentLockState?.name}
+            agentNames={agentCommands.map((c) => ({
               name: c.name,
-              description: c.description,
-              category: c.description.startsWith("[agent]") ? "agent" as const : "command" as const,
-            })),
-          ]}
-          keybindings={keybindings}
-          enhancedKeyboard={enhancedKeyboard}
-          resumeUserMessages={resumeUserMessages}
-          agentLock={agentLockState?.name}
-          agentNames={agentCommands.map((c) => ({
-            name: c.name,
-            description: c.description.replace("[agent] ", ""),
-          }))}
-        /></Box>
-      )}
+              description: c.description.replace("[agent] ", ""),
+            }))}
+          /></Box>
+        )}
 
-      <StatusBar
-        isPaused={isGenerationPaused || !!pendingConfirmation}
-        model={config.model}
-        provider={config.provider}
-        effort={config.effort}
-        messageCount={messages.filter((m) => m.role === "user").length}
-        inputTokens={tokenUsage.inputTokens}
-        outputTokens={tokenUsage.outputTokens}
-        cacheReadTokens={tokenUsage.cacheReadTokens}
-        cacheWriteTokens={tokenUsage.cacheWriteTokens}
-        hint={useMemo(() => getRandomHint(keybindings, enhancedKeyboard), [messages.length, keybindings, enhancedKeyboard])}
-        psResponse={psResponse}
-        psLoading={psLoading}
-        loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
-        sandboxBackend={getSandboxName()}
-        branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
-        turnStartTime={turnStartTime}
-        lastTurnDurationMs={lastTurnDurationMs}
-        isLoading={isLoading}
-        agentLock={agentLockState ?? undefined}
-      />
+        <StatusBar
+          isPaused={isGenerationPaused || !!pendingConfirmation}
+          model={config.model}
+          provider={config.provider}
+          effort={config.effort}
+          messageCount={messages.filter((m) => m.role === "user").length}
+          inputTokens={tokenUsage.inputTokens}
+          outputTokens={tokenUsage.outputTokens}
+          cacheReadTokens={tokenUsage.cacheReadTokens}
+          cacheWriteTokens={tokenUsage.cacheWriteTokens}
+          hint={useMemo(() => getRandomHint(keybindings, enhancedKeyboard), [messages.length, keybindings, enhancedKeyboard])}
+          psResponse={psResponse}
+          psLoading={psLoading}
+          loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
+          sandboxBackend={getSandboxName()}
+          branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
+          turnStartTime={turnStartTime}
+          lastTurnDurationMs={lastTurnDurationMs}
+          isLoading={isLoading}
+          agentLock={agentLockState ?? undefined}
+        />
       </Box>
     </Box>
   );

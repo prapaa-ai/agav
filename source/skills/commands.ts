@@ -1,6 +1,6 @@
 import type { SlashCommand, CommandResult, CommandContext } from "../commands/types.js";
 import type { SkillDefinition } from "./types.js";
-import { loadSkills, loadAllSkills, getSkill } from "./loader.js";
+import {  loadAllSkills, getSkill } from "./loader.js";
 import { executeSkill } from "./executor.js";
 import { installFromUrl, installFromPath, removeSkill, clearSkills } from "./marketplace.js";
 import { setSkillEnabled } from "./skill-registry.js";
@@ -26,7 +26,7 @@ export function createSkillSlashCommand(skill: SkillDefinition): SlashCommand {
             systemPrompt: context.config.systemPrompt ?? "",
             permissionMode: context.config.permissionMode,
             effort: context.config.effort,
-            maxIterations: context.config.maxIterations,
+            iterationsBudget: { remaining: context.config.maxIterations, total: context.config.maxIterations },
             onTokenUsage: context.addTokenUsage,
             onEvent: context.createSkillProgressTracker?.(skill.name, args.trim() || skill.description),
           });

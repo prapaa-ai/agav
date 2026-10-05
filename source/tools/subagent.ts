@@ -20,7 +20,7 @@ export interface SubagentToolDeps {
     systemPrompt: string;
     permissionMode: PermissionMode;
     effort: EffortLevel;
-    maxIterations: number;
+    iterationsBudget: { remaining: number, total: number }
   };
   confirmationQueue: ConfirmationQueue;
   onProgressUpdate: (subagents: SubagentProgress[]) => void;
@@ -126,7 +126,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         config.systemPrompt,
         "",
         "You are a subagent working on a specific task. Complete it thoroughly and report your results. " +
-          "Do not ask questions — work with the information provided. Be concise in your final response.",
+        "Do not ask questions — work with the information provided. Be concise in your final response.",
         steers ? "\n" + steers : "",
       ]
         .filter(Boolean)
@@ -178,7 +178,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         if (childController.signal.aborted) {
           if (worktreePath) {
             process.chdir(originalCwd);
-            await removeWorktree(worktreePath, branchName).catch(() => {});
+            await removeWorktree(worktreePath, branchName).catch(() => { });
           }
           progress.status = "error";
           progress.error = "Cancelled";
@@ -212,7 +212,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           confirmTool,
           permissionMode: config.permissionMode,
           effort: config.effort,
-          maxIterations: config.maxIterations,
+          iterationsBudget: config.iterationsBudget,
         });
 
         const MAX_RECENT_ACTIONS = 10;
@@ -309,7 +309,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
               broadcastNow();
               if (worktreePath) {
                 process.chdir(originalCwd);
-                await removeWorktree(worktreePath, branchName).catch(() => {});
+                await removeWorktree(worktreePath, branchName).catch(() => { });
               }
               return {
                 output: `Subagent error: ${event.error.message}`,
@@ -329,7 +329,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
               mergeNote = `\n\n[Worktree merge warning]: ${mergeErr}`;
             }
           }
-          await removeWorktree(worktreePath, branchName).catch(() => {});
+          await removeWorktree(worktreePath, branchName).catch(() => { });
         }
 
         if (childController.signal.aborted) {
@@ -368,7 +368,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
 
         if (worktreePath) {
           process.chdir(originalCwd);
-          await removeWorktree(worktreePath, branchName).catch(() => {});
+          await removeWorktree(worktreePath, branchName).catch(() => { });
         }
 
         setTimeout(() => {
