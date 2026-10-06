@@ -139,20 +139,31 @@ describe("commands/copy", () => {
     expect(writeClipboardMock).toHaveBeenCalledWith(process.stdout, "block 1\nblock 2");
   });
 
-  it("reports an error if the selected assistant message has no text blocks", async () => {
+  it("tool-only assistant messages do not consume an N slot", async () => {
+    // History: [text answer 1] [tool-only turn] [text answer 2]
+    // /copy 2 must skip the tool-only turn and reach "first response".
     const messages: Message[] = [
-      { 
-        role: "assistant", 
-        content: [
-          { type: "tool_use", id: "123", name: "test", input: {} },
-        ] 
+      { role: "assistant", content: [{ type: "text", text: "first response" }] } as any,
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", toolCallId: "t1", toolName: "shell", toolInput: {} }],
       } as any,
+      { role: "assistant", content: [{ type: "text", text: "second response" }] } as any,
     ];
     const context = createContext(messages);
-    const result = await copyCommand.execute("", context);
 
-    expect(result.type).toBe("message");
-    expect((result as any).text).toContain("contains no text");
-    expect(writeClipboardMock).not.toHaveBeenCalled();
+    const latestResult = await copyCommand.execute("", context);
+    expect(writeClipboardMock).toHaveBeenCalledWith(process.stdout, "second response");
+
+    vi.clearAllMocks();
+
+    const prevResult = await copyCommand.execute("2", context);
+    expect(writeClipboardMock).toHaveBeenCalledWith(process.stdout, "first response");
+    expect((prevResult as any).text).toBe("Copied response -2 to clipboard.");
+
+    // Only 2 text-bearing messages exist; N=3 should report that.
+    const overResult = await copyCommand.execute("3", context);
+    expect((overResult as any).text).toContain("only 2 assistant messages available");
+    expect(writeClipboardMock).toHaveBeenCalledTimes(1);
   });
 });
