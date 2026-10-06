@@ -35,7 +35,7 @@ const baseDeps = {
   systemPrompt: "",
   permissionMode: "ask" as const,
   effort: "medium" as const,
-  maxIterations: 1,
+  iterationsBudget: {remaining : 1,total : 1},
 };
 
 const skill: SkillDefinition = {
@@ -63,7 +63,7 @@ describe("skills/executor", () => {
       systemPrompt: "",
       permissionMode: "ask",
       effort: "medium",
-      maxIterations: 1,
+      iterationsBudget: {remaining : 1,total : 1},
       onTokenUsage,
     });
 

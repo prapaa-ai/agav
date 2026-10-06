@@ -46,7 +46,7 @@ describe("skills/commands", () => {
         systemPrompt: "",
         permissionMode: "ask",
         effort: "medium",
-        maxIterations: 1,
+        iterationsBudget: { remaining: 3 , total : 3},
       } as any,
       setModel: vi.fn(),
       setProvider: vi.fn(),
