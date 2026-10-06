@@ -2,13 +2,15 @@
  * Agent registry - manages ~/.agav/agents/registry.json
  */
 
-import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
 import type { AgentRegistry, AgentRegistryEntry } from "./types.js";
 
-const REGISTRY_PATH = join(homedir(), ".agav", "agents", "registry.json");
+function registryPath(): string {
+  return join(homedir(), ".agav", "agents", "registry.json");
+}
 
 // In-process mutex only — does not protect against concurrent CLI processes.
 // The atomic temp-file-then-rename in saveRegistry prevents file corruption,
@@ -26,11 +28,11 @@ function acquireRegistryLock(): Promise<() => void> {
  */
 export async function loadRegistry(): Promise<AgentRegistry> {
   try {
-    const content = await readFile(REGISTRY_PATH, "utf-8");
+    const content = await readFile(registryPath(), "utf-8");
     try {
       return JSON.parse(content);
     } catch (parseErr) {
-      console.warn(`[agent-registry] Failed to parse ${REGISTRY_PATH}, starting fresh:`, parseErr);
+      console.warn(`[agent-registry] Failed to parse ${registryPath()}, starting fresh:`, parseErr);
       return { agents: {} };
     }
   } catch {
@@ -43,9 +45,14 @@ export async function loadRegistry(): Promise<AgentRegistry> {
  */
 export async function saveRegistry(registry: AgentRegistry): Promise<void> {
   await mkdir(join(homedir(), ".agav", "agents"), { recursive: true });
-  const tmpPath = REGISTRY_PATH + "." + randomBytes(4).toString("hex") + ".tmp";
-  await writeFile(tmpPath, JSON.stringify(registry, null, 2), "utf-8");
-  await rename(tmpPath, REGISTRY_PATH);
+  const path = registryPath();
+  const tmpPath = path + "." + randomBytes(4).toString("hex") + ".tmp";
+  try {
+    await writeFile(tmpPath, JSON.stringify(registry, null, 2), { mode: 0o600 });
+    await rename(tmpPath, path);
+  } finally {
+    await rm(tmpPath, { force: true }).catch(() => {});
+  }
 }
 
 /**

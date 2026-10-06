@@ -67,6 +67,11 @@ export function getConfigItems(
     }
   }
 
+  for (const key of agent.manifest["required-config"] ?? []) {
+    if (!items.some((item) => item.envVarKey === key)) {
+      items.push({ key, label: key, secret: true });
+    }
+  }
   return items;
 }
 

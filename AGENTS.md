@@ -183,30 +183,88 @@ required-config:
   - JIRA_API_TOKEN
 ```
 
-Credentials are stored per-agent in encrypted `config.json`:
+### Resolution Order (runtime)
 
-```json
-{
-  "JIRA_URL": "encrypted:abc123...",
-  "JIRA_EMAIL": "encrypted:def456...",
-  "JIRA_API_TOKEN": "encrypted:ghi789..."
-}
-```
+Credentials are resolved in this priority order:
 
-At runtime, credentials are injected into `process.env` for the duration of each tool call only. They are not present in the main session's environment.
+1. **Project config** — `<project>/.agav/config.json → mcpServers.<key>.env` (only for servers declared in the agent's `mcp-servers` list)
+2. **Global config** — `~/.agav/config.json → mcpServers.<key>.env`
+3. **Environment variables** — `process.env[KEY]`
+
+Project config values win for agents that declare the matching MCP server. Servers not declared in an agent's AGENT.md are unaffected by project overrides.
+
+At runtime, resolved credentials are injected into `process.env` for the duration of each tool call only. They are not present in the main session's environment.
 
 ### Setting Credentials (Manual)
 
-```bash
-# Edit ~/.agav/agents/jira/config.json
-{
-  "JIRA_URL": "https://your-domain.atlassian.net",
-  "JIRA_EMAIL": "user@example.com",
-  "JIRA_API_TOKEN": "your-api-token"
-}
+Store credentials in the global config alongside the MCP server definition:
 
-# Agav will encrypt on next run
+```json
+// ~/.agav/config.json
+{
+  "mcpServers": {
+    "jira": {
+      "command": "npx",
+      "args": ["-y", "@your-org/jira-mcp"],
+      "env": {
+        "JIRA_URL": "https://your-domain.atlassian.net",
+        "JIRA_EMAIL": "user@example.com",
+        "JIRA_API_TOKEN": "your-api-token"
+      }
+    }
+  }
+}
 ```
+
+### Project-Level Credential Overrides
+
+To use a different credential for a specific project, add an override in the project config. Only the overridden key changes; all other global values are inherited:
+
+```json
+// <project>/.agav/config.json
+{
+  "mcpServers": {
+    "git": {
+      "env": {
+        "GIT_TOKEN": "project-specific-token"
+      }
+    }
+  }
+}
+```
+
+This is useful when, for example, a project needs a separate GitHub token while keeping the global token for other projects.
+
+The TUI credential editor routes saves to the right place automatically:
+- **Global agents** → credentials saved to `~/.agav/config.json`
+- **Project agents** → credential overrides saved to `<project>/.agav/config.json`
+
+### Per-Agent Config (Advanced)
+
+Per-agent `~/.agav/agents/<name>/config.json` now only stores **model and effort overrides**, not credentials:
+
+```json
+{
+  "model": "claude-opus-4-5",
+  "effort": "max"
+}
+```
+
+For advanced per-agent credential overrides (e.g., one global agent with different creds per run context), you can still use the `mcp:<serverKey>:<envKey>` key format in the per-agent config — but prefer project config overrides for the common case.
+
+### Migration from Older Versions
+
+If you previously stored credentials directly in `~/.agav/agents/<name>/config.json` (keys like `JIRA_URL`, `JIRA_API_TOKEN`), move them to the global config's `mcpServers` section:
+
+```bash
+# Old location (no longer used for credentials):
+# ~/.agav/agents/jira/config.json → { "JIRA_URL": "...", "JIRA_API_TOKEN": "..." }
+
+# New location:
+# ~/.agav/config.json → { "mcpServers": { "jira": { "env": { "JIRA_URL": "...", "JIRA_API_TOKEN": "..." } } } }
+```
+
+agav will show a `⚠ Migration` warning at agent execution time if it detects credentials in the old location, including the exact keys and where to move them.
 
 ## Polyglot Agents (A2A Protocol)
 

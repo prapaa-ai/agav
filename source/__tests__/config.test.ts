@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
+  chmod: vi.fn().mockResolvedValue(undefined),
+  rename: vi.fn().mockResolvedValue(undefined),
+  rm: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../utils/fs.js", () => ({
   ensureDir: vi.fn().mockResolvedValue(undefined),
@@ -32,6 +35,25 @@ describe("config", () => {
     delete process.env.OLLAMA_API_KEY;
     delete process.env.VERTEX_AI_CREDENTIALS_PATH;
     delete process.env.VERTEX_AI_LOCATION;
+  });
+
+  it("serializes concurrent MCP credential saves", async () => {
+    let config = JSON.stringify({ mcpServers: { test: { env: {} } } });
+    readFile.mockImplementation(async () => config);
+    writeFile.mockImplementation(async (_path: any, content: any) => { config = String(content); });
+    const { saveGlobalMcpEnvVar } = await import("../config/config.js");
+    await Promise.all([
+      saveGlobalMcpEnvVar("test", "FIRST", "one"),
+      saveGlobalMcpEnvVar("test", "SECOND", "two"),
+    ]);
+    expect(JSON.parse(config).mcpServers.test.env).toEqual({ FIRST: "one", SECOND: "two" });
+  });
+
+  it("does not overwrite corrupt global config when saving MCP credentials", async () => {
+    readFile.mockImplementation(async () => "{invalid");
+    const { saveGlobalMcpEnvVar } = await import("../config/config.js");
+    await expect(saveGlobalMcpEnvVar("test", "TOKEN", "secret")).rejects.toThrow();
+    expect(writeFile).not.toHaveBeenCalled();
   });
 
   it("accepts valid effort levels", async () => {

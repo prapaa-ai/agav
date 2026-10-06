@@ -2,16 +2,19 @@
  * Agent credentials management - per-agent config.json with encryption
  */
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, rm, chmod } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { encrypt, decrypt } from "../utils/encrypt.js";
 import type { AgentManifest } from "./types.js";
 import type { AgavConfig } from "../config/config.js";
 
-function collectGlobalMcpEnv(globalConfig?: AgavConfig): Record<string, string> {
+function collectGlobalMcpEnv(manifest: AgentManifest, globalConfig?: AgavConfig): Record<string, string> {
   const env: Record<string, string> = {};
   if (globalConfig?.mcpServers) {
-    for (const srv of Object.values(globalConfig.mcpServers)) {
+    for (const { key } of manifest["mcp-servers"] ?? []) {
+      const srv = globalConfig.mcpServers[key];
+      if (!srv) continue;
       if (srv.env) Object.assign(env, srv.env);
     }
   }
@@ -62,7 +65,34 @@ export async function saveAgentConfig(
 
   const configPath = join(agentPath, "config.json");
   await mkdir(agentPath, { recursive: true });
-  await writeFile(configPath, JSON.stringify(encrypted, null, 2), { encoding: "utf-8", mode: 0o600 });
+  const tmpPath = `${configPath}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await writeFile(tmpPath, JSON.stringify(encrypted, null, 2), { encoding: "utf-8", mode: 0o600 });
+    await chmod(tmpPath, 0o600);
+    await rename(tmpPath, configPath);
+  } finally {
+    await rm(tmpPath, { force: true }).catch(() => {});
+  }
+}
+
+/** Resolve credentials from declared servers and legacy per-agent config. */
+export function resolveAgentMcpEnv(
+  manifest: AgentManifest,
+  globalConfig: AgavConfig | undefined,
+  agentConfig: Record<string, string>,
+): Record<string, string> {
+  const env = collectGlobalMcpEnv(manifest, globalConfig);
+  for (const srv of manifest["mcp-servers"] ?? []) {
+    const prefix = `mcp:${srv.key}:`;
+    for (const [key, value] of Object.entries(agentConfig)) {
+      if (key.startsWith(prefix) && key.length > prefix.length) env[key.slice(prefix.length)] = value;
+    }
+  }
+  for (const key of manifest["required-config"] ?? []) {
+    if (agentConfig[key] && !env[key]) env[key] = agentConfig[key];
+    if (!env[key] && process.env[key]) env[key] = process.env[key];
+  }
+  return env;
 }
 
 /**
@@ -70,15 +100,11 @@ export async function saveAgentConfig(
  * Resolution: global/project config mcpServers env → process.env
  */
 export async function hasRequiredCredentials(
-  _agentPath: string,
+  agentPath: string,
   manifest: AgentManifest,
   globalConfig?: AgavConfig
 ): Promise<boolean> {
-  const requiredConfig = manifest["required-config"] || [];
-  if (requiredConfig.length === 0) return true;
-
-  const mcpEnv = collectGlobalMcpEnv(globalConfig);
-  return requiredConfig.every((key) => mcpEnv[key] || process.env[key]);
+  return (await getMissingCredentials(agentPath, manifest, globalConfig)).length === 0;
 }
 
 /**
@@ -86,14 +112,14 @@ export async function hasRequiredCredentials(
  * Resolution: global/project config mcpServers env → process.env
  */
 export async function getMissingCredentials(
-  _agentPath: string,
+  agentPath: string,
   manifest: AgentManifest,
   globalConfig?: AgavConfig
 ): Promise<string[]> {
   const requiredConfig = manifest["required-config"] || [];
   if (requiredConfig.length === 0) return [];
 
-  const mcpEnv = collectGlobalMcpEnv(globalConfig);
+  const mcpEnv = resolveAgentMcpEnv(manifest, globalConfig, await loadAgentConfig(agentPath));
   return requiredConfig.filter((key) => !mcpEnv[key] && !process.env[key]);
 }
 

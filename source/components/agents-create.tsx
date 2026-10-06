@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { stringify as yamlStringify } from "yaml";
 import type { LLMProvider } from "../providers/types.js";
-import { type AgavConfig, saveGlobalMcpEnvVar } from "../config/config.js";
+import { type AgavConfig, saveGlobalMcpEnvVar, saveProjectMcpEnvVar, loadConfig } from "../config/config.js";
 import type { AgentDefinition, AgentRegistryEntry } from "../agents/types.js";
 import type { MCPServerConfig, MCPEnvVarDeclaration } from "../mcp/types.js";
 import { getRequiredEnvVars } from "../mcp/env-vars.js";
@@ -91,7 +91,9 @@ export function CreateTab({
   const [saveStatus, setSaveStatus] = useState("");
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const workspaceMcpEntries = Object.entries(config?.mcpServers ?? {});
+  const [currentConfig, setCurrentConfig] = useState(config);
+  useEffect(() => { setCurrentConfig(config); }, [config]);
+  const workspaceMcpEntries = Object.entries(currentConfig?.mcpServers ?? {});
 
   const abortRef = useRef<AbortController | null>(null);
 
@@ -225,7 +227,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
     setMcpCredIndex(0);
     setMcpCredBuffer("");
     setMcpCredEditing(false);
-    setDestination("global");
+    setDestination(agent?.origin === "project" ? "project" : "global");
     setSaving(false);
     setSaveStatus("");
     setSaveError(null);
@@ -243,14 +245,17 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
   const saveAgent = useCallback(async () => {
     setSaving(true);
     setSaveError(null);
-    const agentDir = destination === "global"
+    const targetDestination = editingAgent?.origin === "project" ? "project" : destination;
+    const agentDir = editingAgent?.origin === "project" && editingAgent.manifest.name === agentName
+      ? editingAgent.path
+      : targetDestination === "global"
       ? join(homedir(), ".agav", "agents", agentName)
       : join(process.cwd(), ".agav", "agents", agentName);
     const toolsDir = join(agentDir, "tools");
 
     try {
       setSaveStatus("Creating agent directory...");
-      const agentsRoot = destination === "global"
+      const agentsRoot = targetDestination === "global"
         ? join(homedir(), ".agav", "agents")
         : join(process.cwd(), ".agav", "agents");
       await assertPathContained(agentDir, agentsRoot);
@@ -287,7 +292,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
         const serverConfig = config?.mcpServers?.[key];
         if (serverConfig) {
           for (const v of getRequiredEnvVars(key, serverConfig)) {
-            requiredConfig.add(v.name);
+            if (v.isRequired !== false) requiredConfig.add(v.name);
           }
         }
       }
@@ -377,7 +382,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
   }
 
   // --- Input handling ---
-  useInput((input, key) => {
+  useInput(async (input, key) => {
     // === LIST MODE ===
     if (mode === "list") {
       if (confirmingRemove) {
@@ -487,7 +492,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
         if (key.return) {
           const credItems: MCPCredItem[] = [];
           for (const k of mcpSelectedKeys) {
-            const serverConfig = config?.mcpServers?.[k];
+            const serverConfig = currentConfig?.mcpServers?.[k];
             if (!serverConfig) continue;
             const vars = getRequiredEnvVars(k, serverConfig);
             for (const v of vars) {
@@ -495,7 +500,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
               credItems.push({ serverKey: k, envVar: v, configured });
             }
           }
-          const hasMissing = credItems.some((item) => !item.configured);
+          const hasMissing = credItems.some((item) => item.envVar.isRequired !== false && !item.configured);
           if (!hasMissing) {
             setWizardStep(5);
           } else {
@@ -542,7 +547,15 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
           if (mcpCredEditing) {
             const item = mcpCredItems[mcpCredIndex];
             if (item && mcpCredBuffer.trim()) {
-              saveGlobalMcpEnvVar(item.serverKey, item.envVar.name, mcpCredBuffer.trim()).catch(() => {});
+              try {
+                const saveFn = destination === "project" ? saveProjectMcpEnvVar : saveGlobalMcpEnvVar;
+                await saveFn(item.serverKey, item.envVar.name, mcpCredBuffer.trim());
+                setCurrentConfig(await loadConfig());
+                setSaveError(null);
+              } catch (err) {
+                setSaveError(`Credential save failed: ${err instanceof Error ? err.message : String(err)}`);
+                return;
+              }
               setMcpCredItems((prev) => prev.map((it, i) =>
                 i === mcpCredIndex ? { ...it, configured: true } : it,
               ));
@@ -576,9 +589,9 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
     // Step 5: Review & Save
     if (wizardStep === 5) {
       if (key.escape || input === "b") { setMcpCredPhase("select"); setWizardStep(4); return; }
-      if (input === "1" && !saving) { setDestination("global"); return; }
-      if (input === "2" && !saving) { setDestination("project"); return; }
-      if (key.return && !saving && !saveError) { saveAgent(); return; }
+      if (input === "1" && !saving && !editingAgent) { setDestination("global"); return; }
+      if (input === "2" && !saving && !editingAgent) { setDestination("project"); return; }
+      if (key.return && !saving) { saveAgent(); return; }
       return;
     }
   });
@@ -697,6 +710,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
           currentIndex={mcpCredIndex}
           editing={mcpCredEditing}
           buffer={mcpCredBuffer}
+          error={saveError}
         />
       )}
 
@@ -914,12 +928,13 @@ function MCPServerStep({
 }
 
 function MCPCredentialsStep({
-  items, currentIndex, editing, buffer,
+  items, currentIndex, editing, buffer, error,
 }: {
   items: MCPCredItem[];
   currentIndex: number;
   editing: boolean;
   buffer: string;
+  error: string | null;
 }) {
   const configuredCount = items.filter((item) => item.configured).length;
   const maxKeyLen = items.length > 0 ? Math.max(...items.map((item) => item.serverKey.length)) : 0;
@@ -944,7 +959,7 @@ function MCPCredentialsStep({
               {showEditor ? (
                 <>
                   <Text>[enter value]: </Text>
-                  <Text>{buffer}</Text>
+                  <Text>{"•".repeat(buffer.length)}</Text>
                   <Text color="cyan">█</Text>
                 </>
               ) : item.configured ? (
@@ -956,7 +971,13 @@ function MCPCredentialsStep({
           );
         })}
       </Box>
-      <Text dimColor>↑↓ Navigate | ENTER Edit/Save | TAB Skip | → Next</Text>
+      {error && <Text color="red">{error}</Text>}
+      {(() => {
+        const unconfigured = items.filter((i) => !i.configured).length;
+        return unconfigured > 0
+          ? <Text dimColor>↑↓ Navigate | ENTER Edit/Save | TAB Skip | → Skip ({unconfigured} not set)</Text>
+          : <Text dimColor>↑↓ Navigate | ENTER Edit/Save | TAB Skip | → Next</Text>;
+      })()}
     </Box>
   );
 }

@@ -26,6 +26,22 @@ describe("agents/agent-registry", () => {
     vi.resetModules();
   });
 
+  it("does not capture the home directory when imported", async () => {
+    const { loadRegistry } = await import("../agents/agent-registry.js");
+    const otherHome = await mkdtemp(join(tmpdir(), "agav-reg-other-"));
+    try {
+      process.env.HOME = otherHome;
+      process.env.USERPROFILE = otherHome;
+      await mkdir(join(otherHome, ".agav", "agents"), { recursive: true });
+      await writeFile(join(otherHome, ".agav", "agents", "registry.json"), JSON.stringify({ agents: { other: { name: "other" } } }));
+      expect((await loadRegistry()).agents.other.name).toBe("other");
+    } finally {
+      await rm(otherHome, { recursive: true, force: true });
+      process.env.HOME = fakeHome;
+      process.env.USERPROFILE = fakeHome;
+    }
+  });
+
   it("returns empty registry when no file exists", async () => {
     const { loadRegistry } = await import("../agents/agent-registry.js");
     const reg = await loadRegistry();

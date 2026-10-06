@@ -10,7 +10,7 @@ import { setAgentEnabled, loadRegistry } from "../agents/agent-registry.js";
 import type { AgentRegistryEntry } from "../agents/types.js";
 import { deleteAgentWithTemplate } from "../agents/agent-lifecycle.js";
 import { loadAgentConfig, saveAgentConfig } from "../agents/credentials.js";
-import { saveGlobalMcpEnvVar } from "../config/config.js";
+import { saveGlobalMcpEnvVar, saveProjectMcpEnvVar, loadConfig, loadRawProjectConfig } from "../config/config.js";
 import { createToolRegistry } from "../tools/registry-factory.js";
 import { implementAgentTools } from "../agents/tool-gen.js";
 import { wheelSelect, stepIndex } from "./wheel-select.js";
@@ -49,6 +49,8 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   const [nativeToolNames, setNativeToolNames]       = useState<Set<string>>(new Set());
   const [nativeToolsIndex, setNativeToolsIndex]     = useState(0);
   const [nativeToolsEditing, setNativeToolsEditing] = useState(false);
+  const [currentConfig, setCurrentConfig] = useState(config);
+  const [rawProjectConfig, setRawProjectConfig] = useState<Partial<import("../config/config.js").AgavConfig>>({});
   const [runtimeConfigs, setRuntimeConfigs]       = useState<Record<string, Record<string, string>>>({});
 
   const nativeTools = createToolRegistry().list();
@@ -109,7 +111,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
       if (required.length === 0) {
         result[key] = { ready: true, missing: [] };
       } else {
-        const missing = await getMissingCredentials(resolveConfigDir(agent), agent.manifest, config);
+        const missing = await getMissingCredentials(resolveConfigDir(agent), agent.manifest, currentConfig);
         result[key] = { ready: missing.length === 0, missing };
       }
     }
@@ -126,6 +128,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   };
 
   useEffect(() => {
+    loadRawProjectConfig().then(setRawProjectConfig).catch(() => {});
     loadAgents()
       .then((loaded) => {
         setAgents(loaded);
@@ -286,15 +289,26 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
         const agent = filteredAgents[selectedIndex];
         if (!agent) return;
         const agentKey = agent.alias || agent.manifest.name;
-        const items = getConfigItems(agent, config);
+        const items = getConfigItems(agent, currentConfig);
 
         const saveConfigValue = async (value: string) => {
           setConfigError(null);
           const currentItem = items[configEditIndex];
           try {
             if (currentItem?.mcpServerKey && currentItem?.envVarKey) {
-              await saveGlobalMcpEnvVar(currentItem.mcpServerKey, currentItem.envVarKey, value);
-              setConfigSavedKeys((prev) => ({ ...prev, [configEditKey]: value }));
+              const saveFn = agent.origin === "project" ? saveProjectMcpEnvVar : saveGlobalMcpEnvVar;
+              await saveFn(currentItem.mcpServerKey, currentItem.envVarKey, value);
+              const [refreshed, rawProject] = await Promise.all([loadConfig(), loadRawProjectConfig()]);
+              setCurrentConfig(refreshed);
+              setRawProjectConfig(rawProject);
+              const { getMissingCredentials } = await import("../agents/credentials.js");
+              const updated: ReadinessMap = {};
+              for (const a of agents) {
+                const missing = await getMissingCredentials(resolveConfigDir(a), a.manifest, refreshed);
+                updated[a.alias || a.manifest.name] = { ready: missing.length === 0, missing };
+              }
+              setReadinessMap(updated);
+              setConfigSavedKeys((prev) => ({ ...prev, [configEditKey]: value ? "saved" : "" }));
             } else {
               const dir = resolveConfigDir(agent);
               await mkdir(dir, { recursive: true });
@@ -305,7 +319,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
               setRuntimeConfigs((prev) => ({ ...prev, [agentKey]: merged }));
               setConfigSavedKeys((prev) => ({ ...prev, [configEditKey]: value }));
             }
-            computeReadiness(agents);
+            if (!currentItem?.mcpServerKey) computeReadiness(agents);
           } catch (err) {
             setConfigError(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -376,7 +390,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
             const selectedItem = items[configEditIndex]!;
             const existingConfig = runtimeConfigs[agentKey] ?? {};
             setConfigEditKey(selectedItem.key);
-            setConfigEditBuffer(existingConfig[selectedItem.key] ?? "");
+            setConfigEditBuffer(selectedItem.secret ? "" : existingConfig[selectedItem.key] ?? "");
             setConfigError(null);
 
             if (selectedItem.type === "native-tools") {
@@ -511,7 +525,8 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
             sessionModel={config?.model}
             sessionEffort={config?.effort}
             sessionProvider={config?.provider}
-            config={config}
+            config={currentConfig}
+            rawProjectConfig={rawProjectConfig}
           />
           {implementingTools && implementStatus && (
             <Box marginTop={1}><Text color="cyan">{implementStatus}</Text></Box>
@@ -526,7 +541,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
       {activeTab === "list" && listView === "config" && selectedAgent && (
         <ConfigEditView
           agent={selectedAgent}
-          items={getConfigItems(selectedAgent, config)}
+          items={getConfigItems(selectedAgent, currentConfig)}
           editIndex={configEditIndex}
           editKey={configEditKey}
           editBuffer={configEditBuffer}
@@ -538,7 +553,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           pickerActive={configPickerActive}
           pickerItems={configPickerItems}
           pickerIndex={configPickerIndex}
-          config={config}
+          config={currentConfig}
           nativeToolNames={nativeToolNames}
           nativeToolsIndex={nativeToolsIndex}
           nativeToolsEditing={nativeToolsEditing}
@@ -560,7 +575,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
           onBusyChange={setCreateBusy}
           onCreateComplete={handleCreateComplete}
           provider={provider}
-          config={config}
+          config={currentConfig}
           agents={agents}
           registryEntries={registryEntries}
           installedAgents={new Map(agents.map((a) => [a.alias || a.manifest.name, { origin: a.origin, version: a.manifest.version }]))}

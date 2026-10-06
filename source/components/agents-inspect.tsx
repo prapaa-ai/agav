@@ -9,7 +9,13 @@ import { createToolRegistry } from "../tools/registry-factory.js";
 
 const NATIVE_TOOLS = createToolRegistry().list().map((tool) => tool.schema);
 
-export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sessionModel, sessionEffort, sessionProvider, config }: {
+const SOURCE_LABEL: Record<string, string> = {
+  "global-config":  "global config",
+  "project-config": "project config",
+  "process-env":    "env var",
+};
+
+export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sessionModel, sessionEffort, sessionProvider, config, rawProjectConfig }: {
   agent: AgentDefinition;
   statusLabel?: string;
   readiness?: AgentReadiness;
@@ -18,6 +24,7 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
   sessionEffort?: string;
   sessionProvider?: string;
   config?: AgavConfig;
+  rawProjectConfig?: Partial<AgavConfig>;
 }) {
   const name = agent.alias || agent.manifest.name;
   const manifest = agent.manifest;
@@ -136,7 +143,7 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
           {mcpServers.map((srv) => (
             <Box key={srv.key} marginLeft={2} marginTop={1}>
               <Text color="cyan">{srv.key}</Text>
-              <Text dimColor> — {srv.command} {(srv.args ?? []).join(" ")}</Text>
+              <Text dimColor> — {srv.command} (arguments hidden)</Text>
             </Box>
           ))}
         </Box>
@@ -148,12 +155,14 @@ export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sess
           {mcpServers.map((srv) => {
             const serverConfig = config.mcpServers?.[srv.key];
             if (!serverConfig) return null;
-            const statuses = resolveEnvVarStatuses(srv.key, serverConfig, config);
+            const statuses = resolveEnvVarStatuses(srv.key, serverConfig, config, rawProjectConfig);
             return statuses.map((s) => (
               <Text key={`${srv.key}-${s.name}`}>
                 {"  "}{s.hasValue ? <Text color="green">✓</Text> : <Text color="red">✗</Text>}
                 {" "}{srv.key} → {s.name}
-                {s.hasValue ? <Text dimColor> ({s.source})</Text> : <Text color="red"> not set</Text>}
+                {s.hasValue
+                  ? <Text dimColor> ({SOURCE_LABEL[s.source] ?? s.source})</Text>
+                  : <Text color="red"> not set</Text>}
               </Text>
             ));
           })}
@@ -318,7 +327,7 @@ export function ConfigEditView({
             } else if (isNativeTools) {
               valueNode = <Text color="green">{nativeToolNames?.size ?? 0} selected</Text>;
             } else if (item.mcpServerKey && item.envVarKey) {
-              if (savedKeys[item.key] !== undefined) {
+              if (savedKeys[item.key]) {
                 valueNode = <Text color="green">✓ just saved</Text>;
               } else {
                 const serverEnv = config?.mcpServers?.[item.mcpServerKey]?.env;

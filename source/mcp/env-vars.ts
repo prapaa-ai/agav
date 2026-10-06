@@ -30,35 +30,18 @@ export function resolveEnvVarStatuses(
   serverKey: string,
   serverConfig: MCPServerConfig,
   mergedConfig: AgavConfig,
+  rawProjectConfig?: Partial<AgavConfig>,
 ): EnvVarStatus[] {
   const declarations = getRequiredEnvVars(serverKey, serverConfig);
-  const serverEnv = mergedConfig.mcpServers?.[serverKey]?.env ?? {};
+  // Project config wins in the merge, so check it first to assign correct source.
+  const projectEnv = rawProjectConfig?.mcpServers?.[serverKey]?.env;
+  const mergedEnv  = mergedConfig.mcpServers?.[serverKey]?.env ?? {};
 
   return declarations.map((decl) => {
-    if (serverEnv[decl.name]) {
-      return {
-        name: decl.name,
-        source: "global-config" as const,
-        hasValue: true,
-        description: decl.description,
-        isSecret: decl.isSecret,
-      };
-    }
-    if (process.env[decl.name]) {
-      return {
-        name: decl.name,
-        source: "process-env" as const,
-        hasValue: true,
-        description: decl.description,
-        isSecret: decl.isSecret,
-      };
-    }
-    return {
-      name: decl.name,
-      source: "missing" as const,
-      hasValue: false,
-      description: decl.description,
-      isSecret: decl.isSecret,
-    };
+    const base = { name: decl.name, description: decl.description, isSecret: decl.isSecret };
+    if (projectEnv?.[decl.name]) return { ...base, source: "project-config" as const, hasValue: true };
+    if (mergedEnv[decl.name])    return { ...base, source: "global-config"   as const, hasValue: true };
+    if (process.env[decl.name])  return { ...base, source: "process-env"     as const, hasValue: true };
+    return                              { ...base, source: "missing"          as const, hasValue: false };
   });
 }

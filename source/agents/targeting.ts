@@ -56,6 +56,9 @@ export async function resolveTargetAgent(
     const missing = await getMissingCredentials(credPath, agent.manifest, globalConfig);
     if (missing.length > 0) {
       const { setEnvHint, agavHomePath } = await import("../utils/shell-hints.js");
+      const { loadAgentConfig } = await import("./credentials.js");
+      const oldConfig = await loadAgentConfig(credPath);
+      const migratable = missing.filter((k) => k in oldConfig && Boolean(oldConfig[k]));
       const lines = [
         `Agent "${nameOrAlias}" is missing required credentials: ${missing.join(", ")}.`,
         ``,
@@ -65,6 +68,13 @@ export async function resolveTargetAgent(
         `  3. Environment variables:`,
         ...missing.map((k) => `     ${setEnvHint(k, "<your-value>")}`),
       ];
+      if (migratable.length > 0) {
+        lines.push(
+          ``,
+          `⚠ Migration: ${migratable.join(", ")} found in old per-agent config.json (no longer used for credentials).`,
+          `  Move those values to mcpServers[<key>].env in ${agavHomePath("config.json")}.`,
+        );
+      }
       return { error: lines.join("\n") };
     }
   }

@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, rename, rm, chmod } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
@@ -451,8 +452,17 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
 }
 
+let mcpCredentialSave: Promise<void> = Promise.resolve();
+
+/** Serialize in-process updates to avoid losing concurrent credential saves. */
+export function saveGlobalMcpEnvVar(serverKey: string, envKey: string, value: string): Promise<void> {
+  const pending = mcpCredentialSave.then(() => writeGlobalMcpEnvVar(serverKey, envKey, value));
+  mcpCredentialSave = pending.catch(() => {});
+  return pending;
+}
+
 /** Surgically update a single env var in the global config's mcpServers section. */
-export async function saveGlobalMcpEnvVar(
+async function writeGlobalMcpEnvVar(
   serverKey: string,
   envKey: string,
   value: string,
@@ -461,16 +471,100 @@ export async function saveGlobalMcpEnvVar(
   let raw: Record<string, unknown> = {};
   try {
     raw = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
-  } catch { /* empty or missing config */ }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid global config");
   const mcpServers = (raw.mcpServers ?? {}) as Record<string, Record<string, unknown>>;
-  if (!mcpServers[serverKey]) mcpServers[serverKey] = {};
+  if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) throw new Error("Invalid mcpServers config");
+  if (serverKey === "__proto__" || envKey === "__proto__") throw new Error("Invalid MCP credential key");
+  if (!Object.hasOwn(mcpServers, serverKey)) mcpServers[serverKey] = {};
+  if (typeof mcpServers[serverKey] !== "object" || Array.isArray(mcpServers[serverKey])) throw new Error("Invalid MCP server config");
   const env = (mcpServers[serverKey].env ?? {}) as Record<string, string>;
-  env[envKey] = value;
+  if (!env || typeof env !== "object" || Array.isArray(env)) throw new Error("Invalid MCP env config");
+  if (value) env[envKey] = value;
+  else delete env[envKey];
   mcpServers[serverKey].env = env;
   raw.mcpServers = mcpServers;
 
-  await writeFile(CONFIG_PATH, JSON.stringify(raw, null, 2) + "\n");
+  const tmpPath = `${CONFIG_PATH}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await writeFile(tmpPath, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
+    await chmod(tmpPath, 0o600);
+    await rename(tmpPath, CONFIG_PATH);
+  } finally {
+    await rm(tmpPath, { force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Read the raw project config (<cwd>/.agav/config.json) without merging it
+ * with the global config. Returns {} if the file is absent or unreadable.
+ * Strips template metadata and PROJECT_CONFIG_DENY keys, matching loadConfig.
+ */
+export async function loadRawProjectConfig(): Promise<Partial<AgavConfig>> {
+  const projectConfigPath = join(process.cwd(), ".agav", "config.json");
+  try {
+    const raw = JSON.parse(await readFile(projectConfigPath, "utf-8")) as Record<string, unknown>;
+    delete raw.template;
+    for (const key of PROJECT_CONFIG_DENY) delete (raw as Record<string, unknown>)[key];
+    return raw as Partial<AgavConfig>;
+  } catch {
+    return {};
+  }
+}
+
+let mcpProjectCredentialSave: Promise<void> = Promise.resolve();
+
+/**
+ * Surgically update a single env var in the PROJECT config's mcpServers section.
+ * Writes to <cwd>/.agav/config.json atomically. Use for project-level agents'
+ * credential overrides; the global config remains unchanged.
+ */
+export function saveProjectMcpEnvVar(serverKey: string, envKey: string, value: string): Promise<void> {
+  const pending = mcpProjectCredentialSave.then(() => writeProjectMcpEnvVar(serverKey, envKey, value));
+  mcpProjectCredentialSave = pending.catch(() => {});
+  return pending;
+}
+
+/** Surgically update a single env var in the project config's mcpServers section. */
+async function writeProjectMcpEnvVar(
+  serverKey: string,
+  envKey: string,
+  value: string,
+): Promise<void> {
+  const projectDir = join(process.cwd(), ".agav");
+  const projectConfigPath = join(projectDir, "config.json");
+  await ensureDir(projectDir);
+  let raw: Record<string, unknown> = {};
+  try {
+    raw = JSON.parse(await readFile(projectConfigPath, "utf-8"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid project config");
+  const mcpServers = (raw.mcpServers ?? {}) as Record<string, Record<string, unknown>>;
+  if (!mcpServers || typeof mcpServers !== "object" || Array.isArray(mcpServers)) throw new Error("Invalid mcpServers config");
+  if (serverKey === "__proto__" || envKey === "__proto__") throw new Error("Invalid MCP credential key");
+  if (!Object.hasOwn(mcpServers, serverKey)) mcpServers[serverKey] = {};
+  if (typeof mcpServers[serverKey] !== "object" || Array.isArray(mcpServers[serverKey])) throw new Error("Invalid MCP server config");
+  const env = (mcpServers[serverKey].env ?? {}) as Record<string, string>;
+  if (!env || typeof env !== "object" || Array.isArray(env)) throw new Error("Invalid MCP env config");
+  if (value) env[envKey] = value;
+  else delete env[envKey];
+  mcpServers[serverKey].env = env;
+  raw.mcpServers = mcpServers;
+
+  const tmpPath = `${projectConfigPath}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await writeFile(tmpPath, JSON.stringify(raw, null, 2) + "\n", { mode: 0o600 });
+    await chmod(tmpPath, 0o600);
+    await rename(tmpPath, projectConfigPath);
+  } finally {
+    await rm(tmpPath, { force: true }).catch(() => {});
+  }
 }
 
 /** Return the root directory used for Agav's global state files. */

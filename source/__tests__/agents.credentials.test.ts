@@ -9,6 +9,7 @@ import {
   saveAgentConfig,
   hasRequiredCredentials,
   getMissingCredentials,
+  resolveAgentMcpEnv,
 } from "../agents/credentials.js";
 import type { AgentManifest } from "../agents/types.js";
 
@@ -77,6 +78,7 @@ describe("agents/credentials", () => {
       description: "test",
       version: "1.0.0",
       "required-config": ["API_KEY", "API_SECRET"],
+      "mcp-servers": [{ key: "test", command: "npx" }],
     } as AgentManifest;
 
     it("both report missing when nothing is configured", async () => {
@@ -86,12 +88,12 @@ describe("agents/credentials", () => {
       expect(missing).toEqual(["API_KEY", "API_SECRET"]);
     });
 
-    it("per-agent config.json does NOT satisfy required credentials", async () => {
+    it("legacy per-agent config.json satisfies required credentials", async () => {
       await saveAgentConfig(dir, { API_KEY: "k1", API_SECRET: "k2" });
       const has = await hasRequiredCredentials(dir, manifest);
       const missing = await getMissingCredentials(dir, manifest);
-      expect(has).toBe(false);
-      expect(missing).toEqual(["API_KEY", "API_SECRET"]);
+      expect(has).toBe(true);
+      expect(missing).toEqual([]);
     });
 
     it("both agree when global config mcpServers env has all keys", async () => {
@@ -104,6 +106,32 @@ describe("agents/credentials", () => {
       const missing = await getMissingCredentials(dir, manifest, globalConfig);
       expect(has).toBe(true);
       expect(missing).toEqual([]);
+    });
+
+    it("ignores credentials from undeclared servers and resolves scoped overrides", async () => {
+      const globalConfig = { mcpServers: {
+        unrelated: { env: { API_KEY: "wrong", API_SECRET: "wrong" } },
+        test: { env: { API_KEY: "declared" } },
+      } } as unknown as import("../config/config.js").AgavConfig;
+      expect(await getMissingCredentials(dir, manifest, globalConfig)).toEqual(["API_SECRET"]);
+      await saveAgentConfig(dir, { "mcp:test:API_SECRET": "scoped" });
+      expect(await getMissingCredentials(dir, manifest, globalConfig)).toEqual([]);
+    });
+
+    it("passes only declared credentials, including environment-only values, to tool context", () => {
+      const previous = process.env.API_SECRET;
+      try {
+        process.env.API_SECRET = "from-process";
+        const config = { mcpServers: {
+          test: { env: { API_KEY: "declared" } },
+          unrelated: { env: { UNRELATED_TOKEN: "do-not-pass" } },
+        } } as unknown as import("../config/config.js").AgavConfig;
+        const resolved = resolveAgentMcpEnv(manifest, config, { "mcp:unrelated:BAD_KEY": "do-not-pass" });
+        expect(resolved).toEqual({ API_KEY: "declared", API_SECRET: "from-process" });
+      } finally {
+        if (previous === undefined) delete process.env.API_SECRET;
+        else process.env.API_SECRET = previous;
+      }
     });
 
     it("both agree when env vars provide missing keys", async () => {

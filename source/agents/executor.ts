@@ -8,58 +8,19 @@ import { ToolRegistry } from "../tools/registry.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { AgavConfig, PermissionMode } from "../config/config.js";
 import { runAgentLoop } from "../agent/loop.js";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+
+
+
 import { randomUUID } from "node:crypto";
-import { decrypt } from "../utils/encrypt.js";
+import { loadAgentConfig, resolveAgentMcpEnv } from "./credentials.js";
+import { getRequiredEnvVars } from "../mcp/env-vars.js";
+import { resolveConfigDir } from "../components/agents-types.js";
 
 // AgavHooks type - defined locally since it's not exported from hooks.js
 interface AgavHooks {
   afterEdit?: string;
   afterShell?: string;
   preCommit?: string;
-}
-
-/**
- * Load agent credentials from config.json.
- * Tries the agent's own path first, then falls back to the global
- * ~/.agav/agents/<name> path so bundled agents can be configured
- * without touching the app's source directory.
- */
-async function loadAgentCredentials(agentPath: string, agentName?: string): Promise<Record<string, string>> {
-  const paths = [agentPath];
-
-  if (agentName) {
-    const { homedir } = await import("node:os");
-    const globalPath = join(homedir(), ".agav", "agents", agentName);
-    if (globalPath !== agentPath) paths.push(globalPath);
-  }
-
-  for (const p of paths) {
-    const configPath = join(p, "config.json");
-    try {
-      const content = await readFile(configPath, "utf-8");
-      const config = JSON.parse(content);
-
-      const decrypted: Record<string, string> = {};
-      for (const [key, value] of Object.entries(config)) {
-        if (typeof value === "string") {
-          try {
-            decrypted[key] = decrypt(value);
-          } catch {
-            // Not encrypted, use as-is
-            decrypted[key] = value;
-          }
-        }
-      }
-
-      if (Object.keys(decrypted).length > 0) return decrypted;
-    } catch {
-      // No config.json at this path — try next
-    }
-  }
-
-  return {};
 }
 
 /**
@@ -85,7 +46,7 @@ export async function executeNativeAgent(
   const callId = `${agent.manifest.name}-${randomUUID().slice(0, 8)}`;
 
   // Per-agent model/effort overrides (from per-agent config.json).
-  const agentOverrides = await loadAgentCredentials(agent.path, agent.manifest.name);
+  const agentOverrides = await loadAgentConfig(resolveConfigDir(agent));
 
   const model  = agentOverrides["model"]  || agent.manifest.model  || deps.config.model;
   const effort = (agentOverrides["effort"] || agent.manifest.effort || deps.config.effort) as import("../config/config.js").EffortLevel;
@@ -111,11 +72,21 @@ export async function executeNativeAgent(
     agentMCPManager = new MCPManager();
     for (const srv of mcpServersDecl) {
       const globalServerEnv = deps.config.mcpServers?.[srv.key]?.env ?? {};
-      const agentServerOverrides = perAgentMcpOverrides[srv.key] ?? {};
+      const agentServerOverrides = { ...perAgentMcpOverrides[srv.key] };
+      for (const key of agent.manifest["required-config"] ?? []) {
+        if (agentOverrides[key] && !globalServerEnv[key] && !agentServerOverrides[key]) {
+          agentServerOverrides[key] = agentOverrides[key];
+        }
+      }
+      const allowedKeys = new Set([
+        ...getRequiredEnvVars(srv.key, deps.config.mcpServers?.[srv.key] ?? {}).map((v) => v.name),
+        ...(agent.manifest["required-config"] ?? []),
+        ...Object.keys(agentServerOverrides),
+      ]);
       const serverConfig = {
         command: srv.command,
         args: srv.args ?? [],
-        env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...globalServerEnv, ...agentServerOverrides },
+        env: { ...Object.fromEntries(Object.entries(process.env).filter(([key, v]) => v !== undefined && (!/KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH/i.test(key) || allowedKeys.has(key)))) as Record<string, string>, ...globalServerEnv, ...agentServerOverrides },
       };
       try {
         await agentMCPManager.startServer(srv.key, serverConfig);
@@ -126,16 +97,7 @@ export async function executeNativeAgent(
   }
 
   // Collect env values from the agent's declared MCP servers for tool context.
-  const agentMcpKeys = new Set(mcpServersDecl.map((s) => s.key));
-  const agentMcpEnv: Record<string, string> = {};
-  if (deps.config.mcpServers) {
-    for (const [key, srv] of Object.entries(deps.config.mcpServers)) {
-      if (agentMcpKeys.has(key) && srv.env) Object.assign(agentMcpEnv, srv.env);
-    }
-  }
-  for (const overrides of Object.values(perAgentMcpOverrides)) {
-    Object.assign(agentMcpEnv, overrides);
-  }
+  const agentMcpEnv = resolveAgentMcpEnv(agent.manifest, deps.config, agentOverrides);
 
   try {
     // Wrap each tool's execute to inject credentials via context, not process.env.
