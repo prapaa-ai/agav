@@ -99,6 +99,7 @@ function runSeatbelted(
   scriptPath: string,
   stdinPayload: string,
   env: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const home = process.env.HOME ?? "/tmp";
   const profilePath = join(tmpdir(), `agav-agent-sb-${process.pid}-${Date.now()}.sb`);
@@ -116,7 +117,7 @@ function runSeatbelted(
         "-D", `TMPDIR=${tmpdir()}`,
         process.execPath, scriptPath,
       ],
-      { timeout: TOOL_TIMEOUT, maxBuffer: MAX_OUTPUT, env },
+      { timeout: TOOL_TIMEOUT, maxBuffer: MAX_OUTPUT, env, signal },
       (error, stdout, stderr) => {
         try { unlinkSync(profilePath); } catch {}
         resolve({ stdout, stderr, error });
@@ -141,6 +142,7 @@ function runBubblewrapped(
   scriptPath: string,
   stdinPayload: string,
   env: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const home = process.env.HOME ?? "/tmp";
   const privateHomePaths = [".ssh", ".aws", ".gnupg", ".config"]
@@ -161,7 +163,7 @@ function runBubblewrapped(
         "--chdir", process.cwd(),
         process.execPath, scriptPath,
       ],
-      { timeout: TOOL_TIMEOUT, maxBuffer: MAX_OUTPUT, env },
+      { timeout: TOOL_TIMEOUT, maxBuffer: MAX_OUTPUT, env, signal },
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });
       },
@@ -177,12 +179,13 @@ function runUnsandboxed(
   scriptPath: string,
   stdinPayload: string,
   env: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   return new Promise((resolve) => {
     const child = execFile(
       process.execPath,
       [scriptPath],
-      { timeout: TOOL_TIMEOUT, maxBuffer: MAX_OUTPUT, env },
+      { timeout: TOOL_TIMEOUT, maxBuffer: MAX_OUTPUT, env, signal },
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });
       },
@@ -210,7 +213,9 @@ export async function executeSandboxedTool(
   input: Record<string, unknown>,
   credentials?: Record<string, string>,
   forceBackend?: SandboxBackend,
+  signal?: AbortSignal,
 ): Promise<ToolResult & { backend: SandboxBackend }> {
+  if (signal?.aborted) return { output: "Tool cancelled.", isError: true, backend: forceBackend ?? detectSandboxBackend() };
   const scriptPath = getSandboxExecPath();
   if (!existsSync(scriptPath)) {
     return {
@@ -228,27 +233,27 @@ export async function executeSandboxedTool(
 
   switch (backend) {
     case "seatbelt":
-      result = await runSeatbelted(scriptPath, payload, env);
+      result = await runSeatbelted(scriptPath, payload, env, signal);
       // Fallback if sandbox-exec disappeared
       if (result.error && /ENOENT|sandbox-exec.*not found/i.test(result.error.message ?? "")) {
-        result = await runUnsandboxed(scriptPath, payload, env);
+        result = await runUnsandboxed(scriptPath, payload, env, signal);
         return { ...parseResult(result), backend: "none" };
       }
       break;
     case "bubblewrap":
-      result = await runBubblewrapped(scriptPath, payload, env);
+      result = await runBubblewrapped(scriptPath, payload, env, signal);
       if (result.error && /ENOENT|bwrap.*not found/i.test(result.error.message ?? "")) {
-        result = await runUnsandboxed(scriptPath, payload, env);
+        result = await runUnsandboxed(scriptPath, payload, env, signal);
         return { ...parseResult(result), backend: "none" };
       }
       break;
     case "docker":
       // Docker support for agent tools is future work — fall through to unsandboxed
       // (Docker sandbox for shell commands is already handled in sandbox.ts)
-      result = await runUnsandboxed(scriptPath, payload, env);
+      result = await runUnsandboxed(scriptPath, payload, env, signal);
       break;
     default:
-      result = await runUnsandboxed(scriptPath, payload, env);
+      result = await runUnsandboxed(scriptPath, payload, env, signal);
       break;
   }
 

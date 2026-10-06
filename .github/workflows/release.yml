@@ -407,5 +407,10 @@ jobs:
             echo "R2 credentials not configured — skipping R2 mirror."
             exit 0
           fi
-          npm install --no-save @aws-sdk/client-s3@3
-          node scripts/mirror-release-to-r2.mjs "$TAG" release
+          # Do not resolve the application's pnpm-managed peer graph with npm.
+          MIRROR_DIR=$(mktemp -d "${RUNNER_TEMP}/agav-r2-mirror.XXXXXX")
+          trap 'rm -rf "$MIRROR_DIR"' EXIT
+          npm install --prefix "$MIRROR_DIR" --no-save --package-lock=false --ignore-scripts @aws-sdk/client-s3@3.1146.0
+          # ESM resolves packages relative to the script, not the working dir.
+          cp scripts/mirror-release-to-r2.mjs "$MIRROR_DIR/"
+          node "$MIRROR_DIR/mirror-release-to-r2.mjs" "$TAG" "$PWD/release"

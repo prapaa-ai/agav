@@ -9,17 +9,10 @@ export default defineConfig({
     // repeated runs left them orphaned and pushed the machine into swap.
     //
     // We stay on the `forks` pool (not `threads`) because several tests call
-    // `process.chdir()`, which throws inside worker threads. Capping `maxForks`
+    // `process.chdir()`, which throws inside worker threads. Capping `maxWorkers`
     // bounds peak memory while keeping enough parallelism for a fast run.
     pool: "forks",
-    poolOptions: {
-      forks: {
-        // Keep parallelism useful without spawning one heavy fork per core.
-        maxForks: 4,
-        // Don't hold idle forks warm between files.
-        minForks: 1,
-      },
-    },
+    maxWorkers: 4,
     coverage: {
       provider: "v8",
       include: ["source/**/*.{ts,tsx}"],

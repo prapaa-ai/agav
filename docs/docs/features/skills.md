@@ -66,6 +66,24 @@ Skills can be invoked in two ways depending on their `invocation` setting:
 /explain src/config/config.ts
 ```
 
+### Watch a running skill
+
+Skills activated through `activate_skill` appear in the live subagent overview as **Skill: <name>**, including when you invoke a `both` skill such as `/explain`. While the main turn is running, use **↑ / ↓** to select the skill, **Enter** to inspect it, and **Tab** to return to the overview.
+
+Manual-only (`invocation: user`) skills such as `/security-scan` display their detail panel directly while running; you do not need to press Enter. Before the first activity event, this path shows a “Running skill” spinner.
+
+The detail panel shows the task, reasoning summary when the provider emits one, streaming text, and **Recent actions (up to 10)**. Recent actions retain tool inputs, statuses, and available edit diffs across model messages — they do not disappear just because the model starts its next response. This is a recent-activity view, not a complete tool log.
+
+The session footer includes skill token usage as provider usage events arrive: **↑** input, **↓** output, **⇢** cache reads, and **⇠** cache writes when present. Completion does not add the skill total a second time. Usage already reported is retained after failure or cancellation; emitted or thrown errors record an unsuccessful trace, but interruption alone does not guarantee that trace status. Unreported provider usage cannot be counted.
+
+Tool-activated skill entries share the worker UI but do **not** support focused Esc cancellation. Return to the overview with Tab, then press Esc to cancel their parent turn. Individual focused cancellation applies only to actual `subagent` workers. Manual-only slash-command skills currently receive no turn cancellation signal; their progress panel does not make Esc a reliable way to stop them.
+
+### Permissions still apply
+
+A live progress panel does not approve actions. Tool-activated skills inherit the session's permission mode and route sensitive-action approvals to the main terminal. Review the tool input and available diff before approving; `--deny-writes` continues to block designated file-mutating/destructive tools, but is not a universal read-only or network-side-effect boundary.
+
+Manual-only slash-command skills currently run without an interactive confirmation handler. In `ask` mode, operations requiring confirmation are refused and fenced shell blocks are skipped rather than approved silently. Use a read-only task in this mode; do not switch to `--auto-accept` merely to bypass a refusal. See [Security](/reference/security) for permission modes and [Shell blocks](#shell-blocks) for their specific behavior.
+
 ### Automatic dispatch
 
 When a user message starts with `[skill:<name>]`, Agav immediately activates that skill without planning. This is used internally by the LLM for automatic skill selection.
@@ -243,8 +261,10 @@ The `allowed-tools` and `disallowed-tools` fields accept both Agav tool names an
 Skill bodies can contain fenced shell blocks (`` ```sh ``) that execute at runtime. Execution respects the active permission mode:
 
 - **`deny-writes`** — shell blocks are always skipped
-- **`ask`** — each block requires explicit user confirmation
+- **`ask`** — each block requires explicit user confirmation; if no confirmation handler is available (as with manual-only slash-command skills), it is skipped
 - **`auto-accept`** — blocks execute without prompting
+
+Shell blocks execute before the restricted tool registry is built, so tool allow/disallow lists do not filter them. They use direct subprocess execution, not `run_command`: they do not inherit its OS sandbox, destructive-command filtering, streamed logs, or process-group cleanup, and receive no turn cancellation signal. Install only trusted skills with shell blocks.
 
 Shell blocks have a 10-second timeout. On Windows, they run via `cmd.exe /c`; on other platforms, `/bin/sh -c`.
 
@@ -259,7 +279,7 @@ Skills run with a restricted tool registry:
 
 Agav validates skills before installing or loading them. Validation checks include:
 
-- **Required fields** — `name`, `description`, and `version` must be present
+- **Required fields** — `name`, `description`, and a non-empty instruction body must be present; `version` is optional
 - **Name format** — must be lowercase with single hyphens, no leading/trailing hyphens
 - **Directory name** — must match the skill `name` when installed in a dedicated directory
 - **Size limits** — maximum 64 KB file size

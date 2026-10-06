@@ -35,6 +35,8 @@ agav --stream -P "review the current diff"
 
 Print mode accepts cwd-relative `@file` mentions, but it does not add dynamic repository context such as git state, project instructions, memories, or skills.
 
+`--max-turns <number>` caps agent iterations for the print prompt. The cap applies per prompt; when reached the agent summarizes its work and stops.
+
 ## Run mode
 
 | Command | Intent |
@@ -79,3 +81,10 @@ agav --output-schema '{"type":"object","required":["summary"]}' -P "summarize"
 `--output-schema` is print-mode only. Schema mode buffers output even when `--stream` is present. Agav validates JSON, retries once with correction instructions, then prints only the validated JSON value. Invalid schemas, provider errors, or output that remains invalid return exit code `1`; success returns `0`.
 
 Keep secrets in environment variables and use an appropriately narrow tool policy for CI jobs.
+
+
+## Output recovery and stopping jobs
+
+Model-facing tool text has the same [output limits](/features/built-in-tools#output-limits-and-recovery) as interactive sessions, even with `--stream`. Streaming the final answer does not make intermediate tool results unlimited. Saved output paths are temporary and normal process exit attempts cleanup; ask Agav to copy required diagnostics into a protected artifact location during the run, before it exits. A saved log can itself be partial.
+
+Non-interactive tasks have no Ink selection/copy shortcuts or stay-in-session Esc behavior. Use your scheduler's timeout and termination policy, and do not assume a hard-killed process can finish cleanup or publish its logs. Native shell cleanup is best-effort; agent/test subprocesses, detached jobs, MCP server work, and Docker containers have different cancellation limits. Arrange explicit service/container cleanup in CI rather than relying on universal descendant termination. See [cancellation limits](/reference/security#cancellation-is-not-isolation).

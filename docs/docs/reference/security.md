@@ -24,11 +24,11 @@ Sensitive configuration fields are blocked from project-level `.agav/config.json
 
 ### deny-writes mode
 
-In `deny-writes` mode, all file-mutating tools (`edit_file`, `write_file`, `run_command`, `edit_notebook`) are blocked unconditionally — even if they appear in the `allowedTools` list. This prevents a blanket allowlist grant from quietly authorising destructive operations.
+In `deny-writes` mode, `edit_file`, `write_file`, and `edit_notebook`, and tools classified as destructive, are blocked even when allowlisted. A `run_command` not classified as destructive can execute when allowlisted. This is not a universal read-only boundary: command classification is heuristic, and `fetch_url` is treated as safe even for POST, PUT, PATCH, and DELETE. Do not rely on this mode alone to prevent external side effects.
 
 ### Safe tools
 
-These tools never require confirmation because they cannot modify the working tree:
+These tools are treated as safe by the permission gate and normally do not require confirmation. This designation does not mean they have no side effects (`save_memory` and `update_plan` write Agav state, and `fetch_url` can mutate remote services):
 
 `read_file`, `grep_search`, `find_files`, `list_directory`, `web_search`, `lsp_query`, `read_notebook`, `fetch_url`, `overview`, `activate_skill`, `save_memory`, `update_plan`
 
@@ -42,30 +42,30 @@ Agav auto-detects the best available OS-level sandbox at startup:
 
 | Platform | Backend | Mechanism |
 | --- | --- | --- |
-| macOS | Seatbelt | `sandbox-exec` with a deny-default profile |
-| Linux | Bubblewrap | `bwrap` with read-only root and network isolation |
+| macOS | Seatbelt | `sandbox-exec` with an allow-default profile and targeted restrictions |
+| Linux | Bubblewrap | `bwrap` with read-only root and credential masking |
 | Docker | Container | `--network=none`, memory and CPU limits |
 | Windows | Env-var shaping | Strips proxy vars, sets `AGAV_SANDBOX_ACTIVE=1` |
 
 If no backend is available, commands run unsandboxed. Set `AGAV_NO_SANDBOX=1` to intentionally disable sandbox detection.
 
-The same sandbox backends also protect agent tool execution. When an agent runs a `.mjs` tool file, the tool process inherits the sandbox restrictions of the active backend. Bundled agents are trusted and run unsandboxed; global and project agent tools are sandboxed.
+The Seatbelt and Bubblewrap sections below describe **shell `run_command` execution**. Agent `.mjs` tool processes use separate profiles: their Seatbelt profile is deny-default, blocks network, and allows writes only in the working directory and temp; their Bubblewrap runner uses `--unshare-net`, binds host `/tmp`, and masks existing credential and `.config` directories. Do not assume shell and agent-tool network policies are identical. Bundled agents are trusted and run unsandboxed; global and project agent tools use the available agent sandbox backend.
 
 ### Seatbelt (macOS)
 
-The Seatbelt profile uses **deny-default** with targeted allows:
+The Seatbelt profile uses **allow-default** with targeted restrictions; it is not a deny-all capability boundary:
 
 - **Reads** — allowed across the filesystem, except `~/.ssh`, `~/.aws`, and `~/.gnupg`
-- **Writes** — allowed in the working directory and system temp directory. `$HOME` is denied by default, with write carve-outs for the standard cache/config directories that ordinary tooling needs — `~/.cache`, `~/.config`, `~/.local`, `~/.npm`, and `~/.cargo` — so `npm`, `pip`, `cargo`, and `git` work inside the sandbox. Writes to `~/.ssh`, `~/.aws`, and `~/.gnupg` are explicitly denied so no broad allow can re-expose them.
-- **Network** — fully denied
+- **Writes** — system directories (`/System`, `/usr`, `/Library`, `/Applications`) and `$HOME` are denied, with a working-directory carve-out; other locations, including the system temp directory, remain writable subject to ordinary OS permissions. `$HOME` is denied by default, with write carve-outs for the standard cache/config directories that ordinary tooling needs — `~/.cache`, `~/.config`, `~/.local`, `~/.npm`, and `~/.cargo` — so `npm`, `pip`, `cargo`, and `git` work inside the sandbox. Writes to `~/.ssh`, `~/.aws`, and `~/.gnupg` are explicitly denied so no broad allow can re-expose them.
+- **Network** — allowed; do not rely on Seatbelt to prevent network access or exfiltration
 - **Process execution** — allowed, except `/System/Library/CoreServices`
 - **IPC** — Mach lookup, sysctl reads, and POSIX shared memory are allowed for basic process operation
 
 ### Bubblewrap (Linux)
 
-- **Filesystem** — root is mounted read-only (`--ro-bind / /`); the working directory and `/tmp` are writable. Because the read-only root also covers `$HOME`, each standard cache/config directory — `~/.cache`, `~/.config`, `~/.local`, `~/.npm`, and `~/.cargo` — is given a writable scratch `tmpfs` so `npm`, `pip`, `cargo`, and `git` work. These tmpfs mounts are throwaway: nothing persists to or leaks from the host.
+- **Filesystem** — root is mounted read-only (`--ro-bind / /`); the working directory is writable and `/tmp` is a scratch `tmpfs`. Because the read-only root also covers `$HOME`, each standard cache/config directory — `~/.cache`, `~/.config`, `~/.local`, `~/.npm`, and `~/.cargo` — is given a writable scratch `tmpfs` so `npm`, `pip`, `cargo`, and `git` work. These tmpfs mounts are throwaway: nothing persists to or leaks from the host.
 - **Credentials** — `~/.ssh`, `~/.aws`, and `~/.gnupg` are replaced with empty tmpfs mounts, hiding their contents
-- **Network** — fully isolated (`--unshare-net`)
+- **Network** — allowed; Agav does not pass `--unshare-net`
 - **Lifecycle** — child processes are killed when Agav exits (`--die-with-parent`)
 
 ### Docker
@@ -81,6 +81,20 @@ Windows has no kernel-level sandbox. As a best-effort mitigation, Agav:
 
 - Sets `AGAV_SANDBOX_ACTIVE=1` so well-behaved child tools can self-restrict
 - Strips `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (and lowercase variants) to reduce network reach
+
+### Cancellation is not isolation
+
+**Esc** cancels an interactive turn while keeping Agav open; **Ctrl+C** exits unless it copies an active Agav selection. See [Keybindings](/reference/keybindings#cancel-versus-exit).
+
+Native, Seatbelt, and Bubblewrap shell commands use process-group cleanup on failure, cancellation, timeout, and orderly exit; Windows uses tree termination. Successful background commands are preserved on ordinary successful completion. Cleanup is best-effort, cannot undo edits or external actions, and cannot guarantee termination of descendants that detach from the owned group.
+
+Agent/test subprocesses receive cancellation signals without the shell runner's descendant-tree guarantees. Cancelling an MCP request stops the local wait, not necessarily server-side execution, and does not kill its shared server. Docker cancellation targets the local CLI, not guaranteed container/daemon cleanup. Check remote jobs, containers, and services separately after interruption.
+
+Tool-activated skills receive the parent turn signal, but focused skill entries have no individual cancel handler. Manual-only slash-command skills receive no turn signal. Skill shell blocks execute directly outside the restricted tool registry and shell sandbox, and receive no cancellation signal. `fetch_url` uses its own 30-second timeout instead of the turn signal once a request starts. See [Skills](/features/skills#shell-blocks) before trusting executable skill instructions.
+
+### Temporary output privacy
+
+Large tool results may be saved outside the repository in private OS temporary files. They can contain secrets printed by commands or returned by APIs even when environment-variable filtering is enabled. Unix files use mode `0600` and directories `0700`, but the contents are **not encrypted**. Normal exit attempts cleanup; crash leftovers may remain until a later eligible stale-owner sweep. Do not put credentials in command output, and copy needed logs to an appropriately protected location before exiting. See [output limits and retention](/features/built-in-tools#saved-output-paths-and-retention) for quotas and exact cleanup behavior.
 
 ### MCP command validation
 

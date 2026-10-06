@@ -26,7 +26,8 @@ export interface DebugState {
 export interface CommandContext {
   conversation: ConversationState
   config: AgavConfig
-  provider?: LLMProvider
+  provider?: LLMProvider,
+  iterationsBudget?: { remaining: number, total: number },
   setModel: (model: string) => void
   setProvider: (provider: AgavConfig["provider"]) => void
   setEffort: (effort: import("../config/config.js").EffortLevel) => void
@@ -49,6 +50,7 @@ export interface CommandContext {
   toolRegistry: ToolRegistry
   addTokenUsage: (usage: TokenUsage) => void
   setRunningSkill: (name: string | null) => void
+  createSkillProgressTracker?: (title: string, task: string) => (event: import("../agent/loop.js").AgentEvent) => void
   setPickerActive: (active: boolean) => void
   /**
    * Hand the terminal to a picker that writes to stdout directly, and get back

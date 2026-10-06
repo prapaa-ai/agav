@@ -1,4 +1,3 @@
-import React from "react";
 import { render } from "./ink/index.js";
 import App from "./app.js";
 import { isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
@@ -14,6 +13,7 @@ import { runAgentLoop } from "./agent/loop.js";
 import { NO_EDITS_PROMPT, schemaRetryPrompt } from "./agent/internal-prompts.js";
 import { createToolRegistry } from "./tools/registry-factory.js";
 import { getToolLabel } from "./utils/tool-labels.js";
+import { tempOutputManager } from "./utils/temp-output.js";
 import { loadKeybindings } from "./config/keybindings.js";
 import { dim, icons } from "./utils/color.js";
 import { stopAllA2AAgents } from "./agents/a2a-client.js";
@@ -67,6 +67,15 @@ function findClosestFlag(input: string): string | undefined {
   return best;
 }
 
+ function parseMaxTurns(raw?: string): number | undefined {
+    if (!raw) return undefined;
+    const n = Number.parseInt(raw.trim(), 10);
+    if (!Number.isInteger(n) || n <= 0) {
+      process.stderr.write("Error: --max-turns must be a positive integer\n");
+      process.exit(1);
+    }
+    return n;
+  }
 /** Choose between providers which expose the same model during interactive startup. */
 function pickProviderForModel(model: string, matches: FetchedModel[]): Promise<FetchedModel | null> {
   const stdin = process.stdin;
@@ -224,7 +233,7 @@ export async function runPipeMode(
   prompt: string,
   config: AgavConfig,
   provider: LLMProvider,
-  options: { stream?: boolean; outputSchema?: OutputSchema; stdinContent?: string; includeDynamicContext?: boolean; permissionOverride?: import("./config/config.js").PermissionMode; allowedToolsOverride?: string[]; maxTurns?: number } = {},
+  options: { stream?: boolean; outputSchema?: OutputSchema; stdinContent?: string; includeDynamicContext?: boolean; permissionOverride?: import("./config/config.js").PermissionMode; allowedToolsOverride?: string[]; } = {},
 ): Promise<number> {
   const { stream = false, outputSchema } = options;
   const stdinContent = options.stdinContent ?? await readStdin();
@@ -274,7 +283,7 @@ export async function runPipeMode(
     let exitCode = 0;
     let madeEdits = false;
     const maxRetries = 3;
-
+    const iterationsBudget = { remaining: config.maxIterations, total: config.maxIterations };
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       madeEdits = false;
       const loop = runAgentLoop({
@@ -285,7 +294,7 @@ export async function runPipeMode(
         systemPrompt,
         effort: config.effort,
         maxTokens: config.maxTokens,
-        maxIterations: options.maxTurns ?? config.maxIterations,
+        iterationsBudget: iterationsBudget,
         permissionMode,
         allowedTools: options.allowedToolsOverride,
       });
@@ -391,6 +400,7 @@ export function hasStartupFinished(): boolean {
 }
 
 export async function main() {
+  tempOutputManager.pruneStale();
   const flags = parseArgs(process.argv.slice(2));
 
   if (flags.help) {
@@ -424,6 +434,7 @@ export async function main() {
     --deny-writes        Block all write operations
     --help, -h           Show this help
     --version, -v        Show version
+    --max-turns          Caps the number of agentic turns in a session
 
   Agent Commands
     $ agav agents list             List installed agents
@@ -702,7 +713,12 @@ export async function main() {
   }
 
   startupFinished = true;
+  const maxTurns: number | undefined = parseMaxTurns(typeof flags.maxTurns === "string"? flags.maxTurns.trim(): "");
 
+  // Overwrites the config instance when maxTurns is explicitly provided.
+  if (maxTurns !== undefined) {
+    config.maxIterations = maxTurns
+  }
   // Short-circuit into non-interactive mode before the Ink UI is rendered.
   if (flags.print) {
     const provider = createProvider(config);
@@ -711,7 +727,6 @@ export async function main() {
       outputSchema,
     });
     process.exit(exitCode);
-    return;
   }
 
   if (flags.run) {
@@ -743,11 +758,6 @@ export async function main() {
         process.stderr.write("Error: Invalid JSON in --permission / AGAV_PERMISSION\n");
         process.exit(1);
       }
-    }
-
-    if (typeof flags.maxTurns === "string" && flags.maxTurns) {
-      const n = parseInt(flags.maxTurns, 10);
-      if (!isNaN(n) && n > 0) runOptions.maxTurns = n;
     }
 
     const exitCode = await runPipeMode(String(flags.runPrompt ?? ""), config, provider, runOptions);

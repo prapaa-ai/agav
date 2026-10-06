@@ -1,6 +1,6 @@
 import type { SlashCommand, CommandResult, CommandContext } from "../commands/types.js";
 import type { SkillDefinition } from "./types.js";
-import { loadSkills, loadAllSkills, getSkill } from "./loader.js";
+import {  loadAllSkills, getSkill } from "./loader.js";
 import { executeSkill } from "./executor.js";
 import { installFromUrl, installFromPath, removeSkill, clearSkills } from "./marketplace.js";
 import { setSkillEnabled } from "./skill-registry.js";
@@ -26,14 +26,18 @@ export function createSkillSlashCommand(skill: SkillDefinition): SlashCommand {
             systemPrompt: context.config.systemPrompt ?? "",
             permissionMode: context.config.permissionMode,
             effort: context.config.effort,
-            maxIterations: context.config.maxIterations,
+            iterationsBudget: { remaining: context.config.maxIterations, total: context.config.maxIterations },
+            onTokenUsage: context.addTokenUsage,
+            onEvent: context.createSkillProgressTracker?.(skill.name, args.trim() || skill.description),
           });
-          return { type: "message", text: result.output, _tokenUsage: result.tokenUsage, _isSkill: true } as any;
+          // Usage was already merged live; saveNow must not add the total again.
+          return { type: "message", text: result.output, _isSkill: true } as any;
         } catch (err) {
           return {
             type: "message",
             text: `Skill "${skill.name}" failed: ${err instanceof Error ? err.message : String(err)}`,
-          };
+            _isSkill: true,
+          } as any;
         }
       }
 

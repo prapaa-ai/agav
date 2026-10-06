@@ -46,6 +46,7 @@ export type ConfirmToolFn = (
 import type { PermissionMode } from "../config/config.js";
 import { runHook, getHookForTool } from "./hooks.js";
 import { isDestructiveCommand } from "../utils/sandbox.js";
+import { boundToolResult } from "../utils/tool-output.js";
 
 interface LoopParams {
   provider: LLMProvider;
@@ -58,7 +59,6 @@ interface LoopParams {
   signal?: AbortSignal;
   confirmTool?: ConfirmToolFn;
   permissionMode?: PermissionMode;
-  maxIterations?: number;
   allowedTools?: string[];
   hooks?: import("../config/config.js").AgavHooks;
   /**
@@ -68,6 +68,7 @@ interface LoopParams {
    * the loop simply never receives mid-turn steers.
    */
   drainSteers?: () => string[];
+  iterationsBudget?: { remaining: number, total: number }
 }
 
 // Tools that never need confirmation because they cannot modify the working
@@ -94,9 +95,9 @@ function isAllowed(
 
   const primaryInput =
     toolName === "run_command" ? String(input.command ?? "")
-    : toolName === "edit_file" || toolName === "write_file" || toolName === "read_file"
-      ? String(input.path ?? "")
-      : "";
+      : toolName === "edit_file" || toolName === "write_file" || toolName === "read_file"
+        ? String(input.path ?? "")
+        : "";
 
   for (const rule of allowedTools) {
     if (!rule.includes(":")) {
@@ -133,7 +134,13 @@ export async function* runAgentLoop(
   let lastShellFailed = false;
   let verifyReprompts = 0;
   const MAX_VERIFY_REPROMPTS = 2;
-  const maxIterations = params.maxIterations ?? 100;
+
+  if (!params.iterationsBudget) {
+      throw new Error("iterationsBudget is required");
+  }
+  const iterationsBudget = params.iterationsBudget;
+
+
   // Calls the user has already refused, keyed by name + arguments. Scoped to
   // the full loop invocation (not per-turn) so the model cannot retry a denied
   // call later in the same session. This is intentionally conservative: if the
@@ -192,8 +199,12 @@ export async function* runAgentLoop(
       // Non-fatal — fall back to the name-based limits.
     }
   }
+  const maxIterations = Math.min(iterationsBudget.total, iterationsBudget.remaining);
+  for (let iteration = 0; iteration < maxIterations && iterationsBudget.remaining > 0; iteration++) {
 
-  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    if (iterationsBudget) {
+      iterationsBudget.remaining--
+    }
     // Auto-compact if conversation is getting long
     const { compacted, droppedCount } = await conversation.compactIfNeeded(false, summarize);
     if (compacted) {
@@ -205,11 +216,11 @@ export async function* runAgentLoop(
     }
 
     // Graceful shutdown: on the last step, ask for a summary instead of hard-erroring
-    const isLastStep = iteration === maxIterations - 1;
+    const isLastStep = iterationsBudget.remaining <= 0 || iteration === maxIterations - 1;
     if (isLastStep) {
       conversation.addInternalUserMessage(MAX_STEPS_PROMPT);
     }
-
+    
     let textAccum = "";
     const toolCalls = new Map<
       string,
@@ -425,7 +436,7 @@ export async function* runAgentLoop(
               // New file — no diff preview
             }
           }
-        } catch {}
+        } catch { }
 
         yield { type: "tool_confirmation_request", toolName: call.name, toolCallId: id, input, diffLines: previewDiff };
         const choice = await confirmTool(call.name, input, previewDiff, tool?.mcpServerName);
@@ -454,30 +465,50 @@ export async function* runAgentLoop(
 
       const execResults = await Promise.all(
         entries.map(async (entry) => {
-          const result = await toolRegistry.execute(entry.name, entry.input);
+          const result = await toolRegistry.execute(entry.name, entry.input, { signal });
           return { ...entry, result };
         }),
       );
 
-      for (const { id, name, input, result } of execResults) {
+      // Promise.all gives no ordering guarantee between edits and checks.
+      // Any successful edit invalidates old evidence and all checks in this batch.
+      const batchEdited = execResults.some(({ name, result }) =>
+        (name === "edit_file" || name === "write_file") && !result.isError,
+      );
+      if (batchEdited) {
+        madeEdits = true;
+        ranShellAfterEdit = false;
+        lastShellFailed = false;
+      } else if (madeEdits) {
+        const checks = execResults.filter(({ name, result }) =>
+          name === "run_command" || (name === "run_tests"
+            && (result.isError || result.verification?.status === "failed" || result.verification?.status === "passed")),
+        );
+        if (checks.length > 0) {
+          ranShellAfterEdit = true;
+          // Failure wins regardless of input-array or completion order.
+          lastShellFailed = checks.some(({ result }) => result.isError || result.verification?.status === "failed");
+        }
+      }
+
+      for (const { id, name, input, result: initialResult } of execResults) {
+        let result = initialResult;
         if (name === "run_tests") {
           hasTestRun = true;
           if (result.isError) hasTestFailure = true;
-        }
-        if (name === "edit_file" || name === "write_file") {
-          madeEdits = true;
-          ranShellAfterEdit = false;
-          lastShellFailed = false;
-        }
-        if (name === "run_command" && madeEdits) {
-          ranShellAfterEdit = true;
-          lastShellFailed = result.isError;
         }
         const hookDef = getHookForTool(name, input, params.hooks);
         if (hookDef && !result.isError) {
           const hookOutput = await runHook(hookDef.hook, hookDef.vars);
           if (hookOutput) {
-            result.output += `\n\n[Hook output]: ${hookOutput}`;
+            const hookText = `\n\n[Hook output]: ${hookOutput}`;
+            result = await boundToolResult({
+              ...result,
+              output: result.output + hookText,
+              contentBlocks: result.contentBlocks?.length
+                ? [...result.contentBlocks, { type: "text", text: hookText }]
+                : result.contentBlocks,
+            });
           }
         }
         yield { type: "tool_result", toolName: name, toolCallId: id, output: result.output, isError: result.isError, diffLines: result.diffLines };

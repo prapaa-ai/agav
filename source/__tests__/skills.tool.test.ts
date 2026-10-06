@@ -23,6 +23,7 @@ vi.mock("../skills/executor.js", () => ({
 }));
 
 import { createSkillTool } from "../skills/tool.js";
+import { executeSkill } from "../skills/executor.js";
 
 describe("skills/tool", () => {
   beforeEach(() => {
@@ -31,6 +32,8 @@ describe("skills/tool", () => {
 
   it("passes token usage from activate_skill runs into the parent accounting callback", async () => {
     const onTokenUsage = vi.fn();
+    const onEvent = vi.fn();
+    const createProgressTracker = vi.fn(() => onEvent);
     const tool = createSkillTool({
       provider: { name: "mock", stream: vi.fn() } as any,
       parentRegistry: new ToolRegistry(),
@@ -39,14 +42,17 @@ describe("skills/tool", () => {
         systemPrompt: "",
         permissionMode: "ask",
         effort: "medium",
-        maxIterations: 1,
+        iterationsBudget: {remaining : 1,total : 1},
       }),
       onTokenUsage,
+      createProgressTracker,
       getSignal: () => undefined,
     });
 
     const result = await tool.execute({ name: "Nested Skill", arguments: "use this" });
 
+    expect(createProgressTracker).toHaveBeenCalledWith("Skill: Nested Skill", "use this");
+    expect(vi.mocked(executeSkill).mock.calls[0]![2].onEvent).toBe(onEvent);
     expect(result).toEqual({ output: "nested output", isError: false });
     expect(onTokenUsage).toHaveBeenCalledTimes(1);
     expect(onTokenUsage).toHaveBeenCalledWith(reportedUsage);

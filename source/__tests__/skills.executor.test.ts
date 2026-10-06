@@ -35,7 +35,7 @@ const baseDeps = {
   systemPrompt: "",
   permissionMode: "ask" as const,
   effort: "medium" as const,
-  maxIterations: 1,
+  iterationsBudget: {remaining : 1,total : 1},
 };
 
 const skill: SkillDefinition = {
@@ -63,7 +63,7 @@ describe("skills/executor", () => {
       systemPrompt: "",
       permissionMode: "ask",
       effort: "medium",
-      maxIterations: 1,
+      iterationsBudget: {remaining : 1,total : 1},
       onTokenUsage,
     });
 
@@ -76,6 +76,98 @@ describe("skills/executor", () => {
     });
     expect(onTokenUsage).toHaveBeenCalledTimes(1);
     expect(onTokenUsage).toHaveBeenCalledWith(result.tokenUsage);
+  });
+
+  it("reports each usage delta before completion without adding the final total again", async () => {
+    const onTokenUsage = vi.fn();
+    const first = { inputTokens: 11, outputTokens: 7, cacheReadTokens: 3, cacheWriteTokens: 2 };
+    const second = { inputTokens: 5, outputTokens: 4, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    vi.mocked(runAgentLoop).mockReturnValueOnce((async function* () {
+      yield { type: "usage", ...first };
+      expect(onTokenUsage).toHaveBeenCalledTimes(1);
+      expect(onTokenUsage).toHaveBeenCalledWith(first);
+      yield { type: "usage", inputTokens: 5, outputTokens: 4 };
+      expect(onTokenUsage).toHaveBeenLastCalledWith(second);
+      yield { type: "turn_complete" };
+    })() as any);
+    const result = await executeSkill(skill, "", { ...baseDeps, onTokenUsage });
+    expect(onTokenUsage).toHaveBeenCalledTimes(2);
+    expect(result.tokenUsage).toEqual({ inputTokens: 16, outputTokens: 11, cacheReadTokens: 3, cacheWriteTokens: 2 });
+  });
+
+  it("preserves partial usage and fails on an emitted cancellation/provider error", async () => {
+    const onTokenUsage = vi.fn();
+    vi.mocked(runAgentLoop).mockReturnValueOnce((async function* () {
+      yield { type: "usage", inputTokens: 5, outputTokens: 4 };
+      yield { type: "error", error: new Error("Aborted") };
+    })() as any);
+    await expect(executeSkill(skill, "", { ...baseDeps, onTokenUsage })).rejects.toThrow("Aborted");
+    expect(onTokenUsage).toHaveBeenCalledTimes(1);
+    expect(onTokenUsage).toHaveBeenCalledWith({ inputTokens: 5, outputTokens: 4, cacheReadTokens: 0, cacheWriteTokens: 0 });
+    expect(recordSkillTrace).toHaveBeenCalledWith("Demo Skill", "", 9, false);
+  });
+
+  it("adds concurrent skill deltas independently, including a failed invocation", async () => {
+    let total = { inputTokens: 100, outputTokens: 50, cacheReadTokens: 20, cacheWriteTokens: 10 };
+    const onTokenUsage = vi.fn((delta: typeof total) => {
+      total = {
+        inputTokens: total.inputTokens + delta.inputTokens,
+        outputTokens: total.outputTokens + delta.outputTokens,
+        cacheReadTokens: total.cacheReadTokens + delta.cacheReadTokens,
+        cacheWriteTokens: total.cacheWriteTokens + delta.cacheWriteTokens,
+      };
+    });
+    vi.mocked(runAgentLoop).mockReturnValueOnce((async function* () {
+      yield { type: "usage", inputTokens: 11, outputTokens: 7, cacheReadTokens: 3, cacheWriteTokens: 2 };
+      await Promise.resolve();
+      yield { type: "turn_complete" };
+    })() as any);
+    vi.mocked(runAgentLoop).mockReturnValueOnce((async function* () {
+      yield { type: "usage", inputTokens: 5, outputTokens: 4 };
+      yield { type: "error", error: new Error("Aborted") };
+    })() as any);
+    const results = await Promise.allSettled([
+      executeSkill(skill, "one", { ...baseDeps, onTokenUsage }),
+      executeSkill(skill, "two", { ...baseDeps, onTokenUsage }),
+    ]);
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "rejected"]);
+    expect(onTokenUsage).toHaveBeenCalledTimes(2);
+    expect(total).toEqual({ inputTokens: 116, outputTokens: 61, cacheReadTokens: 23, cacheWriteTokens: 12 });
+  });
+
+  it("forwards intermediate activity before the skill finishes", async () => {
+    const events = [
+      { type: "thinking", text: "Inspecting the project" },
+      { type: "streaming_text", text: "Reading files" },
+      { type: "tool_call_start", toolName: "read_file", toolCallId: "call-1" },
+      { type: "tool_result", toolName: "read_file", toolCallId: "call-1", output: "contents", isError: false },
+      { type: "assistant_message_complete", text: "done" },
+      { type: "turn_complete" },
+    ];
+    const onEvent = vi.fn();
+    vi.mocked(runAgentLoop).mockReturnValueOnce((async function* () {
+      for (const event of events) {
+        yield event;
+        expect(onEvent).toHaveBeenLastCalledWith(event);
+      }
+    })() as any);
+
+    const result = await executeSkill(skill, "do it", { ...baseDeps, onEvent } as any);
+
+    expect(result.output).toBe("done");
+    expect(onEvent.mock.calls.map(([event]) => event)).toEqual(events);
+  });
+
+  it("terminates progress when the child loop throws", async () => {
+    const error = new Error("provider failed");
+    vi.mocked(runAgentLoop).mockReturnValueOnce((async function* () {
+      yield { type: "streaming_text", text: "working" };
+      throw error;
+    })() as any);
+    const onEvent = vi.fn();
+
+    await expect(executeSkill(skill, "", { ...baseDeps, onEvent } as any)).rejects.toThrow(error);
+    expect(onEvent).toHaveBeenLastCalledWith({ type: "error", error });
   });
 
   it("records a successful run against the skill's trace log", async () => {

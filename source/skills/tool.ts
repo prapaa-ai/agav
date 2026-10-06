@@ -1,7 +1,7 @@
 import type { ToolDefinition, ToolResult } from "../tools/types.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { ConfirmResult } from "../agent/loop.js";
+import type { AgentEvent, ConfirmResult } from "../agent/loop.js";
 import type { PermissionMode, EffortLevel } from "../config/config.js";
 import { getSkill } from "./loader.js";
 import { executeSkill } from "./executor.js";
@@ -14,11 +14,12 @@ interface SkillToolDeps {
     systemPrompt: string;
     permissionMode: PermissionMode;
     effort: EffortLevel;
-    maxIterations: number;
+    iterationsBudget: { remaining: number, total: number };
   };
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
   onTokenUsage?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   getSignal: () => AbortSignal | undefined;
+  createProgressTracker?: (title: string, task: string) => (event: AgentEvent) => void;
 }
 
 export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
@@ -66,10 +67,11 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
           systemPrompt: config.systemPrompt,
           permissionMode: config.permissionMode,
           effort: config.effort,
-          maxIterations: config.maxIterations,
+          iterationsBudget: config.iterationsBudget,
           confirmTool: deps.confirmTool,
           onTokenUsage: deps.onTokenUsage,
           signal: deps.getSignal(),
+          onEvent: deps.createProgressTracker?.(`Skill: ${skill.name}`, args || skill.description),
         });
         return { output: result.output, isError: false };
       } catch (err) {
