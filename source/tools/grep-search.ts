@@ -108,7 +108,7 @@ async function nativeGrep(
   // root's name, while still excluding generated directories below it.
   const searchFromRoot = SKIP_DIRS.has(basename(searchPath)) &&
     await stat(searchPath).then((info) => info.isDirectory(), () => false);
-  const args = ["-rn", "--color=never", "-E"];
+  const args = ["-rn", "-H", "--color=never", "-E"];
   if (include) {
     args.push("--include", include);
   }
@@ -121,7 +121,7 @@ async function nativeGrep(
   return new Promise((resolve, reject) => {
     execFile("grep", args, { maxBuffer: 200_000, timeout: 15_000, cwd: searchFromRoot ? searchPath : undefined }, (error, stdout, stderr) => {
       if (searchFromRoot) {
-        stdout = stdout.replace(/^\.\//gm, () => `${searchPath}/`);
+        stdout = stdout.replace(/^(Binary file )?\.\//gm, (_match, prefix = "") => `${prefix}${searchPath}/`);
       }
       if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
         reject(error);

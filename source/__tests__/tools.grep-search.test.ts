@@ -41,6 +41,38 @@ async function file(name: string, content = "needle\n") {
   return path;
 }
 
+describe("grep_search native output", () => {
+  beforeEach(() => {
+    vi.mocked(platform).mockReturnValue("linux");
+  });
+
+  it("requests filenames even for a single explicit file", async () => {
+    const target = await file("single.ts");
+    vi.mocked(execFile).mockImplementationOnce(((_command: string, args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      const output = args.includes("-H") ? `${target}:1:needle\n` : "1:needle\n";
+      callback(null, output, "");
+    }) as typeof execFile);
+    expect(await grepSearchTool.execute({ pattern: "needle", path: target })).toEqual({
+      output: `${target}:1:needle`, isError: false,
+    });
+  });
+
+  it.each(["Binary file ./nested/file.bin matches", "./nested/file.bin: binary file matches"])(
+    "normalizes binary paths without rewriting matching text: %s", async (binaryOutput) => {
+      await file("build/nested/file.bin", "needle\0\n");
+      const root = join(directory, "build");
+      const textOutput = "./visible.ts:1:Binary file ./literal matches";
+      vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+        callback(null, `${binaryOutput}\n${textOutput}\n`, "");
+      }) as typeof execFile);
+      expect(await grepSearchTool.execute({ pattern: "needle", path: root })).toEqual({
+        output: `${binaryOutput.replace("./", `${root}/`)}\n${root}/visible.ts:1:Binary file ./literal matches`,
+        isError: false,
+      });
+    },
+  );
+});
+
 for (const backend of ["native", "fallback"] as const) {
   describe.skipIf(backend === "native" && !nativeAvailable)(`grep_search ${backend}`, () => {
     beforeEach(() => {
