@@ -121,7 +121,7 @@ async function nativeGrep(
   return new Promise((resolve, reject) => {
     execFile("grep", args, { maxBuffer: 200_000, timeout: 15_000, cwd: searchFromRoot ? searchPath : undefined }, (error, stdout, stderr) => {
       if (searchFromRoot) {
-        stdout = stdout.replace(/^(Binary file )?\.\//gm, (_match, prefix = "") => `${prefix}${searchPath}/`);
+        stdout = stdout.replace(/(^|\n)(Binary file )?\.\//g, (_match, boundary, prefix = "") => `${boundary}${prefix}${searchPath}/`);
       }
       if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
         reject(error);

@@ -57,6 +57,36 @@ describe("grep_search native output", () => {
     });
   });
 
+  it.each([
+    ["CR", "\r"],
+    ["U+2028", "\u2028"],
+    ["U+2029", "\u2029"],
+  ])("preserves %s inside content while normalizing only LF record starts", async (_name, separator) => {
+    await file("build/visible.ts");
+    const root = join(directory, "build");
+    const content = `needle${separator}./literal${separator}Binary file ./literal matches`;
+    const records = [
+      `./visible.ts:1:${content}`,
+      "Binary file ./nested/gnu.bin matches",
+      `./visible.ts:2:${content}`,
+      "./nested/bsd.bin: binary file matches",
+      `./other.ts:3:${content}`,
+    ];
+    vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      callback(null, records.join("\n") + "\n", "");
+    }) as typeof execFile);
+    expect(await grepSearchTool.execute({ pattern: "needle", path: root })).toEqual({
+      output: [
+        `${root}/visible.ts:1:${content}`,
+        `Binary file ${root}/nested/gnu.bin matches`,
+        `${root}/visible.ts:2:${content}`,
+        `${root}/nested/bsd.bin: binary file matches`,
+        `${root}/other.ts:3:${content}`,
+      ].join("\n"),
+      isError: false,
+    });
+  });
+
   it.each(["Binary file ./nested/file.bin matches", "./nested/file.bin: binary file matches"])(
     "normalizes binary paths without rewriting matching text: %s", async (binaryOutput) => {
       await file("build/nested/file.bin", "needle\0\n");
