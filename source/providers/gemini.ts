@@ -53,16 +53,7 @@ interface GeminiContent {
 export class GeminiProvider implements LLMProvider {
   readonly name = "gemini";
   private apiKey: string;
-  // Store raw Gemini response parts per assistant turn so thought signatures
-  // and thought blocks can be echoed back verbatim in the conversation history.
-  // Keyed by the first synthetic toolCallId in that turn (or "__text_N__" for text-only turns).
-  private rawTurnParts = new Map<string, GeminiPart[]>();
-  private textTurnCounter = 0;
-  // Must outlive a single stream() call. When this reset per request, every
-  // turn's first tool call was named gemini_call_0, so each turn overwrote the
-  // previous turn's rawTurnParts entry and replay handed the newest parts to
-  // every historical turn — corrupting the transcript and mutating the request
-  // prefix on every request, which defeats prompt caching.
+  // Must outlive a single stream() call, including concurrent child requests.
   private callCounter = 0;
 
   constructor(apiKey: string) {
@@ -80,7 +71,6 @@ export class GeminiProvider implements LLMProvider {
       systemPrompt = applyEffortPrompt(systemPrompt, params.effort ?? "medium");
     }
 
-    this.pruneUnreferencedRawParts(params.messages);
     const contents = this.toContents(params.messages);
     const tools = params.tools?.length
       ? [{ functionDeclarations: params.tools.map((t) => this.toTool(t)) }]
@@ -225,40 +215,17 @@ export class GeminiProvider implements LLMProvider {
       debugLog({ req: requestId, usage: lastRawUsage });
     }
 
-    // Store raw parts keyed by each tool call ID in this turn
+    // Publish only after draining: signatures or other opaque parts can arrive
+    // after the function call, including in later chunks. The agent persists
+    // metadata on the tool block, so replay belongs to history, not a shared
+    // provider cache. Store the full turn once, on its first call.
     if (turnCallIds.length > 0) {
-      for (const id of turnCallIds) {
-        this.rawTurnParts.set(id, turnParts);
-      }
-    } else {
-      this.rawTurnParts.set(`__text_${this.textTurnCounter++}__`, turnParts);
-    }
-
-  }
-
-  /**
-   * Prune rawTurnParts entries that are no longer referenced by any message
-   * in the active conversation. Unlike blind count-based pruning, this is
-   * safe for thinking models whose raw parts contain required thought
-   * signatures — we never evict an entry the next request still needs.
-   */
-  private pruneUnreferencedRawParts(messages: Message[]): void {
-    if (this.rawTurnParts.size <= 100) return;
-
-    const liveKeys = new Set<string>();
-    for (const msg of messages) {
-      if (msg.role !== "assistant") continue;
-      for (const block of msg.content) {
-        if (block.type === "tool_use" && block.toolCallId) {
-          liveKeys.add(block.toolCallId);
-        }
-      }
-    }
-
-    for (const key of this.rawTurnParts.keys()) {
-      if (!liveKeys.has(key)) {
-        this.rawTurnParts.delete(key);
-      }
+      yield {
+        type: "tool_call_delta",
+        toolCallId: turnCallIds[0]!,
+        argsJson: "",
+        providerMetadata: { geminiRawTurnParts: turnParts },
+      };
     }
   }
 
@@ -319,9 +286,10 @@ export class GeminiProvider implements LLMProvider {
           }
         }
 
-        const rawParts = toolCallIds.length > 0
-          ? this.rawTurnParts.get(toolCallIds[0]!)
-          : undefined;
+        const storedParts = msg.content.find((block) => block.type === "tool_use"
+          && Array.isArray(block.providerMetadata?.geminiRawTurnParts))
+          ?.providerMetadata?.geminiRawTurnParts;
+        const rawParts = Array.isArray(storedParts) ? storedParts as GeminiPart[] : undefined;
 
         if (rawParts) {
           // Use raw parts verbatim — they include thought blocks and thought_signature
@@ -365,7 +333,7 @@ export class GeminiProvider implements LLMProvider {
     if (last && last.role === role) {
       last.parts.push(...parts);
     } else {
-      // Copy: rawTurnParts hands us a stored array, and a later merge into this
+      // Copy: provider metadata hands us a stored array, and a later merge into this
       // entry would otherwise mutate the cached turn in place.
       result.push({ role, parts: [...parts] });
     }
