@@ -302,7 +302,8 @@ export class GeminiProvider implements LLMProvider {
           }
           this.pushContent(result, "model", rawParts);
         } else {
-          // Fallback: reconstruct from ContentBlocks (no thought signatures — may fail on resume)
+          // Synthetic calls and legacy history have no raw signed turn. Use the
+          // compatibility sentinel here only; real turns above replay verbatim.
           const parts: GeminiPart[] = [];
           for (const block of msg.content) {
             if (block.type === "text" && block.text) {
@@ -316,6 +317,7 @@ export class GeminiProvider implements LLMProvider {
                   name: block.toolName!,
                   args: (block.toolInput ?? {}) as Record<string, unknown>,
                 },
+                thoughtSignature: "skip_thought_signature_validator",
               });
             }
           }
