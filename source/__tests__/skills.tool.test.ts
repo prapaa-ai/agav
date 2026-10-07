@@ -30,6 +30,30 @@ describe("skills/tool", () => {
     vi.clearAllMocks();
   });
 
+  it("forwards explicit context, effective permissions, cancellation, and the same shared budget", async () => {
+    const controller = new AbortController();
+    const budget = { remaining: 4, total: 4 };
+    const confirmTool = vi.fn();
+    const messages = [{ role: "user" as const, content: [{ type: "text" as const, text: "relevant context" }] }];
+    const tool = createSkillTool({
+      provider: { name: "mock", stream: vi.fn() } as any,
+      parentRegistry: new ToolRegistry(),
+      getConfig: () => ({ model: "m", systemPrompt: "base", permissionMode: "ask", effort: "high", iterationsBudget: budget }),
+      confirmTool, getSignal: () => undefined,
+    });
+    await tool.execute({ name: "Nested Skill", arguments: "exact args" }, {
+      signal: controller.signal, conversation: messages, systemPrompt: "stable context", permissionMode: "deny-writes",
+    });
+    const [, args, deps] = vi.mocked(executeSkill).mock.calls[0]!;
+    expect(args).toBe("exact args");
+    expect(deps.contextMessages).toBe(messages);
+    expect(deps.iterationsBudget).toBe(budget);
+    expect(deps.confirmTool).toBe(confirmTool);
+    expect(deps.signal).toBe(controller.signal);
+    expect(deps.systemPrompt).toBe("stable context");
+    expect(deps.permissionMode).toBe("deny-writes");
+  });
+
   it("passes token usage from activate_skill runs into the parent accounting callback", async () => {
     const onTokenUsage = vi.fn();
     const onEvent = vi.fn();

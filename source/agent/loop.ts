@@ -69,6 +69,8 @@ interface LoopParams {
    */
   drainSteers?: () => string[];
   iterationsBudget?: { remaining: number, total: number }
+  /** Explicit skill dispatch shares the normal tool permission/history path. */
+  initialToolCall?: { name: "activate_skill"; input: Record<string, unknown> };
 }
 
 // Tools that never need confirmation because they cannot modify the working
@@ -200,9 +202,15 @@ export async function* runAgentLoop(
     }
   }
   const maxIterations = Math.min(iterationsBudget.total, iterationsBudget.remaining);
-  for (let iteration = 0; iteration < maxIterations && iterationsBudget.remaining > 0; iteration++) {
-
-    if (iterationsBudget) {
+  const initialToolCall = params.initialToolCall;
+  for (let iteration = initialToolCall ? -1 : 0; iteration < maxIterations && iterationsBudget.remaining > 0; iteration++) {
+    const seededCall = iteration === -1 ? initialToolCall : undefined;
+    if (seededCall && signal?.aborted) {
+      yield { type: "error", error: new Error("Aborted") };
+      return;
+    }
+    // A deterministic dispatch is not a model request and spends no iteration.
+    if (!seededCall) {
       iterationsBudget.remaining--
     }
     // Auto-compact if conversation is getting long
@@ -217,7 +225,7 @@ export async function* runAgentLoop(
 
     // Graceful shutdown: on the last step, ask for a summary instead of hard-erroring
     const isLastStep = iterationsBudget.remaining <= 0 || iteration === maxIterations - 1;
-    if (isLastStep) {
+    if (isLastStep && !seededCall) {
       conversation.addInternalUserMessage(MAX_STEPS_PROMPT);
     }
     
@@ -228,8 +236,17 @@ export async function* runAgentLoop(
     >();
     let stopReason = "";
 
+    const dispatchContext = seededCall ? conversation.getMessages() : undefined;
+    if (seededCall) {
+      const id = `skill-${crypto.randomUUID()}`;
+      const argsJson = JSON.stringify(seededCall.input);
+      toolCalls.set(id, { name: seededCall.name, argsJson });
+      yield { type: "tool_call_start", toolName: seededCall.name, toolCallId: id };
+      yield { type: "tool_call_input_delta", toolCallId: id, argsJson };
+    }
+
     try {
-      for await (const event of provider.stream({
+      if (!seededCall) for await (const event of provider.stream({
         model,
         messages: conversation.getMessages(),
         tools: toolRegistry.getSchemas(),
@@ -373,6 +390,7 @@ export async function* runAgentLoop(
     const toolResults: ContentBlock[] = [];
 
     for (const [id, call] of toolCalls) {
+      if (signal?.aborted) break;
       const input = parsedInputs.get(id) ?? { raw: call.argsJson };
       // Hard block: if an explicit allowlist is set, reject tools not on it
       if (params.allowedTools && params.allowedTools.length > 0
@@ -438,8 +456,12 @@ export async function* runAgentLoop(
           }
         } catch { }
 
+        if (signal?.aborted) break;
         yield { type: "tool_confirmation_request", toolName: call.name, toolCallId: id, input, diffLines: previewDiff };
+        // Yielding also hands control to the UI, which may cancel the turn.
+        if (signal?.aborted) break;
         const choice = await confirmTool(call.name, input, previewDiff, tool?.mcpServerName);
+        if (signal?.aborted) break;
         if (choice === "always") {
           permissionMode = "auto-accept";
         }
@@ -454,6 +476,19 @@ export async function* runAgentLoop(
       approved.set(id, { input });
     }
 
+    if (signal?.aborted) {
+      // Preserve every tool_use/result pair, including approved-but-not-run calls.
+      const answered = new Set(toolResults.map(result => result.toolCallId));
+      for (const [id, call] of toolCalls) {
+        if (answered.has(id)) continue;
+        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: "Tool cancelled.", isError: true });
+        yield { type: "tool_result", toolName: call.name, toolCallId: id, output: "Tool cancelled.", isError: true };
+      }
+      conversation.addToolResults(toolResults);
+      yield { type: "error", error: new Error("Aborted") };
+      return;
+    }
+
     // Phase 2: execute approved tools in parallel
     let hasTestRun = false;
     let hasTestFailure = false;
@@ -465,7 +500,7 @@ export async function* runAgentLoop(
 
       const execResults = await Promise.all(
         entries.map(async (entry) => {
-          const result = await toolRegistry.execute(entry.name, entry.input, { signal });
+          const result = await toolRegistry.execute(entry.name, entry.input, { signal, ...(dispatchContext ? { conversation: dispatchContext, systemPrompt, permissionMode } : {}) });
           return { ...entry, result };
         }),
       );

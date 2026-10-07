@@ -25,6 +25,7 @@ interface SkillExecDeps {
   // callers using this callback must not add that total again.
   onTokenUsage?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   signal?: AbortSignal;
+  contextMessages?: import("../providers/types.js").Message[];
   onEvent?: (event: AgentEvent) => void;
 }
 
@@ -133,6 +134,8 @@ export async function executeSkill(
   const registry = buildSkillRegistry(deps.parentRegistry, skill);
   const conversation = new ConversationState();
   conversation.setModel(deps.model);
+  // Compaction mutates blocks, so the child must own a deep context snapshot.
+  if (deps.contextMessages) conversation.setMessages(structuredClone(deps.contextMessages));
 
   const userMessage = args
     ? `${prompt}\n\nUser request: ${args}`

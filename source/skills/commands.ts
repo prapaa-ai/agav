@@ -41,10 +41,7 @@ export function createSkillSlashCommand(skill: SkillDefinition): SlashCommand {
         }
       }
 
-      const prompt = args.trim()
-        ? `[skill:${skill.name}] ${args.trim()}`
-        : `[skill:${skill.name}]`;
-      return { type: "submit", text: prompt };
+      return { type: "skill_invoke", skillName: skill.name, arguments: args.trim() };
     },
   };
 }

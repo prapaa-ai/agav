@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SkillDefinition } from "../skills/types.js";
 import { ToolRegistry } from "../tools/registry.js";
+import { ConversationState } from "../agent/conversation.js";
+import { estimateConversationTokens } from "../utils/tokens.js";
 
 vi.mock("node:child_process", () => ({
   execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
@@ -51,6 +53,42 @@ const skill: SkillDefinition = {
 describe("skills/executor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("isolates parent blocks and token cache from child compaction", async () => {
+    const parent = new ConversationState();
+    for (let i = 0; i < 5; i++) {
+      parent.addUserMessage(`question ${i}`);
+      parent.addAssistantMessage([{
+        type: "tool_use", toolCallId: `read-${i}`, toolName: "read_file",
+        toolInput: { path: `file-${i}` }, providerMetadata: { nested: { signature: "original" } },
+      }]);
+      parent.addToolResults([{
+        type: "tool_result", toolCallId: `read-${i}`, toolResult: "contents ".repeat(200),
+        toolResultContent: [{ type: "text", text: "original rich result ".repeat(200) }],
+      }]);
+    }
+    const snapshot = structuredClone(parent.getMessages());
+    const cachedTokens = parent.tokenCount;
+    vi.mocked(runAgentLoop).mockImplementationOnce(({ conversation }) => (async function* () {
+      const childBlocks = conversation.getMessages().flatMap(message => message.content);
+      const parentBlocks = parent.getMessages().flatMap(message => message.content);
+      expect(childBlocks[1]?.toolInput).not.toBe(parentBlocks[1]?.toolInput);
+      expect(childBlocks[1]?.providerMetadata).not.toBe(parentBlocks[1]?.providerMetadata);
+      expect(childBlocks[2]?.toolResultContent).not.toBe(parentBlocks[2]?.toolResultContent);
+      conversation.setContextWindow(1000);
+      await conversation.compactIfNeeded(true);
+      // Prove the real trimming path ran, not just a history replacement.
+      expect(childBlocks[2]?.toolResult).toContain("...(trimmed)");
+      expect(childBlocks[2]?.toolResultContent).toBeUndefined();
+      yield { type: "turn_complete" };
+    })());
+
+    await executeSkill(skill, "", { ...baseDeps, contextMessages: parent.getMessages() });
+
+    expect(parent.getMessages()).toEqual(snapshot);
+    expect(parent.tokenCount).toBe(cachedTokens);
+    expect(estimateConversationTokens(parent.getMessages())).toBe(cachedTokens);
   });
 
   it("forwards aggregated usage to the parent token accounting callback", async () => {
