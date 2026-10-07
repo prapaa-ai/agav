@@ -558,6 +558,12 @@ export async function* runAgentLoop(
     }
 
     conversation.addToolResults(toolResults);
+    // Tool execution and result yields may cancel the turn, even when a child
+    // has consumed the last shared iteration. Keep history paired before exiting.
+    if (signal?.aborted) {
+      yield { type: "error", error: new Error("Aborted") };
+      return;
+    }
 
     // Deliver /steer directives typed while this turn was running. This is the
     // safe point: tool results have just been appended, so a user message here
@@ -580,6 +586,12 @@ export async function* runAgentLoop(
     } else if (hasTestRun) {
       testRepairAttempts = 0;
     }
+  }
+
+  // Budget exhaustion must not turn cancellation into normal completion.
+  if (signal?.aborted) {
+    yield { type: "error", error: new Error("Aborted") };
+    return;
   }
 
   // Deliver any /steer directives queued during the final iteration, then stop.

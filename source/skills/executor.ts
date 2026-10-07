@@ -104,7 +104,7 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
     // Keep the existing unsandboxed shell-block behavior and output bound.
     const output = await runInSandbox({
       command: block.command, cwd: process.cwd(), timeout: 10_000,
-      maxBuffer: 1024 * 1024, forceBackend: "none", signal: opts.signal,
+      maxBuffer: 1024 * 1024, forceBackend: "none", inheritEnv: true, signal: opts.signal,
     });
     checkAborted(opts.signal);
     result = replaceOnce(result, block.match, output.stdout.trim());

@@ -59,6 +59,31 @@ describe.skipIf(process.platform === "win32")("shell process ownership", () => {
     }
   });
 
+  it("inherits credentials for skill shell blocks but filters ordinary commands", async () => {
+    vi.stubEnv("AGAV_TEST_API_TOKEN", "harmless-skill-credential");
+    const stream = vi.fn(async function* (params) {
+      expect(params.messages[0].content[0].text).toBe("harmless-skill-credential");
+      yield { type: "text_delta" as const, text: "done" };
+    });
+    try {
+      await executeSkill({
+        name: "Shell", slug: "shell", description: "shell",
+        body: '```sh\nprintf "%s" "$AGAV_TEST_API_TOKEN"\n```',
+        frontmatter: { name: "Shell", description: "shell" }, filePath: "/tmp/SKILL.md", origin: "project",
+      }, "", {
+        provider: { name: "mock", stream }, parentRegistry: new ToolRegistry(), model: "mock", systemPrompt: "",
+        permissionMode: "auto-accept", effort: "medium", iterationsBudget: { remaining: 1, total: 1 },
+      });
+      expect(stream).toHaveBeenCalledTimes(1);
+      const result = await shellTool.execute({ command: 'printf "%s" "${AGAV_TEST_API_TOKEN-unset}"', sandbox: "none" });
+      expect(result.isError).toBe(false);
+      expect(result.output).toContain("unset");
+      expect(result.output).not.toContain("harmless-skill-credential");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("closes stdin so a noninteractive read sees EOF", async () => {
     const result = await run("cat; printf done");
     expect(result.error).toBeNull();

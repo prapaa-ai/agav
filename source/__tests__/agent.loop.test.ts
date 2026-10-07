@@ -98,6 +98,59 @@ describe("runAgentLoop", () => {
     expect(events.at(-1)).toEqual({ type: "turn_complete" });
   });
 
+  it.each(["execution", "result event"] as const)("aborts a seeded skill at budget exhaustion during %s without completing or draining steers", async (abortAt) => {
+    const controller = new AbortController();
+    const provider = new MockProvider([]);
+    const conversation = new ConversationState();
+    conversation.addUserMessage("/demo");
+    const tools = new ToolRegistry();
+    const budget = { remaining: 1, total: 1 };
+    const execute = vi.fn(async () => {
+      budget.remaining--; // The child consumes the last shared model request.
+      if (abortAt === "execution") controller.abort();
+      return { output: "partial skill result", isError: true };
+    });
+    tools.register(createTool("activate_skill", execute));
+    const drainSteers = vi.fn(() => ["pending directive"]);
+    const events: AgentEvent[] = [];
+    for await (const event of runAgentLoop({
+      provider, conversation, toolRegistry: tools, model: "m", iterationsBudget: budget,
+      initialToolCall: { name: "activate_skill", input: { name: "Demo" } },
+      signal: controller.signal, drainSteers,
+    })) {
+      events.push(event);
+      if (abortAt === "result event" && event.type === "tool_result") controller.abort();
+    }
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(budget.remaining).toBe(0);
+    expect(provider.stream).not.toHaveBeenCalled();
+    expect(drainSteers).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: "error", error: new Error("Aborted") });
+    expect(events.some(event => event.type === "turn_complete" || event.type === "steer_applied"
+      || (event.type === "assistant_message_complete" && event.text.includes("maximum iterations")))).toBe(false);
+    const messages = conversation.getMessages();
+    expect(messages).toHaveLength(3);
+    const call = messages[1]?.content[0];
+    expect(call).toMatchObject({ type: "tool_use", toolName: "activate_skill" });
+    expect(messages[2]?.content[0]).toMatchObject({
+      type: "tool_result", toolCallId: call?.toolCallId, toolResult: "partial skill result", isError: true,
+    });
+  });
+
+  it("reports abort instead of completion when entering with an exhausted budget", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const provider = new MockProvider([]);
+    const drainSteers = vi.fn(() => ["pending directive"]);
+    const events = await collectEvents(runAgentLoop({
+      provider, conversation: new ConversationState(), toolRegistry: new ToolRegistry(), model: "m",
+      iterationsBudget: { remaining: 0, total: 1 }, signal: controller.signal, drainSteers,
+    }));
+    expect(events).toEqual([{ type: "error", error: new Error("Aborted") }]);
+    expect(provider.stream).not.toHaveBeenCalled();
+    expect(drainSteers).not.toHaveBeenCalled();
+  });
+
   it.each(["confirmation", "confirmation event"] as const)("cancels all pending destructive calls after abort at %s", async (abortAt) => {
     const controller = new AbortController();
     const queue = new ConfirmationQueue();

@@ -430,6 +430,7 @@ function runUnsandboxed(
   maxBuffer: number,
   onOutput?: OutputCallback,
   signal?: AbortSignal,
+  inheritEnv = false,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const isWindows = platform() === "win32";
   const shell = isWindows ? "cmd.exe" : "/bin/sh";
@@ -438,7 +439,7 @@ function runUnsandboxed(
     executeProcess(
       shell,
       shellArgs,
-      { timeout, maxBuffer, cwd, env: filterEnv() },
+      { timeout, maxBuffer, cwd, env: inheritEnv ? undefined : filterEnv() },
       onOutput,
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });
@@ -482,6 +483,8 @@ export interface SandboxOptions {
   timeout: number;
   maxBuffer: number;
   forceBackend?: SandboxBackend;
+  /** Preserve legacy skill-shell inheritance; only honored with forceBackend: "none". */
+  inheritEnv?: boolean;
   signal?: AbortSignal;
   /** Streams raw output in observed arrival order; stdout/stderr results are empty. */
   onOutput?: OutputCallback;
@@ -521,7 +524,7 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
       result = await runDocker(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
       break;
     default:
-      result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
+      result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal, opts.forceBackend === "none" && opts.inheritEnv);
       break;
   }
 

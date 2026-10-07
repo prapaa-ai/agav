@@ -306,6 +306,65 @@ describe("utils/sandbox", () => {
     }
   });
 
+  it.each(["seatbelt", "bubblewrap", "docker"] as const)("ignores skill environment inheritance for %s", async (backend) => {
+    vi.resetModules();
+    const cp = await import("node:child_process");
+    const sandbox = await import("../utils/sandbox.js");
+    vi.stubEnv("AGAV_TEST_API_TOKEN", "harmless-credential");
+    vi.mocked(cp.execFile).mockImplementation((...args: any[]) => {
+      args.at(-1)(null, "success", "");
+      return {} as any;
+    });
+    try {
+      await sandbox.runInSandbox({
+        command: "echo test", cwd: "/tmp", timeout: 1000, maxBuffer: 1024,
+        forceBackend: backend, inheritEnv: true,
+      });
+      if (backend === "docker") {
+        const args = vi.mocked(cp.execFile).mock.calls.find(call => call[1]?.includes("run"))?.[1];
+        expect(args).toBeDefined();
+        expect(args?.join(" ")).not.toContain("AGAV_TEST_API_TOKEN");
+        expect(args?.join(" ")).not.toContain("harmless-credential");
+      } else {
+        const env = vi.mocked(cp.spawn).mock.calls[0]?.[2]?.env;
+        expect(env).toBeDefined();
+        expect(env).not.toHaveProperty("AGAV_TEST_API_TOKEN");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(["seatbelt", "bubblewrap"] as const)("keeps filtering on %s fallback despite skill inheritance", async (backend) => {
+    vi.resetModules();
+    const cp = await import("node:child_process");
+    const sandbox = await import("../utils/sandbox.js");
+    vi.stubEnv("AGAV_TEST_API_TOKEN", "harmless-credential");
+    vi.mocked(cp.spawn).mockImplementationOnce(() => {
+      const child = new EventEmitter() as any;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = vi.fn();
+      queueMicrotask(() => {
+        child.emit("error", new Error("ENOENT"));
+        child.emit("close", -1, null);
+      });
+      return child;
+    });
+    try {
+      const result = await sandbox.runInSandbox({
+        command: "echo test", cwd: "/tmp", timeout: 1000, maxBuffer: 1024,
+        forceBackend: backend, inheritEnv: true,
+      });
+      expect(result.backend).toBe("none");
+      const env = vi.mocked(cp.spawn).mock.calls.at(-1)?.[2]?.env;
+      expect(env).toBeDefined();
+      expect(env).not.toHaveProperty("AGAV_TEST_API_TOKEN");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("seatbelt allows cache/config dirs but keeps credential dirs denied", async () => {
     vi.resetModules();
     const cp = await import("node:child_process");
