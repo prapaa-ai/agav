@@ -176,7 +176,9 @@ export class GeminiProvider implements LLMProvider {
           lastUsage = {
             type: "usage",
             inputTokens: chunk.usageMetadata.promptTokenCount ?? 0,
-            outputTokens: chunk.usageMetadata.candidatesTokenCount ?? 0,
+            // Gemini bills thinking tokens as output, separately from candidates.
+            outputTokens: (chunk.usageMetadata.candidatesTokenCount ?? 0)
+              + (chunk.usageMetadata.thoughtsTokenCount ?? 0),
             cacheReadTokens: chunk.usageMetadata.cachedContentTokenCount ?? 0,
           };
         }

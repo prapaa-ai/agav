@@ -116,6 +116,67 @@ describe("GeminiProvider usage accounting", () => {
     expect(usage[0]).toMatchObject({ inputTokens: 900, outputTokens: 7 });
   });
 
+  it("includes thinking tokens once from the final cumulative usage-only chunk", async () => {
+    mockFetch([
+      {
+        usageMetadata: {
+          promptTokenCount: 900, candidatesTokenCount: 0, thoughtsTokenCount: 10,
+          cachedContentTokenCount: 800, totalTokenCount: 910,
+        },
+        candidates: [{ content: { parts: [{ text: "thinking", thought: true }] } }],
+      },
+      {
+        usageMetadata: {
+          promptTokenCount: 900, candidatesTokenCount: 5, thoughtsTokenCount: 20,
+          cachedContentTokenCount: 800, totalTokenCount: 925,
+        },
+        candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+      },
+      {
+        usageMetadata: {
+          promptTokenCount: 900, candidatesTokenCount: 7, thoughtsTokenCount: 30,
+          cachedContentTokenCount: 800, totalTokenCount: 937,
+        },
+      },
+    ]);
+
+    const events = await collect();
+    expect(usageOf(events)).toEqual([
+      { type: "usage", inputTokens: 900, outputTokens: 37, cacheReadTokens: 800 },
+    ]);
+    expect(events.filter((e) => e.type === "thinking_delta")).toEqual([
+      { type: "thinking_delta", text: "thinking" },
+    ]);
+    expect(events.filter((e) => e.type === "text_delta")).toEqual([
+      { type: "text_delta", text: "ok" },
+    ]);
+    expect(events.at(-1)?.type).toBe("usage");
+  });
+
+  it.each([
+    { usageMetadata: { candidatesTokenCount: 7, thoughtsTokenCount: 30 }, outputTokens: 37 },
+    { usageMetadata: { thoughtsTokenCount: 30 }, outputTokens: 30 },
+    { usageMetadata: { candidatesTokenCount: 7 }, outputTokens: 7 },
+    { usageMetadata: { candidatesTokenCount: 7, thoughtsTokenCount: 0 }, outputTokens: 7 },
+    { usageMetadata: {}, outputTokens: 0 },
+    { usageMetadata: { totalTokenCount: 937 }, outputTokens: 0 },
+  ])("defaults missing usage fields to zero: $usageMetadata", async ({ usageMetadata, outputTokens }) => {
+    mockFetch([{ usageMetadata }]);
+    expect(usageOf(await collect())).toEqual([
+      { type: "usage", inputTokens: 0, outputTokens, cacheReadTokens: 0 },
+    ]);
+  });
+
+  it("uses the latest usage snapshot without retaining earlier thinking counts", async () => {
+    mockFetch([
+      { usageMetadata: { promptTokenCount: 900, candidatesTokenCount: 5, thoughtsTokenCount: 30 } },
+      { usageMetadata: { promptTokenCount: 900, candidatesTokenCount: 7, thoughtsTokenCount: 0 } },
+    ]);
+    expect(usageOf(await collect())).toEqual([
+      { type: "usage", inputTokens: 900, outputTokens: 7, cacheReadTokens: 0 },
+    ]);
+  });
+
   it("emits no usage event when the response carries no usageMetadata", async () => {
     mockFetch([{ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] }]);
     expect(usageOf(await collect())).toHaveLength(0);
