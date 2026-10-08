@@ -510,18 +510,204 @@ export async function getChangelog(): Promise<string> {
   if (!state?.releaseNotes) {
     return "No changelog available. Update state not found.";
   }
-  const bullets = extractBullets(state.releaseNotes);
-  const lines: string[] = [];
-  lines.push(`Agav ${state.latestVersion}${state.updatedFrom ? ` (updated from v${state.updatedFrom})` : ""}`);
-  lines.push("");
-  if (bullets.length > 0) {
-    for (const b of bullets) {
-      lines.push(`  • ${b}`);
+  // Keep the full Markdown here; extractBullets is only for bounded previews.
+  // Block tokens distinguish real section boundaries from fenced examples.
+  const { Lexer, Tokenizer } = await import("marked");
+  const body = state.releaseNotes.replace(/\r\n?/g, "\n");
+  const offsets = new WeakMap<import("marked").Token, number>();
+  class SourceTokenizer extends Tokenizer {
+    // The block lexer passes the remaining source, after consuming *all* block
+    // syntax (including definitions that never appear in its token output).
+    // Only top-level source positions are used; nested block tokens stay nested.
+    override heading(src: string) {
+      const token = super.heading(src);
+      if (token) offsets.set(token, body.length - src.length);
+      return token;
     }
-  } else {
-    lines.push(state.releaseNotes.slice(0, 500));
+    override lheading(src: string) {
+      const token = super.lheading(src);
+      if (token) offsets.set(token, body.length - src.length);
+      return token;
+    }
+    override html(src: string) {
+      const token = super.html(src);
+      if (token) offsets.set(token, body.length - src.length);
+      return token;
+    }
+    override paragraph(src: string) {
+      const token = super.paragraph(src);
+      if (token) offsets.set(token, body.length - src.length);
+      return token;
+    }
   }
-  return lines.join("\n");
+  const tokens = new Lexer({ gfm: true, tokenizer: new SourceTokenizer() }).lex(body);
+  let inComment = false;
+  let summary: { offset: number; text: string } | undefined;
+  let manualInstallOffset: number | undefined;
+  const details: number[] = [];
+  let rawTextElement: string | undefined;
+  let htmlUnitEnd = 0;
+  const scanText = (text: string, html: boolean, sourceOffset?: number): void => {
+    let position = sourceOffset === undefined ? 0 : Math.max(0, htmlUnitEnd - sourceOffset);
+    while (position < text.length) {
+      // Raw-text/RCDATA content is not element or comment markup. Only its
+      // matching end tag leaves that context, even across marked tokens.
+      if (rawTextElement) {
+        const closing = text[position] === "<" ? /^<\/([a-zA-Z][\w:-]*)\s*>/.exec(text.slice(position)) : null;
+        if (closing?.[1]?.toLowerCase() === rawTextElement) {
+          rawTextElement = undefined;
+          position += closing[0].length;
+        } else {
+          position++;
+        }
+        continue;
+      }
+      // Consume marked's complete HTML units. Attributes are opaque to both
+      // comment and element detection; never search flattened tag source.
+      // Raw HTML backslashes/backticks do not mask document comments.
+      if (text[position] === "<" && !text.startsWith("<!--", position)) {
+        // A valid quoted attribute may span Marked's blank-line block split.
+        // Match the complete unit at its known source position, then mask its
+        // consumed extent in subsequent tokens rather than reinterpreting it.
+        const tag = Lexer.rules.inline.normal.tag.exec(sourceOffset === undefined
+          ? text.slice(position) : body.slice(sourceOffset + position));
+        if (tag) {
+          if (sourceOffset !== undefined) htmlUnitEnd = sourceOffset + position + tag[0].length;
+          if (!inComment && html) {
+            const element = /^<(\/?)([a-zA-Z][\w:-]*)/.exec(tag[0]);
+            const name = element?.[2]?.toLowerCase();
+            if (element && !element[1] && ["script", "style", "textarea", "title"].includes(name!)) {
+              rawTextElement = name;
+              if (summary) summary.text += "\0";
+            }
+            if (name === "br" && summary) summary.text += " ";
+            if (element && name === "details" && sourceOffset !== undefined) {
+              if (element[1]) {
+                // A containing details close also ends an unclosed summary;
+                // otherwise stale context would hide later document headings.
+                const closed = details.pop();
+                if (summary && summary.offset === closed) summary = undefined;
+              } else details.push(sourceOffset + position);
+            }
+            if (element && name === "summary") {
+              if (element[1]) {
+                if (summary && /^manual\s+install(?:ation)?$/i.test(summary.text.trim())) {
+                  manualInstallOffset ??= summary.offset;
+                }
+                summary = undefined;
+              } else {
+                // Marked may combine sibling elements in one HTML block.
+                // Capture the nearest containing details opening, or this
+                // summary's exact opening, never the enclosing token start.
+                summary = sourceOffset === undefined ? undefined : {
+                  offset: details.at(-1) ?? sourceOffset + position, text: "",
+                };
+              }
+            }
+          }
+          position += tag[0].length;
+          continue;
+        }
+      }
+      const marker = inComment ? "-->" : "<!--";
+      if (text.startsWith(marker, position)) {
+        position += marker.length;
+        inComment = !inComment;
+      } else {
+        if (!inComment && summary) summary.text += text[position];
+        position++;
+      }
+    }
+  };
+  const scanToken = (token: import("marked").Token, sourceOffset?: number): void => {
+    // Only scan content in its lexer context: HTML is raw, while Markdown
+    // containers already have parsed children (not their link titles/URLs).
+    if (token.type === "code" || token.type === "codespan" || token.type === "escape" || token.type === "image") {
+      // Markdown masks do not apply inside an already-open raw-text element.
+      // Inspect only its literal end tag; the rest remains opaque Markdown.
+      if (rawTextElement) {
+        for (const closing of token.raw.matchAll(/<\/([a-zA-Z][\w:-]*)\s*>/g)) {
+          if (closing[1]?.toLowerCase() === rawTextElement) {
+            rawTextElement = undefined;
+            break;
+          }
+        }
+      }
+      // Opaque content must not join adjacent text into a boundary label.
+      if (summary && !inComment) summary.text += "\0";
+      return;
+    }
+    if (token.type === "list") {
+      const list = token as import("marked").Tokens.List;
+      list.items.forEach((item) => item.tokens.forEach((child) => scanToken(child)));
+      return;
+    }
+    if (token.type === "blockquote") {
+      const quote = token as import("marked").Tokens.Blockquote;
+      quote.tokens.forEach((child) => scanToken(child));
+      return;
+    }
+    if (token.type === "table") {
+      const table = token as import("marked").Tokens.Table;
+      [table.header, ...table.rows].forEach((row) =>
+        row.forEach((cell) => cell.tokens.forEach((child) => scanToken(child))),
+      );
+      return;
+    }
+    if ("tokens" in token && token.tokens) {
+      // Paragraph inline units consume their raw source sequentially. Do not
+      // search the document for repeated text or promote nested Markdown
+      // containers (whose raw includes delimiters/URLs) to section boundaries.
+      let offset = token.type === "paragraph" ? sourceOffset : undefined;
+      for (const child of token.tokens) {
+        scanToken(child, offset);
+        if (offset !== undefined) offset += child.raw.length;
+      }
+      return;
+    }
+    scanText(token.raw, token.type === "html", sourceOffset);
+  };
+  const headingLabel = (units: import("marked").Token[]): string => units.map((unit): string => {
+    if (unit.type === "html") {
+      // Ignore complete formatting tags/comments, not arbitrary HTML text.
+      const tag = Lexer.rules.inline.normal.tag.exec(unit.raw);
+      if (!tag || tag[0].length !== unit.raw.length) return "\0";
+      if (/^<br\b/i.test(unit.raw)) return " ";
+      if (/^<(?:script|style|textarea|title)\b/i.test(unit.raw)) return "\0";
+      return "";
+    }
+    if (["strong", "em", "del", "link"].includes(unit.type) && "tokens" in unit && unit.tokens) {
+      return headingLabel(unit.tokens);
+    }
+    if (unit.type === "text" || unit.type === "escape") return unit.text;
+    return "\0";
+  }).join("");
+  let start = 0;
+  let end = body.length;
+  let foundChanges = false;
+  for (const token of tokens) {
+    const offset = offsets.get(token) ?? 0;
+    // A heading inside a summary contributes to its label, not a document
+    // boundary. Keep scanning so the closing summary uses its captured offset.
+    const commented = inComment || rawTextElement !== undefined || offset < htmlUnitEnd || summary !== undefined;
+    scanToken(token, token.type === "html" || token.type === "paragraph" ? offsets.get(token) : undefined);
+    // Trim only the complete label; nested link/emphasis whitespace joins words.
+    const label = token.type === "heading" ? headingLabel(token.tokens ?? []).trim() : "";
+    const installation = !commented && token.type === "heading" && /^(installation|manual install(?:ation)?)$/i.test(label);
+    // Older descriptions may have only a collapsible manual-install block.
+    // The closing event uses the opening block's captured source position.
+    if (installation || manualInstallOffset !== undefined) {
+      end = manualInstallOffset ?? offset;
+      break;
+    }
+    if (!foundChanges && !commented && token.type === "heading" && /^(changes|what['’]s changed)$/i.test(label)) {
+      start = offset;
+      foundChanges = true;
+    }
+  }
+  // Slice the source, not joined token.raw: the lexer omits link definitions.
+  const header = `Agav ${state.latestVersion}${state.updatedFrom ? ` (updated from v${state.updatedFrom})` : ""}`;
+  return `${header}\n\n${body.slice(start, end).trim()}`;
 }
 
 async function safeMove(src: string, dst: string): Promise<void> {
