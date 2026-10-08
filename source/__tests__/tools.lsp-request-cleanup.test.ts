@@ -13,7 +13,8 @@ type Request = { id: number; method: string };
 type Child = EventEmitter & {
   stdout: PassThrough;
   stderr: PassThrough;
-  stdin: EventEmitter & { writable: boolean; write: ReturnType<typeof vi.fn> };
+  stdin: EventEmitter & { writable: boolean; write: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> };
+  pid: number | undefined;
   kill: ReturnType<typeof vi.fn>;
   requests: Request[];
   callbacks: ((error?: Error | null) => void)[];
@@ -30,6 +31,7 @@ function reply(child: Child, id: number, payload: object = { result: null }) {
 
 function makeChild(autoInitialize = true): Child {
   const child = Object.assign(new EventEmitter(), {
+    pid: 12345 as number | undefined,
     stdout: new PassThrough(), stderr: new PassThrough(),
     stdin: Object.assign(new EventEmitter(), { writable: true, write: vi.fn(), destroy: vi.fn() }),
     kill: vi.fn().mockImplementation(() => { child.emit("exit", null, "SIGTERM"); child.emit("close", null, "SIGTERM"); return true; }),
@@ -90,6 +92,33 @@ async function promptly<T>(promise: Promise<T>): Promise<T | undefined> {
 }
 
 describe("LSP request lifecycle cleanup", () => {
+  it.each([undefined, 0, -1, 1.5, NaN, Infinity])("never signals or escalates a failed spawn with PID %s", async (pid) => {
+    vi.mocked(spawn).mockImplementation(() => {
+      const child = makeChild(false);
+      child.pid = pid;
+      child.kill.mockReturnValue(true); // No exit/close: exercise bounded cleanup.
+      return child as unknown as ChildProcess;
+    });
+    const first = tool.execute(input);
+    const second = tool.execute(input);
+    const child = children[0]!;
+    child.emit("error", new Error("spawn ENOENT"));
+    expect(await promptly(Promise.all([first, second]))).toEqual([
+      { output: "spawn ENOENT", isError: true }, { output: "spawn ENOENT", isError: true },
+    ]);
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1); // Drainage only; no kill escalation.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(child.stdin.destroy).toHaveBeenCalled();
+    expect(child.stdout.destroyed).toBe(true);
+    expect(child.stderr.destroyed).toBe(true);
+    expect(child.stdout.listenerCount("data")).toBe(0);
+    expect(child.listenerCount("exit")).toBe(0);
+    expect(child.listenerCount("close")).toBe(0);
+    expectClean();
+  });
+
   it("accepts buffered responses after exit without evicting a replacement", async () => {
     const first = tool.execute(input);
     const old = children[0]!;

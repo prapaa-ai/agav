@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -35,6 +38,62 @@ async function useChild(script: string, pause = false) {
   const tool = (await import("../tools/lsp.js")).lspTool;
   return { child, closed, tool };
 }
+
+it("survives a real nonexistent-executable spawn in an isolated process group", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  const directory = await mkdtemp(join(tmpdir(), "agav-lsp-failed-spawn-"));
+  let child: ChildProcess | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Detach the caller, not the failed child: a PID-less kill must never reach
+    // the test runner's process group, even when this regression fails.
+    child = actual.spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+      import assert from 'node:assert/strict';
+      import childProcess from 'node:child_process';
+      import { syncBuiltinESMExports } from 'node:module';
+      const spawn = childProcess.spawn;
+      let kills = 0;
+      let failed;
+      childProcess.spawn = (...args) => {
+        failed = spawn(${JSON.stringify(join(directory, "nonexistent-language-server"))}, args[1], args[2]);
+        assert.equal(failed.pid, undefined);
+        const kill = failed.kill.bind(failed);
+        failed.kill = (...args) => { kills++; return kill(...args); };
+        return failed;
+      };
+      syncBuiltinESMExports();
+      const { lspTool } = await import(${JSON.stringify(new URL("../tools/lsp.ts", import.meta.url).href)});
+      const result = await lspTool.execute(${JSON.stringify(input)});
+      assert.equal(result.isError, true);
+      assert.match(result.output, /ENOENT|EPIPE|not running/);
+      await new Promise(resolve => setTimeout(resolve, 400));
+      assert.equal(kills, 0);
+      assert.equal(failed.stdin.destroyed, true);
+      assert.equal(failed.stdout.destroyed, true);
+      assert.equal(failed.stderr.destroyed, true);
+      assert.equal(failed.stdout.listenerCount('data'), 0);
+      console.log('failed-spawn cleanup survived');
+    `], { detached: true, stdio: "pipe" });
+    let stdout = "";
+    let stderr = "";
+    child.stdout!.on("data", chunk => { stdout += chunk; });
+    child.stderr!.on("data", chunk => { stderr += chunk; });
+    const closed = once(child, "close");
+    timeout = setTimeout(() => { child!.kill("SIGKILL"); }, 5000);
+    const [code, signal] = await closed;
+    expect({ code, signal, stderr }).toEqual({ code: 0, signal: null, stderr: "" });
+    expect(stdout.trim()).toBe("failed-spawn cleanup survived");
+  } finally {
+    clearTimeout(timeout);
+    if (child?.pid && child.exitCode === null && child.signalCode === null) {
+      const closed = once(child, "close");
+      child.kill("SIGKILL");
+      await closed;
+    }
+    child?.stdin?.destroy(); child?.stdout?.destroy(); child?.stderr?.destroy();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 10000);
 
 it("drains real Node stdout buffered until after process exit", async () => {
   const { child, closed, tool } = await useChild(`

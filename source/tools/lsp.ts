@@ -57,7 +57,10 @@ function getOrStartServer(lang: string): LSPServer | null {
     const rejectPending = () => {
       for (const p of server.pending.values()) p.reject(server.failure!);
     };
+    // Failed spawn can leave a handle without a PID; never signal it.
+    const hasPid = () => typeof proc.pid === "number" && Number.isInteger(proc.pid) && proc.pid > 0;
     const kill = (signal: NodeJS.Signals) => {
+      if (!hasPid()) return;
       try { proc.kill(signal); } catch {}
     };
     const destroyStreams = () => {
@@ -97,7 +100,7 @@ function getOrStartServer(lang: string): LSPServer | null {
         unavailable(error);
         rejectPending();
         destroyStreams();
-        escalation = setTimeout(() => { if (!exited) kill("SIGKILL"); }, 150);
+        if (hasPid()) escalation = setTimeout(() => { if (!exited) kill("SIGKILL"); }, 150);
         drainage = setTimeout(finish, 300);
         kill("SIGTERM");
       },
