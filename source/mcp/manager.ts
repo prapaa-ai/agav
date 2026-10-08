@@ -68,8 +68,7 @@ export class MCPManager {
           return { output: `MCP server ${mcpTool.serverName} is not running`, isError: true };
         }
         try {
-          const output = await client.callTool(mcpTool.name, input, context?.signal);
-          return { output, isError: false };
+          return await client.callTool(mcpTool.name, input, context?.signal);
         } catch (err) {
           return {
             output: err instanceof Error ? err.message : String(err),
