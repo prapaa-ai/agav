@@ -167,8 +167,13 @@ async function setEnabledCommand(args: string[], enabled: boolean): Promise<numb
  * Main entry point for skill CLI commands.
  */
 export async function runSkillsCommand(command: string | undefined, args: string[]): Promise<number> {
-  // Skills commands do not accept any flags. Reject them early.
-  for (const arg of args) {
+  // Skills commands do not accept flags before the option separator.
+  const separatorIndex = args.indexOf("--");
+  const optionArgs = separatorIndex < 0 ? args : args.slice(0, separatorIndex);
+  if (separatorIndex >= 0) {
+    args = [...optionArgs, ...args.slice(separatorIndex + 1)];
+  }
+  for (const arg of optionArgs) {
     if (arg.startsWith("-")) {
       console.error(`\nError: Unknown option '${arg}'\n`);
       return 1;

@@ -118,6 +118,40 @@ describe("parseArgs", () => {
     expect(flags2.printPrompt).toBe("hello world");
   });
 
+  describe.each(["run", "--print", "-P"])("%s option separator", (command) => {
+    it.each([
+      { tokens: ["explain", "--", "version"], prompt: "explain -- version" },
+      { tokens: ["--", "explain", "--", "--", "version", "--"], prompt: "-- explain -- -- version --" },
+      { tokens: ["explain", "--"], prompt: "explain --" },
+      { tokens: ["--"], prompt: "--" },
+      { tokens: ["--version", "--help", "--cwd", "--model=literal", "--unknown", "-y"], prompt: "--version --help --cwd --model=literal --unknown -y" },
+      { tokens: ["run", "update", "agents", "skills", "--print"], prompt: "run update agents skills --print" },
+    ])("preserves literal prompt: $prompt", ({ tokens, prompt }) => {
+      const flags = parseArgs([command, "--", ...tokens]);
+      expect(flags).toEqual(command === "run"
+        ? { _: tokens, run: true, runPrompt: prompt }
+        : { _: tokens, print: true, printPrompt: prompt });
+    });
+
+    it("consumes the initial separator without adding prompt content", () => {
+      const flags = parseArgs([command, "--"]);
+      expect(flags).toEqual(command === "run" ? { _: [], run: true } : { _: [], print: true });
+    });
+
+    it("still parses normal options before the separator", () => {
+      const flags = parseArgs(["--cwd", "/repo", command, "--model=selected", "--stream", "--", "explain", "--version"]);
+      expect(flags).toEqual({
+        _: ["explain", "--version"],
+        cwd: "/repo",
+        model: "selected",
+        stream: true,
+        ...(command === "run"
+          ? { run: true, runPrompt: "explain --version" }
+          : { print: true, printPrompt: "explain --version" }),
+      });
+    });
+  });
+
   it("rejects extra positionals for update", () => {
     const mockExit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
     const mockStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
