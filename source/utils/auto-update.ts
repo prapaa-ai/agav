@@ -512,8 +512,39 @@ export async function getChangelog(): Promise<string> {
   }
   // Keep the full Markdown here; extractBullets is only for bounded previews.
   // Block tokens distinguish real section boundaries from fenced examples.
-  const { lexer } = await import("marked");
+  const { lexer, Lexer } = await import("marked");
   const body = state.releaseNotes.replace(/\r\n?/g, "\n");
+  let inComment = false;
+  const outsideComments = (raw: string): string => {
+    // Inline code and escaped delimiters are examples, not comment markers.
+    const text = Lexer.lexInline(raw).map((part) =>
+      part.type === "codespan" || part.type === "escape" ? " ".repeat(part.raw.length) : part.raw,
+    ).join("");
+    let visible = "";
+    let position = 0;
+    while (position < text.length) {
+      const marker = inComment ? "-->" : "<!--";
+      const next = text.indexOf(marker, position);
+      if (!inComment) visible += text.slice(position, next < 0 ? text.length : next);
+      if (next < 0) break;
+      visible += " ";
+      position = next + marker.length;
+      inComment = !inComment;
+    }
+    return visible;
+  };
+  const scanToken = (token: import("marked").Token): string => {
+    if (token.type === "code") return "";
+    if (token.type === "list") {
+      const list = token as import("marked").Tokens.List;
+      return list.items.map((item) => item.tokens.map(scanToken).join("")).join("");
+    }
+    if (token.type === "blockquote") {
+      const quote = token as import("marked").Tokens.Blockquote;
+      return quote.tokens.map(scanToken).join("");
+    }
+    return outsideComments(token.raw);
+  };
   let start = 0;
   let end = body.length;
   let cursor = 0;
@@ -521,18 +552,22 @@ export async function getChangelog(): Promise<string> {
   for (const token of lexer(body)) {
     const offset = body.indexOf(token.raw, cursor);
     if (offset < 0) continue;
+    // Scan omitted source (such as link definitions) as well as token text.
+    outsideComments(body.slice(cursor, offset));
     cursor = offset + token.raw.length;
-    const installation = token.type === "heading" && /^(installation|manual install(?:ation)?)$/i.test(token.text);
+    // Fenced and indented code cannot open or close an HTML comment.
+    if (token.type === "code") continue;
+    const commented = inComment;
+    const visible = scanToken(token);
+    const installation = !commented && token.type === "heading" && /^(installation|manual install(?:ation)?)$/i.test(token.text);
     // Older descriptions may have only a collapsible manual-install block.
     // Ignore comments only for detection; keep the original Markdown intact.
-    const manualInstall = token.type === "html" && /<summary\b[^>]*>\s*manual install(?:ation)?\s*<\/summary>/i.test(
-      token.raw.replace(/<!--[\s\S]*?(?:-->|$)/g, " "),
-    );
+    const manualInstall = token.type === "html" && /<summary\b[^>]*>\s*manual install(?:ation)?\s*<\/summary>/i.test(visible);
     if (installation || manualInstall) {
       end = offset;
       break;
     }
-    if (!foundChanges && token.type === "heading" && /^(changes|what['’]s changed)$/i.test(token.text)) {
+    if (!foundChanges && !commented && token.type === "heading" && /^(changes|what['’]s changed)$/i.test(token.text)) {
       start = offset;
       foundChanges = true;
     }

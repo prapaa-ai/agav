@@ -109,6 +109,68 @@ describe("getChangelog full cached release notes", () => {
     expect(await getChangelog()).toBe(header + notes);
   });
 
+  it.each([
+    "<summary>Manual install</summary>",
+    "## Installation",
+    "## Changes\n\n<summary>Manual installation</summary>\n\n## Installation",
+  ])("preserves cross-token comments in details containing %j", async (hidden) => {
+    const notes = `## Changes\n\n- First fix\n\n<details>\n<!--\n\n${hidden}\n\n-->\n</details>\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each(["<summary>Manual install</summary>", "## Installation"])(
+    "preserves unclosed cross-token comments containing %j", async (hidden) => {
+      const notes = `## Changes\n\n- First fix\n\n<details>\n<!--\n\n${hidden}\n\n- Last fix\n\n## Installation\nStill commented`;
+      await seed(notes);
+      expect(await getChangelog()).toBe(header + notes);
+    },
+  );
+
+  it.each([
+    "## Installation\nHidden",
+    "<details>\n<summary>Manual install</summary>\nHidden\n</details>",
+    "<!-- Another comment --> <details><summary>Manual installation</summary>\nHidden\n</details>",
+  ])("recognizes a genuine boundary after a cross-token comment closes (%j)", async (boundary) => {
+    const notes = "## Changes\n\n- First fix\n\n<details>\n<!--\n\n<summary>Manual install</summary>\n\n## Installation\n\n-->\n</details>\n\n- Last fix";
+    await seed(`${notes}\n\n${boundary}`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it("recognizes a real summary in the same HTML token as a cross-token comment closer", async () => {
+    const notes = "## Changes\n\n- First fix\n\n<details>\n<!--\n\n<summary>Manual install</summary>";
+    await seed(`${notes}\n\n</details> --> <details><summary>Manual installation</summary>\nHidden\n</details>`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    "```html\n<!--\n## Installation\n<summary>Manual install</summary>\n```",
+    "~~~html\n<!--\n## Installation\n<summary>Manual install</summary>\n~~~",
+    "```html\n<!--\n-->\n<!--\n```",
+    "Example:\n\n    <!--\n    ## Installation\n    <summary>Manual install</summary>",
+    "- Example:\n\n  ```html\n  <!--\n  ```",
+    "> ```html\n> <!--\n> ```",
+    "The literal `<!--` is not a comment.",
+    "The literal ``<!-- ` --> <!--`` is not a comment.",
+    "The escaped \\<!-- is not a comment.",
+  ])("does not let code or escaped comment markers hide a genuine boundary (%j)", async (example) => {
+    const notes = `## Changes\n\n- First fix\n\n${example}\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it("does not use a commented Changes heading as the start of legacy notes", async () => {
+    const notes = "Legacy introduction\n\n<details>\n<!--\n\n## Changes\n\n-->\n</details>\n\n- Last fix";
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it("does not let a closing delimiter in fenced code end cross-token comment context", async () => {
+    const notes = "## Changes\n\n<details>\n<!--\n\n```html\n-->\n```\n\n## Installation\n\n<summary>Manual install</summary>\n\n-->\n</details>\n\n- Last fix";
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
   it("does not mistake fenced examples or inline mentions for section boundaries", async () => {
     const notes = "## Changes\n\nInstallation handling improved.\n\n```markdown\n## Installation\n<details><summary>Manual install</summary>\n```\n\n### Fixes\n\n- Final fix";
     await seed(`${notes}\n\n## Installation\nHidden`);
