@@ -27,7 +27,7 @@ export type AgentEvent =
   | { type: "turn_complete" }
   | { type: "steer_applied"; directives: string[] }
   | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
-  | { type: "error"; error: Error };
+  | { type: "error"; error: Error; reason?: "iterations_exhausted" };
 
 import type { DiffLine } from "../utils/diff.js";
 import { computeEditDiff, computeDiff } from "../utils/diff.js";
@@ -599,12 +599,14 @@ export async function* runAgentLoop(
   for (const steer of finalSteers) {
     conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
   }
-  yield {
-    type: "assistant_message_complete",
-    text: "[Agent reached maximum iterations]",
-  };
   if (finalSteers.length > 0) {
     yield { type: "steer_applied", directives: finalSteers };
   }
-  yield { type: "turn_complete" };
+  // Exhaustion is incomplete work, not an assistant answer or successful turn.
+  // Reuse the error path so every loop consumer terminates with error status.
+  yield {
+    type: "error",
+    reason: "iterations_exhausted",
+    error: new Error("Agent reached maximum iterations"),
+  };
 }
