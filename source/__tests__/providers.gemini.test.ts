@@ -398,6 +398,44 @@ describe("GeminiProvider replay isolation", () => {
   });
 });
 
+describe("GeminiProvider synthetic calls", () => {
+  it("continues explicit skill dispatch with a compatibility signature", async () => {
+    const bodies: any[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: any) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      const call = body.contents.flatMap((turn: any) => turn.parts).find((part: any) => part.functionCall);
+      if (call && call.thoughtSignature !== "skip_thought_signature_validator") {
+        return { ok: false, status: 400, text: async () => "Function call is missing a thought_signature" };
+      }
+      return { ok: true, body: sseBody([{ candidates: [{ content: { parts: [{ text: "parent done" }] }, finishReason: "STOP" }] }]) };
+    }));
+    const conversation = new ConversationState();
+    conversation.addUserMessage("/demo exact args");
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register({
+      schema: { name: "activate_skill", description: "Skill", inputSchema: { type: "object" } },
+      execute: async () => ({ output: "skill done", isError: false }),
+    });
+    const events = [];
+    for await (const event of runAgentLoop({
+      provider: new GeminiProvider("test-key"), conversation, toolRegistry, model: "gemini-3.5-flash",
+      initialToolCall: { name: "activate_skill", input: { name: "Demo", arguments: "exact args" } },
+      iterationsBudget: { remaining: 5, total: 5 },
+    })) events.push(event);
+    expect(events.some(event => event.type === "error")).toBe(false);
+    expect(events).toContainEqual({ type: "assistant_message_complete", text: "parent done" });
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].contents[1].parts[0]).toEqual({
+      functionCall: { name: "activate_skill", args: { name: "Demo", arguments: "exact args" } },
+      thoughtSignature: "skip_thought_signature_validator",
+    });
+    expect(bodies[0].contents[2].parts[0].functionResponse).toEqual({ name: "activate_skill", response: { result: "skill done" } });
+    // Serialization must not annotate the stored synthetic turn.
+    expect(conversation.getMessages()[1]!.content[0]!.providerMetadata).toBeUndefined();
+  });
+});
+
 describe("GeminiProvider history replay", () => {
   // callCounter used to live inside stream(), so every turn's first tool call
   // was gemini_call_0 and each turn clobbered the previous turn's stored parts.

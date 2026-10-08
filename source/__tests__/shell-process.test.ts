@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { executeSkill } from "../skills/executor.js";
+
+vi.mock("../skills/improvement.js", () => ({ recordSkillTrace: vi.fn(async () => {}) }));
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -24,6 +27,63 @@ async function waitForFile(path: string): Promise<string> {
 
 // Real subprocesses, not mocks: catch open stdin and pipelines retaining pipes.
 describe.skipIf(process.platform === "win32")("shell process ownership", () => {
+  it("cancels active skill shell blocks and their descendants before child requests", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agav-skill-process-test-"));
+    const controller = new AbortController();
+    const pidFile = join(dir, "pid");
+    const stream = vi.fn();
+    const onEvent = vi.fn();
+    try {
+      const command = `/bin/sh -c 'echo \u0024\u0024 > "${pidFile}"; exec sleep 2' | cat`;
+      const pending = executeSkill({
+        name: "Shell", slug: "shell", description: "shell", body: "```sh\n" + command + "\n```\n```sh\necho second\n```",
+        frontmatter: { name: "Shell", description: "shell" }, filePath: join(dir, "SKILL.md"), origin: "project",
+      }, "", {
+        provider: { name: "mock", stream }, parentRegistry: new ToolRegistry(), model: "mock", systemPrompt: "",
+        permissionMode: "auto-accept", effort: "medium", iterationsBudget: { remaining: 2, total: 2 }, signal: controller.signal, onEvent,
+      });
+      // Attach a rejection handler before aborting to avoid an unhandled promise.
+      const rejected = expect(pending).rejects.toThrow("Aborted");
+      const pid = Number(await waitForFile(pidFile));
+      expect(pid).toBeGreaterThan(0);
+      const started = Date.now();
+      controller.abort();
+      await rejected;
+      expect(Date.now() - started).toBeLessThan(1000);
+      expect(() => process.kill(pid, 0)).toThrow();
+      expect(stream).not.toHaveBeenCalled();
+      expect(onEvent).toHaveBeenLastCalledWith({ type: "error", error: expect.any(Error) });
+    } finally {
+      controller.abort();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("inherits credentials for skill shell blocks but filters ordinary commands", async () => {
+    vi.stubEnv("AGAV_TEST_API_TOKEN", "harmless-skill-credential");
+    const stream = vi.fn(async function* (params) {
+      expect(params.messages[0].content[0].text).toBe("harmless-skill-credential");
+      yield { type: "text_delta" as const, text: "done" };
+    });
+    try {
+      await executeSkill({
+        name: "Shell", slug: "shell", description: "shell",
+        body: '```sh\nprintf "%s" "$AGAV_TEST_API_TOKEN"\n```',
+        frontmatter: { name: "Shell", description: "shell" }, filePath: "/tmp/SKILL.md", origin: "project",
+      }, "", {
+        provider: { name: "mock", stream }, parentRegistry: new ToolRegistry(), model: "mock", systemPrompt: "",
+        permissionMode: "auto-accept", effort: "medium", iterationsBudget: { remaining: 1, total: 1 },
+      });
+      expect(stream).toHaveBeenCalledTimes(1);
+      const result = await shellTool.execute({ command: 'printf "%s" "${AGAV_TEST_API_TOKEN-unset}"', sandbox: "none" });
+      expect(result.isError).toBe(false);
+      expect(result.output).toContain("unset");
+      expect(result.output).not.toContain("harmless-skill-credential");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("closes stdin so a noninteractive read sees EOF", async () => {
     const result = await run("cat; printf done");
     expect(result.error).toBeNull();

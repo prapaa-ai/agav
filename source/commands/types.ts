@@ -74,6 +74,7 @@ export type CommandResult =
   | { type: "none" }
   | { type: "submit"; text: string }
   | { type: "agent_invoke"; agentName: string; query: string }
+  | { type: "skill_invoke"; skillName: string; arguments: string }
 
 /** Defines the metadata and executor for a slash command. */
 export interface SlashCommand {

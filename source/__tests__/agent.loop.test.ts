@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runAgentLoop } from "../agent/loop.js";
 import { ConversationState } from "../agent/conversation.js";
+import { ConfirmationQueue } from "../agent/confirmation-queue.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { updatePlanTool } from "../tools/plan.js";
 import { loadPlan, savePlan } from "../agent/planner.js";
@@ -65,6 +66,139 @@ describe("runAgentLoop", () => {
   afterEach(async () => {
     process.chdir(originalCwd);
     await rm(cwd, { recursive: true, force: true });
+  });
+
+  it("executes a seeded skill call before any provider routing, retaining paired history", async () => {
+    const provider = new MockProvider([[{ type: "text_delta", text: "follow-up" }]]);
+    const conversation = new ConversationState();
+    conversation.addUserMessage("prior context");
+    conversation.addUserMessage("/demo exact args");
+    const context = conversation.getMessages();
+    const tools = new ToolRegistry();
+    const execute = vi.fn(async (_input, toolContext) => {
+      expect(provider.stream).not.toHaveBeenCalled();
+      expect(toolContext.conversation).toEqual(context);
+      return { output: "skill result", isError: false };
+    });
+    tools.register(createTool("activate_skill", execute));
+    const budget = { remaining: 3, total: 3 };
+    const events = await collectEvents(runAgentLoop({
+      provider, conversation, toolRegistry: tools, model: "m", iterationsBudget: budget,
+      initialToolCall: { name: "activate_skill", input: { name: "Demo", arguments: "exact args" } },
+    }));
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]![0]).toEqual({ name: "Demo", arguments: "exact args" });
+    expect(provider.stream).toHaveBeenCalledTimes(1);
+    expect(budget.remaining).toBe(2); // Only real model requests spend iterations.
+    const messages = conversation.getMessages();
+    expect(messages[2]?.content[0]).toMatchObject({ type: "tool_use", toolName: "activate_skill" });
+    expect(messages[3]?.content[0]).toMatchObject({ type: "tool_result", toolResult: "skill result" });
+    expect(messages[2]?.content[0]?.toolCallId).toBe(messages[3]?.content[0]?.toolCallId);
+    expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", output: "skill result" }));
+    expect(events.at(-1)).toEqual({ type: "turn_complete" });
+  });
+
+  it.each(["execution", "result event"] as const)("aborts a seeded skill at budget exhaustion during %s without completing or draining steers", async (abortAt) => {
+    const controller = new AbortController();
+    const provider = new MockProvider([]);
+    const conversation = new ConversationState();
+    conversation.addUserMessage("/demo");
+    const tools = new ToolRegistry();
+    const budget = { remaining: 1, total: 1 };
+    const execute = vi.fn(async () => {
+      budget.remaining--; // The child consumes the last shared model request.
+      if (abortAt === "execution") controller.abort();
+      return { output: "partial skill result", isError: true };
+    });
+    tools.register(createTool("activate_skill", execute));
+    const drainSteers = vi.fn(() => ["pending directive"]);
+    const events: AgentEvent[] = [];
+    for await (const event of runAgentLoop({
+      provider, conversation, toolRegistry: tools, model: "m", iterationsBudget: budget,
+      initialToolCall: { name: "activate_skill", input: { name: "Demo" } },
+      signal: controller.signal, drainSteers,
+    })) {
+      events.push(event);
+      if (abortAt === "result event" && event.type === "tool_result") controller.abort();
+    }
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(budget.remaining).toBe(0);
+    expect(provider.stream).not.toHaveBeenCalled();
+    expect(drainSteers).not.toHaveBeenCalled();
+    expect(events.at(-1)).toEqual({ type: "error", error: new Error("Aborted") });
+    expect(events.some(event => event.type === "turn_complete" || event.type === "steer_applied"
+      || (event.type === "assistant_message_complete" && event.text.includes("maximum iterations")))).toBe(false);
+    const messages = conversation.getMessages();
+    expect(messages).toHaveLength(3);
+    const call = messages[1]?.content[0];
+    expect(call).toMatchObject({ type: "tool_use", toolName: "activate_skill" });
+    expect(messages[2]?.content[0]).toMatchObject({
+      type: "tool_result", toolCallId: call?.toolCallId, toolResult: "partial skill result", isError: true,
+    });
+  });
+
+  it("reports abort instead of completion when entering with an exhausted budget", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const provider = new MockProvider([]);
+    const drainSteers = vi.fn(() => ["pending directive"]);
+    const events = await collectEvents(runAgentLoop({
+      provider, conversation: new ConversationState(), toolRegistry: new ToolRegistry(), model: "m",
+      iterationsBudget: { remaining: 0, total: 1 }, signal: controller.signal, drainSteers,
+    }));
+    expect(events).toEqual([{ type: "error", error: new Error("Aborted") }]);
+    expect(provider.stream).not.toHaveBeenCalled();
+    expect(drainSteers).not.toHaveBeenCalled();
+  });
+
+  it.each(["confirmation", "confirmation event"] as const)("cancels all pending destructive calls after abort at %s", async (abortAt) => {
+    const controller = new AbortController();
+    const queue = new ConfirmationQueue();
+    const prompts = vi.fn();
+    queue.bind(prompts);
+    const provider = new MockProvider([[
+      { type: "usage", inputTokens: 5, outputTokens: 3 },
+      { type: "tool_call_start", toolCallId: "write-1", toolName: "write_file" },
+      { type: "tool_call_delta", toolCallId: "write-1", argsJson: '{"path":"one","content":"one"}' },
+      { type: "tool_call_start", toolCallId: "write-2", toolName: "write_file" },
+      { type: "tool_call_delta", toolCallId: "write-2", argsJson: '{"path":"two","content":"two"}' },
+      { type: "message_end", stopReason: "tool_calls" },
+    ]]);
+    const execute = vi.fn(async () => ({ output: "written", isError: false }));
+    const tools = new ToolRegistry();
+    tools.register({ ...createTool("write_file", execute), schema: {
+      ...createTool("write_file", execute).schema, destructive: true,
+    } });
+    const confirmTool = vi.fn(async (toolName: string, input: Record<string, unknown>) => {
+      const pending = queue.enqueue({ toolName, input });
+      controller.abort();
+      queue.clear();
+      return pending;
+    });
+    const conversation = new ConversationState();
+    conversation.addUserMessage("write two files");
+    const events: AgentEvent[] = [];
+    for await (const event of runAgentLoop({
+      provider, conversation, toolRegistry: tools, model: "m", signal: controller.signal,
+      confirmTool, iterationsBudget: { remaining: 3, total: 3 },
+    })) {
+      events.push(event);
+      if (abortAt === "confirmation event" && event.type === "tool_confirmation_request") {
+        controller.abort();
+        queue.clear();
+      }
+    }
+    expect(confirmTool).toHaveBeenCalledTimes(abortAt === "confirmation" ? 1 : 0);
+    expect(prompts.mock.calls.filter(([pending]) => pending !== null)).toHaveLength(abortAt === "confirmation" ? 1 : 0);
+    expect(events.filter(event => event.type === "tool_confirmation_request")).toHaveLength(1);
+    expect(execute).not.toHaveBeenCalled();
+    expect(provider.stream).toHaveBeenCalledTimes(1);
+    expect(events).toContainEqual(expect.objectContaining({ type: "usage", inputTokens: 5, outputTokens: 3 }));
+    expect(events.at(-1)).toEqual({ type: "error", error: new Error("Aborted") });
+    const results = conversation.getMessages().flatMap(message => message.content).filter(block => block.type === "tool_result");
+    expect(results.map(block => block.toolCallId)).toEqual(["write-1", "write-2"]);
+    expect(results.every(block => block.isError && block.toolResult === "Tool cancelled.")).toBe(true);
+    expect(events.filter(event => event.type === "tool_result")).toHaveLength(2);
   });
 
   it("streams text/thinking/usage and completes without tool calls", async () => {

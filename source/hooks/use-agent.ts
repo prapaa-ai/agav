@@ -131,7 +131,7 @@ interface UseAgentReturn {
   subagentStates: SubagentProgress[];
   activePlan: Plan | null;
   refreshPlan: () => void;
-  submit: (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason) => Promise<boolean>;
+  submit: (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason, skillInvocation?: { name: string; arguments: string }) => Promise<boolean>;
   submitToAgent: (agentName: string, query: string, displayText: string, fullAccess?: boolean) => Promise<boolean>;
   refreshAgentCommands: () => Promise<void>;
   addDisplayMessage: (msg: DisplayMessage) => void;
@@ -574,7 +574,7 @@ export function useAgent(
 
   /** Start a new agent turn, wiring UI events to loop events and persisting results on completion. */
   const submit = useCallback(
-    async (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason): Promise<boolean> => {
+    async (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason, skillInvocation?: { name: string; arguments: string }): Promise<boolean> => {
       if (!provider) {
         setError("No LLM provider configured. Check your API key.");
         return false;
@@ -717,10 +717,11 @@ export function useAgent(
           // whatever plan is on disk; anything else carries the existing one
           // forward. The superseded plan is only deleted once a replacement has
           // actually been saved, so a failed re-plan does not lose it.
-          const supersedesPlan = shouldAutoPlan(trimmed) && conversationRef.current.length <= 1;
+          const autoPlan = !skillInvocation && shouldAutoPlan(trimmed);
+          const supersedesPlan = autoPlan && conversationRef.current.length <= 1;
           const carriedPlan = !supersedesPlan && isPlanActive(existingPlan) ? existingPlan : null;
 
-          if (shouldAutoPlan(trimmed) && !carriedPlan) {
+          if (autoPlan && !carriedPlan) {
             setMessages((prev) => [
               ...prev,
               { id: nextId(), role: "system", content: "Creating plan..." },
@@ -840,6 +841,10 @@ export function useAgent(
             // Only the main conversation's loop drains mid-turn /steer
             // directives — subagent/skill/agent loops must not consume them.
             drainSteers,
+            initialToolCall: skillInvocation ? {
+              name: "activate_skill",
+              input: { name: skillInvocation.name, arguments: skillInvocation.arguments },
+            } : undefined,
           });
 
           for await (const event of loop) {
@@ -1117,6 +1122,8 @@ export function useAgent(
           finalizeTurnTimer();
         }
 
+        // A cancelled explicit skill still spent tokens and produced a tool result.
+        if (skillInvocation && abortController.signal.aborted) saveNow();
         setStreamingText("");
         setToolCalls([]);
         setPendingConfirmation(null);
@@ -1131,7 +1138,7 @@ export function useAgent(
       })();
       return true;
     },
-    [provider, config, isLoading, activePlan],
+    [provider, config, isLoading, activePlan, saveNow],
   );
 
   /** Submit a query directly to a named agent, bypassing the main LLM. */

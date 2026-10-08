@@ -29,6 +29,17 @@ describe("skills/commands", () => {
     vi.clearAllMocks();
   });
 
+  it.each(["both", "agav", undefined] as const)("dispatches explicit %s skills without a routing prompt", async (invocation) => {
+    const command = createSkillSlashCommand({ ...skill, frontmatter: { ...skill.frontmatter, invocation } });
+    expect(await command.execute("  exact args  ", {} as any)).toEqual({
+      type: "skill_invoke", skillName: "User Skill", arguments: "exact args",
+    });
+    expect(await command.execute("", {} as any)).toEqual({
+      type: "skill_invoke", skillName: "User Skill", arguments: "",
+    });
+    expect(executeSkill).not.toHaveBeenCalled();
+  });
+
   // Manual-only skills merge usage live, just like activate_skill. Returning
   // _tokenUsage as well would add the final total again in App's saveNow path.
   it("uses live accounting without returning the total for a second merge", async () => {
