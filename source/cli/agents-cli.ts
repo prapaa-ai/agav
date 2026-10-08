@@ -10,6 +10,10 @@ import { setAgentEnabled, loadRegistry } from "../agents/agent-registry.js";
  * List installed agents
  */
 async function listAgents(args: string[] = []): Promise<number> {
+  const separatorIndex = args.indexOf("--");
+  if (separatorIndex >= 0) {
+    args = [...args.slice(0, separatorIndex), ...args.slice(separatorIndex + 1)];
+  }
   if (args.length > 0) {
     console.error(`\nError: Unexpected argument '${args[0]}'\n`);
     return 1;
@@ -78,7 +82,10 @@ async function installAgentCommand(args: string[]): Promise<number> {
   // Parse flags
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    if (arg === "--alias") {
+    if (arg === "--") {
+      positionals.push(...args.slice(i + 1));
+      break;
+    } else if (arg === "--alias") {
       if (!args[i + 1] || args[i + 1]!.startsWith("-")) {
         console.error("\nError: --alias requires a name argument\n");
         return 1;
@@ -140,7 +147,10 @@ async function removeAgentCommand(args: string[]): Promise<number> {
   // Parse flags
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    if (arg === "--destination") {
+    if (arg === "--") {
+      positionals.push(...args.slice(i + 1));
+      break;
+    } else if (arg === "--destination") {
       const dest = args[i + 1];
       if (dest !== "global" && dest !== "project") {
         console.error("\nError: --destination must be 'global' or 'project'\n");
@@ -181,7 +191,12 @@ async function removeAgentCommand(args: string[]): Promise<number> {
  * Enable agent
  */
 async function enableAgentCommand(args: string[]): Promise<number> {
-  for (const arg of args) {
+  const separatorIndex = args.indexOf("--");
+  const optionArgs = separatorIndex < 0 ? args : args.slice(0, separatorIndex);
+  if (separatorIndex >= 0) {
+    args = [...optionArgs, ...args.slice(separatorIndex + 1)];
+  }
+  for (const arg of optionArgs) {
     if (arg.startsWith("-")) {
       console.error(`\nError: Unknown option '${arg}'\n`);
       return 1;
@@ -212,7 +227,12 @@ async function enableAgentCommand(args: string[]): Promise<number> {
  * Disable agent
  */
 async function disableAgentCommand(args: string[]): Promise<number> {
-  for (const arg of args) {
+  const separatorIndex = args.indexOf("--");
+  const optionArgs = separatorIndex < 0 ? args : args.slice(0, separatorIndex);
+  if (separatorIndex >= 0) {
+    args = [...optionArgs, ...args.slice(separatorIndex + 1)];
+  }
+  for (const arg of optionArgs) {
     if (arg.startsWith("-")) {
       console.error(`\nError: Unknown option '${arg}'\n`);
       return 1;

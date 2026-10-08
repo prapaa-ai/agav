@@ -127,7 +127,11 @@ export function parseArgs(argv: string[]) {
 
   while (i < argv.length) {
     const arg = argv[i]!;
-    if (arg === "--") {
+    if (arg === "--" && (!dashDashSeen || !(flags.agents || flags.skills))) {
+      // Keep the boundary separately from positionals for delegated handlers.
+      if (!dashDashSeen && (flags.agents || flags.skills)) {
+        flags.delegatedSeparatorIndex = flags._.length;
+      }
       dashDashSeen = true;
       i++;
       continue;
@@ -555,6 +559,9 @@ export async function main() {
     const { runAgentsCommand } = await import("./cli/agents-cli.js");
     const agentsCommand = typeof flags.agentsCommand === "string" ? flags.agentsCommand : undefined;
     const delegatedArgs = (flags._ as string[]).slice(1);
+    if (typeof flags.delegatedSeparatorIndex === "number") {
+      delegatedArgs.splice(Math.max(0, flags.delegatedSeparatorIndex - 1), 0, "--");
+    }
     const exitCode = await runAgentsCommand(agentsCommand, delegatedArgs);
     process.exit(exitCode);
     return;
@@ -565,6 +572,9 @@ export async function main() {
     const { runSkillsCommand } = await import("./cli/skills-cli.js");
     const skillsCommand = typeof flags.skillsCommand === "string" ? flags.skillsCommand : undefined;
     const delegatedArgs = (flags._ as string[]).slice(1);
+    if (typeof flags.delegatedSeparatorIndex === "number") {
+      delegatedArgs.splice(Math.max(0, flags.delegatedSeparatorIndex - 1), 0, "--");
+    }
     const exitCode = await runSkillsCommand(skillsCommand, delegatedArgs);
     process.exit(exitCode);
     return;
