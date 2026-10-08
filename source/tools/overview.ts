@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from "node:fs/promises";
-import { join, relative, extname } from "node:path";
+import { join, relative, extname, resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
 
 const SKIP_DIRS = new Set([
@@ -162,7 +162,7 @@ export const overviewTool: ToolDefinition = {
     const maxFiles = 200;
     const results: FileSymbols[] = [];
 
-    const absPath = join(process.cwd(), searchPath);
+    const absPath = resolve(searchPath);
 
     try {
       await stat(absPath);
