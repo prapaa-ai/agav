@@ -11,13 +11,14 @@ export interface ClipboardImage {
   filePath: string;
 }
 
-const IMAGES_DIR = join(process.cwd(), ".agav", "images");
 const CLIPBOARD_TIMEOUT_MS = 5000;
 const MAX_CLIPBOARD_IMAGE_BYTES = 10 * 1024 * 1024;
 
 export async function getClipboardImage(): Promise<ClipboardImage | null> {
-  await mkdir(IMAGES_DIR, { recursive: true });
-  const tempPath = join(IMAGES_DIR, `clipboard-${Date.now()}.png`);
+  const imagesDir = join(process.cwd(), ".agav", "images");
+  await mkdir(imagesDir, { recursive: true });
+  const tempPath = join(imagesDir, `clipboard-${Date.now()}.png`);
+
 
   let saved: boolean;
   if (process.platform === "darwin") {
