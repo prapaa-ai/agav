@@ -349,6 +349,89 @@ describe("getChangelog full cached release notes", () => {
     expect(await getChangelog()).toBe(header + notes);
   });
 
+  it.each(["div", "span", "details", "summary", "a"].flatMap((tag) =>
+    ['"', "'"].map((quote) => [tag, quote]),
+  ))("keeps fake summaries in quoted %s attributes (%s) opaque", async (tag, quote) => {
+    const example = `<${tag} title=${quote}<summary>Manual install</summary>${quote}>Example</${tag}>`;
+    const notes = `## Changes\n\n- First fix\n\n${example}\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '<div title="<summary>">Manual install</summary></div>',
+    "<span title='<summary>'>Manual installation</summary></span>",
+    '<summary>Manual install<span title="</summary>"> example</span></summary>',
+    "<summary>Manual installation<span title='</summary>'> example</span></summary>",
+    '<div title="<summary>Manual install</summary>"><!-- real comment\n\n## Installation\n\n--></div>',
+  ])("does not synthesize summary boundaries from attribute openings or closings (%j)", async (example) => {
+    const notes = `## Changes\n\n- First fix\n\n${example}\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '<SUMMARY class="install" title="a > b">  Manual INSTALLATION  </SUMMARY >',
+    "<summary title='a > b'>Manual install</summary>",
+    '<summary><strong>Manual</strong> <em>install</em></summary>',
+    '<summary>Manual<br>install</summary>',
+    '<summary>Manual<BR />installation</summary>',
+    '<summary>Manual\tinstall</summary>',
+    '<summary>Manual\n\n**install**\n\n</summary>',
+    '<summary>Manual<!-- hidden --> install</summary>',
+    '<summary>Manual\n\ninstall</summary>',
+    '<summary>Manual<!--\n\nhidden\n\n--> install</summary>',
+    '<div title="<summary>Fake</summary>"><summary>Manual install</summary></div>',
+    "<summary title='<summary>Fake</summary>'>Manual install</summary>",
+  ])("recognizes actual summary elements across lexical units (%j)", async (boundary) => {
+    const notes = "## Changes\n\n- First fix\n\n- Last fix";
+    await seed(`${notes}\n\n${boundary}\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each(["script", "style", "textarea", "title"])("keeps summary-shaped raw text in %s opaque", async (tag) => {
+    const notes = `## Changes\n\n- First fix\n\n<${tag}>\n"<summary>Manual install</summary><!--"\n</${tag.toUpperCase()}>\n\n- Last fix`;
+    await seed(`${notes}\n\n<summary>Manual install</summary>\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it("keeps raw-text context across Marked heading and paragraph units", async () => {
+    const notes = '## Changes\n\n<title>Release example\n\n## Installation\n\n<summary>Manual install</summary>\n\n</title>\n\n- Last fix';
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '    </title>',
+    '```html\n</title>\n```',
+    '![</title>](https://example.com/image)',
+  ])("leaves raw-text context at its literal end tag even in %j", async (closing) => {
+    const notes = `## Changes\n\n<title>Release example\n\n${closing}\n\n- Last fix`;
+    await seed(`${notes}\n\n<summary>Manual install</summary>\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '> <summary>Manual install</summary>',
+    '- <summary>Manual install</summary>',
+    '![<summary>Manual install</summary>](https://example.com/image)',
+    'Example ` <summary>Manual install</summary> `',
+    'Example \\<summary>Manual install</summary>',
+    '<summary>Manual\n\n`example` install</summary>',
+    '<summary>Manual\n\n![example](https://example.com/image) install</summary>',
+    '<summary>Manual<!-- hidden -->install</summary>',
+  ])("does not promote protected or nonmatching summary contexts (%j)", async (example) => {
+    const notes = `## Changes\n\n${example}\n\n- Last fix`;
+    await seed(`${notes}\n\n<summary>Manual install</summary>\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each(["\n", "\r\n", "\r"])("preserves source positions for structural summaries with %j newlines", async (newline) => {
+    const notes = '## Changes\n\n[setup]: https://example.com "\n<summary>Manual install</summary>\n"\n\n- Last fix';
+    await seed(`${notes}\n\n<summary>Manual\n\ninstall</summary>\nHidden`.replace(/\n/g, newline));
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
   it("preserves cache, version header and command delegation", async () => {
     await seed("## Changes\n\n- Cached notes", undefined);
     // Omit updatedFrom explicitly (the seed helper's default is the old version).

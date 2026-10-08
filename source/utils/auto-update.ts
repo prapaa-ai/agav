@@ -537,71 +537,120 @@ export async function getChangelog(): Promise<string> {
   }
   const tokens = new Lexer({ gfm: true, tokenizer: new SourceTokenizer() }).lex(body);
   let inComment = false;
-  const outsideComments = (text: string): string => {
-    let visible = "";
+  let summary: { offset: number; text: string } | undefined;
+  let manualInstallOffset: number | undefined;
+  let htmlOffset: number | undefined;
+  let rawTextElement: string | undefined;
+  const scanText = (text: string, html: boolean): void => {
     let position = 0;
     while (position < text.length) {
-      // Use marked's tag grammar: quoted attributes (including nested-looking
-      // tags) are one HTML unit, not document comment delimiters. Raw HTML
-      // otherwise stays raw: backslashes/backticks do not mask real comments.
+      // Raw-text/RCDATA content is not element or comment markup. Only its
+      // matching end tag leaves that context, even across marked tokens.
+      if (rawTextElement) {
+        const closing = text[position] === "<" ? /^<\/([a-zA-Z][\w:-]*)\s*>/.exec(text.slice(position)) : null;
+        if (closing?.[1]?.toLowerCase() === rawTextElement) {
+          rawTextElement = undefined;
+          position += closing[0].length;
+        } else {
+          position++;
+        }
+        continue;
+      }
+      // Consume marked's complete HTML units. Attributes are opaque to both
+      // comment and element detection; never search flattened tag source.
+      // Raw HTML backslashes/backticks do not mask document comments.
       if (text[position] === "<" && !text.startsWith("<!--", position)) {
         const tag = Lexer.rules.inline.normal.tag.exec(text.slice(position));
         if (tag) {
-          if (!inComment) visible += tag[0];
+          if (!inComment && html) {
+            const element = /^<(\/?)([a-zA-Z][\w:-]*)/.exec(tag[0]);
+            const name = element?.[2]?.toLowerCase();
+            if (element && !element[1] && ["script", "style", "textarea", "title"].includes(name!)) {
+              rawTextElement = name;
+              if (summary) summary.text += "\0";
+            }
+            if (name === "br" && summary) summary.text += " ";
+            if (element && name === "summary") {
+              if (element[1]) {
+                if (summary && /^manual\s+install(?:ation)?$/i.test(summary.text.trim())) {
+                  manualInstallOffset ??= summary.offset;
+                }
+                summary = undefined;
+              } else {
+                // Only top-level HTML blocks start installation boundaries,
+                // but their summary may close in a later inline HTML unit.
+                summary = htmlOffset === undefined ? undefined : { offset: htmlOffset, text: "" };
+              }
+            }
+          }
           position += tag[0].length;
           continue;
         }
       }
       const marker = inComment ? "-->" : "<!--";
       if (text.startsWith(marker, position)) {
-        visible += " ";
         position += marker.length;
         inComment = !inComment;
       } else {
-        if (!inComment) visible += text[position];
+        if (!inComment && summary) summary.text += text[position];
         position++;
       }
     }
-    return visible;
   };
-  const scanToken = (token: import("marked").Token): string => {
+  const scanToken = (token: import("marked").Token): void => {
     // Only scan content in its lexer context: HTML is raw, while Markdown
     // containers already have parsed children (not their link titles/URLs).
-    if (token.type === "code" || token.type === "codespan" || token.type === "escape" || token.type === "image") return " ";
+    if (token.type === "code" || token.type === "codespan" || token.type === "escape" || token.type === "image") {
+      // Markdown masks do not apply inside an already-open raw-text element.
+      // Inspect only its literal end tag; the rest remains opaque Markdown.
+      if (rawTextElement) {
+        for (const closing of token.raw.matchAll(/<\/([a-zA-Z][\w:-]*)\s*>/g)) {
+          if (closing[1]?.toLowerCase() === rawTextElement) {
+            rawTextElement = undefined;
+            break;
+          }
+        }
+      }
+      // Opaque content must not join adjacent text into a boundary label.
+      if (summary && !inComment) summary.text += "\0";
+      return;
+    }
     if (token.type === "list") {
       const list = token as import("marked").Tokens.List;
-      return list.items.map((item) => item.tokens.map(scanToken).join("")).join("");
+      list.items.forEach((item) => item.tokens.forEach(scanToken));
+      return;
     }
     if (token.type === "blockquote") {
       const quote = token as import("marked").Tokens.Blockquote;
-      return quote.tokens.map(scanToken).join("");
+      quote.tokens.forEach(scanToken);
+      return;
     }
     if (token.type === "table") {
       const table = token as import("marked").Tokens.Table;
-      return [table.header, ...table.rows].map((row) =>
-        row.map((cell) => cell.tokens.map(scanToken).join("")).join(" "),
-      ).join("\n");
+      [table.header, ...table.rows].forEach((row) =>
+        row.forEach((cell) => cell.tokens.forEach(scanToken)),
+      );
+      return;
     }
     if ("tokens" in token && token.tokens) {
-      return token.tokens.map(scanToken).join("");
+      token.tokens.forEach(scanToken);
+      return;
     }
-    return outsideComments(token.raw);
+    scanText(token.raw, token.type === "html");
   };
   let start = 0;
   let end = body.length;
   let foundChanges = false;
   for (const token of tokens) {
     const offset = offsets.get(token) ?? 0;
-    // Fenced and indented code cannot open or close an HTML comment.
-    if (token.type === "code") continue;
-    const commented = inComment;
-    const visible = scanToken(token);
+    const commented = inComment || rawTextElement !== undefined;
+    htmlOffset = token.type === "html" ? offsets.get(token) : undefined;
+    scanToken(token);
     const installation = !commented && token.type === "heading" && /^(installation|manual install(?:ation)?)$/i.test(token.text);
     // Older descriptions may have only a collapsible manual-install block.
-    // Ignore comments only for detection; keep the original Markdown intact.
-    const manualInstall = token.type === "html" && /<summary\b[^>]*>\s*manual install(?:ation)?\s*<\/summary>/i.test(visible);
-    if (installation || manualInstall) {
-      end = offset;
+    // The closing event uses the opening block's captured source position.
+    if (installation || manualInstallOffset !== undefined) {
+      end = manualInstallOffset ?? offset;
       break;
     }
     if (!foundChanges && !commented && token.type === "heading" && /^(changes|what['’]s changed)$/i.test(token.text)) {
