@@ -45,7 +45,7 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
       },
     },
 
-    async execute(input): Promise<ToolResult> {
+    async execute(input, context): Promise<ToolResult> {
       const name = String(input.name);
       const args = String(input.arguments ?? "");
       const skill = getSkill(name);
@@ -64,13 +64,14 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
           provider: deps.provider,
           parentRegistry: deps.parentRegistry,
           model: config.model,
-          systemPrompt: config.systemPrompt,
-          permissionMode: config.permissionMode,
+          systemPrompt: context?.systemPrompt ?? config.systemPrompt,
+          permissionMode: context?.permissionMode ?? config.permissionMode,
+          contextMessages: context?.conversation,
           effort: config.effort,
           iterationsBudget: config.iterationsBudget,
           confirmTool: deps.confirmTool,
           onTokenUsage: deps.onTokenUsage,
-          signal: deps.getSignal(),
+          signal: context?.signal ?? deps.getSignal(),
           onEvent: deps.createProgressTracker?.(`Skill: ${skill.name}`, args || skill.description),
         });
         return { output: result.output, isError: false };

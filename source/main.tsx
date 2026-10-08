@@ -38,7 +38,7 @@ const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
-  "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns",
+  "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -118,16 +118,30 @@ function pickProviderForModel(model: string, matches: FetchedModel[]): Promise<F
   });
 }
 
-/** Parse CLI flags into a lightweight record before config loading and validation. */
 export function parseArgs(argv: string[]) {
-  const flags: Record<string, string | boolean> = {};
+  const flags: Record<string, any> = {};
+  flags._ = [];
   let i = 0;
+  let subcommandSeen = false;
+  let dashDashSeen = false;
+
   while (i < argv.length) {
     const arg = argv[i]!;
-    if (arg === "--") {
+    if (dashDashSeen) {
+      flags._.push(arg);
       i++;
       continue;
     }
+    if (arg === "--") {
+      // Keep the boundary separately from positionals for delegated handlers.
+      if (flags.agents || flags.skills) {
+        flags.delegatedSeparatorIndex = flags._.length;
+      }
+      dashDashSeen = true;
+      i++;
+      continue;
+    }
+    
     if (arg === "--help" || arg === "-h") {
       flags.help = true;
     } else if (arg === "--version" || arg === "-v") {
@@ -152,6 +166,20 @@ export function parseArgs(argv: string[]) {
       flags.outputSchema = argv[++i] ?? "";
     } else if (arg.startsWith("--output-schema=")) {
       flags.outputSchema = arg.slice("--output-schema=".length);
+    } else if (arg === "--cwd") {
+      const nextArg = argv[i + 1];
+      if (!nextArg || nextArg.startsWith("-")) {
+        process.stderr.write(`error: --cwd requires a directory argument\n`);
+        process.exit(1);
+      }
+      flags.cwd = argv[++i] ?? "";
+    } else if (arg.startsWith("--cwd=")) {
+      const val = arg.slice("--cwd=".length);
+      if (!val) {
+        process.stderr.write(`error: --cwd requires a directory argument\n`);
+        process.exit(1);
+      }
+      flags.cwd = val;
     } else if (arg === "--deny-writes") {
       flags.denyWrites = true;
     } else if (arg === "--resume" || arg === "-r") {
@@ -174,9 +202,7 @@ export function parseArgs(argv: string[]) {
       flags.ollamaApiKey = arg.split("=")[1] ?? "";
     } else if (arg === "--print" || arg === "-P") {
       flags.print = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.printPrompt = argv[++i]!;
-      }
+      subcommandSeen = true;
     } else if (arg === "--permission") {
       flags.permission = argv[++i] ?? "";
     } else if (arg.startsWith("--permission=")) {
@@ -189,32 +215,50 @@ export function parseArgs(argv: string[]) {
       flags.maxTurns = argv[++i] ?? "";
     } else if (arg.startsWith("--max-turns=")) {
       flags.maxTurns = arg.slice("--max-turns=".length);
-    } else if (arg === "update" && i === 0) {
+    } else if (arg === "update" && !subcommandSeen) {
       flags.update = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.updateVersion = argv[++i]!;
-      }
-    } else if (arg === "agents" && i === 0) {
+      subcommandSeen = true;
+    } else if (arg === "agents" && !subcommandSeen) {
       flags.agents = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.agentsCommand = argv[++i]!;
-      }
-    } else if (arg === "skills" && i === 0) {
+      subcommandSeen = true;
+    } else if (arg === "skills" && !subcommandSeen) {
       flags.skills = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.skillsCommand = argv[++i]!;
-      }
-    } else if (arg === "run" && i === 0) {
+      subcommandSeen = true;
+    } else if (arg === "run" && !subcommandSeen) {
       flags.run = true;
-    } else if (flags.run && !arg.startsWith("-") && !flags.runPrompt) {
-      flags.runPrompt = arg;
+      subcommandSeen = true;
     } else if (arg.startsWith("-")) {
-      const suggestion = findClosestFlag(arg);
-      process.stderr.write(`error: unknown flag ${arg}${suggestion ? `\nDid you mean ${suggestion}?` : ""}\n`);
-      process.exit(2);
+      if (subcommandSeen && (flags.agents || flags.skills)) {
+        flags._.push(arg);
+      } else {
+        const suggestion = findClosestFlag(arg);
+        process.stderr.write(`error: unknown flag ${arg}${suggestion ? `\nDid you mean ${suggestion}?` : ""}\n`);
+        process.exit(2);
+      }
+    } else {
+      flags._.push(arg);
     }
     i++;
   }
+
+  const pos = flags._ as string[];
+  if (flags.update) {
+    if (pos.length > 0) flags.updateVersion = pos[0];
+    if (pos.length > 1) {
+      process.stderr.write(`error: agav update accepts at most 1 argument\n`);
+      process.exit(1);
+    }
+  }
+  if (flags.agents && pos.length > 0) flags.agentsCommand = pos[0];
+  if (flags.skills && pos.length > 0) flags.skillsCommand = pos[0];
+  if (flags.run && pos.length > 0) flags.runPrompt = pos.join(" ");
+  if (flags.print && pos.length > 0) flags.printPrompt = pos.join(" ");
+  
+  if (!flags.update && !flags.agents && !flags.skills && !flags.run && !flags.print && pos.length > 0) {
+     process.stderr.write(`error: unexpected arguments: ${pos.join(" ")}\n`);
+     process.exit(1);
+  }
+
   return flags;
 }
 
@@ -402,6 +446,35 @@ export function hasStartupFinished(): boolean {
 export async function main() {
   tempOutputManager.pruneStale();
   const flags = parseArgs(process.argv.slice(2));
+  const startupCwd = process.cwd();
+
+  let exitCode = 0;
+  if (typeof flags.cwd === "string") {
+    const { resolve } = await import("node:path");
+    const { statSync } = await import("node:fs");
+    const targetDir = resolve(process.cwd(), flags.cwd);
+    
+    let isDir = false;
+    try {
+      isDir = statSync(targetDir).isDirectory();
+    } catch {
+      // Ignored, isDir remains false
+    }
+
+    if (isDir) {
+      try {
+        process.chdir(targetDir);
+      } catch (error) {
+        process.stderr.write(`error: unable to access directory ${flags.cwd}\n`);
+        exitCode = 1;
+        if (!flags.help) process.exit(1);
+      }
+    } else {
+      process.stderr.write(`error: directory does not exist or is not a directory: ${flags.cwd}\n`);
+      exitCode = 1;
+      if (!flags.help) process.exit(1);
+    }
+  }
 
   if (flags.help) {
     console.log(`
@@ -419,6 +492,7 @@ export async function main() {
   Options
     --provider, -p       LLM provider: anthropic, openai, openrouter, gemini, vertex-ai, or ollama (default: anthropic)
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
+    --cwd <dir>          Set the working directory for the session
     --effort             Reasoning effort: low, medium, high, or max (default: high)
     --ollama-host        Ollama host (default: localhost)
     --ollama-port        Ollama port (default: 11434)
@@ -463,7 +537,7 @@ export async function main() {
     $ agav agents install https://github.com/user/repo/agents/jira
     $ agav agents list
 `);
-    process.exit(0);
+    process.exit(exitCode);
   }
 
   if (flags.version) {
@@ -485,12 +559,11 @@ export async function main() {
   if (flags.agents) {
     const { runAgentsCommand } = await import("./cli/agents-cli.js");
     const agentsCommand = typeof flags.agentsCommand === "string" ? flags.agentsCommand : undefined;
-    // Find "agents" position in argv to correctly slice remaining args
-    const agentsIdx = process.argv.indexOf("agents");
-    const argsStartIndex = agentsIdx >= 0
-      ? agentsIdx + (agentsCommand ? 2 : 1)
-      : (agentsCommand ? 4 : 3);
-    const exitCode = await runAgentsCommand(agentsCommand, process.argv.slice(argsStartIndex));
+    const delegatedArgs = (flags._ as string[]).slice(1);
+    if (typeof flags.delegatedSeparatorIndex === "number") {
+      delegatedArgs.splice(Math.max(0, flags.delegatedSeparatorIndex - 1), 0, "--");
+    }
+    const exitCode = await runAgentsCommand(agentsCommand, delegatedArgs);
     process.exit(exitCode);
     return;
   }
@@ -499,20 +572,20 @@ export async function main() {
   if (flags.skills) {
     const { runSkillsCommand } = await import("./cli/skills-cli.js");
     const skillsCommand = typeof flags.skillsCommand === "string" ? flags.skillsCommand : undefined;
-    // Find "skills" position in argv to correctly slice remaining args
-    const skillsIdx = process.argv.indexOf("skills");
-    const argsStartIndex = skillsIdx >= 0
-      ? skillsIdx + (skillsCommand ? 2 : 1)
-      : (skillsCommand ? 4 : 3);
-    const exitCode = await runSkillsCommand(skillsCommand, process.argv.slice(argsStartIndex));
+    const delegatedArgs = (flags._ as string[]).slice(1);
+    if (typeof flags.delegatedSeparatorIndex === "number") {
+      delegatedArgs.splice(Math.max(0, flags.delegatedSeparatorIndex - 1), 0, "--");
+    }
+    const exitCode = await runSkillsCommand(skillsCommand, delegatedArgs);
     process.exit(exitCode);
     return;
   }
 
+
   // Auto-update check (silent on failure, skipped in CI/pipe mode)
   try {
     const { checkAndUpdate } = await import("./utils/auto-update.js");
-    await checkAndUpdate();
+    await checkAndUpdate(startupCwd);
   } catch {
     // Never block startup on update failures
   }

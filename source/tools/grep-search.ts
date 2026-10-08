@@ -99,26 +99,30 @@ async function nodeGrep(
 }
 
 /** Run native grep and return output. Rejects if grep is not found. */
-function nativeGrep(
+async function nativeGrep(
   pattern: string,
   searchPath: string,
   include: string | undefined,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  const args = ["-rn", "--color=never", "-E"];
+  // grep can exclude its explicit root too; searching "." bypasses only that
+  // root's name, while still excluding generated directories below it.
+  const searchFromRoot = SKIP_DIRS.has(basename(searchPath)) &&
+    await stat(searchPath).then((info) => info.isDirectory(), () => false);
+  const args = ["-rn", "-H", "--color=never", "-E"];
   if (include) {
     args.push("--include", include);
   }
   args.push(
-    "--exclude-dir=node_modules",
-    "--exclude-dir=.git",
-    "--exclude-dir=build",
-    "--exclude-dir=dist",
-    pattern,
-    searchPath,
+    ...Array.from(SKIP_DIRS, (dir) => `--exclude-dir=${dir}`),
+    "-e", pattern, "--",
+    searchFromRoot ? "." : searchPath,
   );
 
   return new Promise((resolve, reject) => {
-    execFile("grep", args, { maxBuffer: 200_000, timeout: 15_000 }, (error, stdout, stderr) => {
+    execFile("grep", args, { maxBuffer: 200_000, timeout: 15_000, cwd: searchFromRoot ? searchPath : undefined }, (error, stdout, stderr) => {
+      if (searchFromRoot) {
+        stdout = stdout.replace(/(^|\n)(Binary file )?\.\//g, (_match, boundary, prefix = "") => `${boundary}${prefix}${searchPath}/`);
+      }
       if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
         reject(error);
       } else {

@@ -58,7 +58,15 @@ describe("CLI boot", () => {
     expect(output).toContain("no provider credentials found");
     expect(output).toMatch(/(export|set|\$env:)\s?ANTHROPIC_API_KEY/);
   });
+
+  it("exits with error for nonexistent --cwd folder", async () => {
+    const result = await runCli(["--cwd", "/does/not/exist/12345", "--help"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("error: directory does not exist or is not a directory: /does/not/exist/12345");
+    expect(result.stdout).toContain("Usage");
+  });
 });
+
 
 describe("Tool registry", () => {
   it("registers all expected tools", async () => {

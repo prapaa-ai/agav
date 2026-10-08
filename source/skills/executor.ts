@@ -1,5 +1,4 @@
-import { execFile } from "node:child_process";
-import { platform } from "node:os";
+import { runInSandbox } from "../utils/sandbox.js";
 import type { SkillDefinition } from "./types.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -25,6 +24,7 @@ interface SkillExecDeps {
   // callers using this callback must not add that total again.
   onTokenUsage?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   signal?: AbortSignal;
+  contextMessages?: import("../providers/types.js").Message[];
   onEvent?: (event: AgentEvent) => void;
 }
 
@@ -43,7 +43,12 @@ function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolR
   return child;
 }
 
+function checkAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error("Aborted");
+}
+
 interface ShellBlockOpts {
+  signal?: AbortSignal;
   permissionMode: PermissionMode;
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
 }
@@ -69,6 +74,7 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
     return haystack.slice(0, idx) + replacement + haystack.slice(idx + needle.length);
   };
   for (const block of blocks) {
+    checkAborted(opts.signal);
     // deny-writes: never execute shell blocks.
     if (mode === "deny-writes") {
       result = replaceOnce(result, block.match, "[shell block skipped — write operations denied]");
@@ -82,6 +88,7 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
         continue;
       }
       const choice = await opts.confirmTool("skill_shell_block", { command: block.command });
+      checkAborted(opts.signal);
       if (choice === "no") {
         result = replaceOnce(result, block.match, "[shell block skipped — denied by user]");
         continue;
@@ -92,15 +99,15 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
     }
 
     // auto-accept (or confirmed): execute.
-    const isWindows = platform() === "win32";
-    const shell = isWindows ? "cmd.exe" : "/bin/sh";
-    const shellArgs = isWindows ? ["/c", block.command] : ["-c", block.command];
-    const output = await new Promise<string>((resolve) => {
-      execFile(shell, shellArgs, { timeout: 10_000 }, (_err, stdout) => {
-        resolve((stdout ?? "").trim());
-      });
+    checkAborted(opts.signal);
+    // Reuse process-tree ownership so abort also stops pipeline descendants.
+    // Keep the existing unsandboxed shell-block behavior and output bound.
+    const output = await runInSandbox({
+      command: block.command, cwd: process.cwd(), timeout: 10_000,
+      maxBuffer: 1024 * 1024, forceBackend: "none", inheritEnv: true, signal: opts.signal,
     });
-    result = replaceOnce(result, block.match, output);
+    checkAborted(opts.signal);
+    result = replaceOnce(result, block.match, output.stdout.trim());
   }
   return result;
 }
@@ -124,48 +131,56 @@ export async function executeSkill(
   if (!deps.iterationsBudget) {
     throw new Error("iterationsBudget is required");
   }
-  let prompt = processDynamicContext(skill.body, args);
-  prompt = await processShellBlocks(prompt, {
-    permissionMode: deps.permissionMode,
-    confirmTool: deps.confirmTool,
-  });
- 
-  const registry = buildSkillRegistry(deps.parentRegistry, skill);
-  const conversation = new ConversationState();
-  conversation.setModel(deps.model);
-
-  const userMessage = args
-    ? `${prompt}\n\nUser request: ${args}`
-    : prompt;
-  conversation.addUserMessage(userMessage);
-
-  const steers = formatSteersForPrompt();
-  const skillSystemPrompt = deps.systemPrompt +
-    `\n\nYou are executing the "${skill.name}" skill. ${skill.description}. ` +
-    "Focus exclusively on the skill's task. Be thorough but concise." +
-    (steers ? "\n\n" + steers : "");
-
-  const loop = runAgentLoop({
-    provider: deps.provider,
-    conversation,
-    toolRegistry: registry,
-    model: skill.frontmatter.model ?? deps.model,
-    systemPrompt: skillSystemPrompt,
-    effort: skill.frontmatter.effort ?? deps.effort,
-    maxTokens: 16384,
-    signal: deps.signal,
-    confirmTool: deps.confirmTool,
-    permissionMode: deps.permissionMode,
-    iterationsBudget: deps.iterationsBudget,
-  });
-
   let result = "";
   let failed = false;
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
-  // Account for each usage event immediately, including tokens spent before
-  // an abort or provider error. Keep the aggregate only for the result/trace.
+  // Preprocessing can prompt or execute commands, so it belongs to the same
+  // failure/progress lifecycle as the child loop.
   try {
+    checkAborted(deps.signal);
+    let prompt = processDynamicContext(skill.body, args);
+    prompt = await processShellBlocks(prompt, {
+      permissionMode: deps.permissionMode,
+      confirmTool: deps.confirmTool,
+      signal: deps.signal,
+    });
+    checkAborted(deps.signal);
+
+    const registry = buildSkillRegistry(deps.parentRegistry, skill);
+    const conversation = new ConversationState();
+    const model = skill.frontmatter.model ?? deps.model;
+    conversation.setModel(model);
+    // Compaction mutates blocks, so the child must own a deep context snapshot.
+    if (deps.contextMessages) conversation.setMessages(structuredClone(deps.contextMessages));
+
+    const userMessage = args
+      ? `${prompt}\n\nUser request: ${args}`
+      : prompt;
+    conversation.addUserMessage(userMessage);
+
+    const steers = formatSteersForPrompt();
+    const skillSystemPrompt = deps.systemPrompt +
+      `\n\nYou are executing the "${skill.name}" skill. ${skill.description}. ` +
+      "Focus exclusively on the skill's task. Be thorough but concise." +
+      (steers ? "\n\n" + steers : "");
+
+    const loop = runAgentLoop({
+      provider: deps.provider,
+      conversation,
+      toolRegistry: registry,
+      model,
+      systemPrompt: skillSystemPrompt,
+      effort: skill.frontmatter.effort ?? deps.effort,
+      maxTokens: 16384,
+      signal: deps.signal,
+      confirmTool: deps.confirmTool,
+      permissionMode: deps.permissionMode,
+      iterationsBudget: deps.iterationsBudget,
+    });
+
+    // Account for each usage event immediately, including tokens spent before
+    // an abort or provider error. Keep the aggregate only for the result/trace.
     for await (const event of loop) {
       deps.onEvent?.(event);
       switch (event.type) {

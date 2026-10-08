@@ -21,6 +21,10 @@ export interface ToolResult {
 export interface ToolContext {
   env?: Record<string, string>;
   signal?: AbortSignal;
+  /** Parent context for an explicitly dispatched skill, separate from arguments. */
+  conversation?: import("../providers/types.js").Message[];
+  systemPrompt?: string;
+  permissionMode?: import("../config/config.js").PermissionMode;
 }
 
 export interface ToolDefinition {

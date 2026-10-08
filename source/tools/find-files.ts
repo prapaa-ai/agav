@@ -49,14 +49,16 @@ async function nodeFind(searchPath: string, pattern: RegExp): Promise<string[]> 
 
 /** Run native find and return output. Rejects if find is not found or not Unix find. */
 function nativeFind(pattern: string, searchPath: string): Promise<{ stdout: string; stderr: string }> {
+  // -path uses glob matching on both BSD and GNU find. Exempt only the
+  // literal starting root, even when it is itself an excluded directory.
+  const rootPattern = searchPath.replace(/[\[\]*?\\]/g, (char) => "\\" + char);
+  const excludedNames = Array.from(SKIP_DIRS).flatMap((dir, i) =>
+    i === 0 ? ["-name", dir] : ["-o", "-name", dir]);
   const args = [
     searchPath,
-    "-name", pattern,
-    "-not", "-path", "*/node_modules/*",
-    "-not", "-path", "*/.git/*",
-    "-not", "-path", "*/build/*",
-    "-not", "-path", "*/dist/*",
-    "-type", "f",
+    "(", "-type", "d", "!", "-path", rootPattern,
+    "(", ...excludedNames, ")", "-prune", ")",
+    "-o", "(", "-type", "f", "-name", pattern, "-print", ")",
   ];
 
   return new Promise((resolve, reject) => {

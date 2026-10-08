@@ -837,6 +837,11 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             case "submit":
               submit(result.text, undefined, undefined, undefined, invocationReason);
               break;
+            case "skill_invoke":
+              submit(trimmed, undefined, undefined, undefined, invocationReason, {
+                name: result.skillName, arguments: result.arguments,
+              });
+              break;
             case "agent_invoke": {
               setInput("");
               setSystemMessages([]);

@@ -661,7 +661,7 @@ export async function forceUpdate(targetVersion?: string): Promise<boolean> {
   }
 }
 
-export async function checkAndUpdate(): Promise<void> {
+export async function checkAndUpdate(startupCwd = process.cwd()): Promise<void> {
   const local = currentVersion();
 
   // Skip update check in CI, pipe mode, or non-TTY
@@ -754,7 +754,9 @@ export async function checkAndUpdate(): Promise<void> {
     // node AND for Bun standalone builds (where argv[1] is /$bunfs/root/<name>).
     // slice(1) leaked that internal path through as the first user argument.
     try {
-      execFileSync(relaunchPath(binaryPath), process.argv.slice(2), { stdio: "inherit" });
+      // Startup already applied --cwd. Resolve the unchanged arguments from
+      // the original launch directory, not from the selected project again.
+      execFileSync(relaunchPath(binaryPath), process.argv.slice(2), { stdio: "inherit", cwd: startupCwd });
     } catch (e: any) {
       process.exit(e.status ?? 0);
     }

@@ -2,14 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SkillDefinition } from "../skills/types.js";
 import { ToolRegistry } from "../tools/registry.js";
+import { ConversationState } from "../agent/conversation.js";
+import { estimateConversationTokens } from "../utils/tokens.js";
 
-vi.mock("node:child_process", () => ({
-  execFile: vi.fn((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
-    cb(null, "shell output", "");
-  }),
+vi.mock("../utils/sandbox.js", () => ({
+  runInSandbox: vi.fn(async () => ({ stdout: "shell output", stderr: "", error: null, backend: "none" })),
 }));
 
-import { execFile } from "node:child_process";
+import { runInSandbox } from "../utils/sandbox.js";
+import { ConfirmationQueue } from "../agent/confirmation-queue.js";
 
 vi.mock("../agent/loop.js", () => ({
   runAgentLoop: vi.fn(() => (async function* () {
@@ -51,6 +52,60 @@ const skill: SkillDefinition = {
 describe("skills/executor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("isolates parent blocks and token cache from child compaction", async () => {
+    const parent = new ConversationState();
+    for (let i = 0; i < 5; i++) {
+      parent.addUserMessage(`question ${i}`);
+      parent.addAssistantMessage([{
+        type: "tool_use", toolCallId: `read-${i}`, toolName: "read_file",
+        toolInput: { path: `file-${i}` }, providerMetadata: { nested: { signature: "original" } },
+      }]);
+      parent.addToolResults([{
+        type: "tool_result", toolCallId: `read-${i}`, toolResult: "contents ".repeat(200),
+        toolResultContent: [{ type: "text", text: "original rich result ".repeat(200) }],
+      }]);
+    }
+    const snapshot = structuredClone(parent.getMessages());
+    const cachedTokens = parent.tokenCount;
+    vi.mocked(runAgentLoop).mockImplementationOnce(({ conversation }) => (async function* () {
+      const childBlocks = conversation.getMessages().flatMap(message => message.content);
+      const parentBlocks = parent.getMessages().flatMap(message => message.content);
+      expect(childBlocks[1]?.toolInput).not.toBe(parentBlocks[1]?.toolInput);
+      expect(childBlocks[1]?.providerMetadata).not.toBe(parentBlocks[1]?.providerMetadata);
+      expect(childBlocks[2]?.toolResultContent).not.toBe(parentBlocks[2]?.toolResultContent);
+      conversation.setContextWindow(1000);
+      await conversation.compactIfNeeded(true);
+      // Prove the real trimming path ran, not just a history replacement.
+      expect(childBlocks[2]?.toolResult).toContain("...(trimmed)");
+      expect(childBlocks[2]?.toolResultContent).toBeUndefined();
+      yield { type: "turn_complete" };
+    })());
+
+    await executeSkill(skill, "", { ...baseDeps, contextMessages: parent.getMessages() });
+
+    expect(parent.getMessages()).toEqual(snapshot);
+    expect(parent.tokenCount).toBe(cachedTokens);
+    expect(estimateConversationTokens(parent.getMessages())).toBe(cachedTokens);
+  });
+
+  it("compacts inherited context using the effective smaller model", async () => {
+    const parent = new ConversationState();
+    for (let i = 0; i < 12; i++) parent.addUserMessage("history ".repeat(12_000));
+    parent.setModel("claude-sonnet-4-6");
+    expect((await parent.compactIfNeeded()).compacted).toBe(false);
+    const snapshot = structuredClone(parent.getMessages());
+    vi.mocked(runAgentLoop).mockImplementationOnce(({ conversation, model }) => (async function* () {
+      expect(model).toBe("claude-haiku-4-5");
+      expect((await conversation.compactIfNeeded()).compacted).toBe(true);
+      expect(conversation.tokenCount).toBeLessThan(parent.tokenCount);
+      yield { type: "turn_complete" };
+    })());
+    await executeSkill({ ...skill, frontmatter: { ...skill.frontmatter, model: "claude-haiku-4-5" } }, "", {
+      ...baseDeps, model: "claude-sonnet-4-6", contextMessages: parent.getMessages(),
+    });
+    expect(parent.getMessages()).toEqual(snapshot);
   });
 
   it("forwards aggregated usage to the parent token accounting callback", async () => {
@@ -209,13 +264,59 @@ describe("skills/executor", () => {
       origin: "project",
     };
 
+    it.each(["no", "yes", "always"] as const)("stops after cancellation at confirmation even when resolved %s", async (choice) => {
+      const controller = new AbortController();
+      const queue = new ConfirmationQueue();
+      const confirmTool = vi.fn((toolName, input) => queue.enqueue({ toolName, input }));
+      const onEvent = vi.fn();
+      const pending = executeSkill({ ...shellSkill, body: shellSkill.body + "\n```sh\necho second\n```" }, "", {
+        ...baseDeps, signal: controller.signal, confirmTool, onEvent,
+      });
+      await vi.waitFor(() => expect(confirmTool).toHaveBeenCalledTimes(1));
+      controller.abort();
+      if (choice === "no") queue.clear();
+      else queue.resolve(choice);
+      await expect(pending).rejects.toThrow("Aborted");
+      expect(confirmTool).toHaveBeenCalledTimes(1);
+      expect(runInSandbox).not.toHaveBeenCalled();
+      expect(runAgentLoop).not.toHaveBeenCalled();
+      expect(onEvent).toHaveBeenLastCalledWith({ type: "error", error: expect.any(Error) });
+      expect(recordSkillTrace).toHaveBeenCalledWith("Shell Skill", "", 0, false);
+    });
+
+    it("does not prompt or execute an already cancelled skill", async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const confirmTool = vi.fn();
+      await expect(executeSkill(shellSkill, "", { ...baseDeps, signal: controller.signal, confirmTool })).rejects.toThrow("Aborted");
+      expect(confirmTool).not.toHaveBeenCalled();
+      expect(runInSandbox).not.toHaveBeenCalled();
+      expect(runAgentLoop).not.toHaveBeenCalled();
+    });
+
+    it("checks cancellation after shell completion before the next block", async () => {
+      const controller = new AbortController();
+      vi.mocked(runInSandbox).mockImplementationOnce(async (opts) => {
+        expect(opts.signal).toBe(controller.signal);
+        controller.abort();
+        return { stdout: "partial", stderr: "", error: null, backend: "none" };
+      });
+      const onEvent = vi.fn();
+      await expect(executeSkill({ ...shellSkill, body: shellSkill.body + "\n```sh\necho second\n```" }, "", {
+        ...baseDeps, permissionMode: "auto-accept", signal: controller.signal, onEvent,
+      })).rejects.toThrow("Aborted");
+      expect(runInSandbox).toHaveBeenCalledTimes(1);
+      expect(runAgentLoop).not.toHaveBeenCalled();
+      expect(onEvent).toHaveBeenLastCalledWith({ type: "error", error: expect.any(Error) });
+    });
+
     it("does not execute shell blocks in deny-writes mode", async () => {
       const result = await executeSkill(shellSkill, "test", {
         ...baseDeps,
         permissionMode: "deny-writes",
       });
 
-      expect(execFile).not.toHaveBeenCalled();
+      expect(runInSandbox).not.toHaveBeenCalled();
       expect(result.output).toBe("skill done");
     });
 
@@ -226,7 +327,7 @@ describe("skills/executor", () => {
         confirmTool: undefined,
       });
 
-      expect(execFile).not.toHaveBeenCalled();
+      expect(runInSandbox).not.toHaveBeenCalled();
       expect(result.output).toBe("skill done");
     });
 
@@ -240,7 +341,7 @@ describe("skills/executor", () => {
       });
 
       expect(confirmTool).toHaveBeenCalledWith("skill_shell_block", { command: "echo hello" });
-      expect(execFile).not.toHaveBeenCalled();
+      expect(runInSandbox).not.toHaveBeenCalled();
       expect(result.output).toBe("skill done");
     });
 
@@ -254,7 +355,7 @@ describe("skills/executor", () => {
       });
 
       expect(confirmTool).toHaveBeenCalledWith("skill_shell_block", { command: "echo hello" });
-      expect(execFile).toHaveBeenCalled();
+      expect(runInSandbox).toHaveBeenCalled();
     });
 
     it("executes shell blocks in auto-accept mode without confirmation", async () => {
@@ -263,7 +364,7 @@ describe("skills/executor", () => {
         permissionMode: "auto-accept",
       });
 
-      expect(execFile).toHaveBeenCalled();
+      expect(runInSandbox).toHaveBeenCalled();
     });
 
     it("skips remaining confirmations after user chooses 'always'", async () => {
@@ -281,7 +382,7 @@ describe("skills/executor", () => {
 
       // Only the first block should trigger confirmation; the second auto-accepts.
       expect(confirmTool).toHaveBeenCalledTimes(1);
-      expect(execFile).toHaveBeenCalledTimes(2);
+      expect(runInSandbox).toHaveBeenCalledTimes(2);
     });
   });
 });
