@@ -44,19 +44,81 @@ function getOrStartServer(lang: string): LSPServer | null {
       cwd: process.cwd(),
     });
 
+    let exited = false;
+    let disposed = false;
+    let finished = false;
+    let escalation: ReturnType<typeof setTimeout> | undefined;
+    let drainage: ReturnType<typeof setTimeout> | undefined;
+    const unavailable = (error: Error) => {
+      server.failure ??= error;
+      // A late event from this process must not evict its replacement.
+      if (servers.get(lang) === server) servers.delete(lang);
+    };
+    const rejectPending = () => {
+      for (const p of server.pending.values()) p.reject(server.failure!);
+    };
+    const kill = (signal: NodeJS.Signals) => {
+      try { proc.kill(signal); } catch {}
+    };
+    const destroyStreams = () => {
+      proc.stdout?.off("data", onData);
+      buffer = Buffer.alloc(0);
+      proc.stdin?.destroy();
+      proc.stdout?.destroy();
+      proc.stderr?.destroy();
+    };
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      unavailable(new Error(`LSP server ${lang} closed`));
+      rejectPending();
+      clearTimeout(escalation);
+      clearTimeout(drainage);
+      destroyStreams();
+      proc.off("exit", onExit);
+      proc.off("close", finish);
+      proc.stdout?.off("end", onEnd);
+      // Destroy/write callbacks can still emit errors after cleanup. Replace
+      // lifecycle handlers with inert guards, not unhandled 'error' events.
+      const ignoreError = () => {};
+      for (const emitter of [proc, proc.stdin, proc.stdout, proc.stderr]) {
+        emitter?.off("error", server.fail);
+        emitter?.on("error", ignoreError);
+      }
+      // A failed kill must not keep the host alive after the bounded shutdown.
+      proc.unref?.();
+    };
     const server: LSPServer = {
       process: proc, nextId: 1, pending: new Map(),
       fail(error) {
-        if (server.failure) return;
-        server.failure = error;
-        // A late event from this process must not evict its replacement.
-        if (servers.get(lang) === server) servers.delete(lang);
-        for (const p of server.pending.values()) p.reject(error);
+        // Exit is not a transport failure: stdout may still contain responses.
+        if (disposed || finished || exited) return;
+        disposed = true;
+        unavailable(error);
+        rejectPending();
+        destroyStreams();
+        escalation = setTimeout(() => { if (!exited) kill("SIGKILL"); }, 150);
+        drainage = setTimeout(finish, 300);
+        kill("SIGTERM");
       },
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (exited || finished) return;
+      exited = true;
+      unavailable(new Error(`LSP server ${lang} exited (code=${code ?? "null"}, signal=${signal ?? "null"})`));
+      clearTimeout(escalation);
+      // Node 'exit' can precede buffered stdout. Settle only after drainage,
+      // bounding inherited/open pipes with the same grace period as shell tools.
+      drainage ??= setTimeout(finish, 300);
+      if (proc.stdout?.readableEnded) rejectPending();
+    };
+    const onEnd = () => {
+      if (exited) rejectPending();
+      else server.fail(new Error(`LSP server ${lang} stdout ended`));
     };
 
     let buffer: Buffer = Buffer.alloc(0);
-    proc.stdout!.on("data", (chunk: Buffer) => {
+    const onData = (chunk: Buffer) => {
       buffer = Buffer.concat([buffer, chunk]);
       while (true) {
         const headerEnd = buffer.indexOf("\r\n\r\n");
@@ -78,14 +140,16 @@ function getOrStartServer(lang: string): LSPServer | null {
           }
         } catch {}
       }
-    });
+    };
 
-    proc.on("error", server.fail);
-    proc.on("exit", (code, signal) => {
-      server.fail(new Error(`LSP server ${lang} exited (code=${code ?? "null"}, signal=${signal ?? "null"})`));
-    });
-    // Writable streams emit 'error' as well as reporting write callback errors.
-    proc.stdin!.on("error", server.fail);
+    proc.stdout!.on("data", onData);
+    proc.stdout!.on("end", onEnd);
+    proc.on("exit", onExit);
+    proc.on("close", finish);
+    // Streams can emit 'error' as well as reporting write callback errors.
+    for (const emitter of [proc, proc.stdin, proc.stdout, proc.stderr]) {
+      emitter?.on("error", server.fail);
+    }
 
     servers.set(lang, server);
 

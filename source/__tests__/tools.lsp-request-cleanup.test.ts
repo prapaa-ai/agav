@@ -14,6 +14,7 @@ type Child = EventEmitter & {
   stdout: PassThrough;
   stderr: PassThrough;
   stdin: EventEmitter & { writable: boolean; write: ReturnType<typeof vi.fn> };
+  kill: ReturnType<typeof vi.fn>;
   requests: Request[];
   callbacks: ((error?: Error | null) => void)[];
 };
@@ -30,7 +31,8 @@ function reply(child: Child, id: number, payload: object = { result: null }) {
 function makeChild(autoInitialize = true): Child {
   const child = Object.assign(new EventEmitter(), {
     stdout: new PassThrough(), stderr: new PassThrough(),
-    stdin: Object.assign(new EventEmitter(), { writable: true, write: vi.fn() }),
+    stdin: Object.assign(new EventEmitter(), { writable: true, write: vi.fn(), destroy: vi.fn() }),
+    kill: vi.fn().mockImplementation(() => { child.emit("exit", null, "SIGTERM"); child.emit("close", null, "SIGTERM"); return true; }),
     requests: [] as Request[], callbacks: [] as Child["callbacks"],
   });
   child.stdin.write.mockImplementation((frame: string, callback?: Child["callbacks"][number]) => {
@@ -88,6 +90,70 @@ async function promptly<T>(promise: Promise<T>): Promise<T | undefined> {
 }
 
 describe("LSP request lifecycle cleanup", () => {
+  it("accepts buffered responses after exit without evicting a replacement", async () => {
+    const first = tool.execute(input);
+    const old = children[0]!;
+    old.emit("exit", 0, null);
+    const next = tool.execute(input);
+    reply(old, 2, { result: ["buffered café"] });
+    old.stdout.emit("end");
+    old.emit("close", 0, null);
+    expect(await first).toEqual({ output: '["buffered café"]', isError: false });
+    const concurrent = tool.execute(input);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    reply(children[1]!, 2); reply(children[1]!, 3);
+    await Promise.all([next, concurrent]);
+    expect(old.kill).not.toHaveBeenCalled();
+    expectClean();
+  });
+
+  it.each(["end", "close", "fallback"])("rejects unanswered exited requests on %s, not on exit", async (event) => {
+    const settled = vi.fn();
+    const promise = tool.execute(input).then(settled);
+    const child = children[0]!;
+    child.emit("exit", 7, null);
+    await Promise.resolve(); await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    if (event === "end") child.stdout.emit("end");
+    else if (event === "close") child.emit("close", 7, null);
+    else await vi.advanceTimersByTimeAsync(300);
+    await promise;
+    expect(settled).toHaveBeenCalledExactlyOnceWith({ output: expect.stringMatching(/exited.*7/), isError: true });
+    if (event === "end") child.emit("close", 7, null);
+    expectClean();
+  });
+
+  it.each(["stdin error", "callback", "throw", "stdout error", "stderr error"])("disposes a live child on %s, escalates once, and isolates replacements", async (event) => {
+    const first = tool.execute(input);
+    const old = children[0]!;
+    old.kill.mockReturnValue(true); // Stay alive despite SIGTERM.
+    if (event === "stdin error") old.stdin.emit("error", new Error("broken transport"));
+    else if (event === "stdout error") old.stdout.emit("error", new Error("broken transport"));
+    else if (event === "stderr error") old.stderr.emit("error", new Error("broken transport"));
+    else if (event === "callback") old.callbacks[1]!(new Error("broken transport"));
+    else {
+      old.stdin.write.mockImplementationOnce(() => { throw new Error("broken transport"); });
+      expect(await promptly(tool.execute(input))).toEqual({ output: "broken transport", isError: true });
+    }
+    expect(await promptly(first)).toEqual({ output: "broken transport", isError: true });
+    expect(old.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+    const next = tool.execute(input);
+    old.stdin.emit("error", new Error("duplicate"));
+    old.emit("error", new Error("duplicate"));
+    await vi.advanceTimersByTimeAsync(150);
+    expect(old.kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
+    await vi.advanceTimersByTimeAsync(150);
+    expect(old.stdout.destroyed).toBe(true);
+    expect(old.stderr.destroyed).toBe(true);
+    expect(old.stdout.listenerCount("data")).toBe(0);
+    old.emit("exit", 1, null); old.emit("close", 1, null);
+    const concurrent = tool.execute(input);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    reply(children[1]!, 2); reply(children[1]!, 3);
+    expect(await Promise.all([next, concurrent])).toEqual([{ output: "null", isError: false }, { output: "null", isError: false }]);
+    expect(old.kill).toHaveBeenCalledTimes(2);
+    expectClean();
+  });
   it.each([false, true])("cleans up success/RPC error (error=%s), ignoring duplicate replies and callbacks", async (error) => {
     const promise = tool.execute(input);
     const child = children[0]!;
@@ -130,7 +196,7 @@ describe("LSP request lifecycle cleanup", () => {
     expect(old.requests.map(r => r.method)).toEqual(["initialize", "textDocument/definition", "textDocument/references"]);
     if (event === "error") old.emit("error", new Error("process failed"));
     else if (event === "stdin error") old.stdin.emit("error", new Error("pipe failed"));
-    else old.emit("exit", 7, "SIGTERM");
+    else { old.emit("exit", 7, "SIGTERM"); old.emit("close", 7, "SIGTERM"); }
     const results = await promptly(Promise.all([first, second]));
     expect(results).toEqual([
       { output: expect.stringMatching(event === "exit" ? /LSP.*exited.*7.*SIGTERM/ : event === "error" ? /process failed/ : /pipe failed/), isError: true },
