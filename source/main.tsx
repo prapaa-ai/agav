@@ -127,13 +127,13 @@ export function parseArgs(argv: string[]) {
 
   while (i < argv.length) {
     const arg = argv[i]!;
-    if (arg === "--") {
-      dashDashSeen = true;
+    if (dashDashSeen) {
+      flags._.push(arg);
       i++;
       continue;
     }
-    if (dashDashSeen) {
-      flags._.push(arg);
+    if (arg === "--") {
+      dashDashSeen = true;
       i++;
       continue;
     }
