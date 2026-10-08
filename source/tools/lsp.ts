@@ -7,6 +7,8 @@ interface LSPServer {
   process: ChildProcess;
   nextId: number;
   pending: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>;
+  failure?: Error;
+  fail: (error: Error) => void;
 }
 
 const servers = new Map<string, LSPServer>();
@@ -42,36 +44,115 @@ function getOrStartServer(lang: string): LSPServer | null {
       cwd: process.cwd(),
     });
 
-    const server: LSPServer = { process: proc, nextId: 1, pending: new Map() };
+    let exited = false;
+    let disposed = false;
+    let finished = false;
+    let escalation: ReturnType<typeof setTimeout> | undefined;
+    let drainage: ReturnType<typeof setTimeout> | undefined;
+    const unavailable = (error: Error) => {
+      server.failure ??= error;
+      // A late event from this process must not evict its replacement.
+      if (servers.get(lang) === server) servers.delete(lang);
+    };
+    const rejectPending = () => {
+      for (const p of server.pending.values()) p.reject(server.failure!);
+    };
+    // Failed spawn can leave a handle without a PID; never signal it.
+    const hasPid = () => typeof proc.pid === "number" && Number.isInteger(proc.pid) && proc.pid > 0;
+    const kill = (signal: NodeJS.Signals) => {
+      if (!hasPid()) return;
+      try { proc.kill(signal); } catch {}
+    };
+    const destroyStreams = () => {
+      proc.stdout?.off("data", onData);
+      buffer = Buffer.alloc(0);
+      proc.stdin?.destroy();
+      proc.stdout?.destroy();
+      proc.stderr?.destroy();
+    };
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      unavailable(new Error(`LSP server ${lang} closed`));
+      rejectPending();
+      clearTimeout(escalation);
+      clearTimeout(drainage);
+      destroyStreams();
+      proc.off("exit", onExit);
+      proc.off("close", finish);
+      proc.stdout?.off("end", onEnd);
+      // Destroy/write callbacks can still emit errors after cleanup. Replace
+      // lifecycle handlers with inert guards, not unhandled 'error' events.
+      const ignoreError = () => {};
+      for (const emitter of [proc, proc.stdin, proc.stdout, proc.stderr]) {
+        emitter?.off("error", server.fail);
+        emitter?.on("error", ignoreError);
+      }
+      // A failed kill must not keep the host alive after the bounded shutdown.
+      proc.unref?.();
+    };
+    const server: LSPServer = {
+      process: proc, nextId: 1, pending: new Map(),
+      fail(error) {
+        // Exit is not a transport failure: stdout may still contain responses.
+        if (disposed || finished || exited) return;
+        disposed = true;
+        unavailable(error);
+        rejectPending();
+        destroyStreams();
+        if (hasPid()) escalation = setTimeout(() => { if (!exited) kill("SIGKILL"); }, 150);
+        drainage = setTimeout(finish, 300);
+        kill("SIGTERM");
+      },
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (exited || finished) return;
+      exited = true;
+      unavailable(new Error(`LSP server ${lang} exited (code=${code ?? "null"}, signal=${signal ?? "null"})`));
+      clearTimeout(escalation);
+      // Node 'exit' can precede buffered stdout. Settle only after drainage,
+      // bounding inherited/open pipes with the same grace period as shell tools.
+      drainage ??= setTimeout(finish, 300);
+      if (proc.stdout?.readableEnded) rejectPending();
+    };
+    const onEnd = () => {
+      if (exited) rejectPending();
+      else server.fail(new Error(`LSP server ${lang} stdout ended`));
+    };
 
-    let buffer = "";
-    proc.stdout!.on("data", (chunk: Buffer) => {
-      buffer += chunk.toString();
+    let buffer: Buffer = Buffer.alloc(0);
+    const onData = (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
       while (true) {
         const headerEnd = buffer.indexOf("\r\n\r\n");
         if (headerEnd === -1) break;
-        const header = buffer.slice(0, headerEnd);
+        const header = buffer.subarray(0, headerEnd).toString("ascii");
         const lenMatch = header.match(/Content-Length:\s*(\d+)/i);
-        if (!lenMatch) { buffer = buffer.slice(headerEnd + 4); continue; }
+        if (!lenMatch) { buffer = buffer.subarray(headerEnd + 4); continue; }
         const len = parseInt(lenMatch[1]!, 10);
         const bodyStart = headerEnd + 4;
         if (buffer.length < bodyStart + len) break;
-        const body = buffer.slice(bodyStart, bodyStart + len);
-        buffer = buffer.slice(bodyStart + len);
+        const body = buffer.subarray(bodyStart, bodyStart + len).toString("utf8");
+        buffer = buffer.subarray(bodyStart + len);
         try {
           const msg = JSON.parse(body);
           if (msg.id != null && server.pending.has(msg.id)) {
             const p = server.pending.get(msg.id)!;
-            server.pending.delete(msg.id);
             if (msg.error) p.reject(new Error(msg.error.message));
             else p.resolve(msg.result);
           }
         } catch {}
       }
-    });
+    };
 
-    proc.on("error", () => { servers.delete(lang); });
-    proc.on("exit", () => { servers.delete(lang); });
+    proc.stdout!.on("data", onData);
+    proc.stdout!.on("end", onEnd);
+    proc.on("exit", onExit);
+    proc.on("close", finish);
+    // Streams can emit 'error' as well as reporting write callback errors.
+    for (const emitter of [proc, proc.stdin, proc.stdout, proc.stderr]) {
+      emitter?.on("error", server.fail);
+    }
 
     servers.set(lang, server);
 
@@ -90,18 +171,34 @@ function getOrStartServer(lang: string): LSPServer | null {
 
 /** Send a JSON-RPC request and resolve when the matching response id arrives. */
 function sendRequest(server: LSPServer, method: string, params: unknown): Promise<unknown> {
+  if (server.failure) return Promise.reject(server.failure);
+  if (!server.process.stdin?.writable) {
+    server.fail(new Error("LSP server is not running"));
+    return Promise.reject(server.failure);
+  }
   return new Promise((resolve, reject) => {
     const id = server.nextId++;
-    server.pending.set(id, { resolve, reject });
-    const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
-    const msg = `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
-    server.process.stdin!.write(msg);
-    setTimeout(() => {
-      if (server.pending.has(id)) {
-        server.pending.delete(id);
-        reject(new Error("LSP request timed out"));
-      }
-    }, 10000);
+    const cleanup = () => {
+      if (!server.pending.has(id)) return false;
+      clearTimeout(timer);
+      server.pending.delete(id);
+      return true;
+    };
+    const fail = (error: Error) => { if (cleanup()) reject(error); };
+    const timer = setTimeout(() => fail(new Error("LSP request timed out")), 10000);
+    server.pending.set(id, {
+      resolve: value => { if (cleanup()) resolve(value); },
+      reject: fail,
+    });
+    try {
+      const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+      const msg = `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+      server.process.stdin!.write(msg, error => {
+        if (error && server.pending.has(id)) server.fail(error);
+      });
+    } catch (error) {
+      server.fail(error instanceof Error ? error : new Error(String(error)));
+    }
   });
 }
 
