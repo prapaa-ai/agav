@@ -576,8 +576,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setFocusedSubagentId(null);
       return;
     }
-    // Arrow key navigation in the subagent overview list
-    if (hasSubagents && !focusedSubagentId && !pendingConfirmation) {
+    // The prompt owns navigation and completion while it contains text.
+    // useInput broadcasts to both handlers; returning here cannot consume a key.
+    if (hasSubagents && !focusedSubagentId && !pendingConfirmation && input.length === 0) {
       if (key.upArrow) {
         setSelectedSubagentIdx((prev) => Math.max(0, prev - 1));
         return;
@@ -586,7 +587,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         setSelectedSubagentIdx((prev) => Math.min(subagentStates.length - 1, prev + 1));
         return;
       }
-      if (key.return) {
+      if (key.return && !key.shift && !key.ctrl && !key.meta && !key.super && !key.hyper) {
         const sa = subagentStates[selectedSubagentIdx];
         if (sa) setFocusedSubagentId(sa.id);
         return;
