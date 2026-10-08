@@ -114,7 +114,7 @@ async function nativeGrep(
   }
   args.push(
     ...Array.from(SKIP_DIRS, (dir) => `--exclude-dir=${dir}`),
-    pattern,
+    "-e", pattern, "--",
     searchFromRoot ? "." : searchPath,
   );
 
