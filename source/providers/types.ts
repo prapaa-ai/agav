@@ -74,4 +74,12 @@ export interface LLMProvider {
    * the model name leave it undefined and fall back to the name-based table.
    */
   getContextWindow?(model: string): Promise<number | undefined>;
+  /**
+   * After `getContextWindow` resolves to `undefined`, distinguishes a model the
+   * provider's catalog was successfully fetched and definitively does not list
+   * (e.g. an OpenRouter stealth model, deliberately excluded from `/models`)
+   * from a transient fetch failure. Only the former is worth asking the user
+   * to fill in manually — prompting on every network blip would be noise.
+   */
+  isContextWindowConfirmedMissing?(model: string): boolean;
 }

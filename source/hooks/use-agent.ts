@@ -105,6 +105,11 @@ export interface PendingConfirmation {
   subagentTask?: string;
 }
 
+export interface PendingContextWindowRequest {
+  model: string;
+  resolve: (tokens: number | undefined) => void;
+}
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
@@ -120,6 +125,8 @@ interface UseAgentReturn {
   toolCalls: ToolCallInfo[];
   error: string | null;
   pendingConfirmation: PendingConfirmation | null;
+  pendingContextWindowRequest: PendingContextWindowRequest | null;
+  resolveContextWindowRequest: (tokens: number | undefined) => void;
   tokenUsage: TokenUsage;
   loadedPlugins: string[];
   mcpServers: string[];
@@ -193,6 +200,7 @@ export function useAgent(
   const [toolCalls, setToolCalls] = useState<ToolCallInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
+  const [pendingContextWindowRequest, setPendingContextWindowRequest] = useState<PendingContextWindowRequest | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>(resumeTokenUsage ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
   const [loadedPlugins, setLoadedPlugins] = useState<string[]>([]);
   const sessionIdRef = useRef<string | null>(resumeSessionId ?? null);
@@ -438,6 +446,13 @@ export function useAgent(
   const cancel = useCallback(() => {
     abortRef.current?.abort();
     confirmationQueueRef.current.clear();
+    // Unblock a loop awaiting a manual-context-window answer — otherwise an
+    // abort during that prompt leaves it hanging forever since the request
+    // has no signal of its own.
+    setPendingContextWindowRequest((current) => {
+      current?.resolve(undefined);
+      return null;
+    });
     if (pausePromiseRef.current) {
       pausePromiseRef.current.resolve();
       pausePromiseRef.current = null;
@@ -493,6 +508,28 @@ export function useAgent(
     // spent waiting for the user to approve/deny a tool call.
     updateTurnStart(Date.now());
     confirmationQueueRef.current.resolve(choice);
+  }, []);
+
+  /**
+   * Resolve a pending manual-context-window request. `tokens` is undefined
+   * when the user dismissed the prompt without entering a value — the loop
+   * falls back to DEFAULT_UNKNOWN_CONTEXT_WINDOW in that case.
+   */
+  const resolveContextWindowRequest = useCallback((tokens: number | undefined) => {
+    setPendingContextWindowRequest((current) => {
+      current?.resolve(tokens);
+      return null;
+    });
+  }, []);
+
+  /**
+   * Shown to runAgentLoop as requestManualContextWindow. Surfaces the modal via
+   * state and resolves once the user answers it or dismisses it.
+   */
+  const requestManualContextWindow = useCallback((model: string): Promise<number | undefined> => {
+    return new Promise((resolve) => {
+      setPendingContextWindowRequest({ model, resolve });
+    });
   }, []);
 
   const addTokenUsage = useCallback((usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => {
@@ -845,6 +882,7 @@ export function useAgent(
               name: "activate_skill",
               input: { name: skillInvocation.name, arguments: skillInvocation.arguments },
             } : undefined,
+            requestManualContextWindow,
           });
 
           for await (const event of loop) {
@@ -1327,6 +1365,8 @@ export function useAgent(
     toolCalls,
     error,
     pendingConfirmation,
+    pendingContextWindowRequest,
+    resolveContextWindowRequest,
     tokenUsage,
     loadedPlugins,
     mcpServers,

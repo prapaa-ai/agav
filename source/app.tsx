@@ -9,6 +9,8 @@ import StatusBar from "./components/status-bar.js";
 import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
 import ToolConfirm from "./components/tool-confirm.js";
+import ContextWindowPrompt from "./components/context-window-prompt.js";
+import { DEFAULT_UNKNOWN_CONTEXT_WINDOW } from "./agent/loop.js";
 import ToolDetailPanel from "./components/tool-detail-panel.js";
 import PlanDetailPanel from "./components/plan-detail-panel.js";
 import SubagentDisplay from "./components/subagent-display.js";
@@ -157,6 +159,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     toolCalls,
     error,
     pendingConfirmation,
+    pendingContextWindowRequest,
+    resolveContextWindowRequest,
     tokenUsage,
     loadedPlugins,
     mcpServers,
@@ -541,6 +545,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
   useInput((rawChar, rawKey) => {
     if (pickerActive) return;
+    // The context-window prompt owns the keyboard exclusively while it is up —
+    // same reasoning as pendingConfirmation below, but it renders in place of
+    // ToolConfirm rather than alongside it, so it needs its own early return.
+    if (pendingContextWindowRequest) return;
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
     // The attachment/file preview panel is read-only and owns no other state,
     // so its keys are handled before anything else can claim them — Esc closes
@@ -1141,6 +1149,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           />
         )}
 
+        {!pendingConfirmation && pendingContextWindowRequest && (
+          <ContextWindowPrompt
+            model={pendingContextWindowRequest.model}
+            defaultValue={DEFAULT_UNKNOWN_CONTEXT_WINDOW}
+            onSubmit={resolveContextWindowRequest}
+          />
+        )}
+
         {agentsTUIActive && (
           <AgentsTUI
             onExit={() => {
@@ -1169,7 +1185,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           />
         )}
 
-        {!pendingConfirmation && (
+        {!pendingConfirmation && !pendingContextWindowRequest && (
           <Box marginTop={1}><InputPrompt
             value={input}
             onChange={(value) => {

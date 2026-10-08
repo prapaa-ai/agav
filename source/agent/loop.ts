@@ -71,7 +71,19 @@ interface LoopParams {
   iterationsBudget?: { remaining: number, total: number }
   /** Explicit skill dispatch shares the normal tool permission/history path. */
   initialToolCall?: { name: "activate_skill"; input: Record<string, unknown> };
+  /**
+   * Asks the user for a model's context window when the provider has
+   * confirmed it cannot report one — an OpenRouter stealth model being the
+   * motivating case, deliberately excluded from the public catalog. Resolve
+   * with a positive token count, or `undefined`/0 to fall back to
+   * `DEFAULT_UNKNOWN_CONTEXT_WINDOW`. Omitted entirely in non-interactive
+   * contexts (subagents, skills, pipe mode), which just take the default.
+   */
+  requestManualContextWindow?: (model: string) => Promise<number | undefined>;
 }
+
+/** Assumed window for a model no catalog can report and the user declined to specify. */
+export const DEFAULT_UNKNOWN_CONTEXT_WINDOW = 200_000;
 
 // Tools that never need confirmation because they cannot modify the working
 // tree or reach outside the session. `save_memory` and `update_plan` write only
@@ -194,12 +206,41 @@ export async function* runAgentLoop(
   // Ask the provider for the window it will actually enforce before the first
   // compaction check runs. Providers cache this, so it costs at most one probe
   // per model; a failure just leaves the name-based estimate in place.
-  if (provider.getContextWindow) {
+  //
+  // Optional chaining throughout: lightweight conversation stand-ins (unit
+  // tests driving runAgentLoop directly) only implement the subset of
+  // ConversationState they exercise, so these calls must tolerate a mock that
+  // predates this feature rather than requiring every call site to update.
+  const manualOverride = conversation.getManualContextWindow?.(model);
+  if (manualOverride !== undefined) {
+    conversation.setContextWindow(manualOverride);
+  } else if (provider.getContextWindow) {
+    let resolved: number | undefined;
     try {
-      conversation.setContextWindow(await provider.getContextWindow(model));
+      resolved = await provider.getContextWindow(model);
     } catch {
       // Non-fatal — fall back to the name-based limits.
     }
+
+    if (resolved === undefined && provider.isContextWindowConfirmedMissing?.(model)) {
+      // The catalog was fetched successfully and genuinely does not list this
+      // model — an OpenRouter stealth model being the motivating case — rather
+      // than a transient lookup failure. Worth asking the user, since the
+      // name-based fallback table has nothing meaningful to offer a codename
+      // like "stealth/space-bunny-alpha" either.
+      let manual: number | undefined;
+      if (params.requestManualContextWindow) {
+        try {
+          manual = await params.requestManualContextWindow(model);
+        } catch {
+          manual = undefined;
+        }
+      }
+      resolved = manual && manual > 0 ? manual : DEFAULT_UNKNOWN_CONTEXT_WINDOW;
+      conversation.setManualContextWindow?.(model, resolved);
+    }
+
+    conversation.setContextWindow(resolved);
   }
   const maxIterations = Math.min(iterationsBudget.total, iterationsBudget.remaining);
   const initialToolCall = params.initialToolCall;

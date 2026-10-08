@@ -9,12 +9,31 @@ import type {
 } from "./types.js";
 import { applyEffortPrompt, supportsNativeEffort } from "./effort.js";
 
+const CONTEXT_CACHE_TTL_MS = 5 * 60 * 1000;
+
 export class AnthropicProvider implements LLMProvider {
   readonly name = "anthropic";
   private client: Anthropic;
+  private readonly contextWindows = new Map<string, { value: number | undefined; expiresAt: number }>();
 
   constructor(apiKey: string) {
     this.client = new Anthropic({ apiKey });
+  }
+
+  /** Anthropic's Models API reports the real window as `max_input_tokens`. */
+  async getContextWindow(model: string): Promise<number | undefined> {
+    const cached = this.contextWindows.get(model);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+    try {
+      const info = await this.client.models.retrieve(model);
+      const value = info.max_input_tokens ?? undefined;
+      this.contextWindows.set(model, { value, expiresAt: Date.now() + CONTEXT_CACHE_TTL_MS });
+      return value;
+    } catch {
+      this.contextWindows.delete(model);
+      return undefined;
+    }
   }
 
   // Translate Anthropic's streaming event model into the provider-agnostic event stream used by the app.

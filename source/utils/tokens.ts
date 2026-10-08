@@ -57,7 +57,18 @@ export function getContextLimits(model: string, explicitMax?: number): ContextLi
 
   const m = model.toLowerCase();
 
-  // GPT-5.4-mini: 400k context
+  // GPT-6 family (Astra/Sol/Luna) and GPT-5.6 (Sol/Terra/Luna): OpenAI retired
+  // the "mini"/"nano" size suffix for a Sol/Terra/Luna capability-tier naming
+  // scheme starting with GPT-5.6, but every tier in both generations ships the
+  // same 1,050,000-token window and 128k max output. Matched on the version
+  // marker rather than the bare tier name — "solar", "terra", etc. appear in
+  // unrelated vendor model names (e.g. an OpenRouter "solar-pro" slug), and
+  // every real GPT-6/5.6 model ID always carries the version prefix anyway.
+  if (m.includes("gpt-6") || m.includes("gpt-5.6")) {
+    return { maxTokens: 1_050_000, warningThreshold: 840_000 };
+  }
+  // GPT-5.4-mini: 400k context. Older size-suffixed naming predates the
+  // Sol/Terra/Luna switch, so this only matches GPT-5.1 through 5.5.
   if (m.includes("gpt-5") && m.includes("mini")) {
     return { maxTokens: 400_000, warningThreshold: 320_000 };
   }
@@ -73,6 +84,13 @@ export function getContextLimits(model: string, explicitMax?: number): ContextLi
   if (m.includes("gpt-4")) {
     return { maxTokens: 128_000, warningThreshold: 100_000 };
   }
+  // Claude Haiku 5.5+: Anthropic moved the whole 5.5 generation (Opus, Sonnet,
+  // and now Haiku) to a uniform 1M window — unlike Haiku 4.5, which stayed at
+  // 200k alongside Sonnet/Opus 4.5. Must be checked before the 4-5/4.5 branch
+  // below so "haiku-5.5" does not fall through to the general haiku case.
+  if (m.includes("haiku") && (m.includes("5-5") || m.includes("5.5") || m.includes("5.6") || m.includes("5-6"))) {
+    return { maxTokens: 1_000_000, warningThreshold: 800_000 };
+  }
   // Claude Opus 4.6+, Sonnet 4.6+, Sonnet 5, Opus 5, Fable 5: 1M context
   if (m.includes("opus") || m.includes("fable") || m.includes("sonnet")) {
     if (m.includes("4-5") || m.includes("4.5")) {
@@ -80,11 +98,11 @@ export function getContextLimits(model: string, explicitMax?: number): ContextLi
     }
     return { maxTokens: 1_000_000, warningThreshold: 800_000 };
   }
-  // Claude Haiku 4.5: 200k context
+  // Claude Haiku 4.5 (and any other Haiku not caught above): 200k context
   if (m.includes("haiku")) {
     return { maxTokens: 200_000, warningThreshold: 160_000 };
   }
-  // Gemini models: default to 1M
+  // Gemini models: default to 1M (uniform across the 3.x/3.5 family)
   if (m.includes("gemini")) {
     return { maxTokens: 1_000_000, warningThreshold: 800_000 };
   }

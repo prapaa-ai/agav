@@ -9,7 +9,6 @@ import { ToolRegistry } from "../tools/registry.js";
 import type { LLMProvider, StreamEvent, StreamParams } from "../providers/types.js";
 import type { ToolDefinition } from "../tools/types.js";
 import type { AgentEvent } from "../agent/loop.js";
-import { removeAllListeners } from "node:cluster";
 
 class MockProvider implements LLMProvider {
   streams: StreamEvent[][];
