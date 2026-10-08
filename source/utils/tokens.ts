@@ -57,14 +57,13 @@ export function getContextLimits(model: string, explicitMax?: number): ContextLi
 
   const m = model.toLowerCase();
 
-  // GPT-6 family (Astra/Sol/Luna) and GPT-5.6 (Sol/Terra/Luna): OpenAI retired
-  // the "mini"/"nano" size suffix for a Sol/Terra/Luna capability-tier naming
-  // scheme starting with GPT-5.6, but every tier in both generations ships the
-  // same 1,050,000-token window and 128k max output. Matched on the version
-  // marker rather than the bare tier name — "solar", "terra", etc. appear in
-  // unrelated vendor model names (e.g. an OpenRouter "solar-pro" slug), and
-  // every real GPT-6/5.6 model ID always carries the version prefix anyway.
-  if (m.includes("gpt-6") || m.includes("gpt-5.6")) {
+  // OpenAI documents a 1,050,000-token context for GPT-6 Astra, Sol, Luna,
+  // GPT-6.1 Sol, and GPT-5.6. Match published GPT-6 IDs (including routed
+  // OpenRouter IDs), not an unverified future model with a "gpt-6" prefix.
+  // https://developers.openai.com/api/docs/models
+  if (/(?:^|\/)gpt-6-(?:astra|sol|luna)$/.test(m)
+    || /(?:^|\/)gpt-6\.1-sol$/.test(m)
+    || m.includes("gpt-5.6")) {
     return { maxTokens: 1_050_000, warningThreshold: 840_000 };
   }
   // GPT-5.4-mini: 400k context. Older size-suffixed naming predates the
