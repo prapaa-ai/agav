@@ -819,7 +819,9 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   // somewhere other than where the user aimed.
   const cols = stdout?.columns || 80;
   const lockPrefix = agentLock ? `${agentLock} › ` : "";
-  const prefixWidth = agentLock ? stringWidth(lockPrefix) : DEFAULT_PREFIX_WIDTH;
+  const shellMode = text.trimStart().startsWith("!");
+  const shellPrefix = "Shell › ";
+  const prefixWidth = shellMode ? stringWidth(shellPrefix) : agentLock ? stringWidth(lockPrefix) : DEFAULT_PREFIX_WIDTH;
   const usable = Math.max(1, cols - prefixWidth);
 
   interface WrappedLine { text: string; offset: number; isFirst: boolean }
@@ -973,7 +975,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         const cursorInLine = cursorPos >= lineStart && (isLastLine ? cursorPos <= lineEnd : cursorPos < lineEnd);
 
         const renderPrefix = (isFirst: boolean) => {
-          if (!isFirst) return <Text dimColor>{"  "}</Text>;
+          if (!isFirst) return <Text dimColor>{" ".repeat(prefixWidth)}</Text>;
+          if (shellMode) return <Text bold color="yellow">{shellPrefix}</Text>;
           if (agentLock) return <Text bold color="magenta">{lockPrefix}</Text>;
           return <Text bold color="green">{"❯ "}</Text>;
         };
