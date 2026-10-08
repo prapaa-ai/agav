@@ -446,6 +446,7 @@ export function hasStartupFinished(): boolean {
 export async function main() {
   tempOutputManager.pruneStale();
   const flags = parseArgs(process.argv.slice(2));
+  const startupCwd = process.cwd();
 
   let exitCode = 0;
   if (typeof flags.cwd === "string") {
@@ -584,7 +585,7 @@ export async function main() {
   // Auto-update check (silent on failure, skipped in CI/pipe mode)
   try {
     const { checkAndUpdate } = await import("./utils/auto-update.js");
-    await checkAndUpdate();
+    await checkAndUpdate(startupCwd);
   } catch {
     // Never block startup on update failures
   }
