@@ -113,6 +113,7 @@ export async function executeNativeAgent(
   }
 
   let finalText = "";
+  let completedPartialText = "";
   let streamingText = "";
   let loopError: Error | null = null;
 
@@ -170,6 +171,8 @@ export async function executeNativeAgent(
       } else if (event.type === "assistant_message_complete") {
         // Completed messages replace narration from earlier tool iterations.
         finalText = event.text;
+        // Empty tool-only messages must not erase recoverable completed work.
+        if (event.text) completedPartialText = event.text;
         streamingText = "";
       } else if (event.type === "error") {
         loopError = event.error;
@@ -188,7 +191,7 @@ export async function executeNativeAgent(
     // terminate progress without being overwritten by a success event.
     if (!loopError) await deps.onProgressUpdate?.(callId, { type: "error", error });
     loopError = error;
-    const partialOutput = [finalText, streamingText].filter(Boolean).join("\n\n");
+    const partialOutput = [completedPartialText, streamingText].filter(Boolean).join("\n\n");
     if (partialOutput) {
       throw new Error(
         `Agent work incomplete: ${error.message}\n\nPartial output (not a final answer):\n${partialOutput}`,

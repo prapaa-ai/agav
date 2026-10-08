@@ -174,6 +174,102 @@ describe("named-agent final output", () => {
     expect(new Set(onProgressUpdate.mock.calls.map((call) => call[0])).size).toBe(2);
   });
 
+  it.each(["exhaustion", "failure", "cancellation", "final", "empty final"] as const)(
+    "handles real-loop %s after a finding and an empty tool-only completion", async (outcome) => {
+      const actual = await vi.importActual<typeof import("../agent/loop.js")>("../agent/loop.js");
+      vi.mocked(runAgentLoop).mockImplementation(actual.runAgentLoop);
+      const controller = new AbortController();
+      const tool = {
+        schema: { name: "inspect", description: "Inspect", inputSchema: { type: "object", properties: {} } },
+        execute: vi.fn(async () => {
+          if (outcome === "cancellation" && tool.execute.mock.calls.length === 2) controller.abort();
+          return { output: "data", isError: false };
+        }),
+      };
+      const streams: StreamEvent[][] = [
+        [
+          { type: "text_delta", text: "Useful finding" },
+          { type: "tool_call_start", toolName: "inspect", toolCallId: "one" },
+          { type: "tool_call_delta", toolCallId: "one", argsJson: "{}" },
+        ],
+        [
+          { type: "tool_call_start", toolName: "inspect", toolCallId: "two" },
+          { type: "tool_call_delta", toolCallId: "two", argsJson: "{}" },
+        ],
+        outcome === "failure" ? [{ type: "error", error: new Error("provider failed") }]
+          : outcome === "empty final" ? [] : [{ type: "text_delta", text: "Final answer" }],
+      ];
+      const realProvider: LLMProvider = {
+        name: "mock", stream: vi.fn(() => (async function* () {
+          for (const event of streams.shift() ?? []) yield event;
+        })()),
+      };
+      const onProgressUpdate = vi.fn();
+      const total = outcome === "exhaustion" ? 2 : 3;
+      const budget = { remaining: total, total };
+      const execution = executeNativeAgent({ ...agent, tools: [tool] }, "task", {
+        provider: realProvider, config, permissionMode: "auto-accept", iterationsBudget: budget,
+        signal: controller.signal, onProgressUpdate,
+      });
+      if (outcome === "final" || outcome === "empty final") {
+        await expect(execution).resolves.toBe(outcome === "final" ? "Final answer" : "Agent completed with no output.");
+        expect(budget.remaining).toBe(0); // A real final answer on the last request succeeds.
+        expect(onProgressUpdate).toHaveBeenLastCalledWith(expect.any(String), { type: "turn_complete" });
+      } else {
+        const reason = outcome === "exhaustion" ? "Agent reached maximum iterations"
+          : outcome === "failure" ? "provider failed" : "Aborted";
+        await expect(execution).rejects.toThrow(
+          `Agent work incomplete: ${reason}\n\nPartial output (not a final answer):\nUseful finding`,
+        );
+        const events = onProgressUpdate.mock.calls.map(call => call[1]);
+        expect(events.at(-1)).toMatchObject({ type: "error", error: new Error(reason) });
+        expect(events.some(event => event.type === "turn_complete")).toBe(false);
+        if (outcome === "exhaustion") expect(events.at(-1)).toHaveProperty("reason", "iterations_exhausted");
+      }
+      expect(realProvider.stream).toHaveBeenCalledTimes(outcome === "exhaustion" || outcome === "cancellation" ? 2 : 3);
+      expect(tool.execute).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(["tool", "targeted"] as const)("marks real exhaustion as an error for the %s caller", async (caller) => {
+    const actual = await vi.importActual<typeof import("../agent/loop.js")>("../agent/loop.js");
+    vi.mocked(runAgentLoop).mockImplementation(actual.runAgentLoop);
+    const tool = {
+      schema: { name: "inspect", description: "Inspect", inputSchema: { type: "object", properties: {} } },
+      execute: vi.fn(async () => ({ output: "data", isError: false })),
+    };
+    const realProvider: LLMProvider = {
+      name: "mock", stream: vi.fn(() => (async function* (): AsyncGenerator<StreamEvent> {
+        yield { type: "text_delta", text: "Useful finding" };
+        yield { type: "tool_call_start", toolName: "inspect", toolCallId: "one" };
+        yield { type: "tool_call_delta", toolCallId: "one", argsJson: "{}" };
+      })()),
+    };
+    const onProgressUpdate = vi.fn();
+    const realDeps = { provider: realProvider, config: { ...config, maxIterations: 1 }, permissionMode: "auto-accept" as const, onProgressUpdate };
+    const realAgent = { ...agent, tools: [tool] };
+    const result = caller === "tool" ? await agentToTool(realAgent, realDeps).execute({ task: "task" })
+      : await executeTargetedAgent(realAgent, "task", realDeps);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Agent work incomplete: Agent reached maximum iterations");
+    expect(result.output).toContain("Partial output (not a final answer):\nUseful finding");
+    expect(onProgressUpdate.mock.calls.some(call => call[1].type === "turn_complete")).toBe(false);
+    expect(realProvider.stream).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports real exhaustion before any output without successful progress", async () => {
+    const actual = await vi.importActual<typeof import("../agent/loop.js")>("../agent/loop.js");
+    vi.mocked(runAgentLoop).mockImplementation(actual.runAgentLoop);
+    const onProgressUpdate = vi.fn();
+    await expect(executeNativeAgent(agent, "task", {
+      ...deps, iterationsBudget: { remaining: 0, total: 1 }, onProgressUpdate,
+    })).rejects.toThrow("Agent reached maximum iterations");
+    expect(provider.stream).not.toHaveBeenCalled();
+    expect(onProgressUpdate.mock.calls.map(call => call[1])).toEqual([
+      { type: "error", reason: "iterations_exhausted", error: new Error("Agent reached maximum iterations") },
+    ]);
+  });
+
   it("returns final-only output with the real loop across narration and tool-only turns, without extra model calls", async () => {
     const actual = await vi.importActual<typeof import("../agent/loop.js")>("../agent/loop.js");
     vi.mocked(runAgentLoop).mockImplementation(actual.runAgentLoop);
