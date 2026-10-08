@@ -10,7 +10,11 @@ import { slugify } from "../skills/skill-utils.js";
 /**
  * List all skills grouped by origin, marking disabled ones.
  */
-async function listSkills(): Promise<number> {
+async function listSkills(args: string[] = []): Promise<number> {
+  if (args.length > 0) {
+    console.error(`\nError: Unexpected argument '${args[0]}'\n`);
+    return 1;
+  }
   const skills = await loadAllSkills();
 
   if (skills.length === 0) {
@@ -50,7 +54,7 @@ async function installSkillCommand(args: string[]): Promise<number> {
     return 1;
   }
 
-  const source = args[0]!;
+  const source = args.join(" ");
   console.log(`\nInstalling skill from ${source}...\n`);
 
   const result = source.startsWith("http")
@@ -85,7 +89,7 @@ async function removeSkillCommand(args: string[]): Promise<number> {
     return 1;
   }
 
-  const name = args[0]!;
+  const name = args.join(" ");
   // Bundled skills can't be removed (they live in the binary); project skills
   // belong to the repo. Direct the user to `disable` rather than reporting a
   // false success or a bare "not found".
@@ -114,7 +118,11 @@ async function removeSkillCommand(args: string[]): Promise<number> {
 /**
  * Remove all user-installed (global) skills.
  */
-async function clearSkillsCommand(): Promise<number> {
+async function clearSkillsCommand(args: string[]): Promise<number> {
+  if (args.length > 0) {
+    console.error(`\nError: Unexpected argument '${args[0]}'\n`);
+    return 1;
+  }
   const removed = await clearSkills();
   if (removed.length === 0) {
     console.log("\nNo user-installed skills to remove.\n");
@@ -137,7 +145,7 @@ async function setEnabledCommand(args: string[], enabled: boolean): Promise<numb
     return 1;
   }
 
-  const name = args[0]!;
+  const name = args.join(" ");
   const slug = slugify(name);
   const skill = (await loadAllSkills()).find((s) => s.slug === slug || s.name === name);
   if (!skill) {
@@ -159,8 +167,16 @@ async function setEnabledCommand(args: string[], enabled: boolean): Promise<numb
  * Main entry point for skill CLI commands.
  */
 export async function runSkillsCommand(command: string | undefined, args: string[]): Promise<number> {
+  // Skills commands do not accept any flags. Reject them early.
+  for (const arg of args) {
+    if (arg.startsWith("-")) {
+      console.error(`\nError: Unknown option '${arg}'\n`);
+      return 1;
+    }
+  }
+
   if (!command || command === "list") {
-    return await listSkills();
+    return await listSkills(args);
   }
 
   switch (command) {
@@ -172,7 +188,7 @@ export async function runSkillsCommand(command: string | undefined, args: string
     case "uninstall":
       return await removeSkillCommand(args);
     case "clear":
-      return await clearSkillsCommand();
+      return await clearSkillsCommand(args);
     case "enable":
       return await setEnabledCommand(args, true);
     case "disable":

@@ -94,7 +94,7 @@ jobs:
         with:
           version: 9
       - run: pnpm install --frozen-lockfile
-      - run: npx tsx source/cli.tsx -- --version
+      - run: npx tsx source/cli.tsx --version
       - name: Check clean worktree
         run: |
           if [ -n "$(git status --porcelain)" ]; then
