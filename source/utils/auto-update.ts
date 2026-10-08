@@ -512,27 +512,62 @@ export async function getChangelog(): Promise<string> {
   }
   // Keep the full Markdown here; extractBullets is only for bounded previews.
   // Block tokens distinguish real section boundaries from fenced examples.
-  const { lexer } = await import("marked");
+  const { Lexer, Tokenizer } = await import("marked");
   const body = state.releaseNotes.replace(/\r\n?/g, "\n");
+  const offsets = new WeakMap<import("marked").Token, number>();
+  class SourceTokenizer extends Tokenizer {
+    // The block lexer passes the remaining source, after consuming *all* block
+    // syntax (including definitions that never appear in its token output).
+    // Only top-level heading/HTML positions are used; nested tokens stay nested.
+    override heading(src: string) {
+      const token = super.heading(src);
+      if (token) offsets.set(token, body.length - src.length);
+      return token;
+    }
+    override lheading(src: string) {
+      const token = super.lheading(src);
+      if (token) offsets.set(token, body.length - src.length);
+      return token;
+    }
+    override html(src: string) {
+      const token = super.html(src);
+      if (token) offsets.set(token, body.length - src.length);
+      return token;
+    }
+  }
+  const tokens = new Lexer({ gfm: true, tokenizer: new SourceTokenizer() }).lex(body);
   let inComment = false;
   const outsideComments = (text: string): string => {
     let visible = "";
     let position = 0;
     while (position < text.length) {
+      // Use marked's tag grammar: quoted attributes (including nested-looking
+      // tags) are one HTML unit, not document comment delimiters. Raw HTML
+      // otherwise stays raw: backslashes/backticks do not mask real comments.
+      if (text[position] === "<" && !text.startsWith("<!--", position)) {
+        const tag = Lexer.rules.inline.normal.tag.exec(text.slice(position));
+        if (tag) {
+          if (!inComment) visible += tag[0];
+          position += tag[0].length;
+          continue;
+        }
+      }
       const marker = inComment ? "-->" : "<!--";
-      const next = text.indexOf(marker, position);
-      if (!inComment) visible += text.slice(position, next < 0 ? text.length : next);
-      if (next < 0) break;
-      visible += " ";
-      position = next + marker.length;
-      inComment = !inComment;
+      if (text.startsWith(marker, position)) {
+        visible += " ";
+        position += marker.length;
+        inComment = !inComment;
+      } else {
+        if (!inComment) visible += text[position];
+        position++;
+      }
     }
     return visible;
   };
   const scanToken = (token: import("marked").Token): string => {
     // Only scan content in its lexer context: HTML is raw, while Markdown
     // containers already have parsed children (not their link titles/URLs).
-    if (token.type === "code" || token.type === "codespan" || token.type === "escape") return " ";
+    if (token.type === "code" || token.type === "codespan" || token.type === "escape" || token.type === "image") return " ";
     if (token.type === "list") {
       const list = token as import("marked").Tokens.List;
       return list.items.map((item) => item.tokens.map(scanToken).join("")).join("");
@@ -554,15 +589,9 @@ export async function getChangelog(): Promise<string> {
   };
   let start = 0;
   let end = body.length;
-  let cursor = 0;
   let foundChanges = false;
-  for (const token of lexer(body)) {
-    const offset = body.indexOf(token.raw, cursor);
-    if (offset < 0) continue;
-    // Re-lex gaps as blocks: marked omits reference definitions, whose
-    // destinations/titles are not inline Markdown. Real HTML gaps still scan.
-    for (const gapToken of lexer(body.slice(cursor, offset))) scanToken(gapToken);
-    cursor = offset + token.raw.length;
+  for (const token of tokens) {
+    const offset = offsets.get(token) ?? 0;
     // Fenced and indented code cannot open or close an HTML comment.
     if (token.type === "code") continue;
     const commented = inComment;

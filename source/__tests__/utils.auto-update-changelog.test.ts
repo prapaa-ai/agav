@@ -278,6 +278,77 @@ describe("getChangelog full cached release notes", () => {
     expect(await getChangelog()).toBe(header + notes);
   });
 
+  it.each([
+    '[setup]: https://example.com/docs "\n## Installation\n"',
+    '[setup]: https://example.com/docs "\n## Installation\n## Installation\n"',
+    '[setup]: https://example.com/docs "\nInstallation\n------------\n"',
+    '[setup]: https://example.com/docs "\n## Changes\n## Installation\n"\n[other]: https://example.com',
+  ])("uses consumed source positions past multiline reference titles (%j)", async (definition) => {
+    const notes = `## Changes\n\n- Fixed [installer][setup].\n\n${definition}`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    "Installation\n------------",
+    "## Installation\n",
+    '<details>\n<summary>Manual install</summary>\nHidden\n</details>',
+  ])("keeps exact source slicing with repeated boundary syntax in reference metadata (%j)", async (boundary) => {
+    const notes = `## Changes\n\n- Fixed [installer][setup].\n\n[setup]: https://example.com/docs "\n${boundary}\n"\n\n> ## Installation\n> Quoted example\n\n- Last fix`;
+    await seed(`${notes}\n\n${boundary}\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it("tracks normalized source offsets with CRLF, tabs and nested blocks", async () => {
+    const notes = '## Changes\n\n- Example:\n\n  ```md\n  ## Installation\n  ```\n\n[setup]: https://example.com "\n## Installation\n"\n\n\t## Installation\n\n- Last fix';
+    await seed(`${notes}\n\n## Installation\nHidden`.replace(/\n/g, "\r\n"));
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it("does not start at duplicate Changes text inside omitted reference metadata", async () => {
+    const definition = '[setup]: https://example.com "\n## Changes\n"';
+    const notes = "## Changes\n\n- Fixed [installer][setup].";
+    await seed(`Introduction\n\n${definition}\n\n${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '<span title="<!--">Comment marker</span>',
+    "<span title='<!--'>Comment marker</span>",
+    '<details title="<!--">Comment marker</details>',
+    '<span title="<span title=\'<!--\'>">Nested attribute</span>',
+    '<span title="\\<!-- `<!--`">Raw attribute</span>',
+    '**<span title="<!--">Nested span</span>**',
+    '[<span title="<!--">Linked span</span>](https://example.com)',
+    '![HTML comment marker <!--](https://example.com/comment.png)',
+    '![HTML comment marker <!--][image]\n\n[image]: https://example.com/comment.png',
+  ])("does not open document comments in HTML attributes or image alt text (%j)", async (example) => {
+    const notes = `## Changes\n\n${example}\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '![Closing marker -->](https://example.com/comment.png)',
+    '![Closing marker -->][image]\n\n[image]: https://example.com/comment.png',
+    '**![Closing marker -->](https://example.com/comment.png)**',
+    '<span title="-->">Closing attribute</span>',
+  ])("does not close cross-token comments with protected delimiters (%j)", async (example) => {
+    const notes = `## Changes\n\n<details>\n<!--\n\n${example}\n\n## Installation\nStill commented\n\n<div>--></div>\n</details>\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '<span title="<!--">Marker</span><!-- real comment',
+    '**<span title="<!--">Marker</span><!-- real comment**',
+    '![Marker <!--](https://example.com/image) <!-- real comment',
+  ])("still recognizes document comments after protected delimiters (%j)", async (opening) => {
+    const notes = `## Changes\n\n${opening}\n\n## Installation\nStill commented\n\n<div>--></div>\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
   it("preserves cache, version header and command delegation", async () => {
     await seed("## Changes\n\n- Cached notes", undefined);
     // Omit updatedFrom explicitly (the seed helper's default is the old version).
