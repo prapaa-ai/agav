@@ -20,7 +20,8 @@ import { findFilesTool } from "../tools/find-files.js";
 const excludedDirectories = ["node_modules", ".git", "build", "dist", ".next", ".venv", "__pycache__", "coverage"];
 const originalDirectory = process.cwd();
 let directory: string;
-let nativeAvailable = process.platform !== "win32";
+const hostPlatform = process.platform;
+let nativeAvailable = hostPlatform !== "win32";
 if (nativeAvailable) {
   try { execFileSync("find", [".", "-prune"], { stdio: "pipe" }); } catch { nativeAvailable = false; }
 }
@@ -93,7 +94,10 @@ for (const backend of ["native", "fallback"] as const) {
       await expectFiles(join(directory, excluded, "inner", "build"), [join(directory, excluded, "inner", "build", "skipped.ts")]);
     });
 
-    it.each(["space root", "brackets[ab]", "star*", "question?", "back\\slash", "unicode-雪-é", "all [] * ? \\ 雪"])(
+    // Backend mocks do not change the host filesystem's filename restrictions.
+    it.each(["space root", "brackets[ab]", "star*", "question?", "back\\slash", "unicode-雪-é", "all [] * ? \\ 雪"].filter(
+      (parent) => hostPlatform !== "win32" || !/[<>:"/\\|?*]/.test(parent),
+    ))(
       "handles literal root metacharacters and unicode: %s", async (parent) => {
         const root = join(directory, parent, "build");
         const target = await file(`${parent}/build/visible.ts`);
