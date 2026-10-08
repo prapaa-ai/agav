@@ -171,7 +171,7 @@ export const lspTool: ToolDefinition = {
             textDocument: { uri },
             position,
           });
-          return { output: JSON.stringify(result, null, 2), isError: false };
+          return { output: JSON.stringify(result), isError: false };
 
         case "references":
           result = await sendRequest(server, "textDocument/references", {
@@ -179,7 +179,7 @@ export const lspTool: ToolDefinition = {
             position,
             context: { includeDeclaration: true },
           });
-          return { output: JSON.stringify(result, null, 2), isError: false };
+          return { output: JSON.stringify(result), isError: false };
 
         case "hover":
           result = await sendRequest(server, "textDocument/hover", {
