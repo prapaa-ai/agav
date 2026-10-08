@@ -20,6 +20,8 @@ interface Props {
   onChange: (value: string) => void;
   onSubmit: (value: string) => void;
   onPaste?: (text: string, insertLabel: (label: string) => void) => void;
+  /** Whether App is tracking a compact paste eligible for immediate-repeat expansion. */
+  canExpandPaste?: boolean;
   onRemoveAttachment?: () => void;
   onClearAttachments?: () => void;
   onRegisterInsert?: (fn: (label: string) => void) => void;
@@ -213,6 +215,50 @@ function graphemeAt(text: string, pos: number): { grapheme: string; length: numb
   return { grapheme: " ", length: 1 };
 }
 
+interface WrappedLine { text: string; offset: number; isFirst: boolean }
+
+/** Shared visual rows for rendering and live (possibly batched) navigation. */
+function wrapPrompt(text: string, usable: number): WrappedLine[] {
+  const wrappedLines: WrappedLine[] = [];
+  const rawLines = text.split("\n");
+  let globalOffset = 0;
+  for (let li = 0; li < rawLines.length; li++) {
+    const raw = rawLines[li]!;
+    let chunkStart = 0;
+    let chunkWidth = 0;
+    let hasChunk = false;
+    for (const { segment, index } of segmenter.segment(raw)) {
+      const segmentWidth = stringWidth(segment);
+      if (hasChunk && chunkWidth + segmentWidth > usable) {
+        wrappedLines.push({ text: raw.slice(chunkStart, index), offset: globalOffset + chunkStart, isFirst: li === 0 && chunkStart === 0 });
+        chunkStart = index;
+        chunkWidth = 0;
+        hasChunk = false;
+      }
+      chunkWidth += segmentWidth;
+      hasChunk = true;
+    }
+    if (hasChunk || raw === "") {
+      wrappedLines.push({ text: raw.slice(chunkStart), offset: globalOffset + chunkStart, isFirst: li === 0 && chunkStart === 0 });
+    }
+    const last = wrappedLines.at(-1)!;
+    if (stringWidth(last.text) >= usable) {
+      wrappedLines.push({ text: "", offset: globalOffset + raw.length, isFirst: false });
+    }
+    globalOffset += raw.length + 1;
+  }
+  if (wrappedLines.length === 0) wrappedLines.push({ text: "", offset: 0, isFirst: true });
+  return wrappedLines;
+}
+
+/** Soft-wrap boundaries belong to the next row; newline boundaries do not. */
+function caretRow(lines: WrappedLine[], cursor: number): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (cursor >= lines[i]!.offset) return i;
+  }
+  return 0;
+}
+
 /** Checks whether a resolved path stays within the current project root. */
 function isWithinRoot(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -220,7 +266,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
 }
 
 /** Renders the interactive prompt with history, completion, and paste handling. */
-export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, onRegisterExpand, onOpenAttachment, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages, agentLock, agentNames = [] }: Props) {
+export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, canExpandPaste = false, onRemoveAttachment, onClearAttachments, onRegisterInsert, onRegisterExpand, onOpenAttachment, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages, agentLock, agentNames = [] }: Props) {
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
   const [, bumpCursor] = useState(0);
@@ -241,6 +287,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   // coming back is an echo, not the source.
   const liveRef = useRef({ value, cursor: 0 });
   const lastEmittedRef = useRef(value);
+  const preferredColumnRef = useRef<number | null>(null);
+  const viewportStartRef = useRef(0);
 
   // The parent also rewrites the buffer on its own — clearing it after a
   // submit, after a `!` shell command, when a wizard exits. A `value` we did
@@ -250,6 +298,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   // line claims an out-of-range offset) and would make backspace splice out
   // characters that are not there.
   if (value !== lastEmittedRef.current) {
+    preferredColumnRef.current = null;
     liveRef.current = { value, cursor: value.length };
     lastEmittedRef.current = value;
   }
@@ -259,6 +308,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
   /** Replaces the buffer and places the caret, live and for the parent both. */
   const applyEdit = (nextValue: string, nextCursor: number) => {
+    preferredColumnRef.current = null;
     liveRef.current = { value: nextValue, cursor: nextCursor };
     lastEmittedRef.current = nextValue;
     emitValue(nextValue);
@@ -267,6 +317,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
   /** Moves the caret without touching the text. */
   const moveCaret = (nextCursor: number) => {
+    preferredColumnRef.current = null;
     liveRef.current.cursor = nextCursor;
     bumpCursor((n) => n + 1);
   };
@@ -665,6 +716,37 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         }
       }
 
+      // Plain arrows navigate visual rows before history, but after completion.
+      // Modified arrows remain global transcript-scroll shortcuts.
+      if ((key.upArrow || key.downArrow)
+        && (!match.action || match.action === "historyUp" || match.action === "historyDown")
+        && historyIndexRef.current < 0
+        && !key.ctrl && !key.meta && !key.super && !key.shift && !suppressHistory) {
+        const lines = wrapPrompt(value, usable);
+        if (lines.length > 1) {
+          const row = caretRow(lines, cursorPos);
+          const column = preferredColumnRef.current ?? stringWidth(lines[row]!.text.slice(0, cursorPos - lines[row]!.offset));
+          const target = lines[Math.max(0, Math.min(lines.length - 1, row + (key.upArrow ? -1 : 1)))]!;
+          let offset = 0;
+          let width = 0;
+          for (const { segment, index } of segmenter.segment(target.text)) {
+            const nextWidth = width + stringWidth(segment);
+            if (nextWidth > column) break;
+            width = nextWidth;
+            offset = index + segment.length;
+          }
+          // A soft-wrapped row's end is owned by the following row.
+          const nextRow = lines[lines.indexOf(target) + 1];
+          if (nextRow?.offset === target.offset + offset && offset > 0) {
+            offset = prevGraphemeOffset(target.text, offset);
+          }
+          clearSelection();
+          moveCaret(snapOutOfAttachment(value, target.offset + offset));
+          preferredColumnRef.current = column;
+          return;
+        }
+      }
+
       // Up arrow — message history (suppressed during agent runs to prevent
       // mouse-wheel-as-arrow-key from triggering costly re-renders).
       if (match.action === "historyUp" && !value.includes("\n") && !suppressHistory) {
@@ -822,35 +904,19 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const prefixWidth = agentLock ? stringWidth(lockPrefix) : DEFAULT_PREFIX_WIDTH;
   const usable = Math.max(1, cols - prefixWidth);
 
-  interface WrappedLine { text: string; offset: number; isFirst: boolean }
-  const wrappedLines: WrappedLine[] = [];
-  const rawLines = text.split("\n");
-  let globalOffset = 0;
-  for (let li = 0; li < rawLines.length; li++) {
-    const raw = rawLines[li]!;
-    let chunkStart = 0;
-    let chunkWidth = 0;
-    let hasChunk = false;
-    for (const { segment, index } of segmenter.segment(raw)) {
-      const segmentWidth = stringWidth(segment);
-      if (hasChunk && chunkWidth + segmentWidth > usable) {
-        wrappedLines.push({ text: raw.slice(chunkStart, index), offset: globalOffset + chunkStart, isFirst: li === 0 && chunkStart === 0 });
-        chunkStart = index;
-        chunkWidth = 0;
-        hasChunk = false;
-      }
-      chunkWidth += segmentWidth;
-      hasChunk = true;
-    }
-    if (hasChunk || raw === "") {
-      wrappedLines.push({ text: raw.slice(chunkStart), offset: globalOffset + chunkStart, isFirst: li === 0 && chunkStart === 0 });
-    }
-    globalOffset += raw.length + 1;
-  }
-  if (wrappedLines.length === 0) wrappedLines.push({ text: "", offset: 0, isFirst: true });
-  wrappedLinesRef.current = wrappedLines;
-
-  const isMultiline = rawLines.length > 1 || wrappedLines.length > 1;
+  const wrappedLines = wrapPrompt(text, usable);
+  const currentRow = caretRow(wrappedLines, cursorPos);
+  const maxRows = Math.max(1, Math.min(8, Math.floor((stdout?.rows || 24) / 3)));
+  const viewStart = Math.max(0, Math.min(
+    viewportStartRef.current,
+    currentRow,
+    wrappedLines.length - maxRows,
+  ));
+  const startRow = Math.max(viewStart, currentRow - maxRows + 1);
+  viewportStartRef.current = startRow;
+  const visibleLines = wrappedLines.slice(startRow, startRow + maxRows);
+  wrappedLinesRef.current = visibleLines;
+  const isMultiline = wrappedLines.length > 1;
 
   // ---------------------------------------------------------------------------
   // Mouse handlers for caret placement and drag-to-select.
@@ -966,11 +1032,10 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         onMouseMove={handleContainerMouseMove}
         onMouseUp={handleContainerMouseUp}
       >
-      {wrappedLines.map((wl, i) => {
+      {visibleLines.map((wl, i) => {
         const lineStart = wl.offset;
         const lineEnd = lineStart + wl.text.length;
-        const isLastLine = i === wrappedLines.length - 1;
-        const cursorInLine = cursorPos >= lineStart && (isLastLine ? cursorPos <= lineEnd : cursorPos < lineEnd);
+        const cursorInLine = startRow + i === currentRow;
 
         const renderPrefix = (isFirst: boolean) => {
           if (!isFirst) return <Text dimColor>{"  "}</Text>;
@@ -1103,9 +1168,15 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           })}
         </Box>
       )}
+      {wrappedLines.length > maxRows && (
+        <Text dimColor>  rows {startRow + 1}-{startRow + visibleLines.length} of {wrappedLines.length} · ↑↓ to navigate</Text>
+      )}
+      {canExpandPaste && (
+        <Text dimColor>  paste again to expand</Text>
+      )}
       {isMultiline && (
         <Box marginTop={1}>
-          <Text dimColor>  {formatKeybinding(keybindings, "submit")} to send · {formatUsableKeybinding(keybindings, "newline", enhancedKeyboard)} for newline</Text>
+          <Text dimColor>  ↑↓ move · {formatKeybinding(keybindings, "submit")} send · {formatUsableKeybinding(keybindings, "newline", enhancedKeyboard)} newline</Text>
         </Box>
       )}
     </Box>
