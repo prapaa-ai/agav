@@ -7,6 +7,8 @@ interface LSPServer {
   process: ChildProcess;
   nextId: number;
   pending: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>;
+  failure?: Error;
+  fail: (error: Error) => void;
 }
 
 const servers = new Map<string, LSPServer>();
@@ -42,7 +44,16 @@ function getOrStartServer(lang: string): LSPServer | null {
       cwd: process.cwd(),
     });
 
-    const server: LSPServer = { process: proc, nextId: 1, pending: new Map() };
+    const server: LSPServer = {
+      process: proc, nextId: 1, pending: new Map(),
+      fail(error) {
+        if (server.failure) return;
+        server.failure = error;
+        // A late event from this process must not evict its replacement.
+        if (servers.get(lang) === server) servers.delete(lang);
+        for (const p of server.pending.values()) p.reject(error);
+      },
+    };
 
     let buffer: Buffer = Buffer.alloc(0);
     proc.stdout!.on("data", (chunk: Buffer) => {
@@ -62,7 +73,6 @@ function getOrStartServer(lang: string): LSPServer | null {
           const msg = JSON.parse(body);
           if (msg.id != null && server.pending.has(msg.id)) {
             const p = server.pending.get(msg.id)!;
-            server.pending.delete(msg.id);
             if (msg.error) p.reject(new Error(msg.error.message));
             else p.resolve(msg.result);
           }
@@ -70,8 +80,12 @@ function getOrStartServer(lang: string): LSPServer | null {
       }
     });
 
-    proc.on("error", () => { servers.delete(lang); });
-    proc.on("exit", () => { servers.delete(lang); });
+    proc.on("error", server.fail);
+    proc.on("exit", (code, signal) => {
+      server.fail(new Error(`LSP server ${lang} exited (code=${code ?? "null"}, signal=${signal ?? "null"})`));
+    });
+    // Writable streams emit 'error' as well as reporting write callback errors.
+    proc.stdin!.on("error", server.fail);
 
     servers.set(lang, server);
 
@@ -90,18 +104,34 @@ function getOrStartServer(lang: string): LSPServer | null {
 
 /** Send a JSON-RPC request and resolve when the matching response id arrives. */
 function sendRequest(server: LSPServer, method: string, params: unknown): Promise<unknown> {
+  if (server.failure) return Promise.reject(server.failure);
+  if (!server.process.stdin?.writable) {
+    server.fail(new Error("LSP server is not running"));
+    return Promise.reject(server.failure);
+  }
   return new Promise((resolve, reject) => {
     const id = server.nextId++;
-    server.pending.set(id, { resolve, reject });
-    const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
-    const msg = `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
-    server.process.stdin!.write(msg);
-    setTimeout(() => {
-      if (server.pending.has(id)) {
-        server.pending.delete(id);
-        reject(new Error("LSP request timed out"));
-      }
-    }, 10000);
+    const cleanup = () => {
+      if (!server.pending.has(id)) return false;
+      clearTimeout(timer);
+      server.pending.delete(id);
+      return true;
+    };
+    const fail = (error: Error) => { if (cleanup()) reject(error); };
+    const timer = setTimeout(() => fail(new Error("LSP request timed out")), 10000);
+    server.pending.set(id, {
+      resolve: value => { if (cleanup()) resolve(value); },
+      reject: fail,
+    });
+    try {
+      const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+      const msg = `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+      server.process.stdin!.write(msg, error => {
+        if (error && server.pending.has(id)) server.fail(error);
+      });
+    } catch (error) {
+      server.fail(error instanceof Error ? error : new Error(String(error)));
+    }
   });
 }
 
