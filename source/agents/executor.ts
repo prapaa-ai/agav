@@ -112,6 +112,10 @@ export async function executeNativeAgent(
     }
   }
 
+  let finalText = "";
+  let streamingText = "";
+  let loopError: Error | null = null;
+
   try {
     // Wrap each tool's execute to inject credentials via context, not process.env.
     // Tools access credentials via process.env during their execute() call only.
@@ -142,9 +146,6 @@ export async function executeNativeAgent(
     const base = deps.config.systemPrompt ?? "";
     const systemPrompt = base ? `${base}\n\n${agent.systemPrompt}` : agent.systemPrompt;
 
-    let output = "";
-    let loopError: Error | null = null;
-
     const loopGenerator = runAgentLoop({
       provider: deps.provider,
       conversation,
@@ -165,23 +166,38 @@ export async function executeNativeAgent(
       await deps.onProgressUpdate?.(callId, event);
 
       if (event.type === "streaming_text") {
-        output += event.text;
+        streamingText += event.text;
       } else if (event.type === "assistant_message_complete") {
-        if (!output && event.text) {
-          output = event.text;
-        }
+        // Completed messages replace narration from earlier tool iterations.
+        finalText = event.text;
+        streamingText = "";
       } else if (event.type === "error") {
         loopError = event.error;
+        throw loopError;
       }
     }
 
-    if (loopError && !output) {
-      throw loopError;
+    if (deps.signal?.aborted) {
+      throw new Error("Aborted");
     }
 
-    return output || "Agent completed with no output.";
+    return finalText || "Agent completed with no output.";
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    // Emitted errors were already forwarded; thrown errors still need to
+    // terminate progress without being overwritten by a success event.
+    if (!loopError) await deps.onProgressUpdate?.(callId, { type: "error", error });
+    loopError = error;
+    const partialOutput = [finalText, streamingText].filter(Boolean).join("\n\n");
+    if (partialOutput) {
+      throw new Error(
+        `Agent work incomplete: ${error.message}\n\nPartial output (not a final answer):\n${partialOutput}`,
+        { cause: error },
+      );
+    }
+    throw error;
   } finally {
-    deps.onProgressUpdate?.(callId, { type: "turn_complete" });
+    if (!loopError) deps.onProgressUpdate?.(callId, { type: "turn_complete" });
 
     if (agentMCPManager) {
       await agentMCPManager.stopAll();
