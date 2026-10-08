@@ -510,18 +510,33 @@ export async function getChangelog(): Promise<string> {
   if (!state?.releaseNotes) {
     return "No changelog available. Update state not found.";
   }
-  const bullets = extractBullets(state.releaseNotes);
-  const lines: string[] = [];
-  lines.push(`Agav ${state.latestVersion}${state.updatedFrom ? ` (updated from v${state.updatedFrom})` : ""}`);
-  lines.push("");
-  if (bullets.length > 0) {
-    for (const b of bullets) {
-      lines.push(`  • ${b}`);
+  // Keep the full Markdown here; extractBullets is only for bounded previews.
+  // Block tokens distinguish real section boundaries from fenced examples.
+  const { lexer } = await import("marked");
+  const body = state.releaseNotes.replace(/\r\n?/g, "\n");
+  let start = 0;
+  let end = body.length;
+  let cursor = 0;
+  let foundChanges = false;
+  for (const token of lexer(body)) {
+    const offset = body.indexOf(token.raw, cursor);
+    if (offset < 0) continue;
+    cursor = offset + token.raw.length;
+    const installation = token.type === "heading" && /^(installation|manual install(?:ation)?)$/i.test(token.text);
+    // Older descriptions may have only a collapsible manual-install block.
+    const manualInstall = token.type === "html" && /<summary\b[^>]*>\s*manual install(?:ation)?\s*<\/summary>/i.test(token.raw);
+    if (installation || manualInstall) {
+      end = offset;
+      break;
     }
-  } else {
-    lines.push(state.releaseNotes.slice(0, 500));
+    if (!foundChanges && token.type === "heading" && /^(changes|what['’]s changed)$/i.test(token.text)) {
+      start = offset;
+      foundChanges = true;
+    }
   }
-  return lines.join("\n");
+  // Slice the source, not joined token.raw: the lexer omits link definitions.
+  const header = `Agav ${state.latestVersion}${state.updatedFrom ? ` (updated from v${state.updatedFrom})` : ""}`;
+  return `${header}\n\n${body.slice(start, end).trim()}`;
 }
 
 async function safeMove(src: string, dst: string): Promise<void> {
