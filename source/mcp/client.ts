@@ -510,8 +510,8 @@ export class MCPClient {
     return { description: result.description, messages: result.messages ?? [] };
   }
 
-  // Calls a discovered MCP tool and flattens its content blocks into a single string.
-  async callTool(toolName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
+  // Calls a discovered MCP tool, retaining its error status alongside rendered content.
+  async callTool(toolName: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<{ output: string; isError: boolean }> {
     // Strip server prefix
     const actualName = toolName.startsWith(`${this.serverName}__`)
       ? toolName.slice(this.serverName.length + 2)
@@ -521,6 +521,7 @@ export class MCPClient {
       name: actualName,
       arguments: args,
     }, signal)) as {
+      isError?: boolean;
       content?: Array<{
         type: string;
         text?: string;
@@ -530,9 +531,10 @@ export class MCPClient {
       }>;
     };
 
-    return (
-      result.content?.map((c) => this.renderContentBlock(c)).join("\n") ?? "No output"
-    );
+    return {
+      output: result.content?.map((c) => this.renderContentBlock(c)).join("\n") ?? "No output",
+      isError: result.isError === true,
+    };
   }
 
   // Renders one MCP content block as text, so no content type is silently dropped.

@@ -55,20 +55,20 @@ function getOrStartServer(lang: string): LSPServer | null {
       },
     };
 
-    let buffer = "";
+    let buffer: Buffer = Buffer.alloc(0);
     proc.stdout!.on("data", (chunk: Buffer) => {
-      buffer += chunk.toString();
+      buffer = Buffer.concat([buffer, chunk]);
       while (true) {
         const headerEnd = buffer.indexOf("\r\n\r\n");
         if (headerEnd === -1) break;
-        const header = buffer.slice(0, headerEnd);
+        const header = buffer.subarray(0, headerEnd).toString("ascii");
         const lenMatch = header.match(/Content-Length:\s*(\d+)/i);
-        if (!lenMatch) { buffer = buffer.slice(headerEnd + 4); continue; }
+        if (!lenMatch) { buffer = buffer.subarray(headerEnd + 4); continue; }
         const len = parseInt(lenMatch[1]!, 10);
         const bodyStart = headerEnd + 4;
         if (buffer.length < bodyStart + len) break;
-        const body = buffer.slice(bodyStart, bodyStart + len);
-        buffer = buffer.slice(bodyStart + len);
+        const body = buffer.subarray(bodyStart, bodyStart + len).toString("utf8");
+        buffer = buffer.subarray(bodyStart + len);
         try {
           const msg = JSON.parse(body);
           if (msg.id != null && server.pending.has(msg.id)) {
