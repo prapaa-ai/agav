@@ -582,8 +582,12 @@ export async function getChangelog(): Promise<string> {
             }
             if (name === "br" && summary) summary.text += " ";
             if (element && name === "details" && sourceOffset !== undefined) {
-              if (element[1]) details.pop();
-              else details.push(sourceOffset + position);
+              if (element[1]) {
+                // A containing details close also ends an unclosed summary;
+                // otherwise stale context would hide later document headings.
+                const closed = details.pop();
+                if (summary && summary.offset === closed) summary = undefined;
+              } else details.push(sourceOffset + position);
             }
             if (element && name === "summary") {
               if (element[1]) {
@@ -677,15 +681,18 @@ export async function getChangelog(): Promise<string> {
     }
     if (unit.type === "text" || unit.type === "escape") return unit.text;
     return "\0";
-  }).join("").trim();
+  }).join("");
   let start = 0;
   let end = body.length;
   let foundChanges = false;
   for (const token of tokens) {
     const offset = offsets.get(token) ?? 0;
-    const commented = inComment || rawTextElement !== undefined || offset < htmlUnitEnd;
+    // A heading inside a summary contributes to its label, not a document
+    // boundary. Keep scanning so the closing summary uses its captured offset.
+    const commented = inComment || rawTextElement !== undefined || offset < htmlUnitEnd || summary !== undefined;
     scanToken(token, token.type === "html" || token.type === "paragraph" ? offsets.get(token) : undefined);
-    const label = token.type === "heading" ? headingLabel(token.tokens ?? []) : "";
+    // Trim only the complete label; nested link/emphasis whitespace joins words.
+    const label = token.type === "heading" ? headingLabel(token.tokens ?? []).trim() : "";
     const installation = !commented && token.type === "heading" && /^(installation|manual install(?:ation)?)$/i.test(label);
     // Older descriptions may have only a collapsible manual-install block.
     // The closing event uses the opening block's captured source position.

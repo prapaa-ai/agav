@@ -493,6 +493,115 @@ describe("getChangelog full cached release notes", () => {
     },
   );
 
+  it.each([1, 2, 3, 4, 5, 6].flatMap((depth) =>
+    ['Manual install', '**Manual install**', '*Manual installation*', '[Manual install](https://example.com)']
+      .map((label) => `${'#'.repeat(depth)} ${label}`),
+  ))("uses the containing summary boundary for heading labels (%j)", async (heading) => {
+    const notes = '## Changes\n\n- Fixed';
+    await seed(`${notes}\n\n<details>\n<summary>\n\n${heading}\n\n</summary>\nHidden\n</details>`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each(['\n', '\r\n', '\r'].flatMap((newline) =>
+    ['', '\n', '\n\n'].flatMap((gap) => [false, true].map((nested) => [newline, gap, nested] as const)),
+  ))("keeps adjacent and nested details offsets for summary headings (%j, %j, %j)", async (newline, gap, nested) => {
+    const notes = `## Changes\n\n<details><summary>Fixes</summary>Fixed${nested ? '' : '</details>'}${gap}`;
+    await seed(`${notes}<details>\n<summary>\n\n## **Manual install**\n\n</summary>Hidden</details>${nested ? '</details>' : ''}`.replace(/\n/g, newline));
+    expect(await getChangelog()).toBe(header + notes.trim());
+  });
+
+  it.each(['', '<div>Fixed</div>', 'Fixed inline. '])(
+    "uses standalone summary offsets for heading labels after %j", async (preceding) => {
+      const notes = `## Changes\n\n${preceding}`;
+      await seed(`${notes}<summary>\n\n## [Manual install](https://example.com)\n\n</summary>Hidden`);
+      expect(await getChangelog()).toBe(header + notes.trim());
+    },
+  );
+
+  it.each([
+    '## Installation',
+    '## **Manual install**\n\nexample',
+    'Example\n\n## Manual install',
+    '## Changes',
+    "## *What's Changed*",
+    '<!--\n\n## Manual install\n\n-->Fixes',
+    '<title>\n\n## Manual install\n\n</title>Fixes',
+    '<span title="before\n\n## Manual install\n\nafter">Fixes</span>',
+    '## Manual<!-- hidden -->install',
+    '## `Manual install`',
+    '## ![Manual install](https://example.com)',
+  ])("keeps nonmatching and protected summary headings until a real boundary (%j)", async (label) => {
+    // No outer Changes heading: a summary heading must not become the start either.
+    const notes = `Legacy introduction\n\n<details>\n<summary>\n\n${label}\n\n</summary>\nFixed\n</details>\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '<details>\n<summary>Fixes\n\n- Fixed\n\n</details>',
+    '<details><summary>Outer fixes</summary><details>\n<summary>Fixes\n\n- Fixed\n\n</details></details>',
+    '<details>\n<summary>Fixes\n\n- Fixed\n\n</details><details><summary>More fixes</summary>Fixed</details>',
+  ])("ends stale summary context at its containing details close (%j)", async (example) => {
+    const notes = `## Changes\n\n${example}`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '<!-- </details> -->',
+    '<title></details></title>',
+    '<span title="</details>"></span>',
+    '<details></details>',
+  ])("does not clear an active summary at a protected or inner details close (%j)", async (example) => {
+    const notes = `Legacy introduction\n\n<details>\n<summary>Fixes${example}\n\n## Installation\n\n</summary>Fixed</details>`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '## Manual <!--\n\n## Installation\n\n-->install',
+    '## Manual <em>install</em>',
+    '## [Manual ](https://example.com)installation',
+  ])("collects summary heading text while retaining lexical contexts (%j)", async (label) => {
+    const notes = '## Changes\n\n- Fixed';
+    await seed(`${notes}\n\n<details>\n<summary>\n\n${label}\n\n</summary>Hidden</details>`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '[Manual ](https://example.com)installation',
+    'Manual[ installation](https://example.com)',
+    '**[Manual ](https://example.com)installation**',
+    '*Manual[ installation](https://example.com)*',
+    '[**Manual** ](https://example.com)installation',
+    'Manual[ *installation*](https://example.com)',
+    '***[Manual ](https://example.com)installation***',
+    '~~[Manual ](https://example.com)installation~~',
+    '[ Manual installation ](https://example.com)',
+    '[Manual](https://example.com) installation',
+  ])("preserves meaningful whitespace in nested heading labels (%j)", async (label) => {
+    const notes = '## Changes\n\n- Fixed';
+    await seed(`${notes}\n\n## ${label}\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '[Manual](https://example.com)installation',
+    '[Manual  ](https://example.com)installation',
+    '[Manual\t](https://example.com)installation',
+    'Manual  installation',
+    'Manual\tinstallation',
+    '**[Manual ](https://example.com)**installation',
+    '*[Manual ](https://example.com)*installation',
+    '[Install ](https://example.com)ation',
+    '**[Install ](https://example.com)ation**',
+    'Install[ ation](https://example.com)',
+  ])("does not delete or normalize internal heading whitespace (%j)", async (label) => {
+    const notes = `## Changes\n\n## ${label}\n\n- Fixed`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
   it.each([
     '## **Installation**',
     '## Installation <!-- release help -->',
