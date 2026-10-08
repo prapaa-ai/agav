@@ -127,17 +127,17 @@ export function parseArgs(argv: string[]) {
 
   while (i < argv.length) {
     const arg = argv[i]!;
-    if (arg === "--" && (!dashDashSeen || !(flags.agents || flags.skills))) {
-      // Keep the boundary separately from positionals for delegated handlers.
-      if (!dashDashSeen && (flags.agents || flags.skills)) {
-        flags.delegatedSeparatorIndex = flags._.length;
-      }
-      dashDashSeen = true;
+    if (dashDashSeen) {
+      flags._.push(arg);
       i++;
       continue;
     }
-    if (dashDashSeen) {
-      flags._.push(arg);
+    if (arg === "--") {
+      // Keep the boundary separately from positionals for delegated handlers.
+      if (flags.agents || flags.skills) {
+        flags.delegatedSeparatorIndex = flags._.length;
+      }
+      dashDashSeen = true;
       i++;
       continue;
     }

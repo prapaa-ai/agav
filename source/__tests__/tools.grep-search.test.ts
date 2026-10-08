@@ -46,6 +46,20 @@ describe("grep_search native output", () => {
     vi.mocked(platform).mockReturnValue("linux");
   });
 
+  it.each(["file", "directory", "excluded root"])("separates option-like patterns from options for an explicit %s", async (kind) => {
+    const target = await file(kind === "excluded root" ? "build/visible.ts" : "src/visible.ts", "--help\n");
+    const searchPath = kind === "file" ? target : dirname(target);
+    vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      callback(null, "", "");
+    }) as typeof execFile);
+    await grepSearchTool.execute({ pattern: "--help", path: searchPath, include: "*.ts" });
+    expect(execFile).toHaveBeenCalledWith("grep", [
+      "-rn", "-H", "--color=never", "-E", "--include", "*.ts",
+      ...excludedDirectories.map((dir) => `--exclude-dir=${dir}`),
+      "-e", "--help", "--", kind === "excluded root" ? "." : searchPath,
+    ], { maxBuffer: 200_000, timeout: 15_000, cwd: kind === "excluded root" ? searchPath : undefined }, expect.any(Function));
+  });
+
   it("requests filenames even for a single explicit file", async () => {
     const target = await file("single.ts");
     vi.mocked(execFile).mockImplementationOnce(((_command: string, args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
@@ -111,6 +125,34 @@ for (const backend of ["native", "fallback"] as const) {
     afterEach(() => {
       if (backend === "fallback") expect(execFile).not.toHaveBeenCalled();
       else expect(execFile).toHaveBeenCalled();
+    });
+
+    it.each(["--help", "-n", "--directories", "--directories=skip", "-", "--help|--directories"])("searches leading-dash regex %s as content in files and directories", async (pattern) => {
+      const content = "ignore\n--help -n --directories=skip\n";
+      const visible = await file("src/visible.ts", content);
+      const generated = await file("build/visible.ts", content);
+      await file("src/notes.txt", content);
+      await file("build/notes.txt", content);
+      await file("src/dist/noise.ts", content);
+      await file("build/dist/noise.ts", content);
+      for (const path of [visible, dirname(visible), generated, dirname(generated)]) {
+        const expectedPath = path === generated || path === dirname(generated) ? generated : visible;
+        expect(await grepSearchTool.execute({ pattern, path, include: "*.ts" })).toEqual({
+          output: `${expectedPath}:2:--help -n --directories=skip`, isError: false,
+        });
+      }
+      process.chdir(dirname(visible));
+      expect(await grepSearchTool.execute({ pattern, include: "*.ts" })).toEqual({
+        output: `${join(process.cwd(), "visible.ts")}:2:--help -n --directories=skip`, isError: false,
+      });
+    });
+
+    it.each(["--help", "-n", "--directories", "--directories=skip", "-"])("returns no matches for absent leading-dash pattern %s", async (pattern) => {
+      const visible = await file("src/visible.ts", "ordinary content\n");
+      const generated = await file("build/visible.ts", "ordinary content\n");
+      for (const path of [visible, dirname(visible), generated, dirname(generated)]) {
+        expect(await grepSearchTool.execute({ pattern, path })).toEqual({ output: "No matches found.", isError: false });
+      }
     });
 
     it("skips all excluded directories recursively, including with a default root", async () => {
