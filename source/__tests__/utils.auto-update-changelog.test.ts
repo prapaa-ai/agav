@@ -86,6 +86,29 @@ describe("getChangelog full cached release notes", () => {
     expect(await getChangelog()).toBe(header + "Legacy notes");
   });
 
+  it.each([
+    "<!-- Legacy <summary>Manual install</summary> markup removed. -->",
+    "<!--\nLegacy <summary>Manual install</summary> markup removed.\n-->",
+    "<details>\n<!-- <summary>Manual install</summary> -->\nRelease details\n</details>",
+    "<!-- First comment --> <!-- <summary>Manual installation</summary> -->",
+    "<!-- Legacy <summary>Manual install</summary> markup removed.",
+  ])("preserves notes containing commented manual-install markup (%j)", async (comment) => {
+    const notes = `## Changes\n\n- First fix\n\n${comment}\n\n- Last fix`;
+    // An unclosed comment also hides the installation heading from the lexer.
+    await seed(comment.endsWith("removed.") ? notes : `${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    "<!-- Legacy markup --> <details><summary>Manual install</summary>\ncurl installer\n</details>",
+    "<details>\n<!--\n<summary>Manual install</summary>\n-->\n<summary class=\"install\">Manual installation</summary>\ncurl installer\n</details>",
+    "<summary>Manual install</summary>\n\ncurl installer",
+  ])("still excludes real manual installation after comments (%j)", async (installation) => {
+    const notes = "## Changes\n\n- First fix\n\n- Last fix";
+    await seed(`${notes}\n\n${installation}`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
   it("does not mistake fenced examples or inline mentions for section boundaries", async () => {
     const notes = "## Changes\n\nInstallation handling improved.\n\n```markdown\n## Installation\n<details><summary>Manual install</summary>\n```\n\n### Fixes\n\n- Final fix";
     await seed(`${notes}\n\n## Installation\nHidden`);

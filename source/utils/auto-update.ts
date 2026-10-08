@@ -524,7 +524,10 @@ export async function getChangelog(): Promise<string> {
     cursor = offset + token.raw.length;
     const installation = token.type === "heading" && /^(installation|manual install(?:ation)?)$/i.test(token.text);
     // Older descriptions may have only a collapsible manual-install block.
-    const manualInstall = token.type === "html" && /<summary\b[^>]*>\s*manual install(?:ation)?\s*<\/summary>/i.test(token.raw);
+    // Ignore comments only for detection; keep the original Markdown intact.
+    const manualInstall = token.type === "html" && /<summary\b[^>]*>\s*manual install(?:ation)?\s*<\/summary>/i.test(
+      token.raw.replace(/<!--[\s\S]*?(?:-->|$)/g, " "),
+    );
     if (installation || manualInstall) {
       end = offset;
       break;
