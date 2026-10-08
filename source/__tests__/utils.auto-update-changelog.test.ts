@@ -159,6 +159,101 @@ describe("getChangelog full cached release notes", () => {
     expect(await getChangelog()).toBe(header + notes);
   });
 
+  it.each(["\\<!--", "`<!--`", "``<!--``"])(
+    "scans raw HTML comment openings without Markdown masks (%j)", async (opening) => {
+      const notes = `## Changes\n\n- First fix\n\n<details>\n${opening}\n\n## Installation\n\n<div>--></div>\n</details>\n\n- Last fix`;
+      await seed(`${notes}\n\n## Installation\nHidden`);
+      expect(await getChangelog()).toBe(header + notes);
+    },
+  );
+
+  it.each(["\\-->", "`-->`", "``-->``"])(
+    "scans raw HTML comment closings without Markdown masks (%j)", async (closing) => {
+      const notes = `## Changes\n\n- First fix\n\n<details>\n<!--\n\n## Installation\n\n<div>${closing}</div>\n</details>\n\n- Last fix`;
+      await seed(`${notes}\n\n## Installation\nHidden`);
+      expect(await getChangelog()).toBe(header + notes);
+    },
+  );
+
+  it.each([
+    "**The literal `<!--` is not a comment.**",
+    "*The literal `<!--` is not a comment.*",
+    "***The literal `<!--` is not a comment.***",
+    "~~**The literal `<!--` is not a comment.**~~",
+    "**The escaped \\<!-- is not a comment.**",
+    "*[The literal `<!--` is not a comment.](https://example.com)*",
+    "[**The escaped \\<!-- is not a comment.**](https://example.com)",
+    "[A link](https://example.com/<!--)",
+    '[A link](https://example.com "<!--")',
+    "![The literal `<!--`](https://example.com/image)",
+    "| Example |\n| --- |\n| **The literal `<!--`** |",
+    "> **The literal `<!--` is not a comment.**",
+    "- **The literal `<!--` is not a comment.**",
+  ])("protects delimiters in nested Markdown contexts (%j)", async (example) => {
+    const notes = `## Changes\n\n- First fix\n\n${example}\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    '[example]: https://example.com "<!--"',
+    "[example]: https://example.com '<!--'",
+    "[example]: https://example.com (<!--)",
+    "[example]: https://example.com/<!--",
+    '[example]: <https://example.com/<!--> "title"',
+    '[example]: https://example.com\n  "<!--"',
+    '[example]: https://example.com "<!--"\n[other]: https://example.com/<!--',
+  ])("ignores delimiters in omitted block reference definitions (%j)", async (definition) => {
+    const notes = `## Changes\n\n- First fix\n\n${definition}\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it("preserves real cross-token comments surrounding reference-definition gaps", async () => {
+    const notes = '## Changes\n\n<details>\n<!--\n\n[example]: https://example.com "-->"\n\n## Installation\n\n<div>--></div>\n</details>\n\n- Last fix';
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it("does not let nested inline code or escapes close a cross-token comment", async () => {
+    const notes = "## Changes\n\n<details>\n<!--\n\n**The literal `-->` and escaped \\--> stay hidden.**\n\n## Installation\n\n<div>--></div>\n</details>\n\n- Last fix";
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    "**The literal `<!--` and `-->` stay literal.**",
+    "*[**The literal ``<!-- ` --> <!--``**](https://example.com)*",
+    "[The literal `<!--`][example]\n\n[example]: https://example.com \"<!--\"",
+    "[The escaped \\<!--][example]\n\n[example]: https://example.com/<!--",
+    "Example:\n\n    -->\n    <!--",
+    "<details>\n\\<!--\n\n## Installation\n\n<div>`-->`</div>\n</details>",
+  ])("recognizes a real manual-install boundary after protected contexts (%j)", async (example) => {
+    const notes = `## Changes\n\n${example}\n\n- Last fix`;
+    await seed(`${notes}\n\n<details>\n<summary>Manual install</summary>\nHidden\n</details>`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    "**A genuine <!-- comment --> in emphasis.**",
+    "[A genuine <!-- comment --> in a link](https://example.com)",
+    "<!-- A genuine comment after a definition -->",
+  ])("still scans genuine comments in parsed contexts (%j)", async (example) => {
+    const notes = `## Changes\n\n[example]: https://example.com \"<!--\"\n\n${example}\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
+  it.each([
+    "<details>\n[example]: https://example.com \"<!--\"",
+    "[example]: not a reference definition <!--",
+    "**A genuine unclosed <!-- comment in emphasis.**",
+  ])("does not suppress real comment openings as reference or container syntax (%j)", async (opening) => {
+    const notes = `## Changes\n\n${opening}\n\n## Installation\n\n<div>--></div>\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
   it("does not use a commented Changes heading as the start of legacy notes", async () => {
     const notes = "Legacy introduction\n\n<details>\n<!--\n\n## Changes\n\n-->\n</details>\n\n- Last fix";
     await seed(`${notes}\n\n## Installation\nHidden`);

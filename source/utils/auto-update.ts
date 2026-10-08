@@ -512,14 +512,10 @@ export async function getChangelog(): Promise<string> {
   }
   // Keep the full Markdown here; extractBullets is only for bounded previews.
   // Block tokens distinguish real section boundaries from fenced examples.
-  const { lexer, Lexer } = await import("marked");
+  const { lexer } = await import("marked");
   const body = state.releaseNotes.replace(/\r\n?/g, "\n");
   let inComment = false;
-  const outsideComments = (raw: string): string => {
-    // Inline code and escaped delimiters are examples, not comment markers.
-    const text = Lexer.lexInline(raw).map((part) =>
-      part.type === "codespan" || part.type === "escape" ? " ".repeat(part.raw.length) : part.raw,
-    ).join("");
+  const outsideComments = (text: string): string => {
     let visible = "";
     let position = 0;
     while (position < text.length) {
@@ -534,7 +530,9 @@ export async function getChangelog(): Promise<string> {
     return visible;
   };
   const scanToken = (token: import("marked").Token): string => {
-    if (token.type === "code") return "";
+    // Only scan content in its lexer context: HTML is raw, while Markdown
+    // containers already have parsed children (not their link titles/URLs).
+    if (token.type === "code" || token.type === "codespan" || token.type === "escape") return " ";
     if (token.type === "list") {
       const list = token as import("marked").Tokens.List;
       return list.items.map((item) => item.tokens.map(scanToken).join("")).join("");
@@ -542,6 +540,15 @@ export async function getChangelog(): Promise<string> {
     if (token.type === "blockquote") {
       const quote = token as import("marked").Tokens.Blockquote;
       return quote.tokens.map(scanToken).join("");
+    }
+    if (token.type === "table") {
+      const table = token as import("marked").Tokens.Table;
+      return [table.header, ...table.rows].map((row) =>
+        row.map((cell) => cell.tokens.map(scanToken).join("")).join(" "),
+      ).join("\n");
+    }
+    if ("tokens" in token && token.tokens) {
+      return token.tokens.map(scanToken).join("");
     }
     return outsideComments(token.raw);
   };
@@ -552,8 +559,9 @@ export async function getChangelog(): Promise<string> {
   for (const token of lexer(body)) {
     const offset = body.indexOf(token.raw, cursor);
     if (offset < 0) continue;
-    // Scan omitted source (such as link definitions) as well as token text.
-    outsideComments(body.slice(cursor, offset));
+    // Re-lex gaps as blocks: marked omits reference definitions, whose
+    // destinations/titles are not inline Markdown. Real HTML gaps still scan.
+    for (const gapToken of lexer(body.slice(cursor, offset))) scanToken(gapToken);
     cursor = offset + token.raw.length;
     // Fenced and indented code cannot open or close an HTML comment.
     if (token.type === "code") continue;
