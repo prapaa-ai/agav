@@ -18,6 +18,14 @@ export const contextCommand: SlashCommand = {
   description: "Show context window usage",
   usage: "Usage: /context\n\nShows a breakdown of what's consuming your context window:\nsystem prompt, tools, MCP tools, skills, and conversation messages.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
+    if (context.conversation.getContextWindow() === undefined && context.provider?.getContextWindow) {
+      try {
+        const reported = await context.provider.getContextWindow(context.config.model);
+        if (reported !== undefined && reported > 0) context.conversation.setContextWindow(reported);
+      } catch {
+        // Metadata is optional; retain the name-based estimate when lookup fails.
+      }
+    }
     const limits = getContextLimits(context.config.model, context.conversation.getContextWindow());
     const maxTokens = limits.maxTokens;
 
