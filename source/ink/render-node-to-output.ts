@@ -8,6 +8,7 @@ import squashTextNodes from "./squash-text-nodes.js";
 import renderBorder from "./render-border.js";
 import renderBackground from "./render-background.js";
 import type Output from "./output.js";
+import {getCopyLines} from "./selection.js";
 
 export type OutputTransformer = (s: string, index: number) => string;
 
@@ -173,17 +174,28 @@ const renderNodeToOutput = (
 		if (node.nodeName === "ink-text") {
 			let text = squashTextNodes(node);
 
-			if (text.length > 0) {
+			if (text.length > 0 || typeof node.attributes.copySeparator === "string") {
+				const source = text;
 				const currentWidth = widestLine(text);
 				const maxWidth = getMaxWidth(yogaNode);
+				const textWrap = node.style.textWrap ?? "wrap";
 
 				if (currentWidth > maxWidth) {
-					const textWrap = node.style.textWrap ?? "wrap";
 					text = wrapText(text, maxWidth, textWrap);
 				}
 
+				const plain = (value: string) => value.replace(/\x1b\[[0-9;]*m/g, "");
+				const copyLines = textWrap.startsWith("truncate") || node.attributes.copyExclude ? undefined
+					: getCopyLines(plain(source), text.split("\n").map(plain));
+				if (copyLines && typeof node.attributes.copySeparator === "string") {
+					copyLines[0]!.separator = node.attributes.copySeparator;
+					copyLines[0]!.explicit = true;
+				}
+				if (copyLines && typeof node.attributes.copySource === "string") {
+					for (const copy of copyLines) copy.source = node.attributes.copySource;
+				}
 				text = applyPaddingToText(node, text);
-				output.write(x, y, text, {transformers: newTransformers});
+				output.write(x, y, text, {transformers: newTransformers, copyLines});
 			}
 
 			return;

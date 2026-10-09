@@ -1,10 +1,12 @@
 import { wrapToWidth } from "./wrap-text.js";
 import type { DetectedTarget } from "./detect-targets.js";
 import type { OpenRef } from "./open-ref.js";
+import {getCopyLines} from "../ink/selection.js";
 
 /** One visual line's worth of runs, ready for `ClickableLine`. */
 export interface LineRunSpec {
   text: string;
+  copySeparator?: string;
   targetId?: string;
   color?: string;
   backgroundColor?: string;
@@ -37,8 +39,14 @@ export function wrapTextToRuns(
   style: { color?: string; underline?: boolean } = {},
   plainRunStyle: { color?: string; backgroundColor?: string; dimColor?: boolean; bold?: boolean } = {},
 ): LineRunSpec[][] {
+  const lines = wrapToWidth(text, width);
+  const copyLines = getCopyLines(text, lines);
+  const withCopyLines = (rows: LineRunSpec[][]) => rows.map((runs, i) => {
+    runs[0] = {...runs[0]!, copySeparator: copyLines[i]!.separator};
+    return runs;
+  });
   if (targets.length === 0) {
-    return wrapToWidth(text, width).map((line) => [{ text: line, ...plainRunStyle }]);
+    return withCopyLines(lines.map((line) => [{ text: line, ...plainRunStyle }]));
   }
 
   // Map each character of `text` to the target (if any) that covers it, so a
@@ -51,7 +59,6 @@ export function wrapTextToRuns(
     }
   }
 
-  const lines = wrapToWidth(text, width);
   const result: LineRunSpec[][] = [];
   let cursor = 0;
 
@@ -83,7 +90,7 @@ export function wrapTextToRuns(
     cursor = lineStart + line.length;
   }
 
-  return result;
+  return withCopyLines(result);
 }
 
 /** Convenience wrapper that encodes each `DetectedTarget` as an `OpenRef` string id. */
