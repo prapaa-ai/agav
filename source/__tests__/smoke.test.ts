@@ -96,12 +96,8 @@ describe("Tool registry", () => {
       "find_files",
       "list_directory",
       "web_search",
-      "lsp_query",
-      "read_notebook",
-      "edit_notebook",
       "fetch_url",
       "update_plan",
-      "github",
       "overview",
       "run_tests",
     ];
