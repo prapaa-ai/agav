@@ -7,6 +7,7 @@ import {
 	tokenize,
 } from "@alcalzone/ansi-tokenize";
 import {type OutputTransformer} from "./render-node-to-output.js";
+import {type CopyLine} from "./selection.js";
 
 /**
 "Virtual" output class
@@ -38,6 +39,7 @@ type Operation =
 			y: number;
 			text: string;
 			transformers: OutputTransformer[];
+			copyLines?: CopyLine[];
 	  }
 	| {
 			type: "clip";
@@ -126,25 +128,21 @@ export default class Output {
 		this.caches = options.caches ?? new OutputCaches();
 	}
 
+	readonly copyLines: (CopyLine | undefined)[] = [];
+
 	write(
 		x: number,
 		y: number,
 		text: string,
-		options: {transformers: OutputTransformer[]},
+		options: {transformers: OutputTransformer[]; copyLines?: CopyLine[]},
 	): void {
-		const {transformers} = options;
+		const {transformers, copyLines} = options;
 
-		if (!text) {
+		if (!text && !copyLines?.length) {
 			return;
 		}
 
-		this.operations.push({
-			type: "write",
-			x,
-			y,
-			text,
-			transformers,
-		});
+		this.operations.push({type: "write", x, y, text, transformers, copyLines});
 	}
 
 	clip(clip: Clip): void {
@@ -181,6 +179,8 @@ export default class Output {
 		}
 
 		const clips: Clip[] = [];
+		const ambiguousRows = new Set<number>();
+		this.copyLines.length = 0;
 
 		for (const operation of this.operations) {
 			if (operation.type === "clip") {
@@ -195,6 +195,7 @@ export default class Output {
 				const {text, transformers} = operation;
 				let {x, y} = operation;
 				let lines = text.split("\n");
+				let copyLines = operation.copyLines;
 
 				const clip = clips.at(-1);
 
@@ -210,7 +211,7 @@ export default class Output {
 					if (clipHorizontally) {
 						const width = this.caches.getWidestLine(text);
 
-						if (x + width < clip.x1! || x > clip.x2!) {
+						if ((width > 0 ? x + width <= clip.x1! : x < clip.x1!) || x >= clip.x2!) {
 							continue;
 						}
 					}
@@ -241,6 +242,7 @@ export default class Output {
 						const height = lines.length;
 						const to = y + height > clip.y2! ? clip.y2! - y : height;
 						lines = lines.slice(from, to);
+						copyLines = copyLines?.slice(from, to);
 
 						if (y < clip.y1!) {
 							y = clip.y1!;
@@ -257,6 +259,29 @@ export default class Output {
 					// pre-initialized `this.output`
 					if (!currentLine) {
 						continue;
+					}
+
+					const copy = copyLines?.[index];
+					const row = y + offsetY;
+					const left = clip?.x1 ?? 0;
+					const right = clip?.x2 ?? this.width;
+					const start = Math.max(left, operation.x + (copy?.startX ?? 0));
+					const end = Math.min(right, operation.x + (copy?.endX ?? this.caches.getStringWidth(line)));
+					// An empty source row is meaningful; a nonempty row clipped to
+					// nothing is not. Keep boundaries relative to the original write.
+					const visible = end > start || (copy && copy.endX === copy.startX &&
+						operation.x + copy.startX >= left && operation.x + copy.startX < right);
+					if (copy && visible && !ambiguousRows.has(row)) {
+						const previous = this.copyLines[row];
+						if (previous && previous.source !== (copy.source ?? operation)) {
+							// Independent columns cannot share a row-level separator.
+							ambiguousRows.add(row);
+							this.copyLines[row] = undefined;
+						} else if (previous) {
+							previous.endX = Math.max(previous.endX ?? 0, end);
+						} else {
+							this.copyLines[row] = {...copy, source: copy.source ?? operation, startX: start, endX: end};
+						}
 					}
 
 					for (const transformer of transformers) {

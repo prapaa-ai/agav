@@ -2,6 +2,7 @@ import { wrapStyled, sliceStyled } from "../components/markdown-text.js";
 import { stripAnsi } from "./wrap-text.js";
 import type { DetectedTarget } from "./detect-targets.js";
 import type { LineRunSpec } from "./wrap-runs.js";
+import {getCopyLines} from "../ink/selection.js";
 
 /**
  * Wrap an already-markdown-rendered (ANSI-styled) string to `width` columns,
@@ -40,7 +41,12 @@ export function buildClickableLines(
   plainRunStyle: { dimColor?: boolean } = {},
 ): LineRunSpec[][] {
   const wrapped = wrapStyled(styledText, width);
-  if (targets.length === 0) return wrapped.map((line) => [{ text: line, ...plainRunStyle }]);
+  const copyLines = getCopyLines(stripAnsi(styledText), wrapped.map(stripAnsi));
+  const withCopyLines = (lines: LineRunSpec[][]) => lines.map((runs, i) => {
+    runs[0] = {...runs[0]!, copySeparator: copyLines[i]!.separator};
+    return runs;
+  });
+  if (targets.length === 0) return withCopyLines(wrapped.map((line) => [{ text: line, ...plainRunStyle }]));
 
   const fullVisible = stripAnsi(styledText);
   const graphemeOffsetAt = (text: string, codeUnitOffset: number) => {
@@ -62,7 +68,7 @@ export function buildClickableLines(
     }
   }
 
-  if (occurrences.length === 0) return wrapped.map((line) => [{ text: line, ...plainRunStyle }]);
+  if (occurrences.length === 0) return withCopyLines(wrapped.map((line) => [{ text: line, ...plainRunStyle }]));
 
   occurrences.sort((a, b) => a.start - b.start);
   const merged: Occurrence[] = [];
@@ -85,7 +91,7 @@ export function buildClickableLines(
   }
 
   let cursor = 0;
-  return wrapped.map((line) => {
+  return withCopyLines(wrapped.map((line) => {
     const visibleLine = stripAnsi(line);
     // `wrapStyled` drops the separating space between words when it breaks a
     // line, so re-sync to the next occurrence of this line's visible content
@@ -112,5 +118,5 @@ export function buildClickableLines(
     }
 
     return runs.length > 0 ? runs : [{ text: line, ...plainRunStyle }];
-  });
+  }));
 }

@@ -102,11 +102,9 @@ const UserMessage = React.memo(function UserMessage({ message, columns, onOpenRe
   };
 
   // Every line is padded out to the full width below, which only paints a
-  // clean band while each one fits on a single row — `wrapToWidth` (used both
-  // directly here and inside `wrapTextToRuns`) guarantees that.
-  const runLines = onOpenRef && targets.length > 0
-    ? wrapTextToRuns(message.content, usable, targets, (t) => targetToRefId(t, encodeOpenRef), { color: getTheme().linkColor, underline: true }, { color: "white" })
-    : wrapToWidth(message.content, usable).map((line) => [{ text: line, color: "white" }]);
+  // clean band while each one fits on a single row — `wrapToWidth` (used
+  // inside `wrapTextToRuns`) guarantees that.
+  const runLines = wrapTextToRuns(message.content, usable, onOpenRef ? targets : [], (t) => targetToRefId(t, encodeOpenRef), { color: getTheme().linkColor, underline: true }, { color: "white" });
 
   return (
     <Box flexDirection="column" marginTop={1} marginBottom={1}>
@@ -126,7 +124,7 @@ const UserMessage = React.memo(function UserMessage({ message, columns, onOpenRe
           ? { text: prefix, color: "green", bold: true, backgroundColor: "#2d2d2d" }
           : { text: prefix, dimColor: true, backgroundColor: "#2d2d2d" };
         const styledRuns = runs.map((r) => ({ ...r, backgroundColor: "#2d2d2d" }));
-        const padRun = { text: " ".repeat(pad), backgroundColor: "#2d2d2d" };
+        const padRun = { text: " ".repeat(pad), backgroundColor: "#2d2d2d", copyExclude: true };
         return <ClickableLine key={i} runs={[prefixRun, ...styledRuns, padRun]} onOpen={handleOpen} />;
       })}
       <Text backgroundColor="#2d2d2d">{emptyLine}</Text>
