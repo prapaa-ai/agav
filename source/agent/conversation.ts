@@ -14,6 +14,25 @@ export class ConversationState {
   private _compacted = false;
   private _lastCompactionSummary = "";
   private _cachedTokenCount: number | undefined;
+  /**
+   * User-supplied context windows for models no catalog can report — OpenRouter
+   * stealth models are the motivating case, deliberately excluded from the
+   * public model listing. Keyed by model name and kept independent of
+   * `contextWindow`/`setModel` so switching models and back does not forget
+   * the answer and re-prompt.
+   */
+  private manualContextWindows = new Map<string, number>();
+  // Remember automatic defaults separately: suppress repeat prompts without
+  // preventing provider metadata from replacing the assumed window later.
+  private assumedContextWindows = new Set<string>();
+
+  hasAssumedContextWindow(model: string): boolean {
+    return this.assumedContextWindows.has(model);
+  }
+
+  setAssumedContextWindow(model: string): void {
+    this.assumedContextWindows.add(model);
+  }
 
   setModel(model: string): void {
     // A window resolved for the previous model says nothing about the new one,
@@ -34,6 +53,16 @@ export class ConversationState {
 
   getContextWindow(): number | undefined {
     return this.contextWindow;
+  }
+
+  /** A previously recorded manual context window for `model`, if the user supplied one. */
+  getManualContextWindow(model: string): number | undefined {
+    return this.manualContextWindows.get(model);
+  }
+
+  /** Remember a user-supplied context window for `model` so later turns do not re-prompt. */
+  setManualContextWindow(model: string, tokens: number): void {
+    if (tokens > 0) this.manualContextWindows.set(model, tokens);
   }
 
   addUserMessage(
