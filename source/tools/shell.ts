@@ -129,8 +129,8 @@ export const shellTool: ToolDefinition = {
     name: "run_command",
     description:
       "Execute a shell command and return its stdout and stderr. Has a 30 second timeout. " +
-      "Commands run inside an OS-level sandbox (macOS Seatbelt / Linux Bubblewrap) by default. " +
-      "Docker sandbox available as an override.",
+      "Uses the available OS-level sandbox by default (unsandboxed if unavailable). " +
+      "Docker sandbox available as an override. Unsandboxed overrides require user-enabled AGAV_NO_SANDBOX=1.",
     inputSchema: {
       type: "object",
       properties: {
@@ -140,7 +140,8 @@ export const shellTool: ToolDefinition = {
         },
         sandbox: {
           type: "string",
-          description: "Sandbox backend override: 'seatbelt', 'bubblewrap', 'docker', or 'none'. Default: auto-detect.",
+          enum: ["seatbelt", "bubblewrap", "docker", "none"],
+          description: "Sandbox backend override. Omit for auto-detection. 'none' requires the user to start Agav with AGAV_NO_SANDBOX=1; tool confirmation does not enable bypass.",
         },
       },
       required: ["command"],
@@ -149,9 +150,8 @@ export const shellTool: ToolDefinition = {
 
   async execute(input, context): Promise<ToolResult> {
     const command = String(input.command);
-    const forceBackend = typeof input.sandbox === "string"
-      ? input.sandbox as SandboxBackend
-      : undefined;
+    // Pass through to the shared runtime validator, including malformed values.
+    const forceBackend = input.sandbox as SandboxBackend | undefined;
 
     if (isDestructiveCommand(command)) {
       return {
@@ -173,6 +173,9 @@ export const shellTool: ToolDefinition = {
         signal: context?.signal,
       });
       error = result.error;
+      if (result.backend !== detectSandboxBackend()) {
+        capture.capture(Buffer.from(`\nShell execution backend: ${result.backend === "none" ? "none (unsandboxed)" : result.backend}\n`), "stderr");
+      }
     } catch (cause) {
       error = cause instanceof Error ? cause : new Error(String(cause));
     }

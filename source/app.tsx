@@ -728,7 +728,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           // while using the existing nonblocking, cancellable process runner.
           const result = await runInSandbox({
             command: cmd, cwd: process.cwd(), timeout: 30000, maxBuffer: 1024 * 1024,
-            forceBackend: "none", inheritEnv: true, signal: controller.signal,
+            forceBackend: "none", allowUnsandboxed: true, inheritEnv: true, signal: controller.signal,
           });
           output = result.stdout + result.stderr;
           commandError = result.error;
@@ -1285,7 +1285,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           psResponse={psResponse}
           psLoading={psLoading}
           loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
-          sandboxBackend={getSandboxName()}
+          sandboxBackend={`sandbox: ${getSandboxName()}`}
           branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
           turnStartTime={turnStartTime}
           lastTurnDurationMs={lastTurnDurationMs}
