@@ -5,6 +5,7 @@ import type { ToolContext, ToolDefinition, ToolResult } from "../tools/types.js"
 // Coordinates multiple MCP server clients and exposes them as Agav tools.
 export class MCPManager {
   private clients = new Map<string, MCPClient>();
+  private startingClients = new Map<string, MCPClient>();
   private onChange: (() => void) | null = null;
 
   // Registers a callback invoked whenever any server's tools/resources/prompts change.
@@ -14,23 +15,33 @@ export class MCPManager {
 
   // Starts or restarts a named MCP server and returns its discovered tools.
   async startServer(name: string, config: MCPServerConfig): Promise<MCPTool[]> {
-    if (this.clients.has(name)) {
+    if (this.clients.has(name) || this.startingClients.has(name)) {
       await this.stopServer(name);
     }
 
     const client = new MCPClient(name, config);
     client.onNotification(() => this.onChange?.());
+    // Shutdown must also own transports still waiting for their handshake.
+    this.startingClients.set(name, client);
     try {
       await client.start();
+      if (this.startingClients.get(name) !== client) return [];
       this.clients.set(name, client);
       return client.getTools();
     } catch (err) {
       client.stop();
       throw err;
+    } finally {
+      if (this.startingClients.get(name) === client) this.startingClients.delete(name);
     }
   }
 
   async stopServer(name: string): Promise<void> {
+    const starting = this.startingClients.get(name);
+    if (starting) {
+      this.startingClients.delete(name);
+      starting.stop();
+    }
     const client = this.clients.get(name);
     if (client) {
       client.stop();
@@ -39,6 +50,10 @@ export class MCPManager {
   }
 
   stopAll(): void {
+    for (const client of this.startingClients.values()) {
+      client.stop();
+    }
+    this.startingClients.clear();
     for (const client of this.clients.values()) {
       client.stop();
     }

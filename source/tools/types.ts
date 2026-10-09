@@ -21,6 +21,8 @@ export interface ToolResult {
 export interface ToolContext {
   env?: Record<string, string>;
   signal?: AbortSignal;
+  /** Trusted host policy; never populated from model arguments. */
+  backgroundPolicy?: import("../background-jobs/types.js").SessionPolicySnapshot;
 }
 
 export interface ToolDefinition {

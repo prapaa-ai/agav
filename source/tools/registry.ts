@@ -30,7 +30,7 @@ export class ToolRegistry {
     try {
       result = context?.signal?.aborted
         ? { output: "Tool cancelled.", isError: true }
-        : await (context?.signal || context?.env ? tool.execute(input, context) : tool.execute(input));
+        : await (context?.signal || context?.env || context?.backgroundPolicy ? tool.execute(input, context) : tool.execute(input));
     } catch (err) {
       result = {
         output: err instanceof Error ? err.message : String(err),

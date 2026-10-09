@@ -38,6 +38,7 @@ import { useClipboardImageDetector } from "./hooks/use-paste-handler.js";
 import { KeybindingResolver, GLOBAL_ACTIONS, formatKeybinding, formatKeybindings, normalizeKeyEvent, type Keybindings } from "./config/keybindings.js";
 import { getLoopStatus, stopActiveLoop } from "./commands/loop.js";
 import { loadScheduledTasks, cronMatches, markTaskRun } from "./config/scheduler.js";
+import { startScheduleTicker, stopScheduleTicker } from "./background-jobs-integration.js";
 import { getSandboxName } from "./utils/sandbox.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
 import { terminalRelativePaths } from "./utils/display-path.js";
@@ -516,6 +517,21 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     }, 30_000);
     return () => clearInterval(checker);
   }, [submit]);
+
+  // Periodic evaluation ticker for the NEW background-jobs "process
+  // schedule" feature (solution.md §11) — distinct from the LLM
+  // prompt-schedule checker above. A schedule created via `/process
+  // schedule create` or the `run_background_job` tool's `schedule-create`
+  // action is otherwise never actually evaluated/triggered. All the actual
+  // interval/evaluation logic lives in `startScheduleTicker` /
+  // `stopScheduleTicker` (background-jobs-integration.ts) so it is
+  // independently unit-testable with fake timers; this effect only starts
+  // and stops it based on the opt-in `backgroundJobsEnabled` config flag.
+  useEffect(() => {
+    if (!config.backgroundJobsEnabled) return;
+    startScheduleTicker(() => ({ permissionMode: config.permissionMode, headlessApprovedActions: [] }));
+    return () => stopScheduleTicker();
+  }, [config.backgroundJobsEnabled, config.permissionMode]);
 
   const hasSubagents = isLoading && subagentStates.length > 0;
 

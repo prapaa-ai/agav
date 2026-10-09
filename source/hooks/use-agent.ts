@@ -486,11 +486,12 @@ export function useAgent(
 
   /** Resolve the oldest pending tool confirmation with the user's decision. */
   const confirmTool = useCallback((choice: ConfirmResult) => {
-    if (choice === "always") sessionPermissionModeRef.current = "auto-accept";
+    // Only the queue's effective generic Always may widen session permission.
+    const resolvedChoice = confirmationQueueRef.current.resolve(choice);
+    if (resolvedChoice === "always") sessionPermissionModeRef.current = "auto-accept";
     // Reset the turn timer so it only counts active agent work, not time
     // spent waiting for the user to approve/deny a tool call.
     updateTurnStart(Date.now());
-    confirmationQueueRef.current.resolve(choice);
   }, []);
 
   const addTokenUsage = useCallback((usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => {
@@ -828,6 +829,7 @@ export function useAgent(
             signal: abortController.signal,
             confirmTool: confirmToolCallback,
             permissionMode: sessionPermissionModeRef.current ?? config.permissionMode,
+            backgroundPermissionMode: config.permissionMode,
             allowedTools: config.allowedTools,
             hooks: config.hooks,
             // Only the main conversation's loop drains mid-turn /steer

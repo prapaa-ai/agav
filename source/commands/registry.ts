@@ -18,6 +18,7 @@ import { searchCommand } from "./search-history.js"
 import { effortCommand } from "./effort.js"
 import { loopCommand } from "./loop.js"
 import { scheduleCommand } from "./schedule.js"
+import { processCommand } from "./process.js"
 import { skillsCommand } from "../skills/commands.js"
 import { steerCommand } from "./steer.js"
 import { changelogCommand } from "./changelog.js"
@@ -57,6 +58,7 @@ export class CommandRegistry {
     this.register(searchCommand)
     this.register(loopCommand)
     this.register(scheduleCommand)
+    this.register(processCommand)
     this.register(skillsCommand)
     this.register(steerCommand)
     this.register(changelogCommand)

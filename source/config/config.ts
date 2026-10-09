@@ -69,6 +69,13 @@ export interface AgavConfig {
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
   showThinking?: boolean;
+  /**
+   * Opt-in switch for the background-jobs subsystem (see solution.md). When
+   * unset or false, `run_background_job`/`/process` are inert — discoverable
+   * but refuse to launch or inspect anything. Defaults to disabled so no
+   * background command is ever launched merely because the feature shipped.
+   */
+  backgroundJobsEnabled?: boolean;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -142,6 +149,11 @@ const PROJECT_CONFIG_TEMPLATE = {
   },
   showThinking: {
     description: "Whether to display the model's reasoning/thinking text as it streams. Toggle with Ctrl+T at runtime.",
+    type: "boolean",
+    eg: false,
+  },
+  backgroundJobsEnabled: {
+    description: "Opt in to the background-jobs subsystem, enabling the run_background_job tool and /process command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
     type: "boolean",
     eg: false,
   },

@@ -24,7 +24,7 @@ export class ConfirmationQueue {
   }
 
   enqueue(item: Omit<QueuedConfirmation, "resolve">): Promise<ConfirmResult> {
-    if (this.autoAccept) {
+    if (this.autoAccept && item.toolName !== "run_background_job") {
       return Promise.resolve("always" as ConfirmResult);
     }
 
@@ -39,22 +39,24 @@ export class ConfirmationQueue {
     });
   }
 
-  resolve(choice: ConfirmResult): void {
+  resolve(choice: ConfirmResult): ConfirmResult | undefined {
     if (this.activeItem) {
+      // Background approval binds only to the displayed specification.
+      if (choice === "always" && this.activeItem.toolName === "run_background_job") choice = "yes";
       this.activeItem.resolve(choice);
       this.activeItem = null;
 
       if (choice === "always") {
         this.autoAccept = true;
-        for (const queued of this.queue) {
+        this.queue = this.queue.filter((queued) => {
+          if (queued.toolName === "run_background_job") return true;
           queued.resolve("always");
-        }
-        this.queue = [];
-        this.setPending?.(null);
-        return;
+          return false;
+        });
       }
 
       this.dequeue();
+      return choice;
     }
   }
 
@@ -78,6 +80,8 @@ export class ConfirmationQueue {
   }
 
   clear(): void {
+    this.activeItem?.resolve("no");
+    for (const entry of this.queue) entry.resolve("no");
     this.queue = [];
     this.activeItem = null;
     this.autoAccept = false;
