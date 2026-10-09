@@ -211,15 +211,24 @@ export async function* runAgentLoop(
   // tests driving runAgentLoop directly) only implement the subset of
   // ConversationState they exercise, so these calls must tolerate a mock that
   // predates this feature rather than requiring every call site to update.
+  if (signal?.aborted) {
+    yield { type: "error", error: new Error("Aborted") };
+    return;
+  }
   const manualOverride = conversation.getManualContextWindow?.(model);
   if (manualOverride !== undefined) {
     conversation.setContextWindow(manualOverride);
   } else if (provider.getContextWindow) {
     let resolved: number | undefined;
     try {
-      resolved = await provider.getContextWindow(model);
+      resolved = await provider.getContextWindow(model, signal);
     } catch {
       // Non-fatal — fall back to the name-based limits.
+    }
+
+    if (signal?.aborted) {
+      yield { type: "error", error: new Error("Aborted") };
+      return;
     }
 
     if (resolved === undefined && provider.isContextWindowConfirmedMissing?.(model)) {
@@ -231,10 +240,14 @@ export async function* runAgentLoop(
       let manual: number | undefined;
       if (params.requestManualContextWindow) {
         try {
-          manual = await params.requestManualContextWindow(model);
+          manual = await params.requestManualContextWindow(model, signal);
         } catch {
           manual = undefined;
         }
+      }
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
       }
       resolved = manual && manual > 0 ? manual : DEFAULT_UNKNOWN_CONTEXT_WINDOW;
       conversation.setManualContextWindow?.(model, resolved);

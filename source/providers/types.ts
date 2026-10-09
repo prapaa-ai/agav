@@ -73,7 +73,7 @@ export interface LLMProvider {
    * be discovered at runtime. Optional: providers whose window is implied by
    * the model name leave it undefined and fall back to the name-based table.
    */
-  getContextWindow?(model: string): Promise<number | undefined>;
+  getContextWindow?(model: string, signal?: AbortSignal): Promise<number | undefined>;
   /**
    * After `getContextWindow` resolves to `undefined`, distinguishes a model the
    * provider's catalog was successfully fetched and definitively does not list

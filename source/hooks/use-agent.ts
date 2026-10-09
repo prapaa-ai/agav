@@ -201,6 +201,7 @@ export function useAgent(
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
   const [pendingContextWindowRequest, setPendingContextWindowRequest] = useState<PendingContextWindowRequest | null>(null);
+  const pendingContextWindowRequestRef = useRef<PendingContextWindowRequest | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>(resumeTokenUsage ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
   const [loadedPlugins, setLoadedPlugins] = useState<string[]>([]);
   const sessionIdRef = useRef<string | null>(resumeSessionId ?? null);
@@ -446,13 +447,9 @@ export function useAgent(
   const cancel = useCallback(() => {
     abortRef.current?.abort();
     confirmationQueueRef.current.clear();
-    // Unblock a loop awaiting a manual-context-window answer — otherwise an
-    // abort during that prompt leaves it hanging forever since the request
-    // has no signal of its own.
-    setPendingContextWindowRequest((current) => {
-      current?.resolve(undefined);
-      return null;
-    });
+    // Resolve synchronously: a state updater can run after the metadata fetch
+    // finishes and the prompt is queued, leaving the cancelled turn waiting.
+    pendingContextWindowRequestRef.current?.resolve(undefined);
     if (pausePromiseRef.current) {
       pausePromiseRef.current.resolve();
       pausePromiseRef.current = null;
@@ -516,19 +513,30 @@ export function useAgent(
    * falls back to DEFAULT_UNKNOWN_CONTEXT_WINDOW in that case.
    */
   const resolveContextWindowRequest = useCallback((tokens: number | undefined) => {
-    setPendingContextWindowRequest((current) => {
-      current?.resolve(tokens);
-      return null;
-    });
+    pendingContextWindowRequestRef.current?.resolve(tokens);
   }, []);
 
   /**
    * Shown to runAgentLoop as requestManualContextWindow. Surfaces the modal via
    * state and resolves once the user answers it or dismisses it.
    */
-  const requestManualContextWindow = useCallback((model: string): Promise<number | undefined> => {
+  const requestManualContextWindow = useCallback((model: string, signal?: AbortSignal): Promise<number | undefined> => {
+    if (signal?.aborted) return Promise.resolve(undefined);
     return new Promise((resolve) => {
-      setPendingContextWindowRequest({ model, resolve });
+      const request: PendingContextWindowRequest = {
+        model,
+        resolve: (tokens) => {
+          signal?.removeEventListener("abort", onAbort);
+          if (pendingContextWindowRequestRef.current !== request) return;
+          pendingContextWindowRequestRef.current = null;
+          setPendingContextWindowRequest((current) => current === request ? null : current);
+          resolve(tokens);
+        },
+      };
+      const onAbort = () => request.resolve(undefined);
+      pendingContextWindowRequestRef.current = request;
+      signal?.addEventListener("abort", onAbort, { once: true });
+      setPendingContextWindowRequest(request);
     });
   }, []);
 
