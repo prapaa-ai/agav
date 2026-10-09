@@ -353,6 +353,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     insertLabel(attachment.label);
   }, []);
 
+  const readPromptRef = useRef<(() => string) | null>(null);
   const insertLabelRef = useRef<((label: string) => void) | null>(null);
   const expandTileRef = useRef<((id: number, fullText: string) => boolean) | null>(null);
   // The most recent paste that was compacted into a tile, so an identical
@@ -584,8 +585,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setFocusedSubagentId(null);
       return;
     }
-    // Arrow key navigation in the subagent overview list
-    if (hasSubagents && !focusedSubagentId && !pendingConfirmation) {
+    // The prompt owns navigation and completion while it contains text.
+    // useInput broadcasts to both handlers; returning here cannot consume a key.
+    if (hasSubagents && !focusedSubagentId && !pendingConfirmation && (readPromptRef.current?.() ?? input).length === 0) {
       if (key.upArrow) {
         setSelectedSubagentIdx((prev) => Math.max(0, prev - 1));
         return;
@@ -594,7 +596,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         setSelectedSubagentIdx((prev) => Math.min(subagentStates.length - 1, prev + 1));
         return;
       }
-      if (key.return) {
+      if (key.return && !key.shift && !key.ctrl && !key.meta && !key.super && !key.hyper) {
         const sa = subagentStates[selectedSubagentIdx];
         if (sa) setFocusedSubagentId(sa.id);
         return;
@@ -621,7 +623,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setShowThinking((prev) => !prev);
       return;
     }
-    if (match.action === "retryLastTurn" && !isLoading && !pendingConfirmation && input.length === 0) {
+    if (match.action === "retryLastTurn" && !isLoading && !pendingConfirmation && (readPromptRef.current?.() ?? input).length === 0) {
       const lastMessage = [...messages].reverse().find((message) => message.role === "user");
       const lastPrompt = lastMessage?.sourceText ?? lastMessage?.content;
       if (lastPrompt) submit(lastPrompt);
@@ -639,7 +641,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     if (match.action === "scrollDown") { docControls.current?.scrollBy(-5); return; }
     if (match.action === "scrollTop") { docControls.current?.scrollToTop(); return; }
     if (match.action === "scrollBottom") { docControls.current?.scrollToBottom(); return; }
-    if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && input.length === 0) {
+    if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && (readPromptRef.current?.() ?? input).length === 0) {
       exit();
       return;
     }
@@ -1223,6 +1225,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               setAttachments([]);
               lastPasteRef.current = null;
             }}
+            onRegisterRead={(read) => { readPromptRef.current = read; }}
             onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
             onRegisterExpand={(fn) => { expandTileRef.current = fn; }}
             onOpenAttachment={handleOpenAttachment}
