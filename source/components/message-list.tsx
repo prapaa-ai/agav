@@ -270,17 +270,30 @@ const ToolResultLine = React.memo(function ToolResultLine({ message }: { message
 /** Renders the appropriate terminal bubble for a message role. */
 const MessageBubble = React.memo(function MessageBubble({ message, prevMessage, toolDetailKey, columns, onOpenRef }: { message: DisplayMessage; prevMessage?: DisplayMessage; toolDetailKey: string; columns: number; onOpenRef?: (ref: OpenRef) => void }) {
   if (message.role === "banner") {
+    // Windows fonts may lack Braille: area-resample its 24×20 mask to 16×14
+    // at 30% coverage, then pack pixel pairs into half/full blocks (16×7).
+    // See deriveBlockLogo in message-list-banner.test.ts for reproduction.
+    const logo = process.platform === "win32" ? [
+      "  ▄█▀▀▀▀▄▄▄▄▄▄▄ ",
+      "▄█ ▀█▄▄  █▄   ▀█",
+      "█▀▀ ▄█▀█  █    █",
+      "█   █▀ ▀▀█▀█▄ ▄█",
+      "█▄▄▀▀▀██▀▀█▄▀ █▀",
+      " ▀█▄ █  █▄  ▄█▀ ",
+      "   ▀██▄▄▄▄█▀▀   ",
+    ] : [
+      "⠀⡠⢞⡋⠉⠙⠢⡤⠴⠦⢤⡀",
+      "⡾⠤⡄⢡⠟⣆⠀⢹⠀⠀⠀⢸",
+      "⡇⠀⠀⣞⠀⠘⢂⡞⠰⣄⠀⡞",
+      "⠹⣔⠉⠈⡍⠋⣍⠘⠆⢀⡼⠁",
+      "⠀⠈⠳⢬⣅⣀⣈⣤⠔⠋⠀⠀",
+    ];
+    // Keep layout coupled to the artwork, including when previewing another logo.
+    const logoWidth = Math.max(...logo.map(visualLen));
     return (
       <Box flexDirection={columns >= 48 ? "row" : "column"} marginTop={1} marginBottom={1} paddingLeft={columns >= 48 ? 3 : 0}>
-        <Box flexDirection="column" flexShrink={0} width={12}>
-          {/* Cropped test.svg paths fitted to 24×20 dots; ~30% coverage keeps strokes distinct. */}
-          <Text color="#0891B2">{[
-            "⠀⡠⢞⡋⠉⠙⠢⡤⠴⠦⢤⡀",
-            "⡾⠤⡄⢡⠟⣆⠀⢹⠀⠀⠀⢸",
-            "⡇⠀⠀⣞⠀⠘⢂⡞⠰⣄⠀⡞",
-            "⠹⣔⠉⠈⡍⠋⣍⠘⠆⢀⡼⠁",
-            "⠀⠈⠳⢬⣅⣀⣈⣤⠔⠋⠀⠀",
-          ].join("\n")}</Text>
+        <Box flexDirection="column" flexShrink={0} width={logoWidth}>
+          <Text color="#0891B2">{logo.join("\n")}</Text>
         </Box>
         <Box flexDirection="column" justifyContent="center" marginLeft={columns >= 48 ? 2 : 0}>
           <Text><Text bold>Agav</Text><Text dimColor>{` v${VERSION}`}</Text></Text>
