@@ -67,15 +67,15 @@ function findClosestFlag(input: string): string | undefined {
   return best;
 }
 
- function parseMaxTurns(raw?: string): number | undefined {
-    if (!raw) return undefined;
-    const n = Number.parseInt(raw.trim(), 10);
-    if (!Number.isInteger(n) || n <= 0) {
-      process.stderr.write("Error: --max-turns must be a positive integer\n");
-      process.exit(1);
-    }
-    return n;
+function parseMaxTurns(raw: string): number {
+  const value = raw.trim();
+  const n = Number(value);
+  if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(n) || n <= 0) {
+    process.stderr.write("Error: --max-turns must be a positive safe integer (1–9007199254740991). Use --max-turns N or --max-turns=N.\n");
+    process.exit(1);
   }
+  return n;
+}
 /** Choose between providers which expose the same model during interactive startup. */
 function pickProviderForModel(model: string, matches: FetchedModel[]): Promise<FetchedModel | null> {
   const stdin = process.stdin;
@@ -212,9 +212,9 @@ export function parseArgs(argv: string[]) {
     } else if (arg.startsWith("--openai-api=")) {
       flags.openaiApi = arg.slice("--openai-api=".length);
     } else if (arg === "--max-turns") {
-      flags.maxTurns = argv[++i] ?? "";
+      flags.maxTurns = parseMaxTurns(argv[++i] ?? "");
     } else if (arg.startsWith("--max-turns=")) {
-      flags.maxTurns = arg.slice("--max-turns=".length);
+      flags.maxTurns = parseMaxTurns(arg.slice("--max-turns=".length));
     } else if (arg === "update" && !subcommandSeen) {
       flags.update = true;
       subcommandSeen = true;
@@ -790,11 +790,9 @@ export async function main() {
   }
 
   startupFinished = true;
-  const maxTurns: number | undefined = parseMaxTurns(typeof flags.maxTurns === "string"? flags.maxTurns.trim(): "");
-
   // Overwrites the config instance when maxTurns is explicitly provided.
-  if (maxTurns !== undefined) {
-    config.maxIterations = maxTurns
+  if (flags.maxTurns !== undefined) {
+    config.maxIterations = flags.maxTurns;
   }
   // Short-circuit into non-interactive mode before the Ink UI is rendered.
   if (flags.print) {
