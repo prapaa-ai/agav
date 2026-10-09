@@ -12,6 +12,9 @@ import Box from "../ink/components/Box.js";
 import ClickableLine from "../components/clickable-line.js";
 import {buildClickableLines} from "../utils/render-clickable.js";
 import {DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING} from "../ink/termio/dec.js";
+import MessageList from "../components/message-list.js";
+import {clearDetectionCache, detectTargets} from "../utils/detect-targets.js";
+import {stripAnsi} from "../utils/wrap-text.js";
 
 type FakeStdout = NodeJS.WriteStream & {chunks: string[]};
 
@@ -38,6 +41,43 @@ const makeStdin = (): NodeJS.ReadStream => {
 	stdin.read = (() => null) as NodeJS.ReadStream["read"];
 	return stdin;
 };
+
+describe("user message copy boundaries", () => {
+	it.each(["targets", "no targets", "no handler"])("copies word wraps and intentional paragraph breaks (%s)", async (mode) => {
+		const stdout = makeStdout();
+		stdout.columns = 30;
+		const stdin = makeStdin();
+		const text = mode === "targets"
+			? "please read https://example.com for more details about this change.\n\nnext paragraph"
+			: "please read these notes for more details about this change.\n\nnext paragraph";
+		const instance = new Ink({stdout, stdin, stderr: stdout, patchConsole: false,
+			exitOnCtrlC: false, alternateScreen: false, maxFps: 30});
+		try {
+			instance.render(createElement(MessageList, {
+				messages: [{id: "copy-user", role: "user", content: text}],
+				columns: stdout.columns, toolDetailKey: "ctrl+o",
+				onOpenRef: mode === "no handler" ? undefined : () => {},
+			}));
+			for (let i = 0; i < 4; i++) {
+				await new Promise(resolve => setTimeout(resolve, 20));
+				await instance.waitUntilRenderFlush();
+			}
+			expect(await detectTargets(text, process.cwd(), "copy-user")).toHaveLength(mode === "targets" ? 1 : 0);
+			const rows = stripAnsi((instance as any).lastOutput).split("\n");
+			const first = rows.findIndex(row => row.includes("❯ please read"));
+			const last = rows.findIndex(row => row.includes("next paragraph"));
+			expect(first).toBeGreaterThanOrEqual(0);
+			expect(last - first).toBeGreaterThan(2);
+			writeClipboard.mockClear();
+			stdin.emit("data", `\x1b[<0;3;${first + 1}M`);
+			stdin.emit("data", `\x1b[<0;${rows[last]!.trimEnd().length + 1};${last + 1}m`);
+			expect(writeClipboard).toHaveBeenLastCalledWith(stdout, text);
+		} finally {
+			instance.unmount();
+			clearDetectionCache();
+		}
+	});
+});
 
 describe("global text selection", () => {
 	beforeEach(() => writeClipboard.mockClear());

@@ -14,6 +14,15 @@ function linesText(result: LineRunSpec[][]): string[] {
 }
 
 describe("wrapTextToRuns", () => {
+  it.each([false, true])("preserves source separators on the first run of each row (targets: %j)", (clickable) => {
+    const text = "implemented by code\n\nnext paragraph";
+    const targets = clickable ? [makeTarget({ kind: "path", text: "implemented", start: 0, end: 11 })] : [];
+    const result = wrapTextToRuns(text, 10, targets, () => "id");
+    expect(linesText(result)).toEqual(["implemente", "d by code", "", "next", "paragraph"]);
+    expect(result.map((runs) => runs[0]!.copySeparator)).toEqual(["\n", "", "\n", "\n", " "]);
+    expect(result.flatMap((runs) => runs.slice(1)).every((run) => run.copySeparator === undefined)).toBe(true);
+  });
+
   it("matches wrapToWidth exactly with no targets, each line a single plain run", () => {
     const text = "hello world, this wraps across lines";
     const width = 10;
