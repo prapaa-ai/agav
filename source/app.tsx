@@ -1217,6 +1217,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             }}
             onSubmit={handleSubmit}
             onPaste={handlePaste}
+            canExpandPaste={lastPasteRef.current !== null}
             onRemoveAttachment={() => {
               setAttachments((prev) => prev.slice(0, -1));
               lastPasteRef.current = null;
