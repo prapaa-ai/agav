@@ -21,12 +21,16 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   /** Anthropic's Models API reports the real window as `max_input_tokens`. */
-  async getContextWindow(model: string): Promise<number | undefined> {
+  async getContextWindow(model: string, signal?: AbortSignal): Promise<number | undefined> {
     const cached = this.contextWindows.get(model);
     if (cached && cached.expiresAt > Date.now()) return cached.value;
 
     try {
-      const info = await this.client.models.retrieve(model);
+      const info = await this.client.models.retrieve(model, undefined, {
+        timeout: 5000,
+        maxRetries: 0,
+        signal,
+      });
       const value = info.max_input_tokens ?? undefined;
       this.contextWindows.set(model, { value, expiresAt: Date.now() + CONTEXT_CACHE_TTL_MS });
       return value;

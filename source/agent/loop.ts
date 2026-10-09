@@ -79,7 +79,7 @@ interface LoopParams {
    * `DEFAULT_UNKNOWN_CONTEXT_WINDOW`. Omitted entirely in non-interactive
    * contexts (subagents, skills, pipe mode), which just take the default.
    */
-  requestManualContextWindow?: (model: string) => Promise<number | undefined>;
+  requestManualContextWindow?: (model: string, signal?: AbortSignal) => Promise<number | undefined>;
 }
 
 /** Assumed window for a model no catalog can report and the user declined to specify. */

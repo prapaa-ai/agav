@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Box, Text, useInput } from "../ink/index.js";
+import { Box, Text, useInput, usePaste } from "../ink/index.js";
 
 interface Props {
   model: string;
@@ -43,10 +43,19 @@ export default function ContextWindowPrompt({ model, defaultValue, onSubmit }: P
       return;
     }
     // Digits only — this is a token count, not free text.
-    if (/^[0-9]$/.test(input)) {
+    if (/^[0-9]+$/.test(input)) {
       setValue((prev) => prev + input);
       setError(null);
     }
+  });
+
+  usePaste((text) => {
+    if (!/^[0-9]+$/.test(text)) {
+      setError("Enter digits only, or press Esc to use the default.");
+      return;
+    }
+    setValue((prev) => prev + text);
+    setError(null);
   });
 
   return (
