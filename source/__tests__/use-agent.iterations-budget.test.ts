@@ -28,7 +28,7 @@ vi.mock("../agents/loader.js", () => ({ loadAgents: async () => [], getCachedAge
 vi.mock("../utils/system-prompt.js", () => ({ refreshStableContext: async () => "", refreshVolatileContext: async () => ({ context: "" }), formatTurnContext: () => "" }));
 vi.mock("../agent/planner.js", () => ({ shouldAutoPlan: () => false, savePlan: vi.fn(async () => {}), loadPlan: async () => boundary.plan, clearPlan: vi.fn(async () => {}), isPlanActive: (plan: Plan | null) => !!plan, setPlanScope: vi.fn(), adoptPlanScope: vi.fn(), prunePlans: async () => {}, formatPlanForPrompt: () => "", ensurePlanFile: async () => {} }));
 
-async function mount(complete = false) {
+async function mount(complete = false, maxIterations = 1) {
   const stream = vi.fn(async function* () {
     if (complete) yield { type: "text_delta" as const, text: "done" };
     else {
@@ -43,7 +43,7 @@ async function mount(complete = false) {
   Object.assign(stdin, { isTTY: true, setRawMode: () => stdin, resume: () => stdin, pause: () => stdin, read: () => null });
   let agent!: ReturnType<typeof useAgent>;
   function App() {
-    agent = useAgent(provider, { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000, maxIterations: 1, errorRetries: 1, permissionMode: "auto-accept" });
+    agent = useAgent(provider, { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000, maxIterations, errorRetries: 1, permissionMode: "auto-accept" });
     return null;
   }
   const instance = render(createElement(App), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
@@ -72,6 +72,35 @@ describe("useAgent per-submission iteration budget", () => {
       expect(ui.stream).toHaveBeenCalledTimes(2);
       expect(boundary.allowances).toEqual([1, 1]);
       expect(boundary.budgets[1]).not.toBe(boundary.budgets[0]);
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("refreshes the exhausted allowance for independent user prompts", async () => {
+    const ui = await mount(true);
+    try {
+      for (const count of [1, 2]) {
+        expect(await ui.agent().submit("inspect")).toBe(true);
+        await vi.waitFor(() => expect(ui.stream).toHaveBeenCalledTimes(count));
+        await vi.waitFor(() => expect(ui.agent().isLoading).toBe(false));
+        expect(ui.agent().iterationsBudget).toEqual({ remaining: 0, total: 1 });
+      }
+      expect(boundary.allowances).toEqual([1, 1]);
+      expect(boundary.budgets[1]).not.toBe(boundary.budgets[0]);
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("retains allowance through the automatic plan continuation scheduler", async () => {
+    boundary.plan = { goal: "inspect", createdAt: new Date().toISOString(), currentStep: 1, steps: [{ id: 1, title: "Inspect", description: "inspect", status: "pending" }] };
+    const ui = await mount(true, 2);
+    try {
+      expect(await ui.agent().submit("inspect")).toBe(true);
+      await vi.waitFor(() => expect(ui.stream).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(ui.agent().messages.some(message => message.isError && message.content.includes("maximum iterations"))).toBe(true));
+      expect(ui.agent().iterationsBudget).toEqual({ remaining: 0, total: 2 });
+      expect(ui.stream).toHaveBeenCalledTimes(2);
+      expect(ui.agent().messages.filter(message => message.role === "user").length).toBeGreaterThan(1);
+      expect(boundary.allowances).toEqual([2, 1, 0]);
+      expect(boundary.budgets.every(budget => budget === boundary.budgets[0])).toBe(true);
     } finally { ui.instance.unmount(); }
   });
 
