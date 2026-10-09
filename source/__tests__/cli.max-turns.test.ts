@@ -47,14 +47,16 @@ async function invoke(args: string[]) {
 
 describe("--max-turns production CLI", () => {
   it.each([{ mode: [] }, { mode: ["-P", "inspect"] }, { mode: ["run", "inspect"] }])("parses both value forms in entry path $mode", ({ mode }) => {
-    expect(parseArgs(["--max-turns", "2", ...mode]).maxTurns).toBe("2");
-    expect(parseArgs([...mode, "--max-turns=2"]).maxTurns).toBe("2");
+    expect(parseArgs(["--max-turns", "2", ...mode]).maxTurns).toBe(2);
+    expect(parseArgs([...mode, "--max-turns=2"]).maxTurns).toBe(2);
   });
 
   it.each(["0", "-5", "foo"])("rejects %s through main, before entering an agent", async (raw) => {
     await invoke(["--max-turns", raw]);
     expect(process.exit).toHaveBeenCalledWith(1);
-    expect(process.stderr.write).toHaveBeenCalledWith("Error: --max-turns must be a positive integer\n");
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("--max-turns must be a positive safe integer"));
+    expect(loadConfig).not.toHaveBeenCalled();
+    expect(createProvider).not.toHaveBeenCalled();
     expect(render).not.toHaveBeenCalled();
     expect(provider.stream).not.toHaveBeenCalled();
   });

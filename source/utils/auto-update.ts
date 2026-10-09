@@ -79,6 +79,12 @@ function isPreRelease(value: string): boolean {
   return /^v?\d+\.\d+\.\d+-/.test(value.trim());
 }
 
+/** Numeric counter for Agav's post-stable beta releases. */
+function betaCounter(value: string): number | null {
+  const match = /^v?\d+\.\d+\.\d+-beta\.(\d+)(?:\+[^\s]+)?$/.exec(value.trim());
+  return match ? Number(match[1]) : null;
+}
+
 export function isNewer(remote: string, local: string): boolean {
   // Parse rather than `split(".").map(Number)`. A tag like v0.2.0-rc1 turned
   // the last part into NaN, and NaN loses every comparison, so the loop fell
@@ -91,12 +97,53 @@ export function isNewer(remote: string, local: string): boolean {
     if (r[i]! > l[i]!) return true;
     if (r[i]! < l[i]!) return false;
   }
-  // Equal core versions. Per semver a stable release is newer than any
-  // pre-release of the same version (0.2.0 > 0.2.0-beta.3), but a
-  // pre-release is never an upgrade over the stable release it targets
-  // (don't sidegrade 0.1.7 → 0.1.7-rc1).
+  // Agav betas follow same-core stable; promotion bumps the core instead.
+  // Only beta-to-beta updates compare counters. Keep alpha/rc behavior intact.
+  const localBeta = betaCounter(local);
+  if (localBeta !== null) {
+    const remoteBeta = betaCounter(remote);
+    return remoteBeta !== null && remoteBeta > localBeta;
+  }
   if (isPreRelease(local) && !isPreRelease(remote)) return true;
   return false;
+}
+
+interface ReleaseInfo {
+  tag_name?: string;
+  body?: string;
+  draft?: boolean;
+  prerelease?: boolean;
+}
+
+/** Stable installs stay on /latest; beta installs discover published betas too. */
+async function fetchUpdateRelease(local: string, timeoutMs: number): Promise<{ status: number; release: ReleaseInfo }> {
+  const beta = betaCounter(local) !== null;
+  const endpoint = beta ? "?per_page=100" : "/latest";
+  const res = await fetch(`https://api.github.com/repos/${REPO}/releases${endpoint}`, {
+    headers: { Accept: "application/vnd.github.v3+json" },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) return { status: res.status, release: {} };
+  if (!beta) return { status: 200, release: (await res.json()) as ReleaseInfo };
+
+  const data = (await res.json()) as ReleaseInfo[];
+  const releases = data.filter((release) => {
+    const tag = release.tag_name ?? "";
+    return !release.draft && parseVersion(tag) !== null
+      && (betaCounter(tag) !== null || (!release.prerelease && !isPreRelease(tag)));
+  });
+  // API ordering is not version ordering. In this cycle same-core beta follows
+  // stable; numeric counters prevent beta.9 from outranking beta.10.
+  releases.sort((a, b) => {
+    const aCore = parseVersion(a.tag_name!)!;
+    const bCore = parseVersion(b.tag_name!)!;
+    for (let i = 0; i < 3; i++) {
+      const diff = bCore[i]! - aCore[i]!;
+      if (diff !== 0) return diff;
+    }
+    return (betaCounter(b.tag_name!) ?? -1) - (betaCounter(a.tag_name!) ?? -1);
+  });
+  return { status: 200, release: releases[0] ?? {} };
 }
 
 async function loadState(): Promise<UpdateState | null> {
@@ -751,20 +798,15 @@ export async function forceUpdate(targetVersion?: string): Promise<boolean> {
       return false;
     }
   } else {
-    // Fetch latest
     process.stderr.write(`  Checking for updates...\n`);
     try {
-      const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-        headers: { Accept: "application/vnd.github.v3+json" },
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) {
-        process.stderr.write(`  Error: Could not fetch release info (HTTP ${res.status}).\n`);
+      const { status, release } = await fetchUpdateRelease(local, 10000);
+      if (status !== 200) {
+        process.stderr.write(`  Error: Could not fetch release info (HTTP ${status}).\n`);
         return false;
       }
-      const data = (await res.json()) as { tag_name?: string; body?: string };
-      latestTag = data.tag_name ?? "";
-      releaseBody = data.body ?? "";
+      latestTag = release.tag_name ?? "";
+      releaseBody = release.body ?? "";
     } catch {
       process.stderr.write(`  Error: Could not reach GitHub.\n`);
       return false;
@@ -856,17 +898,13 @@ export async function checkAndUpdate(startupCwd = process.cwd()): Promise<void> 
   let latestTag: string;
   let releaseBody = "";
   try {
-    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-      headers: { Accept: "application/vnd.github.v3+json" },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) {
+    const { status, release } = await fetchUpdateRelease(local, 5000);
+    if (status !== 200) {
       await saveState({ lastCheck: Date.now(), latestVersion: local });
       return;
     }
-    const data = (await res.json()) as { tag_name?: string; body?: string };
-    latestTag = data.tag_name ?? "";
-    releaseBody = data.body ?? "";
+    latestTag = release.tag_name ?? "";
+    releaseBody = release.body ?? "";
   } catch {
     // Network unreachable — silently skip, don't cache failure
     return;
