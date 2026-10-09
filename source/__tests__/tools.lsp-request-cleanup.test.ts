@@ -147,7 +147,8 @@ describe("LSP request lifecycle cleanup", () => {
     else if (event === "close") child.emit("close", 7, null);
     else await vi.advanceTimersByTimeAsync(300);
     await promise;
-    expect(settled).toHaveBeenCalledExactlyOnceWith({ output: expect.stringMatching(/exited.*7/), isError: true });
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(settled).toHaveBeenCalledWith({ output: expect.stringMatching(/exited.*7/), isError: true });
     if (event === "end") child.emit("close", 7, null);
     expectClean();
   });
@@ -165,7 +166,8 @@ describe("LSP request lifecycle cleanup", () => {
       expect(await promptly(tool.execute(input))).toEqual({ output: "broken transport", isError: true });
     }
     expect(await promptly(first)).toEqual({ output: "broken transport", isError: true });
-    expect(old.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+    expect(old.kill).toHaveBeenCalledTimes(1);
+    expect(old.kill).toHaveBeenCalledWith("SIGTERM");
     const next = tool.execute(input);
     old.stdin.emit("error", new Error("duplicate"));
     old.emit("error", new Error("duplicate"));
@@ -206,7 +208,8 @@ describe("LSP request lifecycle cleanup", () => {
     expect(settled).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     await promise;
-    expect(settled).toHaveBeenCalledExactlyOnceWith({ output: "LSP request timed out", isError: true });
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(settled).toHaveBeenCalledWith({ output: "LSP request timed out", isError: true });
     expectClean();
     reply(children[0]!, 2);
     const next = tool.execute(input);

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SkillDefinition } from "../skills/types.js";
 import { ToolRegistry } from "../tools/registry.js";
+import { createToolRegistry } from "../tools/registry-factory.js";
 import { ConversationState } from "../agent/conversation.js";
 import { estimateConversationTokens } from "../utils/tokens.js";
 
@@ -52,6 +53,32 @@ const skill: SkillDefinition = {
 describe("skills/executor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each([
+    { allowed: undefined, disallowed: undefined, expected: [] },
+    { allowed: ["github", "NotebookRead", "NotebookEdit", "lsp_query"], disallowed: undefined, expected: ["lsp_query", "read_notebook", "edit_notebook", "github"] },
+    { allowed: ["github", "NotebookRead"], disallowed: ["NotebookRead", "github"], expected: [] },
+  ])("only adds explicitly allowed optional tools (%#)", async ({ allowed, disallowed, expected }) => {
+    const parent = createToolRegistry();
+    const originalNames = parent.getSchemas().map((tool) => tool.name);
+    await executeSkill({ ...skill, frontmatter: {
+      ...skill.frontmatter, "allowed-tools": allowed, "disallowed-tools": disallowed,
+    } }, "", { ...baseDeps, parentRegistry: parent });
+    const child = vi.mocked(runAgentLoop).mock.calls[0]![0].toolRegistry;
+    const optional = new Set(["github", "read_notebook", "edit_notebook", "lsp_query"]);
+    expect(child.getSchemas().map((tool) => tool.name).filter((name) => optional.has(name))).toEqual(expected);
+    expect(parent.getSchemas().map((tool) => tool.name)).toEqual(originalNames);
+  });
+
+  it("preserves parent overrides for explicitly allowed optional tools", async () => {
+    const parent = new ToolRegistry();
+    const override = { schema: { name: "github", description: "override", inputSchema: { type: "object" } }, execute: vi.fn() };
+    parent.register(override);
+    await executeSkill({ ...skill, frontmatter: { ...skill.frontmatter, "allowed-tools": ["github"] } }, "", {
+      ...baseDeps, parentRegistry: parent,
+    });
+    expect(vi.mocked(runAgentLoop).mock.calls[0]![0].toolRegistry.list()).toEqual([override]);
   });
 
   it("isolates parent blocks and token cache from child compaction", async () => {
@@ -355,7 +382,46 @@ describe("skills/executor", () => {
       });
 
       expect(confirmTool).toHaveBeenCalledWith("skill_shell_block", { command: "echo hello" });
-      expect(runInSandbox).toHaveBeenCalled();
+      expect(runInSandbox).toHaveBeenCalledWith(expect.not.objectContaining({ forceBackend: "none" }));
+      expect(vi.mocked(runInSandbox).mock.calls[0]?.[0]).not.toHaveProperty("inheritEnv");
+    });
+
+    it("fails the skill when its shell sandbox fails instead of ignoring the error", async () => {
+      vi.mocked(runInSandbox).mockResolvedValueOnce({ stdout: "", stderr: "", error: new Error("sandbox unavailable"), backend: "seatbelt" });
+      await expect(executeSkill(shellSkill, "", { ...baseDeps, permissionMode: "auto-accept" })).rejects.toThrow("sandbox unavailable");
+      expect(runAgentLoop).not.toHaveBeenCalled();
+      expect(recordSkillTrace).toHaveBeenCalledWith("Shell Skill", "", 0, false);
+    });
+
+    it.each([
+      "missing required dependency",
+      "missing required dependency\n" + "😀".repeat(30_000) + "\nfinal diagnostic",
+      "missing required dependency\n" + "line\n".repeat(3_000) + "final diagnostic",
+    ])("retains bounded stderr and the original exit error without continuing (%#)", async (stderr) => {
+      const error = new Error("Command exited with code 1");
+      vi.mocked(runInSandbox).mockResolvedValueOnce({ stdout: "", stderr, error, backend: "seatbelt" });
+      const onEvent = vi.fn();
+      const failedSkill = { ...shellSkill, body: shellSkill.body + "\n```sh\necho second\n```" };
+      const failure = await executeSkill(failedSkill, "", {
+        ...baseDeps, permissionMode: "auto-accept", onEvent,
+      }).catch((cause: Error) => cause);
+      expect(failure).toBeInstanceOf(Error);
+      const diagnostic = failure as Error;
+      expect(diagnostic.message).toContain("missing required dependency");
+      expect(diagnostic.message).toContain("Command exited with code 1");
+      expect(diagnostic.message).toContain("seatbelt");
+      expect(diagnostic.cause).toBe(error);
+      expect(Buffer.byteLength(diagnostic.message)).toBeLessThanOrEqual(40_000);
+      expect(diagnostic.message.split("\n").length).toBeLessThanOrEqual(2_000);
+      expect(diagnostic.message).not.toContain("�");
+      if (stderr.length > 40_000 || stderr.split("\n").length > 2_000) {
+        expect(diagnostic.message).toContain("middle omitted");
+        expect(diagnostic.message).toContain("final diagnostic");
+      }
+      expect(runInSandbox).toHaveBeenCalledTimes(1);
+      expect(runAgentLoop).not.toHaveBeenCalled();
+      expect(onEvent).toHaveBeenLastCalledWith({ type: "error", error: diagnostic });
+      expect(recordSkillTrace).toHaveBeenCalledWith("Shell Skill", "", 0, false);
     });
 
     it("executes shell blocks in auto-accept mode without confirmation", async () => {

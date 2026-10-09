@@ -9,6 +9,8 @@ import StatusBar from "./components/status-bar.js";
 import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
 import ToolConfirm from "./components/tool-confirm.js";
+import ContextWindowPrompt from "./components/context-window-prompt.js";
+import { DEFAULT_UNKNOWN_CONTEXT_WINDOW } from "./agent/loop.js";
 import ToolDetailPanel from "./components/tool-detail-panel.js";
 import PlanDetailPanel from "./components/plan-detail-panel.js";
 import SubagentDisplay from "./components/subagent-display.js";
@@ -74,6 +76,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   const [input, setInput] = useState("");
   const [config, setConfig] = useState(initialConfig);
+  const modelSelectionVersion = useRef(0);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
   }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
@@ -160,6 +163,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     toolCalls,
     error,
     pendingConfirmation,
+    pendingContextWindowRequest,
+    resolveContextWindowRequest,
     tokenUsage,
     loadedPlugins,
     mcpServers,
@@ -546,6 +551,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
   useInput((rawChar, rawKey) => {
     if (pickerActive) return;
+    // The context-window prompt owns the keyboard exclusively while it is up —
+    // same reasoning as pendingConfirmation below, but it renders in place of
+    // ToolConfirm rather than alongside it, so it needs its own early return.
+    if (pendingContextWindowRequest) return;
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
     // The attachment/file preview panel is read-only and owns no other state,
     // so its keys are handled before anything else can claim them — Esc closes
@@ -719,7 +728,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           // while using the existing nonblocking, cancellable process runner.
           const result = await runInSandbox({
             command: cmd, cwd: process.cwd(), timeout: 30000, maxBuffer: 1024 * 1024,
-            forceBackend: "none", inheritEnv: true, signal: controller.signal,
+            forceBackend: "none", allowUnsandboxed: true, inheritEnv: true, signal: controller.signal,
           });
           output = result.stdout + result.stderr;
           commandError = result.error;
@@ -784,10 +793,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           conversation,
           config,
           provider: activeProvider ?? undefined,
+          getModelSelectionVersion: () => modelSelectionVersion.current,
           setModel: (model: string) => {
+            modelSelectionVersion.current++;
             setConfig((prev) => ({ ...prev, model }));
           },
           setProvider: (provider) => {
+            modelSelectionVersion.current++;
             setConfig((prev) => ({ ...prev, provider }));
           },
           setEffort: (effort) => {
@@ -1177,6 +1189,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           />
         )}
 
+        {!pendingConfirmation && pendingContextWindowRequest && (
+          <ContextWindowPrompt
+            model={pendingContextWindowRequest.model}
+            defaultValue={DEFAULT_UNKNOWN_CONTEXT_WINDOW}
+            onSubmit={resolveContextWindowRequest}
+          />
+        )}
+
         {agentsTUIActive && (
           <AgentsTUI
             onExit={() => {
@@ -1205,7 +1225,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           />
         )}
 
-        {!pendingConfirmation && (
+        {!pendingConfirmation && !pendingContextWindowRequest && (
           <Box marginTop={1}><InputPrompt
             value={input}
             onChange={(value) => {
@@ -1265,7 +1285,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           psResponse={psResponse}
           psLoading={psLoading}
           loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
-          sandboxBackend={getSandboxName()}
+          sandboxBackend={`sandbox: ${getSandboxName()}`}
           branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
           turnStartTime={turnStartTime}
           lastTurnDurationMs={lastTurnDurationMs}

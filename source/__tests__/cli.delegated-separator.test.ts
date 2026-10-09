@@ -57,13 +57,15 @@ afterEach(() => {
 describe("delegated separator: parser through real handlers", () => {
   it.each(["add", "install"])("skills %s forwards a dash-prefixed directory", async (action) => {
     await run(["skills", action, "--", "-legacy"]);
-    expect(installFromPath).toHaveBeenCalledExactlyOnceWith("-legacy");
+    expect(installFromPath).toHaveBeenCalledTimes(1);
+    expect(installFromPath).toHaveBeenCalledWith("-legacy");
   });
 
   it.each(["skills", "agents"])("%s keeps global/cwd flags before the boundary", async (command) => {
     await run(["--cwd", process.cwd(), "--provider", "openai", command,
       command === "skills" ? "add" : "install", "--auto-accept", "--", "--cwd", "--version"]);
-    expect(process.chdir).toHaveBeenCalledExactlyOnceWith(process.cwd());
+    expect(process.chdir).toHaveBeenCalledTimes(1);
+    expect(process.chdir).toHaveBeenCalledWith(process.cwd());
     if (command === "skills") expect(installFromPath).toHaveBeenCalledWith("--cwd --version");
     else expect(installAgent).toHaveBeenCalledWith("--cwd --version", { alias: undefined, destination: "global" });
   });
@@ -76,22 +78,26 @@ describe("delegated separator: parser through real handlers", () => {
 
   it("keeps install flags before -- and treats flag names after it literally", async () => {
     await run(["agents", "install", "--alias", "legacy", "--destination", "project", "--", "--alias", "--destination", "global"]);
-    expect(installAgent).toHaveBeenCalledExactlyOnceWith("--alias --destination global", { alias: "legacy", destination: "project" });
+    expect(installAgent).toHaveBeenCalledTimes(1);
+    expect(installAgent).toHaveBeenCalledWith("--alias --destination global", { alias: "legacy", destination: "project" });
   });
 
   it.each(["remove", "uninstall"])("agents %s keeps destination before --", async (action) => {
     await run(["agents", action, "--destination", "project", "--", "-legacy", "--destination", "global", "--"]);
-    expect(uninstallAgent).toHaveBeenCalledExactlyOnceWith("-legacy --destination global --", "project");
+    expect(uninstallAgent).toHaveBeenCalledTimes(1);
+    expect(uninstallAgent).toHaveBeenCalledWith("-legacy --destination global --", "project");
   });
 
   it.each(["enable", "disable"])("agents %s treats every later token literally", async (action) => {
     await run(["agents", action, "--", "-legacy", "--", "--alias"]);
-    expect(setAgentEnabled).toHaveBeenCalledExactlyOnceWith("-legacy -- --alias", action === "enable");
+    expect(setAgentEnabled).toHaveBeenCalledTimes(1);
+    expect(setAgentEnabled).toHaveBeenCalledWith("-legacy -- --alias", action === "enable");
   });
 
   it.each(["remove", "rm", "uninstall"])("skills %s forwards literal names", async (action) => {
     await run(["skills", action, "--", "-legacy", "--"]);
-    expect(removeSkill).toHaveBeenCalledExactlyOnceWith("-legacy --");
+    expect(removeSkill).toHaveBeenCalledTimes(1);
+    expect(removeSkill).toHaveBeenCalledWith("-legacy --");
   });
 
   it.each(["enable", "disable"])("skills %s resolves a literal name", async (action) => {
@@ -99,7 +105,8 @@ describe("delegated separator: parser through real handlers", () => {
       name: "-legacy --", slug: "legacy", origin: "global",
     } as Awaited<ReturnType<typeof loadAllSkills>>[number]]);
     await run(["skills", action, "--", "-legacy", "--"]);
-    expect(setSkillEnabled).toHaveBeenCalledExactlyOnceWith("legacy", action === "enable");
+    expect(setSkillEnabled).toHaveBeenCalledTimes(1);
+    expect(setSkillEnabled).toHaveBeenCalledWith("legacy", action === "enable");
   });
 
   it.each([["skills", "list"], ["skills", "clear"], ["agents", "list"]])("%s %s accepts an empty boundary", async (command, action) => {
@@ -132,12 +139,14 @@ describe("delegated separator: parser through real handlers", () => {
   it("keeps the boundary position when global and agent flags are interspersed", async () => {
     await run(["agents", "install", "local", "--cwd=" + process.cwd(),
       "--destination", "project", "--model", "test", "--", "--alias", "--"]);
-    expect(installAgent).toHaveBeenCalledExactlyOnceWith("local --alias --", { alias: undefined, destination: "project" });
+    expect(installAgent).toHaveBeenCalledTimes(1);
+    expect(installAgent).toHaveBeenCalledWith("local --alias --", { alias: undefined, destination: "project" });
   });
 
   it("keeps ordinary agent flags working without a separator", async () => {
     await run(["agents", "install", "local", "--alias", "legacy", "--destination", "project"]);
-    expect(installAgent).toHaveBeenCalledExactlyOnceWith("local", { alias: "legacy", destination: "project" });
+    expect(installAgent).toHaveBeenCalledTimes(1);
+    expect(installAgent).toHaveBeenCalledWith("local", { alias: "legacy", destination: "project" });
   });
 
   it.each(["--alias", "--destination"])("does not use -- as a value for %s", async (option) => {

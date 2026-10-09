@@ -3,9 +3,10 @@ import { runPipeMode } from "../main.js";
 import type { AgavConfig } from "../config/config.js";
 import type { LLMProvider, StreamEvent, StreamParams } from "../providers/types.js";
 
-vi.mock("../tools/registry-factory.js", async () => {
+vi.mock("../tools/registry-factory.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../tools/registry-factory.js")>();
   const { ToolRegistry } = await import("../tools/registry.js");
-  return { createToolRegistry: () => {
+  return { ...actual, createToolRegistry: () => {
     const registry = new ToolRegistry();
     registry.register({
       schema: { name: "read_file", description: "Read a fixture", inputSchema: { type: "object" } },

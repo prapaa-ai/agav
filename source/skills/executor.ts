@@ -1,4 +1,5 @@
 import { runInSandbox } from "../utils/sandbox.js";
+import { MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_LINES, truncateToolText } from "../utils/tool-output.js";
 import type { SkillDefinition } from "./types.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -10,6 +11,7 @@ import type { PermissionMode, EffortLevel } from "../config/config.js";
 import { recordSkillTrace } from "./improvement.js";
 import { formatSteersForPrompt } from "../commands/steer.js";
 import { baseToolName } from "./skill-utils.js";
+import { createBuiltinToolRegistry, OPTIONAL_TOOL_NAMES } from "../tools/registry-factory.js";
 
 interface SkillExecDeps {
   provider: LLMProvider;
@@ -39,6 +41,14 @@ function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolR
     if (disallowed.has(tool.schema.name)) continue;
     if (allowed && !allowed.has(tool.schema.name)) continue;
     child.register(tool);
+  }
+  // Only explicitly listed optional built-ins can be added beyond the parent set.
+  // Preserve parent overrides and let disallowed-tools take precedence.
+  if (allowed) {
+    const optional = [...allowed].filter((name) => OPTIONAL_TOOL_NAMES.has(name) && !disallowed.has(name));
+    for (const tool of createBuiltinToolRegistry(optional).list()) {
+      if (!parent.list().some((entry) => entry.schema.name === tool.schema.name)) child.register(tool);
+    }
   }
   return child;
 }
@@ -101,12 +111,22 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
     // auto-accept (or confirmed): execute.
     checkAborted(opts.signal);
     // Reuse process-tree ownership so abort also stops pipeline descendants.
-    // Keep the existing unsandboxed shell-block behavior and output bound.
+    // Skill instructions are not a user sandbox opt-out; use the shell default.
     const output = await runInSandbox({
       command: block.command, cwd: process.cwd(), timeout: 10_000,
-      maxBuffer: 1024 * 1024, forceBackend: "none", inheritEnv: true, signal: opts.signal,
+      maxBuffer: 1024 * 1024, signal: opts.signal,
     });
     checkAborted(opts.signal);
+    if (output.error) {
+      const stderr = output.stderr.trim();
+      if (!stderr) throw output.error;
+      // Do not echo command text or persist potentially sensitive diagnostics.
+      let message = `Skill shell block failed (${output.backend}): ${output.error.message}\n\nstderr:\n${stderr}`;
+      if (Buffer.byteLength(message) > MAX_TOOL_OUTPUT_BYTES || message.split("\n").length > MAX_TOOL_OUTPUT_LINES) {
+        message = truncateToolText(message, "[Shell diagnostics truncated; omitted content is unavailable.]");
+      }
+      throw new Error(message, { cause: output.error });
+    }
     result = replaceOnce(result, block.match, output.stdout.trim());
   }
   return result;

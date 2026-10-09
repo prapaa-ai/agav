@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeSkill } from "../skills/executor.js";
 
 vi.mock("../skills/improvement.js", () => ({ recordSkillTrace: vi.fn(async () => {}) }));
@@ -12,6 +12,9 @@ import { ToolRegistry } from "../tools/registry.js";
 import { runAgentLoop } from "../agent/loop.js";
 import { ConversationState } from "../agent/conversation.js";
 import type { LLMProvider, StreamEvent } from "../providers/types.js";
+
+beforeEach(() => vi.stubEnv("AGAV_NO_SANDBOX", "1"));
+afterEach(() => vi.unstubAllEnvs());
 
 const run = (command: string, timeout = 200, signal?: AbortSignal) => runInSandbox({
   command, cwd: process.cwd(), timeout, maxBuffer: 200_000, forceBackend: "none", signal,
@@ -59,16 +62,16 @@ describe.skipIf(process.platform === "win32")("shell process ownership", () => {
     }
   });
 
-  it("inherits credentials for skill shell blocks but filters ordinary commands", async () => {
+  it("filters credentials for skill shell blocks and ordinary commands even with user opt-out", async () => {
     vi.stubEnv("AGAV_TEST_API_TOKEN", "harmless-skill-credential");
     const stream = vi.fn(async function* (params) {
-      expect(params.messages[0].content[0].text).toBe("harmless-skill-credential");
+      expect(params.messages[0].content[0].text).toBe("unset");
       yield { type: "text_delta" as const, text: "done" };
     });
     try {
       await executeSkill({
         name: "Shell", slug: "shell", description: "shell",
-        body: '```sh\nprintf "%s" "$AGAV_TEST_API_TOKEN"\n```',
+        body: '```sh\nprintf "%s" "${AGAV_TEST_API_TOKEN-unset}"\n```',
         frontmatter: { name: "Shell", description: "shell" }, filePath: "/tmp/SKILL.md", origin: "project",
       }, "", {
         provider: { name: "mock", stream }, parentRegistry: new ToolRegistry(), model: "mock", systemPrompt: "",

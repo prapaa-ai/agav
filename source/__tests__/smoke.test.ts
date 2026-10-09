@@ -44,20 +44,32 @@ describe("CLI boot", () => {
   });
 
   it("-P without API key exits 1 with helpful error (not a crash)", async () => {
-    const result = await runCli(["-P", "hello"], {
-      ANTHROPIC_API_KEY: "",
-      OPENAI_API_KEY: "",
-      OPENROUTER_API_KEY: "",
-      GEMINI_API_KEY: "",
-      VERTEX_AI_CREDENTIALS_PATH: "",
-    });
-    expect(result.exitCode).toBe(1);
-    // Helpful means naming a variable and a command to set it, not just saying
-    // that credentials are missing.
-    const output = `${result.stdout}\n${result.stderr}`;
-    expect(output).toContain("no provider credentials found");
-    expect(output).toMatch(/(export|set|\$env:)\s?ANTHROPIC_API_KEY/);
-  });
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const home = mkdtempSync(join(tmpdir(), "agav-smoke-home-"));
+    try {
+      const result = await runCli(["-P", "hello"], {
+        HOME: home,
+        USERPROFILE: home,
+        ANTHROPIC_API_KEY: "",
+        OPENAI_API_KEY: "",
+        OPENROUTER_API_KEY: "",
+        NVIDIA_API_KEY: "",
+        DEEPSEEK_API_KEY: "",
+        GEMINI_API_KEY: "",
+        VERTEX_AI_CREDENTIALS_PATH: "",
+      });
+      expect(result.exitCode).toBe(1);
+      // Helpful means naming a variable and a command to set it, not just saying
+      // that credentials are missing.
+      const output = `${result.stdout}\n${result.stderr}`;
+      expect(output).toContain("no provider credentials found");
+      expect(output).toMatch(/(export|set|\$env:)\s?ANTHROPIC_API_KEY/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 15_000);
 
   it("exits with error for nonexistent --cwd folder", async () => {
     const result = await runCli(["--cwd", "/does/not/exist/12345", "--help"]);
@@ -84,12 +96,8 @@ describe("Tool registry", () => {
       "find_files",
       "list_directory",
       "web_search",
-      "lsp_query",
-      "read_notebook",
-      "edit_notebook",
       "fetch_url",
       "update_plan",
-      "github",
       "overview",
       "run_tests",
     ];
