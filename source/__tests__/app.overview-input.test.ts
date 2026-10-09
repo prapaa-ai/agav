@@ -33,11 +33,14 @@ const progress = (id: string): SubagentProgress => ({
   tokenUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 },
 });
 
-async function mount(title = "subagent") {
+async function mount(title = "subagent", contextWindowPending = false) {
+  const resolveContextWindowRequest = vi.fn();
   const interveneWhilePaused = vi.fn();
   vi.mocked(useAgent).mockReturnValue({
     messages: [], streamingText: "", thinkingText: "", isLoading: true,
     toolCalls: [], error: null, pendingConfirmation: null,
+    pendingContextWindowRequest: contextWindowPending ? { model: "unknown" } : null,
+    resolveContextWindowRequest,
     tokenUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
     loadedPlugins: [], mcpServers: [], mcpPromptCommands: [], skillCommands: [], agentCommands: [],
     subagentStates: [progress(title), progress("second")], activePlan: null,
@@ -62,7 +65,7 @@ async function mount(title = "subagent") {
     await settle();
   };
   await settle();
-  return { instance, key, stdin, settle, interveneWhilePaused };
+  return { instance, key, stdin, settle, interveneWhilePaused, resolveContextWindowRequest };
 }
 const details = () => display.mock.calls.filter(([props]) => props.mode === "detail");
 
@@ -72,6 +75,17 @@ beforeEach(() => {
 });
 
 describe("overview input routing", () => {
+  it("keeps context-window input out of the chat prompt and task overview", async () => {
+    const ui = await mount("subagent", true);
+    try {
+      await ui.key("32768");
+      await ui.key("\r");
+      expect(ui.resolveContextWindowRequest).toHaveBeenCalledExactlyOnceWith(32768);
+      expect(ui.interveneWhilePaused).not.toHaveBeenCalled();
+      expect(details()).toEqual([]);
+    } finally { ui.instance.unmount(); }
+  });
+
   it("does not inspect a task when typing and Enter arrive before a commit", async () => {
     const { instance, stdin, settle, interveneWhilePaused } = await mount();
     try {

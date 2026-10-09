@@ -25,6 +25,9 @@ import { isInternalUserMessage } from "./agent/internal-prompts.js";
 import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
+import { ResourceManager } from "./components/resource-manager.js";
+import { createResourceAdapter } from "./resources/adapters.js";
+import type { ResourceKind, ResourceAdapter } from "./resources/types.js";
 import {
   type Attachment,
   createTextAttachment,
@@ -150,6 +153,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const agentsTUIResolveRef = useRef<(() => void) | null>(null);
   const [skillsTUIActive, setSkillsTUIActive] = useState(false);
   const skillsTUIResolveRef = useRef<(() => void) | null>(null);
+  const [skillsMarketplace, setSkillsMarketplace] = useState(true);
+  const [resourceAdapter, setResourceAdapter] = useState<ResourceAdapter | null>(null);
+  const resourceTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
@@ -846,6 +852,19 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           ),
           setPickerActive,
           suspendTerminal: suspendTerminalSync,
+          showResourceTUI: stdout.isTTY && process.stdin.isTTY ? (kind: ResourceKind, onDone: () => void, marketplace = false) => {
+            if (kind === "agents") {
+              agentsTUIResolveRef.current = onDone;
+              setAgentsTUIActive(true);
+            } else if (kind === "skills") {
+              skillsTUIResolveRef.current = onDone;
+              setSkillsMarketplace(marketplace);
+              setSkillsTUIActive(true);
+            } else {
+              resourceTUIResolveRef.current = onDone;
+              setResourceAdapter(createResourceAdapter(kind));
+            }
+          } : undefined,
           showAgentsTUI: (onDone: () => void) => {
             agentsTUIResolveRef.current = onDone;
             setAgentsTUIActive(true);
@@ -1214,6 +1233,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         )}
         {skillsTUIActive && (
           <SkillsTUI
+            marketplace={skillsMarketplace}
             onExit={() => {
               setSkillsTUIActive(false);
               setPickerActive(false);
@@ -1223,6 +1243,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               resolve?.();
             }}
           />
+        )}
+
+        {resourceAdapter && (
+          <ResourceManager adapter={resourceAdapter} onExit={() => {
+            setResourceAdapter(null);
+            setPickerActive(false);
+            setInput("");
+            const resolve = resourceTUIResolveRef.current;
+            resourceTUIResolveRef.current = null;
+            resolve?.();
+          }} />
         )}
 
         {!pendingConfirmation && !pendingContextWindowRequest && (

@@ -1,18 +1,16 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Box, Text, ScrollBox, useInput, usePaste, useStdout, measureElement } from "../ink/index.js";
 import type { DOMElement, ScrollBoxControls } from "../ink/index.js";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { parse as yamlParse, stringify as yamlStringify } from "yaml";
-import { loadAgents } from "../agents/loader.js";
-import { setAgentEnabled, loadRegistry } from "../agents/agent-registry.js";
+import { getCachedAgents, loadAgents } from "../agents/loader.js";
+import { loadRegistry } from "../agents/agent-registry.js";
 import type { AgentRegistryEntry } from "../agents/types.js";
-import { deleteAgentWithTemplate } from "../agents/agent-lifecycle.js";
 import { loadAgentConfig, saveAgentConfig } from "../agents/credentials.js";
 import { createBuiltinToolRegistry, KNOWN_TOOL_NAMES } from "../tools/registry-factory.js";
 import { implementAgentTools } from "../agents/tool-gen.js";
-import { wheelSelect, stepIndex } from "./wheel-select.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type {
   Tab, ListView, AgentsTUIProps, ReadinessMap,
@@ -20,8 +18,9 @@ import type {
 import {
   EFFORT_VALUES, resolveConfigDir, getConfigItems,
 } from "./agents-types.js";
-import { useSearch, filterInstalledAgents } from "./agents-search.js";
-import { ListTab } from "./agents-list.js";
+import { ResourceManager } from "./resource-manager.js";
+import { createResourceAdapter } from "../resources/adapters.js";
+const agentsAdapter = createResourceAdapter("agents");
 import { InspectView, ConfigEditView } from "./agents-inspect.js";
 import { MarketplaceTab } from "./agents-marketplace.js";
 import { CreateTab } from "./agents-create.js";
@@ -32,8 +31,6 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [listView, setListView] = useState<ListView>("list");
-  const [confirmingRemove, setConfirmingRemove] = useState(false);
-  const [removeStatus, setRemoveStatus] = useState<string | null>(null);
   const [readinessMap, setReadinessMap] = useState<ReadinessMap>({});
 
   const [configEditIndex, setConfigEditIndex]     = useState(0);
@@ -54,6 +51,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
 
   const [configEntryPoint, setConfigEntryPoint]   = useState<"list" | "inspect">("inspect");
   const [marketplaceBusy, setMarketplaceBusy]     = useState(false);
+  const [managerBusy, setManagerBusy] = useState(false);
   const [createBusy, setCreateBusy]               = useState(false);
 
   const [registryEntries, setRegistryEntries]     = useState<Record<string, AgentRegistryEntry>>({});
@@ -150,6 +148,20 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     loadRegistry().then((reg) => setRegistryEntries(reg.agents));
   };
 
+  // Keep the hub in sync without setting loading, which would unmount the manager.
+  const managerAdapter = useMemo(() => ({
+    ...agentsAdapter,
+    list: async () => {
+      const items = await agentsAdapter.list();
+      const loaded = getCachedAgents();
+      setAgents(loaded);
+      await Promise.all([computeReadiness(loaded), loadAllRuntimeConfigs(loaded)]);
+      const registry = await loadRegistry();
+      setRegistryEntries(registry.agents);
+      return items;
+    },
+  }), []);
+
   const saveNativeTools = async (agent: AgentDefinition, names: Set<string>) => {
     const manifestPath = join(agent.path, "AGENT.md");
     const content = await readFile(manifestPath, "utf-8");
@@ -188,7 +200,6 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     setActiveTab("list");
     setSelectedIndex(0);
     setListView("list");
-    setRemoveStatus(null);
   };
 
   const handleCreateComplete = () => {
@@ -197,13 +208,11 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
     setListView("list");
   };
 
-  const { searchQuery: listSearch, searching: listSearching, handleSearchKey: handleListSearch } = useSearch();
-  const filteredAgents = filterInstalledAgents(agents, listSearch);
+  const filteredAgents = agents;
 
   useInput(async (input, key) => {
     const isEditingConfig = listView === "config" && (configEditing || configPickerActive || nativeToolsEditing);
-    if (!listSearching && !isEditingConfig && !marketplaceBusy && !createBusy && (input === "1" || input === "2" || input === "3")) {
-      setRemoveStatus(null);
+    if (!isEditingConfig && !marketplaceBusy && !managerBusy && !createBusy && (input === "1" || input === "2" || input === "3")) {
       scrollControls.current?.scrollToBottom();
       if (input === "1") { setActiveTab("list"); setSelectedIndex(0); setListView("list"); }
       else if (input === "2") { setActiveTab("marketplace"); setSelectedIndex(0); }
@@ -213,63 +222,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
 
     if (activeTab === "list") {
       if (listView === "list") {
-        if (confirmingRemove) {
-          if (input === "y" || input === "Y") {
-            const agent = filteredAgents[selectedIndex];
-            if (agent) {
-              const agentKey = agent.alias || agent.manifest.name;
-              const entry = registryEntries[agentKey];
-              const result = await deleteAgentWithTemplate(agent, { sourceUrl: entry?.sourceUrl });
-              if (result.success) {
-                setRemoveStatus(`Removed ${agentKey}${result.savedTemplate ? " (saved as template)" : ""}`);
-                setSelectedIndex(Math.max(0, selectedIndex - 1));
-                const { getCachedAgents, setCachedAgents } = await import("../agents/loader.js");
-                setCachedAgents(getCachedAgents().filter((a) => (a.alias || a.manifest.name) !== agentKey));
-                await reloadAgents();
-              } else {
-                setRemoveStatus(`Failed: ${result.error}`);
-              }
-            }
-            setConfirmingRemove(false);
-          } else if (input === "n" || input === "N" || key.escape) {
-            setConfirmingRemove(false);
-          }
-          return;
-        }
-
-        if (handleListSearch(input, key)) {
-          setSelectedIndex(0);
-          return;
-        }
-
-        if (key.upArrow && selectedIndex > 0) {
-          setSelectedIndex(selectedIndex - 1);
-          setRemoveStatus(null);
-        } else if (key.downArrow && selectedIndex < filteredAgents.length - 1) {
-          setSelectedIndex(selectedIndex + 1);
-          setRemoveStatus(null);
-        } else if (key.return && filteredAgents[selectedIndex]) {
-          const agent = filteredAgents[selectedIndex]!;
-          const agentKey = agent.alias || agent.manifest.name;
-          const isEnabled = agent.manifest.enabled !== false;
-          await setAgentEnabled(agentKey, !isEnabled);
-          await reloadAgents();
-        } else if (input === "i" && filteredAgents[selectedIndex]) {
-          scrollControls.current?.scrollToBottom();
-          setListView("inspect");
-        } else if (input === "c" && filteredAgents[selectedIndex]) {
-          await enterConfigView(filteredAgents[selectedIndex]!, "list");
-        } else if (input === "d" && filteredAgents[selectedIndex]) {
-          const agent = filteredAgents[selectedIndex]!;
-          if (agent.origin === "bundled") {
-            setRemoveStatus("Bundled agents cannot be removed");
-          } else {
-            setConfirmingRemove(true);
-            setRemoveStatus(null);
-          }
-        } else if (key.escape) {
-          onExit();
-        }
+        // Shared resource manager owns list input.
       } else if (listView === "inspect") {
         const agent = filteredAgents[selectedIndex];
         const hasTODOTools = agent?.tools.some(t => t.schema.description?.includes("TODO"));
@@ -449,12 +402,6 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
 
   const selectedAgent = filteredAgents[selectedIndex];
 
-  const handleListWheel = wheelSelect((delta) => {
-    if (confirmingRemove) return;
-    setSelectedIndex((i) => stepIndex(i, delta, filteredAgents.length));
-    setRemoveStatus(null);
-  });
-
   return (
     <Box flexDirection="column" height={termRows} padding={1}>
       <Box flexDirection="column" flexShrink={0}>
@@ -480,20 +427,25 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
       <Box ref={scrollSlotRef} flexGrow={1} flexDirection="column">
       <ScrollBox height={scrollHeight} controls={scrollControls}>
       {activeTab === "list" && listView === "list" && (
-        // Scoped to the list rather than the whole hub: the Create wizard and
-        // the Marketplace tab own their own wheel behaviour.
-        <Box flexDirection="column" onWheel={handleListWheel}>
-          <ListTab
-            agents={filteredAgents}
-            allAgents={agents}
-            selectedIndex={selectedIndex}
-            searchQuery={listSearch}
-            searching={listSearching}
-            confirmingRemove={confirmingRemove}
-            removeStatus={removeStatus}
-            readinessMap={readinessMap}
-          />
-        </Box>
+        <ResourceManager adapter={managerAdapter} height={scrollHeight} onExit={onExit} onBusyChange={setManagerBusy}
+          actions={[{ key: "c", label: "Configure", run: async (item) => {
+            if (!item) return;
+            const loaded = await loadAgents();
+            setAgents(loaded);
+            const idx = loaded.findIndex((a) => (a.alias || a.manifest.name) === item.id);
+            if (idx < 0) throw new Error("Agent no longer exists.");
+            setSelectedIndex(idx);
+            await enterConfigView(loaded[idx]!, "list");
+          } }, { key: "v", label: "Agent diagnostics", run: async (item) => {
+            if (!item) return;
+            const loaded = await loadAgents();
+            setAgents(loaded);
+            const idx = loaded.findIndex((a) => (a.alias || a.manifest.name) === item.id);
+            if (idx < 0) throw new Error("Agent no longer exists.");
+            setSelectedIndex(idx);
+            setListView("inspect");
+          } }]}
+        />
       )}
       {activeTab === "list" && listView === "inspect" && selectedAgent && (
         <Box flexDirection="column">
@@ -564,7 +516,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
       <Box marginTop={1} borderStyle="single" borderTop paddingTop={1}>
         {activeTab === "list" && listView === "list" && (
           <Text dimColor>
-            ↑↓: Navigate | ENTER: Toggle | i: Inspect | c: Configure | d: Remove | s: Search | ESC: Exit/clear
+            1: List | 2: Marketplace | 3: Create
           </Text>
         )}
         {activeTab === "list" && listView === "inspect" && (

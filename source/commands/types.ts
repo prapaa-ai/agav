@@ -64,6 +64,7 @@ export interface CommandContext {
    * Not needed by the React TUIs — those render inside Ink.
    */
   suspendTerminal: () => () => void
+  showResourceTUI?: (kind: import("../resources/types.js").ResourceKind, onDone: () => void, marketplace?: boolean) => void
   showAgentsTUI: (onDone: () => void) => void
   showSkillsTUI: (onDone: () => void) => void
 }
