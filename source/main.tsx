@@ -320,6 +320,7 @@ export async function runPipeMode(
     : `${effectiveSystemPrompt}\n\nYour final response MUST be valid JSON matching this schema: ${schemaJson}. Return only the JSON value, with no markdown fences or commentary.`;
 
   const permissionMode = options.permissionOverride ?? "auto-accept";
+  const iterationsBudget = { remaining: config.maxIterations, total: config.maxIterations };
 
   const runTurn = async (streamText: boolean): Promise<{ finalText: string; exitCode: number; wroteStreamText: boolean }> => {
     let finalText = "";
@@ -327,7 +328,6 @@ export async function runPipeMode(
     let exitCode = 0;
     let madeEdits = false;
     const maxRetries = 3;
-    const iterationsBudget = { remaining: config.maxIterations, total: config.maxIterations };
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       madeEdits = false;
       const loop = runAgentLoop({
@@ -410,6 +410,10 @@ export async function runPipeMode(
     let validation = validateOutput(result.finalText, validate);
     if (!validation.valid) {
       const details = formatValidationErrors(validation);
+      if (iterationsBudget.remaining <= 0) {
+        process.stderr.write(`Error: Response failed JSON Schema validation; cannot retry because the agent reached maximum iterations: ${details}\n`);
+        return 1;
+      }
       process.stderr.write(`Schema validation failed; retrying once: ${details}\n`);
       conversation.addInternalUserMessage(schemaRetryPrompt(details));
       result = await runTurn(false);
