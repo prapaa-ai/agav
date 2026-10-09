@@ -36,7 +36,7 @@ import { useClipboardImageDetector } from "./hooks/use-paste-handler.js";
 import { KeybindingResolver, GLOBAL_ACTIONS, formatKeybinding, formatKeybindings, normalizeKeyEvent, type Keybindings } from "./config/keybindings.js";
 import { getLoopStatus, stopActiveLoop } from "./commands/loop.js";
 import { loadScheduledTasks, cronMatches, markTaskRun } from "./config/scheduler.js";
-import { getSandboxName } from "./utils/sandbox.js";
+import { getSandboxName, runInSandbox } from "./utils/sandbox.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
 import { terminalRelativePaths } from "./utils/display-path.js";
 import { openTarget } from "./utils/open-target.js";
@@ -137,6 +137,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     };
   }, []);
   const [showCompactionSummary, setShowCompactionSummary] = useState(false);
+  const [runningShellCommand, setRunningShellCommand] = useState<string | null>(null);
+  const shellAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => { shellAbortRef.current?.abort(); }, []);
   const [runningSkillName, setRunningSkillName] = useState<string | null>(null);
   const [skillProgress, setSkillProgress] = useState<SubagentProgress[]>([]);
   const [pickerActive, setPickerActive] = useState(false);
@@ -200,6 +203,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
    * mid-turn instead of being ignored until the CLI is idle.
    */
   const exit = useCallback(() => {
+    shellAbortRef.current?.abort();
     cancel();
     stopActiveLoop();
     exitInk();
@@ -555,6 +559,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
     }
     const match = keyResolverRef.current.feed(char, key);
+    if (shellAbortRef.current && (match.action === "interrupt" || match.action === "cancel" || match.actions.includes("exit"))) {
+      shellAbortRef.current.abort();
+      return;
+    }
     if (match.action === "togglePause" && isLoading && !pendingConfirmation) {
       togglePause();
       return;
@@ -692,28 +700,48 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
 
 
-      // ! prefix — run shell command directly and add output to context
-      if (trimmed.startsWith("!") && trimmed.length > 1) {
-        const cmd = trimmed.slice(1);
+      // ! prefix — run directly, show raw output, then ask the agent to analyze it.
+      // Do not execute a command whose follow-up would be rejected by a busy turn.
+      if (shellAbortRef.current) return;
+      if (trimmed.startsWith("!")) {
+        const cmd = trimmed.slice(1).trim();
+        if (!cmd || isLoading || pendingConfirmation) return;
+        const controller = new AbortController();
+        shellAbortRef.current = controller;
+        setRunningShellCommand(cmd);
         setInput("");
         setSystemMessages([]);
-        const { execSync } = await import("node:child_process");
-        let output: string;
+        let output = "";
+        let commandError: Error | null = null;
         try {
-          output = execSync(cmd, { cwd: process.cwd(), timeout: 30000, maxBuffer: 1024 * 1024, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-        } catch (err: any) {
-          output = (err.stdout ?? "") + (err.stderr ?? "") || err.message;
+          // Preserve direct-shell behavior (unsandboxed, inherited environment),
+          // while using the existing nonblocking, cancellable process runner.
+          const result = await runInSandbox({
+            command: cmd, cwd: process.cwd(), timeout: 30000, maxBuffer: 1024 * 1024,
+            forceBackend: "none", inheritEnv: true, signal: controller.signal,
+          });
+          output = result.stdout + result.stderr;
+          commandError = result.error;
+        } catch (err) {
+          commandError = err instanceof Error ? err : new Error(String(err));
+        } finally {
+          shellAbortRef.current = null;
+          setRunningShellCommand(null);
         }
-        const trimmedOutput = output.trimEnd();
-        const lines = trimmedOutput.split("\n");
-        const preview = lines.length > 30 ? [...lines.slice(0, 30), `... ${lines.length - 30} more lines`].join("\n") : trimmedOutput;
-        submit(
-          `The user ran a shell command. Here is the command and its output:\n$ ${cmd}\n${trimmedOutput}`,
-          undefined,
-          `! ${cmd}`,
-          [{ id: `shell-${Date.now()}`, role: "tool", toolName: "shell", toolDisplayName: `$ ${cmd}`, content: preview }],
-          invocationReason,
+        if (commandError) output += `${output && !output.endsWith("\n") ? "\n" : ""}${commandError.message}`;
+        const shellMessage: DisplayMessage = {
+          id: `shell-${++sysMessageId}`, role: "tool", toolName: "shell",
+          toolDisplayName: `$ ${cmd}`, content: output, isError: !!commandError,
+        };
+        const accepted = !controller.signal.aborted && await submit(
+          `The user ran a shell command. Here is the command and its output:\n$ ${cmd}\n${output}`,
+          undefined, `! ${cmd}`, [shellMessage], invocationReason,
         );
+        // Raw output must remain visible even without an LLM provider or when cancelled.
+        if (!accepted) {
+          addDisplayMessage({ id: `shell-user-${++sysMessageId}`, role: "user", content: `! ${cmd}`, invocationReason });
+          addDisplayMessage(shellMessage);
+        }
         return;
       }
 
@@ -898,7 +926,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setPsResponse(undefined);
       setSystemMessages([]);
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, isLoading, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
+    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
   );
 
   const displayError = error;
@@ -984,6 +1012,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
                 </Box>
               );
             })}
+          </Box>
+        )}
+
+        {runningShellCommand !== null && (
+          <Box marginBottom={1}>
+            <Text color="yellow"><Spinner />{` Shell · $ ${runningShellCommand}`}</Text>
           </Box>
         )}
 
