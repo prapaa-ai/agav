@@ -9,7 +9,7 @@ import { getCachedAgents, loadAgents } from "../agents/loader.js";
 import { loadRegistry } from "../agents/agent-registry.js";
 import type { AgentRegistryEntry } from "../agents/types.js";
 import { loadAgentConfig, saveAgentConfig } from "../agents/credentials.js";
-import { createToolRegistry } from "../tools/registry-factory.js";
+import { createBuiltinToolRegistry, KNOWN_TOOL_NAMES } from "../tools/registry-factory.js";
 import { implementAgentTools } from "../agents/tool-gen.js";
 import type { AgentDefinition } from "../agents/types.js";
 import type {
@@ -47,7 +47,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   const [nativeToolsEditing, setNativeToolsEditing] = useState(false);
   const [runtimeConfigs, setRuntimeConfigs]       = useState<Record<string, Record<string, string>>>({});
 
-  const nativeTools = createToolRegistry().list();
+  const nativeTools = createBuiltinToolRegistry(KNOWN_TOOL_NAMES).list();
 
   const [configEntryPoint, setConfigEntryPoint]   = useState<"list" | "inspect">("inspect");
   const [marketplaceBusy, setMarketplaceBusy]     = useState(false);

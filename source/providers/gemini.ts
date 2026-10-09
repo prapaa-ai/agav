@@ -14,6 +14,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync } from "node:fs";
 
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
+const CONTEXT_CACHE_TTL_MS = 5 * 60 * 1000;
 
 // Opt-in diagnostics for prefix-cache misses. Set AGAV_DEBUG_GEMINI=1 to log to
 // /tmp/agav-gemini-debug.log, or to a path to choose the file. Writes to a file
@@ -55,9 +56,30 @@ export class GeminiProvider implements LLMProvider {
   private apiKey: string;
   // Must outlive a single stream() call, including concurrent child requests.
   private callCounter = 0;
+  private readonly contextWindows = new Map<string, { value: number | undefined; expiresAt: number }>();
 
   constructor(apiKey: string) {
     this.apiKey = apiKey;
+  }
+
+  /** The Gemini models.get endpoint reports the real window as `inputTokenLimit`. */
+  async getContextWindow(model: string): Promise<number | undefined> {
+    const cached = this.contextWindows.get(model);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+    try {
+      const res = await fetch(`${BASE_URL}/models/${model}?key=${this.apiKey}`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) throw new Error(`Gemini models API error ${res.status}`);
+      const data = await res.json() as { inputTokenLimit?: number };
+      const value = data.inputTokenLimit ?? undefined;
+      this.contextWindows.set(model, { value, expiresAt: Date.now() + CONTEXT_CACHE_TTL_MS });
+      return value;
+    } catch {
+      this.contextWindows.delete(model);
+      return undefined;
+    }
   }
 
   async *stream(params: StreamParams): AsyncIterable<StreamEvent> {
