@@ -231,14 +231,12 @@ export async function* runAgentLoop(
       return;
     }
 
-    if (resolved === undefined && provider.isContextWindowConfirmedMissing?.(model)) {
-      // The catalog was fetched successfully and genuinely does not list this
-      // model — an OpenRouter stealth model being the motivating case — rather
-      // than a transient lookup failure. Worth asking the user, since the
-      // name-based fallback table has nothing meaningful to offer a codename
-      // like "stealth/space-bunny-alpha" either.
+    const assumed = conversation.hasAssumedContextWindow?.(model);
+    if (resolved === undefined && (assumed || provider.isContextWindowConfirmedMissing?.(model))) {
+      // Ask only after a confirmed catalog miss. A previous automatic default
+      // suppresses repeat prompts, but never skips the provider's TTL refresh.
       let manual: number | undefined;
-      if (params.requestManualContextWindow) {
+      if (!assumed && params.requestManualContextWindow) {
         try {
           manual = await params.requestManualContextWindow(model, signal);
         } catch {
@@ -249,8 +247,13 @@ export async function* runAgentLoop(
         yield { type: "error", error: new Error("Aborted") };
         return;
       }
-      resolved = manual && manual > 0 ? manual : DEFAULT_UNKNOWN_CONTEXT_WINDOW;
-      conversation.setManualContextWindow?.(model, resolved);
+      if (manual && manual > 0) {
+        resolved = manual;
+        conversation.setManualContextWindow?.(model, manual);
+      } else {
+        resolved = DEFAULT_UNKNOWN_CONTEXT_WINDOW;
+        conversation.setAssumedContextWindow?.(model);
+      }
     }
 
     conversation.setContextWindow(resolved);

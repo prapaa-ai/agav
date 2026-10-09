@@ -22,6 +22,17 @@ export class ConversationState {
    * the answer and re-prompt.
    */
   private manualContextWindows = new Map<string, number>();
+  // Remember automatic defaults separately: suppress repeat prompts without
+  // preventing provider metadata from replacing the assumed window later.
+  private assumedContextWindows = new Set<string>();
+
+  hasAssumedContextWindow(model: string): boolean {
+    return this.assumedContextWindows.has(model);
+  }
+
+  setAssumedContextWindow(model: string): void {
+    this.assumedContextWindows.add(model);
+  }
 
   setModel(model: string): void {
     // A window resolved for the previous model says nothing about the new one,

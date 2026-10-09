@@ -18,7 +18,10 @@ export const contextCommand: SlashCommand = {
   description: "Show context window usage",
   usage: "Usage: /context\n\nShows a breakdown of what's consuming your context window:\nsystem prompt, tools, MCP tools, skills, and conversation messages.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
-    if (context.conversation.getContextWindow() === undefined && context.provider?.getContextWindow) {
+    const manualOverride = context.conversation.getManualContextWindow(context.config.model);
+    if (manualOverride !== undefined) {
+      context.conversation.setContextWindow(manualOverride);
+    } else if (context.conversation.getContextWindow() === undefined && context.provider?.getContextWindow) {
       const selectionVersion = context.getModelSelectionVersion?.();
       try {
         const reported = await context.provider.getContextWindow(context.config.model);
