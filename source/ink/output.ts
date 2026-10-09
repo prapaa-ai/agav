@@ -138,7 +138,7 @@ export default class Output {
 	): void {
 		const {transformers, copyLines} = options;
 
-		if (!text) {
+		if (!text && !copyLines?.length) {
 			return;
 		}
 
@@ -179,6 +179,8 @@ export default class Output {
 		}
 
 		const clips: Clip[] = [];
+		const ambiguousRows = new Set<number>();
+		this.copyLines.length = 0;
 
 		for (const operation of this.operations) {
 			if (operation.type === "clip") {
@@ -209,7 +211,7 @@ export default class Output {
 					if (clipHorizontally) {
 						const width = this.caches.getWidestLine(text);
 
-						if (x + width < clip.x1! || x > clip.x2!) {
+						if ((width > 0 ? x + width <= clip.x1! : x < clip.x1!) || x >= clip.x2!) {
 							continue;
 						}
 					}
@@ -260,9 +262,26 @@ export default class Output {
 					}
 
 					const copy = copyLines?.[index];
-					if (copy && x + copy.startX >= 0 &&
-						(!this.copyLines[y + offsetY] || copy.explicit || copy.separator !== "\n")) {
-						this.copyLines[y + offsetY] = {...copy, startX: x + copy.startX};
+					const row = y + offsetY;
+					const left = clip?.x1 ?? 0;
+					const right = clip?.x2 ?? this.width;
+					const start = Math.max(left, operation.x + (copy?.startX ?? 0));
+					const end = Math.min(right, operation.x + (copy?.endX ?? this.caches.getStringWidth(line)));
+					// An empty source row is meaningful; a nonempty row clipped to
+					// nothing is not. Keep boundaries relative to the original write.
+					const visible = end > start || (copy && copy.endX === copy.startX &&
+						operation.x + copy.startX >= left && operation.x + copy.startX < right);
+					if (copy && visible && !ambiguousRows.has(row)) {
+						const previous = this.copyLines[row];
+						if (previous && previous.source !== (copy.source ?? operation)) {
+							// Independent columns cannot share a row-level separator.
+							ambiguousRows.add(row);
+							this.copyLines[row] = undefined;
+						} else if (previous) {
+							previous.endX = Math.max(previous.endX ?? 0, end);
+						} else {
+							this.copyLines[row] = {...copy, source: copy.source ?? operation, startX: start, endX: end};
+						}
 					}
 
 					for (const transformer of transformers) {

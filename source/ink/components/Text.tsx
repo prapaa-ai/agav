@@ -7,6 +7,10 @@ import {type MouseHandlers} from "./Box.js";
 export type Props = MouseHandlers & {
 	/** Separator before a pre-wrapped visual row when copying. */
 	readonly copySeparator?: string;
+	/** Identity shared by sibling spans of a pre-wrapped source row. */
+	readonly copySource?: string;
+	/** Decorative prefix/padding, not source content. */
+	readonly copyExclude?: boolean;
 	/**
 	 * Change text color. Ink uses Chalk under the hood, so all its
 	 * functionality is supported.
@@ -49,6 +53,8 @@ export default function Text({
 	inverse = false,
 	wrap = "wrap",
 	copySeparator,
+	copySource,
+	copyExclude,
 	children,
 	onClick,
 	onMouseDown,
@@ -109,6 +115,8 @@ export default function Text({
 			// eslint-disable-next-line @typescript-eslint/naming-convention
 			internal_transform: transform,
 			copySeparator,
+			copySource,
+			copyExclude,
 			// Mouse handler props flow through to the host element so the
 			// reconciler assigns them directly to the DOM node.
 			onClick,

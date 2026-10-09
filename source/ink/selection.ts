@@ -3,6 +3,9 @@
 // 0-indexed. A `SelectionRange` is normalized so that (startX, startY) precedes
 // (endX, endY) in reading order (top-to-bottom, then left-to-right).
 
+import sliceAnsi from "slice-ansi";
+import stringWidth from "string-width";
+
 export type SelectionRange = {
 	startX: number;
 	startY: number;
@@ -90,11 +93,18 @@ export const extendSelection = (anchor: Point, to: Point): SelectionRange =>
 	normalizeSelection(anchor, to);
 
 /** Source separator and content column for a rendered visual row. */
-export type CopyLine = {separator: string; startX: number; explicit?: boolean};
+export type CopyLine = {
+	separator: string;
+	startX: number;
+	endX?: number;
+	explicit?: boolean;
+	source?: object | string;
+};
 
 /** Recover source boundaries before visual rows lose their wrapping provenance. */
 export const getCopyLines = (source: string, rows: string[]): CopyLine[] => {
 	let cursor = 0;
+	const identity = {};
 	return rows.map((row, index) => {
 		let start = index > 0 && row === "" && source[cursor] === "\n"
 			? cursor + 1 : source.indexOf(row, cursor);
@@ -102,7 +112,7 @@ export const getCopyLines = (source: string, rows: string[]): CopyLine[] => {
 		const gap = source.slice(cursor, start);
 		const separator = index === 0 || /[\r\n]/.test(gap) ? "\n" : gap;
 		cursor = start + row.length;
-		return {separator, startX: 0};
+		return {separator, startX: 0, endX: stringWidth(row), source: identity};
 	});
 };
 
@@ -116,7 +126,7 @@ export const getSelectedText = (
 
 	if (startY === endY) {
 		const line = startY >= 0 && startY < lines.length ? lines[startY] : "";
-		return (line ?? "").slice(Math.max(0, startX), Math.max(0, endX));
+		return sliceAnsi(line ?? "", Math.max(0, startX), Math.min(Math.max(0, endX), copyLines[startY]?.endX ?? Infinity));
 	}
 
 	const parts: string[] = [];
@@ -125,10 +135,13 @@ export const getSelectedText = (
 		const line = (y >= 0 && y < lines.length ? lines[y] : "") ?? "";
 
 		const copy = copyLines[y];
-		const from = y === startY ? Math.max(0, startX) : (copy?.startX ?? 0);
-		const to = y === endY ? Math.max(0, endX) : line.length;
-		if (y > startY) parts.push(copy?.separator ?? "\n");
-		parts.push(line.slice(from, to));
+		const previous = copyLines[y - 1];
+		const sameSource = copy?.explicit ? previous !== undefined
+			: !copy?.source || copy.source === previous?.source;
+		const from = y === startY ? Math.max(0, startX) : (sameSource ? (copy?.startX ?? 0) : 0);
+		const to = Math.min(y === endY ? Math.max(0, endX) : stringWidth(line), copy?.endX ?? Infinity);
+		if (y > startY) parts.push(sameSource ? (copy?.separator ?? "\n") : "\n");
+		parts.push(sliceAnsi(line, from, to));
 	}
 
 	return parts.join("");

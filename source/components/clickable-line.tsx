@@ -14,6 +14,8 @@ export interface LineRun {
   text: string;
   /** Source separator before this visual row; omitted for ordinary spans. */
   copySeparator?: string;
+  /** Decorative padding that must not become copied source whitespace. */
+  copyExclude?: boolean;
   /** Present only for clickable runs. Opaque to this component — passed through verbatim to onOpen. */
   targetId?: string;
   /** Rendered with this color when set (used for the "clickable" affordance). */
@@ -54,6 +56,8 @@ interface Props {
  * handing runs to `ClickableLine`.
  */
 export default function ClickableLine({ runs, onOpen, onMiss }: Props) {
+  const copySource = React.useId();
+  const contentStart = runs.findIndex(run => run.copySeparator !== undefined);
   return (
     <Box flexDirection="row">
       {runs.map((run, i) => {
@@ -67,6 +71,8 @@ export default function ClickableLine({ runs, onOpen, onMiss }: Props) {
           <Text
             key={i}
             copySeparator={run.copySeparator}
+            copySource={copySource}
+            copyExclude={run.copyExclude || (contentStart >= 0 && i < contentStart)}
             color={run.color}
             backgroundColor={run.backgroundColor}
             underline={run.underline}

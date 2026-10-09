@@ -124,7 +124,7 @@ const UserMessage = React.memo(function UserMessage({ message, columns, onOpenRe
           ? { text: prefix, color: "green", bold: true, backgroundColor: "#2d2d2d" }
           : { text: prefix, dimColor: true, backgroundColor: "#2d2d2d" };
         const styledRuns = runs.map((r) => ({ ...r, backgroundColor: "#2d2d2d" }));
-        const padRun = { text: " ".repeat(pad), backgroundColor: "#2d2d2d" };
+        const padRun = { text: " ".repeat(pad), backgroundColor: "#2d2d2d", copyExclude: true };
         return <ClickableLine key={i} runs={[prefixRun, ...styledRuns, padRun]} onOpen={handleOpen} />;
       })}
       <Text backgroundColor="#2d2d2d">{emptyLine}</Text>

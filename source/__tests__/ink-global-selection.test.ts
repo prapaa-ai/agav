@@ -1,4 +1,5 @@
 import {EventEmitter} from "node:events";
+import chalk from "chalk";
 import {createElement} from "react";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 
@@ -43,13 +44,17 @@ const makeStdin = (): NodeJS.ReadStream => {
 };
 
 describe("user message copy boundaries", () => {
-	it.each(["targets", "no targets", "no handler"])("copies word wraps and intentional paragraph breaks (%s)", async (mode) => {
+	it.each(["targets", "no targets", "no handler", "intentional spaces"])("copies colored word wraps and intentional paragraph breaks (%s)", async (mode) => {
+		const previousLevel = chalk.level;
+		chalk.level = 3;
 		const stdout = makeStdout();
 		stdout.columns = 30;
 		const stdin = makeStdin();
 		const text = mode === "targets"
 			? "please read https://example.com for more details about this change.\n\nnext paragraph"
-			: "please read these notes for more details about this change.\n\nnext paragraph";
+			: mode === "intentional spaces"
+				? "please read these  notes for more details about this change.  \n\nnext paragraph"
+				: "please read these notes for more details about this change.\n\nnext paragraph";
 		const instance = new Ink({stdout, stdin, stderr: stdout, patchConsole: false,
 			exitOnCtrlC: false, alternateScreen: false, maxFps: 30});
 		try {
@@ -74,7 +79,30 @@ describe("user message copy boundaries", () => {
 			expect(writeClipboard).toHaveBeenLastCalledWith(stdout, text);
 		} finally {
 			instance.unmount();
+			chalk.level = previousLevel;
 			clearDetectionCache();
+		}
+	});
+});
+
+describe("multi-column copy boundaries", () => {
+	it("copies both adjacent boxes without dropping the left continuation", async () => {
+		const stdout = makeStdout();
+		stdout.columns = 12;
+		const stdin = makeStdin();
+		const instance = new Ink({stdout, stdin, stderr: stdout, patchConsole: false,
+			exitOnCtrlC: false, alternateScreen: false, maxFps: 30});
+		try {
+			instance.render(createElement(Box, {flexDirection: "row"},
+				createElement(Box, {width: 6}, createElement(Text, null, "ABC\nDEF")),
+				createElement(Box, {width: 6}, createElement(Text, null, "123456789"))));
+			await instance.waitUntilRenderFlush();
+			expect(stripAnsi((instance as any).lastOutput)).toBe("ABC   123456\nDEF   789");
+			stdin.emit("data", "\x1b[<0;1;1M");
+			stdin.emit("data", "\x1b[<0;10;2m");
+			expect(writeClipboard).toHaveBeenLastCalledWith(stdout, "ABC   123456\nDEF   789");
+		} finally {
+			instance.unmount();
 		}
 	});
 });
