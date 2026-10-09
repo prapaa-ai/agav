@@ -19,9 +19,13 @@ export const contextCommand: SlashCommand = {
   usage: "Usage: /context\n\nShows a breakdown of what's consuming your context window:\nsystem prompt, tools, MCP tools, skills, and conversation messages.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
     if (context.conversation.getContextWindow() === undefined && context.provider?.getContextWindow) {
+      const selectionVersion = context.getModelSelectionVersion?.();
       try {
         const reported = await context.provider.getContextWindow(context.config.model);
-        if (reported !== undefined && reported > 0) context.conversation.setContextWindow(reported);
+        if (reported !== undefined && reported > 0
+          && (selectionVersion === undefined || context.getModelSelectionVersion?.() === selectionVersion)) {
+          context.conversation.setContextWindow(reported);
+        }
       } catch {
         // Metadata is optional; retain the name-based estimate when lookup fails.
       }

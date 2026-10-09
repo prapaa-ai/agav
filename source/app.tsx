@@ -76,6 +76,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   const [input, setInput] = useState("");
   const [config, setConfig] = useState(initialConfig);
+  const modelSelectionVersion = useRef(0);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
   }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
@@ -792,10 +793,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           conversation,
           config,
           provider: activeProvider ?? undefined,
+          getModelSelectionVersion: () => modelSelectionVersion.current,
           setModel: (model: string) => {
+            modelSelectionVersion.current++;
             setConfig((prev) => ({ ...prev, model }));
           },
           setProvider: (provider) => {
+            modelSelectionVersion.current++;
             setConfig((prev) => ({ ...prev, provider }));
           },
           setEffort: (effort) => {
