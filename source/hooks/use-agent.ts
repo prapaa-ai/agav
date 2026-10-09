@@ -105,6 +105,11 @@ export interface PendingConfirmation {
   subagentTask?: string;
 }
 
+export interface PendingContextWindowRequest {
+  model: string;
+  resolve: (tokens: number | undefined) => void;
+}
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
@@ -120,6 +125,8 @@ interface UseAgentReturn {
   toolCalls: ToolCallInfo[];
   error: string | null;
   pendingConfirmation: PendingConfirmation | null;
+  pendingContextWindowRequest: PendingContextWindowRequest | null;
+  resolveContextWindowRequest: (tokens: number | undefined) => void;
   tokenUsage: TokenUsage;
   loadedPlugins: string[];
   mcpServers: string[];
@@ -193,6 +200,8 @@ export function useAgent(
   const [toolCalls, setToolCalls] = useState<ToolCallInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
+  const [pendingContextWindowRequest, setPendingContextWindowRequest] = useState<PendingContextWindowRequest | null>(null);
+  const pendingContextWindowRequestRef = useRef<PendingContextWindowRequest | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>(resumeTokenUsage ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
   const [loadedPlugins, setLoadedPlugins] = useState<string[]>([]);
   const sessionIdRef = useRef<string | null>(resumeSessionId ?? null);
@@ -438,6 +447,9 @@ export function useAgent(
   const cancel = useCallback(() => {
     abortRef.current?.abort();
     confirmationQueueRef.current.clear();
+    // Resolve synchronously: a state updater can run after the metadata fetch
+    // finishes and the prompt is queued, leaving the cancelled turn waiting.
+    pendingContextWindowRequestRef.current?.resolve(undefined);
     if (pausePromiseRef.current) {
       pausePromiseRef.current.resolve();
       pausePromiseRef.current = null;
@@ -493,6 +505,39 @@ export function useAgent(
     // spent waiting for the user to approve/deny a tool call.
     updateTurnStart(Date.now());
     confirmationQueueRef.current.resolve(choice);
+  }, []);
+
+  /**
+   * Resolve a pending manual-context-window request. `tokens` is undefined
+   * when the user dismissed the prompt without entering a value — the loop
+   * falls back to DEFAULT_UNKNOWN_CONTEXT_WINDOW in that case.
+   */
+  const resolveContextWindowRequest = useCallback((tokens: number | undefined) => {
+    pendingContextWindowRequestRef.current?.resolve(tokens);
+  }, []);
+
+  /**
+   * Shown to runAgentLoop as requestManualContextWindow. Surfaces the modal via
+   * state and resolves once the user answers it or dismisses it.
+   */
+  const requestManualContextWindow = useCallback((model: string, signal?: AbortSignal): Promise<number | undefined> => {
+    if (signal?.aborted) return Promise.resolve(undefined);
+    return new Promise((resolve) => {
+      const request: PendingContextWindowRequest = {
+        model,
+        resolve: (tokens) => {
+          signal?.removeEventListener("abort", onAbort);
+          if (pendingContextWindowRequestRef.current !== request) return;
+          pendingContextWindowRequestRef.current = null;
+          setPendingContextWindowRequest((current) => current === request ? null : current);
+          resolve(tokens);
+        },
+      };
+      const onAbort = () => request.resolve(undefined);
+      pendingContextWindowRequestRef.current = request;
+      signal?.addEventListener("abort", onAbort, { once: true });
+      setPendingContextWindowRequest(request);
+    });
   }, []);
 
   const addTokenUsage = useCallback((usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => {
@@ -847,6 +892,7 @@ export function useAgent(
               name: "activate_skill",
               input: { name: skillInvocation.name, arguments: skillInvocation.arguments },
             } : undefined,
+            requestManualContextWindow,
           });
 
           for await (const event of loop) {
@@ -1329,6 +1375,8 @@ export function useAgent(
     toolCalls,
     error,
     pendingConfirmation,
+    pendingContextWindowRequest,
+    resolveContextWindowRequest,
     tokenUsage,
     loadedPlugins,
     mcpServers,

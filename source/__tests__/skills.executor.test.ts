@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SkillDefinition } from "../skills/types.js";
 import { ToolRegistry } from "../tools/registry.js";
+import { createToolRegistry } from "../tools/registry-factory.js";
 import { ConversationState } from "../agent/conversation.js";
 import { estimateConversationTokens } from "../utils/tokens.js";
 
@@ -52,6 +53,32 @@ const skill: SkillDefinition = {
 describe("skills/executor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it.each([
+    { allowed: undefined, disallowed: undefined, expected: [] },
+    { allowed: ["github", "NotebookRead", "NotebookEdit", "lsp_query"], disallowed: undefined, expected: ["lsp_query", "read_notebook", "edit_notebook", "github"] },
+    { allowed: ["github", "NotebookRead"], disallowed: ["NotebookRead", "github"], expected: [] },
+  ])("only adds explicitly allowed optional tools (%#)", async ({ allowed, disallowed, expected }) => {
+    const parent = createToolRegistry();
+    const originalNames = parent.getSchemas().map((tool) => tool.name);
+    await executeSkill({ ...skill, frontmatter: {
+      ...skill.frontmatter, "allowed-tools": allowed, "disallowed-tools": disallowed,
+    } }, "", { ...baseDeps, parentRegistry: parent });
+    const child = vi.mocked(runAgentLoop).mock.calls[0]![0].toolRegistry;
+    const optional = new Set(["github", "read_notebook", "edit_notebook", "lsp_query"]);
+    expect(child.getSchemas().map((tool) => tool.name).filter((name) => optional.has(name))).toEqual(expected);
+    expect(parent.getSchemas().map((tool) => tool.name)).toEqual(originalNames);
+  });
+
+  it("preserves parent overrides for explicitly allowed optional tools", async () => {
+    const parent = new ToolRegistry();
+    const override = { schema: { name: "github", description: "override", inputSchema: { type: "object" } }, execute: vi.fn() };
+    parent.register(override);
+    await executeSkill({ ...skill, frontmatter: { ...skill.frontmatter, "allowed-tools": ["github"] } }, "", {
+      ...baseDeps, parentRegistry: parent,
+    });
+    expect(vi.mocked(runAgentLoop).mock.calls[0]![0].toolRegistry.list()).toEqual([override]);
   });
 
   it("isolates parent blocks and token cache from child compaction", async () => {

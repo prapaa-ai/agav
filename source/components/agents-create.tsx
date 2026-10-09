@@ -13,12 +13,12 @@ import { registerAgent } from "../agents/agent-registry.js";
 import { assertPathContained } from "../agents/installer.js";
 import { loadTemplates, saveTemplate, removeTemplate, type AgentTemplate } from "../agents/templates.js";
 import { deleteAgentWithTemplate } from "../agents/agent-lifecycle.js";
-import { createToolRegistry } from "../tools/registry-factory.js";
+import { createBuiltinToolRegistry, KNOWN_TOOL_NAMES } from "../tools/registry-factory.js";
 
 const SAFE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
 const STEP_LABELS = ["Name & Description", "System Prompt", "Native Tools", "MCP Servers", "Review & Save"];
-const NATIVE_TOOLS = createToolRegistry().list().map((tool) => tool.schema);
+const NATIVE_TOOLS = createBuiltinToolRegistry(KNOWN_TOOL_NAMES).list().map((tool) => tool.schema);
 
 type WizardStep = 1 | 2 | 3 | 4 | 5;
 
