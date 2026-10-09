@@ -24,6 +24,8 @@ export function agentToTool(
   deps: {
     provider: LLMProvider;
     config: AgavConfig;
+    /** Read the active prompt's budget at execution time, not registration time. */
+    getIterationsBudget?: () => { remaining: number; total: number } | undefined;
     hooks?: AgavHooks;
     onProgressUpdate?: (callId: string, event: import("../agent/loop.js").AgentEvent) => void;
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<any>;
@@ -79,7 +81,10 @@ export function agentToTool(
 
         let output: string;
         if (agentType === "native") {
-          output = await executeNativeAgent(agent, task, deps);
+          output = await executeNativeAgent(agent, task, {
+            ...deps,
+            iterationsBudget: deps.getIterationsBudget?.(),
+          });
         } else if (agentType === "a2a") {
           output = await executeA2AAgent(agent, task);
         } else {
