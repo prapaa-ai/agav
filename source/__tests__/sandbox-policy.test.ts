@@ -1,5 +1,11 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { platform } from "node:os";
+
+vi.mock("node:os", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:os")>(),
+  platform: vi.fn(() => "darwin"),
+}));
 
 vi.mock("node:child_process", () => ({
   execFileSync: vi.fn(() => Buffer.from("/usr/bin/sandbox-exec\n")),
@@ -33,7 +39,7 @@ const deps = () => ({
   iterationsBudget: { remaining: 2, total: 2 },
 });
 
-beforeEach(() => { vi.clearAllMocks(); vi.stubEnv("AGAV_NO_SANDBOX", ""); });
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(platform).mockReturnValue("darwin"); vi.stubEnv("AGAV_NO_SANDBOX", ""); });
 afterEach(() => vi.unstubAllEnvs());
 
 describe("model sandbox policy", () => {
@@ -79,6 +85,49 @@ describe("model sandbox policy", () => {
     }
     expect(runAgentLoop).toHaveBeenCalledOnce();
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  describe("Windows automatic fallback", () => {
+    beforeEach(() => {
+      vi.mocked(platform).mockReturnValue("win32");
+      // Backend detection is cached; exercise Windows from a fresh module graph.
+      vi.resetModules();
+      vi.stubEnv("AGAV_TEST_API_TOKEN", "harmless-secret");
+    });
+
+    it("automatically uses cmd.exe with credentials filtered", async () => {
+      const { shellTool: windowsShellTool } = await import("../tools/shell.js");
+      expect((await windowsShellTool.execute({ command: "echo harmless", inheritEnv: true })).isError).toBe(false);
+      expect(spawn).toHaveBeenCalledWith("cmd.exe", ["/c", "echo harmless"], expect.objectContaining({
+        detached: false,
+        env: expect.not.objectContaining({ AGAV_TEST_API_TOKEN: "harmless-secret" }),
+      }));
+    });
+
+    it("runs confirmed skill shell blocks using cmd.exe with credentials filtered", async () => {
+      const { executeSkill: executeWindowsSkill } = await import("../skills/executor.js");
+      const { runAgentLoop: windowsLoop } = await import("../agent/loop.js");
+      vi.mocked(windowsLoop).mockReturnValueOnce((async function* () {})());
+      await executeWindowsSkill({ ...skill, body: "```sh\necho harmless\n```" }, "", {
+        ...deps(), permissionMode: "ask", confirmTool: vi.fn(async () => "yes" as const),
+      });
+      expect(spawn).toHaveBeenCalledWith("cmd.exe", ["/c", "echo harmless"], expect.objectContaining({
+        detached: false,
+        env: expect.not.objectContaining({ AGAV_TEST_API_TOKEN: "harmless-secret" }),
+      }));
+    });
+
+    it("rejects unauthorized explicit none even when the automatic backend is none", async () => {
+      const { shellTool: windowsShellTool } = await import("../tools/shell.js");
+      const { detectSandboxBackend } = await import("../utils/sandbox.js");
+      expect(detectSandboxBackend()).toBe("none");
+      const result = await windowsShellTool.execute({
+        command: "echo harmless", sandbox: "none", allowUnsandboxed: true, inheritEnv: true,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("Sandbox bypass denied");
+      expect(spawn).not.toHaveBeenCalled();
+    });
   });
 
   it("runs confirmed skill shell blocks inside the default sandbox with filtered env", async () => {

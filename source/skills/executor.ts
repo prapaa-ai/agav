@@ -1,4 +1,5 @@
 import { runInSandbox } from "../utils/sandbox.js";
+import { MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_LINES, truncateToolText } from "../utils/tool-output.js";
 import type { SkillDefinition } from "./types.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -116,7 +117,16 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
       maxBuffer: 1024 * 1024, signal: opts.signal,
     });
     checkAborted(opts.signal);
-    if (output.error) throw output.error;
+    if (output.error) {
+      const stderr = output.stderr.trim();
+      if (!stderr) throw output.error;
+      // Do not echo command text or persist potentially sensitive diagnostics.
+      let message = `Skill shell block failed (${output.backend}): ${output.error.message}\n\nstderr:\n${stderr}`;
+      if (Buffer.byteLength(message) > MAX_TOOL_OUTPUT_BYTES || message.split("\n").length > MAX_TOOL_OUTPUT_LINES) {
+        message = truncateToolText(message, "[Shell diagnostics truncated; omitted content is unavailable.]");
+      }
+      throw new Error(message, { cause: output.error });
+    }
     result = replaceOnce(result, block.match, output.stdout.trim());
   }
   return result;
