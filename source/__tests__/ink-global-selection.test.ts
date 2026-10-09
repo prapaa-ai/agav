@@ -8,6 +8,9 @@ vi.mock("../ink/termio/clipboard.js", () => ({writeClipboard}));
 import render from "../ink/render.js";
 import Ink from "../ink/ink.js";
 import Text from "../ink/components/Text.js";
+import Box from "../ink/components/Box.js";
+import ClickableLine from "../components/clickable-line.js";
+import {buildClickableLines} from "../utils/render-clickable.js";
 import {DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING} from "../ink/termio/dec.js";
 
 type FakeStdout = NodeJS.WriteStream & {chunks: string[]};
@@ -134,6 +137,31 @@ describe("global text selection", () => {
 			expect(stdout.chunks).toHaveLength(writes);
 			expect(ink.pasteBuffer).toBeUndefined();
 			expect(ink.mouseBuffer).toBeUndefined();
+		} finally {
+			instance.unmount();
+		}
+	});
+
+	it.each([false, true])("copies soft wraps without losing hard breaks (clickable: %j)", async (clickable) => {
+		const stdout = makeStdout();
+		stdout.columns = 12;
+		const stdin = makeStdin();
+		const text = "implemented by other code.\n\nnext paragraph\ncode line";
+		const lines = buildClickableLines(text, 10,
+			[{kind: "url", text: "other", start: 15, end: 20}], () => "id", {});
+		const tree = clickable
+			? createElement(Box, {flexDirection: "column"}, ...lines.map((runs, i) =>
+				createElement(ClickableLine, {key: i, runs: [{text: "  "}, ...runs]})))
+			: createElement(Box, {paddingLeft: 2}, createElement(Text, null, text));
+		const instance = new Ink({stdout, stdin, stderr: stdout, patchConsole: false,
+			exitOnCtrlC: false, alternateScreen: false, maxFps: 30});
+		instance.render(tree);
+		await instance.waitUntilRenderFlush();
+		try {
+			const rows = (instance as any).lastOutput.split("\n");
+			stdin.emit("data", "\x1b[<0;3;1M");
+			stdin.emit("data", `\x1b[<0;${rows.at(-1).length + 1};${rows.length}m`);
+			expect(writeClipboard).toHaveBeenLastCalledWith(stdout, text);
 		} finally {
 			instance.unmount();
 		}

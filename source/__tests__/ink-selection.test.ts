@@ -4,6 +4,7 @@ import {
 	selectWordAt,
 	selectLineAt,
 	getSelectedText,
+	getCopyLines,
 	extendSelection,
 } from "../ink/selection.js";
 import {osc52Copy} from "../ink/termio/clipboard.js";
@@ -72,6 +73,20 @@ describe("selectLineAt", () => {
 });
 
 describe("getSelectedText", () => {
+	it.each([
+		["implemented by code", ["impl", "emented", "by code"]],
+		["one\n\n\ntwo", ["one", "", "", "two"]],
+		["same same\nsame", ["same", "same", "same"]],
+	])("recovers source boundaries for %j", (source, rows) => {
+		expect(getSelectedText(rows, {startX: 0, startY: 0,
+			endX: rows.at(-1)!.length, endY: rows.length - 1}, getCopyLines(source, rows))).toBe(source);
+	});
+
+	it("copies a partial selection across a mid-word wrap", () => {
+		const rows = ["impl", "emented"];
+		expect(getSelectedText(rows, {startX: 2, startY: 0, endX: 3, endY: 1},
+			getCopyLines("implemented", rows))).toBe("pleme");
+	});
 	it("extracts a single-line selection", () => {
 		const lines = ["hello world foo"];
 		const range = {startX: 6, startY: 0, endX: 11, endY: 0};

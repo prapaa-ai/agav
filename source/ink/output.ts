@@ -7,6 +7,7 @@ import {
 	tokenize,
 } from "@alcalzone/ansi-tokenize";
 import {type OutputTransformer} from "./render-node-to-output.js";
+import {type CopyLine} from "./selection.js";
 
 /**
 "Virtual" output class
@@ -38,6 +39,7 @@ type Operation =
 			y: number;
 			text: string;
 			transformers: OutputTransformer[];
+			copyLines?: CopyLine[];
 	  }
 	| {
 			type: "clip";
@@ -126,25 +128,21 @@ export default class Output {
 		this.caches = options.caches ?? new OutputCaches();
 	}
 
+	readonly copyLines: (CopyLine | undefined)[] = [];
+
 	write(
 		x: number,
 		y: number,
 		text: string,
-		options: {transformers: OutputTransformer[]},
+		options: {transformers: OutputTransformer[]; copyLines?: CopyLine[]},
 	): void {
-		const {transformers} = options;
+		const {transformers, copyLines} = options;
 
 		if (!text) {
 			return;
 		}
 
-		this.operations.push({
-			type: "write",
-			x,
-			y,
-			text,
-			transformers,
-		});
+		this.operations.push({type: "write", x, y, text, transformers, copyLines});
 	}
 
 	clip(clip: Clip): void {
@@ -195,6 +193,7 @@ export default class Output {
 				const {text, transformers} = operation;
 				let {x, y} = operation;
 				let lines = text.split("\n");
+				let copyLines = operation.copyLines;
 
 				const clip = clips.at(-1);
 
@@ -241,6 +240,7 @@ export default class Output {
 						const height = lines.length;
 						const to = y + height > clip.y2! ? clip.y2! - y : height;
 						lines = lines.slice(from, to);
+						copyLines = copyLines?.slice(from, to);
 
 						if (y < clip.y1!) {
 							y = clip.y1!;
@@ -257,6 +257,12 @@ export default class Output {
 					// pre-initialized `this.output`
 					if (!currentLine) {
 						continue;
+					}
+
+					const copy = copyLines?.[index];
+					if (copy && x + copy.startX >= 0 &&
+						(!this.copyLines[y + offsetY] || copy.explicit || copy.separator !== "\n")) {
+						this.copyLines[y + offsetY] = {...copy, startX: x + copy.startX};
 					}
 
 					for (const transformer of transformers) {

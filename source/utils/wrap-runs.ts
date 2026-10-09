@@ -5,6 +5,7 @@ import type { OpenRef } from "./open-ref.js";
 /** One visual line's worth of runs, ready for `ClickableLine`. */
 export interface LineRunSpec {
   text: string;
+  copySeparator?: string;
   targetId?: string;
   color?: string;
   backgroundColor?: string;

@@ -12,6 +12,8 @@ export interface LineRun {
    * escape sequences incorrectly.
    */
   text: string;
+  /** Source separator before this visual row; omitted for ordinary spans. */
+  copySeparator?: string;
   /** Present only for clickable runs. Opaque to this component — passed through verbatim to onOpen. */
   targetId?: string;
   /** Rendered with this color when set (used for the "clickable" affordance). */
@@ -64,6 +66,7 @@ export default function ClickableLine({ runs, onOpen, onMiss }: Props) {
         return (
           <Text
             key={i}
+            copySeparator={run.copySeparator}
             color={run.color}
             backgroundColor={run.backgroundColor}
             underline={run.underline}
