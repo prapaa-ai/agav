@@ -10,6 +10,7 @@ type Result = {
 	output: string;
 	outputHeight: number;
 	staticOutput: string;
+	copyLines?: Output["copyLines"];
 };
 
 const renderer = (
@@ -68,6 +69,7 @@ const renderer = (
 		return {
 			output: generatedOutput,
 			outputHeight,
+			copyLines: output.copyLines,
 			// Newline at the end is needed, because static output doesn't have
 			// one, so interactive output will override last line of static output
 			staticOutput: staticOutput ? `${staticOutput.get().output}\n` : "",

@@ -22,7 +22,8 @@ describe("buildClickableLines", () => {
     const width = 12;
     const result = buildClickableLines(styled, width, [], () => "id", {});
     const expected = wrapStyled(styled, width).map((line) => [{ text: line }]);
-    expect(result).toEqual(expected);
+    expect(result.map((runs) => runs.map(({copySeparator, ...run}) => run))).toEqual(expected);
+    expect(result.map((runs) => runs[0]!.copySeparator)).toEqual(["\n", " ", "", ""]);
   });
 
   it("makes a target's literal text clickable when it's found in the rendered line", () => {

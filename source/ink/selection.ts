@@ -3,6 +3,9 @@
 // 0-indexed. A `SelectionRange` is normalized so that (startX, startY) precedes
 // (endX, endY) in reading order (top-to-bottom, then left-to-right).
 
+import sliceAnsi from "slice-ansi";
+import stringWidth from "string-width";
+
 export type SelectionRange = {
 	startX: number;
 	startY: number;
@@ -89,21 +92,41 @@ export const selectLineAt = (lines: string[], y: number): SelectionRange => {
 export const extendSelection = (anchor: Point, to: Point): SelectionRange =>
 	normalizeSelection(anchor, to);
 
-/**
- * Extract the selected substring across lines and join with "\n".
- * Multi-line: first line from startX to end-of-line, middle lines whole, last
- * line up to endX. `endX` is treated as exclusive. Out-of-bounds rows/columns
- * are handled gracefully.
- */
+/** Source separator and content column for a rendered visual row. */
+export type CopyLine = {
+	separator: string;
+	startX: number;
+	endX?: number;
+	explicit?: boolean;
+	source?: object | string;
+};
+
+/** Recover source boundaries before visual rows lose their wrapping provenance. */
+export const getCopyLines = (source: string, rows: string[]): CopyLine[] => {
+	let cursor = 0;
+	const identity = {};
+	return rows.map((row, index) => {
+		let start = index > 0 && row === "" && source[cursor] === "\n"
+			? cursor + 1 : source.indexOf(row, cursor);
+		if (start < 0) start = cursor;
+		const gap = source.slice(cursor, start);
+		const separator = index === 0 || /[\r\n]/.test(gap) ? "\n" : gap;
+		cursor = start + row.length;
+		return {separator, startX: 0, endX: stringWidth(row), source: identity};
+	});
+};
+
+/** Extract a selection, restoring source separators when wrap metadata exists. */
 export const getSelectedText = (
 	lines: string[],
 	range: SelectionRange,
+	copyLines: (CopyLine | undefined)[] = [],
 ): string => {
 	const {startX, startY, endX, endY} = range;
 
 	if (startY === endY) {
 		const line = startY >= 0 && startY < lines.length ? lines[startY] : "";
-		return (line ?? "").slice(Math.max(0, startX), Math.max(0, endX));
+		return sliceAnsi(line ?? "", Math.max(0, startX, copyLines[startY]?.startX ?? 0), Math.min(Math.max(0, endX), copyLines[startY]?.endX ?? Infinity));
 	}
 
 	const parts: string[] = [];
@@ -111,14 +134,15 @@ export const getSelectedText = (
 	for (let y = startY; y <= endY; y++) {
 		const line = (y >= 0 && y < lines.length ? lines[y] : "") ?? "";
 
-		if (y === startY) {
-			parts.push(line.slice(Math.max(0, startX)));
-		} else if (y === endY) {
-			parts.push(line.slice(0, Math.max(0, endX)));
-		} else {
-			parts.push(line);
-		}
+		const copy = copyLines[y];
+		const previous = copyLines[y - 1];
+		const sameSource = copy?.explicit ? previous !== undefined
+			: !copy?.source || copy.source === previous?.source;
+		const from = y === startY ? Math.max(0, startX, copy?.startX ?? 0) : (sameSource ? (copy?.startX ?? 0) : 0);
+		const to = Math.min(y === endY ? Math.max(0, endX) : stringWidth(line), copy?.endX ?? Infinity);
+		if (y > startY) parts.push(sameSource ? (copy?.separator ?? "\n") : "\n");
+		parts.push(sliceAnsi(line, from, to));
 	}
 
-	return parts.join("\n");
+	return parts.join("");
 };
