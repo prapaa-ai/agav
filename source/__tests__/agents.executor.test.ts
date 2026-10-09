@@ -35,6 +35,16 @@ function setEvents(events: AgentEvent[], thrown?: Error) {
 beforeEach(() => { vi.clearAllMocks(); });
 
 describe("named-agent final output", () => {
+  it("loads optional built-ins explicitly declared in native-tools", async () => {
+    setEvents([{ type: "turn_complete" }]);
+    await executeNativeAgent({ ...agent, manifest: {
+      ...agent.manifest, "native-tools": ["github", "read_notebook", "edit_notebook", "lsp_query"],
+    } }, "task", deps);
+    expect(vi.mocked(runAgentLoop).mock.calls[0]![0].toolRegistry.getSchemas().map((tool) => tool.name)).toEqual([
+      "lsp_query", "read_notebook", "edit_notebook", "github",
+    ]);
+  });
+
   it("returns only the last completed answer and forwards every progress event unchanged", async () => {
     const events: AgentEvent[] = [
       { type: "thinking", text: "Planning" },
