@@ -62,7 +62,7 @@ async function mount(title = "subagent") {
     await settle();
   };
   await settle();
-  return { instance, key, interveneWhilePaused };
+  return { instance, key, stdin, settle, interveneWhilePaused };
 }
 const details = () => display.mock.calls.filter(([props]) => props.mode === "detail");
 
@@ -72,6 +72,28 @@ beforeEach(() => {
 });
 
 describe("overview input routing", () => {
+  it("does not inspect a task when typing and Enter arrive before a commit", async () => {
+    const { instance, stdin, settle, interveneWhilePaused } = await mount();
+    try {
+      stdin.emit("data", Buffer.from("x"));
+      stdin.emit("data", Buffer.from("\r"));
+      await settle();
+      expect(interveneWhilePaused).toHaveBeenCalledWith("x", undefined, undefined, undefined, undefined);
+      expect(details()).toEqual([]);
+    } finally { instance.unmount(); }
+  });
+
+  it("keeps a burst of typing, arrows and Enter out of the overview", async () => {
+    const { instance, stdin, settle, key } = await mount();
+    try {
+      for (const key of ["x", "\x1b[B", "\r"]) stdin.emit("data", Buffer.from(key));
+      await settle();
+      expect(details()).toEqual([]);
+      await key("\r");
+      expect(details().at(-1)?.[0].progress.id).toBe("subagent");
+    } finally { instance.unmount(); }
+  });
+
   it.each(["subagent", "skill", "native agent"])("submits a prompt without inspecting a %s", async (title) => {
     const { instance, key, interveneWhilePaused } = await mount(title);
     try {

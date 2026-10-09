@@ -23,6 +23,8 @@ interface Props {
   onRemoveAttachment?: () => void;
   onClearAttachments?: () => void;
   onRegisterInsert?: (fn: (label: string) => void) => void;
+  /** Shares the synchronous buffer with other keyboard handlers before React commits. */
+  onRegisterRead?: (read: () => string) => void;
   /**
    * Registers a function that replaces an existing attachment tile (matched
    * by id) in the buffer with literal text — the "paste the same thing again
@@ -220,7 +222,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
 }
 
 /** Renders the interactive prompt with history, completion, and paste handling. */
-export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, onRegisterExpand, onOpenAttachment, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages, agentLock, agentNames = [] }: Props) {
+export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, onRemoveAttachment, onClearAttachments, onRegisterInsert, onRegisterRead, onRegisterExpand, onOpenAttachment, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages, agentLock, agentNames = [] }: Props) {
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
   const [, bumpCursor] = useState(0);
@@ -406,6 +408,10 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       historyRef.current = merged;
     });
   }, []);
+
+  useEffect(() => {
+    onRegisterRead?.(() => liveRef.current.value);
+  }, [onRegisterRead]);
 
   // Register insert function so parent can insert text at cursor (e.g. Ctrl+I image)
   useEffect(() => {
