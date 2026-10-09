@@ -508,7 +508,10 @@ export async function main() {
     --deny-writes        Block all write operations
     --help, -h           Show this help
     --version, -v        Show version
-    --max-turns          Caps the number of agentic turns in a session
+    --max-turns <number> Cap agent-loop model requests per prompt (interactive, print, and run)
+                         Shared allowance for subagents, native agents, and skills;
+                         continuations and retries retain it, new prompts reset it.
+                         Tool execution itself does not spend an additional turn.
 
   Agent Commands
     $ agav agents list             List installed agents
