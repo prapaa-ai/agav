@@ -355,7 +355,15 @@ describe("skills/executor", () => {
       });
 
       expect(confirmTool).toHaveBeenCalledWith("skill_shell_block", { command: "echo hello" });
-      expect(runInSandbox).toHaveBeenCalled();
+      expect(runInSandbox).toHaveBeenCalledWith(expect.not.objectContaining({ forceBackend: "none" }));
+      expect(vi.mocked(runInSandbox).mock.calls[0]?.[0]).not.toHaveProperty("inheritEnv");
+    });
+
+    it("fails the skill when its shell sandbox fails instead of ignoring the error", async () => {
+      vi.mocked(runInSandbox).mockResolvedValueOnce({ stdout: "", stderr: "", error: new Error("sandbox unavailable"), backend: "seatbelt" });
+      await expect(executeSkill(shellSkill, "", { ...baseDeps, permissionMode: "auto-accept" })).rejects.toThrow("sandbox unavailable");
+      expect(runAgentLoop).not.toHaveBeenCalled();
+      expect(recordSkillTrace).toHaveBeenCalledWith("Shell Skill", "", 0, false);
     });
 
     it("executes shell blocks in auto-accept mode without confirmation", async () => {

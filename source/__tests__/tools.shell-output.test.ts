@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../utils/temp-output.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../utils/temp-output.js")>();
@@ -64,7 +64,9 @@ function savedPath(output: string): string {
   return path!;
 }
 
+beforeEach(() => vi.stubEnv("AGAV_NO_SANDBOX", "1"));
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const call of vi.mocked(mkdtempSync).mock.results) {
     if (call.type === "return" && typeof call.value === "string") directories.add(call.value);
   }

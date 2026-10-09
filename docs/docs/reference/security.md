@@ -47,7 +47,9 @@ Agav auto-detects the best available OS-level sandbox at startup:
 | Docker | Container | `--network=none`, memory and CPU limits |
 | Windows | Env-var shaping | Strips proxy vars, sets `AGAV_SANDBOX_ACTIVE=1` |
 
-If no backend is available, commands run unsandboxed. Set `AGAV_NO_SANDBOX=1` to intentionally disable sandbox detection.
+If no backend is available (including on Windows), automatic shell execution remains unsandboxed. Set `AGAV_NO_SANDBOX=1` before starting Agav to intentionally disable sandbox detection and permit `run_command` overrides of `sandbox: "none"`. Without that user opt-out, model-requested `none` overrides are rejected, including through skills and subagents. Tool approval, “always”, and auto-accept do not authorize sandbox bypass. Invalid backend values are rejected, and failure to launch a selected sandbox does not retry the command unsandboxed.
+
+The footer shows the **shell default**, not proof of isolation for every tool or command. `run_command` reports the execution backend when it differs from that default. Direct user `!` shell commands intentionally remain unsandboxed with an inherited environment; this does not grant the model the same privilege. These shell policies do not provide OS isolation for native file tools.
 
 The Seatbelt and Bubblewrap sections below describe **shell `run_command` execution**. Agent `.mjs` tool processes use separate profiles: their Seatbelt profile is deny-default, blocks network, and allows writes only in the working directory and temp; their Bubblewrap runner uses `--unshare-net`, binds host `/tmp`, and masks existing credential and `.config` directories. Do not assume shell and agent-tool network policies are identical. Bundled agents are trusted and run unsandboxed; global and project agent tools use the available agent sandbox backend.
 
@@ -90,7 +92,7 @@ Native, Seatbelt, and Bubblewrap shell commands use process-group cleanup on fai
 
 Agent/test subprocesses receive cancellation signals without the shell runner's descendant-tree guarantees. Cancelling an MCP request stops the local wait, not necessarily server-side execution, and does not kill its shared server. Docker cancellation targets the local CLI, not guaranteed container/daemon cleanup. Check remote jobs, containers, and services separately after interruption.
 
-Tool-activated skills receive the parent turn signal, but focused skill entries have no individual cancel handler. Manual-only slash-command skills receive no turn signal. Skill shell blocks execute directly outside the restricted tool registry and shell sandbox, and receive no cancellation signal. `fetch_url` uses its own 30-second timeout instead of the turn signal once a request starts. See [Skills](/features/skills#shell-blocks) before trusting executable skill instructions.
+Tool-activated skills receive the parent turn signal, but focused skill entries have no individual cancel handler. Manual-only slash-command skills receive no turn signal. Skill shell blocks execute outside the restricted tool registry but use the default shell sandbox, filtered environment, process-group cleanup, and the skill's cancellation signal when supplied. `fetch_url` uses its own 30-second timeout instead of the turn signal once a request starts. See [Skills](/features/skills#shell-blocks) before trusting executable skill instructions.
 
 ### Temporary output privacy
 

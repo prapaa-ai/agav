@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 
 vi.mock("node:child_process", () => ({
@@ -35,10 +35,20 @@ import { isDestructiveCommand, requireSandbox } from "../utils/sandbox.js";
 const execFileSyncMock = vi.mocked(execFileSync);
 
 describe("utils/sandbox", () => {
+  let exitListeners: Function[];
   beforeEach(() => {
+    exitListeners = process.listeners("exit");
     delete process.env.AGAV_NO_SANDBOX;
     vi.clearAllMocks();
     vi.mocked(spawn).mockImplementation(successfulChild);
+  });
+
+  afterEach(() => {
+    // resetModules creates fresh runner cleanup listeners; don't retain them across tests.
+    for (const listener of process.listeners("exit")) {
+      if (!exitListeners.includes(listener)) process.removeListener("exit", listener as () => void);
+    }
+    delete process.env.AGAV_NO_SANDBOX;
   });
 
   it("detects seatbelt when sandbox-exec is available", async () => {
@@ -78,6 +88,41 @@ describe("utils/sandbox", () => {
     expect(sandbox.detectSandboxBackend()).toBe("none");
     expect(sandbox.getSandboxName()).toBe("none (unsandboxed)");
     delete process.env.AGAV_NO_SANDBOX;
+  });
+
+  it.each(["none", "invalid", "", null, 123])("rejects unauthorized or invalid override %s before execution", async (forceBackend) => {
+    vi.resetModules();
+    const sandbox = await import("../utils/sandbox.js");
+    execFileSyncMock.mockReturnValue(Buffer.from("/usr/bin/sandbox-exec\n"));
+    await expect(sandbox.runInSandbox({
+      command: "echo test", cwd: "/tmp", timeout: 1000, maxBuffer: 1024,
+      forceBackend: forceBackend as any,
+    })).rejects.toThrow(/sandbox/i);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("allows explicit user opt-out but still rejects unknown backends", async () => {
+    vi.resetModules();
+    const sandbox = await import("../utils/sandbox.js");
+    process.env.AGAV_NO_SANDBOX = "1";
+    expect((await sandbox.runInSandbox({ command: "echo test", cwd: "/tmp", timeout: 1000, maxBuffer: 1024, forceBackend: "none" })).backend).toBe("none");
+    await expect(sandbox.runInSandbox({ command: "echo test", cwd: "/tmp", timeout: 1000, maxBuffer: 1024, forceBackend: "typo" as any })).rejects.toThrow(/sandbox/i);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains automatic unsandboxed execution on unsupported systems", async () => {
+    vi.resetModules();
+    const sandbox = await import("../utils/sandbox.js");
+    execFileSyncMock.mockImplementation(() => { throw new Error("not found"); });
+    expect((await sandbox.runInSandbox({ command: "echo test", cwd: "/tmp", timeout: 1000, maxBuffer: 1024 })).backend).toBe("none");
+  });
+
+  it("preserves explicit direct user shell execution and environment inheritance", async () => {
+    vi.resetModules();
+    const sandbox = await import("../utils/sandbox.js");
+    const result = await sandbox.runInSandbox({ command: "echo test", cwd: "/tmp", timeout: 1000, maxBuffer: 1024, forceBackend: "none", allowUnsandboxed: true, inheritEnv: true } as any);
+    expect(result.backend).toBe("none");
+    expect(vi.mocked(spawn).mock.calls[0]?.[2]?.env).toBeUndefined();
   });
 
   it("flags destructive commands", () => {
@@ -283,7 +328,7 @@ describe("utils/sandbox", () => {
         cwd: "/test/dir",
         timeout: 1000,
         maxBuffer: 1024,
-        forceBackend: "none",
+        forceBackend: "none", allowUnsandboxed: true,
       });
 
       const call = vi.mocked(cp.spawn).mock.calls.find((args) => args[0] === "/bin/sh");
@@ -335,7 +380,7 @@ describe("utils/sandbox", () => {
     }
   });
 
-  it.each(["seatbelt", "bubblewrap"] as const)("keeps filtering on %s fallback despite skill inheritance", async (backend) => {
+  it.each(["seatbelt", "bubblewrap"] as const)("fails closed when %s cannot launch despite skill inheritance", async (backend) => {
     vi.resetModules();
     const cp = await import("node:child_process");
     const sandbox = await import("../utils/sandbox.js");
@@ -356,7 +401,10 @@ describe("utils/sandbox", () => {
         command: "echo test", cwd: "/tmp", timeout: 1000, maxBuffer: 1024,
         forceBackend: backend, inheritEnv: true,
       });
-      expect(result.backend).toBe("none");
+      expect(result.backend).toBe(backend);
+      expect(result.error?.message).toContain("ENOENT");
+      expect(cp.spawn).toHaveBeenCalledTimes(1);
+      expect(sandbox.detectSandboxBackend()).not.toBe("none");
       const env = vi.mocked(cp.spawn).mock.calls.at(-1)?.[2]?.env;
       expect(env).toBeDefined();
       expect(env).not.toHaveProperty("AGAV_TEST_API_TOKEN");
