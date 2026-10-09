@@ -574,7 +574,7 @@ export function useAgent(
 
   /** Start a new agent turn, wiring UI events to loop events and persisting results on completion. */
   const submit = useCallback(
-    async (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason, skillInvocation?: { name: string; arguments: string }): Promise<boolean> => {
+    async (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason, skillInvocation?: { name: string; arguments: string }, isAutoContinuation = false): Promise<boolean> => {
       if (!provider) {
         setError("No LLM provider configured. Check your API key.");
         return false;
@@ -585,10 +585,11 @@ export function useAgent(
       if (!trimmed) return false;
       submitPendingRef.current = true;
 
-      if (!displayText) {
+      // Presentation labels (including !commands) do not define prompt lifetime.
+      if (!isAutoContinuation || !currentIterationsBudgetRef.current) {
         currentIterationsBudgetRef.current = { remaining: config.maxIterations, total: config.maxIterations };
       }
-      const iterationsBudget = currentIterationsBudgetRef.current ?? { remaining: config.maxIterations, total: config.maxIterations };
+      const iterationsBudget = currentIterationsBudgetRef.current;
 
       let expansion;
       try {
@@ -608,7 +609,7 @@ export function useAgent(
 
       // Clear plan display when user sends a new message (not auto-continue).
       // If the plan is still active, turn_complete will reload it.
-      if (!displayText) {
+      if (!isAutoContinuation) {
         setActivePlan(null);
         // A real message from the user is fresh input for the current step, so
         // the no-progress budget starts over.
@@ -1289,7 +1290,7 @@ export function useAgent(
       const stepMatch = msg.match(/Step (\d+) only: (.+?)\./);
       const displayText = stepMatch ? `▸ Plan step ${stepMatch[1]}` : "▸ Continuing plan...";
       setPlanContinueMsg(null);
-      setTimeout(() => submit(msg, undefined, displayText), 100);
+      setTimeout(() => submit(msg, undefined, displayText, undefined, undefined, undefined, true), 100);
     }
   }, [isLoading, planContinueMsg, submit]);
 
