@@ -175,7 +175,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     {view === "list" && <Text dimColor>Page {page + 1}/{pages}{adapter.notice ? ` · ${adapter.notice}` : ""}</Text>}
     <Text dimColor>{form ? "Tab/↑↓: Field | ENTER: Save | ESC: Cancel" : view === "detail" ? "↑↓: Scroll | b/ESC: Back" : view === "delete" ? "y: Delete | n/ESC: Cancel" : [
       "↑↓: Navigate", "←→: Page", "ENTER/i: Inspect", "s: Search", "r: Refresh",
-      adapter.create && "n: Create", adapter.update && item && "e: Edit", canToggle && "t: Toggle", canRemove && "d: Delete",
+      adapter.create && "n: Create", adapter.update && item && "e: Edit", canToggle && "t: Enable/disable", canRemove && "d: Delete",
       ...actions.map((a) => `${a.key}: ${a.label}`), "ESC: Exit/clear",
     ].filter(Boolean).join(" | ")}</Text>
   </Box>;

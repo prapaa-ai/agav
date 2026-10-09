@@ -102,6 +102,7 @@ describe("shared resource manager", () => {
   it("inspects with Enter, backs out with ESC, and toggles explicitly", async () => {
     const ui = await mount();
     try {
+      expect(ui.output()).toContain("t: Enable/disable");
       await ui.key("\r");
       expect(ui.adapter.get).toHaveBeenCalledWith("0");
       expect(ui.output()).toContain("Full detail 0");
@@ -131,7 +132,7 @@ describe("shared resource manager", () => {
     const ui = await mount({ remove: undefined, setEnabled: undefined });
     try {
       expect(ui.output()).not.toContain("d: Delete");
-      expect(ui.output()).not.toContain("t: Toggle");
+      expect(ui.output()).not.toContain("t: Enable/disable");
       expect(ui.output()).not.toContain("n: Create");
       await ui.key("d"); await ui.key("y"); await ui.key("t");
       expect(ui.adapter.list).toHaveBeenCalledOnce();
