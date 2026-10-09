@@ -1,12 +1,17 @@
 import type { SlashCommand, CommandResult } from "./types.js"
 import { listSessions } from "../config/history.js"
+import { openResourceManager } from "./resource-manager.js"
 
 /** Search saved session history for a keyword match. */
 export const searchCommand: SlashCommand = {
   name: "search",
   description: "Search past sessions by keyword",
   usage: "Usage: /search <query>\n\n  /search OAuth\n  /search provider bug\n\nSearches saved session messages for the given keyword.\nResults show matching sessions with context.",
-  async execute(args: string): Promise<CommandResult> {
+  async execute(args: string, context): Promise<CommandResult> {
+    if (!args.trim()) {
+      const interactive = openResourceManager("search-history", context);
+      if (interactive) return interactive;
+    }
     const query = args.trim().toLowerCase()
     if (!query) {
       return { type: "message", text: "Usage: /search <keyword>" }
@@ -81,3 +86,5 @@ export const searchCommand: SlashCommand = {
     }
   },
 }
+
+export const searchHistoryCommand: SlashCommand = { ...searchCommand, name: "search-history" }

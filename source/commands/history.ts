@@ -2,6 +2,22 @@ import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import { listSessions, loadSession } from "../config/history.js";
 import { isProviderName } from "../config/startup.js";
 import { pickSession } from "../utils/session-picker.js";
+import { openResourceManager } from "./resource-manager.js";
+
+export const historyCommand: SlashCommand = {
+  name: "history",
+  description: "Browse saved sessions",
+  usage: "Usage: /history [list] · /resume <id> to load a session",
+  async execute(args, context) {
+    if (!args.trim()) {
+      const interactive = openResourceManager("history", context);
+      if (interactive) return interactive;
+    }
+    if (args.trim() && args.trim() !== "list") return { type: "message", text: "Usage: /history [list]" };
+    const sessions = await listSessions();
+    return { type: "message", text: sessions.length ? sessions.map((s) => `${s.id.slice(0, 8)} · ${s.title} · ${s.messages.length} messages`).join("\n") : "No saved sessions." };
+  },
+};
 
 /** Load a session into the active conversation and restore its model/provider. */
 function applySession(loaded: NonNullable<Awaited<ReturnType<typeof loadSession>>>, context: CommandContext): CommandResult {
