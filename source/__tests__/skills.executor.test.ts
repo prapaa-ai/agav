@@ -382,7 +382,46 @@ describe("skills/executor", () => {
       });
 
       expect(confirmTool).toHaveBeenCalledWith("skill_shell_block", { command: "echo hello" });
-      expect(runInSandbox).toHaveBeenCalled();
+      expect(runInSandbox).toHaveBeenCalledWith(expect.not.objectContaining({ forceBackend: "none" }));
+      expect(vi.mocked(runInSandbox).mock.calls[0]?.[0]).not.toHaveProperty("inheritEnv");
+    });
+
+    it("fails the skill when its shell sandbox fails instead of ignoring the error", async () => {
+      vi.mocked(runInSandbox).mockResolvedValueOnce({ stdout: "", stderr: "", error: new Error("sandbox unavailable"), backend: "seatbelt" });
+      await expect(executeSkill(shellSkill, "", { ...baseDeps, permissionMode: "auto-accept" })).rejects.toThrow("sandbox unavailable");
+      expect(runAgentLoop).not.toHaveBeenCalled();
+      expect(recordSkillTrace).toHaveBeenCalledWith("Shell Skill", "", 0, false);
+    });
+
+    it.each([
+      "missing required dependency",
+      "missing required dependency\n" + "😀".repeat(30_000) + "\nfinal diagnostic",
+      "missing required dependency\n" + "line\n".repeat(3_000) + "final diagnostic",
+    ])("retains bounded stderr and the original exit error without continuing (%#)", async (stderr) => {
+      const error = new Error("Command exited with code 1");
+      vi.mocked(runInSandbox).mockResolvedValueOnce({ stdout: "", stderr, error, backend: "seatbelt" });
+      const onEvent = vi.fn();
+      const failedSkill = { ...shellSkill, body: shellSkill.body + "\n```sh\necho second\n```" };
+      const failure = await executeSkill(failedSkill, "", {
+        ...baseDeps, permissionMode: "auto-accept", onEvent,
+      }).catch((cause: Error) => cause);
+      expect(failure).toBeInstanceOf(Error);
+      const diagnostic = failure as Error;
+      expect(diagnostic.message).toContain("missing required dependency");
+      expect(diagnostic.message).toContain("Command exited with code 1");
+      expect(diagnostic.message).toContain("seatbelt");
+      expect(diagnostic.cause).toBe(error);
+      expect(Buffer.byteLength(diagnostic.message)).toBeLessThanOrEqual(40_000);
+      expect(diagnostic.message.split("\n").length).toBeLessThanOrEqual(2_000);
+      expect(diagnostic.message).not.toContain("�");
+      if (stderr.length > 40_000 || stderr.split("\n").length > 2_000) {
+        expect(diagnostic.message).toContain("middle omitted");
+        expect(diagnostic.message).toContain("final diagnostic");
+      }
+      expect(runInSandbox).toHaveBeenCalledTimes(1);
+      expect(runAgentLoop).not.toHaveBeenCalled();
+      expect(onEvent).toHaveBeenLastCalledWith({ type: "error", error: diagnostic });
+      expect(recordSkillTrace).toHaveBeenCalledWith("Shell Skill", "", 0, false);
     });
 
     it("executes shell blocks in auto-accept mode without confirmation", async () => {
