@@ -39,7 +39,7 @@
     "marked-terminal": "^7.3.0",
     "ollama": "^0.6.4",
     "openai": "^7.27.0",
-    "pdfjs-dist": "^6.3.289",
+    "pdfjs-dist": "^6.4.299",
     "react": "~19.2.8",
     "react-reconciler": "0.33.0",
     "scheduler": "^0.27.0",
