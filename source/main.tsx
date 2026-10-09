@@ -67,15 +67,15 @@ function findClosestFlag(input: string): string | undefined {
   return best;
 }
 
- function parseMaxTurns(raw?: string): number | undefined {
-    if (!raw) return undefined;
-    const n = Number.parseInt(raw.trim(), 10);
-    if (!Number.isInteger(n) || n <= 0) {
-      process.stderr.write("Error: --max-turns must be a positive integer\n");
-      process.exit(1);
-    }
-    return n;
+function parseMaxTurns(raw: string): number {
+  const value = raw.trim();
+  const n = Number(value);
+  if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(n) || n <= 0) {
+    process.stderr.write("Error: --max-turns must be a positive safe integer (1–9007199254740991). Use --max-turns N or --max-turns=N.\n");
+    process.exit(1);
   }
+  return n;
+}
 /** Choose between providers which expose the same model during interactive startup. */
 function pickProviderForModel(model: string, matches: FetchedModel[]): Promise<FetchedModel | null> {
   const stdin = process.stdin;
@@ -212,9 +212,9 @@ export function parseArgs(argv: string[]) {
     } else if (arg.startsWith("--openai-api=")) {
       flags.openaiApi = arg.slice("--openai-api=".length);
     } else if (arg === "--max-turns") {
-      flags.maxTurns = argv[++i] ?? "";
+      flags.maxTurns = parseMaxTurns(argv[++i] ?? "");
     } else if (arg.startsWith("--max-turns=")) {
-      flags.maxTurns = arg.slice("--max-turns=".length);
+      flags.maxTurns = parseMaxTurns(arg.slice("--max-turns=".length));
     } else if (arg === "update" && !subcommandSeen) {
       flags.update = true;
       subcommandSeen = true;
@@ -320,6 +320,7 @@ export async function runPipeMode(
     : `${effectiveSystemPrompt}\n\nYour final response MUST be valid JSON matching this schema: ${schemaJson}. Return only the JSON value, with no markdown fences or commentary.`;
 
   const permissionMode = options.permissionOverride ?? "auto-accept";
+  const iterationsBudget = { remaining: config.maxIterations, total: config.maxIterations };
 
   const runTurn = async (streamText: boolean): Promise<{ finalText: string; exitCode: number; wroteStreamText: boolean }> => {
     let finalText = "";
@@ -327,7 +328,6 @@ export async function runPipeMode(
     let exitCode = 0;
     let madeEdits = false;
     const maxRetries = 3;
-    const iterationsBudget = { remaining: config.maxIterations, total: config.maxIterations };
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       madeEdits = false;
       const loop = runAgentLoop({
@@ -410,6 +410,10 @@ export async function runPipeMode(
     let validation = validateOutput(result.finalText, validate);
     if (!validation.valid) {
       const details = formatValidationErrors(validation);
+      if (iterationsBudget.remaining <= 0) {
+        process.stderr.write(`Error: Response failed JSON Schema validation; cannot retry because the agent reached maximum iterations: ${details}\n`);
+        return 1;
+      }
       process.stderr.write(`Schema validation failed; retrying once: ${details}\n`);
       conversation.addInternalUserMessage(schemaRetryPrompt(details));
       result = await runTurn(false);
@@ -786,11 +790,9 @@ export async function main() {
   }
 
   startupFinished = true;
-  const maxTurns: number | undefined = parseMaxTurns(typeof flags.maxTurns === "string"? flags.maxTurns.trim(): "");
-
   // Overwrites the config instance when maxTurns is explicitly provided.
-  if (maxTurns !== undefined) {
-    config.maxIterations = maxTurns
+  if (flags.maxTurns !== undefined) {
+    config.maxIterations = flags.maxTurns;
   }
   // Short-circuit into non-interactive mode before the Ink UI is rendered.
   if (flags.print) {

@@ -685,6 +685,7 @@ export function useAgent(
                 toolRegistryRef.current.register(agentToTool(agent, {
                   provider,
                   config: configRef.current,
+                  getIterationsBudget: () => currentIterationsBudgetRef.current ?? undefined,
                   onProgressUpdate: async (callId, event) => {
                     if (pausePromiseRef.current) await pausePromiseRef.current.promise;
                     if (!trackerCache.has(callId)) {
