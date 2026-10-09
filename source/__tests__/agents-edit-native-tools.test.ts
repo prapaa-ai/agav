@@ -76,7 +76,7 @@ describe("edit-agent native tools", () => {
   it("renders the native tools editor with current selection and controls", async () => {
     const agent = makeAgent("global");
     const stdout = makeStdout();
-    const instance = render(h(ConfigEditView, {
+    const editor = h(ConfigEditView, {
       agent,
       items: getConfigItems(agent),
       editIndex: 2,
@@ -89,7 +89,8 @@ describe("edit-agent native tools", () => {
       nativeToolNames: new Set(["read_file"]),
       nativeToolsIndex: 0,
       nativeToolsEditing: true,
-    }), {
+    });
+    const instance = render(editor, {
       stdout,
       stdin: makeStdin(),
       patchConsole: false,
@@ -104,6 +105,15 @@ describe("edit-agent native tools", () => {
     expect(frame).toContain("› [x] read_file");
     expect(frame).toContain("  [ ] write_file");
     expect(frame).toContain("SPACE: Toggle | ENTER: Save | ESC: Cancel");
+
+    stdout.chunks.length = 0;
+    instance.rerender(h(ConfigEditView, { ...editor.props, nativeToolsIndex: 10 }));
+    await settle(instance);
+
+    const optionalToolsFrame = stripAnsi(stdout.chunks.join(""));
+    for (const name of ["github", "read_notebook", "edit_notebook", "lsp_query"]) {
+      expect(optionalToolsFrame).toContain(`[ ] ${name}`);
+    }
 
     instance.unmount();
   });
