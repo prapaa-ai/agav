@@ -27,6 +27,8 @@ export interface CommandContext {
   conversation: ConversationState
   config: AgavConfig
   provider?: LLMProvider,
+  /** Changes synchronously when the selected model or provider changes. */
+  getModelSelectionVersion?: () => number,
   iterationsBudget?: { remaining: number, total: number },
   setModel: (model: string) => void
   setProvider: (provider: AgavConfig["provider"]) => void
