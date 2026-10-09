@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 
 import { wrapTextToRuns, targetToRefId, type LineRunSpec } from "../utils/wrap-runs.js";
-import { wrapToWidth } from "../utils/wrap-text.js";
+import { wrapToWidth, visualLen } from "../utils/wrap-text.js";
+import { getCopyLines, getSelectedText } from "../ink/selection.js";
 import type { DetectedTarget } from "../utils/detect-targets.js";
 import { encodeOpenRef } from "../utils/open-ref.js";
 
@@ -14,6 +15,19 @@ function linesText(result: LineRunSpec[][]): string[] {
 }
 
 describe("wrapTextToRuns", () => {
+  it.each([2, 4, 10, 40])("keeps indentation, target offsets and copy boundaries at width %i", (width) => {
+    const text = "  code()\n    - item  \n   \n  界🎉é end";
+    const start = text.indexOf("code()");
+    const result = wrapTextToRuns(text, width,
+      [makeTarget({ kind: "path", text: "code()", start, end: start + 6 })], () => "code");
+    const rows = linesText(result);
+    expect(rows[0]!.startsWith("  ")).toBe(true);
+    expect(rows.every(row => visualLen(row) <= width)).toBe(true);
+    expect(result.flat().filter(run => run.targetId === "code").map(run => run.text).join("")).toBe("code()");
+    expect(getSelectedText(rows, { startX: 0, startY: 0, endX: width, endY: rows.length - 1 },
+      getCopyLines(text, rows))).toBe(text);
+  });
+
   it.each([false, true])("preserves source separators on the first run of each row (targets: %j)", (clickable) => {
     const text = "implemented by code\n\nnext paragraph";
     const targets = clickable ? [makeTarget({ kind: "path", text: "implemented", start: 0, end: 11 })] : [];

@@ -15,7 +15,7 @@ import {buildClickableLines} from "../utils/render-clickable.js";
 import {DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING} from "../ink/termio/dec.js";
 import MessageList from "../components/message-list.js";
 import {clearDetectionCache, detectTargets} from "../utils/detect-targets.js";
-import {stripAnsi} from "../utils/wrap-text.js";
+import {stripAnsi, visualLen, wrapToWidth} from "../utils/wrap-text.js";
 
 type FakeStdout = NodeJS.WriteStream & {chunks: string[]};
 
@@ -44,6 +44,49 @@ const makeStdin = (): NodeJS.ReadStream => {
 };
 
 describe("user message copy boundaries", () => {
+	it.each([
+		["message", 30],
+		["message that wraps onto another row", 18],
+		["  indented text", 30],
+		["  indented text wraps\n    code()\n  - item\n   \n  end  ", 18],
+		["     x\n  y", 4],
+		["  code()\n    - item  \n   \n  界🎉é end", 6],
+		["  界🎉é words\n  end", 10],
+		["  see https://example.com\n  end", 18],
+	] as const)("renders and copies a user message from column zero: %j (width %i)", async (text, columns) => {
+		const previousLevel = chalk.level;
+		chalk.level = 3;
+		const stdout = makeStdout();
+		stdout.columns = columns;
+		const stdin = makeStdin();
+		const instance = new Ink({stdout, stdin, stderr: stdout, patchConsole: false,
+			exitOnCtrlC: false, alternateScreen: false, maxFps: 30});
+		try {
+			instance.render(createElement(MessageList, {
+				messages: [{id: "copy-indent", role: "user", content: text}],
+				columns, toolDetailKey: "ctrl+o", onOpenRef: () => {},
+			}));
+			for (let i = 0; i < 4; i++) {
+				await new Promise(resolve => setTimeout(resolve, 20));
+				await instance.waitUntilRenderFlush();
+			}
+			const rows = stripAnsi((instance as any).lastOutput).split("\n");
+			const first = rows.findIndex(row => row.startsWith("❯ "));
+			expect(first).toBeGreaterThanOrEqual(0);
+			const wrapped = wrapToWidth(text, columns - 2);
+			expect(rows.slice(first, first + wrapped.length)).toEqual(wrapped.map((line, i) =>
+				(i === 0 ? "❯ " : "  ") + line + " ".repeat(columns - 2 - visualLen(line))));
+			writeClipboard.mockClear();
+			stdin.emit("data", `\x1b[<0;1;${first + 1}M`);
+			stdin.emit("data", `\x1b[<0;${columns + 1};${first + wrapped.length}m`);
+			expect(writeClipboard).toHaveBeenLastCalledWith(stdout, text);
+		} finally {
+			instance.unmount();
+			chalk.level = previousLevel;
+			clearDetectionCache();
+		}
+	});
+
 	it.each(["targets", "no targets", "no handler", "intentional spaces"])("copies colored word wraps and intentional paragraph breaks (%s)", async (mode) => {
 		const previousLevel = chalk.level;
 		chalk.level = 3;

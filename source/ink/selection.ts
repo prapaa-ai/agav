@@ -126,7 +126,7 @@ export const getSelectedText = (
 
 	if (startY === endY) {
 		const line = startY >= 0 && startY < lines.length ? lines[startY] : "";
-		return sliceAnsi(line ?? "", Math.max(0, startX), Math.min(Math.max(0, endX), copyLines[startY]?.endX ?? Infinity));
+		return sliceAnsi(line ?? "", Math.max(0, startX, copyLines[startY]?.startX ?? 0), Math.min(Math.max(0, endX), copyLines[startY]?.endX ?? Infinity));
 	}
 
 	const parts: string[] = [];
@@ -138,7 +138,7 @@ export const getSelectedText = (
 		const previous = copyLines[y - 1];
 		const sameSource = copy?.explicit ? previous !== undefined
 			: !copy?.source || copy.source === previous?.source;
-		const from = y === startY ? Math.max(0, startX) : (sameSource ? (copy?.startX ?? 0) : 0);
+		const from = y === startY ? Math.max(0, startX, copy?.startX ?? 0) : (sameSource ? (copy?.startX ?? 0) : 0);
 		const to = Math.min(y === endY ? Math.max(0, endX) : stringWidth(line), copy?.endX ?? Infinity);
 		if (y > startY) parts.push(sameSource ? (copy?.separator ?? "\n") : "\n");
 		parts.push(sliceAnsi(line, from, to));

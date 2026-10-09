@@ -75,6 +75,20 @@ describe("selectLineAt", () => {
 
 describe("getSelectedText", () => {
 	it.each([
+		[0, 9, 0, "message"],
+		[0, 6, 1, "message next"],
+		[0, 1, 0, ""],
+		[0, 2, 0, ""],
+		[10, 12, 0, ""],
+		[4, 7, 0, "ssa"],
+	])("bounds decorated selections (%i, %i, %i)", (startX, endX, endY, expected) => {
+		const rows = ["❯ message   ", "  next      "];
+		const metadata = getCopyLines("message next", ["message", "next"])
+			.map(copy => ({...copy, startX: 2, endX: copy.endX! + 2}));
+		expect(getSelectedText(rows, {startX, startY: 0, endX, endY}, metadata)).toBe(expected);
+	});
+
+	it.each([
 		["implemented by code", ["impl", "emented", "by code"]],
 		["one\n\n\ntwo", ["one", "", "", "two"]],
 		["same same\nsame", ["same", "same", "same"]],
