@@ -77,6 +77,39 @@ afterEach(() => {
 });
 
 describe("bounded streamed shell output", () => {
+  it("enforces an explicit timeout and retains partial output", async () => {
+    const result = await shellTool.execute({
+      command: `exec ${command("process.stdout.write('started'); setInterval(() => {}, 1000);")}`,
+      sandbox: "none", timeout_ms: 300,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("started");
+    expect(result.output).toContain("timed out after 300ms");
+  });
+
+  it("allows a command to complete within its chosen timeout", async () => {
+    const result = await shellTool.execute({
+      command: command("setTimeout(() => process.stdout.write('completed'), 100);"),
+      sandbox: "none", timeout_ms: 2000,
+    });
+    expect(result).toEqual({ output: "completed", isError: false });
+  });
+
+  it("cancels a command without waiting for a long timeout", async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 300);
+    try {
+      const result = await shellTool.execute({
+        command: `exec ${command("process.stdout.write('started'); setInterval(() => {}, 1000);")}`,
+        sandbox: "none", timeout_ms: 120_000,
+      }, { signal: controller.signal });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("Command cancelled.");
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   it("keeps small stdout/stderr output unchanged without creating a file", async () => {
     const result = await execute("process.stdout.write('hello'); process.stderr.write('warning');");
     expect(result).toEqual({ output: "hello\nwarning", isError: false });
