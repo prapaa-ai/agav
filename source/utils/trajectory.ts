@@ -1,4 +1,5 @@
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { Message, ContentBlock } from "../providers/types.js";
 
 /**
@@ -64,5 +65,13 @@ export async function writeAgavTrajectory(path: string, data: AgavTrajectoryInpu
       content: m.content.map(sanitizeBlock),
     })),
   };
-  await writeFile(path, JSON.stringify(trajectory, null, 2), "utf-8");
+  // Stage beside the destination so rename is atomic on the same filesystem.
+  const temporaryDirectory = await mkdtemp(join(dirname(path), ".agav-trajectory-"));
+  try {
+    const temporaryPath = join(temporaryDirectory, "trajectory.json");
+    await writeFile(temporaryPath, JSON.stringify(trajectory, null, 2), "utf-8");
+    await rename(temporaryPath, path);
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
 }

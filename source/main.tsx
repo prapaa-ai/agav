@@ -10,6 +10,7 @@ import { loadSessionState, markCleanExit, markCleanExitSync } from "./config/ses
 import { loadTheme } from "./config/theme.js";
 import { ConversationState } from "./agent/conversation.js";
 import { runAgentLoop } from "./agent/loop.js";
+import { writeAgavTrajectory, type AgavRunUsage } from "./utils/trajectory.js";
 import { NO_EDITS_PROMPT, schemaRetryPrompt } from "./agent/internal-prompts.js";
 import { createToolRegistry } from "./tools/registry-factory.js";
 import { getToolLabel } from "./utils/tool-labels.js";
@@ -38,7 +39,7 @@ const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
-  "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns",
+  "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--trajectory",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -166,6 +167,13 @@ export function parseArgs(argv: string[]) {
       flags.outputSchema = argv[++i] ?? "";
     } else if (arg.startsWith("--output-schema=")) {
       flags.outputSchema = arg.slice("--output-schema=".length);
+    } else if (arg === "--trajectory" || arg.startsWith("--trajectory=")) {
+      const path = arg === "--trajectory" ? argv[++i] : arg.slice("--trajectory=".length);
+      if (!path?.trim() || (arg === "--trajectory" && path.startsWith("-"))) {
+        process.stderr.write("Error: --trajectory requires a non-empty file path.\n");
+        process.exit(1);
+      }
+      flags.trajectoryPath = path;
     } else if (arg === "--cwd") {
       const nextArg = argv[i + 1];
       if (!nextArg || nextArg.startsWith("-")) {
@@ -241,6 +249,11 @@ export function parseArgs(argv: string[]) {
     i++;
   }
 
+  if (flags.trajectoryPath && !flags.run && !flags.print && !flags.help && !flags.version) {
+    process.stderr.write("Error: --trajectory is only supported with run or --print (-P).\n");
+    process.exit(1);
+  }
+
   const pos = flags._ as string[];
   if (flags.update) {
     if (pos.length > 0) flags.updateVersion = pos[0];
@@ -277,8 +290,10 @@ export async function runPipeMode(
   prompt: string,
   config: AgavConfig,
   provider: LLMProvider,
-  options: { stream?: boolean; outputSchema?: OutputSchema; stdinContent?: string; includeDynamicContext?: boolean; permissionOverride?: import("./config/config.js").PermissionMode; allowedToolsOverride?: string[]; } = {},
+  options: { trajectoryPath?: string; stream?: boolean; outputSchema?: OutputSchema; stdinContent?: string; includeDynamicContext?: boolean; permissionOverride?: import("./config/config.js").PermissionMode; allowedToolsOverride?: string[]; } = {},
 ): Promise<number> {
+  const startedAt = new Date().toISOString();
+  const usage: AgavRunUsage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 };
   const { stream = false, outputSchema } = options;
   const stdinContent = options.stdinContent ?? await readStdin();
 
@@ -374,6 +389,12 @@ export async function runPipeMode(
             process.stderr.write(`Error: ${event.error.message}\n`);
             exitCode = 1;
             break;
+          case "usage":
+            usage.input_tokens += event.inputTokens;
+            usage.output_tokens += event.outputTokens;
+            usage.cache_read_tokens += event.cacheReadTokens ?? 0;
+            usage.cache_write_tokens += event.cacheWriteTokens ?? 0;
+            break;
           case "turn_complete":
             break;
         }
@@ -394,47 +415,74 @@ export async function runPipeMode(
     return { finalText, exitCode, wroteStreamText };
   };
 
-  // Schema output must stay buffered so an invalid first attempt never contaminates stdout.
-  let result = await runTurn(stream && outputSchema === undefined);
-  if (result.exitCode !== 0) return result.exitCode;
+  const execute = async (): Promise<number> => {
+    // Schema output must stay buffered so an invalid first attempt never contaminates stdout.
+    let result = await runTurn(stream && outputSchema === undefined);
+    if (result.exitCode !== 0) return result.exitCode;
 
-  if (outputSchema !== undefined) {
-    let validate;
-    try {
-      validate = createOutputValidator(outputSchema);
-    } catch (error) {
-      process.stderr.write(`Error: Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}\n`);
-      return 1;
-    }
-
-    let validation = validateOutput(result.finalText, validate);
-    if (!validation.valid) {
-      const details = formatValidationErrors(validation);
-      if (iterationsBudget.remaining <= 0) {
-        process.stderr.write(`Error: Response failed JSON Schema validation; cannot retry because the agent reached maximum iterations: ${details}\n`);
+    if (outputSchema !== undefined) {
+      let validate;
+      try {
+        validate = createOutputValidator(outputSchema);
+      } catch (error) {
+        process.stderr.write(`Error: Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}\n`);
         return 1;
       }
-      process.stderr.write(`Schema validation failed; retrying once: ${details}\n`);
-      conversation.addInternalUserMessage(schemaRetryPrompt(details));
-      result = await runTurn(false);
-      if (result.exitCode !== 0) return result.exitCode;
-      validation = validateOutput(result.finalText, validate);
+
+      let validation = validateOutput(result.finalText, validate);
+      if (!validation.valid) {
+        const details = formatValidationErrors(validation);
+        if (iterationsBudget.remaining <= 0) {
+          process.stderr.write(`Error: Response failed JSON Schema validation; cannot retry because the agent reached maximum iterations: ${details}\n`);
+          return 1;
+        }
+        process.stderr.write(`Schema validation failed; retrying once: ${details}\n`);
+        conversation.addInternalUserMessage(schemaRetryPrompt(details));
+        result = await runTurn(false);
+        if (result.exitCode !== 0) return result.exitCode;
+        validation = validateOutput(result.finalText, validate);
+      }
+
+      if (!validation.valid) {
+        process.stderr.write(`Error: Response failed JSON Schema validation after retry: ${formatValidationErrors(validation)}\n`);
+        return 1;
+      }
+      process.stdout.write(`${JSON.stringify(validation.value)}\n`);
+      return 0;
     }
 
-    if (!validation.valid) {
-      process.stderr.write(`Error: Response failed JSON Schema validation after retry: ${formatValidationErrors(validation)}\n`);
-      return 1;
+    if (stream && result.wroteStreamText) {
+      process.stdout.write("\n");
+    } else if (result.finalText) {
+      process.stdout.write(result.finalText + "\n");
     }
-    process.stdout.write(`${JSON.stringify(validation.value)}\n`);
-    return 0;
-  }
+    return result.exitCode;
+  };
 
-  if (stream && result.wroteStreamText) {
-    process.stdout.write("\n");
-  } else if (result.finalText) {
-    process.stdout.write(result.finalText + "\n");
+  let exitCode: number;
+  try {
+    exitCode = await execute();
+  } catch (error) {
+    if (!options.trajectoryPath) throw error;
+    process.stderr.write(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
+    exitCode = 1;
   }
-  return result.exitCode;
+  if (options.trajectoryPath) {
+    try {
+      await writeAgavTrajectory(options.trajectoryPath, {
+        model: config.model,
+        provider: config.provider,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        usage,
+        messages: conversation.getMessages(),
+      });
+    } catch (error) {
+      process.stderr.write(`Error: Failed to write trajectory: ${error instanceof Error ? error.message : String(error)}\n`);
+      exitCode = 1;
+    }
+  }
+  return exitCode;
 }
 
 let startupFinished = false;
@@ -512,6 +560,7 @@ export async function main() {
     --deny-writes        Block all write operations
     --help, -h           Show this help
     --version, -v        Show version
+    --trajectory <path> Export run/print transcript, token usage, and timing as JSON
     --max-turns <number> Cap agent-loop model requests per prompt (interactive, print, and run)
                          Shared allowance for subagents, native agents, and skills;
                          continuations and retries retain it, new prompts reset it.
@@ -803,6 +852,7 @@ export async function main() {
     const exitCode = await runPipeMode(String(flags.printPrompt ?? ""), config, provider, {
       stream: flags.stream === true,
       outputSchema,
+      trajectoryPath: flags.trajectoryPath,
     });
     process.exit(exitCode);
   }
@@ -812,6 +862,7 @@ export async function main() {
     const runOptions: Parameters<typeof runPipeMode>[3] = {
       stream: true,
       includeDynamicContext: true,
+      trajectoryPath: flags.trajectoryPath,
     };
 
     // Parse permission from --permission flag or AGAV_PERMISSION env var
