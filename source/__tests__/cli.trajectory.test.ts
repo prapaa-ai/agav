@@ -76,7 +76,7 @@ const originalArgv = process.argv;
 const exited = new Error("trajectory test process exited");
 let directory: string;
 let trajectoryPath: string;
-let provider: ReturnType<typeof providerFor>;
+let provider: ReturnType<typeof providerFor> & Pick<LLMProvider, "getContextWindow">;
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -250,6 +250,44 @@ describe("real pipe-mode trajectory export", () => {
     expect(provider.stream).toHaveBeenCalledTimes(1);
     expect(stderr()).toMatch(/JSON Schema validation.*maximum iterations/);
     expect((await exported()).usage).toEqual(zeroUsage);
+  });
+
+  it("preserves the original task and every tool cycle through repeated compaction", async () => {
+    let turns = 0;
+    let summaries = 0;
+    provider = {
+      name: "mock",
+      getContextWindow: async () => 100,
+      stream: vi.fn((params: StreamParams) => (async function* (): AsyncGenerator<StreamEvent> {
+        if (params.systemPrompt?.startsWith("Summarize this conversation")) {
+          summaries++;
+          yield { type: "usage", inputTokens: 20, outputTokens: 0, cacheReadTokens: 2, cacheWriteTokens: 3 };
+          yield { type: "text_delta", text: "Compact summary" };
+          yield { type: "usage", inputTokens: 0, outputTokens: 5 };
+        } else {
+          turns++;
+          if (turns <= 6) {
+            yield { type: "tool_call_start", toolCallId: `cycle-${turns}`, toolName: "read_file" };
+            yield { type: "tool_call_delta", toolCallId: `cycle-${turns}`, argsJson: '{"path":"fixture.txt"}' };
+            yield { type: "usage", inputTokens: 10, outputTokens: 1 };
+          } else {
+            yield* text("Complete");
+          }
+        }
+        yield { type: "message_end", stopReason: "end_turn" };
+      })()),
+    };
+    expect(await runPipeMode("Inspect the original task " + "context ".repeat(100), config, provider, options())).toBe(0);
+    expect(summaries).toBeGreaterThan(1);
+    const result = await exported();
+    expect(messageText(result.messages[0]!)).toContain("Inspect the original task");
+    const blocks = result.messages.flatMap(message => message.content);
+    expect(blocks.filter(block => block.type === "tool_use").map(block => block.toolCallId))
+      .toEqual(Array.from({ length: 6 }, (_, i) => `cycle-${i + 1}`));
+    expect(blocks.filter(block => block.type === "tool_result")).toHaveLength(6);
+    expect(result.messages.some(message => messageText(message) === "Compact summary")).toBe(false);
+    expect(result.usage).toEqual({ input_tokens: 60 + summaries * 20, output_tokens: 6 + summaries * 5,
+      cache_read_tokens: summaries * 2, cache_write_tokens: summaries * 3 });
   });
 
   it("returns 1 and reports a real filesystem export failure on stderr", async () => {

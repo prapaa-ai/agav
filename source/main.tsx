@@ -318,7 +318,7 @@ export async function runPipeMode(
   }
 
   const toolRegistry = createToolRegistry();
-  const conversation = new ConversationState();
+  const conversation = new ConversationState(!!options.trajectoryPath);
   conversation.setModel(config.model);
   conversation.addUserMessage(fullPrompt, expansion.contentBlocks, undefined, prompt);
 
@@ -475,7 +475,7 @@ export async function runPipeMode(
         startedAt,
         finishedAt: new Date().toISOString(),
         usage,
-        messages: conversation.getMessages(),
+        messages: conversation.getTranscript(),
       });
     } catch (error) {
       process.stderr.write(`Error: Failed to write trajectory: ${error instanceof Error ? error.message : String(error)}\n`);
