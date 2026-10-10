@@ -586,8 +586,10 @@ export async function* runAgentLoop(
       for (const { id, name, input, result: initialResult } of execResults) {
         let result = initialResult;
         if (name === "run_tests") {
-          hasTestRun = true;
-          if (result.isError) hasTestFailure = true;
+          if (result.verification?.failureKind !== "runner_unavailable") {
+            hasTestRun = true;
+            if (result.isError) hasTestFailure = true;
+          }
         }
         const hookDef = getHookForTool(name, input, params.hooks);
         if (hookDef && !result.isError) {

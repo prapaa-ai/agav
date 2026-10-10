@@ -127,6 +127,27 @@ describe("structured verification loop", () => {
     expect(result.prompts.filter((p) => p.startsWith(TESTS_FAILED_PREFIX))).toHaveLength(3);
     expect(result.prompts.filter((p) => p === VERIFY_FAILED_PROMPT)).toHaveLength(2);
   });
+  it("does not inject code-repair guidance for an unavailable pytest runner", async () => {
+    childOutput("", Object.assign(new Error("python failed"), { code: 1 }), "/usr/local/bin/python: No module named pytest\n");
+    const result = await scenario([[edit()], [{ name: "run_tests", builtin: true, input: { framework: "pytest" } }]]);
+    expect(result.prompts.some(prompt => prompt.startsWith(TESTS_FAILED_PREFIX))).toBe(false);
+    expect(result.prompts.filter(prompt => prompt === VERIFY_FAILED_PROMPT)).toHaveLength(2);
+    expect(result.events.some(event => event.type === "tool_result" && event.isError)).toBe(true);
+  });
+
+  it("does not reset or consume code-repair attempts on unavailable-runner results", async () => {
+    const unavailable: ToolResult = { ...failing, verification: { status: "failed", failureKind: "runner_unavailable", passed: 0, failed: 0, errors: 0, exitCode: 1 } };
+    const result = await scenario([[edit()], [check(failing)], [check(unavailable)], [check(failing)], [check(failing)], [check(failing)]]);
+    expect(result.prompts.filter(prompt => prompt.startsWith(TESTS_FAILED_PREFIX)).map(prompt => prompt.slice(0, 27)))
+      .toEqual([1, 2, 3].map(attempt => `${TESTS_FAILED_PREFIX}${attempt}/3). `.slice(0, 27)));
+  });
+
+  it("retains repair guidance for genuine failures batched with an unavailable runner", async () => {
+    const unavailable: ToolResult = { ...failing, verification: { status: "failed", failureKind: "runner_unavailable", passed: 0, failed: 0, errors: 0, exitCode: 1 } };
+    const result = await scenario([[edit()], [check(unavailable), check(failing)]]);
+    expect(result.prompts.filter(prompt => prompt.startsWith(TESTS_FAILED_PREFIX))).toHaveLength(1);
+  });
+
   it("integrates real built-in metadata into loop", async () => {
     childOutput(" Tests  2 passed (2)\n");
     const result = await scenario([[edit()], [{ name: "run_tests", builtin: true, input: { framework: "vitest" } }]]);
@@ -197,6 +218,31 @@ describe("built-in test runner", () => {
     expect(result.output).toContain(err.message);
     expect(result.output).toContain("raw diagnostic");
   });
+  it.each([
+    ["pytest", Object.assign(new Error("python failed"), { code: 1 }), "/usr/local/bin/python: No module named pytest\n"],
+    ["pytest", Object.assign(new Error("python failed"), { code: 1 }), "python: No module named 'pytest'\n"],
+    ["go", Object.assign(new Error("spawn go ENOENT"), { code: "ENOENT" }), ""],
+  ])("classifies unambiguous runner startup failures: %s", async (framework, error, stderr) => {
+    childOutput("", error as Error, String(stderr));
+    const result = await testRunnerTool.execute({ framework });
+    expect(result.isError).toBe(true);
+    expect(result.verification).toMatchObject({ status: "failed", failureKind: "runner_unavailable", passed: 0, failed: 0 });
+    expect(result.output).toContain("Test runner could not start");
+    expect(result.output).toContain("report the blocker");
+  });
+
+  it.each([
+    ["pytest", "", "ModuleNotFoundError: No module named 'project_module'"],
+    ["pytest", "", "E   ModuleNotFoundError: No module named 'pytest'"],
+    ["pytest", "1 failed in 0.1s", "python: No module named pytest"],
+    ["vitest", "", "npx: network request failed"],
+  ])("does not misclassify ambiguous or actual failures: %s", async (framework, stdout, stderr) => {
+    childOutput(stdout, Object.assign(new Error("command failed"), { code: 1 }), stderr);
+    const result = await testRunnerTool.execute({ framework });
+    expect(result.verification?.status).toBe("failed");
+    expect(result.verification).not.toHaveProperty("failureKind");
+  });
+
   it("handles synchronous startup exceptions", async () => {
     vi.mocked(execFile).mockImplementation(() => { throw new Error("startup exception"); });
     const result = await testRunnerTool.execute({ framework: "vitest" });
