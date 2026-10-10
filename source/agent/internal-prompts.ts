@@ -9,14 +9,23 @@ import type { Message } from "../providers/types.js";
  * They live here rather than at their call sites so the legacy matcher below
  * cannot drift out of sync with the text actually being written.
  */
+const NEEDS_VERIFY_PREFIX = "You made changes but did not verify they work.";
+const VERIFY_FAILED_PREFIX = "Your last verification command failed or produced errors/warnings.";
+
+const VERIFICATION_SCOPE =
+  "Do not modify unrelated files or fix pre-existing warnings unless required by the task. " +
+  "If dependencies or infrastructure block verification, use available relevant checks, then report the blocker and what remains unverified. " +
+  "Do not claim verification passed based on unrelated successful commands or when required checks could not run.";
+
 export const NEEDS_VERIFY_PROMPT =
-  "You made changes but did not verify they work. Run the program to check your changes produce the correct output. " +
-  "If there are expected output files, compare your output against them. If the task requires compilation, compile and check for errors/warnings. " +
-  "Do not stop until you have verified your solution.";
+  `${NEEDS_VERIFY_PREFIX} Run checks relevant to the requested change to confirm the correct output. ` +
+  "If there are expected output files, compare your output against them. If the task requires compilation, compile and inspect errors/warnings relevant to the task. " +
+  VERIFICATION_SCOPE;
 
 export const VERIFY_FAILED_PROMPT =
-  "Your last verification command failed or produced errors/warnings. Read the output carefully, identify the specific issue, fix it, and verify again. " +
-  "Do not stop until verification passes cleanly.";
+  `${VERIFY_FAILED_PREFIX} Read the output carefully and distinguish failures in checks relevant to the requested change from setup blockers or unrelated warnings. ` +
+  "Fix failures caused by your changes and verify again; address other failures only when required by the task. " +
+  VERIFICATION_SCOPE;
 
 export const MAX_STEPS_PROMPT =
   "You have reached the maximum number of steps. Summarize what you have accomplished, " +
@@ -63,8 +72,8 @@ export const COMPACTION_PLACEHOLDER_PREFIX = "[Earlier conversation";
  * sessions never reach this — the flag settles it first.
  */
 const LEGACY_PREFIXES = [
-  NEEDS_VERIFY_PROMPT,
-  VERIFY_FAILED_PROMPT,
+  NEEDS_VERIFY_PREFIX,
+  VERIFY_FAILED_PREFIX,
   MAX_STEPS_PROMPT,
   NO_EDITS_PROMPT,
   TESTS_FAILED_PREFIX,
