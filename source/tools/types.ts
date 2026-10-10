@@ -10,6 +10,8 @@ export interface ToolResult {
   /** Structured test evidence; absent metadata is not verification. */
   verification?: {
     status: "passed" | "failed" | "inconclusive";
+    /** Explicit runner startup failure, not evidence of a source defect. */
+    failureKind?: "runner_unavailable";
     passed: number;
     failed: number;
     errors: number;

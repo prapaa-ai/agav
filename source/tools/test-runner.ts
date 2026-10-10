@@ -312,7 +312,7 @@ export const testRunnerTool: ToolDefinition = {
 
     const { cmd, args } = getCommand(framework, testPath);
 
-    const output = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; diagnostic?: string }>((resolve) => {
+    const output = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; diagnostic?: string; errorCode?: string }>((resolve) => {
       try {
         execFile(cmd, args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd, signal: context?.signal }, (err, stdout, stderr) => {
           resolve({
@@ -320,6 +320,7 @@ export const testRunnerTool: ToolDefinition = {
             stderr: stderr ?? "",
             exitCode: !err ? 0 : typeof err.code === "number" && !err.signal && !err.killed ? err.code : null,
             diagnostic: err?.message,
+            errorCode: typeof err?.code === "string" ? err.code : undefined,
           });
         });
       } catch (err) {
@@ -330,6 +331,10 @@ export const testRunnerTool: ToolDefinition = {
     const combined = output.stdout + "\n" + output.stderr;
     const results = parseOutput(framework, combined.replace(/\u001b\[[0-9;]*m/g, ""));
     const isError = output.exitCode !== 0 || !!output.diagnostic || results.failed > 0 || results.errors > 0 || results.failures.length > 0;
+    const noTestEvidence = results.passed === 0 && results.failed === 0 && results.errors === 0 && results.failures.length === 0;
+    const runnerUnavailable = isError && noTestEvidence && (output.errorCode === "ENOENT"
+      || (framework === "pytest" && output.exitCode === 1 && !output.stdout.trim()
+        && /^(?:[^\r\n]*[/\\])?python(?:\d+(?:\.\d+)*)?(?:\.exe)?: No module named (?:pytest|'pytest'|"pytest")$/.test(output.stderr.trim())));
     const status = isError ? "failed" : results.passed > 0 ? "passed" : "inconclusive";
     // Keep process diagnostics even when the framework parser finds no failures.
     if (isError || status === "inconclusive") {
@@ -338,10 +343,13 @@ export const testRunnerTool: ToolDefinition = {
     const formatted = formatResults(results);
 
     return {
-      output: formatted + (output.diagnostic ? `\n\nProcess error: ${output.diagnostic}` : ""),
+      output: formatted + (runnerUnavailable
+        ? "\n\nTest runner could not start. Use an available relevant check or report the blocker and what remains unverified. Do not modify source code merely to resolve a missing runner."
+        : "") + (output.diagnostic ? `\n\nProcess error: ${output.diagnostic}` : ""),
       isError,
       verification: {
         status,
+        ...(runnerUnavailable ? { failureKind: "runner_unavailable" as const } : {}),
         passed: results.passed,
         failed: results.failed,
         errors: results.errors,
