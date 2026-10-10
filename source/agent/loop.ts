@@ -189,12 +189,12 @@ export async function* runAgentLoop(
       })) {
         if (event.type === "text_delta") result += event.text;
         if (event.type === "usage") {
-          pendingSummarizeUsage = {
-            inputTokens: event.inputTokens,
-            outputTokens: event.outputTokens,
-            cacheReadTokens: event.cacheReadTokens ?? 0,
-            cacheWriteTokens: event.cacheWriteTokens ?? 0,
-          };
+          // Providers may split input/cache and output usage across events.
+          pendingSummarizeUsage ??= { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+          pendingSummarizeUsage["inputTokens"]! += event.inputTokens;
+          pendingSummarizeUsage["outputTokens"]! += event.outputTokens;
+          pendingSummarizeUsage["cacheReadTokens"]! += event.cacheReadTokens ?? 0;
+          pendingSummarizeUsage["cacheWriteTokens"]! += event.cacheWriteTokens ?? 0;
         }
       }
     } catch {
