@@ -84,6 +84,40 @@ If you know which transport the server speaks, pin it with `transport`:
 
 `headers` are sent with every request and are the recommended way to pass authentication tokens. The `command`, `args`, and `env` fields are not used for remote servers.
 
+### Example: free web search with Parallel
+
+[Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp) provides web search and page fetching without an account or API key. Anonymous search uses Fast mode and is intended for light use; higher rate limits require authentication.
+
+Merge this server entry into `mcpServers` in `./.agav/config.json` for the current project, or `~/.agav/config.json` for all projects. Keep your other server entries and provider settings:
+
+```json
+{
+  "mcpServers": {
+    "parallel": {
+      "type": "remote",
+      "url": "https://search.parallel.ai/mcp",
+      "transport": "http",
+      "headers": {
+        "User-Agent": "agav (https://github.com/prapaa-ai/agav)"
+      }
+    }
+  }
+}
+```
+
+Restart Agav and run `/debug` to confirm that `parallel` is connected. Agav exposes its tools as `parallel__web_search` and `parallel__web_fetch`, alongside the existing built-in tools. MCP calls follow your normal tool permissions and require confirmation in the default `ask` mode.
+
+Try a focused research request:
+
+```text
+Use parallel__web_search to find the Node.js documentation for AbortSignal.timeout.
+Then use parallel__web_fetch to read the relevant page and summarize how to set
+an HTTP request timeout, citing the source URL. Use one new UUID as session_id
+and reuse it for both calls.
+```
+
+The search tool takes an `objective` and a `search_queries` array; the fetch tool takes a `urls` array. Agav discovers their full input schemas from the server. If `parallel` is missing from `/debug`, check network access to the endpoint and restart after checking the configuration. If a call is rate limited, retry after the wait indicated by the service.
+
 ## Exposed capabilities
 
 - **Tools** are registered in the main tool pool with their server name prefixed to the tool name and shown in the description. MCP tools are not in the built-in safe list, so they **require user confirmation** before each call unless you are in `auto-accept` mode or the tool is explicitly allowed via `--permission`.
