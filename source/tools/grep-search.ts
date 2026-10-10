@@ -31,19 +31,22 @@ async function nodeGrep(
   searchPath: string,
   pattern: RegExp,
   include: RegExp | undefined,
+  filesOnly = false,
 ): Promise<string[]> {
   const results: string[] = [];
+  const limit = filesOnly ? MAX_RESULTS + 1 : MAX_RESULTS;
 
   async function walkDir(dir: string): Promise<void> {
-    if (results.length >= MAX_RESULTS) return;
+    if (results.length >= limit) return;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
-    } catch {
+    } catch (error) {
+      if (filesOnly) throw error;
       return;
     }
     for (const entry of entries) {
-      if (results.length >= MAX_RESULTS) return;
+      if (results.length >= limit) return;
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) {
@@ -59,12 +62,14 @@ async function nodeGrep(
           const content = buf.toString("utf-8");
           const lines = content.split("\n");
           for (let i = 0; i < lines.length; i++) {
-            if (results.length >= MAX_RESULTS) return;
+            if (results.length >= limit) return;
             if (pattern.test(lines[i]!)) {
-              results.push(`${fullPath}:${i + 1}:${lines[i]}`);
+              results.push(filesOnly ? fullPath : `${fullPath}:${i + 1}:${lines[i]}`);
+              if (filesOnly) break;
             }
           }
-        } catch {
+        } catch (error) {
+          if (filesOnly) throw error;
           // Skip unreadable files
         }
       }
@@ -81,16 +86,18 @@ async function nodeGrep(
           const content = buf.toString("utf-8");
           const lines = content.split("\n");
           for (let i = 0; i < lines.length; i++) {
-            if (results.length >= MAX_RESULTS) break;
+            if (results.length >= limit) break;
             if (pattern.test(lines[i]!)) {
-              results.push(`${searchPath}:${i + 1}:${lines[i]}`);
+              results.push(filesOnly ? searchPath : `${searchPath}:${i + 1}:${lines[i]}`);
+              if (filesOnly) break;
             }
           }
         }
       }
       return results;
     }
-  } catch {
+  } catch (error) {
+    if (filesOnly) throw error;
     return results;
   }
 
@@ -103,12 +110,13 @@ async function nativeGrep(
   pattern: string,
   searchPath: string,
   include: string | undefined,
+  filesOnly = false,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   // grep can exclude its explicit root too; searching "." bypasses only that
   // root's name, while still excluding generated directories below it.
   const searchFromRoot = SKIP_DIRS.has(basename(searchPath)) &&
     await stat(searchPath).then((info) => info.isDirectory(), () => false);
-  const args = ["-rn", "-H", "--color=never", "-E"];
+  const args = filesOnly ? ["-rl", "-I", "--color=never", "-E"] : ["-rn", "-H", "--color=never", "-E"];
   if (include) {
     args.push("--include", include);
   }
@@ -126,7 +134,7 @@ async function nativeGrep(
       if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
         reject(error);
       } else {
-        resolve({ stdout, stderr, code: error ? (error as any).code ?? null : 0 });
+        resolve({ stdout, stderr: stderr || (filesOnly ? error?.message : "") || "", code: error ? (error as any).code ?? null : 0 });
       }
     });
   });
@@ -137,7 +145,7 @@ export const grepSearchTool: ToolDefinition = {
     name: "grep_search",
     description:
       "Search for a pattern in files using grep. Returns matching lines with file paths and line numbers. " +
-      "Supports regex patterns. Searches recursively from the given directory.",
+      "Supports regex patterns. Searches recursively from the given directory. Use files_only for matching paths without content.",
     inputSchema: {
       type: "object",
       properties: {
@@ -149,6 +157,10 @@ export const grepSearchTool: ToolDefinition = {
           type: "string",
           description: "Directory or file to search in (default: current directory)",
         },
+        files_only: {
+          type: "boolean",
+          description: "Return each matching text file path once instead of matching lines (default: false).",
+        },
         include: {
           type: "string",
           description: "File glob pattern to include (e.g. '*.ts', '*.py')",
@@ -159,6 +171,10 @@ export const grepSearchTool: ToolDefinition = {
   },
 
   async execute(input): Promise<ToolResult> {
+    if (input.files_only !== undefined && typeof input.files_only !== "boolean") {
+      return { output: "Invalid files_only: expected a boolean.", isError: true };
+    }
+    const filesOnly = input.files_only === true;
     const pattern = String(input.pattern);
     const searchPath = resolve(String(input.path ?? "."));
     const include = input.include ? String(input.include) : undefined;
@@ -167,11 +183,14 @@ export const grepSearchTool: ToolDefinition = {
     // On Unix, try native grep first for speed, fall back to Node.js if not found.
     if (platform() !== "win32") {
       try {
-        const result = await nativeGrep(pattern, searchPath, include);
+        const result = await nativeGrep(pattern, searchPath, include, filesOnly);
+        if (filesOnly && result.code !== 0 && result.code !== 1) {
+          return { output: result.stdout.trimEnd() + "\nSearch incomplete: " + (result.stderr || "grep failed"), isError: true };
+        }
         if (result.stdout) {
           const lines = result.stdout.split("\n").filter(Boolean);
           const truncated = lines.length > MAX_RESULTS
-            ? lines.slice(0, MAX_RESULTS).join("\n") + `\n... ${lines.length - MAX_RESULTS} more matches`
+            ? lines.slice(0, MAX_RESULTS).join("\n") + (filesOnly ? "\n... results truncated at 100 files" : `\n... ${lines.length - MAX_RESULTS} more matches`)
             : result.stdout.trimEnd();
           return { output: truncated, isError: false };
         }
@@ -188,11 +207,13 @@ export const grepSearchTool: ToolDefinition = {
     try {
       const regex = new RegExp(pattern);
       const includeRegex = include ? globToRegex(include) : undefined;
-      const results = await nodeGrep(searchPath, regex, includeRegex);
+      const results = await nodeGrep(searchPath, regex, includeRegex, filesOnly);
       if (results.length === 0) {
         return { output: "No matches found.", isError: false };
       }
-      const output = results.length >= MAX_RESULTS
+      const output = filesOnly
+        ? results.slice(0, MAX_RESULTS).join("\n") + (results.length > MAX_RESULTS ? "\n... results truncated at 100 files" : "")
+        : results.length >= MAX_RESULTS
         ? results.join("\n") + "\n... results truncated at 100 matches"
         : results.join("\n");
       return { output, isError: false };

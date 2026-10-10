@@ -200,6 +200,43 @@ for (const backend of ["native", "fallback"] as const) {
       expect(await grepSearchTool.execute({ pattern: "needle", path: deeplyExcluded })).toEqual({ output: `${deeplyExcluded}:1:needle`, isError: false });
     });
 
+    it("returns each matching file once without its content", async () => {
+      const first = await file("src/first.ts", "needle42\nneedle43\n".repeat(150));
+      const second = await file("src/second.ts", "needle44\n");
+      await file("src/notes.txt");
+      await file("dist/noise.ts");
+      await file("src/binary.ts", "needle42\0");
+      const result = await grepSearchTool.execute({ pattern: "^needle[0-9]+", path: directory, include: "*.ts", files_only: true });
+      expect(result.isError).toBe(false);
+      expect(result.output.split("\n").sort()).toEqual([first, second].sort());
+      expect(await grepSearchTool.execute({ pattern: "needle", path: first, files_only: true })).toEqual({ output: first, isError: false });
+      expect(await grepSearchTool.execute({ pattern: "absent", path: directory, files_only: true })).toEqual({ output: "No matches found.", isError: false });
+    });
+
+    it("normalizes explicit excluded roots in files-only mode", async () => {
+      const target = await file("build/visible.ts", "--help\n--help\n");
+      await file("build/dist/noise.ts", "--help\n");
+      expect(await grepSearchTool.execute({ pattern: "--help", path: dirname(target), files_only: true })).toEqual({ output: target, isError: false });
+    });
+
+    it("caps files, not matches, and only reports truncation when additional files exist", async () => {
+      for (let i = 0; i < 100; i++) await file(`src/${String(i).padStart(3, "0")}.ts`, "needle\nneedle\n");
+      const exact = await grepSearchTool.execute({ pattern: "needle", path: directory, files_only: true });
+      expect(exact.output.split("\n")).toHaveLength(100);
+      expect(exact.output).not.toContain("truncated");
+      await file("src/extra.ts");
+      const capped = await grepSearchTool.execute({ pattern: "needle", path: directory, files_only: true });
+      expect(capped.output.split("\n")).toHaveLength(101);
+      expect(capped.output.split("\n").at(-1)).toBe("... results truncated at 100 files");
+    });
+
+    it("reports missing roots and invalid regexes as errors, not no matches", async () => {
+      const missing = await grepSearchTool.execute({ pattern: "needle", path: join(directory, "missing"), files_only: true });
+      expect(missing.isError).toBe(true);
+      const invalid = await grepSearchTool.execute({ pattern: "[", path: directory, files_only: true });
+      expect(invalid.isError).toBe(true);
+    });
+
     it("preserves include filtering, regex matching, line numbers and no-match output", async () => {
       const visible = await file("src/visible.ts", "ignore\nneedle42\nneedleX\n");
       await file("src/notes.txt", "needle42\n");
@@ -211,3 +248,35 @@ for (const backend of ["native", "fallback"] as const) {
     });
   });
 }
+
+describe("files-only validation and partial search failures", () => {
+  it.each([null, "true", 1, {}])("rejects malformed files_only: %s", async value => {
+    const result = await grepSearchTool.execute({ pattern: "needle", path: directory, files_only: value });
+    expect(result.isError).toBe(true);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("falls back when grep is unavailable and preserves the default line mode", async () => {
+    vi.mocked(platform).mockReturnValue("linux");
+    const target = await file("fixture.ts", "needle\nneedle\n");
+    vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      callback(Object.assign(new Error("grep unavailable"), { code: "ENOENT" }), "", "");
+    }) as typeof execFile);
+    expect(await grepSearchTool.execute({ pattern: "needle", path: target, files_only: true })).toEqual({ output: target, isError: false });
+    vi.mocked(platform).mockReturnValue("win32");
+    expect(await grepSearchTool.execute({ pattern: "needle", path: target, files_only: false }))
+      .toEqual({ output: `${target}:1:needle\n${target}:2:needle`, isError: false });
+  });
+
+  it("preserves partial native output but flags incomplete searches", async () => {
+    vi.mocked(platform).mockReturnValue("linux");
+    vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      callback(Object.assign(new Error("search timed out"), { code: 2 }), `${directory}/found.ts\n`, "grep: permission denied");
+    }) as typeof execFile);
+    const result = await grepSearchTool.execute({ pattern: "needle", path: directory, files_only: true });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("found.ts");
+    expect(result.output).toContain("permission denied");
+    expect(result.output).toContain("incomplete");
+  });
+});
