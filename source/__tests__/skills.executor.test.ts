@@ -57,6 +57,44 @@ describe("skills/executor", () => {
     vi.clearAllMocks();
   });
 
+  describe("skill argument placement", () => {
+    const latestPrompt = () => vi.mocked(runAgentLoop).mock.calls.at(-1)![0].conversation.getMessages().at(-1)!.content[0]!.text;
+
+    it("does not append arguments already embedded in the body", async () => {
+      const args = "document content ".repeat(1000);
+      await executeSkill({ ...skill, body: "Review: $ARGUMENTS" }, args, baseDeps);
+      expect(latestPrompt()).toBe(`Review: ${args}`);
+      expect(recordSkillTrace).toHaveBeenCalledWith(skill.name, args, 18, true);
+    });
+
+    it.each(["cost $&", "literal $$ and $` and $'", "$ARGUMENTS", "$CWD", "line one\nline two"])("embeds literal arguments without replacement expansion: %s", async args => {
+      await executeSkill({ ...skill, body: "Review: $ARGUMENTS" }, args, baseDeps);
+      expect(latestPrompt()).toBe(`Review: ${args}`);
+    });
+
+    it("preserves intentional repeated placeholders", async () => {
+      await executeSkill({ ...skill, body: "$ARGUMENTS then $ARGUMENTS" }, "input", baseDeps);
+      expect(latestPrompt()).toBe("input then input");
+    });
+
+    it("retains appended arguments for bodies without a placeholder", async () => {
+      await executeSkill(skill, "input", baseDeps);
+      expect(latestPrompt()).toBe("Do the thing.\n\nUser request: input");
+    });
+
+    it("retains the empty-argument placeholder behavior", async () => {
+      await executeSkill({ ...skill, body: "Review: $ARGUMENTS" }, "", baseDeps);
+      expect(latestPrompt()).toBe("Review: (no arguments)");
+      await executeSkill(skill, "", baseDeps);
+      expect(latestPrompt()).toBe("Do the thing.");
+    });
+
+    it.each(["auto-accept", "deny-writes"] as const)("retains arguments consumed by shell preprocessing: %s", async permissionMode => {
+      await executeSkill({ ...skill, body: "Inspect:\n```sh\nprintf $ARGUMENTS\n```" }, "fixture-input", { ...baseDeps, permissionMode });
+      expect(latestPrompt()).toContain("User request: fixture-input");
+    });
+  });
+
   it.each([
     { allowed: undefined, disallowed: undefined, expected: [] },
     { allowed: ["github", "NotebookRead", "NotebookEdit", "lsp_query"], disallowed: undefined, expected: ["lsp_query", "read_notebook", "edit_notebook", "github"] },

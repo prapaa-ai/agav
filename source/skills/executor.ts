@@ -133,9 +133,8 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
 }
 
 function processDynamicContext(body: string, args: string): string {
-  return body
-    .replace(/\$ARGUMENTS/g, args || "(no arguments)")
-    .replace(/\$CWD/g, process.cwd());
+  return body.replace(/\$ARGUMENTS|\$CWD/g, placeholder =>
+    placeholder === "$ARGUMENTS" ? args || "(no arguments)" : process.cwd());
 }
 
 export interface SkillExecResult {
@@ -174,7 +173,10 @@ export async function executeSkill(
     // Compaction mutates blocks, so the child must own a deep context snapshot.
     if (deps.contextMessages) conversation.setMessages(structuredClone(deps.contextMessages));
 
-    const userMessage = args
+    // Shell preprocessing can consume an embedded argument; retain the request
+    // unless the original template embedded it and the final prompt still has it.
+    const argumentsEmbedded = skill.body.includes("$ARGUMENTS") && prompt.includes(args);
+    const userMessage = args && !argumentsEmbedded
       ? `${prompt}\n\nUser request: ${args}`
       : prompt;
     conversation.addUserMessage(userMessage);
