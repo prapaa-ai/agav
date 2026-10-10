@@ -318,6 +318,9 @@ export async function runPipeMode(
   }
 
   const toolRegistry = createToolRegistry();
+  // Headless execution has no session plan creation or plan context injection.
+  // Do not advertise an updater that cannot work (or mutate another session's plan).
+  toolRegistry.unregister("update_plan");
   const conversation = new ConversationState(!!options.trajectoryPath);
   conversation.setModel(config.model);
   conversation.addUserMessage(fullPrompt, expansion.contentBlocks, undefined, prompt);
