@@ -2,7 +2,7 @@ import { ToolRegistry } from "./registry.js";
 import { fileReadTool } from "./file-read.js";
 import { fileWriteTool } from "./file-write.js";
 import { editFileTool } from "./file-edit.js";
-import { shellTool } from "./shell.js";
+import { shellTool, createShellTool } from "./shell.js";
 import { grepSearchTool } from "./grep-search.js";
 import { findFilesTool } from "./find-files.js";
 import { listDirectoryTool } from "./list-directory.js";
@@ -77,7 +77,7 @@ export function createBuiltinToolRegistry(toolNames: Iterable<string>): ToolRegi
   const requested = new Set(toolNames);
   const registry = new ToolRegistry();
   for (const tool of BUILTIN_TOOLS) {
-    if (requested.has(tool.schema.name)) registry.register(tool);
+    if (requested.has(tool.schema.name)) registry.register(tool === shellTool ? createShellTool() : tool);
   }
   return registry;
 }

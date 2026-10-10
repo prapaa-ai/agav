@@ -7,6 +7,8 @@ import { ConversationState } from "../agent/conversation.js";
 import { estimateConversationTokens } from "../utils/tokens.js";
 
 vi.mock("../utils/sandbox.js", () => ({
+  getAvailableSandboxOverrides: vi.fn(() => []),
+  detectSandboxBackend: vi.fn(() => "none"),
   runInSandbox: vi.fn(async () => ({ stdout: "shell output", stderr: "", error: null, backend: "none" })),
 }));
 
