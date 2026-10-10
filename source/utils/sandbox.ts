@@ -49,6 +49,32 @@ function canExec(cmd: string): boolean {
   }
 }
 
+let installedBackends: SandboxBackend[] | undefined;
+
+/** Installed override executables; discovery is cached, authorization is not. */
+export function getAvailableSandboxOverrides(): SandboxBackend[] {
+  if (!installedBackends) {
+    installedBackends = [];
+    if (platform() !== "win32") {
+      if (canExec("sandbox-exec")) installedBackends.push("seatbelt");
+      if (canExec("bwrap")) installedBackends.push("bubblewrap");
+    }
+    let dockerInstalled = false;
+    if (platform() === "win32") {
+      try {
+        execFileSync("docker", ["--version"], { stdio: "pipe", timeout: 3000 });
+        dockerInstalled = true;
+      } catch { /* Docker is optional. */ }
+    } else {
+      dockerInstalled = canExec("docker");
+    }
+    if (dockerInstalled) installedBackends.push("docker");
+  }
+  return process.env["AGAV_NO_SANDBOX"] === "1"
+    ? [...installedBackends, "none"]
+    : [...installedBackends];
+}
+
 export function detectSandboxBackend(): SandboxBackend {
   // Always respect the env var — check every call, not just first
   if (process.env["AGAV_NO_SANDBOX"] === "1") {

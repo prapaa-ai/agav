@@ -4,6 +4,7 @@ import type { ToolDefinition, ToolResult } from "./types.js";
 import {
   runInSandbox,
   detectSandboxBackend,
+  getAvailableSandboxOverrides,
   isDestructiveCommand,
   type SandboxBackend,
 } from "../utils/sandbox.js";
@@ -182,6 +183,27 @@ export const shellTool: ToolDefinition = {
     return { output: capture.finish(error), isError: !!error };
   },
 };
+
+/** Snapshot model-visible capabilities without changing execution policy. */
+export function createShellTool(): ToolDefinition {
+  const overrides = getAvailableSandboxOverrides();
+  const schema = structuredClone(shellTool.schema);
+  const properties = schema.inputSchema.properties as Record<string, Record<string, unknown>>;
+  if (overrides.length > 0) {
+    properties.sandbox!.enum = overrides;
+    properties.sandbox!.description = "Optional installed backend override. Omit sandbox to use the default backend.";
+  } else {
+    delete properties.sandbox;
+  }
+  const backend = detectSandboxBackend();
+  schema.description = "Execute a shell command and return its stdout and stderr. Has a 30 second timeout. "
+    + `Omit sandbox to use the default backend: ${backend}${backend === "none" ? " (unsandboxed fallback)" : ""}. `
+    + (overrides.includes("none")
+      ? "Explicit unsandboxed overrides are enabled by the user."
+      : "Do not request sandbox: none; explicit bypass is not authorized.")
+    + (overrides.includes("docker") ? " Docker overrides require a running Docker daemon." : "");
+  return { ...shellTool, schema };
+}
 
 export function isSandboxAvailable(): boolean {
   return detectSandboxBackend() !== "none";
