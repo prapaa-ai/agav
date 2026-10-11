@@ -5,6 +5,7 @@ import render from "../ink/render.js";
 import { useAgent } from "../hooks/use-agent.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { Plan } from "../agent/planner.js";
+import { clearSteers, drainSteers, queueSteer } from "../commands/steer.js";
 
 const boundary = vi.hoisted(() => ({
   plan: null as Plan | null,
@@ -86,6 +87,67 @@ describe("useAgent per-submission iteration budget", () => {
       }
       expect(boundary.allowances).toEqual([1, 1]);
       expect(boundary.budgets[1]).not.toBe(boundary.budgets[0]);
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("appends a named acknowledgement when a running subagent receives a steer", async () => {
+    clearSteers();
+    const ui = await mount(false, 3);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = vi.fn();
+    ui.agent().toolRegistry.register({
+      schema: { name: "noop", description: "Gated", inputSchema: { type: "object", properties: {} } },
+      execute: async () => { entered(); await gate; return { output: "ok", isError: false }; },
+    });
+    const child = ui.agent().toolRegistry.execute("subagent", { title: "Inspect parser", task: "inspect parser" });
+    try {
+      await vi.waitFor(() => expect(entered).toHaveBeenCalledTimes(1));
+      ui.agent().addDisplayMessage({ id: "submission", role: "system", content: "Steer submitted" });
+      queueSteer("focus on boundaries");
+      release();
+      await child;
+      await vi.waitFor(() => expect(ui.agent().messages.some(message => message.content === 'Delivered 1 steer to subagent "Inspect parser".')).toBe(true));
+      ui.agent().addDisplayMessage({ id: "later", role: "assistant", content: "Later progress" });
+      await vi.waitFor(() => expect(ui.agent().messages.at(-1)?.id).toBe("later"));
+      expect(ui.agent().messages.map(message => message.content)).toEqual([
+        "Steer submitted", 'Delivered 1 steer to subagent "Inspect parser".', "Later progress",
+      ]);
+      expect(drainSteers()).toEqual(["focus on boundaries"]);
+    } finally { release(); await child; clearSteers(); ui.instance.unmount(); }
+  });
+
+  it("updates the plan at its original timeline position and removes it on clear", async () => {
+    const ui = await mount(true);
+    try {
+      boundary.plan = { goal: "Ship feature", createdAt: "2026-01-01", currentStep: 0, steps: [{ id: 1, title: "Inspect", description: "inspect", status: "pending" }] };
+      ui.agent().refreshPlan();
+      await vi.waitFor(() => expect(ui.agent().messages.filter(message => message.plan)).toHaveLength(1));
+      const anchor = ui.agent().messages.find(message => message.plan)!;
+      ui.agent().addDisplayMessage({ id: "later-progress", role: "assistant", content: "Later progress" });
+      boundary.plan = { ...boundary.plan, steps: [{ ...boundary.plan.steps[0]!, status: "in_progress" }] };
+      ui.agent().refreshPlan();
+      await vi.waitFor(() => expect(ui.agent().messages.find(message => message.plan)?.plan?.steps[0]?.status).toBe("in_progress"));
+      expect(ui.agent().messages.map(message => message.id)).toEqual([anchor.id, "later-progress"]);
+      boundary.plan = null;
+      ui.agent().refreshPlan();
+      await vi.waitFor(() => expect(ui.agent().messages.map(message => message.id)).toEqual(["later-progress"]));
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("replaces the plan on session activation without retaining the previous panel", async () => {
+    const ui = await mount(true);
+    try {
+      boundary.plan = { goal: "First plan", createdAt: "2026-01-01", currentStep: 0, steps: [{ id: 1, title: "Inspect", description: "inspect", status: "pending" }] };
+      ui.agent().refreshPlan();
+      await vi.waitFor(() => expect(ui.agent().messages.filter(message => message.plan)).toHaveLength(1));
+      boundary.plan = { ...boundary.plan, goal: "Second plan", createdAt: "2026-01-02" };
+      ui.agent().activateSession("second-session");
+      await vi.waitFor(() => expect(ui.agent().activePlan?.goal).toBe("Second plan"));
+      expect(ui.agent().messages.filter(message => message.plan).map(message => message.plan?.goal)).toEqual(["Second plan"]);
+      ui.agent().clearMessages();
+      await vi.waitFor(() => expect(ui.agent().messages).toEqual([]));
+      expect(ui.agent().activePlan).toBeNull();
     } finally { ui.instance.unmount(); }
   });
 

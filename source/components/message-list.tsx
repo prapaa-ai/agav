@@ -1,4 +1,5 @@
 import React from "react";
+import type { Plan } from "../agent/planner.js";
 import { Box, Text } from "../ink/index.js";
 import { renderMarkdown } from "./markdown-text.js";
 import ClickableLine from "./clickable-line.js";
@@ -19,6 +20,7 @@ export interface DisplayMessage {
   id: string;
   role: "user" | "assistant" | "system" | "tool" | "banner";
   content: string;
+  plan?: Plan;
   sourceText?: string;
   invocationReason?: InvocationReason;
   toolName?: string;
@@ -30,6 +32,7 @@ export interface DisplayMessage {
 
 interface Props {
   messages: DisplayMessage[];
+  renderPlan?: (plan: Plan) => React.ReactNode;
   toolDetailKey: string;
   columns: number;
   /** Opens/previews whatever a clickable run in the transcript resolved to. */
@@ -379,11 +382,11 @@ const MessageBubble = React.memo(function MessageBubble({ message, prevMessage, 
  * to a fixed band of the screen while everything below — a streaming reply, a
  * plan, a detail panel — slid around inside bands of their own.
  */
-const MessageList = React.memo(function MessageList({ messages, toolDetailKey, columns, onOpenRef }: Props) {
+const MessageList = React.memo(function MessageList({ messages, toolDetailKey, columns, onOpenRef, renderPlan }: Props) {
   return (
     <Box flexDirection="column" flexShrink={0}>
       {messages.map((message, index) => (
-        <MessageBubble key={message.id} message={message} prevMessage={index > 0 ? messages[index - 1] : undefined} toolDetailKey={toolDetailKey} columns={columns} onOpenRef={onOpenRef} />
+        message.plan ? <React.Fragment key={message.id}>{renderPlan?.(message.plan)}</React.Fragment> : <MessageBubble key={message.id} message={message} prevMessage={index > 0 ? messages[index - 1] : undefined} toolDetailKey={toolDetailKey} columns={columns} onOpenRef={onOpenRef} />
       ))}
     </Box>
   );

@@ -18,7 +18,10 @@ vi.mock("node:child_process", () => ({
   }),
 }));
 vi.mock("../skills/improvement.js", () => ({ recordSkillTrace: vi.fn(async () => {}) }));
-vi.mock("../commands/steer.js", () => ({ formatSteersForPrompt: () => "" }));
+vi.mock("../commands/steer.js", () => ({
+  formatSteersForPrompt: () => "",
+  createSteerQueue: () => ({ drain: () => [], dispose: vi.fn() }),
+}));
 vi.mock("../agent/loop.js", () => ({ runAgentLoop: vi.fn() }));
 import { spawn } from "node:child_process";
 import { runAgentLoop } from "../agent/loop.js";

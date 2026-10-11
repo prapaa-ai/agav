@@ -15,6 +15,7 @@ vi.mock("../utils/worktree.js", () => ({
 // Mock steer formatting
 vi.mock("../commands/steer.js", () => ({
   formatSteersForPrompt: vi.fn(() => ""),
+  createSteerQueue: () => ({ drain: () => [], dispose: vi.fn() }),
 }));
 
 import { runAgentLoop } from "../agent/loop.js";
