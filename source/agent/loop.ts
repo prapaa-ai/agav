@@ -258,6 +258,7 @@ export async function* runAgentLoop(
 
     conversation.setContextWindow(resolved);
   }
+  conversation.setSystemPrompt?.(systemPrompt ?? "");
   const maxIterations = Math.min(iterationsBudget.total, iterationsBudget.remaining);
   const initialToolCall = params.initialToolCall;
   for (let iteration = initialToolCall ? -1 : 0; iteration < maxIterations && iterationsBudget.remaining > 0; iteration++) {

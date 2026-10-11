@@ -36,19 +36,21 @@ export const contextCommand: SlashCommand = {
     const limits = getContextLimits(context.config.model, context.conversation.getContextWindow());
     const maxTokens = limits.maxTokens;
 
-    const systemPrompt = await buildSystemPrompt();
+    const effectivePrompt = context.conversation.getSystemPrompt();
+    const systemPrompt = effectivePrompt ?? context.config.systemPrompt ?? await buildSystemPrompt();
     const systemTokens = estimateTokens(systemPrompt);
 
     const allTools = context.toolRegistry.list();
-    const mcpTools = allTools.filter(t => t.schema.name.startsWith("mcp__"));
-    const builtinTools = allTools.filter(t => !t.schema.name.startsWith("mcp__"));
+    const mcpTools = allTools.filter(t => t.mcpServerName !== undefined || t.schema.name === "mcp_read_resource");
+    const mcpNames = new Set(mcpTools.map(t => t.schema.name));
+    const builtinTools = allTools.filter(t => !mcpNames.has(t.schema.name));
 
     const schemas = context.toolRegistry.getSchemas();
     let builtinToolTokens = 0;
     let mcpToolTokens = 0;
     for (const s of schemas) {
       const tokens = estimateTokens(s.name) + estimateTokens(s.description ?? "") + estimateTokens(JSON.stringify(s.inputSchema ?? {}));
-      if (s.name.startsWith("mcp__")) {
+      if (mcpNames.has(s.name)) {
         mcpToolTokens += tokens;
       } else {
         builtinToolTokens += tokens;
@@ -57,7 +59,8 @@ export const contextCommand: SlashCommand = {
 
     const skills = getCachedSkills();
     const skillCatalog = buildSkillCatalog(skills);
-    const skillTokens = skillCatalog ? estimateTokens(skillCatalog) : 0;
+    // Stable context already embeds the skill catalog in an effective prompt.
+    const skillTokens = effectivePrompt === undefined && skillCatalog ? estimateTokens(skillCatalog) : 0;
 
     const messageTokens = context.conversation.tokenCount;
     const usedTokens = systemTokens + builtinToolTokens + mcpToolTokens + skillTokens + messageTokens;
@@ -66,10 +69,12 @@ export const contextCommand: SlashCommand = {
     const debugState = context.getDebugState();
 
     const rows: [string, string, string][] = [
-      [`  System prompt`, fmtTokens(systemTokens), pct(systemTokens, maxTokens)],
-      [`  Built-in tools (${builtinTools.length})`, fmtTokens(builtinToolTokens), pct(builtinToolTokens, maxTokens)],
+      [effectivePrompt === undefined ? "  System prompt" : "  System prompt + skills", fmtTokens(systemTokens), pct(systemTokens, maxTokens)],
+      [`  Non-MCP tools (${builtinTools.length})`, fmtTokens(builtinToolTokens), pct(builtinToolTokens, maxTokens)],
       [`  MCP tools (${mcpTools.length})`, fmtTokens(mcpToolTokens), pct(mcpToolTokens, maxTokens)],
-      [`  Skills (${skills.length})`, fmtTokens(skillTokens), pct(skillTokens, maxTokens)],
+      ...(effectivePrompt === undefined
+        ? [[`  Skills (${skills.length})`, fmtTokens(skillTokens), pct(skillTokens, maxTokens)] as [string, string, string]]
+        : []),
       [`  Messages (${context.conversation.length})`, fmtTokens(messageTokens), pct(messageTokens, maxTokens)],
     ];
 
@@ -78,6 +83,13 @@ export const contextCommand: SlashCommand = {
     lines.push("");
     lines.push(`  Model:     ${context.config.model} (${context.config.provider})`);
     lines.push(`  Compacted: ${context.conversation.wasCompacted ? "yes" : "no"}`);
+    lines.push("  Estimated context window usage (not cumulative token usage).");
+    if (context.isLoading) {
+      lines.push("  Snapshot of committed messages; excludes in-flight output.");
+    }
+    if (effectivePrompt === undefined) {
+      lines.push("  Prompt estimate; stable per-turn context is not yet captured.");
+    }
     lines.push("");
     lines.push("  \x1b[2m" + "─".repeat(48) + "\x1b[0m");
 
@@ -89,6 +101,13 @@ export const contextCommand: SlashCommand = {
     lines.push(`${"  Used".padEnd(30)} ${fmtTokens(usedTokens).padStart(8)}  ${pct(usedTokens, maxTokens).padStart(6)}`);
     lines.push(`${"  Free".padEnd(30)} ${fmtTokens(freeTokens).padStart(8)}  ${pct(freeTokens, maxTokens).padStart(6)}`);
     lines.push(`${"  Total".padEnd(30)} ${fmtTokens(maxTokens).padStart(8)}`);
+
+    if (debugState.tokenUsage) {
+      const usage = debugState.tokenUsage;
+      lines.push("");
+      lines.push("\x1b[1mSession totals (all requests, not context occupancy)\x1b[0m");
+      lines.push(`  ${fmtTokens(usage.inputTokens)} ↑ ${fmtTokens(usage.outputTokens)} ↓ ${fmtTokens(usage.cacheReadTokens)} ⇢${usage.cacheWriteTokens > 0 ? ` ${fmtTokens(usage.cacheWriteTokens)} ⇠` : ""}`);
+    }
 
     if (debugState.mcpServers.length > 0) {
       lines.push("");
