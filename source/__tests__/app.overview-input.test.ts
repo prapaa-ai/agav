@@ -35,7 +35,7 @@ const progress = (id: string): SubagentProgress => ({
 
 async function mount(title = "subagent", contextWindowPending = false) {
   const resolveContextWindowRequest = vi.fn();
-  const interveneWhilePaused = vi.fn();
+  const interveneWhilePaused = vi.fn().mockResolvedValue(true);
   vi.mocked(useAgent).mockReturnValue({
     messages: [], streamingText: "", thinkingText: "", isLoading: true,
     toolCalls: [], error: null, pendingConfirmation: null,

@@ -416,12 +416,23 @@ export async function* runAgentLoop(
 
     // No tool calls — final response (unless edits are unverified or verification failed)
     if (toolCalls.size === 0) {
+      // A provider can abort while exhausting its iterator without another event.
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
       const needsVerify = madeEdits && !ranShellAfterEdit;
       const verifyFailed = madeEdits && ranShellAfterEdit && lastShellFailed;
       if ((needsVerify || verifyFailed) && verifyReprompts < MAX_VERIFY_REPROMPTS) {
         verifyReprompts++;
         conversation.addInternalUserMessage(needsVerify ? NEEDS_VERIFY_PROMPT : VERIFY_FAILED_PROMPT);
         continue;
+      }
+      yield { type: "assistant_message_complete", text: textAccum };
+      // Yielding hands control back to the caller, which may cancel the turn.
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
       }
       // A directive queued after the final tool round would otherwise sit in the
       // queue forever — this is the loop's last exit before max-iterations.
@@ -431,9 +442,12 @@ export async function* runAgentLoop(
       for (const steer of lateSteers) {
         conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
       }
-      yield { type: "assistant_message_complete", text: textAccum };
       if (lateSteers.length > 0) {
         yield { type: "steer_applied", directives: lateSteers };
+      }
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
       }
       yield { type: "turn_complete" };
       return;
@@ -592,8 +606,8 @@ export async function* runAgentLoop(
           }
         }
         const hookDef = getHookForTool(name, input, params.hooks);
-        if (hookDef && !result.isError) {
-          const hookOutput = await runHook(hookDef.hook, hookDef.vars);
+        if (hookDef && !result.isError && !signal?.aborted) {
+          const hookOutput = await runHook(hookDef.hook, hookDef.vars, signal);
           if (hookOutput) {
             const hookText = `\n\n[Hook output]: ${hookOutput}`;
             result = await boundToolResult({

@@ -3,6 +3,7 @@ import { resolve, dirname } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import { computeDiff } from "../utils/diff.js";
 import { pushUndo } from "../utils/undo.js";
+import { withFileMutationLock } from "../utils/file-mutation-lock.js";
 
 export const fileWriteTool: ToolDefinition = {
   schema: {
@@ -25,36 +26,38 @@ export const fileWriteTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const filePath = resolve(String(input.path));
     const content = String(input.content);
 
     try {
-      let oldContent: string | null = null;
-      try {
-        oldContent = await readFile(filePath, "utf-8");
-      } catch {
-        // New file
-      }
+      return await withFileMutationLock(filePath, async (): Promise<ToolResult> => {
+        let oldContent: string | null = null;
+        try {
+          oldContent = await readFile(filePath, "utf-8");
+        } catch {
+          // New file
+        }
 
-      await mkdir(dirname(filePath), { recursive: true });
-      await pushUndo(filePath, "write_file");
-      await writeFile(filePath, content, "utf-8");
+        await mkdir(dirname(filePath), { recursive: true });
+        await pushUndo(filePath, "write_file");
+        await writeFile(filePath, content, "utf-8");
 
-      if (oldContent !== null) {
-        const diffLines = computeDiff(oldContent, content);
+        if (oldContent !== null) {
+          const diffLines = computeDiff(oldContent, content);
+          return {
+            output: filePath,
+            isError: false,
+            diffLines,
+          };
+        }
+
+        const lineCount = content.split("\n").length;
         return {
-          output: filePath,
+          output: `Created ${filePath} (${lineCount} lines)`,
           isError: false,
-          diffLines,
         };
-      }
-
-      const lineCount = content.split("\n").length;
-      return {
-        output: `Created ${filePath} (${lineCount} lines)`,
-        isError: false,
-      };
+      }, context?.signal);
     } catch (err) {
       return {
         output: `Failed to write ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
