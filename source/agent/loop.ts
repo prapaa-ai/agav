@@ -62,10 +62,10 @@ interface LoopParams {
   allowedTools?: string[];
   hooks?: import("../config/config.js").AgavHooks;
   /**
-   * Drains /steer directives queued mid-turn. Only the main conversation's
-   * loop supplies this: subagents, skills, and agents run their own loops and
-   * must never consume directives addressed to the primary agent. When unset,
-   * the loop simply never receives mid-turn steers.
+   * Drains /steer directives queued mid-turn. The main conversation drains
+   * its queue; subagents supply independent broadcast queues so no child
+   * consumes another recipient's directives. When unset, the loop receives
+   * no mid-turn steers.
    */
   drainSteers?: () => string[];
   iterationsBudget?: { remaining: number, total: number }

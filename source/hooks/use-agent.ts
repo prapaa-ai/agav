@@ -216,7 +216,18 @@ export function useAgent(
   const [mcpResourceCount, setMcpResourceCount] = useState(0);
   const [mcpPromptCount, setMcpPromptCount] = useState(0);
   const [subagentStates, setSubagentStates] = useState<SubagentProgress[]>([]);
-  const [activePlan, setActivePlan] = useState<Plan | null>(null);
+  const [activePlan, setActivePlanState] = useState<Plan | null>(null);
+  const setActivePlan = useCallback((plan: Plan | null) => {
+    setActivePlanState(plan);
+    setMessages((prev) => {
+      if (!plan || plan.steps.length === 0) return prev.filter((message) => !message.plan);
+      const existing = prev.find((message) => message.plan?.createdAt === plan.createdAt);
+      if (existing) {
+        return prev.map((message) => message.id === existing.id ? { ...message, plan } : message);
+      }
+      return [...prev.filter((message) => !message.plan), { id: nextId(), role: "system", content: "", plan }];
+    });
+  }, []);
   const subagentDisplayNamesRef = useRef(new Map<string, string>());
   const toolInputsRef = useRef(new Map<string, Record<string, unknown>>());
   const turnCountRef = useRef(0);
@@ -311,6 +322,14 @@ export function useAgent(
         }),
         confirmationQueue: confirmationQueueRef.current,
         onProgressUpdate: setSubagentStates,
+        onSteerApplied: (_id, title, directives) => {
+          const count = directives.length;
+          setMessages((prev) => [...prev, {
+            id: nextId(),
+            role: "system",
+            content: `Delivered ${count} steer${count === 1 ? "" : "s"} to subagent "${title}".`,
+          }]);
+        },
         onTokenUsage: (usage) => setTokenUsage((prev) => ({
           inputTokens: prev.inputTokens + usage.inputTokens,
           outputTokens: prev.outputTokens + usage.outputTokens,

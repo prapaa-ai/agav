@@ -9,7 +9,7 @@ import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
 import { ToolRegistry as ToolRegistryClass } from "./registry.js";
 import { createWorktree, removeWorktree, applyWorktreeChanges } from "../utils/worktree.js";
-import { formatSteersForPrompt } from "../commands/steer.js";
+import { createSteerQueue, formatSteersForPrompt } from "../commands/steer.js";
 
 const MAX_CONCURRENT = 5;
 export interface SubagentToolDeps {
@@ -24,6 +24,7 @@ export interface SubagentToolDeps {
   };
   confirmationQueue: ConfirmationQueue;
   onProgressUpdate: (subagents: SubagentProgress[]) => void;
+  onSteerApplied?: (id: string, title: string, directives: string[]) => void;
   onTokenUsage: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   getSignal: () => AbortSignal | undefined;
 }
@@ -122,6 +123,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       conversation.addUserMessage(task);
 
       const steers = formatSteersForPrompt();
+      const steerQueue = createSteerQueue();
       const subagentSystemPrompt = [
         config.systemPrompt,
         "",
@@ -213,6 +215,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           permissionMode: config.permissionMode,
           effort: config.effort,
           iterationsBudget: config.iterationsBudget,
+          drainSteers: steerQueue.drain,
         });
 
         const MAX_RECENT_ACTIONS = 10;
@@ -287,6 +290,14 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
               progress.streamingText = "";
               startNewReasoningSummary = true;
               broadcastNow();
+              break;
+
+            case "steer_applied":
+              deps.onSteerApplied?.(id, title, event.directives);
+              break;
+
+            case "turn_complete":
+              steerQueue.dispose();
               break;
 
             case "usage":
@@ -377,6 +388,8 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         }, 100);
 
         return { output: `Subagent error: ${errMsg}`, isError: true };
+      } finally {
+        steerQueue.dispose();
       }
     },
 
