@@ -44,7 +44,7 @@ async function mount(title = "subagent", contextWindowPending = false) {
     tokenUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
     loadedPlugins: [], mcpServers: [], mcpPromptCommands: [], skillCommands: [], agentCommands: [],
     subagentStates: [progress(title), progress("second")], activePlan: null,
-    conversation: {}, isGenerationPaused: true, interveneWhilePaused,
+    conversation: {}, addDisplayMessage: vi.fn(), isGenerationPaused: true, interveneWhilePaused,
   } as unknown as ReturnType<typeof useAgent>);
   const stdout = new EventEmitter() as NodeJS.WriteStream;
   Object.assign(stdout, { isTTY: true, columns: 100, rows: 30, write: () => true });

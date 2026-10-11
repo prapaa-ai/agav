@@ -885,9 +885,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         if (result) {
           switch (result.type) {
             case "message": {
-              setSystemMessages([
-                { id: `sys-${++sysMessageId}`, role: "system", content: result.text },
-              ]);
+              const message: DisplayMessage = { id: `sys-${++sysMessageId}`, role: "system", content: result.text };
+              if (/^\/(steer|plan)(?:\s|$)/i.test(trimmed)) {
+                addDisplayMessage(message);
+              } else {
+                setSystemMessages([message]);
+              }
               if ((result as any)._isSkill) {
                 conversation.addUserMessage(trimmed);
                 conversation.addAssistantMessage([{ type: "text", text: result.text }]);
@@ -1019,7 +1022,40 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           </Box>
         )}
 
-        <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} columns={termCols} onOpenRef={handleOpenRef} />
+        <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} columns={termCols} onOpenRef={handleOpenRef} renderPlan={(plan) => (
+          <Box flexDirection="column" marginBottom={1} marginLeft={2}>
+            <Text bold dimColor>Plan: {terminalRelativePaths(plan.goal)}</Text>
+            {plan.steps.map((step) => {
+              const icon = step.status === "done" ? "\x1b[32m✓\x1b[0m"
+                : step.status === "in_progress" ? "\x1b[36m◉\x1b[0m"
+                  : step.status === "failed" ? "\x1b[31m✗\x1b[0m"
+                    : "○";
+              const textColor = step.status === "done" ? "green"
+                : step.status === "in_progress" ? "cyan"
+                  : step.status === "failed" ? "red"
+                    : undefined;
+              return (
+                <Text key={step.id} dimColor={step.status === "done"} color={textColor as any}>
+                  {`  ${icon} Step ${step.id}: ${terminalRelativePaths(step.title)}`}
+                </Text>
+              );
+            })}
+            {(() => {
+              const done = plan.steps.filter((s) => s.status === "done").length;
+              const total = plan.steps.length;
+              const progress = done === total
+                ? <Text color="green">{`  ✓ All ${total} steps complete`}</Text>
+                : <Text dimColor>{`  ${done}/${total} complete`}</Text>;
+              if (showPlanDetail) return progress;
+              return (
+                <>
+                  {progress}
+                  <Text dimColor italic>{`  ${formatKeybinding(keybindings, "togglePlanDetail")}: full plan`}</Text>
+                </>
+              );
+            })()}
+          </Box>
+        )} />
 
         {systemMessages.length > 0 && (
           <Box marginBottom={1} flexDirection="column">
@@ -1068,41 +1104,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           )}
         </Box>
       )}
-
-        {activePlan && activePlan.steps.length > 0 && (
-          <Box flexDirection="column" marginBottom={1} marginLeft={2}>
-            <Text bold dimColor>Plan: {terminalRelativePaths(activePlan.goal)}</Text>
-            {activePlan.steps.map((step) => {
-              const icon = step.status === "done" ? "\x1b[32m✓\x1b[0m"
-                : step.status === "in_progress" ? "\x1b[36m◉\x1b[0m"
-                  : step.status === "failed" ? "\x1b[31m✗\x1b[0m"
-                    : "○";
-              const textColor = step.status === "done" ? "green"
-                : step.status === "in_progress" ? "cyan"
-                  : step.status === "failed" ? "red"
-                    : undefined;
-              return (
-                <Text key={step.id} dimColor={step.status === "done"} color={textColor as any}>
-                  {`  ${icon} Step ${step.id}: ${terminalRelativePaths(step.title)}`}
-                </Text>
-              );
-            })}
-            {(() => {
-              const done = activePlan.steps.filter((s) => s.status === "done").length;
-              const total = activePlan.steps.length;
-              const progress = done === total
-                ? <Text color="green">{`  ✓ All ${total} steps complete`}</Text>
-                : <Text dimColor>{`  ${done}/${total} complete`}</Text>;
-              if (showPlanDetail) return progress;
-              return (
-                <>
-                  {progress}
-                  <Text dimColor italic>{`  ${formatKeybinding(keybindings, "togglePlanDetail")}: full plan`}</Text>
-                </>
-              );
-            })()}
-          </Box>
-        )}
 
         {showCompactionSummary && conversation.lastCompactionSummary && (
           <Box flexDirection="column" marginBottom={1} marginLeft={2} borderStyle="single" borderColor="gray" paddingX={1}>
