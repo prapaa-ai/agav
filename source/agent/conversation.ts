@@ -33,6 +33,17 @@ export class ConversationState {
     return structuredClone(this.transcript ?? this.messages);
   }
 
+  // Effective prompt from the main loop, including stable per-turn context.
+  private systemPrompt?: string;
+
+  setSystemPrompt(prompt: string): void {
+    this.systemPrompt = prompt;
+  }
+
+  getSystemPrompt(): string | undefined {
+    return this.systemPrompt;
+  }
+
   private model = "";
   private contextWindow?: number;
   private _compacted = false;
@@ -199,6 +210,7 @@ export class ConversationState {
   }
 
   clear(): void {
+    this.systemPrompt = undefined;
     this.messages = [];
     if (this.transcript) this.transcript = [];
     this.transcriptCopies = new WeakMap();
@@ -230,6 +242,7 @@ export class ConversationState {
   }
 
   setMessages(messages: Message[], compacted?: boolean): void {
+    this.systemPrompt = undefined;
     this.messages = this.sanitizeMessages([...messages]);
     if (this.transcript) {
       this.transcript = [];
