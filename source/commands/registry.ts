@@ -25,6 +25,7 @@ import { contextCommand } from "./context.js"
 import { agentsCommand } from "./agents.js"
 import { agentLockCommand } from "./agent-lock.js"
 import { openCommand } from "./open.js"
+import { mcpCommand } from "./mcp.js"
 import { copyCommand } from "./copy.js"
 export { MID_TURN_SAFE_COMMANDS, isCommandAllowedMidTurn } from "./mid-turn.js"
 
@@ -68,6 +69,7 @@ export class CommandRegistry {
     this.register(agentLockCommand)
     this.register(openCommand)
     this.register(copyCommand)
+    this.register(mcpCommand)
   }
 
   /** Add a command to the registry by name. */

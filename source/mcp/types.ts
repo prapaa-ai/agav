@@ -11,6 +11,14 @@ export interface MCPServerConfig {
   transport?: "http" | "sse";
   // Extra headers sent with every remote request (e.g. Authorization).
   headers?: Record<string, string>;
+  // OAuth is discovered automatically on 401; false keeps static/header-only authentication.
+  oauth?: false | {
+    clientId?: string;
+    issuer?: string;
+    scopes?: string[];
+    callbackPort?: number;
+    timeoutSeconds?: number;
+  };
 }
 
 // Tool metadata normalized from an MCP server's tools/list response.

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+import { MCPOAuth, MCPOAuthError } from "./oauth.js";
 import type {
   MCPServerConfig,
   MCPTool,
@@ -18,7 +19,7 @@ export class MCPClient {
   private process: ChildProcess | null = null;
   private nextId = 1;
   // Tracks in-flight requests so stdout responses can resolve the right promise.
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; pause: () => void; resume: () => void }>();
   private tools: MCPTool[] = [];
   private resources: MCPResource[] = [];
   private prompts: MCPPrompt[] = [];
@@ -26,10 +27,19 @@ export class MCPClient {
   private notificationHandler: ((method: string, params: unknown) => void) | null = null;
   readonly serverName: string;
   private config: MCPServerConfig;
+  private oauth: MCPOAuth;
+  private authorizationWaits = 0;
 
   constructor(name: string, config: MCPServerConfig) {
     this.serverName = name;
     this.config = config;
+    this.oauth = new MCPOAuth(name, config, process.stdin.isTTY === true, (active) => {
+      this.authorizationWaits += active ? 1 : -1;
+      for (const pending of this.pending.values()) {
+        if (this.authorizationWaits > 0) pending.pause();
+        else pending.resume();
+      }
+    });
   }
 
   // Registers a callback invoked whenever the server sends a notification.
@@ -72,6 +82,7 @@ export class MCPClient {
       try {
         await this.connectHttp(urlStr);
       } catch (httpErr) {
+        if (httpErr instanceof MCPOAuthError || this.abortController?.signal.aborted !== false) throw httpErr;
         try {
           await this.connectSse(urlStr);
         } catch {
@@ -108,7 +119,7 @@ export class MCPClient {
     this.activeTransport = "sse";
     const signal = this.abortController!.signal;
 
-    const response = await fetch(urlStr, {
+    const response = await this.oauth.fetch(urlStr, {
       headers: {
         ...this.config.headers,
         "Accept": "text/event-stream",
@@ -280,7 +291,7 @@ export class MCPClient {
       if (this.sessionId) headers["Mcp-Session-Id"] = this.sessionId;
     }
 
-    const response = await fetch(this.postUrl, {
+    const response = await this.oauth.fetch(this.postUrl, {
       method: "POST",
       headers,
       body: JSON.stringify(msg),
@@ -599,11 +610,18 @@ export class MCPClient {
       // Cancel only this wait, never the shared server/transport. Servers may
       // finish their work later; responses for removed request IDs are ignored.
       const onAbort = () => fail(new Error("MCP request cancelled."));
-      const timer = setTimeout(() => fail(new Error(`MCP request ${method} timed out`)), 30000);
-      if (typeof timer === "object" && "unref" in timer) timer.unref();
+      let timer: ReturnType<typeof setTimeout>;
+      const pause = () => clearTimeout(timer);
+      const resume = () => {
+        pause();
+        timer = setTimeout(() => fail(new Error(`MCP request ${method} timed out`)), 30000);
+        if (typeof timer === "object" && "unref" in timer) timer.unref();
+      };
+      if (this.authorizationWaits === 0) resume();
       this.pending.set(id, {
         resolve: value => { cleanup(); resolve(value); },
         reject: fail,
+        pause, resume,
       });
       signal?.addEventListener("abort", onAbort, { once: true });
       if (signal?.aborted) { onAbort(); return; }

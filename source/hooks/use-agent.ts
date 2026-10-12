@@ -26,6 +26,8 @@ import {
   ensurePlanFile,
   type Plan,
 } from "../agent/planner.js";
+import { MCPAuthenticationRequiredError } from "../mcp/oauth.js";
+import { formatMCPAuthenticationWarning } from "../mcp/auth-status.js";
 import { MCPManager } from "../mcp/manager.js";
 import { createPromptCommand } from "../mcp/prompt-command.js";
 import type { SlashCommand } from "../commands/types.js";
@@ -130,6 +132,9 @@ interface UseAgentReturn {
   tokenUsage: TokenUsage;
   loadedPlugins: string[];
   mcpServers: string[];
+  getMCPAuthenticationRequired: () => string[];
+  logoutMCPServer: (name: string) => Promise<void>;
+  authenticateMCPServer: (name: string) => Promise<void>;
   mcpPromptCommands: SlashCommand[];
   skillCommands: SlashCommand[];
   agentCommands: SlashCommand[];
@@ -288,6 +293,7 @@ export function useAgent(
     }
   }, []);
   const toolRegistryRef = useRef(createToolRegistry());
+  const registeredMcpToolsRef = useRef(new Set<string>());
   const mcpManagerRef = useRef(new MCPManager());
   const abortRef = useRef<AbortController | null>(null);
 
@@ -356,6 +362,11 @@ export function useAgent(
   // Re-pulls tools/resources/prompts from the manager and re-syncs the registries.
   const syncMcpState = useCallback(() => {
     const mcpTools = mcpManagerRef.current.getToolDefinitions();
+    const names = new Set(mcpTools.map(tool => tool.schema.name));
+    for (const name of registeredMcpToolsRef.current) {
+      if (!names.has(name)) toolRegistryRef.current.unregister(name);
+    }
+    registeredMcpToolsRef.current = names;
     for (const tool of mcpTools) {
       toolRegistryRef.current.register(tool);
     }
@@ -368,6 +379,9 @@ export function useAgent(
     setMcpResourceCount(mcpManagerRef.current.getAllResources().length);
     setMcpPromptCount(prompts.length);
     setMcpServers(mcpManagerRef.current.getServerNames());
+    const warning = formatMCPAuthenticationWarning(mcpManagerRef.current.getAuthenticationRequired());
+    setMessages(prev => prev.flatMap(message => message.id !== "mcp-auth-warning" ? [message] :
+      warning ? [{ ...message, content: warning }] : []));
   }, []);
 
   // Load optional extension points once so plugin and MCP tools become available for later turns.
@@ -449,21 +463,24 @@ export function useAgent(
 
       // Start MCP servers
       if (config.mcpServers) {
-        for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
+        await Promise.all(Object.entries(config.mcpServers).map(async ([name, serverConfig]) => {
           // Skip non-server entries: schema metadata keys (description, eg, etc.)
           // and malformed values. A valid server config must have either `command`
           // (stdio) or `url` (remote) — anything else is not a real server entry.
           if (typeof serverConfig !== "object" || serverConfig === null
             || !("command" in serverConfig || "url" in serverConfig)) {
-            continue;
+            return;
           }
           try {
             await mcpManagerRef.current.startServer(name, serverConfig);
             syncMcpState();
           } catch (err) {
+            if (err instanceof MCPAuthenticationRequiredError) return;
             process.stderr.write(`[mcp:${name}] failed to start: ${err instanceof Error ? err.message : String(err)}\n`);
           }
-        }
+        }));
+        const warning = formatMCPAuthenticationWarning(mcpManagerRef.current.getAuthenticationRequired());
+        if (warning) setMessages(prev => [...prev.filter(message => message.id !== "mcp-auth-warning"), { id: "mcp-auth-warning", role: "system", content: warning }]);
       }
     })();
 
@@ -474,6 +491,7 @@ export function useAgent(
 
   /** Abort the active loop and clear any queued confirmations waiting on user input. */
   const cancel = useCallback(() => {
+    mcpManagerRef.current.cancelAuthentication();
     invalidateContinuation();
     abortRef.current?.abort();
     confirmationQueueRef.current.clear();
@@ -1482,6 +1500,19 @@ export function useAgent(
     tokenUsage,
     loadedPlugins,
     mcpServers,
+    getMCPAuthenticationRequired: () => mcpManagerRef.current.getAuthenticationRequired(),
+    logoutMCPServer: async (name: string) => {
+      const server = Object.hasOwn(configRef.current.mcpServers ?? {}, name) ? configRef.current.mcpServers![name] : undefined;
+      if (!server || typeof server !== "object" || !server.url) throw new Error(`MCP server "${name}" is not a configured remote server.`);
+      try { await mcpManagerRef.current.logoutServer(name, server); }
+      finally { syncMcpState(); }
+    },
+    authenticateMCPServer: async (name: string) => {
+      const server = Object.hasOwn(configRef.current.mcpServers ?? {}, name) ? configRef.current.mcpServers![name] : undefined;
+      if (!server || typeof server !== "object" || !server.url) throw new Error(`MCP server "${name}" is not a configured remote server.`);
+      await mcpManagerRef.current.authenticateServer(name, server);
+      syncMcpState();
+    },
     mcpPromptCommands,
     skillCommands,
     agentCommands,

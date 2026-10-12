@@ -1,3 +1,4 @@
+import { MCPOAuth, MCPAuthenticationRequiredError } from "./oauth.js";
 import { MCPClient } from "./client.js";
 import type { MCPServerConfig, MCPTool, MCPResource, MCPPrompt, MCPResourceContent } from "./types.js";
 import type { ToolContext, ToolDefinition, ToolResult } from "../tools/types.js";
@@ -5,6 +6,10 @@ import type { ToolContext, ToolDefinition, ToolResult } from "../tools/types.js"
 // Coordinates multiple MCP server clients and exposes them as Agav tools.
 export class MCPManager {
   private clients = new Map<string, MCPClient>();
+  private authenticationRequired = new Set<string>();
+  private logins = new Map<string, { oauth: MCPOAuth; controller: AbortController }>();
+  private loggingOut = new Set<string>();
+  private starting = new Map<string, MCPClient>();
   private onChange: (() => void) | null = null;
 
   // Registers a callback invoked whenever any server's tools/resources/prompts change.
@@ -14,35 +19,96 @@ export class MCPManager {
 
   // Starts or restarts a named MCP server and returns its discovered tools.
   async startServer(name: string, config: MCPServerConfig): Promise<MCPTool[]> {
-    if (this.clients.has(name)) {
+    if (this.clients.has(name) || this.starting.has(name)) {
       await this.stopServer(name);
     }
 
     const client = new MCPClient(name, config);
     client.onNotification(() => this.onChange?.());
+    this.starting.set(name, client);
     try {
       await client.start();
+      if (this.starting.get(name) !== client) throw new Error(`MCP server ${name} stopped during startup`);
+      this.starting.delete(name);
       this.clients.set(name, client);
+      this.authenticationRequired.delete(name);
       return client.getTools();
     } catch (err) {
       client.stop();
+      if (err instanceof MCPAuthenticationRequiredError) this.authenticationRequired.add(name);
+      if (this.starting.get(name) === client) this.starting.delete(name);
       throw err;
     }
   }
 
   async stopServer(name: string): Promise<void> {
-    const client = this.clients.get(name);
+    const client = this.clients.get(name) ?? this.starting.get(name);
     if (client) {
       client.stop();
       this.clients.delete(name);
+      this.starting.delete(name);
+    }
+  }
+
+  getAuthenticationRequired(): string[] {
+    return [...this.authenticationRequired].sort();
+  }
+
+  async authenticateServer(name: string, config: MCPServerConfig): Promise<void> {
+    if (this.loggingOut.has(name)) throw new Error(`MCP server ${name} is logging out.`);
+    if (this.logins.has(name)) throw new Error(`MCP server ${name} is already authenticating.`);
+    const oauth = new MCPOAuth(name, config);
+    const controller = new AbortController();
+    this.logins.set(name, { oauth, controller });
+    try {
+      await oauth.auth(controller.signal);
+      controller.signal.throwIfAborted();
+      try {
+        await this.startServer(name, config);
+      } catch (error) {
+        if (controller.signal.aborted) throw controller.signal.reason;
+        throw new Error(`OAuth succeeded, but MCP connection failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+      }
+      controller.signal.throwIfAborted();
+      this.onChange?.();
+    } finally {
+      this.logins.delete(name);
+    }
+  }
+
+  async logoutServer(name: string, config: MCPServerConfig): Promise<void> {
+    if (!config.url) throw new Error(`MCP server "${name}" is not a configured remote server.`);
+    if (config.oauth === false || Object.keys(config.headers ?? {}).some(key => key.toLowerCase() === "authorization")) {
+      throw new Error(`MCP server "${name}" uses configured authentication. Remove its Authorization header or credentials from configuration instead.`);
+    }
+    if (this.loggingOut.has(name)) throw new Error(`MCP server ${name} is already logging out.`);
+    this.loggingOut.add(name);
+    try {
+      const login = this.logins.get(name);
+      login?.controller.abort(new Error("MCP authentication cancelled by logout."));
+      await this.stopServer(name);
+      this.authenticationRequired.add(name);
+      this.onChange?.(); // Remove tools even if deleting the credential file fails.
+      await (login?.oauth ?? new MCPOAuth(name, config)).disconnect();
+    } finally {
+      this.loggingOut.delete(name);
+    }
+  }
+
+  cancelAuthentication(): void {
+    for (const [name, login] of this.logins) {
+      login.controller.abort(new Error("MCP authentication cancelled."));
+      this.starting.get(name)?.stop();
     }
   }
 
   stopAll(): void {
-    for (const client of this.clients.values()) {
+    this.cancelAuthentication();
+    for (const client of [...this.clients.values(), ...this.starting.values()]) {
       client.stop();
     }
     this.clients.clear();
+    this.starting.clear();
   }
 
   getAllTools(): MCPTool[] {
