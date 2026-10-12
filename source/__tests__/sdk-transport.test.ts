@@ -75,7 +75,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("real SDK SSE transport (Anthropic 0.131 / OpenAI 7.27)", () => {
+describe("real SDK SSE transport (Anthropic 0.133 / OpenAI 7.32)", () => {
   it("runs Anthropic messages.stream through its accumulator and preserves exact text/tool deltas", async () => {
     const wire = anthropicStart()
       + sse({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, true)
@@ -103,7 +103,7 @@ describe("real SDK SSE transport (Anthropic 0.131 / OpenAI 7.27)", () => {
     ]);
     const req = request();
     expect(req.url.href).toBe("https://offline.invalid/v1/messages");
-    expect(req.headers.get("x-stainless-package-version")).toBe("0.131.0");
+    expect(req.headers.get("x-stainless-package-version")).toBe("0.133.0");
     expect(req.headers.get("x-stainless-helper-method")).toBe("stream");
     expect(req.body).toMatchObject({ stream: true, max_tokens: 128,
       tools: [{ name: "read_file", input_schema: params.tools![0]!.inputSchema, cache_control: { type: "ephemeral" } }] });
@@ -134,7 +134,7 @@ describe("real SDK SSE transport (Anthropic 0.131 / OpenAI 7.27)", () => {
     expect(req.url.searchParams.get("tenant")).toBe("team a");
     // 7.27 preserves repeated base-URL query parameters, not just the last one.
     expect(req.url.searchParams.getAll("tag")).toEqual(["one", "two"]);
-    expect(req.headers.get("x-stainless-package-version")).toBe("7.27.0");
+    expect(req.headers.get("x-stainless-package-version")).toBe("7.32.0");
     expect(req.body).toMatchObject({ stream: true, max_completion_tokens: 128, stream_options: { include_usage: true } });
     expect(req.body).not.toHaveProperty("max_tokens");
   });
