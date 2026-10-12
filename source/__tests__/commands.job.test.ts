@@ -1,6 +1,6 @@
 import { fixtureCommand, killWindowsFixtureSupervisor } from "./background-job-fixtures.js";
 /**
- * T16 — Tests for the `/process` slash command.
+ * T16 — Tests for the `/job` slash command.
  *
  * Same real-coordinator approach as `tools.background-job.test.ts`: import
  * the coordinator from compiled `build/` output so the real detached
@@ -38,7 +38,7 @@ async function killSupervisorProcessForJob(jobId: string): Promise<void> {
   }
 }
 
-const { processCommand } = await import("../commands/process.js");
+const { jobCommand } = await import("../commands/job.js");
 const { __setSharedCoordinatorForTests } = await import("../background-jobs-integration.js");
 
 async function importBuiltCoordinatorModule(): Promise<typeof import("../background-jobs/coordinator/service.js")> {
@@ -75,7 +75,7 @@ function createContext(configOverrides: Record<string, unknown> = {}): CommandCo
   };
 }
 
-function messageText(result: Awaited<ReturnType<typeof processCommand.execute>>): string {
+function messageText(result: Awaited<ReturnType<typeof jobCommand.execute>>): string {
   expect(result.type).toBe("message");
   return result.type === "message" ? result.text : "";
 }
@@ -128,50 +128,50 @@ async function startRealJob(command: string): Promise<string> {
   return summary.jobId;
 }
 
-describe("/process — opt-in gate", () => {
+describe("/job — opt-in gate", () => {
   it("blocks when backgroundJobsEnabled is false", async () => {
     const context = createContext({ backgroundJobsEnabled: false });
-    const result = await processCommand.execute("list", context);
+    const result = await jobCommand.execute("list", context);
     expect(messageText(result)).toContain("not enabled");
   });
 
   it("blocks when backgroundJobsEnabled is absent", async () => {
     const context = createContext({ backgroundJobsEnabled: undefined });
-    const result = await processCommand.execute("capabilities", context);
+    const result = await jobCommand.execute("capabilities", context);
     expect(messageText(result)).toContain("not enabled");
   });
 });
 
-describe("/process list", () => {
+describe("/job list", () => {
   it("reports plainly when there are no jobs", async () => {
-    const result = await processCommand.execute("list", createContext());
+    const result = await jobCommand.execute("list", createContext());
     expect(messageText(result)).toBe("No background jobs found.");
   });
 
   it("shows a started job", async () => {
     const jobId = await startRealJob(fixtureCommand("cmd-test done", 200));
-    const result = await processCommand.execute("list", createContext());
+    const result = await jobCommand.execute("list", createContext());
     expect(messageText(result)).toContain(jobId.slice(0, 8));
   }, 15000);
 });
 
-describe("/process poll", () => {
+describe("/job poll", () => {
   it("requires an id", async () => {
-    const result = await processCommand.execute("poll", createContext());
-    expect(messageText(result)).toContain("Usage: /process poll <id>");
+    const result = await jobCommand.execute("poll", createContext());
+    expect(messageText(result)).toContain("Usage: /job poll <id>");
   });
 
   it("shows job state", async () => {
     const jobId = await startRealJob(fixtureCommand("poll-test", 200));
-    const result = await processCommand.execute(`poll ${jobId}`, createContext());
+    const result = await jobCommand.execute(`poll ${jobId}`, createContext());
     expect(messageText(result)).toContain(`jobId: ${jobId}`);
   }, 15000);
 });
 
-describe("/process log", () => {
+describe("/job log", () => {
   it("requires an id", async () => {
-    const result = await processCommand.execute("log", createContext());
-    expect(messageText(result)).toContain("Usage: /process log <id>");
+    const result = await jobCommand.execute("log", createContext());
+    expect(messageText(result)).toContain("Usage: /job log <id>");
   });
 
   it("shows captured output once the job has produced some", async () => {
@@ -180,7 +180,7 @@ describe("/process log", () => {
     const deadline = Date.now() + 15000;
     let text = "";
     while (Date.now() < deadline) {
-      const result = await processCommand.execute(`log ${jobId}`, createContext());
+      const result = await jobCommand.execute(`log ${jobId}`, createContext());
       text = messageText(result);
       if (text.includes("log-test-output")) break;
       await new Promise((r) => setTimeout(r, 200));
@@ -189,10 +189,10 @@ describe("/process log", () => {
   }, 20000);
 });
 
-describe("/process stop", () => {
+describe("/job stop", () => {
   it("requires an id", async () => {
-    const result = await processCommand.execute("stop", createContext());
-    expect(messageText(result)).toContain("Usage: /process stop <id>");
+    const result = await jobCommand.execute("stop", createContext());
+    expect(messageText(result)).toContain("Usage: /job stop <id>");
   });
 
   it("reports the exact supported stop outcome without claiming Windows shell descendants stopped", async () => {
@@ -200,19 +200,19 @@ describe("/process stop", () => {
 
     const runningDeadline = Date.now() + 10000;
     while (Date.now() < runningDeadline) {
-      const result = await processCommand.execute(`poll ${jobId}`, createContext());
+      const result = await jobCommand.execute(`poll ${jobId}`, createContext());
       if (messageText(result).includes("state: running")) break;
       await new Promise((r) => setTimeout(r, 150));
     }
 
     const expectedState = process.platform === "win32" ? "unknown" : "interrupted";
-    const stopResult = await processCommand.execute(`stop ${jobId}`, createContext());
+    const stopResult = await jobCommand.execute(`stop ${jobId}`, createContext());
     expect(stopResult.type).toBe("message");
 
     const deadline = Date.now() + 15000;
     let finalText = "";
     while (Date.now() < deadline) {
-      const result = await processCommand.execute(`poll ${jobId}`, createContext());
+      const result = await jobCommand.execute(`poll ${jobId}`, createContext());
       finalText = messageText(result);
       if (finalText.includes(`state: ${expectedState}`)) break;
       await new Promise((r) => setTimeout(r, 200));
@@ -225,23 +225,23 @@ describe("/process stop", () => {
   }, 30000);
 });
 
-describe("/process capabilities", () => {
+describe("/job capabilities", () => {
   it("prints a capability report", async () => {
-    const result = await processCommand.execute("capabilities", createContext());
+    const result = await jobCommand.execute("capabilities", createContext());
     const text = messageText(result);
     expect(text).toContain("platform:");
     expect(text).toContain("availableIsolationBackends:");
   });
 });
 
-describe("/process unknown action", () => {
+describe("/job unknown action", () => {
   it("shows usage for unrecognized actions", async () => {
-    const result = await processCommand.execute("bogus-action", createContext());
+    const result = await jobCommand.execute("bogus-action", createContext());
     expect(messageText(result)).toContain("Unknown action");
   });
 
   it("shows usage for no args", async () => {
-    const result = await processCommand.execute("", createContext());
-    expect(messageText(result)).toContain("Usage: /process");
+    const result = await jobCommand.execute("", createContext());
+    expect(messageText(result)).toContain("Usage: /job");
   });
 });

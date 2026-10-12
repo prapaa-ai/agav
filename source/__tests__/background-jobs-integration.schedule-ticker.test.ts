@@ -1,7 +1,7 @@
 /**
  * Tests for `startScheduleTicker` / `stopScheduleTicker`
  * (source/background-jobs-integration.ts) — the periodic driver that calls
- * `ScheduleEngine.evaluateOnce()` so a schedule created via `/process
+ * `ScheduleEngine.evaluateOnce()` so a schedule created via `/job
  * schedule create` or the `run_background_job` tool's `schedule-create`
  * action actually triggers. Fixes Blocker 1: previously nothing called
  * `evaluateOnce()` at all.

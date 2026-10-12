@@ -94,7 +94,7 @@ function formatList(summaries: JobSummary[]): string {
 function mapBackgroundJobError(error: BackgroundJobError): string {
   switch (error.code) {
     case "authorization-denied":
-      return "This action requires confirmation; it was not approved.";
+      return `This action requires confirmation; it was not approved. (${error.message})`;
     case "capacity-exceeded":
       return "Too many background jobs are already running (limit reached).";
     case "isolation-unavailable":

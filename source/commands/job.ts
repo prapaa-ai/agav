@@ -1,5 +1,5 @@
 /**
- * T16 — Manual `/process` slash command.
+ * T16 — Manual `/job` slash command.
  *
  * Direct, user-facing inspection/control of background jobs WITHOUT going
  * through the LLM/tool-call path, per solution.md §2: "Add user-facing job
@@ -26,18 +26,18 @@ import {
 } from "../background-jobs/types.js";
 
 const DISABLED_MESSAGE =
-  'Background jobs are not enabled. Set "backgroundJobsEnabled": true in your agav config to use /process.';
+  'Background jobs are not enabled. Set "backgroundJobsEnabled": true in your agav config to use /job.';
 
 const USAGE =
-  "Usage: /process <action>\n\n" +
-  "  /process list                                       Show all known background jobs\n" +
-  "  /process poll <id>                                  Show the current state of one job\n" +
-  "  /process log <id> [maxBytes]                        Show captured output of one job\n" +
-  "  /process stop <id>                                  Request termination of one job\n" +
-  "  /process schedule list                              Show all registered schedules\n" +
-  '  /process schedule create "<cron>" <timezone> <cmd>  Register a recurring background command\n' +
-  "  /process schedule revoke <scheduleId>               Revoke a schedule by exact id (does not stop already-running jobs)\n" +
-  "  /process capabilities                               Show platform capability/status report\n\n" +
+  "Usage: /job <action>\n\n" +
+  "  /job list                                       Show all known background jobs\n" +
+  "  /job poll <id>                                  Show the current state of one job\n" +
+  "  /job log <id> [maxBytes]                        Show captured output of one job\n" +
+  "  /job stop <id>                                  Request termination of one job\n" +
+  "  /job schedule list                              Show all registered schedules\n" +
+  '  /job schedule create "<cron>" <timezone> <cmd>  Register a recurring background command\n' +
+  "  /job schedule revoke <scheduleId>               Revoke a schedule by exact id (does not stop already-running jobs)\n" +
+  "  /job capabilities                               Show platform capability/status report\n\n" +
   'Background jobs must be enabled via "backgroundJobsEnabled": true in your agav config.\n' +
   "Note: creating a schedule only registers it — no periodic timer in this delivery automatically triggers scheduled launches yet.";
 
@@ -79,7 +79,7 @@ function message(text: string): CommandResult {
 function mapBackgroundJobError(error: BackgroundJobError): string {
   switch (error.code) {
     case "authorization-denied":
-      return "This action requires confirmation; it was not approved.";
+      return `This action requires confirmation; it was not approved. (${error.message})`;
     case "capacity-exceeded":
       return "Too many background jobs are already running (limit reached).";
     case "not-found":
@@ -93,8 +93,8 @@ function mapBackgroundJobError(error: BackgroundJobError): string {
   }
 }
 
-export const processCommand: SlashCommand = {
-  name: "process",
+export const jobCommand: SlashCommand = {
+  name: "job",
   description: "Inspect and control background jobs (manual, opt-in subsystem)",
   usage: USAGE,
 
@@ -120,14 +120,14 @@ export const processCommand: SlashCommand = {
 
       if (action === "poll") {
         const id = parts[1];
-        if (!id) return message("Usage: /process poll <id>");
+        if (!id) return message("Usage: /job poll <id>");
         const summary = await coordinator.poll(id);
         return message(formatSummary(summary));
       }
 
       if (action === "log") {
         const id = parts[1];
-        if (!id) return message("Usage: /process log <id> [maxBytes]");
+        if (!id) return message("Usage: /job log <id> [maxBytes]");
         const maxBytes = parts[2] ? Number(parts[2]) : undefined;
         const tail = await coordinator.log(id, { maxBytes: Number.isFinite(maxBytes) ? maxBytes : undefined });
         const note = tail.truncated ? "\n[output truncated]" : "";
@@ -136,7 +136,7 @@ export const processCommand: SlashCommand = {
 
       if (action === "stop") {
         const id = parts[1];
-        if (!id) return message("Usage: /process stop <id>");
+        if (!id) return message("Usage: /job stop <id>");
         const summary = await coordinator.stop(id, {
           permissionMode: context.config.permissionMode,
           headlessApprovedActions: [],
@@ -179,7 +179,7 @@ export const processCommand: SlashCommand = {
           const rest = parts.slice(2).join(" ");
           const match = /^"([^"]+)"\s+(\S+)\s+(.+)$/.exec(rest);
           if (!match) {
-            return message('Usage: /process schedule create "<cron>" <timezone> <command>');
+            return message('Usage: /job schedule create "<cron>" <timezone> <command>');
           }
           const [, cron, timezone, command] = match;
           const launchSpecTemplate: Omit<LaunchSpec, "requestId" | "createdAt"> = {
@@ -196,14 +196,14 @@ export const processCommand: SlashCommand = {
           const schedule = await scheduleEngine.createSchedule({ cron: cron!, timezone: timezone!, launchSpecTemplate, session });
           return message(
             `Created schedule ${schedule.scheduleId} (cron: "${schedule.cron}", timezone: ${schedule.timezone}).\n` +
-              `List with: /process schedule list\n` +
-              `Revoke with: /process schedule revoke ${schedule.scheduleId}`,
+              `List with: /job schedule list\n` +
+              `Revoke with: /job schedule revoke ${schedule.scheduleId}`,
           );
         }
 
         if (subAction === "revoke") {
           const scheduleId = parts[2];
-          if (!scheduleId) return message("Usage: /process schedule revoke <scheduleId>");
+          if (!scheduleId) return message("Usage: /job schedule revoke <scheduleId>");
           const schedules = await scheduleEngine.listSchedules();
           const foundMatch = schedules.find((s) => s.scheduleId === scheduleId);
           if (!foundMatch) return message(`No schedule found with id "${scheduleId}".`);
@@ -215,7 +215,7 @@ export const processCommand: SlashCommand = {
           );
         }
 
-        return message(`Unknown /process schedule sub-action. ${USAGE}`);
+        return message(`Unknown /job schedule sub-action. ${USAGE}`);
       }
 
       return message(`Unknown action. ${USAGE}`);

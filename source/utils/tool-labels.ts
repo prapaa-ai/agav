@@ -105,6 +105,34 @@ const TOOL_META: Record<string, ToolMeta> = {
       return task.length > 50 ? task.slice(0, 50) + "..." : task;
     },
   },
+  run_background_job: {
+    label: "Background job",
+    formatSummary: (input) => {
+      // Two call shapes reach here: (a) the agent-loop's confirmation popup
+      // for a pending launch passes { action, spec }, where `spec` is the
+      // normalized LaunchSpec being approved (see agent/loop.ts's
+      // confirmBackgroundAction wiring) — not the tool's own flat
+      // parameters; (b) a direct-tool-call summary would pass the tool's
+      // own flat { action, command, jobId, ... } shape. Handle both.
+      const action = typeof input.action === "string" ? input.action : "";
+      const spec = input.spec as Record<string, unknown> | undefined;
+      const invocation = spec?.invocation as Record<string, unknown> | undefined;
+      let commandText = "";
+      if (invocation?.mode === "shell") {
+        commandText = String(invocation.commandText ?? "");
+      } else if (invocation?.mode === "direct") {
+        const args = Array.isArray(invocation.args) ? invocation.args : [];
+        commandText = [invocation.executable, ...args].join(" ");
+      } else if (typeof input.command === "string") {
+        commandText = input.command;
+      }
+      const trimmed = commandText.length > 60 ? commandText.slice(0, 60) + "..." : commandText;
+      if (action && trimmed) return `${action}: ${trimmed}`;
+      if (action) return action;
+      if (trimmed) return trimmed;
+      return typeof input.jobId === "string" ? `job ${input.jobId}` : "";
+    },
+  },
 };
 
 const DEFAULT_META: ToolMeta = {

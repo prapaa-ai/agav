@@ -71,7 +71,7 @@ export interface AgavConfig {
   showThinking?: boolean;
   /**
    * Opt-in switch for the background-jobs subsystem (see solution.md). When
-   * unset or false, `run_background_job`/`/process` are inert — discoverable
+   * unset or false, `run_background_job`/`/job` are inert — discoverable
    * but refuse to launch or inspect anything. Defaults to disabled so no
    * background command is ever launched merely because the feature shipped.
    */
@@ -153,7 +153,7 @@ const PROJECT_CONFIG_TEMPLATE = {
     eg: false,
   },
   backgroundJobsEnabled: {
-    description: "Opt in to the background-jobs subsystem, enabling the run_background_job tool and /process command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
+    description: "Opt in to the background-jobs subsystem, enabling the run_background_job tool and /job command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
     type: "boolean",
     eg: false,
   },

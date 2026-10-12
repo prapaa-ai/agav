@@ -1,8 +1,8 @@
 /**
- * T16 — Tests for the `/process schedule` sub-command
+ * T16 — Tests for the `/job schedule` sub-command
  * (`schedule list` / `schedule create` / `schedule revoke`).
  *
- * Same real-coordinator approach as `commands.process.test.ts`: import the
+ * Same real-coordinator approach as `commands.job.test.ts`: import the
  * coordinator from compiled `build/` output so the real schedule engine
  * (built on top of it) is exercised for real. Run `npx tsc -p tsconfig.json`
  * first.
@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandContext } from "../commands/types.js";
 
-const { processCommand } = await import("../commands/process.js");
+const { jobCommand } = await import("../commands/job.js");
 const { __setSharedCoordinatorForTests } = await import("../background-jobs-integration.js");
 
 async function importBuiltCoordinatorModule(): Promise<typeof import("../background-jobs/coordinator/service.js")> {
@@ -54,7 +54,7 @@ function createContext(configOverrides: Record<string, unknown> = {}): CommandCo
   };
 }
 
-function messageText(result: Awaited<ReturnType<typeof processCommand.execute>>): string {
+function messageText(result: Awaited<ReturnType<typeof jobCommand.execute>>): string {
   expect(result.type).toBe("message");
   return result.type === "message" ? result.text : "";
 }
@@ -74,63 +74,63 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 }, 20000);
 
-describe("/process schedule — opt-in gate", () => {
+describe("/job schedule — opt-in gate", () => {
   it("blocks when backgroundJobsEnabled is false", async () => {
     const context = createContext({ backgroundJobsEnabled: false });
-    const result = await processCommand.execute("schedule list", context);
+    const result = await jobCommand.execute("schedule list", context);
     expect(messageText(result)).toContain("not enabled");
   });
 });
 
-describe("/process schedule list", () => {
+describe("/job schedule list", () => {
   it("reports plainly when there are no schedules", async () => {
-    const result = await processCommand.execute("schedule list", createContext());
+    const result = await jobCommand.execute("schedule list", createContext());
     expect(messageText(result)).toBe("No schedules found.");
   });
 
   it("defaults to list when no sub-action is given after 'schedule'", async () => {
-    const result = await processCommand.execute("schedule", createContext());
+    const result = await jobCommand.execute("schedule", createContext());
     expect(messageText(result)).toBe("No schedules found.");
   });
 });
 
-describe("/process schedule create", () => {
+describe("/job schedule create", () => {
   it("creates a schedule from a quoted cron, timezone, and command", async () => {
-    const result = await processCommand.execute('schedule create "0 9 * * *" UTC echo hello-scheduled', createContext());
+    const result = await jobCommand.execute('schedule create "0 9 * * *" UTC echo hello-scheduled', createContext());
     expect(messageText(result)).toContain("Created schedule");
 
-    const listResult = await processCommand.execute("schedule list", createContext());
+    const listResult = await jobCommand.execute("schedule list", createContext());
     expect(messageText(listResult)).toContain('cron: "0 9 * * *"');
     expect(messageText(listResult)).toContain("timezone: UTC");
   });
 
   it("shows usage when the arguments are malformed", async () => {
-    const result = await processCommand.execute("schedule create not-quoted-cron", createContext());
-    expect(messageText(result)).toContain("Usage: /process schedule create");
+    const result = await jobCommand.execute("schedule create not-quoted-cron", createContext());
+    expect(messageText(result)).toContain("Usage: /job schedule create");
   });
 });
 
-describe("/process schedule revoke", () => {
+describe("/job schedule revoke", () => {
   it("revokes an existing schedule by exact id", async () => {
-    const createResult = await processCommand.execute('schedule create "0 9 * * *" UTC echo hi', createContext());
+    const createResult = await jobCommand.execute('schedule create "0 9 * * *" UTC echo hi', createContext());
     const idMatch = /Created schedule (\S+) /.exec(messageText(createResult));
     expect(idMatch).not.toBeNull();
     const scheduleId = idMatch![1]!;
 
-    const revokeResult = await processCommand.execute(`schedule revoke ${scheduleId}`, createContext());
+    const revokeResult = await jobCommand.execute(`schedule revoke ${scheduleId}`, createContext());
     expect(messageText(revokeResult)).toContain("Revoked schedule");
 
-    const listResult = await processCommand.execute("schedule list", createContext());
+    const listResult = await jobCommand.execute("schedule list", createContext());
     expect(messageText(listResult)).toContain("[disabled]");
   });
 
   it("returns a clear message for an unknown scheduleId", async () => {
-    const result = await processCommand.execute("schedule revoke does-not-exist", createContext());
+    const result = await jobCommand.execute("schedule revoke does-not-exist", createContext());
     expect(messageText(result)).toContain("No schedule found");
   });
 
   it("shows usage when scheduleId is missing", async () => {
-    const result = await processCommand.execute("schedule revoke", createContext());
-    expect(messageText(result)).toContain("Usage: /process schedule revoke");
+    const result = await jobCommand.execute("schedule revoke", createContext());
+    expect(messageText(result)).toContain("Usage: /job schedule revoke");
   });
 });

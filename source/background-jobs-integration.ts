@@ -5,7 +5,7 @@
  * integration lives OUTSIDE this directory: source/tools/, source/commands/,
  * source/agent/") — it is product wiring, not a subsystem-internal module.
  *
- * Both `source/tools/background-job.ts` and `source/commands/process.ts`
+ * Both `source/tools/background-job.ts` and `source/commands/job.ts`
  * need a `CoordinatorClient`. Rather than each constructing its own
  * `createCoordinator()` instance (wasteful, though not unsafe — the
  * coordinator is effectively stateless per-call against shared on-disk

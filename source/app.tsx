@@ -566,7 +566,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   // Periodic evaluation ticker for the NEW background-jobs "process
   // schedule" feature (solution.md §11) — distinct from the LLM
-  // prompt-schedule checker above. A schedule created via `/process
+  // prompt-schedule checker above. A schedule created via `/job
   // schedule create` or the `run_background_job` tool's `schedule-create`
   // action is otherwise never actually evaluated/triggered. All the actual
   // interval/evaluation logic lives in `startScheduleTicker` /
