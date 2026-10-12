@@ -3,9 +3,9 @@ import { Box, Text } from "../ink/index.js";
 import type { AgentDefinition, MarketplaceAgent } from "../agents/types.js";
 import type { AgentReadiness, ConfigItem } from "./agents-types.js";
 import { resolveConfigPath, parseFileUrl } from "./agents-types.js";
-import { createToolRegistry } from "../tools/registry-factory.js";
+import { createBuiltinToolRegistry, KNOWN_TOOL_NAMES } from "../tools/registry-factory.js";
 
-const NATIVE_TOOLS = createToolRegistry().list().map((tool) => tool.schema);
+const NATIVE_TOOLS = createBuiltinToolRegistry(KNOWN_TOOL_NAMES).list().map((tool) => tool.schema);
 
 export function InspectView({ agent, statusLabel, readiness, runtimeConfig, sessionModel, sessionEffort, sessionProvider }: {
   agent: AgentDefinition;

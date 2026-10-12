@@ -128,7 +128,8 @@ export async function saveMemory(entry: {
   return slug;
 }
 
-export async function loadMemories(): Promise<MemoryEntry[]> {
+export async function loadMemories(refresh = false): Promise<MemoryEntry[]> {
+  if (refresh) invalidateMemoriesCache();
   const dir = await getProjectMemoryDir();
   if (_memoriesCache !== undefined && _memoriesCacheDir === dir) {
     return _memoriesCache;

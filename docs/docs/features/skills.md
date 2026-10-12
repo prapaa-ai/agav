@@ -264,7 +264,7 @@ Skill bodies can contain fenced shell blocks (`` ```sh ``) that execute at runti
 - **`ask`** — each block requires explicit user confirmation; if no confirmation handler is available (as with manual-only slash-command skills), it is skipped
 - **`auto-accept`** — blocks execute without prompting
 
-Shell blocks execute before the restricted tool registry is built, so tool allow/disallow lists do not filter them. They use direct subprocess execution, not `run_command`: they do not inherit its OS sandbox, destructive-command filtering, streamed logs, or process-group cleanup, and receive no turn cancellation signal. Install only trusted skills with shell blocks.
+Shell blocks execute before the restricted tool registry is built, so tool allow/disallow lists do not filter them. They use the shared shell runner with the default sandbox, credential-filtered environment, process-group cleanup, and the skill's cancellation signal when supplied. Confirmation does not bypass sandboxing. A shell failure fails the skill rather than silently substituting empty output. They do not use `run_command`'s destructive-command filtering or streamed logs. Install only trusted skills with shell blocks.
 
 Shell blocks have a 10-second timeout. On Windows, they run via `cmd.exe /c`; on other platforms, `/bin/sh -c`.
 

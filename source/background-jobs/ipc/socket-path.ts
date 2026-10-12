@@ -35,7 +35,7 @@ export function getSocketPath(root: string, name: string): string {
   }
 
   const direct = join(root, `${name}.sock`);
-  if (direct.length <= SAFE_PATH_LIMIT) {
+  if (Buffer.byteLength(direct) <= SAFE_PATH_LIMIT) {
     return direct;
   }
 
@@ -43,5 +43,9 @@ export function getSocketPath(root: string, name: string): string {
   // sockaddr_un length limit while remaining reproducible for the same
   // (root, name) pair.
   const hash = createHash("sha256").update(`${root}\u0000${name}`).digest("hex").slice(0, 16);
-  return join(root, `ajb-${hash}.sock`);
+  const fallback = join(root, hash);
+  if (Buffer.byteLength(fallback) > SAFE_PATH_LIMIT) {
+    throw new Error("Background-jobs storage path is too long for a Unix socket; use a shorter storage root.");
+  }
+  return fallback;
 }

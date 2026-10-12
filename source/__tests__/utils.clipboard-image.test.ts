@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execFile } from "node:child_process";
 import { downscaleImage, MAX_RAW_IMAGE_BYTES } from "../utils/media-tools.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -72,6 +72,23 @@ describe("getClipboardImage on Linux", () => {
       expect.any(Function),
     );
   });
+
+  it("updates process.cwd() dynamically instead of retaining import-time cwd", async () => {
+    const calls: string[] = [];
+    mockClipboardTool(calls, "xclip", TINY_PNG);
+    const { getClipboardImage } = await import("../utils/clipboard-image.js");
+    
+    // Simulate chdir after import
+    const newDir = join(workingDirectory, "new_folder");
+    await mkdir(newDir);
+    process.chdir(newDir);
+    
+    const image = await getClipboardImage();
+    expect(image).not.toBeNull();
+    // The temp file path should reflect the new CWD
+    expect(image!.filePath).toContain(join(newDir, ".agav", "images"));
+  });
+
 
   it("prefers wl-paste over xclip when a Wayland session is active", async () => {
     process.env.WAYLAND_DISPLAY = "wayland-0";

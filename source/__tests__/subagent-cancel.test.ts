@@ -15,6 +15,7 @@ vi.mock("../utils/worktree.js", () => ({
 // Mock steer formatting
 vi.mock("../commands/steer.js", () => ({
   formatSteersForPrompt: vi.fn(() => ""),
+  createSteerQueue: () => ({ drain: () => [], dispose: vi.fn() }),
 }));
 
 import { runAgentLoop } from "../agent/loop.js";
@@ -51,7 +52,7 @@ function makeDeps(overrides: Partial<Parameters<typeof createSubagentTool>[0]> =
       systemPrompt: "You are a test agent.",
       permissionMode: "auto-accept" as const,
       effort: "medium" as const,
-      maxIterations: 1,
+      iterationsBudget: {remaining : 1,total : 1},
     }),
     confirmationQueue: { enqueue: vi.fn(() => Promise.resolve("yes")), rejectBySubagentId: vi.fn() } as any,
     onProgressUpdate: vi.fn(),

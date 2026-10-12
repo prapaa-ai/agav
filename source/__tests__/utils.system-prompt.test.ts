@@ -96,6 +96,19 @@ describe("utils/system-prompt", () => {
     }
   });
 
+  it("updates process.cwd() dynamically", async () => {
+    const oldCwd = process.cwd();
+    const prompt1 = await buildSystemPrompt();
+    expect(prompt1).toContain(oldCwd);
+
+    const mockCwd = vi.spyOn(process, "cwd").mockReturnValue("/fake/dir/xyz123");
+    const prompt2 = await buildSystemPrompt();
+    expect(prompt2).toContain("/fake/dir/xyz123");
+    
+    mockCwd.mockRestore();
+  });
+
+
   it("refreshes dynamic context from all sections", async () => {
     vi.mocked(getGitContext).mockResolvedValue({ isRepo: true, branch: "main", status: "clean", recentCommits: "", remoteUrl: "" });
     vi.mocked(formatGitPrompt).mockReturnValue("git block");

@@ -79,7 +79,7 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | `showThinking` | When `true`, stream the model's reasoning text (toggle at runtime with Ctrl+T) |
 | `effort` | `low`, `medium`, `high`, or `max`; invalid values fall back to `medium` |
 | `maxTokens` | Maximum output tokens per model response |
-| `maxIterations` | Maximum agent/tool iterations; must be a positive integer |
+| `maxIterations` | Maximum agent/tool iterations per prompt; must be a positive integer; can be overridden at startup with `--max-turns` for the current session |
 | `errorRetries` | Transient provider retries; must be zero or greater |
 | `permissionMode` | `ask`, `auto-accept`, or `deny-writes` |
 | `sandboxRequired` | When `true`, refuse to start if no OS-level sandbox (Seatbelt, Bubblewrap, or Docker) is available |

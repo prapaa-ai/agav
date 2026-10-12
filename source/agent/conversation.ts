@@ -9,11 +9,65 @@ import {
 
 export class ConversationState {
   private messages: Message[] = [];
+  private transcript?: Message[];
+  private transcriptCopies = new WeakMap<Message, Message>();
+
+  constructor(recordTranscript = false) {
+    if (recordTranscript) this.transcript = [];
+  }
+
+  private recordMessage(message: Message): void {
+    if (!this.transcript) return;
+    const copy = structuredClone(message);
+    this.transcriptCopies.set(message, copy);
+    this.transcript.push(copy);
+  }
+
+  private appendMessage(message: Message): void {
+    this.messages.push(message);
+    this.recordMessage(message);
+  }
+
+  /** Original execution history, independent of context trimming and summaries. */
+  getTranscript(): Message[] {
+    return structuredClone(this.transcript ?? this.messages);
+  }
+
+  // Effective prompt from the main loop, including stable per-turn context.
+  private systemPrompt?: string;
+
+  setSystemPrompt(prompt: string): void {
+    this.systemPrompt = prompt;
+  }
+
+  getSystemPrompt(): string | undefined {
+    return this.systemPrompt;
+  }
+
   private model = "";
   private contextWindow?: number;
   private _compacted = false;
   private _lastCompactionSummary = "";
   private _cachedTokenCount: number | undefined;
+  /**
+   * User-supplied context windows for models no catalog can report — OpenRouter
+   * stealth models are the motivating case, deliberately excluded from the
+   * public model listing. Keyed by model name and kept independent of
+   * `contextWindow`/`setModel` so switching models and back does not forget
+   * the answer and re-prompt.
+   */
+  private manualContextWindows = new Map<string, number>();
+  // Remember automatic defaults separately: suppress repeat prompts without
+  // preventing provider metadata from replacing the assumed window later.
+  private assumedContextWindows = new Set<string>();
+
+  hasAssumedContextWindow(model: string): boolean {
+    return this.assumedContextWindows.has(model);
+  }
+
+  setAssumedContextWindow(model: string): void {
+    this.assumedContextWindows.add(model);
+  }
 
   setModel(model: string): void {
     // A window resolved for the previous model says nothing about the new one,
@@ -36,6 +90,16 @@ export class ConversationState {
     return this.contextWindow;
   }
 
+  /** A previously recorded manual context window for `model`, if the user supplied one. */
+  getManualContextWindow(model: string): number | undefined {
+    return this.manualContextWindows.get(model);
+  }
+
+  /** Remember a user-supplied context window for `model` so later turns do not re-prompt. */
+  setManualContextWindow(model: string, tokens: number): void {
+    if (tokens > 0) this.manualContextWindows.set(model, tokens);
+  }
+
   addUserMessage(
     text: string,
     extraBlocks?: ContentBlock[],
@@ -47,7 +111,7 @@ export class ConversationState {
     if (extraBlocks) {
       content.push(...extraBlocks);
     }
-    this.messages.push({
+    this.appendMessage({
       role: "user",
       content,
       ...(displayText ? { displayText } : {}),
@@ -62,7 +126,7 @@ export class ConversationState {
    * can leave it out — the model needs to see it, the user should not.
    */
   addInternalUserMessage(text: string): void {
-    this.messages.push({ role: "user", content: [{ type: "text", text }], internal: true });
+    this.appendMessage({ role: "user", content: [{ type: "text", text }], internal: true });
     this.invalidateTokenCache();
   }
 
@@ -77,6 +141,7 @@ export class ConversationState {
     const last = this.messages[this.messages.length - 1];
     if (!last || last.role !== "user") return;
     last.content.push({ type: "text", text });
+    this.transcriptCopies.get(last)?.content.push({ type: "text", text });
     this.invalidateTokenCache();
   }
 
@@ -120,17 +185,23 @@ export class ConversationState {
       content: [{ type: "text", text }],
       internal: true,
     };
+    const nextCopy = this.messages[insertAt] && this.transcriptCopies.get(this.messages[insertAt]!);
     this.messages.splice(insertAt, 0, injected);
+    this.recordMessage(injected);
+    if (this.transcript && nextCopy) {
+      const copy = this.transcript.pop()!;
+      this.transcript.splice(this.transcript.indexOf(nextCopy), 0, copy);
+    }
     this.invalidateTokenCache();
   }
 
   addAssistantMessage(content: ContentBlock[]): void {
-    this.messages.push({ role: "assistant", content });
+    this.appendMessage({ role: "assistant", content });
     this.invalidateTokenCache();
   }
 
   addToolResults(results: ContentBlock[]): void {
-    this.messages.push({ role: "user", content: results });
+    this.appendMessage({ role: "user", content: results });
     this.invalidateTokenCache();
   }
 
@@ -139,7 +210,10 @@ export class ConversationState {
   }
 
   clear(): void {
+    this.systemPrompt = undefined;
     this.messages = [];
+    if (this.transcript) this.transcript = [];
+    this.transcriptCopies = new WeakMap();
     this._compacted = false;
     this.invalidateTokenCache();
   }
@@ -168,7 +242,13 @@ export class ConversationState {
   }
 
   setMessages(messages: Message[], compacted?: boolean): void {
+    this.systemPrompt = undefined;
     this.messages = this.sanitizeMessages([...messages]);
+    if (this.transcript) {
+      this.transcript = [];
+      this.transcriptCopies = new WeakMap();
+      for (const message of this.messages) this.recordMessage(message);
+    }
     if (compacted !== undefined) this._compacted = compacted;
     this.invalidateTokenCache();
   }

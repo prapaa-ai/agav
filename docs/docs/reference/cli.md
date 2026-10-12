@@ -15,6 +15,16 @@ agav -P "prompt"             # Print one final response and exit
 agav update [version]        # Update the installed release
 ```
 
+### --max-turns
+
+`--max-turns <number>` caps agent iterations **per prompt** across interactive, print (`-P`), and run (`run`) modes.
+
+- Interactive: the cap applies to each user turn in the session. The budget resets for every new prompt and is shared with subagents, skills, and tool calls.
+- Print mode: a single prompt runs with the cap; when reached the agent summarizes its work and stops.
+- Run mode: the cap limits internal model/tool iterations for the task prompt.
+
+The flag overrides `maxIterations` in configuration for the current session only. On resume, the session history is kept but the cap is reapplied to new prompts.
+
 ## Options
 
 | Option | Description |
@@ -30,7 +40,7 @@ agav update [version]        # Update the installed release
 | `--stream` | Stream print-mode response text |
 | `--output-schema <json\|@file>` | Validate print-mode output against JSON Schema |
 | `--permission <json>` | Tool policy for `agav run` |
-| `--max-turns <number>` | Limit iterations in `agav run` |
+| `--max-turns <number>` | Limit the number of agent iterations per prompt in interactive, print, and run modes |
 | `--resume`, `-r [id]` | Open the session picker or resume by ID prefix |
 | `--auto-accept`, `-y` | Skip normal tool confirmations |
 | `--openai-api` | OpenAI API mode: `responses` (default) or `chat`. Use `chat` for OpenAI-compatible endpoints that don't support the Responses API. |
@@ -95,10 +105,10 @@ Local paths and GitHub repository URLs are both supported for `install`. For Git
 agav skills                            # Alias for agav skills list
 agav skills list                       # List all skills grouped by origin, with state
 agav skills add <url|path>             # Install from a URL or local path
-agav skills remove <name>              # Uninstall a global skill
-agav skills disable <name>             # Disable a skill (bundled skills included)
-agav skills enable <name>              # Re-enable a disabled skill
-agav skills clear                      # Remove all user-installed skills
+agav skills remove <name>             # Uninstall a global skill
+agav skills disable <name>            # Disable a skill (bundled skills included)
+agav skills enable <name>             # Re-enable a disabled skill
+agav skills clear                     # Remove all user-installed skills
 ```
 
 Bundled skills are compiled into the binary and cannot be removed, but `disable` turns them off without deleting anything. The enabled/disabled state is stored in `~/.agav/skills/registry.json`. Changes take effect on the next start.

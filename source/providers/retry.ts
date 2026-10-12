@@ -56,6 +56,7 @@ export class RetryProvider implements LLMProvider {
    * would silently disable context-window discovery for wrapped providers.
    */
   readonly getContextWindow?: LLMProvider["getContextWindow"];
+  readonly isContextWindowConfirmedMissing?: LLMProvider["isContextWindowConfirmedMissing"];
 
   constructor(inner: LLMProvider, maxRetries = DEFAULT_MAX_RETRIES) {
     this.inner = inner;
@@ -63,6 +64,9 @@ export class RetryProvider implements LLMProvider {
     this.maxRetries = maxRetries;
     if (inner.getContextWindow) {
       this.getContextWindow = inner.getContextWindow.bind(inner);
+    }
+    if (inner.isContextWindowConfirmedMissing) {
+      this.isContextWindowConfirmedMissing = inner.isContextWindowConfirmedMissing.bind(inner);
     }
   }
 

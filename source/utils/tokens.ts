@@ -57,7 +57,18 @@ export function getContextLimits(model: string, explicitMax?: number): ContextLi
 
   const m = model.toLowerCase();
 
-  // GPT-5.4-mini: 400k context
+  // GPT-6 Astra, Sol, Luna and GPT-6.1 Sol have 1,050,000-token context
+  // windows (922,000 max input + 128,000 max output). Match published IDs,
+  // including routed OpenRouter IDs, rather than guessing for future GPT-6s.
+  // GPT-5.6 models also have a 1,050,000-token context.
+  // https://developers.openai.com/api/docs/models
+  if (/(?:^|\/)gpt-6-(?:astra|sol|luna)$/.test(m)
+    || /(?:^|\/)gpt-6\.1-sol$/.test(m)
+    || m.includes("gpt-5.6")) {
+    return { maxTokens: 1_050_000, warningThreshold: 840_000 };
+  }
+  // GPT-5.4-mini: 400k context. Older size-suffixed naming predates the
+  // Sol/Terra/Luna switch, so this only matches GPT-5.1 through 5.5.
   if (m.includes("gpt-5") && m.includes("mini")) {
     return { maxTokens: 400_000, warningThreshold: 320_000 };
   }
@@ -73,18 +84,25 @@ export function getContextLimits(model: string, explicitMax?: number): ContextLi
   if (m.includes("gpt-4")) {
     return { maxTokens: 128_000, warningThreshold: 100_000 };
   }
-  // Claude Opus 4.6+, Sonnet 4.6+, Sonnet 5, Opus 5, Fable 5: 1M context
+  // Anthropic's Claude 5 family has 1M context: Fable 5/5.1, Mythos 5/5.1,
+  // Opus 5/5.5, Sonnet 5/5.5 and Haiku 5.5. Haiku 4.5 stays at 200k.
+  // https://platform.claude.com/docs/en/about-claude/models/overview
+  if (/(?:^|[/.])claude-(?:fable|mythos|opus|sonnet)-5(?:[.-]\d+)?(?:$|[.-])/.test(m)
+    || /(?:^|[/.])claude-haiku-5[-.]5(?:$|[.-])/.test(m)) {
+    return { maxTokens: 1_000_000, warningThreshold: 800_000 };
+  }
+  // Claude Opus 4.6+, Sonnet 4.6+: 1M context
   if (m.includes("opus") || m.includes("fable") || m.includes("sonnet")) {
     if (m.includes("4-5") || m.includes("4.5")) {
       return { maxTokens: 200_000, warningThreshold: 160_000 };
     }
     return { maxTokens: 1_000_000, warningThreshold: 800_000 };
   }
-  // Claude Haiku 4.5: 200k context
+  // Claude Haiku 4.5 (and any other Haiku not caught above): 200k context
   if (m.includes("haiku")) {
     return { maxTokens: 200_000, warningThreshold: 160_000 };
   }
-  // Gemini models: default to 1M
+  // Gemini models: default to 1M (uniform across the 3.x/3.5 family)
   if (m.includes("gemini")) {
     return { maxTokens: 1_000_000, warningThreshold: 800_000 };
   }

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { Message } from "../providers/types.js";
 import {
   NEEDS_VERIFY_PROMPT,
+  VERIFY_FAILED_PROMPT,
   MAX_STEPS_PROMPT,
   isInternalUserMessage,
   testsFailedPrompt,
@@ -96,5 +97,39 @@ describe("messagesToDisplay", () => {
   it("falls back to the source text when there is no display text", () => {
     const restored: Message[] = [userMessage("read the file <contents...>", { sourceText: "read @a.ts" })];
     expect(messagesToDisplay(restored).map((m) => m.content)).toEqual(["read @a.ts"]);
+  });
+});
+
+const legacyVerificationPrompts = [
+  "You made changes but did not verify they work. Run the program to check your changes produce the correct output. " +
+    "If there are expected output files, compare your output against them. If the task requires compilation, compile and check for errors/warnings. " +
+    "Do not stop until you have verified your solution.",
+  "Your last verification command failed or produced errors/warnings. Read the output carefully, identify the specific issue, fix it, and verify again. " +
+    "Do not stop until verification passes cleanly.",
+];
+
+describe("scoped verification guidance", () => {
+  it.each([NEEDS_VERIFY_PROMPT, VERIFY_FAILED_PROMPT])("keeps verification relevant and blocked outcomes honest: %s", prompt => {
+    expect(prompt).toContain("checks relevant to the requested change");
+    expect(prompt).toContain("Do not modify unrelated files or fix pre-existing warnings");
+    expect(prompt).toContain("If dependencies or infrastructure block verification");
+    expect(prompt).toContain("report the blocker and what remains unverified");
+    expect(prompt).toContain("Do not claim verification passed");
+    expect(prompt).not.toContain("Do not stop until");
+    expect(isInternalUserMessage(userMessage(prompt))).toBe(true);
+  });
+
+  it("retains relevant output and compilation checks", () => {
+    expect(NEEDS_VERIFY_PROMPT).toContain("expected output files");
+    expect(NEEDS_VERIFY_PROMPT).toContain("If the task requires compilation");
+    expect(VERIFY_FAILED_PROMPT).toContain("Fix failures caused by your changes and verify again");
+  });
+
+  it.each(legacyVerificationPrompts)("hides old unflagged verification prompts, but never user quotes: %s", prompt => {
+    expect(isInternalUserMessage(userMessage(prompt))).toBe(true);
+    expect(messagesToDisplay([userMessage(prompt)])).toEqual([]);
+    expect(isInternalUserMessage(userMessage(prompt, { sourceText: prompt }))).toBe(false);
+    expect(isInternalUserMessage(userMessage(prompt, { displayText: prompt }))).toBe(false);
+    expect(isInternalUserMessage({ role: "assistant", content: [{ type: "text", text: prompt }] })).toBe(false);
   });
 });

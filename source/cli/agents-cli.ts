@@ -9,7 +9,15 @@ import { setAgentEnabled, loadRegistry } from "../agents/agent-registry.js";
 /**
  * List installed agents
  */
-async function listAgents(): Promise<number> {
+async function listAgents(args: string[] = []): Promise<number> {
+  const separatorIndex = args.indexOf("--");
+  if (separatorIndex >= 0) {
+    args = [...args.slice(0, separatorIndex), ...args.slice(separatorIndex + 1)];
+  }
+  if (args.length > 0) {
+    console.error(`\nError: Unexpected argument '${args[0]}'\n`);
+    return 1;
+  }
   const agents = await loadAgents();
 
   if (agents.length === 0) {
@@ -67,30 +75,45 @@ async function listAgents(): Promise<number> {
  * Install agent from URL or local path
  */
 async function installAgentCommand(args: string[]): Promise<number> {
-  if (args.length === 0) {
-    console.error("\nError: No source URL or path provided.\n");
-    console.error("Usage: agav agents install <url|path> [--alias name] [--destination global|project]\n");
-    return 1;
-  }
-
-  const source = args[0]!;
   let alias: string | undefined;
   let destination: "global" | "project" = "global";
+  const positionals: string[] = [];
 
   // Parse flags
-  for (let i = 1; i < args.length; i++) {
+  for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    if (arg === "--alias" && args[i + 1]) {
+    if (arg === "--") {
+      positionals.push(...args.slice(i + 1));
+      break;
+    } else if (arg === "--alias") {
+      if (!args[i + 1] || args[i + 1]!.startsWith("-")) {
+        console.error("\nError: --alias requires a name argument\n");
+        return 1;
+      }
       alias = args[++i]!;
-    } else if (arg === "--destination" && args[i + 1]) {
-      const dest = args[++i]!;
+    } else if (arg === "--destination") {
+      const dest = args[i + 1];
       if (dest !== "global" && dest !== "project") {
         console.error("\nError: --destination must be 'global' or 'project'\n");
         return 1;
       }
       destination = dest;
+      i++;
+    } else if (arg.startsWith("-")) {
+      console.error(`\nError: Unknown option '${arg}'\n`);
+      return 1;
+    } else {
+      positionals.push(arg);
     }
   }
+
+  if (positionals.length === 0) {
+    console.error("\nError: No source URL or path provided.\n");
+    console.error("Usage: agav agents install <url|path> [--alias name] [--destination global|project]\n");
+    return 1;
+  }
+
+  const source = positionals.join(" ");
 
   console.log(`\nInstalling agent from ${source}...\n`);
 
@@ -118,27 +141,38 @@ async function installAgentCommand(args: string[]): Promise<number> {
  * Uninstall agent
  */
 async function removeAgentCommand(args: string[]): Promise<number> {
-  if (args.length === 0) {
-    console.error("\nError: No agent name provided.\n");
-    console.error("Usage: agav agents remove <name> [--destination global|project]\n");
-    return 1;
-  }
-
-  const name = args[0]!;
   let destination: "global" | "project" = "global";
+  const positionals: string[] = [];
 
   // Parse flags
-  for (let i = 1; i < args.length; i++) {
+  for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    if (arg === "--destination" && args[i + 1]) {
-      const dest = args[++i]!;
+    if (arg === "--") {
+      positionals.push(...args.slice(i + 1));
+      break;
+    } else if (arg === "--destination") {
+      const dest = args[i + 1];
       if (dest !== "global" && dest !== "project") {
         console.error("\nError: --destination must be 'global' or 'project'\n");
         return 1;
       }
       destination = dest;
+      i++;
+    } else if (arg.startsWith("-")) {
+      console.error(`\nError: Unknown option '${arg}'\n`);
+      return 1;
+    } else {
+      positionals.push(arg);
     }
   }
+
+  if (positionals.length === 0) {
+    console.error("\nError: No agent name provided.\n");
+    console.error("Usage: agav agents remove <name> [--destination global|project]\n");
+    return 1;
+  }
+
+  const name = positionals.join(" ");
 
   console.log(`\nRemoving agent: ${name}...\n`);
 
@@ -157,13 +191,25 @@ async function removeAgentCommand(args: string[]): Promise<number> {
  * Enable agent
  */
 async function enableAgentCommand(args: string[]): Promise<number> {
+  const separatorIndex = args.indexOf("--");
+  const optionArgs = separatorIndex < 0 ? args : args.slice(0, separatorIndex);
+  if (separatorIndex >= 0) {
+    args = [...optionArgs, ...args.slice(separatorIndex + 1)];
+  }
+  for (const arg of optionArgs) {
+    if (arg.startsWith("-")) {
+      console.error(`\nError: Unknown option '${arg}'\n`);
+      return 1;
+    }
+  }
+
   if (args.length === 0) {
     console.error("\nError: No agent name provided.\n");
     console.error("Usage: agav agents enable <name>\n");
     return 1;
   }
 
-  const name = args[0]!;
+  const name = args.join(" ");
 
   console.log(`\nEnabling agent: ${name}...\n`);
 
@@ -181,13 +227,25 @@ async function enableAgentCommand(args: string[]): Promise<number> {
  * Disable agent
  */
 async function disableAgentCommand(args: string[]): Promise<number> {
+  const separatorIndex = args.indexOf("--");
+  const optionArgs = separatorIndex < 0 ? args : args.slice(0, separatorIndex);
+  if (separatorIndex >= 0) {
+    args = [...optionArgs, ...args.slice(separatorIndex + 1)];
+  }
+  for (const arg of optionArgs) {
+    if (arg.startsWith("-")) {
+      console.error(`\nError: Unknown option '${arg}'\n`);
+      return 1;
+    }
+  }
+
   if (args.length === 0) {
     console.error("\nError: No agent name provided.\n");
     console.error("Usage: agav agents disable <name>\n");
     return 1;
   }
 
-  const name = args[0]!;
+  const name = args.join(" ");
 
   console.log(`\nDisabling agent: ${name}...\n`);
 
@@ -206,7 +264,7 @@ async function disableAgentCommand(args: string[]): Promise<number> {
  */
 export async function runAgentsCommand(command: string | undefined, args: string[]): Promise<number> {
   if (!command || command === "list") {
-    return await listAgents();
+    return await listAgents(args);
   }
 
   switch (command) {

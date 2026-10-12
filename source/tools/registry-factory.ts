@@ -2,7 +2,7 @@ import { ToolRegistry } from "./registry.js";
 import { fileReadTool } from "./file-read.js";
 import { fileWriteTool } from "./file-write.js";
 import { editFileTool } from "./file-edit.js";
-import { shellTool } from "./shell.js";
+import { shellTool, createShellTool } from "./shell.js";
 import { grepSearchTool } from "./grep-search.js";
 import { findFilesTool } from "./find-files.js";
 import { listDirectoryTool } from "./list-directory.js";
@@ -45,7 +45,15 @@ export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
   "run_background_job",
 ]);
 
-/** Register the default built-in tool set used by interactive and print-mode sessions. */
+/** Built-ins available only when explicitly requested by a skill or native agent. */
+export const OPTIONAL_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "github",
+  "read_notebook",
+  "edit_notebook",
+  "lsp_query",
+]);
+
+/** Full built-in catalog, including tools excluded from normal sessions. */
 const BUILTIN_TOOLS = [
   fileReadTool,
   fileWriteTool,
@@ -72,12 +80,12 @@ export function createBuiltinToolRegistry(toolNames: Iterable<string>): ToolRegi
   const requested = new Set(toolNames);
   const registry = new ToolRegistry();
   for (const tool of BUILTIN_TOOLS) {
-    if (requested.has(tool.schema.name)) registry.register(tool);
+    if (requested.has(tool.schema.name)) registry.register(tool === shellTool ? createShellTool() : tool);
   }
   return registry;
 }
 
 /** Register the default built-in tool set used by interactive and print-mode sessions. */
 export function createToolRegistry(): ToolRegistry {
-  return createBuiltinToolRegistry(KNOWN_TOOL_NAMES);
+  return createBuiltinToolRegistry([...KNOWN_TOOL_NAMES].filter((name) => !OPTIONAL_TOOL_NAMES.has(name)));
 }

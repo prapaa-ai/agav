@@ -177,6 +177,53 @@ main (0.1.9)                          ← current stable
 - The `beta → main` merge and hotfixes to `main` are **maintainer-only** operations
 - Hotfixes can go directly to `main` with a patch bump (e.g. `0.2.1`)
 
+### Reviewed release notes (before merging a stable release)
+
+Stable publication requires `docs/releases/v<version>.md` in the release commit.
+The `check-version` job validates it **before binary builds**; missing, blank,
+heading/comment-only notes or notes still marked `<!-- DRAFT ... -->` fail the
+release. Stable publishing reads that file, never a reconstructed post-squash
+commit log. Installation instructions are appended by the workflow, so keep
+only the change sections in the notes file. GitHub's extra generated PR section
+is disabled to avoid duplicate changelogs.
+
+1. On a release preparation branch, fetch tags and generate a **separate draft**
+   while the individual beta commits are still available:
+   ```bash
+   git fetch origin --tags
+   node scripts/release-notes.mjs prepare 0.2.5 > /tmp/agav-v0.2.5-draft.md
+   ```
+   The script prints the prior stable baseline to stderr and the draft to stdout.
+   It never creates or overwrites a reviewed notes file. Stable drafts use the
+   highest stable version below the target (ignoring beta/rc tags), even when
+   that stable tag is on a divergent squash history. No stable tag means an
+   explicit error; prepare the first release's notes manually.
+2. Review the draft against `git diff v<previous-stable> HEAD` and the preserved
+   beta/PR history. Divergent histories can list changes already shipped: remove
+   those, duplicate entries, version bumps and release noise. Verify substantive
+   claims against the tree diff. Group the remaining changes under `### Features`,
+   `### Fixes` and `### Other changes`. Remove the draft marker after review.
+3. Save the reviewed change sections to `docs/releases/v0.2.5.md`, bump
+   `package.json` to `0.2.5`, and include both in the release PR **before** merging
+   to `main`. Validate locally:
+   ```bash
+   node scripts/release-notes.mjs validate 0.2.5
+   node scripts/release-notes.mjs publish 0.2.5
+   ```
+   The second command only prints notes; it does not publish anything. Squashing
+   the release PR is safe because the reviewed file survives in the merged tree.
+   Hotfixes to `main` require the same version-specific reviewed file.
+4. After CI publishes, read back the GitHub release description and check the
+   notes and Installation section. Do not rerun a release/build merely to repair
+   text: update the existing release body only, preserving its tag and assets.
+
+Beta releases continue to generate grouped incremental notes from the newest
+(by tag creation date) **ancestor** release tag, stable or prerelease, excluding
+the current tag and skipping divergent tags. With no ancestor release tag they
+use repository history. Beta notes do not require a reviewed file and never
+become the baseline for a stable draft. The reviewed v0.2.4 repair and its
+claim-to-diff audit are in `docs/releases/`.
+
 **Installing a beta version:**
 
 ```bash

@@ -26,7 +26,10 @@ export interface DebugState {
 export interface CommandContext {
   conversation: ConversationState
   config: AgavConfig
-  provider?: LLMProvider
+  provider?: LLMProvider,
+  /** Changes synchronously when the selected model or provider changes. */
+  getModelSelectionVersion?: () => number,
+  iterationsBudget?: { remaining: number, total: number },
   setModel: (model: string) => void
   setProvider: (provider: AgavConfig["provider"]) => void
   setEffort: (effort: import("../config/config.js").EffortLevel) => void
@@ -61,6 +64,7 @@ export interface CommandContext {
    * Not needed by the React TUIs — those render inside Ink.
    */
   suspendTerminal: () => () => void
+  showResourceTUI?: (kind: import("../resources/types.js").ResourceKind, onDone: () => void, marketplace?: boolean) => void
   showAgentsTUI: (onDone: () => void) => void
   showSkillsTUI: (onDone: () => void) => void
 }
@@ -73,6 +77,7 @@ export type CommandResult =
   | { type: "none" }
   | { type: "submit"; text: string }
   | { type: "agent_invoke"; agentName: string; query: string }
+  | { type: "skill_invoke"; skillName: string; arguments: string }
 
 /** Defines the metadata and executor for a slash command. */
 export interface SlashCommand {

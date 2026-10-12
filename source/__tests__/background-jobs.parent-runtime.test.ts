@@ -50,7 +50,7 @@ async function parent(input: Record<string, unknown>, accept = true) {
   const conversation = new ConversationState(); conversation.addUserMessage("fixture background action");
   const events: any[] = [];
   // Deliberately no signal: reproduces the parent's dropped-policy bug.
-  for await (const event of runAgentLoop({ provider, conversation, toolRegistry: createToolRegistry(), model: "fixture", permissionMode: "ask", confirmTool: (toolName, input) => queue.enqueue({ toolName, input }) })) events.push(event);
+  for await (const event of runAgentLoop({ provider, conversation, toolRegistry: createToolRegistry(), model: "fixture", permissionMode: "ask", iterationsBudget: { remaining: 2, total: 2 }, confirmTool: (toolName, input) => queue.enqueue({ toolName, input }) })) events.push(event);
   const result = events.find(e => e.type === "tool_result");
   expect(result).toBeDefined();
   return { result, approvals };

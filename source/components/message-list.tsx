@@ -1,4 +1,5 @@
 import React from "react";
+import type { Plan } from "../agent/planner.js";
 import { Box, Text } from "../ink/index.js";
 import { renderMarkdown } from "./markdown-text.js";
 import ClickableLine from "./clickable-line.js";
@@ -19,6 +20,7 @@ export interface DisplayMessage {
   id: string;
   role: "user" | "assistant" | "system" | "tool" | "banner";
   content: string;
+  plan?: Plan;
   sourceText?: string;
   invocationReason?: InvocationReason;
   toolName?: string;
@@ -30,6 +32,7 @@ export interface DisplayMessage {
 
 interface Props {
   messages: DisplayMessage[];
+  renderPlan?: (plan: Plan) => React.ReactNode;
   toolDetailKey: string;
   columns: number;
   /** Opens/previews whatever a clickable run in the transcript resolved to. */
@@ -102,11 +105,9 @@ const UserMessage = React.memo(function UserMessage({ message, columns, onOpenRe
   };
 
   // Every line is padded out to the full width below, which only paints a
-  // clean band while each one fits on a single row — `wrapToWidth` (used both
-  // directly here and inside `wrapTextToRuns`) guarantees that.
-  const runLines = onOpenRef && targets.length > 0
-    ? wrapTextToRuns(message.content, usable, targets, (t) => targetToRefId(t, encodeOpenRef), { color: getTheme().linkColor, underline: true }, { color: "white" })
-    : wrapToWidth(message.content, usable).map((line) => [{ text: line, color: "white" }]);
+  // clean band while each one fits on a single row — `wrapToWidth` (used
+  // inside `wrapTextToRuns`) guarantees that.
+  const runLines = wrapTextToRuns(message.content, usable, onOpenRef ? targets : [], (t) => targetToRefId(t, encodeOpenRef), { color: getTheme().linkColor, underline: true }, { color: "white" });
 
   return (
     <Box flexDirection="column" marginTop={1} marginBottom={1}>
@@ -126,7 +127,7 @@ const UserMessage = React.memo(function UserMessage({ message, columns, onOpenRe
           ? { text: prefix, color: "green", bold: true, backgroundColor: "#2d2d2d" }
           : { text: prefix, dimColor: true, backgroundColor: "#2d2d2d" };
         const styledRuns = runs.map((r) => ({ ...r, backgroundColor: "#2d2d2d" }));
-        const padRun = { text: " ".repeat(pad), backgroundColor: "#2d2d2d" };
+        const padRun = { text: " ".repeat(pad), backgroundColor: "#2d2d2d", copyExclude: true };
         return <ClickableLine key={i} runs={[prefixRun, ...styledRuns, padRun]} onOpen={handleOpen} />;
       })}
       <Text backgroundColor="#2d2d2d">{emptyLine}</Text>
@@ -193,6 +194,19 @@ const ToolResultLine = React.memo(function ToolResultLine({ message }: { message
   const summary = message.toolName && message.toolInput ? getToolSummary(message.toolName, message.toolInput) : "";
   const displayContent = terminalRelativePaths(message.content, toolPathValues(message.toolInput));
 
+  // Direct user shell commands are terminal output, not summarized agent tools.
+  // Keep their bytes literal: no markdown, path rewriting, or one-line preview.
+  if (message.toolName === "shell") {
+    return (
+      <Box flexDirection="column" marginBottom={1}>
+        <Text bold color={message.isError ? "red" : "yellow"}>
+          {message.isError ? "✗ " : "✓ "}Shell output{message.toolDisplayName ? ` · ${message.toolDisplayName}` : ""}
+        </Text>
+        <Text>{message.content || "(no output)"}</Text>
+      </Box>
+    );
+  }
+
   // Image reference. Plain text rather than an OSC 8 hyperlink — this
   // renderer corrupts OSC 8 (the URL leaks into visible text) and emitting it
   // on a row we also handle clicks for causes terminals to double-open. The
@@ -255,19 +269,32 @@ const ToolResultLine = React.memo(function ToolResultLine({ message }: { message
 });
 
 /** Renders the appropriate terminal bubble for a message role. */
-const MessageBubble = React.memo(function MessageBubble({ message, prevRole, toolDetailKey, columns, onOpenRef }: { message: DisplayMessage; prevRole?: string; toolDetailKey: string; columns: number; onOpenRef?: (ref: OpenRef) => void }) {
+const MessageBubble = React.memo(function MessageBubble({ message, prevMessage, toolDetailKey, columns, onOpenRef }: { message: DisplayMessage; prevMessage?: DisplayMessage; toolDetailKey: string; columns: number; onOpenRef?: (ref: OpenRef) => void }) {
   if (message.role === "banner") {
+    // Windows fonts may lack Braille: area-resample its 24×20 mask to 16×14
+    // at 30% coverage, then pack pixel pairs into half/full blocks (16×7).
+    // See deriveBlockLogo in message-list-banner.test.ts for reproduction.
+    const logo = process.platform === "win32" ? [
+      "  ▄█▀▀▀▀▄▄▄▄▄▄▄ ",
+      "▄█ ▀█▄▄  █▄   ▀█",
+      "█▀▀ ▄█▀█  █    █",
+      "█   █▀ ▀▀█▀█▄ ▄█",
+      "█▄▄▀▀▀██▀▀█▄▀ █▀",
+      " ▀█▄ █  █▄  ▄█▀ ",
+      "   ▀██▄▄▄▄█▀▀   ",
+    ] : [
+      "⠀⡠⢞⡋⠉⠙⠢⡤⠴⠦⢤⡀",
+      "⡾⠤⡄⢡⠟⣆⠀⢹⠀⠀⠀⢸",
+      "⡇⠀⠀⣞⠀⠘⢂⡞⠰⣄⠀⡞",
+      "⠹⣔⠉⠈⡍⠋⣍⠘⠆⢀⡼⠁",
+      "⠀⠈⠳⢬⣅⣀⣈⣤⠔⠋⠀⠀",
+    ];
+    // Keep layout coupled to the artwork, including when previewing another logo.
+    const logoWidth = Math.max(...logo.map(visualLen));
     return (
       <Box flexDirection={columns >= 48 ? "row" : "column"} marginTop={1} marginBottom={1} paddingLeft={columns >= 48 ? 3 : 0}>
-        <Box flexDirection="column" flexShrink={0} width={12}>
-          {/* Cropped test.svg paths fitted to 24×20 dots; ~30% coverage keeps strokes distinct. */}
-          <Text color="#0891B2">{[
-            "⠀⡠⢞⡋⠉⠙⠢⡤⠴⠦⢤⡀",
-            "⡾⠤⡄⢡⠟⣆⠀⢹⠀⠀⠀⢸",
-            "⡇⠀⠀⣞⠀⠘⢂⡞⠰⣄⠀⡞",
-            "⠹⣔⠉⠈⡍⠋⣍⠘⠆⢀⡼⠁",
-            "⠀⠈⠳⢬⣅⣀⣈⣤⠔⠋⠀⠀",
-          ].join("\n")}</Text>
+        <Box flexDirection="column" flexShrink={0} width={logoWidth}>
+          <Text color="#0891B2">{logo.join("\n")}</Text>
         </Box>
         <Box flexDirection="column" justifyContent="center" marginLeft={columns >= 48 ? 2 : 0}>
           <Text><Text bold>Agav</Text><Text dimColor>{` v${VERSION}`}</Text></Text>
@@ -300,7 +327,7 @@ const MessageBubble = React.memo(function MessageBubble({ message, prevRole, too
   }
 
   if (message.role === "assistant") {
-    const hadTools = prevRole === "tool";
+    const hadTools = prevMessage?.role === "tool" && prevMessage.toolName !== "shell";
     const displayContent = terminalRelativePaths(message.content);
     return (
       <Box flexDirection="column" marginBottom={1}>
@@ -355,11 +382,11 @@ const MessageBubble = React.memo(function MessageBubble({ message, prevRole, too
  * to a fixed band of the screen while everything below — a streaming reply, a
  * plan, a detail panel — slid around inside bands of their own.
  */
-const MessageList = React.memo(function MessageList({ messages, toolDetailKey, columns, onOpenRef }: Props) {
+const MessageList = React.memo(function MessageList({ messages, toolDetailKey, columns, onOpenRef, renderPlan }: Props) {
   return (
     <Box flexDirection="column" flexShrink={0}>
       {messages.map((message, index) => (
-        <MessageBubble key={message.id} message={message} prevRole={index > 0 ? messages[index - 1]?.role : undefined} toolDetailKey={toolDetailKey} columns={columns} onOpenRef={onOpenRef} />
+        message.plan ? <React.Fragment key={message.id}>{renderPlan?.(message.plan)}</React.Fragment> : <MessageBubble key={message.id} message={message} prevMessage={index > 0 ? messages[index - 1] : undefined} toolDetailKey={toolDetailKey} columns={columns} onOpenRef={onOpenRef} />
       ))}
     </Box>
   );

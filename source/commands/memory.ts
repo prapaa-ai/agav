@@ -1,4 +1,5 @@
 import type { SlashCommand, CommandResult } from "./types.js"
+import { openResourceManager } from "./resource-manager.js"
 import {
   saveMemory,
   loadMemories,
@@ -12,8 +13,12 @@ import {
 export const memoryCommand: SlashCommand = {
   name: "memory",
   description: "Manage persistent memories",
-  usage: "Usage: /memory <action>\n\n  /memory              List all saved memories\n  /memory list         Same as above\n  /memory add <text>   Save a new memory\n  /memory delete <N>   Delete memory by index\n  /memory clear        Delete all memories\n  /memory path         Show the memory storage path\n\nMemories persist across sessions and are injected into the system prompt.",
-  async execute(args: string): Promise<CommandResult> {
+  usage: "Usage: /memory <action>\n\n  /memory              Open manager (list in headless mode)\n  /memory list         Print saved memories\n  /memory add <text>   Save a new memory\n  /memory delete <N>   Delete memory by index\n  /memory clear        Delete all memories\n  /memory path         Show the memory storage path\n\nMemories persist across sessions and are injected into the system prompt.",
+  async execute(args: string, context): Promise<CommandResult> {
+    if (!args.trim()) {
+      const interactive = openResourceManager("memory", context);
+      if (interactive) return interactive;
+    }
     const parts = args.trim().split(/\s+/)
     const action = parts[0]?.toLowerCase() || "list"
 

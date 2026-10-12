@@ -76,8 +76,8 @@ describe("DeepSeekProvider getContextWindow", () => {
           ok: true,
           json: async () => ({
             data: [
-              { id: "deepseek-v4-pro", context_length: 131072 },
-              { id: "deepseek-v4-flash", context_length: 65536 },
+              { id: "deepseek-v4-pro", context_window: 131072 },
+              { id: "deepseek-v4-flash", context_window: 65536 },
             ],
           }),
         } as any;
@@ -102,7 +102,7 @@ describe("DeepSeekProvider getContextWindow", () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
       json: async () => ({
-        data: [{ id: "deepseek-v4-pro", context_length: 131072 }],
+        data: [{ id: "deepseek-v4-pro", context_window: 131072 }],
       }),
     })) as any;
     globalThis.fetch = fetchMock;

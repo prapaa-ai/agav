@@ -82,7 +82,7 @@ describe("mid-turn steer delivery", () => {
         toolRegistry: registry,
         model: "mock",
         permissionMode: "auto-accept",
-        maxIterations: 3,
+        iterationsBudget: {remaining : 3,total : 3},
         drainSteers,
       })) {
         events.push(event);
@@ -154,7 +154,7 @@ describe("mid-turn steer delivery", () => {
         toolRegistry: registry,
         model: "mock",
         permissionMode: "auto-accept",
-        maxIterations: 3,
+        iterationsBudget: {remaining : 3,total : 3},
         drainSteers,
       })) {
         events.push(event);
@@ -287,7 +287,7 @@ describe("steer queue plumbing", () => {
         toolRegistry: registry,
         model: "mock",
         permissionMode: "auto-accept",
-        maxIterations: 3,
+        iterationsBudget: {remaining : 3,total : 3},
         // No drainSteers — this is how subagent/skill/agent loops run.
       })) {
         events.push(event);

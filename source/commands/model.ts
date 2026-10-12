@@ -6,6 +6,8 @@ import { fetchVertexAIModels } from "../providers/vertex-ai.js";
 export interface FetchedModel {
   id: string;
   provider: string;
+  /** Real context window reported by the provider's model listing, when available. */
+  contextWindow?: number;
 }
 
 async function fetchAnthropicModels(apiKey: string): Promise<FetchedModel[]> {
@@ -18,9 +20,9 @@ async function fetchAnthropicModels(apiKey: string): Promise<FetchedModel[]> {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return [];
-    const data = (await res.json()) as { data?: { id: string }[] };
+    const data = (await res.json()) as { data?: { id: string; max_input_tokens?: number }[] };
     return (data.data ?? [])
-      .map((m) => ({ id: m.id, provider: "anthropic" }))
+      .map((m) => ({ id: m.id, provider: "anthropic", contextWindow: m.max_input_tokens ?? undefined }))
       .sort((a, b) => a.id.localeCompare(b.id));
   } catch {
     return [];
@@ -51,9 +53,9 @@ async function fetchOpenRouterModels(apiKey: string): Promise<FetchedModel[]> {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return [];
-    const data = (await res.json()) as { data?: { id: string }[] };
+    const data = (await res.json()) as { data?: { id: string; context_length?: number }[] };
     return (data.data ?? [])
-      .map((m) => ({ id: m.id, provider: "openrouter" }))
+      .map((m) => ({ id: m.id, provider: "openrouter", contextWindow: m.context_length ?? undefined }))
       .sort((a, b) => a.id.localeCompare(b.id));
   } catch {
     return [];
@@ -67,9 +69,9 @@ async function fetchNvidiaModels(apiKey: string): Promise<FetchedModel[]> {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return [];
-    const data = (await res.json()) as { data?: { id: string }[] };
+    const data = (await res.json()) as { data?: { id: string; context_length?: number; max_model_len?: number }[] };
     return (data.data ?? [])
-      .map((m) => ({ id: m.id, provider: "nvidia" }))
+      .map((m) => ({ id: m.id, provider: "nvidia", contextWindow: m.context_length ?? m.max_model_len ?? undefined }))
       .sort((a, b) => a.id.localeCompare(b.id));
   } catch {
     return [];
@@ -83,9 +85,11 @@ async function fetchDeepSeekModels(apiKey: string): Promise<FetchedModel[]> {
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return [];
-    const data = (await res.json()) as { data?: { id: string }[] };
+    // DeepSeek's /models response names this field "context_window", not the
+    // "context_length" OpenRouter/NVIDIA use.
+    const data = (await res.json()) as { data?: { id: string; context_window?: number }[] };
     return (data.data ?? [])
-      .map((m) => ({ id: m.id, provider: "deepseek" }))
+      .map((m) => ({ id: m.id, provider: "deepseek", contextWindow: m.context_window ?? undefined }))
       .sort((a, b) => a.id.localeCompare(b.id));
   } catch {
     return [];
@@ -114,10 +118,10 @@ async function fetchGeminiModels(apiKey: string): Promise<FetchedModel[]> {
       { signal: AbortSignal.timeout(5000) },
     );
     if (!res.ok) return [];
-    const data = (await res.json()) as { models?: { name: string; supportedGenerationMethods?: string[] }[] };
+    const data = (await res.json()) as { models?: { name: string; supportedGenerationMethods?: string[]; inputTokenLimit?: number }[] };
     return (data.models ?? [])
       .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
-      .map((m) => ({ id: m.name.replace("models/", ""), provider: "gemini" }))
+      .map((m) => ({ id: m.name.replace("models/", ""), provider: "gemini", contextWindow: m.inputTokenLimit ?? undefined }))
       .sort((a, b) => a.id.localeCompare(b.id));
   } catch {
     return [];
@@ -192,6 +196,13 @@ function matchesProviderPrefix(model: string, provider: string): boolean {
   return false;
 }
 
+/** Compact "200k" / "1m" label for a context window token count. */
+function formatContextWindow(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}m`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(n % 1_000 === 0 ? 0 : 1)}k`;
+  return String(n);
+}
+
 function pickModel(
   models: FetchedModel[],
   currentModel: string,
@@ -247,12 +258,13 @@ function pickModel(
       const isSel = i === selected;
       const active = m.id === currentModel ? " ◀" : "";
       const providerTag = m.provider !== currentProvider ? ` [${m.provider}]` : "";
+      const contextTag = m.contextWindow ? ` (${formatContextWindow(m.contextWindow)} ctx)` : "";
 
       clearLine();
       if (isSel) {
-        process.stdout.write(`\x1b[46;30m  ❯ ${m.id}${providerTag}${active} \x1b[0m\n`);
+        process.stdout.write(`\x1b[46;30m  ❯ ${m.id}${contextTag}${providerTag}${active} \x1b[0m\n`);
       } else {
-        process.stdout.write(`\x1b[2m    ${m.id}${providerTag}${active}\x1b[0m\n`);
+        process.stdout.write(`\x1b[2m    ${m.id}${contextTag}${providerTag}${active}\x1b[0m\n`);
       }
     }
 

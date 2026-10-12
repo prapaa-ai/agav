@@ -1,5 +1,4 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
-import { basename } from "node:path";
 import { Box, Text, ScrollBox, Spinner, useInput, useApp, useStdout, measureElement } from "./ink/index.js";
 import type { DOMElement, ScrollBoxControls, WheelEventData } from "./ink/index.js";
 import MessageList from "./components/message-list.js";
@@ -7,9 +6,12 @@ import type { DisplayMessage } from "./components/message-list.js";
 import StreamingResponse from "./components/streaming-response.js";
 import InputPrompt from "./components/input-prompt.js";
 import StatusBar from "./components/status-bar.js";
+import RequestQueue from "./components/request-queue.js";
 import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
 import ToolConfirm from "./components/tool-confirm.js";
+import ContextWindowPrompt from "./components/context-window-prompt.js";
+import { DEFAULT_UNKNOWN_CONTEXT_WINDOW } from "./agent/loop.js";
 import ToolDetailPanel from "./components/tool-detail-panel.js";
 import PlanDetailPanel from "./components/plan-detail-panel.js";
 import SubagentDisplay from "./components/subagent-display.js";
@@ -24,7 +26,9 @@ import { isInternalUserMessage } from "./agent/internal-prompts.js";
 import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
-import { saveSession } from "./config/history.js";
+import { ResourceManager } from "./components/resource-manager.js";
+import { createResourceAdapter } from "./resources/adapters.js";
+import type { ResourceKind, ResourceAdapter } from "./resources/types.js";
 import {
   type Attachment,
   createTextAttachment,
@@ -39,7 +43,7 @@ import { KeybindingResolver, GLOBAL_ACTIONS, formatKeybinding, formatKeybindings
 import { getLoopStatus, stopActiveLoop } from "./commands/loop.js";
 import { loadScheduledTasks, cronMatches, markTaskRun } from "./config/scheduler.js";
 import { startScheduleTicker, stopScheduleTicker } from "./background-jobs-integration.js";
-import { getSandboxName } from "./utils/sandbox.js";
+import { getSandboxName, runInSandbox } from "./utils/sandbox.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
 import { terminalRelativePaths } from "./utils/display-path.js";
 import { openTarget } from "./utils/open-target.js";
@@ -70,13 +74,39 @@ const BANNER: DisplayMessage = {
   content: "",
 };
 
+interface QueuedRequest {
+  id: number;
+  text: string;
+  attachments: Attachment[];
+  invocationReason?: InvocationReason;
+}
+
 let sysMessageId = 0;
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
 export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false }: Props) {
 
   const [input, setInput] = useState("");
+  const [queuedRequests, setQueuedRequests] = useState<QueuedRequest[]>([]);
+  const queueRef = useRef<QueuedRequest[]>([]);
+  const [queueActive, setQueueActive] = useState(false);
+  const requestPendingRef = useRef(false);
+  // Updated synchronously at user edit boundaries, including edits before React flushes.
+  const composerEditVersionRef = useRef(0);
+  const [requestCompletion, setRequestCompletion] = useState(0);
+  const requestCompletionRef = useRef(0);
+  const [queueBlocked, setQueueBlocked] = useState(false);
+  const updateQueue = useCallback((requests: QueuedRequest[]) => {
+    queueRef.current = requests;
+    setQueuedRequests(requests);
+  }, []);
+  const cancelQueuedRequest = useCallback((id: number) => {
+    const remaining = queueRef.current.filter(request => request.id !== id);
+    updateQueue(remaining);
+    if (!remaining.length) setQueueBlocked(false);
+  }, [updateQueue]);
   const [config, setConfig] = useState(initialConfig);
+  const modelSelectionVersion = useRef(0);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
   }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
@@ -140,6 +170,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     };
   }, []);
   const [showCompactionSummary, setShowCompactionSummary] = useState(false);
+  const [runningShellCommand, setRunningShellCommand] = useState<string | null>(null);
+  const shellAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => { shellAbortRef.current?.abort(); }, []);
   const [runningSkillName, setRunningSkillName] = useState<string | null>(null);
   const [skillProgress, setSkillProgress] = useState<SubagentProgress[]>([]);
   const [pickerActive, setPickerActive] = useState(false);
@@ -147,6 +180,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const agentsTUIResolveRef = useRef<(() => void) | null>(null);
   const [skillsTUIActive, setSkillsTUIActive] = useState(false);
   const skillsTUIResolveRef = useRef<(() => void) | null>(null);
+  const [skillsMarketplace, setSkillsMarketplace] = useState(true);
+  const [resourceAdapter, setResourceAdapter] = useState<ResourceAdapter | null>(null);
+  const resourceTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
@@ -160,6 +196,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     toolCalls,
     error,
     pendingConfirmation,
+    pendingContextWindowRequest,
+    resolveContextWindowRequest,
     tokenUsage,
     loadedPlugins,
     mcpServers,
@@ -194,6 +232,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     isGenerationPaused,
     togglePause,
     interveneWhilePaused,
+    iterationsBudget
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
   /**
@@ -202,10 +241,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
    * mid-turn instead of being ignored until the CLI is idle.
    */
   const exit = useCallback(() => {
+    updateQueue([]);
+    shellAbortRef.current?.abort();
     cancel();
     stopActiveLoop();
     exitInk();
-  }, [cancel, exitInk]);
+  }, [cancel, exitInk, updateQueue]);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
   const { stdout } = useStdout();
@@ -346,11 +387,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   /** Convert pasted text into an attachment so large snippets do not bloat the visible prompt line. */
   const handlePaste = useCallback((text: string, insertLabel: (label: string) => void) => {
+    composerEditVersionRef.current++;
     const attachment = createTextAttachment(text);
     setAttachments((prev) => [...prev, attachment]);
     insertLabel(attachment.label);
   }, []);
 
+  const readPromptRef = useRef<(() => string) | null>(null);
   const insertLabelRef = useRef<((label: string) => void) | null>(null);
   const expandTileRef = useRef<((id: number, fullText: string) => boolean) | null>(null);
   // The most recent paste that was compacted into a tile, so an identical
@@ -366,12 +409,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     // Uses the shared monotonic counter (not `Date.now()`) so this attachment's
     // id can never collide with one created in the same millisecond, and its
     // tile is always resolvable back to a record.
+    composerEditVersionRef.current++;
     const attachment = createImageAttachmentFromData(img.base64, img.mediaType, img.width || undefined, img.height || undefined);
     setAttachments((prev) => [...prev, attachment]);
     insertLabelRef.current?.(attachment.label);
   }, []);
 
   const handleLargePaste = useCallback((text: string) => {
+    composerEditVersionRef.current++;
     const last = lastPasteRef.current;
     if (last && last.text === text) {
       // Same text pasted again — try to swap the tile it made for its full
@@ -394,12 +439,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, []);
 
   const handleShortPaste = useCallback((text: string) => {
+    composerEditVersionRef.current++;
     insertLabelRef.current?.(text);
   }, []);
 
   // Disable paste capture while any picker (wizard, model selector, etc.) is active
   // so paste events don't silently land in the hidden InputPrompt buffer
-  useClipboardImageDetector(handleClipboardImage, !isLoading && !pickerActive, handleLargePaste, handleShortPaste);
+  useClipboardImageDetector(handleClipboardImage, !pickerActive && !queueActive && !pendingConfirmation && !pendingContextWindowRequest, handleLargePaste, handleShortPaste);
 
   /** Run a side query independently so it never delays the active agent turn. */
   const runPsQuery = useCallback(async (query: { text: string; blocks: ContentBlock[] }) => {
@@ -513,7 +559,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             });
           }
         }
-      } catch {}
+      } catch { }
     }, 30_000);
     return () => clearInterval(checker);
   }, [submit]);
@@ -557,7 +603,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
   useInput((rawChar, rawKey) => {
-    if (pickerActive) return;
+    if (pickerActive || (queueActive && !(rawKey.ctrl && rawChar === "c"))) return;
+    if (rawKey.ctrl && rawChar === "q" && queueRef.current.length > 0 && !pendingConfirmation && !pendingContextWindowRequest) {
+      setQueueActive(true);
+      return;
+    }
+    // The context-window prompt owns the keyboard exclusively while it is up —
+    // same reasoning as pendingConfirmation below, but it renders in place of
+    // ToolConfirm rather than alongside it, so it needs its own early return.
+    if (pendingContextWindowRequest) return;
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
     // The attachment/file preview panel is read-only and owns no other state,
     // so its keys are handled before anything else can claim them — Esc closes
@@ -572,15 +626,19 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
     }
     const match = keyResolverRef.current.feed(char, key);
+    if (shellAbortRef.current && (match.action === "interrupt" || match.action === "cancel" || match.actions.includes("exit"))) {
+      shellAbortRef.current.abort();
+      return;
+    }
     if (match.action === "togglePause" && isLoading && !pendingConfirmation) {
       togglePause();
       return;
     }
-    if (match.action === "interrupt" && isLoading && !pendingConfirmation) {
+    if (match.action === "interrupt" && (isLoading || requestPendingRef.current) && !pendingConfirmation) {
       cancel();
       return;
     }
-    if (match.action === "cancel" && isLoading && !pendingConfirmation) {
+    if (match.action === "cancel" && (isLoading || requestPendingRef.current) && !pendingConfirmation) {
       if (focusedSubagentId) {
         cancelSubagent(focusedSubagentId);
         setFocusedSubagentId(null);
@@ -593,8 +651,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setFocusedSubagentId(null);
       return;
     }
-    // Arrow key navigation in the subagent overview list
-    if (hasSubagents && !focusedSubagentId && !pendingConfirmation) {
+    // The prompt owns navigation and completion while it contains text.
+    // useInput broadcasts to both handlers; returning here cannot consume a key.
+    if (hasSubagents && !focusedSubagentId && !pendingConfirmation && (readPromptRef.current?.() ?? input).length === 0) {
       if (key.upArrow) {
         setSelectedSubagentIdx((prev) => Math.max(0, prev - 1));
         return;
@@ -603,7 +662,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         setSelectedSubagentIdx((prev) => Math.min(subagentStates.length - 1, prev + 1));
         return;
       }
-      if (key.return) {
+      if (key.return && !key.shift && !key.ctrl && !key.meta && !key.super && !key.hyper) {
         const sa = subagentStates[selectedSubagentIdx];
         if (sa) setFocusedSubagentId(sa.id);
         return;
@@ -630,7 +689,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setShowThinking((prev) => !prev);
       return;
     }
-    if (match.action === "retryLastTurn" && !isLoading && !pendingConfirmation && input.length === 0) {
+    if (match.action === "retryLastTurn" && !isLoading && !pendingConfirmation && (readPromptRef.current?.() ?? input).length === 0) {
       const lastMessage = [...messages].reverse().find((message) => message.role === "user");
       const lastPrompt = lastMessage?.sourceText ?? lastMessage?.content;
       if (lastPrompt) submit(lastPrompt);
@@ -648,7 +707,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     if (match.action === "scrollDown") { docControls.current?.scrollBy(-5); return; }
     if (match.action === "scrollTop") { docControls.current?.scrollToTop(); return; }
     if (match.action === "scrollBottom") { docControls.current?.scrollToBottom(); return; }
-    if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && input.length === 0) {
+    if (match.actions.includes("exit") && !isLoading && !pendingConfirmation && (readPromptRef.current?.() ?? input).length === 0) {
       exit();
       return;
     }
@@ -684,8 +743,18 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   /** Route input either to slash commands, side queries, or the main agent turn. */
   const handleSubmit = useCallback(
-    async (value: string, invocationReason?: InvocationReason) => {
+    async (value: string, invocationReason?: InvocationReason, queued?: QueuedRequest) => {
+      const promptAttachments = queued?.attachments ?? attachments;
       const trimmed = value.trim();
+      const composerEditVersion = composerEditVersionRef.current;
+
+      if (trimmed === "/queue" || trimmed === "/queue retry") {
+        setInput("");
+        if (trimmed === "/queue retry") setQueueBlocked(false);
+        else if (queueRef.current.length) setQueueActive(true);
+        else showStatusLine("No queued requests.");
+        return;
+      }
 
       // /ps — side query that runs independently of the current turn.
       if (trimmed.startsWith("/ps ")) {
@@ -708,208 +777,322 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
 
 
-      // ! prefix — run shell command directly and add output to context
-      if (trimmed.startsWith("!") && trimmed.length > 1) {
-        const cmd = trimmed.slice(1);
-        setInput("");
-        setSystemMessages([]);
-        const { execSync } = await import("node:child_process");
-        let output: string;
-        try {
-          output = execSync(cmd, { cwd: process.cwd(), timeout: 30000, maxBuffer: 1024 * 1024, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-        } catch (err: any) {
-          output = (err.stdout ?? "") + (err.stderr ?? "") || err.message;
-        }
-        const trimmedOutput = output.trimEnd();
-        const lines = trimmedOutput.split("\n");
-        const preview = lines.length > 30 ? [...lines.slice(0, 30), `... ${lines.length - 30} more lines`].join("\n") : trimmedOutput;
-        submit(
-          `The user ran a shell command. Here is the command and its output:\n$ ${cmd}\n${trimmedOutput}`,
-          undefined,
-          `! ${cmd}`,
-          [{ id: `shell-${Date.now()}`, role: "tool", toolName: "shell", toolDisplayName: `$ ${cmd}`, content: preview }],
+      const commandName = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
+      const immediateCommand = trimmed.startsWith("/") && promptAttachments.length === 0 && isCommandAllowedMidTurn(commandName);
+      if (!queued && !immediateCommand && (requestPendingRef.current || !isGenerationPaused || trimmed.startsWith("/") || trimmed.startsWith("!")) &&
+          (isLoading || requestPendingRef.current || shellAbortRef.current || queueRef.current.length > 0)) {
+        if (!trimmed && promptAttachments.length === 0) return;
+        if (trimmed.startsWith("!") && !trimmed.slice(1).trim()) return;
+        updateQueue([...queueRef.current, {
+          id: ++sysMessageId, text: value,
+          attachments: promptAttachments.map(attachment => ({ ...attachment, contentBlock: { ...attachment.contentBlock } })),
           invocationReason,
-        );
+        }]);
+        composerEditVersionRef.current++;
+        setInput("");
+        setAttachments([]);
+        lastPasteRef.current = null;
         return;
       }
-
-      if (!trimmed && attachments.length === 0) return;
-
-      const commandName = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
-      const isSlashCommand = trimmed.startsWith("/")
-        && attachments.length === 0
-        && (!isLoading || isCommandAllowedMidTurn(commandName));
-      if (!isSlashCommand && isLoading) {
-        if (isGenerationPaused && (trimmed || attachments.length > 0)) {
-          const extraBlocks: ContentBlock[] = attachments.map((attachment) => ({ ...attachment.contentBlock }));
-          const llmText = trimmed || "See attached content";
-          const imageIds = attachments.filter((a) => a.kind === "image").map((a) => a.id);
-          if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => {});
+      const ownsPending = !immediateCommand;
+      if (ownsPending) requestPendingRef.current = true;
+      const resetComposer = () => {
+        if (queued) return;
+        if (composerEditVersionRef.current === composerEditVersion) {
+          composerEditVersionRef.current++;
           setInput("");
-          setAttachments([]);
           lastPasteRef.current = null;
+        }
+        const submittedIds = new Set(promptAttachments.map(attachment => attachment.id));
+        setAttachments(previous => previous.filter(attachment => !submittedIds.has(attachment.id)));
+        if (lastPasteRef.current && submittedIds.has(lastPasteRef.current.attachmentId)) lastPasteRef.current = null;
+      };
+      try {
+        // ! prefix — run directly, show raw output, then ask the agent to analyze it.
+        // Do not execute a command whose follow-up would be rejected by a busy turn.
+        if (shellAbortRef.current) return;
+        if (trimmed.startsWith("!")) {
+          const cmd = trimmed.slice(1).trim();
+          if (!cmd || isLoading || pendingConfirmation) return;
+          const controller = new AbortController();
+          shellAbortRef.current = controller;
+          setRunningShellCommand(cmd);
+          resetComposer();
+          setSystemMessages([]);
+          let output = "";
+          let commandError: Error | null = null;
+          try {
+            // Preserve direct-shell behavior (unsandboxed, inherited environment),
+            // while using the existing nonblocking, cancellable process runner.
+            const result = await runInSandbox({
+              command: cmd, cwd: process.cwd(), timeout: 30000, maxBuffer: 1024 * 1024,
+              forceBackend: "none", allowUnsandboxed: true, inheritEnv: true, signal: controller.signal,
+            });
+            output = result.stdout + result.stderr;
+            commandError = result.error;
+          } catch (err) {
+            commandError = err instanceof Error ? err : new Error(String(err));
+          } finally {
+            shellAbortRef.current = null;
+            setRunningShellCommand(null);
+          }
+          if (commandError) output += `${output && !output.endsWith("\n") ? "\n" : ""}${commandError.message}`;
+          const shellMessage: DisplayMessage = {
+            id: `shell-${++sysMessageId}`, role: "tool", toolName: "shell",
+            toolDisplayName: `$ ${cmd}`, content: output, isError: !!commandError,
+          };
+          const accepted = !controller.signal.aborted && await submit(
+            `The user ran a shell command. Here is the command and its output:\n$ ${cmd}\n${output}`,
+            undefined, `! ${cmd}`, [shellMessage], invocationReason,
+          );
+          // Raw output must remain visible even without an LLM provider or when cancelled.
+          if (!accepted) {
+            addDisplayMessage({ id: `shell-user-${++sysMessageId}`, role: "user", content: `! ${cmd}`, invocationReason });
+            addDisplayMessage(shellMessage);
+          }
+          return;
+        }
+
+        if (!trimmed && promptAttachments.length === 0) return;
+
+        const isSlashCommand = trimmed.startsWith("/")
+          && promptAttachments.length === 0
+          && (!isLoading || isCommandAllowedMidTurn(commandName));
+        if (!isSlashCommand && isLoading) {
+          if (isGenerationPaused && (trimmed || promptAttachments.length > 0)) {
+            const extraBlocks: ContentBlock[] = promptAttachments.map((attachment) => ({ ...attachment.contentBlock }));
+            const llmText = trimmed || "See attached content";
+            const imageIds = promptAttachments.filter((a) => a.kind === "image").map((a) => a.id);
+            const accepted = await interveneWhilePaused(
+              llmText,
+              extraBlocks.length > 0 ? extraBlocks : undefined,
+              undefined,
+              undefined,
+              invocationReason,
+            );
+            if (!accepted) return;
+            if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => { });
+            resetComposer();
+            setShowToolDetail(false);
+            setPsResponse(undefined);
+            setSystemMessages([]);
+          }
+          return;
+        }
+
+        if (isSlashCommand) {
+          resetComposer();
           setShowToolDetail(false);
           setPsResponse(undefined);
           setSystemMessages([]);
-          void interveneWhilePaused(
-            llmText,
-            extraBlocks.length > 0 ? extraBlocks : undefined,
-            undefined,
-            undefined,
-            invocationReason,
-          );
-        }
-        return;
-      }
+          const result = await commandRegistryRef.current.execute(trimmed, {
+            conversation,
+            config,
+            provider: activeProvider ?? undefined,
+            getModelSelectionVersion: () => modelSelectionVersion.current,
+            setModel: (model: string) => {
+              modelSelectionVersion.current++;
+              setConfig((prev) => ({ ...prev, model }));
+            },
+            setProvider: (provider) => {
+              modelSelectionVersion.current++;
+              setConfig((prev) => ({ ...prev, provider }));
+            },
+            setEffort: (effort) => {
+              setConfig((prev) => ({ ...prev, effort }));
+            },
+            showStatus: (text: string) => {
+              setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: text }]);
+            },
+            clearMessages: () => {
+              updateQueue([]);
+              setQueueBlocked(false);
+              clearMessages();
+              setSystemMessages([]);
+              setPreview(null);
+              clearAttachmentRegistry();
+              resetDisplay();
+            },
+            refreshPlan,
+            saveSession: saveNow,
+            refreshDisplay: () => {
+              refreshDisplay();
+            },
+            loadSession: (...args) => {
+              updateQueue([]);
+              setQueueBlocked(false);
+              return loadSession(...args);
+            },
+            activateSession: (...args) => {
+              updateQueue([]);
+              setQueueBlocked(false);
+              return activateSession(...args);
+            },
+            renameSession,
+            currentSessionId: sessionId,
+            exit,
+            isLoading,
+            getDebugState: () => ({
+              tokenUsage,
+              loadedPlugins,
+              mcpServers,
+              mcpResources: mcpResourceCount,
+              mcpPrompts: mcpPromptCount,
+            }),
+            submit,
+            handleSubmit,
+            toolRegistry,
+            addTokenUsage,
+            setRunningSkill: (name) => {
+              setSkillProgress([]);
+              setRunningSkillName(name);
+            },
+            createSkillProgressTracker: (title, task) => makeAgentProgressTracker(
+              `skill-${++sysMessageId}`, title, task, setSkillProgress,
+            ),
+            setPickerActive,
+            suspendTerminal: suspendTerminalSync,
+            showResourceTUI: stdout.isTTY && process.stdin.isTTY ? (kind: ResourceKind, onDone: () => void, marketplace = false) => {
+              if (kind === "agents") {
+                agentsTUIResolveRef.current = onDone;
+                setAgentsTUIActive(true);
+              } else if (kind === "skills") {
+                skillsTUIResolveRef.current = onDone;
+                setSkillsMarketplace(marketplace);
+                setSkillsTUIActive(true);
+              } else {
+                resourceTUIResolveRef.current = onDone;
+                setResourceAdapter(createResourceAdapter(kind));
+              }
+            } : undefined,
+            showAgentsTUI: (onDone: () => void) => {
+              agentsTUIResolveRef.current = onDone;
+              setAgentsTUIActive(true);
+            },
+            showSkillsTUI: (onDone: () => void) => {
+              skillsTUIResolveRef.current = onDone;
+              setSkillsTUIActive(true);
+            },
+            iterationsBudget: iterationsBudget
+          },);
 
-      if (isSlashCommand) {
-        setInput("");
+          setRunningSkillName(null);
+
+          // Sync agent lock state after any slash command (handles /agent, /clear, /new)
+          const { getLockedAgent } = await import("./commands/agent-lock.js");
+          setAgentLockState(getLockedAgent());
+
+          if (result) {
+            switch (result.type) {
+              case "message": {
+                const message: DisplayMessage = { id: `sys-${++sysMessageId}`, role: "system", content: result.text };
+                if (/^\/(steer|plan)(?:\s|$)/i.test(trimmed)) {
+                  addDisplayMessage(message);
+                } else {
+                  setSystemMessages([message]);
+                }
+                if ((result as any)._isSkill) {
+                  conversation.addUserMessage(trimmed);
+                  conversation.addAssistantMessage([{ type: "text", text: result.text }]);
+                  saveNow((result as any)._tokenUsage);
+                }
+                break;
+              }
+              case "submit":
+                if (!await submit(result.text, undefined, undefined, undefined, invocationReason) && queued) {
+                  throw new Error("Queued request could not start. Use /queue retry to retry.");
+                }
+                break;
+              case "skill_invoke":
+                if (!await submit(trimmed, undefined, undefined, undefined, invocationReason, {
+                  name: result.skillName, arguments: result.arguments,
+                }) && queued) throw new Error("Queued skill could not start. Use /queue retry to retry.");
+                break;
+              case "agent_invoke": {
+                resetComposer();
+                setSystemMessages([]);
+                if (!await submitToAgent(result.agentName, result.query, trimmed) && queued) {
+                  throw new Error("Queued agent request could not start. Use /queue retry to retry.");
+                }
+                break;
+              }
+              case "clear":
+                break;
+              case "exit":
+                break;
+            }
+          }
+          return;
+        }
+
+        // Session agent lock — route non-command input directly to the locked agent
+        {
+          const { getLockedAgent } = await import("./commands/agent-lock.js");
+          const lock = getLockedAgent();
+          if (lock) {
+            const llmText = trimmed || "See attached content";
+            resetComposer();
+            setShowToolDetail(false);
+            setPsResponse(undefined);
+            setSystemMessages([]);
+            if (!await submitToAgent(lock.name, llmText, trimmed, lock.full) && queued) {
+              throw new Error("Queued agent request could not start. Use /queue retry to retry.");
+            }
+            return;
+          }
+        }
+
+        // Collect attachment content blocks
+        // The registry later compacts image records by dropping their retained
+        // payload. Give the conversation its own block objects so that cleanup
+        // cannot mutate image data retained in the submitted turn.
+        const extraBlocks: ContentBlock[] = promptAttachments.map((attachment) => ({ ...attachment.contentBlock }));
+        const llmText = trimmed || "See attached content";
+        const accepted = await submit(llmText, extraBlocks, undefined, undefined, invocationReason);
+        if (!accepted) {
+          if (queued) throw new Error("Queued request could not start. It remains in the queue; use /queue retry when ready.");
+          return;
+        }
+        // The pending list is cleared here, but the registry (keyed by id) is
+        // not — a tile stays clickable in the scrolled-back transcript for the
+        // rest of the session. Image bytes are spooled to disk and dropped from
+        // memory now that the base64 payload has already gone to the provider.
+        const imageIds = promptAttachments.filter((a) => a.kind === "image").map((a) => a.id);
+        if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => { });
+        resetComposer();
+        // The tile a tracked paste made is gone now that the buffer is cleared;
+        // an identical paste after this turn should attach fresh, not try to
+        // expand a tile that no longer exists anywhere.
         setShowToolDetail(false);
         setPsResponse(undefined);
         setSystemMessages([]);
-        const result = await commandRegistryRef.current.execute(trimmed, {
-          conversation,
-          config,
-          provider: activeProvider ?? undefined,
-          setModel: (model: string) => {
-            setConfig((prev) => ({ ...prev, model }));
-          },
-          setProvider: (provider) => {
-            setConfig((prev) => ({ ...prev, provider }));
-          },
-          setEffort: (effort) => {
-            setConfig((prev) => ({ ...prev, effort }));
-          },
-          showStatus: (text: string) => {
-            setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: text }]);
-          },
-          clearMessages: () => {
-            clearMessages();
-            setSystemMessages([]);
-            setPreview(null);
-            clearAttachmentRegistry();
-            resetDisplay();
-          },
-          refreshPlan,
-          saveSession: saveNow,
-          refreshDisplay: () => {
-            refreshDisplay();
-          },
-          loadSession,
-          activateSession,
-          renameSession,
-          currentSessionId: sessionId,
-          exit,
-          isLoading,
-          getDebugState: () => ({
-            tokenUsage,
-            loadedPlugins,
-            mcpServers,
-            mcpResources: mcpResourceCount,
-            mcpPrompts: mcpPromptCount,
-          }),
-          submit,
-          handleSubmit,
-          toolRegistry,
-          addTokenUsage,
-          setRunningSkill: (name) => {
-            setSkillProgress([]);
-            setRunningSkillName(name);
-          },
-          createSkillProgressTracker: (title, task) => makeAgentProgressTracker(
-            `skill-${++sysMessageId}`, title, task, setSkillProgress,
-          ),
-          setPickerActive,
-          suspendTerminal: suspendTerminalSync,
-          showAgentsTUI: (onDone: () => void) => {
-            agentsTUIResolveRef.current = onDone;
-            setAgentsTUIActive(true);
-          },
-          showSkillsTUI: (onDone: () => void) => {
-            skillsTUIResolveRef.current = onDone;
-            setSkillsTUIActive(true);
-          },
-        });
-
-        setRunningSkillName(null);
-
-        // Sync agent lock state after any slash command (handles /agent, /clear, /new)
-        const { getLockedAgent } = await import("./commands/agent-lock.js");
-        setAgentLockState(getLockedAgent());
-
-        if (result) {
-          switch (result.type) {
-            case "message": {
-              setSystemMessages([
-                { id: `sys-${++sysMessageId}`, role: "system", content: result.text },
-              ]);
-              if ((result as any)._isSkill) {
-                conversation.addUserMessage(trimmed);
-                conversation.addAssistantMessage([{ type: "text", text: result.text }]);
-                saveNow((result as any)._tokenUsage);
-              }
-              break;
-            }
-            case "submit":
-              submit(result.text, undefined, undefined, undefined, invocationReason);
-              break;
-            case "agent_invoke": {
-              setInput("");
-              setSystemMessages([]);
-              submitToAgent(result.agentName, result.query, trimmed);
-              break;
-            }
-            case "clear":
-              break;
-            case "exit":
-              break;
-          }
-        }
-        return;
-      }
-
-      // Session agent lock — route non-command input directly to the locked agent
-      {
-        const { getLockedAgent } = await import("./commands/agent-lock.js");
-        const lock = getLockedAgent();
-        if (lock) {
-          const llmText = trimmed || "See attached content";
-          setInput("");
-          setAttachments([]);
-          setShowToolDetail(false);
-          setPsResponse(undefined);
-          setSystemMessages([]);
-          submitToAgent(lock.name, llmText, trimmed, lock.full);
-          return;
+      } finally {
+        if (ownsPending) {
+          requestPendingRef.current = false;
+          requestCompletionRef.current++;
+          setRequestCompletion(requestCompletionRef.current);
         }
       }
-
-      // Collect attachment content blocks
-      // The registry later compacts image records by dropping their retained
-      // payload. Give the conversation its own block objects so that cleanup
-      // cannot mutate image data retained in the submitted turn.
-      const extraBlocks: ContentBlock[] = attachments.map((attachment) => ({ ...attachment.contentBlock }));
-      const llmText = trimmed || "See attached content";
-      const accepted = await submit(llmText, extraBlocks, undefined, undefined, invocationReason);
-      if (!accepted) return;
-      // The pending list is cleared here, but the registry (keyed by id) is
-      // not — a tile stays clickable in the scrolled-back transcript for the
-      // rest of the session. Image bytes are spooled to disk and dropped from
-      // memory now that the base64 payload has already gone to the provider.
-      const imageIds = attachments.filter((a) => a.kind === "image").map((a) => a.id);
-      if (imageIds.length > 0) compactImageAttachments(imageIds).catch(() => {});
-      setInput("");
-      setAttachments([]);
-      // The tile a tracked paste made is gone now that the buffer is cleared;
-      // an identical paste after this turn should attach fresh, not try to
-      // expand a tile that no longer exists anywhere.
-      lastPasteRef.current = null;
-      setShowToolDetail(false);
-      setPsResponse(undefined);
-      setSystemMessages([]);
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, attachments, isLoading, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId],
+    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine],
   );
+
+  // Start one request at a time; retain failures rather than dropping user input.
+  useEffect(() => {
+    // An older idle render can flush after submit has accepted a new turn.
+    // Wait for the render carrying that completion (and its new loading state).
+    if (requestCompletion !== requestCompletionRef.current || isLoading || requestPendingRef.current || runningShellCommand || runningSkillName ||
+        pendingConfirmation || pendingContextWindowRequest || pickerActive || queueActive || queueBlocked) return;
+    const request = queueRef.current[0];
+    if (!request) return;
+    updateQueue(queueRef.current.slice(1));
+    void handleSubmit(request.text, request.invocationReason, request).catch(err => {
+      updateQueue([request, ...queueRef.current]);
+      setQueueBlocked(true);
+      showStatusLine(err instanceof Error ? err.message : String(err), true);
+    });
+  }, [isLoading, runningShellCommand, runningSkillName, pendingConfirmation, pendingContextWindowRequest,
+    pickerActive, queueActive, queueBlocked, queuedRequests, requestCompletion, handleSubmit, updateQueue, showStatusLine]);
 
   const displayError = error;
   const allMessages = useMemo(() => {
@@ -963,39 +1146,78 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         put instead of drifting.
       */}
       <ScrollBox height={documentHeight} stickToBottom={false} controls={docControls}>
-      {displayError && (
-        <Box marginBottom={1} flexShrink={0}>
-          <Text color="red">Error: {terminalRelativePaths(displayError)}</Text>
-        </Box>
-      )}
+        {displayError && (
+          <Box marginBottom={1} flexShrink={0}>
+            <Text color="red">Error: {terminalRelativePaths(displayError)}</Text>
+          </Box>
+        )}
 
-      <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} columns={termCols} onOpenRef={handleOpenRef} />
+        <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} columns={termCols} onOpenRef={handleOpenRef} renderPlan={(plan) => (
+          <Box flexDirection="column" marginBottom={1} marginLeft={2}>
+            <Text bold dimColor>Plan: {terminalRelativePaths(plan.goal)}</Text>
+            {plan.steps.map((step) => {
+              const icon = step.status === "done" ? "\x1b[32m✓\x1b[0m"
+                : step.status === "in_progress" ? "\x1b[36m◉\x1b[0m"
+                  : step.status === "failed" ? "\x1b[31m✗\x1b[0m"
+                    : "○";
+              const textColor = step.status === "done" ? "green"
+                : step.status === "in_progress" ? "cyan"
+                  : step.status === "failed" ? "red"
+                    : undefined;
+              return (
+                <Text key={step.id} dimColor={step.status === "done"} color={textColor as any}>
+                  {`  ${icon} Step ${step.id}: ${terminalRelativePaths(step.title)}`}
+                </Text>
+              );
+            })}
+            {(() => {
+              const done = plan.steps.filter((s) => s.status === "done").length;
+              const total = plan.steps.length;
+              const progress = done === total
+                ? <Text color="green">{`  ✓ All ${total} steps complete`}</Text>
+                : <Text dimColor>{`  ${done}/${total} complete`}</Text>;
+              if (showPlanDetail) return progress;
+              return (
+                <>
+                  {progress}
+                  <Text dimColor italic>{`  ${formatKeybinding(keybindings, "togglePlanDetail")}: full plan`}</Text>
+                </>
+              );
+            })()}
+          </Box>
+        )} />
 
-      {systemMessages.length > 0 && (
-        <Box marginBottom={1} flexDirection="column">
-          {systemMessages.map((msg) => {
-            const displayContent = terminalRelativePaths(msg.content);
-            const hasMarkdown = /^#{1,3}\s|^\*\*|\*\*$|^- \*\*|```/.test(displayContent);
-            if (hasMarkdown && displayContent.length > 200) {
+        {systemMessages.length > 0 && (
+          <Box marginBottom={1} flexDirection="column">
+            {systemMessages.map((msg) => {
+              const displayContent = terminalRelativePaths(msg.content);
+              const hasMarkdown = /^#{1,3}\s|^\*\*|\*\*$|^- \*\*|```/.test(displayContent);
+              if (hasMarkdown && displayContent.length > 200) {
+                return (
+                  <Box key={msg.id} flexDirection="column">
+                    <Text dimColor>{renderMarkdown(displayContent)}</Text>
+                  </Box>
+                );
+              }
+              const lines = displayContent.split("\n");
               return (
                 <Box key={msg.id} flexDirection="column">
-                  <Text dimColor>{renderMarkdown(displayContent)}</Text>
+                  {lines.map((line, i) => (
+                    <Text key={i} dimColor={!msg.isError} color={msg.isError ? "red" : undefined}>
+                      {line || " "}
+                    </Text>
+                  ))}
                 </Box>
               );
-            }
-            const lines = displayContent.split("\n");
-            return (
-              <Box key={msg.id} flexDirection="column">
-                {lines.map((line, i) => (
-                  <Text key={i} dimColor={!msg.isError} color={msg.isError ? "red" : undefined}>
-                    {line || " "}
-                  </Text>
-                ))}
-              </Box>
-            );
-          })}
-        </Box>
-      )}
+            })}
+          </Box>
+        )}
+
+        {runningShellCommand !== null && (
+          <Box marginBottom={1}>
+            <Text color="yellow"><Spinner />{` Shell · $ ${runningShellCommand}`}</Text>
+          </Box>
+        )}
 
       {runningSkillName && (
         <Box marginBottom={1} flexDirection="column">
@@ -1013,124 +1235,89 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         </Box>
       )}
 
-      {activePlan && activePlan.steps.length > 0 && (
-        <Box flexDirection="column" marginBottom={1} marginLeft={2}>
-          <Text bold dimColor>Plan: {terminalRelativePaths(activePlan.goal)}</Text>
-          {activePlan.steps.map((step) => {
-            const icon = step.status === "done" ? "\x1b[32m✓\x1b[0m"
-              : step.status === "in_progress" ? "\x1b[36m◉\x1b[0m"
-              : step.status === "failed" ? "\x1b[31m✗\x1b[0m"
-              : "○";
-            const textColor = step.status === "done" ? "green"
-              : step.status === "in_progress" ? "cyan"
-              : step.status === "failed" ? "red"
-              : undefined;
+        {showCompactionSummary && conversation.lastCompactionSummary && (
+          <Box flexDirection="column" marginBottom={1} marginLeft={2} borderStyle="single" borderColor="gray" paddingX={1}>
+            <Text bold dimColor>Compaction Summary</Text>
+            <Text dimColor>{terminalRelativePaths(conversation.lastCompactionSummary)}</Text>
+            <Text dimColor italic>{"\n"}Ctrl+O to close</Text>
+          </Box>
+        )}
+
+        {isLoading && (() => {
+          const focusedSubagent = focusedSubagentId
+            ? subagentStates.find((s) => s.id === focusedSubagentId)
+            : null;
+
+          if (focusedSubagent) {
             return (
-              <Text key={step.id} dimColor={step.status === "done"} color={textColor as any}>
-                {`  ${icon} Step ${step.id}: ${terminalRelativePaths(step.title)}`}
-              </Text>
+              <Box flexDirection="column" marginBottom={1}>
+                <SubagentDisplay progress={focusedSubagent} mode="detail" />
+                <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cancel")}: cancel this subagent · Tab: back to overview</Text>
+              </Box>
             );
-          })}
-          {(() => {
-            const done = activePlan.steps.filter((s) => s.status === "done").length;
-            const total = activePlan.steps.length;
-            const progress = done === total
-              ? <Text color="green">{`  ✓ All ${total} steps complete`}</Text>
-              : <Text dimColor>{`  ${done}/${total} complete`}</Text>;
-            if (showPlanDetail) return progress;
-            return (
-              <>
-                {progress}
-                <Text dimColor italic>{`  ${formatKeybinding(keybindings, "togglePlanDetail")}: full plan`}</Text>
-              </>
-            );
-          })()}
-        </Box>
-      )}
+          }
 
-      {showCompactionSummary && conversation.lastCompactionSummary && (
-        <Box flexDirection="column" marginBottom={1} marginLeft={2} borderStyle="single" borderColor="gray" paddingX={1}>
-          <Text bold dimColor>Compaction Summary</Text>
-          <Text dimColor>{terminalRelativePaths(conversation.lastCompactionSummary)}</Text>
-          <Text dimColor italic>{"\n"}Ctrl+O to close</Text>
-        </Box>
-      )}
-
-      {isLoading && (() => {
-        const focusedSubagent = focusedSubagentId
-          ? subagentStates.find((s) => s.id === focusedSubagentId)
-          : null;
-
-        if (focusedSubagent) {
           return (
             <Box flexDirection="column" marginBottom={1}>
-              <SubagentDisplay progress={focusedSubagent} mode="detail" />
-              <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cancel")}: cancel this subagent · Tab: back to overview</Text>
-            </Box>
-          );
-        }
-
-        return (
-          <Box flexDirection="column" marginBottom={1}>
-            {toolCalls
-              .filter((tc) => tc.toolName !== "subagent")
-              .map((tc, i) => (
-                <ToolCallDisplay key={`${tc.toolName}-${i}`} toolCall={tc} />
-              ))}
-            {subagentStates.map((sa, i) => {
-              const isSelected = i === selectedSubagentIdx;
-              return (
-                <Box key={sa.id}>
-                  {isSelected ? <Text color="cyan">{"▸ "}</Text> : <Text>{"  "}</Text>}
-                  <SubagentDisplay progress={sa} mode="compact" index={i} />
-                </Box>
-              );
-            })}
-            {(() => {
-              const pendingSubagents = toolCalls.filter((tc) => tc.toolName === "subagent" && tc.status === "running");
-              const spawning = pendingSubagents.length > 0 && subagentStates.length === 0;
-              if (spawning) {
-                const count = pendingSubagents.length;
+              {toolCalls
+                .filter((tc) => tc.toolName !== "subagent")
+                .map((tc, i) => (
+                  <ToolCallDisplay key={`${tc.toolName}-${i}`} toolCall={tc} />
+                ))}
+              {subagentStates.map((sa, i) => {
+                const isSelected = i === selectedSubagentIdx;
                 return (
-                  <Box>
-                    <Text dimColor>{"  "}</Text>
-                    <Text color="cyan"><Spinner />{" "}</Text>
-                    <Text dimColor>Spawning {count} subagent{count !== 1 ? "s" : ""}...</Text>
+                  <Box key={sa.id}>
+                    {isSelected ? <Text color="cyan">{"▸ "}</Text> : <Text>{"  "}</Text>}
+                    <SubagentDisplay progress={sa} mode="compact" index={i} />
                   </Box>
                 );
-              }
-              return null;
-            })()}
-            <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} isPaused={isGenerationPaused} />
-            {hasSubagents && (
-              <Text dimColor>{"\n  "}↑↓: select · Enter: inspect · {formatKeybinding(keybindings, "cancel")}: cancel all</Text>
-            )}
-          </Box>
-        );
-      })()}
+              })}
+              {(() => {
+                const pendingSubagents = toolCalls.filter((tc) => tc.toolName === "subagent" && tc.status === "running");
+                const spawning = pendingSubagents.length > 0 && subagentStates.length === 0;
+                if (spawning) {
+                  const count = pendingSubagents.length;
+                  return (
+                    <Box>
+                      <Text dimColor>{"  "}</Text>
+                      <Text color="cyan"><Spinner />{" "}</Text>
+                      <Text dimColor>Spawning {count} subagent{count !== 1 ? "s" : ""}...</Text>
+                    </Box>
+                  );
+                }
+                return null;
+              })()}
+              <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} isPaused={isGenerationPaused} />
+              {hasSubagents && (
+                <Text dimColor>{"\n  "}↑↓: select · Enter: inspect · {formatKeybinding(keybindings, "cancel")}: cancel all</Text>
+              )}
+            </Box>
+          );
+        })()}
 
-      {showToolDetail && toolMessages.length > 0 && (
-        <ToolDetailPanel
-          tools={toolMessages}
-          closeKey={formatKeybinding(keybindings, "toggleToolDetail")}
-        />
-      )}
+        {showToolDetail && toolMessages.length > 0 && (
+          <ToolDetailPanel
+            tools={toolMessages}
+            closeKey={formatKeybinding(keybindings, "toggleToolDetail")}
+          />
+        )}
 
-      {showPlanDetail && activePlan && (
-        <PlanDetailPanel
-          plan={activePlan}
-          closeKey={formatKeybinding(keybindings, "togglePlanDetail")}
-        />
-      )}
+        {showPlanDetail && activePlan && (
+          <PlanDetailPanel
+            plan={activePlan}
+            closeKey={formatKeybinding(keybindings, "togglePlanDetail")}
+          />
+        )}
 
-      {preview && (
-        <AttachmentPreview
-          content={preview}
-          closeKey="Esc"
-          copyKey="c"
-          columns={termCols}
-        />
-      )}
+        {preview && (
+          <AttachmentPreview
+            content={preview}
+            closeKey="Esc"
+            copyKey="c"
+            columns={termCols}
+          />
+        )}
       </ScrollBox>
 
       {/*
@@ -1140,111 +1327,144 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         they can't see.
       */}
       <Box flexDirection="column" flexShrink={0} ref={footerRef}>
-      {pendingConfirmation && (
-        <ToolConfirm
-          toolName={pendingConfirmation.toolName}
-          input={pendingConfirmation.input}
-          diffLines={pendingConfirmation.diffLines}
-          mcpServerName={pendingConfirmation.mcpServerName}
-          onConfirm={confirmTool}
-          subagentTask={pendingConfirmation.subagentTask}
-          keybindings={keybindings}
+        <RequestQueue
+          requests={queuedRequests.map(request => ({ id: request.id, text: request.text, attachmentCount: request.attachments.length }))}
+          onCancel={cancelQueuedRequest}
+          active={queueActive && !pickerActive && !pendingConfirmation && !pendingContextWindowRequest}
+          onClose={() => setQueueActive(false)} onActivate={() => setQueueActive(true)} columns={termCols}
         />
-      )}
+        {queueBlocked && queuedRequests.length > 0 && <Text color="yellow">Queue paused · /queue retry to retry</Text>}
+        {pendingConfirmation && (
+          <ToolConfirm
+            toolName={pendingConfirmation.toolName}
+            input={pendingConfirmation.input}
+            diffLines={pendingConfirmation.diffLines}
+            mcpServerName={pendingConfirmation.mcpServerName}
+            onConfirm={confirmTool}
+            subagentTask={pendingConfirmation.subagentTask}
+            keybindings={keybindings}
+          />
+        )}
 
-      {agentsTUIActive && (
-        <AgentsTUI
-          onExit={() => {
-            setAgentsTUIActive(false);
-            setPickerActive(false);
-            setInput(""); // clear any paste that leaked into InputPrompt while wizard was active
-            const resolve = agentsTUIResolveRef.current;
-            agentsTUIResolveRef.current = null;
-            resolve?.();
-            refreshAgentCommands();
-          }}
-          provider={activeProvider}
-          config={config}
-        />
-      )}
-      {skillsTUIActive && (
-        <SkillsTUI
-          onExit={() => {
-            setSkillsTUIActive(false);
+        {!pendingConfirmation && pendingContextWindowRequest && (
+          <ContextWindowPrompt
+            model={pendingContextWindowRequest.model}
+            defaultValue={DEFAULT_UNKNOWN_CONTEXT_WINDOW}
+            onSubmit={resolveContextWindowRequest}
+          />
+        )}
+
+        {agentsTUIActive && (
+          <AgentsTUI
+            onExit={() => {
+              setAgentsTUIActive(false);
+              setPickerActive(false);
+              setInput(""); // clear any paste that leaked into InputPrompt while wizard was active
+              const resolve = agentsTUIResolveRef.current;
+              agentsTUIResolveRef.current = null;
+              resolve?.();
+              refreshAgentCommands();
+            }}
+            provider={activeProvider}
+            config={config}
+          />
+        )}
+        {skillsTUIActive && (
+          <SkillsTUI
+            marketplace={skillsMarketplace}
+            onExit={() => {
+              setSkillsTUIActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = skillsTUIResolveRef.current;
+              skillsTUIResolveRef.current = null;
+              resolve?.();
+            }}
+          />
+        )}
+
+        {resourceAdapter && (
+          <ResourceManager adapter={resourceAdapter} onExit={() => {
+            setResourceAdapter(null);
             setPickerActive(false);
             setInput("");
-            const resolve = skillsTUIResolveRef.current;
-            skillsTUIResolveRef.current = null;
+            const resolve = resourceTUIResolveRef.current;
+            resourceTUIResolveRef.current = null;
             resolve?.();
-          }}
-        />
-      )}
+          }} />
+        )}
 
-      {!pendingConfirmation && (
-        <Box marginTop={1}><InputPrompt
-          value={input}
-          onChange={(value) => {
-            // A matching paste only expands the tile it just created. Once
-            // the prompt has changed, an identical paste elsewhere is a new
-            // attachment rather than an instruction to replace that tile.
-            lastPasteRef.current = null;
-            setInput(value);
-          }}
-          onSubmit={handleSubmit}
-          onPaste={handlePaste}
-          onRemoveAttachment={() => {
-            setAttachments((prev) => prev.slice(0, -1));
-            lastPasteRef.current = null;
-          }}
-          onClearAttachments={() => {
-            setAttachments([]);
-            lastPasteRef.current = null;
-          }}
-          onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
-          onRegisterExpand={(fn) => { expandTileRef.current = fn; }}
-          onOpenAttachment={handleOpenAttachment}
-          disabled={pickerActive}
-          suppressHistory={isLoading}
-          commands={[
-            { name: "ps", description: "Side query while agent is working" },
-            ...commandRegistryRef.current.list().map((c) => ({
+        {!pendingConfirmation && !pendingContextWindowRequest && (
+          <Box marginTop={1}><InputPrompt
+            value={input}
+            onChange={(value) => {
+              composerEditVersionRef.current++;
+              // A matching paste only expands the tile it just created. Once
+              // the prompt has changed, an identical paste elsewhere is a new
+              // attachment rather than an instruction to replace that tile.
+              lastPasteRef.current = null;
+              setInput(value);
+            }}
+            onSubmit={handleSubmit}
+            onPaste={handlePaste}
+            canExpandPaste={lastPasteRef.current !== null}
+            onRemoveAttachment={() => {
+              composerEditVersionRef.current++;
+              setAttachments((prev) => prev.slice(0, -1));
+              lastPasteRef.current = null;
+            }}
+            onClearAttachments={() => {
+              composerEditVersionRef.current++;
+              setAttachments([]);
+              lastPasteRef.current = null;
+            }}
+            onRegisterRead={(read) => { readPromptRef.current = read; }}
+            onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
+            onRegisterExpand={(fn) => { expandTileRef.current = fn; }}
+            onOpenAttachment={handleOpenAttachment}
+            disabled={pickerActive || queueActive}
+            suppressHistory={isLoading}
+            commands={[
+              { name: "queue", description: "Manage queued requests (retry to resume)" },
+              { name: "ps", description: "Side query while agent is working" },
+              ...commandRegistryRef.current.list().map((c) => ({
+                name: c.name,
+                description: c.description,
+                category: c.description.startsWith("[agent]") ? "agent" as const : "command" as const,
+              })),
+            ]}
+            keybindings={keybindings}
+            enhancedKeyboard={enhancedKeyboard}
+            resumeUserMessages={resumeUserMessages}
+            agentLock={agentLockState?.name}
+            agentNames={agentCommands.map((c) => ({
               name: c.name,
-              description: c.description,
-              category: c.description.startsWith("[agent]") ? "agent" as const : "command" as const,
-            })),
-          ]}
-          keybindings={keybindings}
-          enhancedKeyboard={enhancedKeyboard}
-          resumeUserMessages={resumeUserMessages}
-          agentLock={agentLockState?.name}
-          agentNames={agentCommands.map((c) => ({
-            name: c.name,
-            description: c.description.replace("[agent] ", ""),
-          }))}
-        /></Box>
-      )}
+              description: c.description.replace("[agent] ", ""),
+            }))}
+          /></Box>
+        )}
 
-      <StatusBar
-        isPaused={isGenerationPaused || !!pendingConfirmation}
-        model={config.model}
-        provider={config.provider}
-        effort={config.effort}
-        messageCount={messages.filter((m) => m.role === "user").length}
-        inputTokens={tokenUsage.inputTokens}
-        outputTokens={tokenUsage.outputTokens}
-        cacheReadTokens={tokenUsage.cacheReadTokens}
-        cacheWriteTokens={tokenUsage.cacheWriteTokens}
-        hint={useMemo(() => getRandomHint(keybindings, enhancedKeyboard), [messages.length, keybindings, enhancedKeyboard])}
-        psResponse={psResponse}
-        psLoading={psLoading}
-        loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
-        sandboxBackend={getSandboxName()}
-        branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
-        turnStartTime={turnStartTime}
-        lastTurnDurationMs={lastTurnDurationMs}
-        isLoading={isLoading}
-        agentLock={agentLockState ?? undefined}
-      />
+        <StatusBar
+          isPaused={isGenerationPaused || !!pendingConfirmation}
+          model={config.model}
+          provider={config.provider}
+          effort={config.effort}
+          messageCount={messages.filter((m) => m.role === "user").length}
+          inputTokens={tokenUsage.inputTokens}
+          outputTokens={tokenUsage.outputTokens}
+          cacheReadTokens={tokenUsage.cacheReadTokens}
+          cacheWriteTokens={tokenUsage.cacheWriteTokens}
+          hint={useMemo(() => getRandomHint(keybindings, enhancedKeyboard), [messages.length, keybindings, enhancedKeyboard])}
+          psResponse={psResponse}
+          psLoading={psLoading}
+          loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
+          sandboxBackend={`sandbox: ${getSandboxName()}`}
+          branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
+          turnStartTime={turnStartTime}
+          lastTurnDurationMs={lastTurnDurationMs}
+          isLoading={isLoading}
+          agentLock={agentLockState ?? undefined}
+        />
       </Box>
     </Box>
   );

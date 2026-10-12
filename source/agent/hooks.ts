@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
 import type { AgavHooks } from "../config/config.js";
 
-export async function runHook(hook: string, vars: Record<string, string>): Promise<string | null> {
+export async function runHook(hook: string, vars: Record<string, string>, signal?: AbortSignal): Promise<string | null> {
+  if (signal?.aborted) return null;
+
   let command = hook;
   for (const [key, value] of Object.entries(vars)) {
     command = command.replaceAll(`$${key}`, value);
@@ -12,7 +14,7 @@ export async function runHook(hook: string, vars: Record<string, string>): Promi
   const shellArgs = isWindows ? ["/c", command] : ["-c", command];
 
   return new Promise((resolve) => {
-    execFile(shell, shellArgs, { timeout: 5000 }, (err, stdout) => {
+    execFile(shell, shellArgs, { timeout: 5000, signal }, (err, stdout) => {
       if (err) {
         resolve(null);
       } else {

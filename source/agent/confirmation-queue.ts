@@ -80,6 +80,7 @@ export class ConfirmationQueue {
   }
 
   clear(): void {
+    // Unblock callers awaiting confirmation when the active turn is cancelled.
     this.activeItem?.resolve("no");
     for (const entry of this.queue) entry.resolve("no");
     this.queue = [];

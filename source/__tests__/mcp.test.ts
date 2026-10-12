@@ -1,5 +1,146 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { MCPClient } from "../mcp/client.js";
+import { MCPManager } from "../mcp/manager.js";
+import { ToolRegistry } from "../tools/registry.js";
+import { ConversationState } from "../agent/conversation.js";
+import { runAgentLoop } from "../agent/loop.js";
+import type { LLMProvider, StreamParams } from "../providers/types.js";
+
+// Exercise the public APIs with JSON-RPC replies, rather than mocking callTool.
+describe("MCP tool result status", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let client: MCPClient;
+  let manager: MCPManager;
+  const config = { type: "remote", transport: "http", url: "http://localhost/mcp" } as const;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    client = new MCPClient("test", config);
+    manager = new MCPManager();
+  });
+
+  afterEach(() => {
+    client.stop();
+    manager.stopAll();
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  function mockRpc(reply: Record<string, unknown>) {
+    const calls = vi.fn();
+    globalThis.fetch = vi.fn(async (_url, options) => {
+      const request = JSON.parse(String(options?.body));
+      let result: unknown;
+      switch (request.method) {
+        case "initialize": result = { capabilities: {} }; break;
+        case "notifications/initialized": return new Response(null, { status: 202 });
+        case "tools/list": result = { tools: [{ name: "operate", inputSchema: { type: "object", properties: {} } }] }; break;
+        case "tools/call": calls(request.params); break;
+        default: throw new Error(`Unexpected RPC method: ${request.method}`);
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: request.id,
+        ...(request.method === "tools/call" ? reply : { result }),
+      }), { headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    return calls;
+  }
+
+  it.each([
+    { label: "missing flag", result: { content: [{ type: "text", text: "ok" }] }, output: "ok", isError: false },
+    { label: "false flag", result: { isError: false, content: [{ type: "text", text: "ok" }] }, output: "ok", isError: false },
+    { label: "true flag and joined text", result: { isError: true, content: [{ type: "text", text: "failed" }, { type: "text", text: "details" }] }, output: "failed\ndetails", isError: true },
+    { label: "empty content", result: { isError: true, content: [] }, output: "", isError: true },
+    { label: "missing content", result: { isError: true }, output: "No output", isError: true },
+    { label: "empty text", result: { content: [{ type: "text" }, { type: "text", text: "next" }] }, output: "\nnext", isError: false },
+    { label: "existing non-text rendering", result: { isError: true, content: [
+      { type: "image", mimeType: "image/png" },
+      { type: "resource", resource: { uri: "file:///note", text: "note" } },
+      { type: "resource_link", uri: "file:///link" },
+      { type: "other" },
+    ] }, output: "[Image content omitted: image/png]\n[Resource: file:///note]\nnote\n[Resource link: file:///link]\n[Unsupported content type: other]", isError: true },
+  ])("preserves $label through client, manager and registry", async ({ result, output, isError }) => {
+    const calls = mockRpc({ result });
+    await client.start();
+    await manager.startServer("test", config);
+    const expected = { output, isError };
+    await expect(client.callTool("test__operate", { value: 1 })).resolves.toEqual(expected);
+    const definition = manager.getToolDefinitions()[0]!;
+    await expect(definition.execute({ value: 1 })).resolves.toEqual(expected);
+    const registry = new ToolRegistry();
+    registry.register(definition);
+    await expect(registry.execute("test__operate", { value: 1 })).resolves.toEqual(expected);
+    expect(calls.mock.calls).toEqual(Array.from({ length: 3 }, () => [{ name: "operate", arguments: { value: 1 } }]));
+  });
+
+  it.each(["rpc", "transport"] as const)("keeps %s failures distinct from resolved tool errors", async (failure) => {
+    const calls = mockRpc({ error: { code: -32603, message: "RPC failed" } });
+    await client.start();
+    await manager.startServer("test", config);
+    const error = failure === "rpc" ? "RPC failed" : "Network failed";
+    if (failure === "transport") globalThis.fetch = vi.fn().mockRejectedValue(new Error(error));
+    await expect(client.callTool("operate", {})).rejects.toThrow(error);
+    const definition = manager.getToolDefinitions()[0]!;
+    await expect(definition.execute({})).resolves.toEqual({ output: error, isError: true });
+    const registry = new ToolRegistry();
+    registry.register(definition);
+    await expect(registry.execute("test__operate", {})).resolves.toEqual({ output: error, isError: true });
+    if (failure === "rpc") expect(calls).toHaveBeenCalledTimes(3);
+    else expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("forwards cancellation without stopping the shared server or retrying", async () => {
+    const calls = mockRpc({ result: { content: [{ type: "text", text: "ok" }] } });
+    await manager.startServer("test", config);
+    const definition = manager.getToolDefinitions()[0]!;
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    // The RPC send stays in flight; abort must settle only this request's wait.
+    fetchMock.mockImplementationOnce(() => new Promise<Response>(() => {}));
+    const pending = definition.execute({}, { signal: controller.signal });
+    controller.abort();
+    await expect(pending).resolves.toEqual({ output: "MCP request cancelled.", isError: true });
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    const sends = fetchMock.mock.calls.length;
+    await expect(definition.execute({}, { signal: controller.signal })).resolves.toEqual({ output: "MCP request cancelled.", isError: true });
+    expect(fetchMock).toHaveBeenCalledTimes(sends);
+    await expect(definition.execute({})).resolves.toEqual({ output: "ok", isError: false });
+    expect(calls).toHaveBeenCalledTimes(1);
+    expect(manager.getServerNames()).toEqual(["test"]);
+  });
+
+  it("retains tool-level failure in agent events and model tool history without retries", async () => {
+    const calls = mockRpc({ result: { isError: true, content: [{ type: "text", text: "Operation failed" }] } });
+    await manager.startServer("test", config);
+    const registry = new ToolRegistry();
+    registry.register(manager.getToolDefinitions()[0]!);
+    const conversation = new ConversationState();
+    conversation.addUserMessage("operate");
+    let turn = 0;
+    const stream = vi.fn(async function* (params: StreamParams) {
+      if (turn++ === 0) {
+        yield { type: "tool_call_start", toolCallId: "call-1", toolName: "test__operate" } as const;
+        yield { type: "tool_call_delta", toolCallId: "call-1", argsJson: "{}" } as const;
+        yield { type: "message_end", stopReason: "tool_calls" } as const;
+      } else {
+        expect(params.messages.flatMap(message => message.content)).toContainEqual({
+          type: "tool_result", toolCallId: "call-1", toolResult: "Operation failed", isError: true,
+        });
+        yield { type: "text_delta", text: "Failed." } as const;
+        yield { type: "message_end", stopReason: "end_turn" } as const;
+      }
+    });
+    const provider: LLMProvider = { name: "mock", stream };
+    const events = [];
+    for await (const event of runAgentLoop({ provider, conversation, toolRegistry: registry, model: "m",
+      permissionMode: "auto-accept", iterationsBudget: { remaining: 3, total: 3 },
+    })) events.push(event);
+    expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", toolCallId: "call-1", output: "Operation failed", isError: true }));
+    expect(calls).toHaveBeenCalledTimes(1);
+    expect(stream).toHaveBeenCalledTimes(2);
+    expect(events.at(-1)).toEqual({ type: "turn_complete" });
+  });
+});
 
 describe("mcp/client remote/SSE", () => {
   let originalFetch: typeof globalThis.fetch;

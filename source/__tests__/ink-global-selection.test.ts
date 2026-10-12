@@ -1,4 +1,5 @@
 import {EventEmitter} from "node:events";
+import chalk from "chalk";
 import {createElement} from "react";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 
@@ -8,7 +9,13 @@ vi.mock("../ink/termio/clipboard.js", () => ({writeClipboard}));
 import render from "../ink/render.js";
 import Ink from "../ink/ink.js";
 import Text from "../ink/components/Text.js";
+import Box from "../ink/components/Box.js";
+import ClickableLine from "../components/clickable-line.js";
+import {buildClickableLines} from "../utils/render-clickable.js";
 import {DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING} from "../ink/termio/dec.js";
+import MessageList from "../components/message-list.js";
+import {clearDetectionCache, detectTargets} from "../utils/detect-targets.js";
+import {stripAnsi, visualLen, wrapToWidth} from "../utils/wrap-text.js";
 
 type FakeStdout = NodeJS.WriteStream & {chunks: string[]};
 
@@ -35,6 +42,113 @@ const makeStdin = (): NodeJS.ReadStream => {
 	stdin.read = (() => null) as NodeJS.ReadStream["read"];
 	return stdin;
 };
+
+describe("user message copy boundaries", () => {
+	it.each([
+		["message", 30],
+		["message that wraps onto another row", 18],
+		["  indented text", 30],
+		["  indented text wraps\n    code()\n  - item\n   \n  end  ", 18],
+		["     x\n  y", 4],
+		["  code()\n    - item  \n   \n  界🎉é end", 6],
+		["  界🎉é words\n  end", 10],
+		["  see https://example.com\n  end", 18],
+	] as const)("renders and copies a user message from column zero: %j (width %i)", async (text, columns) => {
+		const previousLevel = chalk.level;
+		chalk.level = 3;
+		const stdout = makeStdout();
+		stdout.columns = columns;
+		const stdin = makeStdin();
+		const instance = new Ink({stdout, stdin, stderr: stdout, patchConsole: false,
+			exitOnCtrlC: false, alternateScreen: false, maxFps: 30});
+		try {
+			instance.render(createElement(MessageList, {
+				messages: [{id: "copy-indent", role: "user", content: text}],
+				columns, toolDetailKey: "ctrl+o", onOpenRef: () => {},
+			}));
+			for (let i = 0; i < 4; i++) {
+				await new Promise(resolve => setTimeout(resolve, 20));
+				await instance.waitUntilRenderFlush();
+			}
+			const rows = stripAnsi((instance as any).lastOutput).split("\n");
+			const first = rows.findIndex(row => row.startsWith("❯ "));
+			expect(first).toBeGreaterThanOrEqual(0);
+			const wrapped = wrapToWidth(text, columns - 2);
+			expect(rows.slice(first, first + wrapped.length)).toEqual(wrapped.map((line, i) =>
+				(i === 0 ? "❯ " : "  ") + line + " ".repeat(columns - 2 - visualLen(line))));
+			writeClipboard.mockClear();
+			stdin.emit("data", `\x1b[<0;1;${first + 1}M`);
+			stdin.emit("data", `\x1b[<0;${columns + 1};${first + wrapped.length}m`);
+			expect(writeClipboard).toHaveBeenLastCalledWith(stdout, text);
+		} finally {
+			instance.unmount();
+			chalk.level = previousLevel;
+			clearDetectionCache();
+		}
+	});
+
+	it.each(["targets", "no targets", "no handler", "intentional spaces"])("copies colored word wraps and intentional paragraph breaks (%s)", async (mode) => {
+		const previousLevel = chalk.level;
+		chalk.level = 3;
+		const stdout = makeStdout();
+		stdout.columns = 30;
+		const stdin = makeStdin();
+		const text = mode === "targets"
+			? "please read https://example.com for more details about this change.\n\nnext paragraph"
+			: mode === "intentional spaces"
+				? "please read these  notes for more details about this change.  \n\nnext paragraph"
+				: "please read these notes for more details about this change.\n\nnext paragraph";
+		const instance = new Ink({stdout, stdin, stderr: stdout, patchConsole: false,
+			exitOnCtrlC: false, alternateScreen: false, maxFps: 30});
+		try {
+			instance.render(createElement(MessageList, {
+				messages: [{id: "copy-user", role: "user", content: text}],
+				columns: stdout.columns, toolDetailKey: "ctrl+o",
+				onOpenRef: mode === "no handler" ? undefined : () => {},
+			}));
+			for (let i = 0; i < 4; i++) {
+				await new Promise(resolve => setTimeout(resolve, 20));
+				await instance.waitUntilRenderFlush();
+			}
+			expect(await detectTargets(text, process.cwd(), "copy-user")).toHaveLength(mode === "targets" ? 1 : 0);
+			const rows = stripAnsi((instance as any).lastOutput).split("\n");
+			const first = rows.findIndex(row => row.includes("❯ please read"));
+			const last = rows.findIndex(row => row.includes("next paragraph"));
+			expect(first).toBeGreaterThanOrEqual(0);
+			expect(last - first).toBeGreaterThan(2);
+			writeClipboard.mockClear();
+			stdin.emit("data", `\x1b[<0;3;${first + 1}M`);
+			stdin.emit("data", `\x1b[<0;${rows[last]!.trimEnd().length + 1};${last + 1}m`);
+			expect(writeClipboard).toHaveBeenLastCalledWith(stdout, text);
+		} finally {
+			instance.unmount();
+			chalk.level = previousLevel;
+			clearDetectionCache();
+		}
+	});
+});
+
+describe("multi-column copy boundaries", () => {
+	it("copies both adjacent boxes without dropping the left continuation", async () => {
+		const stdout = makeStdout();
+		stdout.columns = 12;
+		const stdin = makeStdin();
+		const instance = new Ink({stdout, stdin, stderr: stdout, patchConsole: false,
+			exitOnCtrlC: false, alternateScreen: false, maxFps: 30});
+		try {
+			instance.render(createElement(Box, {flexDirection: "row"},
+				createElement(Box, {width: 6}, createElement(Text, null, "ABC\nDEF")),
+				createElement(Box, {width: 6}, createElement(Text, null, "123456789"))));
+			await instance.waitUntilRenderFlush();
+			expect(stripAnsi((instance as any).lastOutput)).toBe("ABC   123456\nDEF   789");
+			stdin.emit("data", "\x1b[<0;1;1M");
+			stdin.emit("data", "\x1b[<0;10;2m");
+			expect(writeClipboard).toHaveBeenLastCalledWith(stdout, "ABC   123456\nDEF   789");
+		} finally {
+			instance.unmount();
+		}
+	});
+});
 
 describe("global text selection", () => {
 	beforeEach(() => writeClipboard.mockClear());
@@ -134,6 +248,31 @@ describe("global text selection", () => {
 			expect(stdout.chunks).toHaveLength(writes);
 			expect(ink.pasteBuffer).toBeUndefined();
 			expect(ink.mouseBuffer).toBeUndefined();
+		} finally {
+			instance.unmount();
+		}
+	});
+
+	it.each([false, true])("copies soft wraps without losing hard breaks (clickable: %j)", async (clickable) => {
+		const stdout = makeStdout();
+		stdout.columns = 12;
+		const stdin = makeStdin();
+		const text = "implemented by other code.\n\nnext paragraph\ncode line";
+		const lines = buildClickableLines(text, 10,
+			[{kind: "url", text: "other", start: 15, end: 20}], () => "id", {});
+		const tree = clickable
+			? createElement(Box, {flexDirection: "column"}, ...lines.map((runs, i) =>
+				createElement(ClickableLine, {key: i, runs: [{text: "  "}, ...runs]})))
+			: createElement(Box, {paddingLeft: 2}, createElement(Text, null, text));
+		const instance = new Ink({stdout, stdin, stderr: stdout, patchConsole: false,
+			exitOnCtrlC: false, alternateScreen: false, maxFps: 30});
+		instance.render(tree);
+		await instance.waitUntilRenderFlush();
+		try {
+			const rows = (instance as any).lastOutput.split("\n");
+			stdin.emit("data", "\x1b[<0;3;1M");
+			stdin.emit("data", `\x1b[<0;${rows.at(-1).length + 1};${rows.length}m`);
+			expect(writeClipboard).toHaveBeenLastCalledWith(stdout, text);
 		} finally {
 			instance.unmount();
 		}

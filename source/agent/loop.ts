@@ -27,7 +27,7 @@ export type AgentEvent =
   | { type: "turn_complete" }
   | { type: "steer_applied"; directives: string[] }
   | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
-  | { type: "error"; error: Error };
+  | { type: "error"; error: Error; reason?: "iterations_exhausted" };
 
 import type { DiffLine } from "../utils/diff.js";
 import { computeEditDiff, computeDiff } from "../utils/diff.js";
@@ -61,17 +61,31 @@ interface LoopParams {
   permissionMode?: PermissionMode;
   /** Host's background permission, independent of generic session Always. */
   backgroundPermissionMode?: PermissionMode;
-  maxIterations?: number;
   allowedTools?: string[];
   hooks?: import("../config/config.js").AgavHooks;
   /**
-   * Drains /steer directives queued mid-turn. Only the main conversation's
-   * loop supplies this: subagents, skills, and agents run their own loops and
-   * must never consume directives addressed to the primary agent. When unset,
-   * the loop simply never receives mid-turn steers.
+   * Drains /steer directives queued mid-turn. The main conversation drains
+   * its queue; subagents supply independent broadcast queues so no child
+   * consumes another recipient's directives. When unset, the loop receives
+   * no mid-turn steers.
    */
   drainSteers?: () => string[];
+  iterationsBudget?: { remaining: number, total: number }
+  /** Explicit skill dispatch shares the normal tool permission/history path. */
+  initialToolCall?: { name: "activate_skill"; input: Record<string, unknown> };
+  /**
+   * Asks the user for a model's context window when the provider has
+   * confirmed it cannot report one — an OpenRouter stealth model being the
+   * motivating case, deliberately excluded from the public catalog. Resolve
+   * with a positive token count, or `undefined`/0 to fall back to
+   * `DEFAULT_UNKNOWN_CONTEXT_WINDOW`. Omitted entirely in non-interactive
+   * contexts (subagents, skills, pipe mode), which just take the default.
+   */
+  requestManualContextWindow?: (model: string, signal?: AbortSignal) => Promise<number | undefined>;
 }
+
+/** Assumed window for a model no catalog can report and the user declined to specify. */
+export const DEFAULT_UNKNOWN_CONTEXT_WINDOW = 200_000;
 
 // Tools that never need confirmation because they cannot modify the working
 // tree or reach outside the session. `save_memory` and `update_plan` write only
@@ -97,9 +111,9 @@ function isAllowed(
 
   const primaryInput =
     toolName === "run_command" ? String(input.command ?? "")
-    : toolName === "edit_file" || toolName === "write_file" || toolName === "read_file"
-      ? String(input.path ?? "")
-      : "";
+      : toolName === "edit_file" || toolName === "write_file" || toolName === "read_file"
+        ? String(input.path ?? "")
+        : "";
 
   for (const rule of allowedTools) {
     if (!rule.includes(":")) {
@@ -136,7 +150,13 @@ export async function* runAgentLoop(
   let lastShellFailed = false;
   let verifyReprompts = 0;
   const MAX_VERIFY_REPROMPTS = 2;
-  const maxIterations = params.maxIterations ?? 100;
+
+  if (!params.iterationsBudget) {
+      throw new Error("iterationsBudget is required");
+  }
+  const iterationsBudget = params.iterationsBudget;
+
+
   // Calls the user has already refused, keyed by name + arguments. Scoped to
   // the full loop invocation (not per-turn) so the model cannot retry a denied
   // call later in the same session. This is intentionally conservative: if the
@@ -171,12 +191,12 @@ export async function* runAgentLoop(
       })) {
         if (event.type === "text_delta") result += event.text;
         if (event.type === "usage") {
-          pendingSummarizeUsage = {
-            inputTokens: event.inputTokens,
-            outputTokens: event.outputTokens,
-            cacheReadTokens: event.cacheReadTokens ?? 0,
-            cacheWriteTokens: event.cacheWriteTokens ?? 0,
-          };
+          // Providers may split input/cache and output usage across events.
+          pendingSummarizeUsage ??= { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+          pendingSummarizeUsage["inputTokens"]! += event.inputTokens;
+          pendingSummarizeUsage["outputTokens"]! += event.outputTokens;
+          pendingSummarizeUsage["cacheReadTokens"]! += event.cacheReadTokens ?? 0;
+          pendingSummarizeUsage["cacheWriteTokens"]! += event.cacheWriteTokens ?? 0;
         }
       }
     } catch {
@@ -188,15 +208,71 @@ export async function* runAgentLoop(
   // Ask the provider for the window it will actually enforce before the first
   // compaction check runs. Providers cache this, so it costs at most one probe
   // per model; a failure just leaves the name-based estimate in place.
-  if (provider.getContextWindow) {
+  //
+  // Optional chaining throughout: lightweight conversation stand-ins (unit
+  // tests driving runAgentLoop directly) only implement the subset of
+  // ConversationState they exercise, so these calls must tolerate a mock that
+  // predates this feature rather than requiring every call site to update.
+  if (signal?.aborted) {
+    yield { type: "error", error: new Error("Aborted") };
+    return;
+  }
+  const manualOverride = conversation.getManualContextWindow?.(model);
+  if (manualOverride !== undefined) {
+    conversation.setContextWindow(manualOverride);
+  } else if (provider.getContextWindow) {
+    let resolved: number | undefined;
     try {
-      conversation.setContextWindow(await provider.getContextWindow(model));
+      resolved = await provider.getContextWindow(model, signal);
     } catch {
       // Non-fatal — fall back to the name-based limits.
     }
-  }
 
-  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    if (signal?.aborted) {
+      yield { type: "error", error: new Error("Aborted") };
+      return;
+    }
+
+    const assumed = conversation.hasAssumedContextWindow?.(model);
+    if (resolved === undefined && (assumed || provider.isContextWindowConfirmedMissing?.(model))) {
+      // Ask only after a confirmed catalog miss. A previous automatic default
+      // suppresses repeat prompts, but never skips the provider's TTL refresh.
+      let manual: number | undefined;
+      if (!assumed && params.requestManualContextWindow) {
+        try {
+          manual = await params.requestManualContextWindow(model, signal);
+        } catch {
+          manual = undefined;
+        }
+      }
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
+      if (manual && manual > 0) {
+        resolved = manual;
+        conversation.setManualContextWindow?.(model, manual);
+      } else {
+        resolved = DEFAULT_UNKNOWN_CONTEXT_WINDOW;
+        conversation.setAssumedContextWindow?.(model);
+      }
+    }
+
+    conversation.setContextWindow(resolved);
+  }
+  conversation.setSystemPrompt?.(systemPrompt ?? "");
+  const maxIterations = Math.min(iterationsBudget.total, iterationsBudget.remaining);
+  const initialToolCall = params.initialToolCall;
+  for (let iteration = initialToolCall ? -1 : 0; iteration < maxIterations && iterationsBudget.remaining > 0; iteration++) {
+    const seededCall = iteration === -1 ? initialToolCall : undefined;
+    if (seededCall && signal?.aborted) {
+      yield { type: "error", error: new Error("Aborted") };
+      return;
+    }
+    // A deterministic dispatch is not a model request and spends no iteration.
+    if (!seededCall) {
+      iterationsBudget.remaining--
+    }
     // Auto-compact if conversation is getting long
     const { compacted, droppedCount } = await conversation.compactIfNeeded(false, summarize);
     if (compacted) {
@@ -208,8 +284,8 @@ export async function* runAgentLoop(
     }
 
     // Graceful shutdown: on the last step, ask for a summary instead of hard-erroring
-    const isLastStep = iteration === maxIterations - 1;
-    if (isLastStep) {
+    const isLastStep = iterationsBudget.remaining <= 0 || iteration === maxIterations - 1;
+    if (isLastStep && !seededCall) {
       conversation.addInternalUserMessage(MAX_STEPS_PROMPT);
     }
 
@@ -220,8 +296,17 @@ export async function* runAgentLoop(
     >();
     let stopReason = "";
 
+    const dispatchContext = seededCall ? conversation.getMessages() : undefined;
+    if (seededCall) {
+      const id = `skill-${crypto.randomUUID()}`;
+      const argsJson = JSON.stringify(seededCall.input);
+      toolCalls.set(id, { name: seededCall.name, argsJson });
+      yield { type: "tool_call_start", toolName: seededCall.name, toolCallId: id };
+      yield { type: "tool_call_input_delta", toolCallId: id, argsJson };
+    }
+
     try {
-      for await (const event of provider.stream({
+      if (!seededCall) for await (const event of provider.stream({
         model,
         messages: conversation.getMessages(),
         tools: toolRegistry.getSchemas(),
@@ -334,12 +419,23 @@ export async function* runAgentLoop(
 
     // No tool calls — final response (unless edits are unverified or verification failed)
     if (toolCalls.size === 0) {
+      // A provider can abort while exhausting its iterator without another event.
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
       const needsVerify = madeEdits && !ranShellAfterEdit;
       const verifyFailed = madeEdits && ranShellAfterEdit && lastShellFailed;
       if ((needsVerify || verifyFailed) && verifyReprompts < MAX_VERIFY_REPROMPTS) {
         verifyReprompts++;
         conversation.addInternalUserMessage(needsVerify ? NEEDS_VERIFY_PROMPT : VERIFY_FAILED_PROMPT);
         continue;
+      }
+      yield { type: "assistant_message_complete", text: textAccum };
+      // Yielding hands control back to the caller, which may cancel the turn.
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
       }
       // A directive queued after the final tool round would otherwise sit in the
       // queue forever — this is the loop's last exit before max-iterations.
@@ -349,9 +445,12 @@ export async function* runAgentLoop(
       for (const steer of lateSteers) {
         conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
       }
-      yield { type: "assistant_message_complete", text: textAccum };
       if (lateSteers.length > 0) {
         yield { type: "steer_applied", directives: lateSteers };
+      }
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
       }
       yield { type: "turn_complete" };
       return;
@@ -365,6 +464,7 @@ export async function* runAgentLoop(
     const toolResults: ContentBlock[] = [];
 
     for (const [id, call] of toolCalls) {
+      if (signal?.aborted) break;
       const input = parsedInputs.get(id) ?? { raw: call.argsJson };
       // Hard block: if an explicit allowlist is set, reject tools not on it
       if (params.allowedTools && params.allowedTools.length > 0
@@ -429,10 +529,14 @@ export async function* runAgentLoop(
               // New file — no diff preview
             }
           }
-        } catch {}
+        } catch { }
 
+        if (signal?.aborted) break;
         yield { type: "tool_confirmation_request", toolName: call.name, toolCallId: id, input, diffLines: previewDiff };
+        // Yielding also hands control to the UI, which may cancel the turn.
+        if (signal?.aborted) break;
         const choice = await confirmTool(call.name, input, previewDiff, tool?.mcpServerName);
+        if (signal?.aborted) break;
         if (choice === "always") {
           permissionMode = "auto-accept";
         }
@@ -445,6 +549,19 @@ export async function* runAgentLoop(
         }
       }
       approved.set(id, { input });
+    }
+
+    if (signal?.aborted) {
+      // Preserve every tool_use/result pair, including approved-but-not-run calls.
+      const answered = new Set(toolResults.map(result => result.toolCallId));
+      for (const [id, call] of toolCalls) {
+        if (answered.has(id)) continue;
+        toolResults.push({ type: "tool_result", toolCallId: id, toolResult: "Tool cancelled.", isError: true });
+        yield { type: "tool_result", toolName: call.name, toolCallId: id, output: "Tool cancelled.", isError: true };
+      }
+      conversation.addToolResults(toolResults);
+      yield { type: "error", error: new Error("Aborted") };
+      return;
     }
 
     // Phase 2: execute approved tools in parallel
@@ -460,6 +577,7 @@ export async function* runAgentLoop(
         entries.map(async (entry) => {
           const result = await toolRegistry.execute(entry.name, entry.input, {
             signal,
+            ...(dispatchContext ? { conversation: dispatchContext, systemPrompt, permissionMode } : {}),
             backgroundPolicy: entry.name === "run_background_job" ? {
               // Background consent is exact-spec: generic Always/allowedTools
               // choices must not widen an ask-mode background grant.
@@ -502,12 +620,14 @@ export async function* runAgentLoop(
       for (const { id, name, input, result: initialResult } of execResults) {
         let result = initialResult;
         if (name === "run_tests") {
-          hasTestRun = true;
-          if (result.isError) hasTestFailure = true;
+          if (result.verification?.failureKind !== "runner_unavailable") {
+            hasTestRun = true;
+            if (result.isError) hasTestFailure = true;
+          }
         }
         const hookDef = getHookForTool(name, input, params.hooks);
-        if (hookDef && !result.isError) {
-          const hookOutput = await runHook(hookDef.hook, hookDef.vars);
+        if (hookDef && !result.isError && !signal?.aborted) {
+          const hookOutput = await runHook(hookDef.hook, hookDef.vars, signal);
           if (hookOutput) {
             const hookText = `\n\n[Hook output]: ${hookOutput}`;
             result = await boundToolResult({
@@ -531,6 +651,12 @@ export async function* runAgentLoop(
     }
 
     conversation.addToolResults(toolResults);
+    // Tool execution and result yields may cancel the turn, even when a child
+    // has consumed the last shared iteration. Keep history paired before exiting.
+    if (signal?.aborted) {
+      yield { type: "error", error: new Error("Aborted") };
+      return;
+    }
 
     // Deliver /steer directives typed while this turn was running. This is the
     // safe point: tool results have just been appended, so a user message here
@@ -555,17 +681,25 @@ export async function* runAgentLoop(
     }
   }
 
+  // Budget exhaustion must not turn cancellation into normal completion.
+  if (signal?.aborted) {
+    yield { type: "error", error: new Error("Aborted") };
+    return;
+  }
+
   // Deliver any /steer directives queued during the final iteration, then stop.
   const finalSteers = collectSteers();
   for (const steer of finalSteers) {
     conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
   }
-  yield {
-    type: "assistant_message_complete",
-    text: "[Agent reached maximum iterations]",
-  };
   if (finalSteers.length > 0) {
     yield { type: "steer_applied", directives: finalSteers };
   }
-  yield { type: "turn_complete" };
+  // Exhaustion is incomplete work, not an assistant answer or successful turn.
+  // Reuse the error path so every loop consumer terminates with error status.
+  yield {
+    type: "error",
+    reason: "iterations_exhausted",
+    error: new Error("Agent reached maximum iterations"),
+  };
 }

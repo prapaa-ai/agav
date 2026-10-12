@@ -33,8 +33,16 @@ export function wrapToWidth(content: string, width: number): string[] {
   const lines: string[] = [];
 
   for (const paragraph of content.split(/\r\n|\r|\n/)) {
+    // Keep indentation attached to the first word (or as the whole blank
+    // paragraph), so empty split tokens cannot discard it. Overlong indentation
+    // goes through the same column-aware cutting as an overlong word.
+    const indentation = paragraph.match(/^ */)![0];
+    // Only the single space before the next word is a wrap separator. Keep
+    // other spaces in the tokens, including trailing whitespace on full rows.
+    const words = paragraph.slice(indentation.length).split(/ (?=[^ ])/);
+    words[0] = indentation + words[0]!;
     let current = "";
-    for (const word of paragraph.split(" ")) {
+    for (const word of words) {
       const candidate = current ? `${current} ${word}` : word;
       if (visualLen(candidate) <= usable) {
         current = candidate;

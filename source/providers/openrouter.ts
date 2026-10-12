@@ -48,11 +48,26 @@ export class OpenRouterProvider extends OpenAIProvider {
       }
       if (!this.contextWindows.has(model)) {
         // Retry absent models after the TTL in case OpenRouter's catalog changes.
+        // A cache entry here — as opposed to no entry at all — is what lets
+        // isContextWindowConfirmedMissing tell "the catalog was fetched and
+        // genuinely does not list this model" (e.g. a stealth model) apart from
+        // a transient fetch failure below, which leaves no entry behind.
         this.contextWindows.set(model, { value: undefined, expiresAt });
       }
       return this.contextWindows.get(model)?.value;
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * True once a successful catalog fetch has confirmed `model` is absent —
+   * OpenRouter deliberately excludes stealth models from `/models`, so this is
+   * the only way to tell "genuinely unlisted" apart from "fetch failed" and
+   * decide whether asking the user for a manual context window is worthwhile.
+   */
+  isContextWindowConfirmedMissing(model: string): boolean {
+    const cached = this.contextWindows.get(model);
+    return cached !== undefined && cached.expiresAt > Date.now() && cached.value === undefined;
   }
 }

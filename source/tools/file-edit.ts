@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import { computeEditDiff } from "../utils/diff.js";
 import { pushUndo } from "../utils/undo.js";
+import { withFileMutationLock } from "../utils/file-mutation-lock.js";
 
 export const editFileTool: ToolDefinition = {
   schema: {
@@ -31,7 +32,7 @@ export const editFileTool: ToolDefinition = {
     },
   },
 
-  async execute(input): Promise<ToolResult> {
+  async execute(input, context): Promise<ToolResult> {
     const filePath = resolve(String(input.path));
     const oldString = String(input.old_string);
     const newString = String(input.new_string);
@@ -41,33 +42,35 @@ export const editFileTool: ToolDefinition = {
     }
 
     try {
-      const content = await readFile(filePath, "utf-8");
-      const occurrences = content.split(oldString).length - 1;
+      return await withFileMutationLock(filePath, async (): Promise<ToolResult> => {
+        const content = await readFile(filePath, "utf-8");
+        const occurrences = content.split(oldString).length - 1;
 
-      if (occurrences === 0) {
+        if (occurrences === 0) {
+          return {
+            output: `String not found in ${filePath}. Make sure old_string matches exactly, including whitespace.`,
+            isError: true,
+          };
+        }
+
+        if (occurrences > 1) {
+          return {
+            output: `Found ${occurrences} occurrences of old_string in ${filePath}. Provide more surrounding context to make it unique.`,
+            isError: true,
+          };
+        }
+
+        const diffLines = computeEditDiff(content, oldString, newString);
+        const updated = content.replace(oldString, newString);
+        await pushUndo(filePath, "edit_file");
+        await writeFile(filePath, updated, "utf-8");
+
         return {
-          output: `String not found in ${filePath}. Make sure old_string matches exactly, including whitespace.`,
-          isError: true,
+          output: filePath,
+          isError: false,
+          diffLines,
         };
-      }
-
-      if (occurrences > 1) {
-        return {
-          output: `Found ${occurrences} occurrences of old_string in ${filePath}. Provide more surrounding context to make it unique.`,
-          isError: true,
-        };
-      }
-
-      const diffLines = computeEditDiff(content, oldString, newString);
-      const updated = content.replace(oldString, newString);
-      await pushUndo(filePath, "edit_file");
-      await writeFile(filePath, updated, "utf-8");
-
-      return {
-        output: filePath,
-        isError: false,
-        diffLines,
-      };
+      }, context?.signal);
     } catch (err) {
       return {
         output: `Failed to edit ${filePath}: ${err instanceof Error ? err.message : String(err)}`,

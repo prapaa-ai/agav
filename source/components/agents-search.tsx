@@ -43,7 +43,7 @@ export function useSearch() {
         setSearchQuery((q) => q.slice(0, -1));
         return true;
       }
-      if (input && input.length === 1) {
+      if (input && !key.ctrl && !key.meta) {
         setSearchQuery((q) => q + input);
         return true;
       }
@@ -60,7 +60,13 @@ export function useSearch() {
     return false;
   }
 
-  return { searchQuery, searching, handleSearchKey };
+  function handleSearchPaste(text: string): boolean {
+    if (!searching) return false;
+    setSearchQuery((q) => q + text);
+    return true;
+  }
+
+  return { searchQuery, searching, handleSearchKey, handleSearchPaste };
 }
 
 export function SearchBar({

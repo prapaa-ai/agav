@@ -10,6 +10,8 @@ export interface ToolResult {
   /** Structured test evidence; absent metadata is not verification. */
   verification?: {
     status: "passed" | "failed" | "inconclusive";
+    /** Explicit runner startup failure, not evidence of a source defect. */
+    failureKind?: "runner_unavailable";
     passed: number;
     failed: number;
     errors: number;
@@ -23,6 +25,10 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** Trusted host policy; never populated from model arguments. */
   backgroundPolicy?: import("../background-jobs/types.js").SessionPolicySnapshot;
+  /** Parent context for an explicitly dispatched skill, separate from arguments. */
+  conversation?: import("../providers/types.js").Message[];
+  systemPrompt?: string;
+  permissionMode?: import("../config/config.js").PermissionMode;
 }
 
 export interface ToolDefinition {

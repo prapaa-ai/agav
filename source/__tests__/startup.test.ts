@@ -7,6 +7,7 @@ import {
   resolveStartupSelection,
   selectConfiguredProvider,
 } from "../config/startup.js";
+import { parseArgs } from "../main.js";
 
 const base: AgavConfig = {
   provider: "anthropic",
@@ -22,6 +23,210 @@ vi.mock("../config/history.js", () => ({
   listSessions: vi.fn(),
 }));
 
+describe("parseArgs", () => {
+  it("parses --cwd with space separation", () => {
+    const flags = parseArgs(["--cwd", "/fake/path"]);
+    expect(flags.cwd).toBe("/fake/path");
+  });
+
+  it("parses --cwd= with equals separation", () => {
+    const flags = parseArgs(["--cwd=/fake/path"]);
+    expect(flags.cwd).toBe("/fake/path");
+  });
+
+  it("leaves flags.cwd undefined if --cwd is omitted", () => {
+    const flags = parseArgs(["--help"]);
+    expect(flags.cwd).toBeUndefined();
+  });
+
+  it("recognizes subcommands even when flags precede them", () => {
+    const runFlags = parseArgs(["--cwd", "/repo", "run"]);
+    expect(runFlags.run).toBe(true);
+
+    const agentFlags = parseArgs(["--cwd=/repo", "agents"]);
+    expect(agentFlags.agents).toBe(true);
+
+    const updateFlags = parseArgs(["--cwd", "/repo", "update"]);
+    expect(updateFlags.update).toBe(true);
+  });
+
+  it("treats missing or empty --cwd values as process exits", () => {
+    const mockExit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const mockStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    
+    parseArgs(["--cwd"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--cwd requires a directory argument"));
+    
+    mockExit.mockClear();
+    parseArgs(["--cwd="]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+
+    mockExit.mockRestore();
+    mockStderr.mockRestore();
+  });
+
+  it("does not consume another option flag as the --cwd argument", () => {
+    const mockExit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const mockStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    
+    parseArgs(["--cwd", "--help"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--cwd requires a directory argument"));
+
+    mockExit.mockRestore();
+    mockStderr.mockRestore();
+  });
+
+  it("collects positionals accurately even when global flags are interspersed", () => {
+    const flags = parseArgs(["skills", "--cwd", "/repo", "remove", "target"]);
+    expect(flags.skills).toBe(true);
+    expect(flags.skillsCommand).toBe("remove");
+    expect(flags._).toEqual(["remove", "target"]);
+  });
+
+  it("safely ignores global flags masquerading as subcommand arguments", () => {
+    // Tests: agav --cwd skills skills remove target
+    const flags = parseArgs(["--cwd", "skills", "skills", "remove", "target"]);
+    expect(flags.cwd).toBe("skills");
+    expect(flags.skills).toBe(true);
+    expect(flags.skillsCommand).toBe("remove");
+    expect(flags._).toEqual(["remove", "target"]);
+  });
+
+  it("safely passes unknown flags to the leftover array if a subcommand is active", () => {
+    const flags = parseArgs(["agents", "--alias", "foo", "install", "url"]);
+    expect(flags.agents).toBe(true);
+    expect(flags._).toEqual(["--alias", "foo", "install", "url"]);
+    expect(flags.agentsCommand).toBe("--alias"); // The action verb is unfortunately seen as the flag, working as intended for POSIX.
+  });
+
+  it("stops flag parsing completely after the -- separator", () => {
+    const flags = parseArgs(["skills", "remove", "--", "--version"]);
+    expect(flags.skills).toBe(true);
+    expect(flags.version).toBeUndefined(); // It did NOT trigger global --version!
+    expect(flags._).toEqual(["remove", "--version"]); // The subcommand receives --version safely.
+  });
+
+  it("joins multiple positionals for run and print, allowing unquoted usage", () => {
+    const flags = parseArgs(["run", "explain", "this", "file"]);
+    expect(flags.run).toBe(true);
+    expect(flags.runPrompt).toBe("explain this file");
+
+    const flags2 = parseArgs(["--print", "hello", "world"]);
+    expect(flags2.print).toBe(true);
+    expect(flags2.printPrompt).toBe("hello world");
+  });
+
+  describe.each(["run", "--print", "-P"])("%s option separator", (command) => {
+    it.each([
+      { tokens: ["explain", "--", "version"], prompt: "explain -- version" },
+      { tokens: ["--", "explain", "--", "--", "version", "--"], prompt: "-- explain -- -- version --" },
+      { tokens: ["explain", "--"], prompt: "explain --" },
+      { tokens: ["--"], prompt: "--" },
+      { tokens: ["--version", "--help", "--cwd", "--model=literal", "--unknown", "-y"], prompt: "--version --help --cwd --model=literal --unknown -y" },
+      { tokens: ["run", "update", "agents", "skills", "--print"], prompt: "run update agents skills --print" },
+    ])("preserves literal prompt: $prompt", ({ tokens, prompt }) => {
+      const flags = parseArgs([command, "--", ...tokens]);
+      expect(flags).toEqual(command === "run"
+        ? { _: tokens, run: true, runPrompt: prompt }
+        : { _: tokens, print: true, printPrompt: prompt });
+    });
+
+    it("consumes the initial separator without adding prompt content", () => {
+      const flags = parseArgs([command, "--"]);
+      expect(flags).toEqual(command === "run" ? { _: [], run: true } : { _: [], print: true });
+    });
+
+    it("still parses normal options before the separator", () => {
+      const flags = parseArgs(["--cwd", "/repo", command, "--model=selected", "--stream", "--", "explain", "--version"]);
+      expect(flags).toEqual({
+        _: ["explain", "--version"],
+        cwd: "/repo",
+        model: "selected",
+        stream: true,
+        ...(command === "run"
+          ? { run: true, runPrompt: "explain --version" }
+          : { print: true, printPrompt: "explain --version" }),
+      });
+    });
+  });
+
+  it("rejects extra positionals for update", () => {
+    const mockExit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const mockStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    
+    parseArgs(["update", "0.2.4", "extra"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("agav update accepts at most 1 argument"));
+
+    mockExit.mockRestore();
+    mockStderr.mockRestore();
+  });
+
+  it("rejects leftover positionals if no command accepts them", () => {
+    const mockExit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const mockStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    
+    parseArgs(["hello"]); // "hello" is unhandled
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("unexpected arguments: hello"));
+
+    mockExit.mockRestore();
+    mockStderr.mockRestore();
+  });
+});
+
+describe("subcommand strict argument parsing", () => {
+  it("rejects unknown flags for skills clear", async () => {
+    const { runSkillsCommand } = await import("../cli/skills-cli.js");
+    const mockStderr = vi.spyOn(console, "error").mockImplementation(() => true);
+    
+    const code = await runSkillsCommand("clear", ["--bogus"]);
+    expect(code).toBe(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("Unknown option '--bogus'"));
+    
+    mockStderr.mockRestore();
+  });
+
+  it("rejects misspelled options for agents remove", async () => {
+    const { runAgentsCommand } = await import("../cli/agents-cli.js");
+    const mockStderr = vi.spyOn(console, "error").mockImplementation(() => true);
+    
+    const code = await runAgentsCommand("remove", ["target", "--destinatoin", "project"]);
+    expect(code).toBe(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("Unknown option '--destinatoin'"));
+    
+    mockStderr.mockRestore();
+  });
+
+  it("rejects missing values for valid agent options", async () => {
+    const { runAgentsCommand } = await import("../cli/agents-cli.js");
+    const mockStderr = vi.spyOn(console, "error").mockImplementation(() => true);
+    
+    const code = await runAgentsCommand("remove", ["target", "--destination"]);
+    expect(code).toBe(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--destination must be 'global' or 'project'"));
+    
+    mockStderr.mockRestore();
+  });
+
+  it("joins unquoted paths for skill installation", async () => {
+    // This isn't an error case, we just want to ensure it joins spaces correctly without crashing
+    const { runSkillsCommand } = await import("../cli/skills-cli.js");
+    const mockStderr = vi.spyOn(console, "error").mockImplementation(() => true);
+    const mockLog = vi.spyOn(console, "log").mockImplementation(() => true);
+    
+    // We expect it to try installing from "C:/My Skills/Tool" and fail gracefully 
+    // at the file-system level, NOT at the argument-parsing level.
+    const code = await runSkillsCommand("add", ["C:/My", "Skills/Tool"]);
+    // The installer should log the joined path
+    expect(mockLog).toHaveBeenCalledWith(expect.stringContaining("C:/My Skills/Tool"));
+    
+    mockStderr.mockRestore();
+    mockLog.mockRestore();
+  });
+});
 
 describe("startup provider and model resolution", () => {
   it("keeps configured selection for plain startup", async () => {

@@ -4,7 +4,7 @@ import { clearCommand, newCommand } from "./clear.js"
 import { nameCommand } from "./name.js"
 import { modelCommand } from "./model.js"
 import { exitCommand } from "./exit.js"
-import { resumeCommand } from "./history.js"
+import { resumeCommand, historyCommand } from "./history.js"
 import { exportCommand } from "./export.js"
 import { watchCommand } from "./watch.js"
 import { branchCommand } from "./branch.js"
@@ -14,7 +14,7 @@ import { fastCommand, deepCommand } from "./model-routing.js"
 import { undoCommand } from "./undo.js"
 import { planCommand } from "./plan.js"
 import { debugCommand } from "./debug.js"
-import { searchCommand } from "./search-history.js"
+import { searchCommand, searchHistoryCommand } from "./search-history.js"
 import { effortCommand } from "./effort.js"
 import { loopCommand } from "./loop.js"
 import { scheduleCommand } from "./schedule.js"
@@ -26,6 +26,7 @@ import { contextCommand } from "./context.js"
 import { agentsCommand } from "./agents.js"
 import { agentLockCommand } from "./agent-lock.js"
 import { openCommand } from "./open.js"
+import { copyCommand } from "./copy.js"
 export { MID_TURN_SAFE_COMMANDS, isCommandAllowedMidTurn } from "./mid-turn.js"
 
 /** Store slash commands and dispatch raw user input to the matching handler. */
@@ -43,6 +44,8 @@ export class CommandRegistry {
     this.register(effortCommand)
     this.register(exitCommand)
     this.register(resumeCommand)
+    this.register(historyCommand)
+    this.register(searchHistoryCommand)
     this.register(exportCommand)
     this.register(watchCommand)
     this.register(branchCommand)
@@ -66,6 +69,7 @@ export class CommandRegistry {
     this.register(agentsCommand)
     this.register(agentLockCommand)
     this.register(openCommand)
+    this.register(copyCommand)
   }
 
   /** Add a command to the registry by name. */

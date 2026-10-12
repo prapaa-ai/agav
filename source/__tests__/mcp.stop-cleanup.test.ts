@@ -37,7 +37,7 @@ describe("MCPClient.stop() cleanup", () => {
       expect(send).toHaveBeenCalledTimes(1);
       const next = client.callTool("fast", {});
       internal.pending.values().next().value.resolve({ content: [{ type: "text", text: "ok" }] });
-      await expect(next).resolves.toBe("ok");
+      await expect(next).resolves.toEqual({ output: "ok", isError: false });
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();

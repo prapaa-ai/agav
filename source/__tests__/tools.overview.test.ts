@@ -34,6 +34,38 @@ async function nestedFixture() {
   await file("child/deep/deeper/deeper.ts", "export type DeeperSymbol = string;");
 }
 
+describe("overview paths", () => {
+  it.each([0, 1, undefined])("matches relative output for an external absolute directory at depth %s", async (depth) => {
+    await nestedFixture();
+    const relativeResult = await overviewTool.execute({ path, depth });
+    expect(relativeResult.isError).toBe(false);
+    expect(relativeResult.output).toContain("rootSymbol()");
+    expect(await overviewTool.execute({ path: directory, depth })).toEqual(relativeResult);
+  });
+
+  it("resolves omitted, dot, and relative paths from the session working directory", async () => {
+    await file("root.ts");
+    await file("child/child.ts");
+    const originalDirectory = process.cwd();
+    try {
+      process.chdir(directory);
+      const expected = { output: "1 files, 1 symbols\n\n./\n  root.ts — example()", isError: false };
+      expect(await overviewTool.execute({ depth: 0 })).toEqual(expected);
+      expect(await overviewTool.execute({ path: ".", depth: 0 })).toEqual(expected);
+      expect(await overviewTool.execute({ path: "child", depth: 0 })).toEqual({
+        output: "1 files, 1 symbols\n\n./\n  child.ts — example()", isError: false,
+      });
+    } finally {
+      process.chdir(originalDirectory);
+    }
+  });
+
+  it("preserves the supplied absolute path in missing directory errors", async () => {
+    const missing = join(directory, "missing");
+    expect(await overviewTool.execute({ path: missing })).toEqual({ output: `Directory not found: ${missing}`, isError: true });
+  });
+});
+
 describe("overview depth", () => {
   it("reads root files only at depth 0, without traversing children", async () => {
     await nestedFixture();

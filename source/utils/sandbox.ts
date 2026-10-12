@@ -49,6 +49,32 @@ function canExec(cmd: string): boolean {
   }
 }
 
+let installedBackends: SandboxBackend[] | undefined;
+
+/** Installed override executables; discovery is cached, authorization is not. */
+export function getAvailableSandboxOverrides(): SandboxBackend[] {
+  if (!installedBackends) {
+    installedBackends = [];
+    if (platform() !== "win32") {
+      if (canExec("sandbox-exec")) installedBackends.push("seatbelt");
+      if (canExec("bwrap")) installedBackends.push("bubblewrap");
+    }
+    let dockerInstalled = false;
+    if (platform() === "win32") {
+      try {
+        execFileSync("docker", ["--version"], { stdio: "pipe", timeout: 3000 });
+        dockerInstalled = true;
+      } catch { /* Docker is optional. */ }
+    } else {
+      dockerInstalled = canExec("docker");
+    }
+    if (dockerInstalled) installedBackends.push("docker");
+  }
+  return process.env["AGAV_NO_SANDBOX"] === "1"
+    ? [...installedBackends, "none"]
+    : [...installedBackends];
+}
+
 export function detectSandboxBackend(): SandboxBackend {
   // Always respect the env var — check every call, not just first
   if (process.env["AGAV_NO_SANDBOX"] === "1") {
@@ -431,6 +457,7 @@ function runUnsandboxed(
   maxBuffer: number,
   onOutput?: OutputCallback,
   signal?: AbortSignal,
+  inheritEnv = false,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const isWindows = platform() === "win32";
   const shell = isWindows ? "cmd.exe" : "/bin/sh";
@@ -440,7 +467,7 @@ function runUnsandboxed(
     executeProcess(
       shell,
       shellArgs,
-      { timeout, maxBuffer, cwd, env: filterEnv(), windowsVerbatimArguments: isWindows },
+      { timeout, maxBuffer, cwd, env: inheritEnv ? undefined : filterEnv(), windowsVerbatimArguments: isWindows },
       onOutput,
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });
@@ -484,6 +511,10 @@ export interface SandboxOptions {
   timeout: number;
   maxBuffer: number;
   forceBackend?: SandboxBackend;
+  /** Trusted direct user shell only; never populate from model input. */
+  allowUnsandboxed?: boolean;
+  /** Direct user shell inheritance; only honored with forceBackend: "none". */
+  inheritEnv?: boolean;
   signal?: AbortSignal;
   /** Streams raw output in observed arrival order; stdout/stderr results are empty. */
   onOutput?: OutputCallback;
@@ -495,6 +526,14 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
   error: Error | null;
   backend: SandboxBackend;
 }> {
+  // Runtime validation is required: tool inputs are not constrained by TS types.
+  if (opts.forceBackend !== undefined &&
+      !["seatbelt", "bubblewrap", "docker", "none"].includes(opts.forceBackend)) {
+    throw new Error("Invalid sandbox backend. Use seatbelt, bubblewrap, docker, or none.");
+  }
+  if (opts.forceBackend === "none" && !opts.allowUnsandboxed && process.env["AGAV_NO_SANDBOX"] !== "1") {
+    throw new Error("Sandbox bypass denied. Only the user can enable unsandboxed overrides by starting Agav with AGAV_NO_SANDBOX=1. Omit sandbox to use the default backend.");
+  }
   const backend = opts.forceBackend ?? detectSandboxBackend();
   if (opts.signal?.aborted) {
     return { stdout: "", stderr: "", error: new Error("Command cancelled."), backend };
@@ -505,26 +544,18 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
   switch (backend) {
     case "seatbelt":
       result = await runSeatbelt(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
-      if (result.error && /ENOENT|sandbox-exec.*not found/i.test(result.error.message ?? "")) {
-        detectedBackend = "none";
-        result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
-        return { ...result, backend: "none" };
-      }
       break;
     case "bubblewrap":
       result = await runBubblewrap(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
-      if (result.error && /ENOENT|bwrap.*not found/i.test(result.error.message ?? "")) {
-        detectedBackend = "none";
-        result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
-        return { ...result, backend: "none" };
-      }
       break;
     case "docker":
       result = await runDocker(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
       break;
-    default:
-      result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
+    case "none":
+      result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal, opts.allowUnsandboxed && opts.forceBackend === "none" && opts.inheritEnv);
       break;
+    default:
+      throw new Error("Invalid sandbox backend.");
   }
 
   return { ...result, backend };

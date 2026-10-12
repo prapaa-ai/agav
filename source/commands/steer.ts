@@ -10,8 +10,24 @@ let activeSteers: string[] = [];
  */
 let steerQueue: string[] = [];
 
+const childSteerQueues = new Set<string[]>();
+
+/** Independent delivery queue: children never consume the parent's directives. */
+export function createSteerQueue(): { drain: () => string[]; dispose: () => void } {
+  const queue: string[] = [];
+  childSteerQueues.add(queue);
+  return {
+    drain: () => queue.splice(0),
+    dispose: () => {
+      childSteerQueues.delete(queue);
+      queue.length = 0;
+    },
+  };
+}
+
 export function queueSteer(directive: string): void {
   steerQueue.push(directive);
+  for (const queue of childSteerQueues) queue.push(directive);
 }
 
 /** Return queued mid-turn directives in arrival order and empty the queue. */
@@ -29,6 +45,7 @@ export function getActiveSteers(): string[] {
 export function clearSteers(): void {
   activeSteers = [];
   steerQueue = [];
+  for (const queue of childSteerQueues) queue.length = 0;
 }
 
 export function formatSteersForPrompt(): string {

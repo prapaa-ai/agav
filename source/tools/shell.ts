@@ -4,11 +4,13 @@ import type { ToolDefinition, ToolResult } from "./types.js";
 import {
   runInSandbox,
   detectSandboxBackend,
+  getAvailableSandboxOverrides,
   isDestructiveCommand,
   type SandboxBackend,
 } from "../utils/sandbox.js";
 
 const DEFAULT_TIMEOUT = 30_000;
+const MAX_TIMEOUT = 120_000;
 const MAX_OUTPUT = 40_000;
 const PREVIEW_HALF = 19_000;
 const MAX_LOG_BYTES = 16 * 1024 * 1024;
@@ -128,9 +130,9 @@ export const shellTool: ToolDefinition = {
   schema: {
     name: "run_command",
     description:
-      "Execute a shell command and return its stdout and stderr. Has a 30 second timeout. " +
-      "Commands run inside an OS-level sandbox (macOS Seatbelt / Linux Bubblewrap) by default. " +
-      "Docker sandbox available as an override.",
+      "Execute a shell command and return its stdout and stderr. Defaults to a 30 second timeout; timeout_ms can extend it to 120 seconds for long-running commands. " +
+      "Uses the available OS-level sandbox by default (unsandboxed if unavailable). " +
+      "Docker sandbox available as an override. Unsandboxed overrides require user-enabled AGAV_NO_SANDBOX=1.",
     inputSchema: {
       type: "object",
       properties: {
@@ -138,9 +140,17 @@ export const shellTool: ToolDefinition = {
           type: "string",
           description: "The shell command to execute",
         },
+        timeout_ms: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_TIMEOUT,
+          default: DEFAULT_TIMEOUT,
+          description: "Command timeout in milliseconds. Omit for 30000; use a longer timeout for builds or dependency installation (maximum 120000).",
+        },
         sandbox: {
           type: "string",
-          description: "Sandbox backend override: 'seatbelt', 'bubblewrap', 'docker', or 'none'. Default: auto-detect.",
+          enum: ["seatbelt", "bubblewrap", "docker", "none"],
+          description: "Sandbox backend override. Omit for auto-detection. 'none' requires the user to start Agav with AGAV_NO_SANDBOX=1; tool confirmation does not enable bypass.",
         },
       },
       required: ["command"],
@@ -148,10 +158,13 @@ export const shellTool: ToolDefinition = {
   },
 
   async execute(input, context): Promise<ToolResult> {
+    const timeout = input.timeout_ms === undefined ? DEFAULT_TIMEOUT : input.timeout_ms;
+    if (typeof timeout !== "number" || !Number.isSafeInteger(timeout) || timeout < 1 || timeout > MAX_TIMEOUT) {
+      return { output: "Invalid timeout_ms: expected an integer between 1 and 120000 milliseconds.", isError: true };
+    }
     const command = String(input.command);
-    const forceBackend = typeof input.sandbox === "string"
-      ? input.sandbox as SandboxBackend
-      : undefined;
+    // Pass through to the shared runtime validator, including malformed values.
+    const forceBackend = input.sandbox as SandboxBackend | undefined;
 
     if (isDestructiveCommand(command)) {
       return {
@@ -166,19 +179,43 @@ export const shellTool: ToolDefinition = {
       const result = await runInSandbox({
         command,
         cwd: process.cwd(),
-        timeout: DEFAULT_TIMEOUT,
+        timeout,
         maxBuffer: MAX_OUTPUT * 2,
         forceBackend,
         onOutput: capture.capture,
         signal: context?.signal,
       });
       error = result.error;
+      if (result.backend !== detectSandboxBackend()) {
+        capture.capture(Buffer.from(`\nShell execution backend: ${result.backend === "none" ? "none (unsandboxed)" : result.backend}\n`), "stderr");
+      }
     } catch (cause) {
       error = cause instanceof Error ? cause : new Error(String(cause));
     }
     return { output: capture.finish(error), isError: !!error };
   },
 };
+
+/** Snapshot model-visible capabilities without changing execution policy. */
+export function createShellTool(): ToolDefinition {
+  const overrides = getAvailableSandboxOverrides();
+  const schema = structuredClone(shellTool.schema);
+  const properties = schema.inputSchema.properties as Record<string, Record<string, unknown>>;
+  if (overrides.length > 0) {
+    properties.sandbox!.enum = overrides;
+    properties.sandbox!.description = "Optional installed backend override. Omit sandbox to use the default backend.";
+  } else {
+    delete properties.sandbox;
+  }
+  const backend = detectSandboxBackend();
+  schema.description = "Execute a shell command and return its stdout and stderr. Defaults to a 30 second timeout; timeout_ms can extend it to 120 seconds for long-running commands. "
+    + `Omit sandbox to use the default backend: ${backend}${backend === "none" ? " (unsandboxed fallback)" : ""}. `
+    + (overrides.includes("none")
+      ? "Explicit unsandboxed overrides are enabled by the user."
+      : "Do not request sandbox: none; explicit bypass is not authorized.")
+    + (overrides.includes("docker") ? " Docker overrides require a running Docker daemon." : "");
+  return { ...shellTool, schema };
+}
 
 export function isSandboxAvailable(): boolean {
   return detectSandboxBackend() !== "none";

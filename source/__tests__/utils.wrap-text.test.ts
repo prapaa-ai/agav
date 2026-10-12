@@ -8,6 +8,24 @@ function fitsOnOneRow(lines: string[], width: number): boolean {
 }
 
 describe("wrapToWidth", () => {
+  it.each([
+    ["  indented text", 40, ["  indented text"]],
+    ["  code\n    nested\r\n  - item\r  end", 40, ["  code", "    nested", "  - item", "  end"]],
+    ["  indented text", 10, ["  indented", "text"]],
+    ["  abcdef", 4, ["  ab", "cdef"]],
+    ["     x", 2, ["  ", "  ", " x"]],
+    ["   \n  \n", 2, ["  ", " ", "  ", ""]],
+    ["  a  b  ", 40, ["  a  b  "]],
+    ["  item  ", 6, ["  item", "  "]],
+    ["a    b", 2, ["a ", "  ", "b"]],
+    ["  界🎉é", 4, ["  界", "🎉é"]],
+    ["  x", 0, [" ", " ", "x"]],
+  ] as const)("preserves indentation in %j at width %i", (text, width, expected) => {
+    const lines = wrapToWidth(text, width);
+    expect(lines).toEqual(expected);
+    expect(fitsOnOneRow(lines, Math.max(1, width))).toBe(true);
+  });
+
   it("leaves text that already fits on one line", () => {
     expect(wrapToWidth("hello there", 40)).toEqual(["hello there"]);
   });

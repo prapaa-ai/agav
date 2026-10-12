@@ -313,6 +313,7 @@ export default class Ink {
 	// Global text selection state. Operates on screen coordinates (after scroll
 	// offset is applied). Active when a mouse-down on an area with no component
 	// onMouseDown handler initiates a drag.
+	private copyLines: NonNullable<ReturnType<typeof renderer>["copyLines"]> = [];
 	private selectionAnchor: {x: number; y: number} | null = null;
 	private selectionRange: SelectionRange | null = null;
 	private selectionDragging = false;
@@ -663,7 +664,8 @@ export default class Ink {
 
 		this.calculateLayout();
 
-		const {output, staticOutput} = renderer(this.rootNode, false);
+		const {output, staticOutput, copyLines} = renderer(this.rootNode, false);
+		this.copyLines = copyLines ?? [];
 
 		// New <Static> children have been added when static output is non-empty.
 		const hasStaticOutput = staticOutput && staticOutput !== "\n";
@@ -1185,7 +1187,7 @@ export default class Ink {
 	private copyGlobalSelection(): void {
 		if (!this.selectionRange) return;
 
-		const text = getSelectedText(this.getPlainLines(), this.selectionRange);
+		const text = getSelectedText(this.getPlainLines(), this.selectionRange, this.copyLines);
 		if (text.trim()) {
 			writeClipboard(this.options.stdout, text);
 		}

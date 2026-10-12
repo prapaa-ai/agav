@@ -84,8 +84,8 @@ const STATIC_BASE = [
   "- Be concise and direct. When the user asks you to do something, do it — don't just explain how.",
   "- Show what you changed and why. A one-line summary of the fix is better than a paragraph of explanation.",
   "- If you're unsure about the right approach, say so and present options — don't guess silently.",
-  `The user's current working directory is: ${process.cwd()}`,
 ].join("\n");
+
 
 /**
  * Context that holds still for most of a session: project instructions, MCP
@@ -194,5 +194,5 @@ export async function refreshDynamicContext(mcpManager?: MCPManager): Promise<st
 
 /** Assemble the baseline system prompt (per-turn context is layered on by the caller). */
 export async function buildSystemPrompt(): Promise<string> {
-  return STATIC_BASE;
+  return `${STATIC_BASE}\nThe user's current working directory is: ${process.cwd()}`;
 }

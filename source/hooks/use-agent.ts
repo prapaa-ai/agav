@@ -105,6 +105,11 @@ export interface PendingConfirmation {
   subagentTask?: string;
 }
 
+export interface PendingContextWindowRequest {
+  model: string;
+  resolve: (tokens: number | undefined) => void;
+}
+
 export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
@@ -120,6 +125,8 @@ interface UseAgentReturn {
   toolCalls: ToolCallInfo[];
   error: string | null;
   pendingConfirmation: PendingConfirmation | null;
+  pendingContextWindowRequest: PendingContextWindowRequest | null;
+  resolveContextWindowRequest: (tokens: number | undefined) => void;
   tokenUsage: TokenUsage;
   loadedPlugins: string[];
   mcpServers: string[];
@@ -131,7 +138,7 @@ interface UseAgentReturn {
   subagentStates: SubagentProgress[];
   activePlan: Plan | null;
   refreshPlan: () => void;
-  submit: (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason) => Promise<boolean>;
+  submit: (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason, skillInvocation?: { name: string; arguments: string }) => Promise<boolean>;
   submitToAgent: (agentName: string, query: string, displayText: string, fullAccess?: boolean) => Promise<boolean>;
   refreshAgentCommands: () => Promise<void>;
   addDisplayMessage: (msg: DisplayMessage) => void;
@@ -155,6 +162,7 @@ interface UseAgentReturn {
   transcriptRevision: number;
   turnStartTime: number | null;
   lastTurnDurationMs: number | null;
+  iterationsBudget?: { remaining: number; total: number };
 }
 
 /** Own the agent lifecycle, conversation state, tool events, persistence, and confirmations. */
@@ -192,6 +200,8 @@ export function useAgent(
   const [toolCalls, setToolCalls] = useState<ToolCallInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null);
+  const [pendingContextWindowRequest, setPendingContextWindowRequest] = useState<PendingContextWindowRequest | null>(null);
+  const pendingContextWindowRequestRef = useRef<PendingContextWindowRequest | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage>(resumeTokenUsage ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
   const [loadedPlugins, setLoadedPlugins] = useState<string[]>([]);
   const sessionIdRef = useRef<string | null>(resumeSessionId ?? null);
@@ -206,11 +216,32 @@ export function useAgent(
   const [mcpResourceCount, setMcpResourceCount] = useState(0);
   const [mcpPromptCount, setMcpPromptCount] = useState(0);
   const [subagentStates, setSubagentStates] = useState<SubagentProgress[]>([]);
-  const [activePlan, setActivePlan] = useState<Plan | null>(null);
+  const [activePlan, setActivePlanState] = useState<Plan | null>(null);
+  const setActivePlan = useCallback((plan: Plan | null) => {
+    setActivePlanState(plan);
+    setMessages((prev) => {
+      if (!plan || plan.steps.length === 0) return prev.filter((message) => !message.plan);
+      const existing = prev.find((message) => message.plan?.createdAt === plan.createdAt);
+      if (existing) {
+        return prev.map((message) => message.id === existing.id ? { ...message, plan } : message);
+      }
+      return [...prev.filter((message) => !message.plan), { id: nextId(), role: "system", content: "", plan }];
+    });
+  }, []);
   const subagentDisplayNamesRef = useRef(new Map<string, string>());
   const toolInputsRef = useRef(new Map<string, Record<string, unknown>>());
   const turnCountRef = useRef(0);
-  const [planContinueMsg, setPlanContinueMsg] = useState<string | null>(null);
+  const [planContinueMsg, setPlanContinueMsg] = useState<{ text: string; epoch: number } | null>(null);
+  const requestEpochRef = useRef(0);
+  const sessionRevisionRef = useRef(0);
+  const continuationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const interventionPendingRef = useRef(false);
+  const invalidateContinuation = useCallback(() => {
+    requestEpochRef.current++;
+    if (continuationTimerRef.current) clearTimeout(continuationTimerRef.current);
+    continuationTimerRef.current = null;
+    setPlanContinueMsg(null);
+  }, []);
   // Tracks how many times the plan auto-continue has resubmitted the same step
   // without it completing, so a step that can never finish cannot loop forever.
   const planContinueRef = useRef<{ stepId: number; attempts: number }>({ stepId: -1, attempts: 0 });
@@ -221,6 +252,7 @@ export function useAgent(
   const sessionPermissionModeRef = useRef<AgavConfig["permissionMode"] | undefined>(undefined);
   const resetPlanContinue = () => { planContinueRef.current = { stepId: -1, attempts: 0 }; };
   const resumedRef = useRef(false);
+  const currentIterationsBudgetRef = useRef<{ remaining: number; total: number } | null>(null);
 
   const subagentToolRef = useRef<{ cancelSubagent: (id: string) => void } | null>(null);
   const confirmationQueueRef = useRef(new ConfirmationQueue());
@@ -258,7 +290,7 @@ export function useAgent(
   const toolRegistryRef = useRef(createToolRegistry());
   const mcpManagerRef = useRef(new MCPManager());
   const abortRef = useRef<AbortController | null>(null);
-  
+
   const isPausedRef = useRef(false);
   const pausePromiseRef = useRef<{ promise: Promise<void>; resolve: () => void } | null>(null);
   const [isGenerationPaused, setIsGenerationPaused] = useState(false);
@@ -296,10 +328,18 @@ export function useAgent(
           systemPrompt: configRef.current.systemPrompt ?? "",
           permissionMode: configRef.current.permissionMode,
           effort: configRef.current.effort,
-          maxIterations: configRef.current.maxIterations,
+          iterationsBudget: currentIterationsBudgetRef.current ?? { remaining: configRef.current.maxIterations, total: configRef.current.maxIterations },
         }),
         confirmationQueue: confirmationQueueRef.current,
         onProgressUpdate: setSubagentStates,
+        onSteerApplied: (_id, title, directives) => {
+          const count = directives.length;
+          setMessages((prev) => [...prev, {
+            id: nextId(),
+            role: "system",
+            content: `Delivered ${count} steer${count === 1 ? "" : "s"} to subagent "${title}".`,
+          }]);
+        },
         onTokenUsage: (usage) => setTokenUsage((prev) => ({
           inputTokens: prev.inputTokens + usage.inputTokens,
           outputTokens: prev.outputTokens + usage.outputTokens,
@@ -352,7 +392,7 @@ export function useAgent(
           }
         }
       }
-      prunePlans().catch(() => {});
+      prunePlans().catch(() => { });
 
       // Load plugins
       const pluginTools = await loadPlugins();
@@ -381,7 +421,7 @@ export function useAgent(
             systemPrompt: configRef.current.systemPrompt ?? "",
             permissionMode: configRef.current.permissionMode,
             effort: configRef.current.effort,
-            maxIterations: configRef.current.maxIterations,
+            iterationsBudget: currentIterationsBudgetRef.current ?? { remaining: configRef.current.maxIterations, total: configRef.current.maxIterations },
           }),
           confirmTool: skillConfirmCallback,
           onTokenUsage: (usage) => setTokenUsage((prev) => ({
@@ -434,14 +474,26 @@ export function useAgent(
 
   /** Abort the active loop and clear any queued confirmations waiting on user input. */
   const cancel = useCallback(() => {
+    invalidateContinuation();
     abortRef.current?.abort();
     confirmationQueueRef.current.clear();
+    // Resolve synchronously: a state updater can run after the metadata fetch
+    // finishes and the prompt is queued, leaving the cancelled turn waiting.
+    pendingContextWindowRequestRef.current?.resolve(undefined);
     if (pausePromiseRef.current) {
       pausePromiseRef.current.resolve();
       pausePromiseRef.current = null;
     }
     isPausedRef.current = false;
     setIsGenerationPaused(false);
+  }, [invalidateContinuation]);
+
+  useEffect(() => () => {
+    requestEpochRef.current++;
+    if (continuationTimerRef.current) clearTimeout(continuationTimerRef.current);
+    abortRef.current?.abort();
+    pausePromiseRef.current?.resolve();
+    confirmationQueueRef.current.clear();
   }, []);
 
   /** Cancel a single subagent by its ID while leaving others running. */
@@ -455,8 +507,11 @@ export function useAgent(
 
   /** Reset visible chat state and the underlying conversation history for a fresh session. */
   const clearMessages = useCallback(() => {
+    cancel();
+    sessionRevisionRef.current++;
     setMessages([]);
-    conversationRef.current.clear();
+    conversationRef.current = new ConversationState();
+    conversationRef.current.setModel(configRef.current.model);
     setError(null);
     sessionIdRef.current = null;
     setSessionId(undefined);
@@ -469,9 +524,9 @@ export function useAgent(
     // there so the new session does not inherit a plan it never made.
     setPlanScope(null);
     setActivePlan(null);
-    clearPlan().catch(() => {});
+    clearPlan().catch(() => { });
     setTranscriptRevision((revision) => revision + 1);
-  }, []);
+  }, [cancel]);
 
   /**
    * Re-read the plan for the current scope into the panel. Slash commands write
@@ -481,7 +536,7 @@ export function useAgent(
   const refreshPlan = useCallback(() => {
     loadPlan()
       .then((plan) => setActivePlan(isPlanActive(plan) ? plan : null))
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   /** Resolve the oldest pending tool confirmation with the user's decision. */
@@ -492,6 +547,39 @@ export function useAgent(
     // Reset the turn timer so it only counts active agent work, not time
     // spent waiting for the user to approve/deny a tool call.
     updateTurnStart(Date.now());
+  }, []);
+
+  /**
+   * Resolve a pending manual-context-window request. `tokens` is undefined
+   * when the user dismissed the prompt without entering a value — the loop
+   * falls back to DEFAULT_UNKNOWN_CONTEXT_WINDOW in that case.
+   */
+  const resolveContextWindowRequest = useCallback((tokens: number | undefined) => {
+    pendingContextWindowRequestRef.current?.resolve(tokens);
+  }, []);
+
+  /**
+   * Shown to runAgentLoop as requestManualContextWindow. Surfaces the modal via
+   * state and resolves once the user answers it or dismisses it.
+   */
+  const requestManualContextWindow = useCallback((model: string, signal?: AbortSignal): Promise<number | undefined> => {
+    if (signal?.aborted) return Promise.resolve(undefined);
+    return new Promise((resolve) => {
+      const request: PendingContextWindowRequest = {
+        model,
+        resolve: (tokens) => {
+          signal?.removeEventListener("abort", onAbort);
+          if (pendingContextWindowRequestRef.current !== request) return;
+          pendingContextWindowRequestRef.current = null;
+          setPendingContextWindowRequest((current) => current === request ? null : current);
+          resolve(tokens);
+        },
+      };
+      const onAbort = () => request.resolve(undefined);
+      pendingContextWindowRequestRef.current = request;
+      signal?.addEventListener("abort", onAbort, { once: true });
+      setPendingContextWindowRequest(request);
+    });
   }, []);
 
   const addTokenUsage = useCallback((usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => {
@@ -507,11 +595,11 @@ export function useAgent(
     setTokenUsage((currentUsage) => {
       const merged = extraUsage
         ? {
-            inputTokens: currentUsage.inputTokens + extraUsage.inputTokens,
-            outputTokens: currentUsage.outputTokens + extraUsage.outputTokens,
-            cacheReadTokens: currentUsage.cacheReadTokens + extraUsage.cacheReadTokens,
-            cacheWriteTokens: currentUsage.cacheWriteTokens + extraUsage.cacheWriteTokens,
-          }
+          inputTokens: currentUsage.inputTokens + extraUsage.inputTokens,
+          outputTokens: currentUsage.outputTokens + extraUsage.outputTokens,
+          cacheReadTokens: currentUsage.cacheReadTokens + extraUsage.cacheReadTokens,
+          cacheWriteTokens: currentUsage.cacheWriteTokens + extraUsage.cacheWriteTokens,
+        }
         : currentUsage;
       saveSession(
         conversationRef.current.getMessages(),
@@ -525,12 +613,16 @@ export function useAgent(
         sessionIdRef.current = id;
         setSessionId(id);
         adoptPlanScope(id);
-      }).catch(() => {});
+      }).catch(() => { });
       return merged;
     });
   }, [config.model, config.provider]);
 
   const loadSession = useCallback((session: SessionRecord) => {
+    cancel();
+    sessionRevisionRef.current++;
+    conversationRef.current = new ConversationState();
+    conversationRef.current.setModel(configRef.current.model);
     // Attachment records are process-local. Forget the prior session before
     // reserving this transcript's ids, so its persisted tiles cannot resolve
     // to attachments created under the previous session.
@@ -548,22 +640,26 @@ export function useAgent(
     resetPlanContinue();
     setActivePlan(null);
     setPlanScope(session.id);
+    const epoch = requestEpochRef.current;
     loadPlan()
-      .then((plan) => setActivePlan(isPlanActive(plan) ? plan : null))
-      .catch(() => {});
+      .then((plan) => { if (epoch === requestEpochRef.current) setActivePlan(isPlanActive(plan) ? plan : null); })
+      .catch(() => { });
     refreshDisplay();
-  }, [refreshDisplay]);
+  }, [refreshDisplay, cancel]);
 
   const activateSession = useCallback((id: string, name?: string) => {
+    cancel();
+    sessionRevisionRef.current++;
     sessionIdRef.current = id;
     setSessionId(id);
     sessionNameRef.current = name;
     setSessionName(name);
     setPlanScope(id);
+    const epoch = requestEpochRef.current;
     loadPlan()
-      .then((plan) => setActivePlan(isPlanActive(plan) ? plan : null))
-      .catch(() => {});
-  }, []);
+      .then((plan) => { if (epoch === requestEpochRef.current) setActivePlan(isPlanActive(plan) ? plan : null); })
+      .catch(() => { });
+  }, [cancel]);
 
   const renameSession = useCallback((name: string) => {
     sessionNameRef.current = name;
@@ -573,26 +669,49 @@ export function useAgent(
 
   /** Start a new agent turn, wiring UI events to loop events and persisting results on completion. */
   const submit = useCallback(
-    async (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason): Promise<boolean> => {
+    async (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason, skillInvocation?: { name: string; arguments: string }, isAutoContinuation = false, isIntervention = false): Promise<boolean> => {
       if (!provider) {
         setError("No LLM provider configured. Check your API key.");
         return false;
       }
-      if (submitPendingRef.current) return false;
+      if (submitPendingRef.current || (interventionPendingRef.current && !isIntervention)) return false;
 
       const trimmed = input.trim();
       if (!trimmed) return false;
+      if (!isAutoContinuation) invalidateContinuation();
+      const requestEpoch = requestEpochRef.current;
+      const sessionRevision = sessionRevisionRef.current;
+      const abortController = new AbortController();
+      abortRef.current = abortController;
       submitPendingRef.current = true;
+      setIsLoading(true);
+
+      // Presentation labels (including !commands) do not define prompt lifetime.
+      if (!isAutoContinuation || !currentIterationsBudgetRef.current) {
+        currentIterationsBudgetRef.current = { remaining: config.maxIterations, total: config.maxIterations };
+      }
+      const iterationsBudget = currentIterationsBudgetRef.current;
 
       let expansion;
       try {
         expansion = await expandFileMentions(trimmed, { cwd: process.cwd() });
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        if (!abortController.signal.aborted && requestEpoch === requestEpochRef.current) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+        abortRef.current = null;
         submitPendingRef.current = false;
+        setIsLoading(false);
+        return false;
+      }
+      if (abortController.signal.aborted || requestEpoch !== requestEpochRef.current) {
+        abortRef.current = null;
+        submitPendingRef.current = false;
+        setIsLoading(false);
         return false;
       }
 
+      const turnConversation = conversationRef.current;
       const submittedText = expansion.expanded.trim();
       const submittedBlocks = [...(extraBlocks ?? []), ...expansion.contentBlocks];
       const warningText = expansion.warnings.map((warning) => `⚠ ${warning}`).join("\n");
@@ -602,7 +721,7 @@ export function useAgent(
 
       // Clear plan display when user sends a new message (not auto-continue).
       // If the plan is still active, turn_complete will reload it.
-      if (!displayText) {
+      if (!isAutoContinuation) {
         setActivePlan(null);
         // A real message from the user is fresh input for the current step, so
         // the no-progress budget starts over.
@@ -615,16 +734,13 @@ export function useAgent(
         ...(followUpMessages ?? []),
       ]);
 
-      conversationRef.current.addUserMessage(submittedText, submittedBlocks, visibleText, trimmed, invocationReason);
+      turnConversation.addUserMessage(submittedText, submittedBlocks, visibleText, trimmed, invocationReason);
 
       setIsLoading(true);
       updateTurnStart(Date.now());
       setLastTurnDurationMs(null);
       setStreamingText("");
       setToolCalls([]);
-
-      const abortController = new AbortController();
-      abortRef.current = abortController;
 
       const confirmToolCallback = (
         toolName: string,
@@ -656,6 +772,7 @@ export function useAgent(
             refreshStableContext(mcpManagerRef.current),
             refreshVolatileContext(trimmed),
           ]);
+          abortController.signal.throwIfAborted();
           const effectiveSystemPrompt = stableCtx
             ? (config.systemPrompt ?? "") + "\n\n" + stableCtx
             : config.systemPrompt;
@@ -678,6 +795,7 @@ export function useAgent(
                 toolRegistryRef.current.register(agentToTool(agent, {
                   provider,
                   config: configRef.current,
+                  getIterationsBudget: () => currentIterationsBudgetRef.current ?? undefined,
                   onProgressUpdate: async (callId, event) => {
                     if (pausePromiseRef.current) await pausePromiseRef.current.promise;
                     if (!trackerCache.has(callId)) {
@@ -707,14 +825,16 @@ export function useAgent(
           }
 
           const existingPlan = await loadPlan();
+          abortController.signal.throwIfAborted();
           // A plan-worthy prompt at the start of a fresh conversation supersedes
           // whatever plan is on disk; anything else carries the existing one
           // forward. The superseded plan is only deleted once a replacement has
           // actually been saved, so a failed re-plan does not lose it.
-          const supersedesPlan = shouldAutoPlan(trimmed) && conversationRef.current.length <= 1;
+          const autoPlan = !skillInvocation && shouldAutoPlan(trimmed);
+          const supersedesPlan = autoPlan && turnConversation.length <= 1;
           const carriedPlan = !supersedesPlan && isPlanActive(existingPlan) ? existingPlan : null;
 
-          if (shouldAutoPlan(trimmed) && !carriedPlan) {
+          if (autoPlan && !carriedPlan) {
             setMessages((prev) => [
               ...prev,
               { id: nextId(), role: "system", content: "Creating plan..." },
@@ -741,6 +861,7 @@ export function useAgent(
               signal: abortController.signal,
             })) {
               if (pausePromiseRef.current) await pausePromiseRef.current.promise;
+              abortController.signal.throwIfAborted();
               if (event.type === "text_delta") planJson += event.text;
               if (event.type === "usage") {
                 setTokenUsage((prev) => ({
@@ -752,6 +873,7 @@ export function useAgent(
               }
             }
 
+            abortController.signal.throwIfAborted();
             try {
               // Extract JSON from response (might be wrapped in markdown)
               const jsonMatch = planJson.match(/\{[\s\S]*\}/);
@@ -775,6 +897,7 @@ export function useAgent(
               if (plan.steps.length === 0) throw new Error("planning response had no steps");
 
               await savePlan(plan);
+              abortController.signal.throwIfAborted();
               resetPlanContinue();
               setActivePlan(plan);
 
@@ -789,6 +912,7 @@ export function useAgent(
 
               turnContextParts.push(formatPlanForPrompt(plan));
             } catch {
+              abortController.signal.throwIfAborted();
               // Nothing was saved, so any superseded plan is still on disk.
               const kept = isPlanActive(existingPlan);
               if (kept) setActivePlan(existingPlan);
@@ -807,25 +931,26 @@ export function useAgent(
             turnContextParts.push(formatPlanForPrompt(carriedPlan));
           }
 
+          abortController.signal.throwIfAborted();
           // Attach volatile context to the tail of this turn's user message. It is
           // left frozen in history rather than rewritten on later turns: editing an
           // earlier message would invalidate the very prefix this split protects,
           // so the wrapper tells the model to trust the most recent copy.
           if (turnContextParts.length > 0) {
-            conversationRef.current.appendToLastUserMessage(
+            turnConversation.appendToLastUserMessage(
               formatTurnContext(turnContextParts.join("\n\n")),
             );
           }
 
           const loop = runAgentLoop({
             provider,
-            conversation: conversationRef.current,
+            conversation: turnConversation,
             toolRegistry: toolRegistryRef.current,
             model: config.model,
             systemPrompt: effectiveSystemPrompt,
             effort: config.effort,
             maxTokens: config.maxTokens,
-            maxIterations: config.maxIterations,
+            iterationsBudget: iterationsBudget,
             signal: abortController.signal,
             confirmTool: confirmToolCallback,
             permissionMode: sessionPermissionModeRef.current ?? config.permissionMode,
@@ -835,10 +960,20 @@ export function useAgent(
             // Only the main conversation's loop drains mid-turn /steer
             // directives — subagent/skill/agent loops must not consume them.
             drainSteers,
+            initialToolCall: skillInvocation ? {
+              name: "activate_skill",
+              input: { name: skillInvocation.name, arguments: skillInvocation.arguments },
+            } : undefined,
+            requestManualContextWindow,
           });
 
           for await (const event of loop) {
             if (pausePromiseRef.current) await pausePromiseRef.current.promise;
+            // Let the loop finish pairing every tool_use with its tool_result
+            // before cancellation closes the iterator. Do not display stale results.
+            if (abortController.signal.aborted && event.type === "tool_result") continue;
+            abortController.signal.throwIfAborted();
+            if (requestEpoch !== requestEpochRef.current) throw new Error("Stale request");
             switch (event.type) {
               case "thinking":
                 currentThinking += event.text;
@@ -888,7 +1023,7 @@ export function useAgent(
                       if (tc.toolCallId) {
                         toolInputsRef.current.set(tc.toolCallId, parsed);
                       }
-                    } catch {}
+                    } catch { }
                     return { ...tc, argsJson: json, input: parsed };
                   }),
                 );
@@ -902,7 +1037,7 @@ export function useAgent(
                 if (event.toolName === "update_plan") {
                   loadPlan().then((plan) => {
                     if (plan) setActivePlan(plan);
-                  }).catch(() => {});
+                  }).catch(() => { });
                 }
                 const resultToolCallId = event.toolCallId;
                 const resultToolName = event.toolName;
@@ -972,47 +1107,50 @@ export function useAgent(
                 break;
 
               case "turn_complete":
+                abortController.signal.throwIfAborted();
                 setIsLoading(false);
                 finalizeTurnTimer();
                 setSubagentStates([]);
                 setTokenUsage((currentUsage) => {
+                  if (abortController.signal.aborted || requestEpoch !== requestEpochRef.current) return currentUsage;
                   saveSession(
-                    conversationRef.current.getMessages(),
+                    turnConversation.getMessages(),
                     config.model,
                     config.provider,
                     sessionIdRef.current ?? undefined,
                     currentUsage,
-                    conversationRef.current.wasCompacted,
+                    turnConversation.wasCompacted,
                     sessionNameRef.current,
                   ).then((id) => {
+                    if (abortController.signal.aborted || requestEpoch !== requestEpochRef.current) return;
                     sessionIdRef.current = id;
                     setSessionId(id);
                     // Re-key the plan the moment this session gets an identity,
                     // so it is still findable after the session ends.
                     adoptPlanScope(id);
-                  }).catch(() => {});
+                  }).catch(() => { });
                   return currentUsage;
                 });
                 saveSessionState(
-                  conversationRef.current.getMessages(),
+                  turnConversation.getMessages(),
                   config.model,
                   config.provider,
                   false,
-                ).catch(() => {});
+                ).catch(() => { });
                 turnCountRef.current++;
                 maybeRunBackgroundImprovement(turnCountRef.current, getCachedSkills(), (msg) => {
                   setMessages((prev) => [...prev, { id: nextId(), role: "system", content: msg }]);
-                }).catch(() => {});
+                }).catch(() => { });
 
                 // Auto-continue if the active plan has pending steps
                 loadPlan().then(async (latestPlan) => {
-                  if (!latestPlan) return;
+                  if (abortController.signal.aborted || requestEpoch !== requestEpochRef.current || !latestPlan) return;
                   const pendingSteps = latestPlan.steps.filter((s) => s.status === "pending" || s.status === "in_progress");
                   if (pendingSteps.length === 0) {
                     // Plan is complete — clear display and delete the file
                     resetPlanContinue();
                     setActivePlan(null);
-                    await clearPlan().catch(() => {});
+                    await clearPlan().catch(() => { });
                     return;
                   }
 
@@ -1030,7 +1168,8 @@ export function useAgent(
                     latestPlan.currentStep = latestPlan.steps.findIndex(
                       (s) => s.status === "pending" || s.status === "in_progress",
                     );
-                    await savePlan(latestPlan).catch(() => {});
+                    await savePlan(latestPlan).catch(() => { });
+                    if (abortController.signal.aborted || requestEpoch !== requestEpochRef.current) return;
                     resetPlanContinue();
                     setActivePlan(latestPlan);
                     setMessages((prev) => [
@@ -1045,8 +1184,8 @@ export function useAgent(
                   }
 
                   setActivePlan(latestPlan);
-                  setPlanContinueMsg(`Do Step ${next.id} only: ${next.title}. Mark it in_progress, do the work, mark it done, then end your response silently — no commentary about stopping or pausing.`);
-                }).catch(() => {});
+                  setPlanContinueMsg({ text: `Do Step ${next.id} only: ${next.title}. Mark it in_progress, do the work, mark it done, then end your response silently — no commentary about stopping or pausing.`, epoch: requestEpoch });
+                }).catch(() => { });
                 break;
 
               case "steer_applied": {
@@ -1086,7 +1225,7 @@ export function useAgent(
         } catch (err) {
           if (abortController.signal.aborted) {
             const partialText = currentText;
-            if (partialText) {
+            if (partialText && sessionRevision === sessionRevisionRef.current) {
               setMessages((prev) => [
                 ...prev,
                 {
@@ -1112,6 +1251,8 @@ export function useAgent(
           finalizeTurnTimer();
         }
 
+        // A cancelled explicit skill still spent tokens and produced a tool result.
+        if (skillInvocation && abortController.signal.aborted && sessionRevision === sessionRevisionRef.current) saveNow();
         setStreamingText("");
         setToolCalls([]);
         setPendingConfirmation(null);
@@ -1126,7 +1267,7 @@ export function useAgent(
       })();
       return true;
     },
-    [provider, config, isLoading, activePlan],
+    [provider, config, isLoading, activePlan, saveNow, invalidateContinuation],
   );
 
   /** Submit a query directly to a named agent, bypassing the main LLM. */
@@ -1136,23 +1277,41 @@ export function useAgent(
         setError("No LLM provider configured. Check your API key.");
         return false;
       }
-      if (submitPendingRef.current) return false;
+      if (submitPendingRef.current || interventionPendingRef.current) return false;
+      invalidateContinuation();
+      const requestEpoch = requestEpochRef.current;
+      const sessionRevision = sessionRevisionRef.current;
+      const abortController = new AbortController();
+      abortRef.current = abortController;
       submitPendingRef.current = true;
+      setIsLoading(true);
 
-      const { resolveTargetAgent, executeTargetedAgent } = await import("../agents/targeting.js");
-      const resolved = await resolveTargetAgent(agentName);
-      if ("error" in resolved) {
-        setError(resolved.error);
+      let resolved: Awaited<ReturnType<typeof import("../agents/targeting.js").resolveTargetAgent>>;
+      let executeTargetedAgent: typeof import("../agents/targeting.js").executeTargetedAgent;
+      try {
+        const targeting = await import("../agents/targeting.js");
+        executeTargetedAgent = targeting.executeTargetedAgent;
+        resolved = await targeting.resolveTargetAgent(agentName);
+        abortController.signal.throwIfAborted();
+        if (requestEpoch !== requestEpochRef.current) throw new Error("Stale request");
+        if ("error" in resolved) throw new Error(resolved.error);
+      } catch (err) {
+        if (!abortController.signal.aborted && requestEpoch === requestEpochRef.current) {
+          setError(err instanceof Error ? err.message : String(err));
+        }
+        abortRef.current = null;
         submitPendingRef.current = false;
+        setIsLoading(false);
         return false;
       }
 
+      const turnConversation = conversationRef.current;
       setError(null);
       setMessages((prev) => [
         ...prev,
         { id: nextId(), role: "user", content: displayText },
       ]);
-      conversationRef.current.addUserMessage(
+      turnConversation.addUserMessage(
         `[Direct query to ${agentName} agent]: ${query}`,
         undefined,
         displayText,
@@ -1165,22 +1324,19 @@ export function useAgent(
       setStreamingText("");
       setToolCalls([]);
 
-      const abortController = new AbortController();
-      abortRef.current = abortController;
-
       const confirmToolCallback = fullAccess
         ? undefined
         : (
-            toolName: string,
-            toolInput: Record<string, unknown>,
-            diffPreview?: DiffLine[],
-          ): Promise<ConfirmResult> => {
-            return confirmationQueueRef.current.enqueue({
-              toolName,
-              input: toolInput,
-              diffLines: diffPreview,
-            });
-          };
+          toolName: string,
+          toolInput: Record<string, unknown>,
+          diffPreview?: DiffLine[],
+        ): Promise<ConfirmResult> => {
+          return confirmationQueueRef.current.enqueue({
+            toolName,
+            input: toolInput,
+            diffLines: diffPreview,
+          });
+        };
 
       (async () => {
         try {
@@ -1210,6 +1366,8 @@ export function useAgent(
             permissionMode: fullAccess ? "auto-accept" : undefined,
           });
 
+          abortController.signal.throwIfAborted();
+          if (requestEpoch !== requestEpochRef.current) throw new Error("Stale request");
           const responseContent = result.isError
             ? `Error from ${agentName}: ${result.output}`
             : result.output;
@@ -1218,7 +1376,7 @@ export function useAgent(
             ...prev,
             { id: nextId(), role: "assistant", content: responseContent },
           ]);
-          conversationRef.current.addAssistantMessage([
+          turnConversation.addAssistantMessage([
             { type: "text", text: responseContent },
           ]);
 
@@ -1256,7 +1414,7 @@ export function useAgent(
 
       return true;
     },
-    [provider, config, saveNow],
+    [provider, config, saveNow, invalidateContinuation],
   );
 
   /** Reload agents from disk and rebuild the targeting slash commands. */
@@ -1272,12 +1430,16 @@ export function useAgent(
   }, []);
 
   useEffect(() => {
-    if (!isLoading && planContinueMsg) {
-      const msg = planContinueMsg;
+    if (!isLoading && planContinueMsg && planContinueMsg.epoch === requestEpochRef.current) {
+      const { text: msg, epoch } = planContinueMsg;
       const stepMatch = msg.match(/Step (\d+) only: (.+?)\./);
       const displayText = stepMatch ? `▸ Plan step ${stepMatch[1]}` : "▸ Continuing plan...";
       setPlanContinueMsg(null);
-      setTimeout(() => submit(msg, undefined, displayText), 100);
+      continuationTimerRef.current = setTimeout(() => {
+        continuationTimerRef.current = null;
+        if (epoch !== requestEpochRef.current || submitPendingRef.current || interventionPendingRef.current) return;
+        void submit(msg, undefined, displayText, undefined, undefined, undefined, true);
+      }, 100);
     }
   }, [isLoading, planContinueMsg, submit]);
 
@@ -1289,20 +1451,22 @@ export function useAgent(
       followUpMessages?: DisplayMessage[],
       invocationReason?: InvocationReason,
     ): Promise<boolean> => {
-      if (!isPausedRef.current) return false;
+      if (!isPausedRef.current || interventionPendingRef.current) return false;
       const trimmed = input.trim();
       if (!trimmed && (!extraBlocks || extraBlocks.length === 0)) return false;
-
-      // Abort the active stream and resolve the pause so the loop exits
+      interventionPendingRef.current = true;
       cancel();
-      
-      // Wait for the aborted turn to clear its pending state completely
-      while (submitPendingRef.current) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
+      const epoch = requestEpochRef.current;
+      try {
+        while (submitPendingRef.current) {
+          if (epoch !== requestEpochRef.current) return false;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        if (epoch !== requestEpochRef.current) return false;
+        return await submit(trimmed || "See attached content", extraBlocks, displayText, followUpMessages, invocationReason, undefined, false, true);
+      } finally {
+        interventionPendingRef.current = false;
       }
-
-      // Start the new request
-      return submit(trimmed, extraBlocks, displayText, followUpMessages, invocationReason);
     },
     [cancel, submit]
   );
@@ -1315,6 +1479,8 @@ export function useAgent(
     toolCalls,
     error,
     pendingConfirmation,
+    pendingContextWindowRequest,
+    resolveContextWindowRequest,
     tokenUsage,
     loadedPlugins,
     mcpServers,
@@ -1350,5 +1516,6 @@ export function useAgent(
     transcriptRevision,
     turnStartTime,
     lastTurnDurationMs,
+    iterationsBudget: currentIterationsBudgetRef.current ?? undefined,
   };
 }

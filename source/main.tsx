@@ -1,4 +1,3 @@
-import React from "react";
 import { render } from "./ink/index.js";
 import App from "./app.js";
 import { isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
@@ -11,6 +10,7 @@ import { loadSessionState, markCleanExit, markCleanExitSync } from "./config/ses
 import { loadTheme } from "./config/theme.js";
 import { ConversationState } from "./agent/conversation.js";
 import { runAgentLoop } from "./agent/loop.js";
+import { writeAgavTrajectory, type AgavRunUsage } from "./utils/trajectory.js";
 import { NO_EDITS_PROMPT, schemaRetryPrompt } from "./agent/internal-prompts.js";
 import { createToolRegistry } from "./tools/registry-factory.js";
 import { getToolLabel } from "./utils/tool-labels.js";
@@ -39,7 +39,7 @@ const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
-  "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns",
+  "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--trajectory",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -68,6 +68,15 @@ function findClosestFlag(input: string): string | undefined {
   return best;
 }
 
+function parseMaxTurns(raw: string): number {
+  const value = raw.trim();
+  const n = Number(value);
+  if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(n) || n <= 0) {
+    process.stderr.write("Error: --max-turns must be a positive safe integer (1–9007199254740991). Use --max-turns N or --max-turns=N.\n");
+    process.exit(1);
+  }
+  return n;
+}
 /** Choose between providers which expose the same model during interactive startup. */
 function pickProviderForModel(model: string, matches: FetchedModel[]): Promise<FetchedModel | null> {
   const stdin = process.stdin;
@@ -110,16 +119,30 @@ function pickProviderForModel(model: string, matches: FetchedModel[]): Promise<F
   });
 }
 
-/** Parse CLI flags into a lightweight record before config loading and validation. */
 export function parseArgs(argv: string[]) {
-  const flags: Record<string, string | boolean> = {};
+  const flags: Record<string, any> = {};
+  flags._ = [];
   let i = 0;
+  let subcommandSeen = false;
+  let dashDashSeen = false;
+
   while (i < argv.length) {
     const arg = argv[i]!;
-    if (arg === "--") {
+    if (dashDashSeen) {
+      flags._.push(arg);
       i++;
       continue;
     }
+    if (arg === "--") {
+      // Keep the boundary separately from positionals for delegated handlers.
+      if (flags.agents || flags.skills) {
+        flags.delegatedSeparatorIndex = flags._.length;
+      }
+      dashDashSeen = true;
+      i++;
+      continue;
+    }
+    
     if (arg === "--help" || arg === "-h") {
       flags.help = true;
     } else if (arg === "--version" || arg === "-v") {
@@ -144,6 +167,27 @@ export function parseArgs(argv: string[]) {
       flags.outputSchema = argv[++i] ?? "";
     } else if (arg.startsWith("--output-schema=")) {
       flags.outputSchema = arg.slice("--output-schema=".length);
+    } else if (arg === "--trajectory" || arg.startsWith("--trajectory=")) {
+      const path = arg === "--trajectory" ? argv[++i] : arg.slice("--trajectory=".length);
+      if (!path?.trim() || (arg === "--trajectory" && path.startsWith("-"))) {
+        process.stderr.write("Error: --trajectory requires a non-empty file path.\n");
+        process.exit(1);
+      }
+      flags.trajectoryPath = path;
+    } else if (arg === "--cwd") {
+      const nextArg = argv[i + 1];
+      if (!nextArg || nextArg.startsWith("-")) {
+        process.stderr.write(`error: --cwd requires a directory argument\n`);
+        process.exit(1);
+      }
+      flags.cwd = argv[++i] ?? "";
+    } else if (arg.startsWith("--cwd=")) {
+      const val = arg.slice("--cwd=".length);
+      if (!val) {
+        process.stderr.write(`error: --cwd requires a directory argument\n`);
+        process.exit(1);
+      }
+      flags.cwd = val;
     } else if (arg === "--deny-writes") {
       flags.denyWrites = true;
     } else if (arg === "--resume" || arg === "-r") {
@@ -166,9 +210,7 @@ export function parseArgs(argv: string[]) {
       flags.ollamaApiKey = arg.split("=")[1] ?? "";
     } else if (arg === "--print" || arg === "-P") {
       flags.print = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.printPrompt = argv[++i]!;
-      }
+      subcommandSeen = true;
     } else if (arg === "--permission") {
       flags.permission = argv[++i] ?? "";
     } else if (arg.startsWith("--permission=")) {
@@ -178,35 +220,58 @@ export function parseArgs(argv: string[]) {
     } else if (arg.startsWith("--openai-api=")) {
       flags.openaiApi = arg.slice("--openai-api=".length);
     } else if (arg === "--max-turns") {
-      flags.maxTurns = argv[++i] ?? "";
+      flags.maxTurns = parseMaxTurns(argv[++i] ?? "");
     } else if (arg.startsWith("--max-turns=")) {
-      flags.maxTurns = arg.slice("--max-turns=".length);
-    } else if (arg === "update" && i === 0) {
+      flags.maxTurns = parseMaxTurns(arg.slice("--max-turns=".length));
+    } else if (arg === "update" && !subcommandSeen) {
       flags.update = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.updateVersion = argv[++i]!;
-      }
-    } else if (arg === "agents" && i === 0) {
+      subcommandSeen = true;
+    } else if (arg === "agents" && !subcommandSeen) {
       flags.agents = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.agentsCommand = argv[++i]!;
-      }
-    } else if (arg === "skills" && i === 0) {
+      subcommandSeen = true;
+    } else if (arg === "skills" && !subcommandSeen) {
       flags.skills = true;
-      if (argv[i + 1] && !argv[i + 1]!.startsWith("-")) {
-        flags.skillsCommand = argv[++i]!;
-      }
-    } else if (arg === "run" && i === 0) {
+      subcommandSeen = true;
+    } else if (arg === "run" && !subcommandSeen) {
       flags.run = true;
-    } else if (flags.run && !arg.startsWith("-") && !flags.runPrompt) {
-      flags.runPrompt = arg;
+      subcommandSeen = true;
     } else if (arg.startsWith("-")) {
-      const suggestion = findClosestFlag(arg);
-      process.stderr.write(`error: unknown flag ${arg}${suggestion ? `\nDid you mean ${suggestion}?` : ""}\n`);
-      process.exit(2);
+      if (subcommandSeen && (flags.agents || flags.skills)) {
+        flags._.push(arg);
+      } else {
+        const suggestion = findClosestFlag(arg);
+        process.stderr.write(`error: unknown flag ${arg}${suggestion ? `\nDid you mean ${suggestion}?` : ""}\n`);
+        process.exit(2);
+      }
+    } else {
+      flags._.push(arg);
     }
     i++;
   }
+
+  if (flags.trajectoryPath && !flags.run && !flags.print && !flags.help && !flags.version) {
+    process.stderr.write("Error: --trajectory is only supported with run or --print (-P).\n");
+    process.exit(1);
+  }
+
+  const pos = flags._ as string[];
+  if (flags.update) {
+    if (pos.length > 0) flags.updateVersion = pos[0];
+    if (pos.length > 1) {
+      process.stderr.write(`error: agav update accepts at most 1 argument\n`);
+      process.exit(1);
+    }
+  }
+  if (flags.agents && pos.length > 0) flags.agentsCommand = pos[0];
+  if (flags.skills && pos.length > 0) flags.skillsCommand = pos[0];
+  if (flags.run && pos.length > 0) flags.runPrompt = pos.join(" ");
+  if (flags.print && pos.length > 0) flags.printPrompt = pos.join(" ");
+  
+  if (!flags.update && !flags.agents && !flags.skills && !flags.run && !flags.print && pos.length > 0) {
+     process.stderr.write(`error: unexpected arguments: ${pos.join(" ")}\n`);
+     process.exit(1);
+  }
+
   return flags;
 }
 
@@ -225,8 +290,10 @@ export async function runPipeMode(
   prompt: string,
   config: AgavConfig,
   provider: LLMProvider,
-  options: { stream?: boolean; outputSchema?: OutputSchema; stdinContent?: string; includeDynamicContext?: boolean; permissionOverride?: import("./config/config.js").PermissionMode; allowedToolsOverride?: string[]; maxTurns?: number } = {},
+  options: { trajectoryPath?: string; stream?: boolean; outputSchema?: OutputSchema; stdinContent?: string; includeDynamicContext?: boolean; permissionOverride?: import("./config/config.js").PermissionMode; allowedToolsOverride?: string[]; } = {},
 ): Promise<number> {
+  const startedAt = new Date().toISOString();
+  const usage: AgavRunUsage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 };
   const { stream = false, outputSchema } = options;
   const stdinContent = options.stdinContent ?? await readStdin();
 
@@ -251,7 +318,10 @@ export async function runPipeMode(
   }
 
   const toolRegistry = createToolRegistry();
-  const conversation = new ConversationState();
+  // Headless execution has no session plan creation or plan context injection.
+  // Do not advertise an updater that cannot work (or mutate another session's plan).
+  toolRegistry.unregister("update_plan");
+  const conversation = new ConversationState(!!options.trajectoryPath);
   conversation.setModel(config.model);
   conversation.addUserMessage(fullPrompt, expansion.contentBlocks, undefined, prompt);
 
@@ -268,6 +338,7 @@ export async function runPipeMode(
     : `${effectiveSystemPrompt}\n\nYour final response MUST be valid JSON matching this schema: ${schemaJson}. Return only the JSON value, with no markdown fences or commentary.`;
 
   const permissionMode = options.permissionOverride ?? "auto-accept";
+  const iterationsBudget = { remaining: config.maxIterations, total: config.maxIterations };
 
   const runTurn = async (streamText: boolean): Promise<{ finalText: string; exitCode: number; wroteStreamText: boolean }> => {
     let finalText = "";
@@ -275,7 +346,6 @@ export async function runPipeMode(
     let exitCode = 0;
     let madeEdits = false;
     const maxRetries = 3;
-
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       madeEdits = false;
       const loop = runAgentLoop({
@@ -286,7 +356,7 @@ export async function runPipeMode(
         systemPrompt,
         effort: config.effort,
         maxTokens: config.maxTokens,
-        maxIterations: options.maxTurns ?? config.maxIterations,
+        iterationsBudget: iterationsBudget,
         permissionMode,
         allowedTools: options.allowedToolsOverride,
       });
@@ -322,6 +392,12 @@ export async function runPipeMode(
             process.stderr.write(`Error: ${event.error.message}\n`);
             exitCode = 1;
             break;
+          case "usage":
+            usage.input_tokens += event.inputTokens;
+            usage.output_tokens += event.outputTokens;
+            usage.cache_read_tokens += event.cacheReadTokens ?? 0;
+            usage.cache_write_tokens += event.cacheWriteTokens ?? 0;
+            break;
           case "turn_complete":
             break;
         }
@@ -342,43 +418,74 @@ export async function runPipeMode(
     return { finalText, exitCode, wroteStreamText };
   };
 
-  // Schema output must stay buffered so an invalid first attempt never contaminates stdout.
-  let result = await runTurn(stream && outputSchema === undefined);
-  if (result.exitCode !== 0) return result.exitCode;
+  const execute = async (): Promise<number> => {
+    // Schema output must stay buffered so an invalid first attempt never contaminates stdout.
+    let result = await runTurn(stream && outputSchema === undefined);
+    if (result.exitCode !== 0) return result.exitCode;
 
-  if (outputSchema !== undefined) {
-    let validate;
+    if (outputSchema !== undefined) {
+      let validate;
+      try {
+        validate = createOutputValidator(outputSchema);
+      } catch (error) {
+        process.stderr.write(`Error: Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}\n`);
+        return 1;
+      }
+
+      let validation = validateOutput(result.finalText, validate);
+      if (!validation.valid) {
+        const details = formatValidationErrors(validation);
+        if (iterationsBudget.remaining <= 0) {
+          process.stderr.write(`Error: Response failed JSON Schema validation; cannot retry because the agent reached maximum iterations: ${details}\n`);
+          return 1;
+        }
+        process.stderr.write(`Schema validation failed; retrying once: ${details}\n`);
+        conversation.addInternalUserMessage(schemaRetryPrompt(details));
+        result = await runTurn(false);
+        if (result.exitCode !== 0) return result.exitCode;
+        validation = validateOutput(result.finalText, validate);
+      }
+
+      if (!validation.valid) {
+        process.stderr.write(`Error: Response failed JSON Schema validation after retry: ${formatValidationErrors(validation)}\n`);
+        return 1;
+      }
+      process.stdout.write(`${JSON.stringify(validation.value)}\n`);
+      return 0;
+    }
+
+    if (stream && result.wroteStreamText) {
+      process.stdout.write("\n");
+    } else if (result.finalText) {
+      process.stdout.write(result.finalText + "\n");
+    }
+    return result.exitCode;
+  };
+
+  let exitCode: number;
+  try {
+    exitCode = await execute();
+  } catch (error) {
+    if (!options.trajectoryPath) throw error;
+    process.stderr.write(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
+    exitCode = 1;
+  }
+  if (options.trajectoryPath) {
     try {
-      validate = createOutputValidator(outputSchema);
+      await writeAgavTrajectory(options.trajectoryPath, {
+        model: config.model,
+        provider: config.provider,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        usage,
+        messages: conversation.getTranscript(),
+      });
     } catch (error) {
-      process.stderr.write(`Error: Invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}\n`);
-      return 1;
+      process.stderr.write(`Error: Failed to write trajectory: ${error instanceof Error ? error.message : String(error)}\n`);
+      exitCode = 1;
     }
-
-    let validation = validateOutput(result.finalText, validate);
-    if (!validation.valid) {
-      const details = formatValidationErrors(validation);
-      process.stderr.write(`Schema validation failed; retrying once: ${details}\n`);
-      conversation.addInternalUserMessage(schemaRetryPrompt(details));
-      result = await runTurn(false);
-      if (result.exitCode !== 0) return result.exitCode;
-      validation = validateOutput(result.finalText, validate);
-    }
-
-    if (!validation.valid) {
-      process.stderr.write(`Error: Response failed JSON Schema validation after retry: ${formatValidationErrors(validation)}\n`);
-      return 1;
-    }
-    process.stdout.write(`${JSON.stringify(validation.value)}\n`);
-    return 0;
   }
-
-  if (stream && result.wroteStreamText) {
-    process.stdout.write("\n");
-  } else if (result.finalText) {
-    process.stdout.write(result.finalText + "\n");
-  }
-  return result.exitCode;
+  return exitCode;
 }
 
 let startupFinished = false;
@@ -394,6 +501,35 @@ export function hasStartupFinished(): boolean {
 export async function main() {
   tempOutputManager.pruneStale();
   const flags = parseArgs(process.argv.slice(2));
+  const startupCwd = process.cwd();
+
+  let exitCode = 0;
+  if (typeof flags.cwd === "string") {
+    const { resolve } = await import("node:path");
+    const { statSync } = await import("node:fs");
+    const targetDir = resolve(process.cwd(), flags.cwd);
+    
+    let isDir = false;
+    try {
+      isDir = statSync(targetDir).isDirectory();
+    } catch {
+      // Ignored, isDir remains false
+    }
+
+    if (isDir) {
+      try {
+        process.chdir(targetDir);
+      } catch (error) {
+        process.stderr.write(`error: unable to access directory ${flags.cwd}\n`);
+        exitCode = 1;
+        if (!flags.help) process.exit(1);
+      }
+    } else {
+      process.stderr.write(`error: directory does not exist or is not a directory: ${flags.cwd}\n`);
+      exitCode = 1;
+      if (!flags.help) process.exit(1);
+    }
+  }
 
   if (flags.help) {
     console.log(`
@@ -411,6 +547,7 @@ export async function main() {
   Options
     --provider, -p       LLM provider: anthropic, openai, openrouter, gemini, vertex-ai, or ollama (default: anthropic)
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
+    --cwd <dir>          Set the working directory for the session
     --effort             Reasoning effort: low, medium, high, or max (default: high)
     --ollama-host        Ollama host (default: localhost)
     --ollama-port        Ollama port (default: 11434)
@@ -426,6 +563,11 @@ export async function main() {
     --deny-writes        Block all write operations
     --help, -h           Show this help
     --version, -v        Show version
+    --trajectory <path> Export run/print transcript, token usage, and timing as JSON
+    --max-turns <number> Cap agent-loop model requests per prompt (interactive, print, and run)
+                         Shared allowance for subagents, native agents, and skills;
+                         continuations and retries retain it, new prompts reset it.
+                         Tool execution itself does not spend an additional turn.
 
   Agent Commands
     $ agav agents list             List installed agents
@@ -454,7 +596,7 @@ export async function main() {
     $ agav agents install https://github.com/user/repo/agents/jira
     $ agav agents list
 `);
-    process.exit(0);
+    process.exit(exitCode);
   }
 
   if (flags.version) {
@@ -476,12 +618,11 @@ export async function main() {
   if (flags.agents) {
     const { runAgentsCommand } = await import("./cli/agents-cli.js");
     const agentsCommand = typeof flags.agentsCommand === "string" ? flags.agentsCommand : undefined;
-    // Find "agents" position in argv to correctly slice remaining args
-    const agentsIdx = process.argv.indexOf("agents");
-    const argsStartIndex = agentsIdx >= 0
-      ? agentsIdx + (agentsCommand ? 2 : 1)
-      : (agentsCommand ? 4 : 3);
-    const exitCode = await runAgentsCommand(agentsCommand, process.argv.slice(argsStartIndex));
+    const delegatedArgs = (flags._ as string[]).slice(1);
+    if (typeof flags.delegatedSeparatorIndex === "number") {
+      delegatedArgs.splice(Math.max(0, flags.delegatedSeparatorIndex - 1), 0, "--");
+    }
+    const exitCode = await runAgentsCommand(agentsCommand, delegatedArgs);
     process.exit(exitCode);
     return;
   }
@@ -490,20 +631,20 @@ export async function main() {
   if (flags.skills) {
     const { runSkillsCommand } = await import("./cli/skills-cli.js");
     const skillsCommand = typeof flags.skillsCommand === "string" ? flags.skillsCommand : undefined;
-    // Find "skills" position in argv to correctly slice remaining args
-    const skillsIdx = process.argv.indexOf("skills");
-    const argsStartIndex = skillsIdx >= 0
-      ? skillsIdx + (skillsCommand ? 2 : 1)
-      : (skillsCommand ? 4 : 3);
-    const exitCode = await runSkillsCommand(skillsCommand, process.argv.slice(argsStartIndex));
+    const delegatedArgs = (flags._ as string[]).slice(1);
+    if (typeof flags.delegatedSeparatorIndex === "number") {
+      delegatedArgs.splice(Math.max(0, flags.delegatedSeparatorIndex - 1), 0, "--");
+    }
+    const exitCode = await runSkillsCommand(skillsCommand, delegatedArgs);
     process.exit(exitCode);
     return;
   }
 
+
   // Auto-update check (silent on failure, skipped in CI/pipe mode)
   try {
     const { checkAndUpdate } = await import("./utils/auto-update.js");
-    await checkAndUpdate();
+    await checkAndUpdate(startupCwd);
   } catch {
     // Never block startup on update failures
   }
@@ -704,16 +845,19 @@ export async function main() {
   }
 
   startupFinished = true;
-
+  // Overwrites the config instance when maxTurns is explicitly provided.
+  if (flags.maxTurns !== undefined) {
+    config.maxIterations = flags.maxTurns;
+  }
   // Short-circuit into non-interactive mode before the Ink UI is rendered.
   if (flags.print) {
     const provider = createProvider(config);
     const exitCode = await runPipeMode(String(flags.printPrompt ?? ""), config, provider, {
       stream: flags.stream === true,
       outputSchema,
+      trajectoryPath: flags.trajectoryPath,
     });
     process.exit(exitCode);
-    return;
   }
 
   if (flags.run) {
@@ -721,6 +865,7 @@ export async function main() {
     const runOptions: Parameters<typeof runPipeMode>[3] = {
       stream: true,
       includeDynamicContext: true,
+      trajectoryPath: flags.trajectoryPath,
     };
 
     // Parse permission from --permission flag or AGAV_PERMISSION env var
@@ -745,11 +890,6 @@ export async function main() {
         process.stderr.write("Error: Invalid JSON in --permission / AGAV_PERMISSION\n");
         process.exit(1);
       }
-    }
-
-    if (typeof flags.maxTurns === "string" && flags.maxTurns) {
-      const n = parseInt(flags.maxTurns, 10);
-      if (!isNaN(n) && n > 0) runOptions.maxTurns = n;
     }
 
     const exitCode = await runPipeMode(String(flags.runPrompt ?? ""), config, provider, runOptions);

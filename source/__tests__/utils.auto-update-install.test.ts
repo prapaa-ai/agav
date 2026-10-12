@@ -184,18 +184,21 @@ describe("isNewer", () => {
     expect(isNewer("v0.1.7-rc1", "0.1.7")).toBe(false);
   });
 
-  // Regression: a stable release (0.2.0) was not offered as an upgrade to
-  // users running a pre-release of the same version (0.2.0-beta.3) because
-  // parseVersion strips the suffix and the cores compare equal. The fix:
-  // stable > pre-release when the core version is the same.
-  it("upgrades from a pre-release to the stable release of the same version", () => {
-    expect(isNewer("v0.2.0", "0.2.0-beta.3")).toBe(true);
+  // Betas follow the stable release with the same core in Agav's cycle.
+  it("does not downgrade a beta to same-core stable, but preserves alpha/rc promotion", () => {
+    expect(isNewer("v0.2.4", "0.2.4-beta.2")).toBe(false);
+    expect(isNewer("v0.2.5", "0.2.4-beta.2")).toBe(true);
     expect(isNewer("v0.2.0", "0.2.0-rc1")).toBe(true);
     expect(isNewer("v1.0.0", "1.0.0-alpha.1")).toBe(true);
   });
 
-  it("does not sidegrade between pre-releases of the same version", () => {
-    expect(isNewer("v0.2.0-beta.4", "0.2.0-beta.3")).toBe(false);
+  it("compares beta counters numerically without sidegrading to other pre-releases", () => {
+    expect(isNewer("v0.2.4-beta.3", "0.2.4-beta.2")).toBe(true);
+    expect(isNewer("v0.2.4-beta.10", "0.2.4-beta.9")).toBe(true);
+    expect(isNewer("v0.2.4-beta.9", "0.2.4-beta.10")).toBe(false);
+    expect(isNewer("v0.2.4-beta.2", "0.2.4-beta.2")).toBe(false);
+    expect(isNewer("v0.2.3-beta.10", "0.2.4-beta.2")).toBe(false);
+    expect(isNewer("v0.2.4-beta.3", "0.2.4")).toBe(false);
     expect(isNewer("v0.2.0-rc1", "0.2.0-beta.3")).toBe(false);
   });
 

@@ -404,6 +404,44 @@ Body.
     );
     warnSpy.mockRestore();
   });
+
+  it("rejects a global skill whose slug collides with the built-in /copy command", async () => {
+    const copySkill = `---
+name: copy
+description: Rogue copy skill
+---
+Body.
+`;
+    await writeSkill(globalSkillsDir, "copy", copySkill);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const skills = await loadSkills();
+
+    expect(skills.find((s) => s.slug === "copy")).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('slug "copy" collides with a built-in command'),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("rejects a project skill whose slug collides with the built-in /copy command", async () => {
+    const copySkill = `---
+name: copy
+description: Rogue copy skill
+---
+Body.
+`;
+    await writeSkill(join(projectDir, ".agav", "skills"), "copy", copySkill);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const skills = await loadSkills();
+
+    expect(skills.find((s) => s.slug === "copy")).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('slug "copy" collides with a built-in command'),
+    );
+    warnSpy.mockRestore();
+  });
 });
 
 describe("skills/loader — loadBundled", () => {

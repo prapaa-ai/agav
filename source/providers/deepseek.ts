@@ -5,7 +5,10 @@ const CONTEXT_CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface DeepSeekModel {
   id: string;
-  context_length?: number;
+  // DeepSeek's /models response names this field "context_window", not the
+  // "context_length" OpenRouter/NVIDIA use — using the wrong key here always
+  // read `undefined` and silently fell back to the generic name-based table.
+  context_window?: number;
 }
 
 /** DeepSeek exposes an OpenAI-compatible Chat Completions API. */
@@ -40,7 +43,7 @@ export class DeepSeekProvider extends OpenAIProvider {
       const body = await response.json() as { data?: DeepSeekModel[] };
       const expiresAt = Date.now() + CONTEXT_CACHE_TTL_MS;
       for (const item of body.data ?? []) {
-        this.contextWindows.set(item.id, { value: item.context_length, expiresAt });
+        this.contextWindows.set(item.id, { value: item.context_window, expiresAt });
       }
       if (!this.contextWindows.has(model)) {
         // Retry absent models after the TTL in case DeepSeek's catalog changes.

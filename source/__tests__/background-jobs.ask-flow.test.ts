@@ -45,7 +45,7 @@ function provider(input: Record<string, unknown>) {
 async function run(input: Record<string, unknown>, confirmTool?: any, signal?: AbortSignal, permissionMode: "ask" | "deny-writes" = "ask") {
   const conversation = new ConversationState(); conversation.addUserMessage("background task");
   const events = [];
-  for await (const event of runAgentLoop({ provider: provider(input), conversation, toolRegistry: createToolRegistry(), model: "test", permissionMode, confirmTool, signal })) events.push(event);
+  for await (const event of runAgentLoop({ provider: provider(input), conversation, toolRegistry: createToolRegistry(), model: "test", permissionMode, confirmTool, signal, iterationsBudget: { remaining: 2, total: 2 } })) events.push(event);
   return events;
 }
 describe("background authorization through the actual tool factory and loop", () => {
@@ -70,7 +70,8 @@ describe("background authorization through the actual tool factory and loop", ()
   it("subagent consent includes identity and cancellation rejects the pending action", async () => {
     const queue = new ConfirmationQueue(); let pending: any;
     queue.bind(item => { pending = item; });
-    const tool = createSubagentTool({ provider: provider({ action: "start", command: "echo consent" }), parentToolRegistry: createToolRegistry(), getConfig: () => ({ model: "test", systemPrompt: "test", permissionMode: "ask", effort: "medium", maxIterations: 2 }), confirmationQueue: queue, onProgressUpdate: () => {}, onTokenUsage: () => {}, getSignal: () => undefined });
+    const iterationsBudget = { remaining: 2, total: 2 };
+    const tool = createSubagentTool({ provider: provider({ action: "start", command: "echo consent" }), parentToolRegistry: createToolRegistry(), getConfig: () => ({ model: "test", systemPrompt: "test", permissionMode: "ask", effort: "medium", iterationsBudget }), confirmationQueue: queue, onProgressUpdate: () => {}, onTokenUsage: () => {}, getSignal: () => undefined });
     const result = tool.execute({ title: "background", task: "launch background task" });
     await vi.waitFor(() => expect(pending).toBeTruthy());
     expect(pending.subagentId).toBe("sa-1"); expect(pending.input.spec).toBeDefined();

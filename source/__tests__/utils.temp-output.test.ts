@@ -171,7 +171,9 @@ describe("shared temporary output retention", () => {
     registry.register({ schema: { name: "side-effect", description: "", inputSchema: {} }, execute });
     expect((await registry.execute("side-effect", {})).isError).toBe(true);
     expect(execute).toHaveBeenCalledOnce();
+    vi.stubEnv("AGAV_NO_SANDBOX", "1");
     const shell = await shellTool.execute({ command: `"${process.execPath}" -e "process.stdout.write('x'.repeat(50000)); process.exitCode = 7"`, sandbox: "none" });
+    vi.unstubAllEnvs();
     expect(shell.isError).toBe(true);
     expect(shell.output).toContain("retention quota reached");
     expect(shell.output).toContain("Command exited with code 7");
