@@ -267,7 +267,7 @@ describe("mcp/client remote/SSE", () => {
     const fetchMock = vi.fn().mockImplementation(async (_url, options) => {
       const msg = JSON.parse(options.body);
       postedMethods.push(msg.method);
-      seenSessionIds.push(options.headers["Mcp-Session-Id"] ?? null);
+      seenSessionIds.push(new Headers(options.headers).get("Mcp-Session-Id"));
 
       if (msg.method === "initialize") {
         return makeSseResponse(
@@ -358,7 +358,7 @@ describe("mcp/client remote/SSE", () => {
     const fetchMock = vi.fn().mockImplementation(async (_url, options) => {
       if (options?.method === "POST") {
         const msg = JSON.parse(options.body);
-        const acceptsStream = String(options.headers?.["Accept"] ?? "").includes("text/event-stream");
+        const acceptsStream = String(new Headers(options.headers).get("Accept") ?? "").includes("text/event-stream");
         // Streamable HTTP probe: initialize POST asks for event-stream and gets a 404, so
         // auto-detect abandons HTTP and falls back to the legacy SSE transport.
         if (msg.method === "initialize" && acceptsStream) {

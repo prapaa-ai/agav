@@ -82,7 +82,78 @@ If you know which transport the server speaks, pin it with `transport`:
 | `transport` | `"http"` or `"sse"` | no | Force a specific transport; omit to auto-detect |
 | `headers` | Record\<string, string\> | no | Extra headers sent with every request |
 
-`headers` are sent with every request and are the recommended way to pass authentication tokens. The `command`, `args`, and `env` fields are not used for remote servers.
+`headers` are sent with every request and can pass static authentication tokens. Explicit `Authorization` headers take precedence over OAuth. The `command`, `args`, and `env` fields are not used for remote servers.
+
+## OAuth authentication
+
+Agav discovers OAuth requirements when a remote MCP server returns a Bearer authentication challenge. Startup and tool requests never launch browser sign-in automatically. Cached tokens are reused or refreshed silently; servers needing sign-in are summarized in one startup warning. Run `/mcp` to view connected servers and those requiring authentication, then explicitly run `/mcp auth <name>` to open your browser, complete the PKCE authorization flow, and connect that server without restarting. Other configured servers connect independently.
+
+For example, add Figma's remote server to `./.agav/config.json`:
+
+```json
+{
+  "mcpServers": {
+    "figma": {
+      "url": "https://mcp.figma.com/mcp",
+      "transport": "http"
+    }
+  }
+}
+```
+
+**Figma remote access limitation:** Figma currently rejects Agav's dynamic client registration with `403 Forbidden` before browser sign-in. OAuth support alone does not bypass provider client restrictions. Remote access may require Figma to approve Agav; using another product's client identity is not a supported workaround. The remote configuration above shows the endpoint, but is not a verified working Agav/Figma integration.
+
+If your account supports Figma's [desktop MCP server](https://developers.figma.com/docs/figma-mcp-server/local-server-installation/), enable it in the Figma desktop app and use its local endpoint instead:
+
+```json
+{
+  "mcpServers": {
+    "figma": {
+      "url": "http://127.0.0.1:3845/mcp",
+      "transport": "http"
+    }
+  }
+}
+```
+
+The desktop server has different availability and capabilities from the remote server. Keep Figma running and restart Agav after changing configuration.
+
+For servers that accept Agav's client registration, you can also sign in explicitly before starting Agav:
+
+```bash
+agav mcp auth figma
+```
+
+Standalone CLI sign-in does not require an LLM provider. Restart Agav after using `agav mcp auth <name>`. In an existing Agav session, `/mcp auth <name>` reconnects immediately; success feedback names the connected server and reports how many still require authentication. The startup warning updates as servers connect and disappears when none remain. Failed, denied, or canceled sign-in never reports success. If OAuth succeeds but MCP discovery fails, the error distinguishes those outcomes.
+
+Startup never launches a new browser login, whether interactive or not; it reuses cached credentials, refreshes tokens when possible, or reports the command needed to sign in. The sign-in timeout defaults to five minutes, separate from normal MCP request timeouts. Ctrl+C cancels standalone CLI sign-in; the normal interrupt/cancel shortcut cancels in-session sign-in. Duplicate sign-in requests for the same server are rejected while one is pending.
+
+OAuth tokens and registered client credentials are encrypted using Agav's existing local encryption utility and stored in private, atomically replaced files under `~/.agav/mcp-auth/`, not in project configuration. This is local encryption, not an operating-system keychain. Cache entries are isolated by server name, URL, authentication settings, and configured headers. Treat this directory as sensitive. Expired tokens are refreshed automatically; revoked credentials may require sign-in again.
+
+To remove a server's cached credentials:
+
+```bash
+agav mcp logout figma
+```
+
+Restart running Agav sessions after standalone CLI logout. In an existing session, run `/mcp logout <name>` instead: it immediately disconnects that server, removes its tools/resources/prompt commands, cancels any pending sign-in, and deletes its cached OAuth credentials without restarting. Other servers stay connected. Run `/mcp auth <name>` to sign in again.
+
+Logout removes local credentials; it does not revoke grants at the provider. Servers with an explicit `Authorization` header or `oauth: false` cannot use in-session OAuth logout: remove their configured credentials instead. Stdio servers do not support OAuth logout.
+
+Optional remote-server configuration:
+
+| Field | Description |
+| --- | --- |
+| `oauth: false` | Disable automatic OAuth for this server. |
+| `oauth.clientId` | Use a pre-registered public client ID instead of dynamic registration. |
+| `oauth.issuer` | Use and validate a specific authorization-server issuer. |
+| `oauth.scopes` | Array of requested scopes. |
+| `oauth.callbackPort` | Fixed loopback callback port; omitted or zero allocates and remembers a port. |
+| `oauth.timeoutSeconds` | Positive sign-in timeout; defaults to 300. |
+
+OAuth endpoints must use HTTPS, except for loopback development servers. Redirects and cross-origin MCP POST endpoints are rejected to avoid leaking credentials. Servers must support dynamic registration or a configured public client ID. Agav supports the authorization-code flow, not device-code or client-credentials grants.
+
+See [Figma's remote MCP setup](https://developers.figma.com/docs/figma-mcp-server/remote-server-installation/) for Figma account and access requirements.
 
 ## Exposed capabilities
 

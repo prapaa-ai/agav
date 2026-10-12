@@ -46,6 +46,9 @@ export interface CommandContext {
   exit: () => void
   /** Whether an agent turn is currently in flight. */
   isLoading?: boolean
+  getMCPAuthenticationRequired?: () => string[]
+  logoutMCPServer?: (name: string) => Promise<void>
+  authenticateMCPServer?: (name: string) => Promise<void>
   getDebugState: () => DebugState
   submit: (text: string) => void
   handleSubmit: (text: string, invocationReason?: InvocationReason) => void
