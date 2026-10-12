@@ -34,7 +34,7 @@ export class MCPClient {
     this.serverName = name;
     this.config = config;
     this.oauth = new MCPOAuth(name, config, process.stdin.isTTY === true, (active) => {
-      this.authorizationWaits += active ? 1 : -1;
+      this.authorizationWaits = active ? this.authorizationWaits + 1 : Math.max(0, this.authorizationWaits - 1);
       for (const pending of this.pending.values()) {
         if (this.authorizationWaits > 0) pending.pause();
         else pending.resume();

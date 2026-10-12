@@ -153,14 +153,11 @@ export class MCPOAuth {
 
   private async authenticate(interactive: boolean, signal?: AbortSignal, resourceMetadataUrl?: URL,
     scope?: string, rejectedToken?: string): Promise<void> {
-    this.onAuthorization?.(true);
     try {
       await this.authenticateInner(interactive, signal, resourceMetadataUrl, scope, rejectedToken);
     } catch (error) {
       if (error instanceof MCPAuthenticationRequiredError) throw error;
       throw new MCPOAuthError(error instanceof Error ? error.message : String(error), { cause: error });
-    } finally {
-      this.onAuthorization?.(false);
     }
   }
 
@@ -195,6 +192,7 @@ export class MCPOAuth {
       void code.catch(() => {});
       const cancelled = () => { rejectCode(controller.signal.reason); server?.closeAllConnections(); server?.close(); };
       controller.signal.addEventListener("abort", cancelled, { once: true });
+      this.onAuthorization?.(true);
       try {
         const fetchFn: typeof globalThis.fetch = async (input, init) => {
           const target = input instanceof Request ? input.url : String(input);
@@ -274,7 +272,15 @@ export class MCPOAuth {
             resolveCode(value);
           });
           await new Promise<void>((resolve, reject) => {
-            server!.once("error", reject);
+            server!.once("error", (error: NodeJS.ErrnoException) => {
+              if (error.code !== "EADDRINUSE") { reject(error); return; }
+              // A saved registration is bound to this redirect URI. Never silently
+              // pick a different port while reusing its client credentials.
+              const recovery = this.options.callbackPort
+                ? "Stop the process using that port, or change oauth.callbackPort to a free port and authenticate again."
+                : `Stop the process using that port and retry, or run agav mcp logout ${this.name} then agav mcp auth ${this.name} to register a new callback port.`;
+              reject(new Error(`MCP OAuth callback port ${port} is already in use. ${recovery}`, { cause: error }));
+            });
             server!.listen(port, "127.0.0.1", resolve);
           });
           controller.signal.throwIfAborted();
@@ -337,6 +343,7 @@ export class MCPOAuth {
           await sdkAuth(provider, { ...options, authorizationCode });
         }
       } finally {
+        this.onAuthorization?.(false);
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
         controller.signal.removeEventListener("abort", cancelled);

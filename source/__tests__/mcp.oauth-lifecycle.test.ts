@@ -32,6 +32,20 @@ describe("OAuth MCP lifecycle", () => {
     expect((client as any).pending.size).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
   });
+  it("does not let an unmatched authorization end prevent new request timers", async () => {
+    vi.useFakeTimers();
+    const client = new MCPClient("test", { url: "https://example.com/mcp", transport: "http" });
+    mocks.callbacks[0]!(false);
+    expect((client as any).authorizationWaits).toBe(0);
+    mocks.fetch.mockImplementation(() => new Promise<Response>(() => {}));
+    const start = client.start();
+    const rejection = expect(start).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(30_000);
+    await rejection;
+    client.stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("stopAll aborts an MCP server still authenticating", async () => {
     mocks.fetch.mockImplementation((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
       init.signal!.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });

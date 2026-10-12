@@ -33,7 +33,8 @@ export const mcpCommand: SlashCommand = {
     try {
       await context.authenticateMCPServer(name);
       const remaining = context.getMCPAuthenticationRequired?.().length ?? 0;
-      return { type: "message", text: `Authenticated and connected MCP server "${name}". ${remaining} MCP server${remaining === 1 ? " still requires" : "s still require"} authentication.` };
+      const pending = remaining > 0 ? ` ${remaining} MCP server${remaining === 1 ? " still requires" : "s still require"} authentication.` : "";
+      return { type: "message", text: `Authenticated and connected MCP server "${name}".${pending}` };
     } catch (error) {
       return { type: "message", text: `MCP sign-in failed for "${name}": ${error instanceof Error ? error.message : String(error)}` };
     }

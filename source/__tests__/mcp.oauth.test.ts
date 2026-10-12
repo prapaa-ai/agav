@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -11,7 +11,7 @@ vi.mock("../utils/open-external.js", () => ({ openExternal: mocks.browser }));
 import { MCPOAuth, MCPAuthenticationRequiredError } from "../mcp/oauth.js";
 import { MCPClient } from "../mcp/client.js";
 import { MCPManager } from "../mcp/manager.js";
-import { decrypt } from "../utils/encrypt.js";
+import { decrypt, encrypt } from "../utils/encrypt.js";
 
 describe("MCP SDK OAuth", () => {
   let server: Server;
@@ -487,6 +487,39 @@ describe("MCP SDK OAuth", () => {
 
   it("rejects OAuth logout for a stdio server", async () => {
     await expect(new MCPManager().logoutServer("local", { command: "node" })).rejects.toThrow("not a configured remote server");
+  });
+
+  it("does not emit authorization activity for a cached token or concurrent auth no-op", async () => {
+    const activity = vi.fn();
+    const oauth = new MCPOAuth("test", { url: `${origin}/mcp` }, true, activity); clients.push(oauth);
+    await Promise.all([oauth.auth(), oauth.auth(), oauth.auth()]);
+    expect(activity.mock.calls).toEqual([[true], [false]]);
+    activity.mockClear();
+    await oauth.auth();
+    expect(activity).not.toHaveBeenCalled();
+  });
+
+  it("does not pause requests when a challenge requires explicit login", async () => {
+    const activity = vi.fn();
+    const oauth = new MCPOAuth("test", { url: `${origin}/mcp` }, false, activity); clients.push(oauth);
+    await expect(oauth.fetch(`${origin}/mcp`, {})).rejects.toBeInstanceOf(MCPAuthenticationRequiredError);
+    expect(activity).not.toHaveBeenCalled();
+  });
+
+  it("provides recovery instructions when a saved callback port is occupied", async () => {
+    const oauth = client(); await oauth.auth();
+    const file = await credentialFile();
+    const stored = JSON.parse(decrypt(await readFile(file, "utf8")));
+    delete stored.tokens; delete stored.expiresAt;
+    await writeFile(file, encrypt(JSON.stringify(stored)));
+    const occupied = createServer();
+    await new Promise<void>(resolve => occupied.listen(stored.callbackPort, "127.0.0.1", resolve));
+    try {
+      await expect(oauth.auth()).rejects.toThrow(`MCP OAuth callback port ${stored.callbackPort} is already in use`);
+      await expect(oauth.auth()).rejects.toThrow("agav mcp logout test");
+      expect(JSON.parse(decrypt(await readFile(file, "utf8"))).callbackPort).toBe(stored.callbackPort);
+      expect(mocks.browser).toHaveBeenCalledTimes(1);
+    } finally { await new Promise<void>(resolve => occupied.close(() => resolve())); }
   });
 
   it("rejects an already aborted signal without opening a browser", async () => {
