@@ -380,8 +380,10 @@ export function useAgent(
     setMcpPromptCount(prompts.length);
     setMcpServers(mcpManagerRef.current.getServerNames());
     const warning = formatMCPAuthenticationWarning(mcpManagerRef.current.getAuthenticationRequired());
-    setMessages(prev => prev.flatMap(message => message.id !== "mcp-auth-warning" ? [message] :
-      warning ? [{ ...message, content: warning }] : []));
+    setMessages(prev => {
+      const messages = prev.filter(message => message.id !== "mcp-auth-warning");
+      return warning ? [...messages, { id: "mcp-auth-warning", role: "system", content: warning }] : messages;
+    });
   }, []);
 
   // Load optional extension points once so plugin and MCP tools become available for later turns.

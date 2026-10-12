@@ -63,6 +63,7 @@ describe("explicit MCP startup authentication", () => {
     })));
     vi.spyOn(MCPManager.prototype, "getAllPrompts").mockImplementation(() => connected ? [{ name: "linear__prompt", serverName: "linear" }] : []);
     vi.spyOn(MCPManager.prototype, "logoutServer").mockImplementation(async () => { connected = false; });
+    vi.spyOn(MCPManager.prototype, "authenticateServer").mockImplementation(async () => { connected = true; });
     const stdout = new EventEmitter() as NodeJS.WriteStream;
     Object.assign(stdout, { isTTY: true, columns: 80, rows: 24, write: () => true });
     const stdin = new EventEmitter() as NodeJS.ReadStream;
@@ -75,12 +76,23 @@ describe("explicit MCP startup authentication", () => {
       for (let i = 0; i < 100; i++) { await instance.waitUntilRenderFlush(); if (agent.mcpServers.length) break; }
       expect(agent.toolRegistry.get("linear__list")).toBeDefined();
       expect(agent.mcpPromptCommands).toHaveLength(1);
+      expect(agent.messages.filter(message => message.id === "mcp-auth-warning")).toEqual([]);
       await agent.logoutMCPServer("linear");
       for (let i = 0; i < 20; i++) await instance.waitUntilRenderFlush();
       expect(agent.toolRegistry.get("linear__list")).toBeUndefined();
       expect(agent.toolRegistry.get("other__list")).toBeDefined();
       expect(agent.mcpPromptCommands).toEqual([]);
       expect(agent.mcpServers).toEqual(["other"]);
+      const warnings = () => agent.messages.filter(message => message.id === "mcp-auth-warning");
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0]!.content).toBe("Warning: 1 MCP server requires authentication. Run /mcp to view them, then /mcp auth <name> to sign in.");
+      await agent.logoutMCPServer("linear");
+      for (let i = 0; i < 20; i++) await instance.waitUntilRenderFlush();
+      expect(warnings()).toHaveLength(1);
+      await agent.authenticateMCPServer("linear");
+      for (let i = 0; i < 20; i++) await instance.waitUntilRenderFlush();
+      expect(warnings()).toEqual([]);
+      expect(agent.toolRegistry.get("linear__list")).toBeDefined();
       await expect(agent.logoutMCPServer("unknown")).rejects.toThrow("not a configured remote server");
     } finally { instance.unmount(); }
   });
