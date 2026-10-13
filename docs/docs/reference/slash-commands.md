@@ -10,7 +10,7 @@ Type `/` in an interactive session to autocomplete commands. Run `/help` to see 
 
 Most slash commands run when Agav is idle. These commands can also run while Agav is streaming, executing tools, or otherwise doing in-flight work: `/help`, `/exit`, `/loop`, `/steer`, `/context`, `/memory`, `/remember`, and `/forget`.
 
-Other commands, such as `/model` and `/clear`, are not dispatched while a turn is busy. Their text stays in the prompt; submit it again once Agav is idle, or press **Esc** to cancel the turn first. They are not queued for automatic execution. While generation is paused, input that is not an allowed mid-turn command is treated as new direction for the turn, so wait until idle to run other slash commands. Mid-turn command dispatch also requires no pending attachments.
+Other commands, such as `/model` and `/clear`, are queued when submitted while a turn is busy and dispatched in submission order once Agav is idle. Ordinary prompts and `!` shell commands queue too, with their submitted attachments. `/queue` and `/queue retry` manage this queue immediately; `/ps <question>` still runs independently. While generation is paused, ordinary non-command input provides new direction for the active turn instead of queuing, unless another submission is already being prepared. Mid-turn command dispatch requires no pending attachments. See [queued follow-up requests](/workflows/planning-and-steering#queued-follow-up-requests).
 
 `/exit` works mid-turn: it cancels the active turn and stops the repeating `/loop` before closing the terminal UI. To cancel without leaving Agav, use **Esc** instead. **Ctrl+C** exits unless an Agav text selection is active, in which case it copies the selection.
 
@@ -24,7 +24,8 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | `/effort [low\|medium\|high\|max]` | Show or set reasoning effort. |
 | `/fast`, `/deep` | Switch to the current provider's fast or most capable model shortcut. |
 | `/compact` | Summarize older conversation content to free context-window space. |
-| `/context` | Show a token-use breakdown for the system prompt, tools, MCP tools, skills, and messages. |
+| `/context` | Show estimated context occupancy for the effective prompt, tools, and messages, separately from cumulative session usage; in-flight output is excluded while streaming. |
+| `/copy [N]` | Copy the latest text-bearing assistant message, or the Nth-most-recent one (positive integer). Tool-only messages do not count. |
 | `/export` | Write the current conversation, including tool activity, to a timestamped Markdown file in the working directory. |
 | `/ps <question>` | Run a brief independent side query with read-only conversation context, without interrupting the active main task. It cannot use tools or plugins. |
 
@@ -32,17 +33,20 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 
 | Command | Purpose |
 | --- | --- |
-| `/resume [id]` | List saved sessions or resume one by ID or prefix match. |
-| `/search <query>` | Search saved session messages by keyword. |
+| `/resume [id]` | Open the session picker or resume one by ID or prefix match. |
+| `/history` | Open the searchable saved-session manager to inspect, rename, or delete sessions; use `/resume <id>` to load one. `/history list` prints a list. |
+| `/search [query]`, `/search-history [query]` | Open the searchable history manager without arguments; with a query, print matching saved session messages. |
+| `/queue` | Open queue management; use Up/Down to select, Delete/Backspace to cancel an entry, and Esc or Ctrl+Q to return. |
+| `/queue retry` | Resume a queue paused after a dispatch failure, retrying the retained request first. |
 | `/name <title>` | Give the current session a descriptive name. |
 | `/branch [name]` | List branches in the current session lineage, or fork the current conversation into a named branch. |
 | `/plan` | Show this session's plan and step progress. |
 | `/plan list` | List every plan saved for the current project. |
 | `/plan <n> <status>` | Set step `<n>` to `pending`, `in_progress`, `done`, or `failed`. |
 | `/plan clear` | Delete this session's plan. Use `no plan` in a prompt to skip automatic planning. |
-| `/steer <directive>` | Add durable direction for later turns. Use `/steer list`, `/steer remove <number>`, or `/steer clear` to manage directives. |
+| `/steer <directive>` | Add in-memory, session-scoped direction for subsequent main-agent and subagent prompts. Use `/steer list`, `/steer remove <number>`, or `/steer clear` to manage directives. |
 | `/loop` | Show the active loop. `/loop <interval> <prompt>` repeats an agent prompt; intervals support `s`, `m`, and `h`. `/loop <prompt>` defaults to ten minutes, and `/loop stop` cancels it. |
-| `/schedule` | List saved tasks. Use `/schedule add "<five-field cron>" <prompt>`, then `enable`, `disable`, or `remove <id>` to manage them. |
+| `/schedule` | Open the searchable schedule manager to inspect, create, toggle, or delete tasks. `/schedule list` prints saved tasks; `add "<five-field cron>" <prompt>`, `enable`, `disable`, and `remove <id>` remain available. |
 | `/watch <path\|glob> <command>` | Run a shell command after matching files change. `/watch stop` cancels it; glob patterns are supported. |
 | `/undo`, `/undo list` | Revert the most recent tracked file change or inspect the current in-memory undo stack. |
 
@@ -50,16 +54,18 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 
 | Command | Purpose |
 | --- | --- |
-| `/memory`, `/memory list` | List project-scoped persistent memories. |
+| `/memory` | Open the searchable memory manager while idle to inspect, create, edit, or delete memories; falls back to a text list during a turn or without the interactive manager. |
+| `/memory list` | Print project-scoped persistent memories. |
 | `/memory add <text>` | Save a persistent memory. |
 | `/memory delete <name>`, `/memory rm <name>` | Delete one memory by its listed name. |
 | `/memory clear`, `/memory path` | Delete all project memories or show their storage directory. |
 | `/remember <text>` | Shortcut for `/memory add <text>`. |
 | `/forget [name]` | List memories when called without an argument, or delete a memory by name. |
-| `/skills`, `/skills list` | List bundled, global, and project skills. |
+| `/skills` | Open the searchable installed-skills manager with inspection, installation, enable/disable, and eligible global-skill deletion. |
+| `/skills list` | Print bundled, global, and project skills. |
 | `/skills info <name>` | Show a skill's origin, invocation mode, tool policy, path, and usage statistics. |
 | `/skills add <path\|url>` | Validate and install a skill from a local `SKILL.md` or trusted URL. Restart Agav to activate it. |
-| `/skills marketplace [number]` | List available marketplace skills or install a numbered entry. |
+| `/skills marketplace [number]` | Browse the marketplace manager without a number while idle; Enter/`i` inspects and `a` installs. In text-only contexts it prints entries; a number installs that entry. |
 | `/skills remove <name>`, `/skills rm <name>` | Remove an installed global skill. Bundled and project skills can't be removed — Agav points you to `/skills disable` instead. Restart Agav to apply the change. |
 | `/skills disable <name>` | Turn a skill off without deleting it. Works on bundled skills, which are compiled into the binary and cannot be removed. Restart Agav to apply. |
 | `/skills enable <name>` | Turn a previously disabled skill back on. Restart Agav to apply. |
@@ -71,6 +77,18 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | Command | Purpose |
 | --- | --- |
 | `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor, including native-tool selection for editable native agents. `[2]` Marketplace tab browses, searches, and installs community agents. `[3]` Create tab lists user-created agents and templates, and opens a 5-step wizard to create or edit agents. |
+
+Bare resource-manager commands open a TUI only in an idle interactive session. Explicit `list` and other text subcommands remain available; see [sessions and memory](/workflows/sessions-and-memory), [skills](/features/skills), and [automation](/workflows/automation) for controls and text fallbacks.
+
+## MCP connections
+
+| Command | Purpose |
+| --- | --- |
+| `/mcp`, `/mcp list` | Show connected servers and those requiring authentication. |
+| `/mcp auth <name>` | Explicitly start browser OAuth sign-in and reconnect the server without restarting. Startup never opens sign-in automatically. |
+| `/mcp logout <name>` | Disconnect an OAuth server and remove cached local credentials and its session tools/resources/prompts. Provider grants are not revoked. |
+
+See [MCP authentication](/features/mcp#oauth-authentication) for compatible servers, cancellation, and static-credential limitations.
 
 ## Diagnostics and exit
 

@@ -75,9 +75,9 @@ Each agent declares the environment variables it needs (`required-config` in the
 
 - Stored encrypted in `~/.agav/agents/<name>/config.json` — never in plain text
 - Injected into `process.env` only during that agent's execution — not shared with other agents or the parent session
-- Editable from the agent inspect view: `/agents → inspect → e`
+- Editable from the List tab: `/agents → [1] List → select agent → c`
 
-Agents with missing credentials show a `⚠ Needs config` indicator in the List tab. The LLM receives an error message if it tries to call an unconfigured agent.
+Agents with missing credentials show a `⚠ Needs config` indicator in the config editor and agent diagnostics (`v` from the List tab). The LLM receives an error message if it tries to call an unconfigured agent.
 
 ## Tool permissions and confirmation
 
@@ -86,11 +86,11 @@ Every tool in an agent is classified as either `safe` (read-only) or `destructiv
 - **Safe tools** run without a confirmation prompt.
 - **Destructive tools** pause and display a `[Y]es / [N]o / [A]lways` confirmation before executing.
 
-The classification is declared in the agent manifest (`tool-permissions`) and is visible in the inspect view.
+The classification is declared in the agent manifest (`tool-permissions`) and is visible in agent diagnostics (`v` from the List tab).
 
 ## Native tool access
 
-Native agents do not automatically receive Agav's built-in tools. Select the tools they need during creation, or open `/agents → List → inspect → e` and edit **Native Tools**. The chosen tools are written to the agent's `native-tools` manifest allowlist. Leaving the list empty keeps built-in tools unavailable while preserving agent-local and declared MCP tools. Bundled and A2A agents cannot edit this setting.
+Native agents do not automatically receive Agav's built-in tools. Select the tools they need during creation, or open `/agents → [1] List → select agent → c` and edit **Native Tools**. The chosen tools are written to the agent's `native-tools` manifest allowlist. Leaving the list empty keeps built-in tools unavailable while preserving agent-local and declared MCP tools. Bundled and A2A agents cannot edit this setting.
 
 ### Agent sandbox
 
@@ -108,7 +108,7 @@ On macOS the agent sandbox uses a deny-default Seatbelt profile; on Linux it use
 
 ## Model and effort overrides
 
-Agents inherit the session's model and effort by default. You can override them per-agent in the config editor (`/agents → inspect → e`). The override is stored in the agent's `config.json` and shown as `<model> (agent override)` in the inspect view. Clear the value to revert to inheriting from the session.
+Agents inherit the session's model and effort by default. You can override them per-agent in the config editor (`/agents → [1] List → select agent → c`). The override is stored in the agent's `config.json` and shown as `<model> (agent override)` in agent diagnostics (`v` from the List tab). Clear the value to revert to inheriting from the session.
 
 ## CLI
 
@@ -125,9 +125,26 @@ agav agents remove <name>              # Remove from disk
 
 Open `/agents` to manage agents interactively. The three tabs are:
 
-- **`[1] List`** — view, inspect, enable/disable, and remove installed agents.
+- **`[1] List`** — search, inspect, configure, enable/disable, and remove installed agents.
 - **`[2] Marketplace`** — browse and install community agents.
 - **`[3] Create`** — create new agents with the wizard, and manage your agents and templates.
+
+The List tab uses the shared resource manager. **↑↓** navigates, **←→** pages
+(page size adapts to the available height), **s** starts incremental search by
+name, description, origin, or tags, and **ENTER** confirms the filter. **r**
+refreshes the list; **ESC** clears an active search before exiting. `/agents list`
+remains a textual listing.
+
+For the selected agent:
+
+- **ENTER** or **i** opens standard inspection: description, origin, version, tool names, and system prompt. **↑↓** scrolls; **b** or **ESC** returns to the list.
+- **c** opens the credential and settings editor directly from the list.
+- **v** opens the legacy agent diagnostics view, including credential readiness, tool permissions, and model/effort overrides. **e** opens config only from this diagnostics view, not from standard inspection.
+- **t** toggles enabled/disabled.
+- **d** deletes an eligible non-bundled agent after confirmation; **y** confirms and **n** or **ESC** cancels. Bundled agents cannot be deleted.
+
+The Marketplace tab retains its own controls: **ENTER** installs and **i**
+inspects. See [Agent Marketplace](/features/agent-marketplace).
 
 ## Related
 

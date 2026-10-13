@@ -22,7 +22,7 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Inspect subagent | `Enter` |
 | Back to overview | `Tab` |
 | Insert newline | `Shift+Enter`, or `Option+Return` on macOS terminals that support it |
-| Submit | `Enter` |
+| Submit (queue while busy) | `Enter` |
 | Prompt history | `Up` / `Down` |
 | Exit, or copy an active Agav selection | `Ctrl+C` |
 | Clear input | `Ctrl+U` |
@@ -32,7 +32,11 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Command palette | `Ctrl+K Ctrl+P` |
 | Show keybindings | `Ctrl+K Ctrl+S` |
 | Clear screen | `Ctrl+L` |
-| Exit while idle with an empty prompt | `Ctrl+Q` |
+| Manage queued requests when present; otherwise exit while idle with an empty prompt | `Ctrl+Q` |
+
+## Queue controls
+
+Use `/queue` or **Ctrl+Q** when requests are queued. **Up/Down** selects an entry; **Delete/Backspace** cancels that entry without stopping the active turn. You can also click its **×**. **Esc** or **Ctrl+Q** closes queue management without cancelling requests; automatic dispatch waits while the queue panel is open. `/queue retry` resumes a queue paused after a dispatch failure. See [queued follow-ups](/workflows/planning-and-steering#queued-follow-up-requests).
 
 ## Cancel versus exit
 

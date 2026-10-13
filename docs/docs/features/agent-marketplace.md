@@ -52,8 +52,10 @@ Globally installed agents block re-installation at project scope — use the Lis
 After installing, switch to the List tab to configure credentials:
 
 ```
-/agents → [1] List → select the agent → i (inspect) → e (edit config)
+/agents → [1] List → select the agent → c (configure)
 ```
+
+In the List tab, `ENTER` or `i` opens standard inspection, not the config editor. Use `c` from the list to configure, or `v` to open legacy agent diagnostics (where `e` opens config). These list controls differ from the Marketplace tab, where `ENTER` installs and `i` inspects.
 
 The config editor shows each required credential with its current status (`✓ configured` or `✗ not set`). Press `ENTER` on a field to edit it, paste your value, and press `ENTER` again to save. Values are encrypted at rest.
 
@@ -98,6 +100,8 @@ my-marketplace/
 See the [official marketplace repository](https://github.com/prapaa-ai/agav-marketplace) for a complete example.
 
 ## Deleting agents
+
+In the List tab, select an eligible non-bundled agent and press `d`. Confirm with `y`, or cancel with `n` or `ESC`. Use `t` to disable an agent without deleting it.
 
 When a globally installed, user-created agent (one without a marketplace `sourceUrl`) is deleted from the List or Create tab, Agav automatically saves it as a template before removal. Project-scoped user-created agents are deleted without a template. The template preserves the agent's name, description, system prompt, MCP server selections, and tags. You can restore it later from the Create tab (`[3] Create`).
 

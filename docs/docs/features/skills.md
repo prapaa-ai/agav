@@ -136,20 +136,26 @@ If the URL returns an HTML page instead of Markdown, Agav reports a clear error 
 /skills marketplace 3            # Install skill #3 directly
 ```
 
-The marketplace opens an interactive TUI with two tabs — **Marketplace** (browse
-and install) and **Installed** (manage what you already have):
-- **Tab** to switch between the Marketplace and Installed tabs
-- **↑↓** to navigate, **←→** to page (5 skills per page)
-- **s** to search by name or description
-- **ENTER** to install the selected marketplace skill
-- In the Installed tab, **d** (or **ENTER**) toggles a skill between enabled and
-  disabled — this works on bundled skills too
-- **r** to refresh the catalog
-- **ESC** to exit
+The marketplace uses the shared searchable, paginated resource manager with two
+modes — **Marketplace** (browse and install) and **Installed** (manage what you
+already have). Bare `/skills` opens Installed; `/skills list` remains textual.
 
-Already-installed skills show a `✓ installed` badge and cannot be reinstalled.
-In the Installed tab each skill shows its origin and an `[enabled]`/`[disabled]`
-state.
+- **Tab** switches between Marketplace and Installed
+- **↑↓** navigates; **←→** changes page (page size adapts to the available terminal height)
+- **s** starts incremental search; **ENTER** confirms the filter
+- **ENTER** or **i** inspects the selected skill; **↑↓** scrolls details and **b** or **ESC** returns to the list
+- In Marketplace, **a** installs the selected skill
+- In Installed, **n** opens an install form for a URL or local path, **t** toggles
+  enabled/disabled (including bundled skills), and **d** deletes an eligible
+  global skill after confirmation (**y** confirms; **n** or **ESC** cancels)
+- **r** refreshes the current list
+- **ESC** clears an active search before exiting
+
+Marketplace search matches names and descriptions; Installed search also matches
+origin and tags. Already-installed skills can be found by searching `installed`,
+but do not show an installed badge. Installing an already-installed marketplace
+skill is refused. In Installed, each skill shows its origin and an
+`[enabled]`/`[disabled]` state. Restart Agav after skill changes.
 
 ### Removing skills
 
@@ -184,7 +190,7 @@ marked `[disabled]` so you can re-enable it. The choice is stored in
 disabling or enabling a skill.
 
 You can also toggle skills from the Installed tab of `/skills marketplace`
-(press **d**), or from outside a session with the CLI:
+(press **t**), or open bare `/skills` to manage installed skills. From outside a session, use the CLI:
 
 ```bash
 agav skills list                 # all skills grouped by origin, with state
@@ -271,7 +277,8 @@ Shell blocks have a 10-second timeout. On Windows, they run via `cmd.exe /c`; on
 ## Execution sandboxing
 
 Skills run with a restricted tool registry:
-- Only tools listed in `allowed-tools` are available (or all tools if no whitelist is set)
+- Only tools listed in `allowed-tools` are available; without an allowlist, the skill inherits its parent registry's tools, not every built-in
+- Optional GitHub, notebook, and LSP built-ins require explicit `allowed-tools` entries and are exposed only inside the skill's execution
 - Tools listed in `disallowed-tools` are removed
 - `subagent` and `activate_skill` are always removed — skills cannot nest or activate other skills
 

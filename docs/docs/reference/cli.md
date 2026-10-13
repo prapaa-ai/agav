@@ -23,7 +23,7 @@ agav update [version]        # Update the installed release
 - Print mode: a single prompt runs with the cap; when reached the agent summarizes its work and stops.
 - Run mode: the cap limits internal model/tool iterations for the task prompt.
 
-The flag overrides `maxIterations` in configuration for the current session only. On resume, the session history is kept but the cap is reapplied to new prompts.
+The flag overrides `maxIterations` in configuration for the current session only. On resume, the session history is kept but the cap is reapplied to new prompts. Values must be positive safe integers (1–9,007,199,254,740,991); invalid or missing values fail before work starts. Subagents, native agents, and skills share the active allowance. Automatic continuations and JSON-schema corrections do not reset it; independent prompts, including new shell submissions, do.
 
 ## Options
 
@@ -31,6 +31,8 @@ The flag overrides `maxIterations` in configuration for the current session only
 | --- | --- |
 | `--provider`, `-p` | `anthropic`, `openai`, `openrouter`, `nvidia`, `deepseek`, `gemini`, `vertex-ai`, or `ollama` |
 | `--model`, `-m` | Provider model identifier |
+| `--cwd <dir>` | Set the launch working directory; absolute and launch-relative paths are supported |
+| `--trajectory <path>` | Export a run/print transcript, aggregate token usage, and timing as JSON; not supported for interactive sessions |
 | `--effort` | `low`, `medium`, `high`, or `max` |
 | `--ollama-host` | Ollama host when no complete endpoint is set |
 | `--ollama-port` | Ollama port |
@@ -48,7 +50,19 @@ The flag overrides `maxIterations` in configuration for the current session only
 | `--version`, `-v` | Print the version |
 | `--help`, `-h` | Print help |
 
-Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, and max turns.
+Both `--option value` and `--option=value` are accepted for provider, model, effort, working directory, trajectory path, Ollama values, output schema, permissions, and max turns.
+
+### Working directory and literal arguments
+
+```bash
+agav --cwd ../service
+agav --cwd=/path/to/repo run "review the API"
+agav run -- "explain --max-turns=2 literally"
+```
+
+`--cwd` changes the working directory before project configuration, context, and relative files are resolved. A missing, inaccessible, or non-directory target produces a startup error. Relative paths are resolved from the original launch directory; automatic-update restarts do not apply them twice.
+
+`--` ends Agav option parsing: following tokens are literal prompt or delegated agent/skill arguments, even when they resemble flags. Place Agav options before this separator. See [trajectory exports](/workflows/non-interactive#trajectory-exports) for audit and benchmark output.
 
 ## Startup provider and model selection
 
@@ -112,3 +126,12 @@ agav skills clear                     # Remove all user-installed skills
 ```
 
 Bundled skills are compiled into the binary and cannot be removed, but `disable` turns them off without deleting anything. The enabled/disabled state is stored in `~/.agav/skills/registry.json`. Changes take effect on the next start.
+
+## MCP authentication subcommands
+
+```bash
+agav mcp auth <name>          # Explicit browser OAuth sign-in
+agav mcp logout <name>        # Delete local cached OAuth credentials
+```
+
+These commands use configured MCP servers and do not require an LLM provider. Restart an existing session after standalone sign-in or logout; use `/mcp auth <name>` or `/mcp logout <name>` inside the session for immediate reconnection or disconnection. Logout does not revoke provider authorization grants. See [MCP authentication](/features/mcp#oauth-authentication) for compatibility and credential storage.

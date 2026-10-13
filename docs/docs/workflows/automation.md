@@ -27,11 +27,24 @@ Supported interval suffixes are `s`, `m`, and `h`. If you omit a suffix, Agav as
 
 | Command | Intent |
 | --- | --- |
+| `/schedule` | Open the interactive schedule manager (textual list in headless mode). |
 | `/schedule add "<cron>" <prompt>` | Save a recurring task using a five-field cron schedule. |
-| `/schedule list` | Show saved scheduled tasks and their state. |
+| `/schedule list` | Show saved scheduled tasks and their state as text, even in the interactive UI. |
 | `/schedule disable <id>` | Pause the scheduled task identified by `<id>`. |
 | `/schedule enable <id>` | Resume the scheduled task identified by `<id>`. |
 | `/schedule remove <id>` | Delete the scheduled task identified by `<id>`. |
+
+Bare `/schedule` opens a searchable, paginated manager in the interactive UI.
+Use **↑↓** to navigate, **←→** to page (page size adapts to terminal height),
+**s** to search names, cron expressions, or prompt text, and **ENTER** to confirm
+the filter. **ENTER** or **i** inspects a task's ID, cron, prompt, and last run;
+**↑↓** scrolls details and **b** or **ESC** returns to the list.
+
+From the list, **n** creates a task using Cron and Prompt fields (**Tab** or
+**↑↓** switches fields; **ENTER** saves; **ESC** cancels), **t** toggles
+enabled/disabled, and **d** requests deletion (**y** confirms; **n** or **ESC**
+cancels). **r** refreshes; **ESC** clears an active search before exiting. There
+is no edit action: remove and recreate a task to change its cron or prompt.
 
 Scheduled tasks use standard five-field cron expressions and persist in `~/.agav/scheduled-tasks.json`:
 

@@ -83,6 +83,23 @@ agav --output-schema '{"type":"object","required":["summary"]}' -P "summarize"
 Keep secrets in environment variables and use an appropriately narrow tool policy for CI jobs.
 
 
+## Trajectory exports
+
+Use `--trajectory <path>` (or `--trajectory=<path>`) with `run` or print mode to save a native Agav JSON transcript for auditing or benchmark conversion:
+
+```bash
+agav --cwd ./service run --trajectory ./run.json "review the API"
+agav --trajectory ./print.json -P "summarize this repository"
+```
+
+The path is relative to the selected working directory unless absolute. Create its parent directory first. Exports contain `agav_trajectory_version: 1`, provider/model identifiers, start/finish timestamps, aggregate input/output/cache token usage, and ordered messages with correlated tool calls/results. Committed history is retained through compaction, retries, and schema corrections. Image payloads are replaced with placeholders; this is Agav's native format, not ATIF.
+
+Agav stages the file beside its destination and atomically renames it, replacing an existing destination on success. If execution fails after conversation setup, it still attempts to export the available transcript; failures before that setup may not produce a file. Export failure is reported on stderr and returns exit code `1`. A successful export does not turn a failed task into a successful one. Hard termination can prevent publication.
+
+Treat transcripts as sensitive: prompts, tool arguments/results, and source content can contain private information. Store them in a protected location and review before sharing. Without the flag, no trajectory file is written. Interactive sessions do not support `--trajectory`; use `/export` for their Markdown transcript.
+
+Headless runs do not advertise or register the interactive `update_plan` tool. This prevents a one-shot run from changing a saved interactive plan.
+
 ## Output recovery and stopping jobs
 
 Model-facing tool text has the same [output limits](/features/built-in-tools#output-limits-and-recovery) as interactive sessions, even with `--stream`. Streaming the final answer does not make intermediate tool results unlimited. Saved output paths are temporary and normal process exit attempts cleanup; ask Agav to copy required diagnostics into a protected artifact location during the run, before it exits. A saved log can itself be partial.
