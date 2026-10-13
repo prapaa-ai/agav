@@ -135,7 +135,7 @@ export function parseArgs(argv: string[]) {
     }
     if (arg === "--") {
       // Keep the boundary separately from positionals for delegated handlers.
-      if (flags.agents || flags.skills) {
+      if (flags.agents || flags.skills || flags.mcp) {
         flags.delegatedSeparatorIndex = flags._.length;
       }
       dashDashSeen = true;
@@ -232,11 +232,14 @@ export function parseArgs(argv: string[]) {
     } else if (arg === "skills" && !subcommandSeen) {
       flags.skills = true;
       subcommandSeen = true;
+    } else if (arg === "mcp" && !subcommandSeen) {
+      flags.mcp = true;
+      subcommandSeen = true;
     } else if (arg === "run" && !subcommandSeen) {
       flags.run = true;
       subcommandSeen = true;
     } else if (arg.startsWith("-")) {
-      if (subcommandSeen && (flags.agents || flags.skills)) {
+      if (subcommandSeen && (flags.agents || flags.skills || flags.mcp)) {
         flags._.push(arg);
       } else {
         const suggestion = findClosestFlag(arg);
@@ -264,10 +267,11 @@ export function parseArgs(argv: string[]) {
   }
   if (flags.agents && pos.length > 0) flags.agentsCommand = pos[0];
   if (flags.skills && pos.length > 0) flags.skillsCommand = pos[0];
+  if (flags.mcp && pos.length > 0) flags.mcpCommand = pos[0];
   if (flags.run && pos.length > 0) flags.runPrompt = pos.join(" ");
   if (flags.print && pos.length > 0) flags.printPrompt = pos.join(" ");
   
-  if (!flags.update && !flags.agents && !flags.skills && !flags.run && !flags.print && pos.length > 0) {
+  if (!flags.update && !flags.agents && !flags.skills && !flags.mcp && !flags.run && !flags.print && pos.length > 0) {
      process.stderr.write(`error: unexpected arguments: ${pos.join(" ")}\n`);
      process.exit(1);
   }
@@ -541,6 +545,8 @@ export async function main() {
     $ agav update                  Update to the latest version
     $ agav agents [command]        Manage service agents
     $ agav skills [command]        Manage skills
+    $ agav mcp auth <name>         Sign in to an OAuth-protected MCP server
+    $ agav mcp logout <name>       Remove cached MCP OAuth credentials
     $ agav --print "prompt"
     $ cat file | agav -P "explain this"
 
@@ -611,6 +617,18 @@ export async function main() {
     const targetVersion = typeof flags.updateVersion === "string" ? flags.updateVersion : undefined;
     const ok = await forceUpdate(targetVersion);
     process.exit(ok ? 0 : 1);
+    return;
+  }
+
+  // MCP authentication does not require an LLM provider or a running TUI.
+  if (flags.mcp) {
+    const { runMCPCommand } = await import("./cli/mcp-cli.js");
+    const args = (flags._ as string[]).slice(1);
+    if (typeof flags.delegatedSeparatorIndex === "number") {
+      args.splice(Math.max(0, flags.delegatedSeparatorIndex - 1), 0, "--");
+    }
+    const exitCode = await runMCPCommand(flags.mcpCommand, args);
+    process.exit(exitCode);
     return;
   }
 

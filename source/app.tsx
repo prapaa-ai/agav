@@ -201,6 +201,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     tokenUsage,
     loadedPlugins,
     mcpServers,
+    getMCPAuthenticationRequired,
+    authenticateMCPServer,
+    logoutMCPServer,
     mcpPromptCommands,
     skillCommands,
     agentCommands,
@@ -932,6 +935,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             currentSessionId: sessionId,
             exit,
             isLoading,
+            getMCPAuthenticationRequired,
+            authenticateMCPServer,
+            logoutMCPServer,
             getDebugState: () => ({
               tokenUsage,
               loadedPlugins,
@@ -1074,7 +1080,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine],
+    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine],
   );
 
   // Start one request at a time; retain failures rather than dropping user input.
