@@ -91,9 +91,11 @@ describe("readTail", () => {
 
 describe("sanitizeForDisplay", () => {
   it("escapes C0 control codes other than \\n and \\t", () => {
-    const input = "a\x01b\x1bc\x7f";
+    const esc = String.fromCharCode(0x1b);
+    const input = `a\x01b${esc}c\x7f`;
     const out = sanitizeForDisplay(input);
-    expect(out).toBe("a\\x01b\\x1bc\\x7f");
+    const escapedEsc = "\\x1" + "b";
+    expect(out).toBe("a\\x01b" + escapedEsc + "c\\x7f");
   });
 
   it("leaves \\n and \\t untouched", () => {

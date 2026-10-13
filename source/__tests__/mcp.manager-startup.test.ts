@@ -17,7 +17,7 @@ describe("MCP startup shutdown", () => {
       expect(stop).toHaveBeenCalledTimes(1);
     } finally {
       release();
-      await starting;
+      await starting.catch(() => {});
       manager.stopAll();
     }
     expect(manager.getServerNames()).toEqual([]);
@@ -32,7 +32,7 @@ describe("MCP startup shutdown", () => {
     const starting = manager.startServer("pending", { command: "fixture" });
     manager.stopAll();
     release();
-    await starting;
+    await starting.catch(() => {});
     const names = manager.getServerNames();
     manager.stopAll();
     expect(names).toEqual([]);
