@@ -27,9 +27,11 @@ export interface ResourceAdapter {
   remove?(id: string): Promise<void>;
   setEnabled?(id: string, enabled: boolean): Promise<void>;
   notice?: string;
+  /** Footer label for ENTER/i when "Inspect" undersells what the detail view shows. */
+  inspectLabel?: string;
 }
 
-export type ResourceKind = "agents" | "skills" | "memory" | "schedule" | "history" | "search-history";
+export type ResourceKind = "agents" | "skills" | "memory" | "schedule" | "history" | "search-history" | "jobs";
 
 export function filterResources(items: ResourceItem[], query: string): ResourceItem[] {
   const q = query.toLowerCase();

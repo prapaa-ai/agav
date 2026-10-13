@@ -26,6 +26,7 @@ import { isInternalUserMessage } from "./agent/internal-prompts.js";
 import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
+import { JobsTUI } from "./components/jobs-tui.js";
 import { ResourceManager } from "./components/resource-manager.js";
 import { createResourceAdapter } from "./resources/adapters.js";
 import type { ResourceKind, ResourceAdapter } from "./resources/types.js";
@@ -181,6 +182,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [skillsTUIActive, setSkillsTUIActive] = useState(false);
   const skillsTUIResolveRef = useRef<(() => void) | null>(null);
   const [skillsMarketplace, setSkillsMarketplace] = useState(true);
+  const [jobsTUIActive, setJobsTUIActive] = useState(false);
+  const jobsTUIResolveRef = useRef<(() => void) | null>(null);
   const [resourceAdapter, setResourceAdapter] = useState<ResourceAdapter | null>(null);
   const resourceTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
@@ -966,6 +969,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
                 skillsTUIResolveRef.current = onDone;
                 setSkillsMarketplace(marketplace);
                 setSkillsTUIActive(true);
+              } else if (kind === "jobs") {
+                jobsTUIResolveRef.current = onDone;
+                setJobsTUIActive(true);
               } else {
                 resourceTUIResolveRef.current = onDone;
                 setResourceAdapter(createResourceAdapter(kind));
@@ -1384,6 +1390,19 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               setInput("");
               const resolve = skillsTUIResolveRef.current;
               skillsTUIResolveRef.current = null;
+              resolve?.();
+            }}
+          />
+        )}
+        {jobsTUIActive && (
+          <JobsTUI
+            permissionMode={config.permissionMode}
+            onExit={() => {
+              setJobsTUIActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = jobsTUIResolveRef.current;
+              jobsTUIResolveRef.current = null;
               resolve?.();
             }}
           />

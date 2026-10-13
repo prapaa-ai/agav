@@ -6,18 +6,25 @@ import { filterResources, resourcePage } from "../resources/types.js";
 import { useSearch, SearchBar } from "./agents-search.js";
 import { wheelSelect, stepIndex } from "./wheel-select.js";
 
+/** Returned by an action to open its own read-only view (e.g. a report) in the detail pane. */
+export interface ResourceActionView {
+  detail: string;
+}
+
 export interface ResourceAction {
   key: string;
   label: string;
-  run(item: ResourceItem | undefined): void | string | Promise<void | string>;
+  run(item: ResourceItem | undefined): void | string | ResourceActionView | Promise<void | string | ResourceActionView>;
 }
 
-export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, height }: {
+export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, height, prompt }: {
   adapter: ResourceAdapter;
   onExit(): void;
   actions?: ResourceAction[];
   onBusyChange?(busy: boolean): void;
   height?: number;
+  /** Shown in place of "Working…" while a running action awaits a decision from the parent. */
+  prompt?: string;
 }) {
   const [items, setItems] = useState<ResourceItem[]>([]);
   const [index, setIndex] = useState(0);
@@ -140,7 +147,11 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
       const action = actions.find((a) => a.key === input || (a.key === "Tab" && key.tab));
       if (action) void run(async () => {
         const result = await action.run(item);
-        if (typeof result === "string" && mounted.current) {
+        if (result && typeof result === "object" && mounted.current) {
+          setDetail({ ...(item ?? { id: "", title: "", description: "" }), detail: result.detail });
+          setScrollOffset(Number.POSITIVE_INFINITY);
+          setView("detail");
+        } else if (typeof result === "string" && mounted.current) {
           await reload();
           setStatus(result);
         }
@@ -170,11 +181,11 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
         </Box>)}
       </ScrollBox>
     </Box>
-    {busy && <Text color="yellow">Working…</Text>}
+    {prompt ? <Text color="yellow" wrap="truncate-end">{prompt}</Text> : busy && <Text color="yellow">Working…</Text>}
     {status && <Text color="yellow">{status}</Text>}
     {view === "list" && <Text dimColor>Page {page + 1}/{pages}{adapter.notice ? ` · ${adapter.notice}` : ""}</Text>}
     <Text dimColor>{form ? "Tab/↑↓: Field | ENTER: Save | ESC: Cancel" : view === "detail" ? "↑↓: Scroll | b/ESC: Back" : view === "delete" ? "y: Delete | n/ESC: Cancel" : [
-      "↑↓: Navigate", "←→: Page", "ENTER/i: Inspect", "s: Search", "r: Refresh",
+      "↑↓: Navigate", "←→: Page", `ENTER/i: ${adapter.inspectLabel ?? "Inspect"}`, "s: Search", "r: Refresh",
       adapter.create && "n: Create", adapter.update && item && "e: Edit", canToggle && "t: Enable/disable", canRemove && "d: Delete",
       ...actions.map((a) => `${a.key}: ${a.label}`), "ESC: Exit/clear",
     ].filter(Boolean).join(" | ")}</Text>

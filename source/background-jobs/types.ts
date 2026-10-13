@@ -320,6 +320,16 @@ export interface ScheduleRecord {
   grantId: GrantId;
   enabled: boolean;
   createdAt: string;
+  /**
+   * Set while a schedule is paused (disabled but resumable). Revocation is
+   * permanent and predates pausing, so a disabled record WITHOUT this field
+   * is revoked — see `isScheduleRevoked`.
+   */
+  pausedAt?: string;
+}
+
+export function isScheduleRevoked(schedule: Pick<ScheduleRecord, "enabled" | "pausedAt">): boolean {
+  return !schedule.enabled && schedule.pausedAt === undefined;
 }
 
 export interface ScheduleOccurrenceRecord {
@@ -465,7 +475,7 @@ export interface CoordinatorClient {
   start(request: StartJobRequest, session: SessionPolicySnapshot): Promise<JobSummary>;
   list(): Promise<JobSummary[]>;
   poll(jobIdOrPrefix: string): Promise<JobSummary>;
-  log(jobIdOrPrefix: string, opts?: { maxBytes?: number; cursor?: string }): Promise<LogTail>;
+  log(jobIdOrPrefix: string, opts?: { maxBytes?: number; cursor?: string; stream?: "stdout" | "stderr" }): Promise<LogTail>;
   wait(jobIdOrPrefix: string, signal?: AbortSignal): Promise<JobSummary>;
   stop(jobIdOrPrefix: string, session: SessionPolicySnapshot): Promise<JobSummary>;
   cleanup(jobIdOrPrefix: string, session: SessionPolicySnapshot): Promise<void>;

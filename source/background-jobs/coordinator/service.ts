@@ -57,7 +57,7 @@ import { getSocketPath } from "../ipc/socket-path.js";
 import { IpcClient } from "../ipc/client.js";
 import { reconcileJob } from "../recovery/reconcile.js";
 import { createMailboxService, type MailboxService } from "../mailbox/mailbox-service.js";
-import { readCursor, readTail } from "../logging/segment-reader.js";
+import { readCursor, readTail, type LogStream } from "../logging/segment-reader.js";
 import { reserveCapacity } from "./admission.js";
 import { launchSupervisorForJob, socketNameForJob } from "./launcher.js";
 import { join } from "node:path";
@@ -379,14 +379,16 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       return summary;
     },
 
-    async log(jobIdOrPrefix: string, logOpts?: { maxBytes?: number; cursor?: string }): Promise<LogTail> {
+    async log(jobIdOrPrefix: string, logOpts?: { maxBytes?: number; cursor?: string; stream?: LogStream }): Promise<LogTail> {
       const jobId = await resolveJobId(jobIdOrPrefix);
       const socketPath = socketPathFor(root, jobId);
+      const stream = logOpts?.stream ?? "stdout";
 
       const reply = await tryIpcRequest(socketPath, {
         type: "log",
         maxBytes: logOpts?.maxBytes,
         cursor: logOpts?.cursor,
+        stream,
       });
 
       if (reply !== undefined && isLogResponse(reply)) {
@@ -399,10 +401,10 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       // the supervisor process has exited.
       const dir = logsDirFor(root, jobId);
       if (logOpts?.cursor !== undefined || logOpts?.maxBytes === undefined) {
-        const result = await readCursor(dir, "stdout", logOpts?.cursor, logOpts?.maxBytes);
+        const result = await readCursor(dir, stream, logOpts?.cursor, logOpts?.maxBytes);
         return { text: result.text, truncated: result.truncated, cursor: result.cursor };
       }
-      const result = await readTail(dir, "stdout", logOpts.maxBytes);
+      const result = await readTail(dir, stream, logOpts.maxBytes);
       return { text: result.text, truncated: result.truncated, cursor: "" };
     },
 

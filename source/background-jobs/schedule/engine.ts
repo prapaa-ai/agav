@@ -13,12 +13,14 @@ import { randomUUID } from "node:crypto";
 
 import {
   BackgroundJobError,
+  isScheduleRevoked,
   isTerminalLifecycle,
   type CoordinatorClient,
   type JobRecord,
   type LaunchSpec,
   type Repositories,
   type ScheduleId,
+  type ScheduleOccurrenceRecord,
   type ScheduleRecord,
   type SessionPolicySnapshot,
 } from "../types.js";
@@ -40,6 +42,12 @@ export interface ScheduleEvaluationResult {
   reason?: string;
 }
 
+/** One trigger of a schedule and the job it launched, if dispatch got that far. */
+export interface ScheduleRun {
+  occurrence: ScheduleOccurrenceRecord;
+  job?: JobRecord;
+}
+
 export interface ScheduleEngine {
   createSchedule(input: {
     cron: string;
@@ -51,6 +59,12 @@ export interface ScheduleEngine {
   revokeSchedule(scheduleId: ScheduleId, session: SessionPolicySnapshot): Promise<void>;
 
   listSchedules(): Promise<ScheduleRecord[]>;
+
+  /** Pause or resume future triggers. Never touches jobs already launched. */
+  setScheduleEnabled(scheduleId: ScheduleId, enabled: boolean, session: SessionPolicySnapshot): Promise<ScheduleRecord>;
+
+  /** Runs of one schedule, newest first. */
+  listRuns(scheduleId: ScheduleId): Promise<ScheduleRun[]>;
 
   evaluateOnce(args: {
     nowUtc: Date;
@@ -129,11 +143,52 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
       if (!decision.allowed) {
         throw new BackgroundJobError("authorization-denied", decision.reason);
       }
-      await repositories.schedules.put({ ...schedule, enabled: false });
+      // Clearing the pause marker is what makes revocation permanent.
+      await repositories.schedules.put({ ...schedule, enabled: false, pausedAt: undefined });
     },
 
     async listSchedules() {
       return repositories.schedules.list();
+    },
+
+    async setScheduleEnabled(scheduleId, enabled, session) {
+      const schedule = await repositories.schedules.get(scheduleId);
+      if (schedule === undefined) {
+        throw new BackgroundJobError("not-found", `No schedule found for scheduleId "${scheduleId}".`);
+      }
+      if (isScheduleRevoked(schedule)) {
+        throw new BackgroundJobError("authorization-denied", "This schedule was revoked and cannot be re-enabled. Create a new schedule instead.");
+      }
+      if (schedule.enabled === enabled) return schedule;
+      // Resuming re-allows launches, so it is gated like creation (deny-writes
+      // blocks it); pausing is gated like revocation and is never blocked.
+      const decision = await authorizationService.authorize(
+        enabled ? "schedule-create" : "schedule-revoke",
+        schedule.launchSpecTemplate,
+        session,
+      );
+      if (!decision.allowed) {
+        throw new BackgroundJobError("authorization-denied", decision.reason);
+      }
+      if (enabled) {
+        // Dispatch revalidates the original grant; fail now rather than
+        // silently skipping every future trigger.
+        const grant = await authorizationService.revalidateBeforeDispatch(schedule.grantId, schedule.launchSpecTemplate);
+        if (!grant.allowed) throw new BackgroundJobError("authorization-denied", grant.reason);
+      }
+      const updated: ScheduleRecord = { ...schedule, enabled, pausedAt: enabled ? undefined : new Date().toISOString() };
+      await repositories.schedules.put(updated);
+      return updated;
+    },
+
+    async listRuns(scheduleId) {
+      const [occurrences, jobs] = await Promise.all([
+        repositories.occurrences.listForSchedule(scheduleId),
+        repositories.jobs.list(),
+      ]);
+      return occurrences
+        .map((occurrence) => ({ occurrence, job: jobs.find((j) => j.requestId === occurrence.requestId) }))
+        .sort((a, b) => b.occurrence.createdAt.localeCompare(a.occurrence.createdAt));
     },
 
     async evaluateOnce({ nowUtc, connectedSessions }) {
