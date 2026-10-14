@@ -1,7 +1,3 @@
-/**
- * WP-12 — Windows scheduler entry: Task Scheduler task `\Agav\JobTick`,
- * every minute, "Run only when user is logged on" (InteractiveToken), hidden.
- */
 import type { SchedulerContext, SchedulerTarget } from "./common.js";
 import { errorMessage, unlinkIfExists, writeFileAtomic } from "./common.js";
 
@@ -15,7 +11,6 @@ function xmlUnescape(s: string): string {
   return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 }
 
-/** Quote one argument per the MSVCRT/CommandLineToArgvW rules. */
 export function quoteWindowsArg(arg: string): string {
   if (arg !== "" && !/[\s"]/.test(arg)) return arg;
   let out = '"';
@@ -35,7 +30,6 @@ export function quoteWindowsArg(arg: string): string {
   return `${out}${"\\".repeat(backslashes * 2)}"`;
 }
 
-/** Split a command line per CommandLineToArgvW (inverse of quoteWindowsArg). */
 export function splitWindowsArgs(input: string): string[] {
   const out: string[] = [];
   let cur = "";
@@ -80,10 +74,7 @@ export function splitWindowsArgs(input: string): string[] {
   return out;
 }
 
-/**
- * Task XML. `startBoundary` is fixed (a past date) so output is deterministic;
- * the repetition makes it fire every minute from logon onwards.
- */
+/** `startBoundary` is a fixed past date so output is deterministic. */
 export function generateTaskXml(target: SchedulerTarget, startBoundary = "2000-01-01T00:00:00"): string {
   const args = target.args.map(quoteWindowsArg).join(" ");
   return [
@@ -138,7 +129,7 @@ export function parseTaskXml(xml: string): SchedulerTarget | undefined {
   return { executable, args };
 }
 
-/** schtasks expects UTF-16LE with BOM when the XML declares UTF-16. */
+/** schtasks needs UTF-16LE with BOM when the XML declares UTF-16. */
 export function encodeUtf16Le(text: string): Uint8Array {
   return Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
 }

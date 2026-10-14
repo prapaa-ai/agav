@@ -1,13 +1,3 @@
-/**
- * T05 — Storage root resolution, canonicalization and ID safety.
- *
- * Owned by T05 (storage/repositories). Per solution.md §7: "Resolve custom
- * storage roots to absolute paths and require local, private storage with
- * validated locking/publication semantics. Network/shared storage is outside
- * the baseline. IDs are not file paths; derive all paths inside the
- * validated root and reject unsafe links/junctions. Use full
- * collision-resistant IDs; every prefix-based action rejects ambiguity."
- */
 import { promises as fs } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -16,10 +6,9 @@ import { BACKGROUND_JOBS_STORAGE_VERSION, BackgroundJobError } from "../types.js
 import { getPlatformAdapter } from "../platform/index.js";
 import { writeAtomic } from "./atomic-file.js";
 
-/** Matches the "collision-resistant" identifiers this subsystem issues (uuid-ish). */
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
-/** Reject obvious network/UNC-style paths; best-effort per solution.md §7. */
+/** Best-effort: network/shared storage is unsupported (locking/publication semantics unverified). */
 function looksLikeNetworkPath(path: string): boolean {
   return path.startsWith("\\\\") || path.includes("://");
 }
@@ -30,18 +19,11 @@ function assertSafeId(id: string): void {
   }
 }
 
-/** Default storage root: `<agav-dir>/background-jobs`, unless a custom root is supplied. */
 export function defaultStorageRoot(): string {
   return join(getAgavDir(), "background-jobs");
 }
 
-/**
- * Resolve a storage root to an absolute, canonicalized, local path.
- *
- * Creates the directory (mode 0700) if it does not exist yet, then
- * canonicalizes it via the platform adapter (resolves symlinks/junctions and
- * verifies existence). Rejects paths that look like network/UNC shares.
- */
+/** Creates the root (0700) if missing and canonicalizes it, resolving symlinks/junctions. */
 export async function resolveStorageRoot(customRoot?: string): Promise<string> {
   const requested = customRoot ?? defaultStorageRoot();
   if (looksLikeNetworkPath(requested)) {
@@ -70,10 +52,7 @@ export async function resolveStorageRoot(customRoot?: string): Promise<string> {
   return canonical;
 }
 
-// ---------------------------------------------------------------------------
-// Record path helpers — every path is derived inside `root`; ids are
-// validated so they can never traverse outside it.
-// ---------------------------------------------------------------------------
+// Every path is derived inside `root`; ids are validated so they cannot traverse outside it.
 
 export function jobsDir(root: string): string {
   return join(root, "jobs");
@@ -152,21 +131,11 @@ export function lockPath(root: string, name: string): string {
   return join(locksDir(root), `${name}.lock`);
 }
 
-// ---------------------------------------------------------------------------
-// Store VERSION marker (plan item 0.10, decision D6)
-// ---------------------------------------------------------------------------
-
-/** `<root>/VERSION`: plain-text integer storage version of this store. */
 export function storageVersionPath(root: string): string {
   return join(root, "VERSION");
 }
 
-/**
- * Read the store's on-disk VERSION. Returns `undefined` when the file does
- * not exist (stores created by builds that predate the marker). A file that
- * isn't a positive integer is reported as `storage-unavailable` rather than
- * guessed at.
- */
+/** `undefined` for stores that predate the marker; a non-integer file throws rather than being guessed at. */
 export async function readStorageVersion(root: string): Promise<number | undefined> {
   const path = storageVersionPath(root);
   let raw: string;
@@ -186,15 +155,7 @@ export async function readStorageVersion(root: string): Promise<number | undefin
   return Number(trimmed);
 }
 
-/**
- * Write the current storage version to `<root>/VERSION` if the file is
- * absent. An existing file is never rewritten, so a store created or
- * upgraded by a newer build keeps its marker. Writing the marker into an
- * older store that lacks one is harmless: on-disk record shapes are
- * unchanged at version 1. Publication is atomic temp+rename (`writeAtomic`),
- * so readers never observe a partial file; concurrent first-time writers
- * all publish the same content.
- */
+/** Never rewrites an existing marker, so a store from a newer build keeps its version. */
 export async function ensureStorageVersionFile(root: string): Promise<void> {
   const path = storageVersionPath(root);
   try {
@@ -206,11 +167,7 @@ export async function ensureStorageVersionFile(root: string): Promise<void> {
   await writeAtomic(path, `${BACKGROUND_JOBS_STORAGE_VERSION}\n`);
 }
 
-/**
- * Throw `store-version-newer` when the on-disk VERSION is greater than the
- * version this build supports (`BACKGROUND_JOBS_STORAGE_VERSION`). A missing
- * file is accepted (legacy store). Returns the on-disk version, if any.
- */
+/** Throws `store-version-newer` if the store is newer than this build; a missing marker is accepted. */
 export async function checkStorageVersion(root: string): Promise<number | undefined> {
   const version = await readStorageVersion(root);
   if (version !== undefined && version > BACKGROUND_JOBS_STORAGE_VERSION) {
@@ -223,11 +180,7 @@ export async function checkStorageVersion(root: string): Promise<number | undefi
   return version;
 }
 
-/**
- * Resolve an unambiguous id from `ids` matching `prefix`. Exact full-id
- * matches take priority over prefix matches. Throws `not-found` when nothing
- * matches and `ambiguous-id` when more than one candidate matches.
- */
+/** An exact id match wins over prefix matches; no match or several prefix matches throw. */
 export function resolvePrefix(ids: string[], prefix: string): string {
   const exact = ids.find((id) => id === prefix);
   if (exact) return exact;

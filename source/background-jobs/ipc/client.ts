@@ -1,8 +1,3 @@
-/**
- * IPC client (T06): connects to an `IpcServer` socket/pipe, performs the
- * version-negotiation handshake, and provides a correlated request/response
- * API plus a bounded reconnect helper.
- */
 import { randomUUID } from "node:crypto";
 import { connect as netConnect, type Socket } from "node:net";
 import { existsSync } from "node:fs";
@@ -36,12 +31,7 @@ export class IpcClient {
     socket.on("error", (err) => this.rejectAllPending(toBackgroundJobError(err)));
   }
 
-  /**
-   * Connect, perform the hello handshake, and resolve once the server has
-   * ack'd. Rejects with a `BackgroundJobError` on timeout, version
-   * rejection, or connection failure (e.g. nothing listening, or the
-   * socket/pipe path does not exist).
-   */
+  /** Resolves once the server acks the hello handshake; rejects with a `BackgroundJobError` otherwise. */
   static async connect(socketPath: string, timeoutMs = 3000): Promise<IpcClient> {
     if (osPlatform() !== "win32" && !existsSync(socketPath)) {
       throw new BackgroundJobError("not-found", `IPC socket not found at ${socketPath}`);
@@ -92,8 +82,7 @@ export class IpcClient {
         }
       };
 
-      // Consume exactly the first decoded message as the handshake
-      // response; afterwards `request()` wiring takes over dispatch.
+      // The first decoded message is the handshake response; later ones go to response dispatch.
       const iterator = this.decoder[Symbol.asyncIterator]();
       iterator
         .next()
@@ -104,8 +93,6 @@ export class IpcClient {
             return;
           }
           onFirstMessage(res.value);
-          // Switch the decoder over to envelope-dispatch mode for all
-          // subsequent messages (requests sent after this point).
           this.attachResponseDispatch();
         })
         .catch((err) => {
@@ -146,11 +133,6 @@ export class IpcClient {
     }
   }
 
-  /**
-   * Send a request and wait for its correlated response. Multiple concurrent
-   * calls on the same connection are safe: each gets its own randomUUID
-   * correlation id so responses cannot cross-match.
-   */
   request(msg: unknown, timeoutMs = 10000): Promise<unknown> {
     if (this.closed) {
       return Promise.reject(new BackgroundJobError("storage-unavailable", "IPC client is closed"));
@@ -185,12 +167,7 @@ export class IpcClient {
     });
   }
 
-  /**
-   * Bounded, diagnosable reconnect helper per solution.md §6 "reconnect is
-   * bounded and diagnosable": tries `connect()` up to `retries + 1` times
-   * total with a fixed delay between attempts, then rejects with the last
-   * observed error rather than retrying forever.
-   */
+  /** Up to `retries + 1` attempts with a fixed delay, then rejects with the last error (never retries forever). */
   static async connectWithRetry(socketPath: string, options?: ConnectWithRetryOptions): Promise<IpcClient> {
     const retries = options?.retries ?? 3;
     const delayMs = options?.delayMs ?? 200;

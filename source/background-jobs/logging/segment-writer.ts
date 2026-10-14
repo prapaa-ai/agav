@@ -1,46 +1,9 @@
 /**
- * T10 — Supervisor-owned, segmented, multi-stream log writer.
- *
- * Per solution.md §9: "The supervisor consumes workload pipes and owns all
- * retained log files. Rotate into numbered segments by closing the current
- * segment and opening the next—not by renaming a file the workload still
- * writes. Readers must release handles; Windows deletion failures receive
- * bounded retries." and "Never grow beyond quota or block the workload
- * indefinitely because logging stalled."
- *
- * Ownership boundary (per README.md / types.ts module map): this module
- * reports failures via `opts.onFailure` only. It never signals, stops or
- * otherwise acts on a process — that is the supervisor's (T11) job, acting
- * on the decision produced by `logging/failure-policy.ts`.
- *
- * Design notes:
- *  - Each stream ("stdout"/"stderr") has its own independently numbered
- *    segment sequence: `stdout.0.log`, `stdout.1.log`, ... and
- *    `stderr.0.log`, `stderr.1.log`, ... living side by side in `dir`.
- *  - A single long-lived append `FileHandle` is kept open per stream for
- *    write efficiency (avoids open/close syscalls per chunk). The handle is
- *    closed whenever the segment rotates (so we never keep writing into a
- *    file we've logically "closed") and on `close()`/rotation-failure.
- *  - Byte accounting (`retainedBytesPerJob`) is tracked across BOTH streams
- *    combined, matching `ResourceLimits.retainedLogBytesPerJob` which is
- *    documented in types.ts as "both streams combined". When the combined
- *    total exceeds the budget, the oldest segments (lowest index, oldest by
- *    mtime, considered across either stream) are deleted until back under
- *    budget.
- *  - The writer treats all chunks as opaque bytes. It never attempts UTF-8
- *    decoding/validation — that is strictly the reader's job at display
- *    time (see segment-reader.ts).
- *  - A single enormous chunk larger than `segmentBytes` is split across as
- *    many segment boundaries as necessary; each split still obeys the
- *    close-current/open-next rotation discipline (never rename a file still
- *    being written).
- *  - Segment deletion during eviction is retried up to 3 times, 50ms apart,
- *    to tolerate transient Windows-style sharing-violation-equivalent
- *    failures (this writer runs on Linux in CI, but the retry loop is
- *    written generically so the same code behaves correctly when this
- *    module eventually runs on Windows). If deletion still fails after
- *    retries, `opts.onFailure` is invoked and rotation/writing continues —
- *    a logging failure never throws out of the write path.
+ * Supervisor-owned writer with independent numbered segments per stream (`stdout.0.log`, ...).
+ * Rotation closes the current segment and opens the next; it never renames a file the workload
+ * still writes. The retained-bytes quota spans both streams combined. Chunks are opaque bytes
+ * (UTF-8 is the reader's concern). Failures go to `onFailure` and never throw out of the write
+ * path; this module never acts on a process.
  */
 import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
@@ -58,20 +21,15 @@ async function sleep(ms: number): Promise<void> {
 }
 
 export interface SegmentedLogWriterOptions {
-  /** Maximum size in bytes of a single segment file before rotating. */
   segmentBytes: number;
-  /** Maximum combined on-disk bytes retained across both streams for this job. */
+  /** Combined across both streams. */
   retainedBytesPerJob: number;
-  /** Called (never throws) when a logging-layer operation fails irrecoverably. Never acts on a process. */
   onFailure: (reason: string) => void;
 }
 
 interface StreamState {
-  /** Index of the segment currently open for appending (or about to be opened). */
   currentIndex: number;
-  /** Open append handle for `currentIndex`, if any. */
   handle?: FileHandle;
-  /** Bytes already written into the currently open segment. */
   currentSize: number;
 }
 
@@ -79,9 +37,6 @@ function segmentPath(dir: string, stream: LogStream, index: number): string {
   return join(dir, `${stream}.${index}.log`);
 }
 
-/**
- * Matches `stdout.<n>.log` / `stderr.<n>.log` and extracts `<n>`.
- */
 function parseSegmentFileName(name: string, stream: LogStream): number | undefined {
   const match = /^([a-z]+)\.(\d+)\.log$/.exec(name);
   if (!match) return undefined;
@@ -157,7 +112,6 @@ export class SegmentedLogWriter {
     }
     s.currentIndex += 1;
     s.currentSize = 0;
-    // The next write() call will lazily open the new segment via ensureHandle.
   }
 
   async write(stream: LogStream, chunk: Buffer): Promise<void> {
@@ -180,8 +134,7 @@ export class SegmentedLogWriter {
         await handle.appendFile(slice);
       } catch (error) {
         this.onFailure(`segment write failed: ${String((error as Error)?.message ?? error)}`);
-        // Degrade gracefully: drop this slice rather than throwing out of the
-        // write path, but still advance offset so we don't spin forever.
+        // The slice is dropped, but offset still advances so we don't spin.
       }
       s.currentSize += sliceLen;
       offset += sliceLen;
@@ -223,6 +176,7 @@ export class SegmentedLogWriter {
 
   private async deleteWithRetry(path: string): Promise<boolean> {
     let lastError: unknown;
+    // Bounded retries tolerate transient Windows sharing violations.
     for (let attempt = 0; attempt < DELETE_RETRY_ATTEMPTS; attempt++) {
       try {
         await fs.unlink(path);
@@ -238,13 +192,7 @@ export class SegmentedLogWriter {
     return false;
   }
 
-  /**
-   * Deletes oldest segments (lowest index first, tie-broken by mtime) across
-   * either stream until combined retained bytes are back under budget. Never
-   * deletes a stream's currently-open segment (that would violate the
-   * "close then open next, never touch a file still being written"
-   * discipline, and the currently open segment is still accruing).
-   */
+  /** Deletes oldest segments (lowest index, then mtime) across both streams until under budget. */
   private async enforceRetention(): Promise<void> {
     const all = await this.listAllSegmentsWithStats();
     let total = all.reduce((sum, s) => sum + s.size, 0);

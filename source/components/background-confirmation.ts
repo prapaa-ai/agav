@@ -1,3 +1,4 @@
+import stringWidth from "string-width";
 import type { GrantAction, LaunchSpec } from "../background-jobs/types.js";
 
 /** Consent-relevant spec handed to `confirmBackgroundAction`. */
@@ -18,9 +19,7 @@ export interface BackgroundConfirmation {
   isolation: string;
   /** True when no sandbox applies; callers should make this stand out. */
   unrestricted: boolean;
-  /** Cron and timezone for a recurring spec. */
   schedule?: string;
-  /** Environment names, credential references and headless flag, when present. */
   extras: string[];
   /** Explains that approval outlives this single invocation. */
   reuse: string;
@@ -29,6 +28,13 @@ export interface BackgroundConfirmation {
 /** Keep newlines/tabs but make other control characters visible instead of acting on the terminal. */
 function visible(text: string): string {
   return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, (c) => `\\x${c.charCodeAt(0).toString(16).padStart(2, "0")}`);
+}
+
+export function detailViewport(lines: string[], columns: number, maxRows: number): { contentRows: number; rows: number; overflows: boolean } {
+  const width = Math.max(1, columns);
+  const contentRows = lines.reduce((sum, line) => sum + line.split("\n").reduce((n, part) => n + Math.max(1, Math.ceil(stringWidth(part) / width)), 0), 0);
+  const rows = Math.min(contentRows, Math.max(1, maxRows));
+  return { contentRows, rows, overflows: contentRows > rows };
 }
 
 function describeIsolation(spec: BackgroundConfirmSpec): { text: string; unrestricted: boolean } {
@@ -80,7 +86,6 @@ export function describeBackgroundConfirmation(action: GrantAction, spec: Backgr
   };
 }
 
-/** Plain-text lines for one-line-per-term renderers; the caller appends its own controls line. */
 export function backgroundConfirmationLines(info: BackgroundConfirmation): string[] {
   return [
     `${info.label}: ${info.command}?`,
@@ -92,7 +97,6 @@ export function backgroundConfirmationLines(info: BackgroundConfirmation): strin
   ];
 }
 
-/** Recognizes the `{ action, spec }` input the agent loop passes for background consent. */
 export function parseBackgroundConfirmInput(
   input: Record<string, unknown>,
 ): { action: GrantAction; spec: BackgroundConfirmSpec } | undefined {

@@ -1,9 +1,3 @@
-/**
- * WP-12 (plan 1.3) — `agav job tick --install | --uninstall | --status`.
- *
- * Selects the per-OS backend (systemd/cron, launchd, Task Scheduler) and
- * reports on the entry. All system access goes through an injected context.
- */
 import { homedir as osHomedir } from "node:os";
 
 import type { ResolveTargetDeps, SchedulerContext, SchedulerTarget } from "./common.js";
@@ -41,18 +35,13 @@ export interface StatusResult {
   installed: boolean;
   backend?: SchedulerBackend;
   target?: SchedulerTarget;
-  /** Where the entry lives (unit path, plist path, task name, "crontab"). */
+  /** Unit path, plist path, task name, or "crontab". */
   location?: string;
-  /** Whether the entry's target executable (and CLI entry) still exist. */
   targetExists?: boolean;
-  /**
-   * Re-run `--install`: the entry target differs from the current executable
-   * and no longer exists, or the entry uses the legacy `job tick` form.
-   */
+  /** `--install` should be re-run: the entry's target is gone and differs from the current executable, or it is legacy. */
   stale?: boolean;
-  /** Entry uses the legacy `<exe> [entry] job tick` form (loads the full CLI each minute). */
+  /** Entry uses the legacy `job tick` form. */
   outdated?: boolean;
-  /** The command a fresh `--install` would write. */
   current?: SchedulerTarget;
 }
 

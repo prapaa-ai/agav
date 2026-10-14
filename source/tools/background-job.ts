@@ -1,27 +1,7 @@
 /**
- * T16 — Manual background-job tool.
- *
- * A single `run_background_job` tool exposes the core manual actions
- * (start/list/poll/log/wait/stop) against the T14 coordinator — the ONLY
- * entry point allowed to launch/observe/stop background jobs. This file
- * never imports supervisor/platform-adapter code directly.
- *
- * Opt-in gate: the tool is always registered (discoverable in /help and
- * tool schemas), but `execute()` refuses to do anything unless
- * `backgroundJobsEnabled: true` is set in the Agav config. This keeps the
- * feature truly opt-in without needing to thread a flag through
- * app.tsx/main.tsx's tool-list construction.
- *
- * Trust/capability tier: commands run outside the normal 30-second
- * `run_command` timeout and OUTSIDE the OS sandbox (seatbelt/bubblewrap)
- * used by `run_command` — the SAME trust boundary applies (same OS user),
- * per solution.md §4, but there is no per-call timeout and no sandboxing by
- * default. Jobs persist across the current turn and session.
- *
- * Headless (print/run) mode: the host sets `context.headless`; start requests
- * carry `headless: true` so the coordinator enforces the headless consent gate.
- * No headless grant source exists yet, so the `SessionPolicySnapshot` built
- * here always has `headlessApprovedActions: []` and headless writes are denied.
+ * Always registered, but `execute()` refuses unless `backgroundJobsEnabled` is set.
+ * Jobs run outside the `run_command` timeout and OS sandbox (same OS user).
+ * No headless grant source exists yet, so headless writes are denied.
  */
 import { platform as osPlatform } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -135,8 +115,9 @@ export const backgroundJobTool: ToolDefinition = {
       "wait (block, cancellably, until a job reaches a terminal state), stop (request termination of one job). " +
       "Also supports recurring process-schedules: schedule-create (register a cron-based schedule for a shell " +
       "command), schedule-list (show all known schedules), schedule-revoke (disable a schedule by exact id). Note: " +
-      "schedules are checked about every 30 seconds, but only while an interactive agav session with " +
-      "background jobs enabled is running. Nothing triggers them while agav is closed.",
+      "by default schedules are checked about every 30 seconds, but only while an interactive agav session with " +
+      "background jobs enabled is running. If unattended automation is explicitly configured (`agav job tick " +
+      "--install` or `agav job daemon start`), schedules also fire while agav is closed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -215,10 +196,8 @@ export const backgroundJobTool: ToolDefinition = {
 
     const session = context?.backgroundPolicy ?? sessionPolicyFromConfig(config.permissionMode);
 
-    // The coordinator/schedule engine only apply the headless consent gate where
-    // a request carries `headless` (start). For the other write actions enforce
-    // the same rule here: with no human to ask, only an explicitly pre-approved
-    // action may proceed. `context.headless` is host-supplied, never model input.
+    // The coordinator only applies the headless gate to `start`; enforce it here for
+    // the other write actions. `context.headless` is host-supplied, never model input.
     const headlessGate = (grantAction: GrantAction): ToolResult | undefined =>
       context?.headless === true && !isHeadlessActionApproved(grantAction, session)
         ? errorResult(
@@ -244,13 +223,9 @@ export const backgroundJobTool: ToolDefinition = {
             requestId: randomUUID(),
             invocation,
             cwd: typeof input.cwd === "string" && input.cwd.trim() !== "" ? input.cwd : process.cwd(),
-            // Phase-B default: no sandboxing requested for background jobs.
-            // Explicitly approved unrestricted execution ("none") is the
-            // simplest safe default here since this tool does not yet
-            // expose an isolation-selection UI; the same trust boundary as
-            // run_command already applies (same OS user).
+            // No isolation-selection UI yet; unrestricted, same trust boundary as run_command.
             isolation: { backend: "none", required: false },
-            // Trusted host fact (print/run mode), never from model input.
+            // Host-supplied, never from model input.
             ...(context?.headless === true ? { headless: true } : {}),
           };
           const summary = await coordinator.start(request, session);

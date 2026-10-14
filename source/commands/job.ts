@@ -1,21 +1,3 @@
-/**
- * T16 — Manual `/job` slash command.
- *
- * Direct, user-facing inspection/control of background jobs WITHOUT going
- * through the LLM/tool-call path, per solution.md §2: "Add user-facing job
- * inspection and capability/status reporting without requiring an LLM
- * turn." This talks to the coordinator the exact same way the
- * `run_background_job` tool does (via the shared singleton in
- * `../background-jobs-integration.js`), and is gated by the same
- * `backgroundJobsEnabled` config flag.
- *
- * A bare `/job` opens the shared resource manager (see `JobsTUI`) like the
- * other manager commands; the text sub-commands remain for headless use.
- *
- * This file is intentionally separate from `./schedule.ts` (the old
- * prompt-schedule feature, unrelated and left untouched) and does not reuse
- * the `/schedule` name.
- */
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import { openResourceManager } from "./resource-manager.js";
 import { getSharedCoordinator, getSharedScheduleEngine } from "../background-jobs-integration.js";
@@ -43,15 +25,11 @@ const USAGE =
   "  /job schedule revoke <scheduleId>               Revoke a schedule by exact id (does not stop already-running jobs)\n" +
   "  /job capabilities                               Show platform capability/status report\n\n" +
   'Background jobs must be enabled via "backgroundJobsEnabled": true in your agav config.\n' +
-  "Note: schedules are checked about every 30 seconds, but only while an interactive agav session with background jobs enabled is running. Nothing triggers them while agav is closed.";
+  "Note: by default schedules are checked about every 30 seconds, but only while an interactive agav session with background jobs enabled is running. If unattended automation is explicitly configured (`agav job tick --install` or `agav job daemon start`), schedules also fire while agav is closed.";
 
 const LOG_USAGE = "Usage: /job log <id> [--stderr] [--tail N]";
 
-/**
- * Parses the arguments after `/job log <id>`. `--stderr` picks the stream and
- * `--tail N` (or `--tail=N`) asks for the last N bytes. A bare number is still
- * accepted as the old `[maxBytes]` form. It's a deprecated alias of `--tail`.
- */
+/** A bare number is the deprecated `[maxBytes]` form, an alias of `--tail`. */
 function parseLogArgs(args: string[]): { stream: "stdout" | "stderr"; maxBytes?: number } | { error: string } {
   let stream: "stdout" | "stderr" = "stdout";
   let tail: number | undefined;
@@ -97,12 +75,7 @@ function message(text: string): CommandResult {
   return { type: "message", text };
 }
 
-/**
- * The text commands cannot show an approval prompt themselves. When the action
- * only failed for lack of confirmation, open the interactive manager (which
- * can) and say which key completes the action; otherwise keep the plain
- * message, pointing at the manager for headless callers.
- */
+/** Text commands can't prompt; when only confirmation was missing, open the manager, which can. */
 async function confirmationNeeded(error: unknown, manualHint: string, context: CommandContext): Promise<CommandResult | undefined> {
   if (!(error instanceof BackgroundJobError) || error.code !== "authorization-denied"
     || !/interactive confirmation/i.test(error.message)) return undefined;

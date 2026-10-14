@@ -1,27 +1,6 @@
 /**
- * T10 — Bounded segmented log readers.
- *
- * Per solution.md §9: "Read byte-bounded tails/cursors across segments; a
- * line count is only a display preference. List/poll metadata never read
- * entire logs. Completion summaries contain small, labelled excerpts from
- * both stdout and stderr, prioritize according to outcome, preserve real
- * exit codes and indicate truncation. Escape terminal controls and treat
- * output as untrusted data."
- *
- * `listSegments` is metadata-only: it calls `fs.readdir` + `fs.stat` and
- * never opens/reads file contents, so polling job status is cheap even for
- * huge logs.
- *
- * `readTail`/`readCursor` read only the byte ranges they need via
- * `fs.read(fd, buffer, 0, length, position)` with an explicit position —
- * they never read a whole segment just to discard most of it.
- *
- * UTF-8 boundary safety: this module intentionally reimplements the
- * trailing-incomplete-codepoint-safe decoding technique used by
- * `source/tools/shell.ts`'s `utf8Tail` (skip leading continuation bytes
- * 0b10xxxxxx after truncating from the end) rather than importing that
- * tool-layer module, to keep `background-jobs/*` independent of
- * `tools/*` per the module boundaries documented in types.ts/README.md.
+ * Byte-bounded log readers: tails and cursors read only the ranges they need.
+ * UTF-8 handling is reimplemented here to keep background-jobs/* independent of tools/*.
  */
 import { promises as fsp } from "node:fs";
 import { join } from "node:path";
@@ -44,9 +23,7 @@ function parseSegmentFileName(name: string, stream: LogStream): number | undefin
   return Number.isSafeInteger(index) && index >= 0 ? index : undefined;
 }
 
-/**
- * Metadata-only segment listing: readdir + stat, never reads file bodies.
- */
+/** Metadata only (readdir + stat), so polling stays cheap for huge logs. */
 export async function listSegments(dir: string, stream: LogStream): Promise<SegmentInfo[]> {
   let entries: string[] = [];
   try {
@@ -67,24 +44,14 @@ export async function listSegments(dir: string, stream: LogStream): Promise<Segm
   return results;
 }
 
-/**
- * Finds the leading byte offset of a UTF-8 buffer such that the slice
- * `buffer.subarray(start)` never begins mid-codepoint. Mirrors the
- * boundary-safety technique in tools/shell.ts's `utf8Tail` (skip leading
- * continuation bytes, 0b10xxxxxx, after truncating from the end).
- */
+/** Skips leading continuation bytes so the slice never starts mid-codepoint. */
 function utf8SafeStart(buffer: Buffer, start: number): number {
   let s = Math.max(0, Math.min(start, buffer.length));
   while (s < buffer.length && (buffer[s]! & 0xc0) === 0x80) s++;
   return s;
 }
 
-/**
- * Escapes ANSI/terminal control sequences so raw untrusted job output can
- * never manipulate the viewer's terminal. All C0 control codes except
- * `\n` and `\t` are replaced with a visible `\xNN` placeholder (ESC itself
- * renders as `\x1b`).
- */
+/** Job output is untrusted: control codes other than `\n`/`\t` become visible `\xNN` so they can't drive the terminal. */
 export function sanitizeForDisplay(text: string): string {
   let out = "";
   for (let i = 0; i < text.length; i++) {
@@ -121,11 +88,7 @@ async function readRange(path: string, start: number, end: number): Promise<Buff
   }
 }
 
-/**
- * Reads only the last `maxBytes` of the stream's combined segments, walking
- * from the newest segment backward and reading only what's needed (never a
- * whole old segment just to discard most of it).
- */
+/** Reads only the last `maxBytes`, walking segments newest-first. */
 export async function readTail(
   dir: string,
   stream: LogStream,
@@ -158,9 +121,7 @@ export async function readTail(
 }
 
 interface Cursor {
-  /** Segment index to resume reading from. */
   index: number;
-  /** Byte offset within that segment to resume reading from. */
   offset: number;
 }
 
@@ -190,18 +151,11 @@ function decodeCursor(encoded: string | undefined): Cursor {
 
 const DEFAULT_CURSOR_MAX_BYTES = 64 * 1024;
 
-/** True when the listing contains a segment with a higher index than `index` (i.e. `index` is no longer the active segment). */
 function hasLaterSegment(segments: SegmentInfo[], index: number): boolean {
   return segments.some((s) => s.index > index);
 }
 
-/**
- * Cursor-based incremental read: resumes from the position encoded in
- * `cursor` (or the start, if absent) and reads forward up to `maxBytes`,
- * returning a new cursor for the next call. Repeated polling with the
- * returned cursor never re-reads already-delivered bytes and never skips
- * bytes produced between calls.
- */
+/** Resumes from `cursor` (or the start) and returns the next cursor. */
 export async function readCursor(
   dir: string,
   stream: LogStream,
@@ -215,8 +169,7 @@ export async function readCursor(
     return { text: "", truncated: false, cursor: encodeCursor({ index, offset }) };
   }
 
-  // Clamp a stale cursor pointing before the earliest retained segment
-  // (e.g. older segments were evicted) forward to the earliest available.
+  // Stale cursor (older segments evicted): clamp to the earliest retained segment.
   const minIndex = segments[0]!.index;
   if (index < minIndex) {
     index = minIndex;
@@ -230,16 +183,13 @@ export async function readCursor(
   for (const segment of segments) {
     if (segment.index < index) continue;
     if (remaining <= 0) {
-      // There is more data available than we read this call.
       truncated = true;
       break;
     }
     const startOffset = segment.index === index ? Math.min(offset, segment.size) : 0;
     const available = segment.size - startOffset;
     if (available <= 0) {
-      // Fully consumed this segment already. Only advance to the next
-      // segment once a later one exists; otherwise the writer may still
-      // append to this segment, so park the cursor at its end.
+      // Only advance once a later segment exists; otherwise the writer may still append here.
       if (hasLaterSegment(segments, segment.index)) {
         index = segment.index + 1;
         offset = 0;
@@ -269,9 +219,6 @@ export async function readCursor(
 
   const combined = Buffer.concat(parts);
   const safeStart = utf8SafeStart(combined, 0);
-  // Any bytes trimmed off the end for UTF-8 safety must not be marked as
-  // consumed — back the cursor up by the un-decoded trailing bytes so the
-  // next call picks them up.
   const text = sanitizeForDisplay(combined.subarray(safeStart).toString("utf8"));
   return { text, truncated, cursor: encodeCursor({ index, offset }) };
 }
@@ -287,12 +234,7 @@ export interface CompletionExcerpt {
   truncated: boolean;
 }
 
-/**
- * Small, labelled excerpts from both streams for a completion summary.
- * Per solution.md §9/§10: prioritize the byte budget according to outcome —
- * a failed job gives stderr the larger share (70/30) since the failure
- * reason usually lives there; a clean completion splits evenly.
- */
+/** A failed job gives stderr the larger share (70/30) since the reason usually lives there; otherwise split evenly. */
 export async function buildCompletionExcerpt(
   dir: string,
   opts: CompletionExcerptOptions,

@@ -1,16 +1,6 @@
-/**
- * T15 — Recurring process-schedule engine (solution.md §11).
- *
- * This module owns schedule CRUD (create/revoke/list) and the periodic
- * evaluation pass that decides, for each enabled schedule, whether an
- * occurrence is due and — if so — whether it is safe to dispatch. Dispatch
- * happens ONLY through the injected `CoordinatorClient.start()`; this file
- * never imports supervisor/launcher code directly, matching the
- * module-boundary rule in types.ts ("schedule-engine.ts -> consumes
- * storage + authorization + coordinator client API").
- */
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import {
   BackgroundJobError,
@@ -26,6 +16,9 @@ import {
   type SessionPolicySnapshot,
 } from "../types.js";
 import type { AuthorizationService } from "../authorization/service.js";
+import { buildMinimalEnvironment, normalizeWindowsEnvKeyCasing } from "../launch-spec/environment.js";
+import { getPlatformAdapter } from "../platform/index.js";
+import { withJobLock } from "../storage/single-writer-lock.js";
 import { computeNextOccurrence, parseCronExpression } from "./cron.js";
 import { reserveOccurrence } from "./occurrence-reservation.js";
 
@@ -43,7 +36,6 @@ export interface ScheduleEvaluationResult {
   reason?: string;
 }
 
-/** One trigger of a schedule and the job it launched, if dispatch got that far. */
 export interface ScheduleRun {
   occurrence: ScheduleOccurrenceRecord;
   job?: JobRecord;
@@ -61,10 +53,10 @@ export interface ScheduleEngine {
 
   listSchedules(): Promise<ScheduleRecord[]>;
 
-  /** Pause or resume future triggers. Never touches jobs already launched. */
+  /** Never touches jobs already launched. */
   setScheduleEnabled(scheduleId: ScheduleId, enabled: boolean, session: SessionPolicySnapshot): Promise<ScheduleRecord>;
 
-  /** Runs of one schedule, newest first. */
+  /** Newest first. */
   listRuns(scheduleId: ScheduleId): Promise<ScheduleRun[]>;
 
   evaluateOnce(args: {
@@ -82,29 +74,42 @@ export interface CreateScheduleEngineArgs {
 
 export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEngine {
   const { repositories, coordinator, authorizationService } = args;
-  // `args.root` is accepted for a stable constructor signature/future use
-  // (e.g. future on-disk schedule-engine-local caches) but is not needed by
-  // any current behavior here — every persistence operation goes through
-  // `repositories`, which is already bound to a resolved root by its own
-  // constructor.
   void args.root;
+
+  // Serializes read-check-write on one schedule record across sessions and
+  // processes. Lock acquisition does not wait, so retry briefly; callers keep
+  // the critical section short and never hold it across a human prompt.
+  // The name is prefixed so it cannot collide with a job id.
+  async function withScheduleLock<T>(scheduleId: ScheduleId, fn: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await withJobLock(args.root, `schedule-${scheduleId}`, fn);
+      } catch (error) {
+        if (!(error instanceof BackgroundJobError && error.code === "lock-held") || attempt >= 100) throw error;
+        await sleep(25 + Math.floor(Math.random() * 25));
+      }
+    }
+  }
 
   return {
     async createSchedule(input) {
-      // Validate the cron expression; propagate BackgroundJobError on
-      // malformed input rather than catching/rewrapping it.
       parseCronExpression(input.cron);
 
-      // Bind recurring consent to the schedule's exact terms and identity.
       const scheduleId = randomUUID();
       // Validate timezone before prompting or persisting an approval.
       new Intl.DateTimeFormat("en", { timeZone: input.timezone });
       // Resolve cwd BEFORE approval so the grant hash covers the absolute
       // directory, not a relative one that would resolve differently when a
       // later trigger runs from another project.
+      // Likewise resolve the effective environment now (same allow-list the
+      // normalizer applies), so the grant hash covers it and every dispatch
+      // launches with exactly this env, not the dispatcher's PATH/HOME.
+      const platform = (await getPlatformAdapter()).platform;
+      const effectiveEnv = { ...buildMinimalEnvironment(platform).env, ...input.launchSpecTemplate.env };
       const launchSpecTemplate = {
         ...input.launchSpecTemplate,
         cwd: resolve(input.launchSpecTemplate.cwd),
+        env: platform === "win32" ? normalizeWindowsEnvKeyCasing(effectiveEnv) : effectiveEnv,
         recurrence: { scheduleId, scheduleVersion: 1, cron: input.cron, timezone: input.timezone },
       };
       const decision = await authorizationService.authorize(
@@ -130,8 +135,7 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
       return record;
     },
 
-    // Per solution.md §4/§11: revocation blocks future triggers; it does
-    // NOT touch any existing reserved/in-flight occurrence or running job.
+    // Revocation blocks future triggers only; reserved/in-flight occurrences and running jobs are untouched.
     // Authorization may block on a human prompt, so the schedule is re-read
     // before committing and the revocation is applied to that fresh record:
     // revoke always wins over a concurrent pause/resume.
@@ -144,12 +148,14 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
       if (!decision.allowed) {
         throw new BackgroundJobError("authorization-denied", decision.reason);
       }
-      const current = await repositories.schedules.get(scheduleId);
-      if (current === undefined) {
-        throw new BackgroundJobError("not-found", `No schedule found for scheduleId "${scheduleId}".`);
-      }
-      // Clearing the pause marker is what makes revocation permanent.
-      await repositories.schedules.put({ ...current, enabled: false, pausedAt: undefined });
+      await withScheduleLock(scheduleId, async () => {
+        const current = await repositories.schedules.get(scheduleId);
+        if (current === undefined) {
+          throw new BackgroundJobError("not-found", `No schedule found for scheduleId "${scheduleId}".`);
+        }
+        // Clearing the pause marker is what makes revocation permanent.
+        await repositories.schedules.put({ ...current, enabled: false, pausedAt: undefined });
+      });
     },
 
     async listSchedules() {
@@ -182,21 +188,23 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
         if (!grant.allowed) throw new BackgroundJobError("authorization-denied", grant.reason);
       }
       // Authorization/revalidation may have blocked on a human prompt; recheck
-      // the stored record so a concurrent revoke (or another pause/resume)
-      // is never overwritten with the stale snapshot read above.
-      const current = await repositories.schedules.get(scheduleId);
-      if (current === undefined) {
-        throw new BackgroundJobError("not-found", `No schedule found for scheduleId "${scheduleId}".`);
-      }
-      if (isScheduleRevoked(current)) {
-        throw new BackgroundJobError("authorization-denied", "This schedule was revoked and cannot be re-enabled. Create a new schedule instead.");
-      }
-      if (current.enabled !== schedule.enabled || current.pausedAt !== schedule.pausedAt) {
-        throw new BackgroundJobError("authorization-denied", "This schedule was changed by another session while approval was pending. Retry the pause/resume.");
-      }
-      const updated: ScheduleRecord = { ...current, enabled, pausedAt: enabled ? undefined : new Date().toISOString() };
-      await repositories.schedules.put(updated);
-      return updated;
+      // the stored record under the schedule lock so a concurrent revoke (or
+      // another pause/resume) is never overwritten with the stale snapshot.
+      return withScheduleLock(scheduleId, async () => {
+        const current = await repositories.schedules.get(scheduleId);
+        if (current === undefined) {
+          throw new BackgroundJobError("not-found", `No schedule found for scheduleId "${scheduleId}".`);
+        }
+        if (isScheduleRevoked(current)) {
+          throw new BackgroundJobError("authorization-denied", "This schedule was revoked and cannot be re-enabled. Create a new schedule instead.");
+        }
+        if (current.enabled !== schedule.enabled || current.pausedAt !== schedule.pausedAt) {
+          throw new BackgroundJobError("authorization-denied", "This schedule was changed by another session while approval was pending. Retry the pause/resume.");
+        }
+        const updated: ScheduleRecord = { ...current, enabled, pausedAt: enabled ? undefined : new Date().toISOString() };
+        await repositories.schedules.put(updated);
+        return updated;
+      });
     },
 
     async listRuns(scheduleId) {
@@ -212,9 +220,6 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
     async evaluateOnce({ nowUtc, connectedSessions }) {
       const results: ScheduleEvaluationResult[] = [];
 
-      // Cache the jobs listing once per evaluation pass (not required for
-      // correctness, just avoids redundant repository reads across
-      // multiple schedules in the same pass).
       let jobsCache: JobRecord[] | undefined;
       const getJobs = async (): Promise<JobRecord[]> => {
         if (jobsCache === undefined) {
@@ -225,30 +230,18 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
 
       const schedules = await repositories.schedules.list();
       for (const schedule of schedules) {
-        // Disabled schedules are not evaluated at all — no entry is pushed
-        // for them (revokeSchedule sets enabled:false).
         if (!schedule.enabled) continue;
 
         const fields = parseCronExpression(schedule.cron);
-        // Evaluate from one minute before `nowUtc` so an occurrence due
-        // exactly "now" or within the last evaluation-granularity window is
-        // detected, without ever returning an occurrence AFTER `nowUtc`
-        // (checked explicitly below) — this avoids gaps between successive
-        // evaluateOnce calls at typical polling cadences.
+        // Start one minute back so an occurrence due right now is not missed between polls.
         const occurrence = computeNextOccurrence(fields, schedule.timezone, new Date(nowUtc.getTime() - 60_000));
         if (occurrence === undefined || occurrence.utc.getTime() > nowUtc.getTime()) {
           results.push({ scheduleId: schedule.scheduleId, outcome: "no-occurrence-due" });
           continue;
         }
 
-        // An occurrence is due. Per solution.md §11: "Any connected
-        // deny-writes session suppresses process-schedule launches while
-        // attached." Checked BEFORE reserving anything: a later
-        // evaluateOnce call at a later nowUtc will compute a newer
-        // occurrence once enough time passes — no backfill bookkeeping is
-        // needed here (intentional per "no unbounded queue,
-        // disconnected-time backfill, or repeated retries within a
-        // blocked/failed slot").
+        // A connected deny-writes session suppresses launches. Checked BEFORE reserving, and the
+        // skipped slot is never backfilled or retried.
         const restrictive = authorizationService.aggregateRestrictivePolicy(connectedSessions);
         if (restrictive.blocksNewLaunches) {
           results.push({
@@ -259,9 +252,6 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
           continue;
         }
 
-        // Recheck grant validity against the CURRENT launch spec template
-        // before dispatch (solution.md §11: "recheck grant validity,
-        // credentials, directories, capability and restrictive policy").
         const grantDecision = await authorizationService.revalidateBeforeDispatch(
           schedule.grantId,
           schedule.launchSpecTemplate,
@@ -275,11 +265,7 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
           continue;
         }
 
-        // One active/unknown job per schedule: look at every occurrence
-        // previously recorded for this schedule and check whether any of
-        // their associated jobs is still non-terminal (running, starting,
-        // accepted, unknown, or recovery-required all count as "still
-        // active/ambiguous" via isTerminalLifecycle's narrow true-set).
+        // One active job per schedule; unknown/recovery-required jobs count as still active.
         const existingOccurrences = await repositories.occurrences.listForSchedule(schedule.scheduleId);
         const jobs = await getJobs();
         const hasActiveOverlap = existingOccurrences.some((occ) => {
@@ -292,34 +278,39 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
           continue;
         }
 
-        // Reserve the occurrence durably BEFORE dispatch (solution.md §11:
-        // "Reserve the occurrence durably before dispatch and associate it
-        // with a stable launch request."). If another evaluation pass (or a
-        // simultaneous client, or a clock-rollback replay) already claimed
-        // this exact local occurrence, `reserved` is false here and this
-        // pass backs off without attempting a second dispatch.
+        // Reserve durably BEFORE dispatch; if another pass already claimed this occurrence, back off.
         const requestId = randomUUID();
-        const { reserved, record } = await reserveOccurrence({
-          repositories,
-          schedule,
-          occurrenceUtc: occurrence.utc,
-          localKey: occurrence.localKey,
-          requestId,
+        // Re-read under the schedule lock: a revoke/pause committed after the
+        // list above must stop this trigger. A revoke landing after the
+        // reservation does not cancel it (same as an in-flight job).
+        let reserved = false;
+        let record: ScheduleOccurrenceRecord | undefined;
+        let stillEnabled = true;
+        await withScheduleLock(schedule.scheduleId, async () => {
+          const current = await repositories.schedules.get(schedule.scheduleId);
+          if (current === undefined || !current.enabled || current.grantId !== schedule.grantId) {
+            stillEnabled = false;
+            return;
+          }
+          ({ reserved, record } = await reserveOccurrence({
+            repositories,
+            schedule: current,
+            occurrenceUtc: occurrence.utc,
+            localKey: occurrence.localKey,
+            requestId,
+          }));
         });
+        if (!stillEnabled) {
+          results.push({ scheduleId: schedule.scheduleId, outcome: "no-occurrence-due" });
+          continue;
+        }
         if (!reserved) {
           results.push({ scheduleId: schedule.scheduleId, outcome: "skipped-overlap" });
           continue;
         }
 
-        // Dispatch via the coordinator ONLY — never a lower-level
-        // supervisor/launcher path (module-boundary rule in types.ts). The
-        // schedule's grant already represents consent for this exact spec
-        // (established at createSchedule time and reconfirmed just above
-        // via revalidateBeforeDispatch). `scheduleGrant` makes the
-        // coordinator launch from that exact approved template and
-        // revalidate the existing grant rather than minting a new one under
-        // the session below, which is deliberately non-minting ("ask" with
-        // no confirmation handler) so nothing can be approved through it.
+        // `scheduleGrant` makes the coordinator launch the exact approved template and revalidate the
+        // existing grant; the session below is deliberately non-minting so nothing new can be approved.
         try {
           await coordinator.start(
             {
@@ -336,16 +327,9 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
           await repositories.occurrences.update(record!.occurrenceId, { status: "dispatched" });
           results.push({ scheduleId: schedule.scheduleId, outcome: "dispatched" });
         } catch (error) {
-          // Per solution.md §11: "Ambiguous dispatch is recovery-required,
-          // not an automatic retry." The occurrence is marked
-          // recovery-required unconditionally on ANY dispatch failure (not
-          // only literally-ambiguous ones) and is never retried by this or
-          // any future evaluateOnce call, since the durable reservation
-          // above already claimed this exact local occurrence for good. An
-          // unexpected (non-capacity) dispatch failure reuses the
-          // "skipped-grant-invalid" outcome value below rather than
-          // inventing a new one, since there is no better-fitting value in
-          // the fixed outcome union for this case.
+          // Any dispatch failure may be ambiguous, so the occurrence is marked recovery-required and
+          // never retried (the reservation holds that slot for good). Non-capacity failures are
+          // reported as "skipped-grant-invalid" for lack of a better outcome value.
           const message = error instanceof Error ? error.message : String(error);
           await repositories.occurrences.update(record!.occurrenceId, {
             status: "recovery-required",

@@ -1,14 +1,3 @@
-/**
- * Shared POSIX primitives usable by both the Linux (T02) and macOS (T03)
- * adapters. Owned by T01 so T02/T03 coordinate changes here instead of
- * importing each other's adapter files directly (subtasks.md T03 note:
- * "Coordinate shared POSIX primitives through T01's owner rather than
- * editing T02's files").
- *
- * Nothing here is OS-specific; `linux.ts` and `macos.ts` should prefer these
- * helpers over duplicating logic, and extend/override only where Linux and
- * macOS genuinely diverge (e.g. cgroups are Linux-only).
- */
 import { constants, promises as fs } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { hostname } from "node:os";
@@ -18,16 +7,11 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-/** Resolve symlinks and verify the path exists; throws ENOENT-style errors otherwise. */
 export async function canonicalizePathPosix(path: string): Promise<string> {
   return realpath(path);
 }
 
-/**
- * The current process's start time never changes, so read it once per
- * process (on macOS `readProcessStartTimePosix` spawns `ps`, which would
- * otherwise run on every lock acquisition).
- */
+// Cached: own start time never changes, and on macOS reading it spawns `ps`.
 let ownStartTime: Promise<string | undefined> | undefined;
 function readOwnProcessStartTime(): Promise<string | undefined> {
   ownStartTime ??= readProcessStartTimePosix(process.pid).catch(() => undefined);
@@ -35,20 +19,11 @@ function readOwnProcessStartTime(): Promise<string | undefined> {
 }
 
 /**
- * Exclusive lock using O_EXCL file creation — a stable lock object that is
- * never deleted/replaced while held (solution.md §7: "Stable lock objects
- * must not be deleted/replaced while held. A stale timestamp is not
- * permission to steal ownership.").
- *
- * The lock file records the holder's identity: `pid`, `processStartTime`
- * (from `readProcessStartTimePosix`, when readable) and `hostname`, plus an
- * ISO `acquiredAt` timestamp purely for diagnostics. Staleness (age) is
- * never used to seize the lock. This primitive itself never removes another
- * holder's lock: on EEXIST it throws `lock-held`. Recovery lives one layer
- * up (`storage/single-writer-lock.ts`, `isLockOwnerGone`) and only moves an
- * abandoned lock aside after independently verifying the owner process is
- * gone — same host, and the pid is dead or has been reused (start time
- * differs). A missing/corrupt holder record is never recovered.
+ * O_EXCL lock file, never deleted/replaced while held; age is never grounds to
+ * seize it (`acquiredAt` is diagnostic only). On EEXIST this throws `lock-held`.
+ * Stale recovery lives in `storage/single-writer-lock.ts` and requires verifying
+ * the owner is gone (same host; pid dead or reused). A missing/corrupt holder
+ * record is never recovered.
  */
 export async function acquireExclusiveLockPosix(lockPath: string): Promise<() => Promise<void>> {
   await fs.mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
@@ -86,7 +61,7 @@ export async function acquireExclusiveLockPosix(lockPath: string): Promise<() =>
   };
 }
 
-/** Best-effort boot/process-creation identity disambiguator for PID reuse detection. */
+/** Best-effort process start time, used to detect PID reuse. */
 export async function readProcessStartTimePosix(pid: number): Promise<string | undefined> {
   try {
     // Linux: /proc/<pid>/stat field 22 is starttime (ticks since boot).
@@ -99,7 +74,7 @@ export async function readProcessStartTimePosix(pid: number): Promise<string | u
     // Not Linux /proc, or process gone — fall through to the portable probe.
   }
   try {
-    // Portable (Linux + macOS) fallback: ps exposes an elapsed/start field.
+    // Portable fallback (macOS).
     const { stdout } = await execFileAsync("ps", ["-o", "lstart=", "-p", String(pid)]);
     const trimmed = stdout.trim();
     if (trimmed) return trimmed;
@@ -119,7 +94,6 @@ export async function pidExistsPosix(pid: number): Promise<boolean> {
   }
 }
 
-/** Send a signal to an entire process group (negative pid convention). */
 export function signalProcessGroup(pgid: number, signal: NodeJS.Signals): void {
   try {
     process.kill(-pgid, signal);
@@ -129,15 +103,9 @@ export function signalProcessGroup(pgid: number, signal: NodeJS.Signals): void {
 }
 
 /**
- * True while the process group `pgid` still has at least one live member.
- * `kill(-pgid, 0)`: ESRCH means the group is gone; EPERM means it exists but
- * is not signalable by us (still alive). Any other error is rethrown.
- *
- * Where `/proc` is available, members that are only zombies (exited but not
- * yet reaped, e.g. under a non-reaping PID 1) are not counted as live, so a
- * finished job is not held open forever. If `/proc` is unavailable (macOS) or
- * no member of the group can be positively classified, this conservatively
- * reports the group as alive.
+ * True while the process group still has a live member. With `/proc`, zombies
+ * (e.g. unreaped under a non-reaping PID 1) don't count, so a finished job isn't
+ * held open forever. Without `/proc` (macOS), conservatively reports alive.
  */
 export async function processGroupHasLiveMembersPosix(pgid: number): Promise<boolean> {
   try {

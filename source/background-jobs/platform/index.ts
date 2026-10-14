@@ -1,11 +1,3 @@
-/**
- * Platform adapter selector — owned by T01 (integration lead).
- *
- * T02/T03/T04 each implement and export a `platformAdapter: PlatformAdapter`
- * from their own file (`linux.ts`, `macos.ts`, `windows.ts`) and MUST NOT
- * edit this selector. This indirection keeps `platform/*` files mutually
- * independent (no agent needs to touch another OS's file to get picked up).
- */
 import { platform as osPlatform } from "node:os";
 import type { PlatformAdapter } from "../types.js";
 import { BackgroundJobError } from "../types.js";
@@ -30,11 +22,8 @@ export async function getPlatformAdapter(): Promise<PlatformAdapter> {
   return adapter;
 }
 
-/**
- * Liveness helpers used by stale-lock recovery (`storage/single-writer-lock.ts`).
- * They are plain functions rather than `PlatformAdapter` members because the
- * frozen adapter contract in types.ts has no lock-holder probe.
- */
+// Liveness helpers for stale-lock recovery (storage/single-writer-lock.ts); not
+// PlatformAdapter members because the adapter contract has no lock-holder probe.
 
 /**
  * False only on positive evidence that no process with `pid` exists
@@ -51,24 +40,16 @@ export async function lockOwnerPidExists(pid: number): Promise<boolean> {
   }
 }
 
-/**
- * Best-effort process start time for PID-reuse detection, in the same format
- * the POSIX lock writer records. Windows has no start-time probe without a
- * native addon (see windows.ts limitations), so it returns `undefined` there,
- * and callers must treat that as "cannot detect reuse".
- */
+/** Same format the POSIX lock writer records. `undefined` on Windows (no probe without a native addon): callers must treat that as "cannot detect reuse". */
 export async function readLockOwnerStartTime(pid: number): Promise<string | undefined> {
   if (osPlatform() === "win32") return undefined;
   return readProcessStartTimePosix(pid);
 }
 
 /**
- * Whether the owned workload scope still has live members after the direct
- * child has exited. Only meaningful for POSIX `process-group` scopes (the
- * workload is spawned detached, so its pgid equals the handle pid); every other
- * scope (notably Windows, which has no verifiable group) reports `false`, i.e.
- * "nothing known to be left", preserving the prior direct-child-only behavior.
- * Probe failures other than ESRCH/EPERM propagate to the caller.
+ * Whether the owned scope still has live members after the direct child exited.
+ * Only POSIX `process-group` scopes are probed; others (notably Windows) report
+ * `false`, i.e. "nothing known to be left". Probe errors other than ESRCH/EPERM propagate.
  */
 export async function ownedScopeHasLiveMembers(ownershipHandle: string, ownershipScope: string): Promise<boolean> {
   if (osPlatform() === "win32" || ownershipScope !== "process-group") return false;
@@ -77,7 +58,7 @@ export async function ownedScopeHasLiveMembers(ownershipHandle: string, ownershi
   return processGroupHasLiveMembersPosix(pgid);
 }
 
-/** Test-only override so unit tests can inject a fake adapter without mocking node:os. */
+/** Test-only override. */
 export function __setPlatformAdapterForTests(adapter: PlatformAdapter | null): void {
   cached = adapter;
 }

@@ -1,48 +1,12 @@
 /**
- * T05 — Single-writer lock helpers.
+ * Single-writer locks. On `lock-held` a lock is recovered only when its owner is verified gone
+ * (`isLockOwnerGone`): same host, and the pid is dead or reused. A missing/corrupt holder record
+ * or lock age never allows recovery. The stale file is quarantined (never deleted) and acquisition
+ * retried once; recoverers are serialized by a `<lock>.recovery` guard.
  *
- * Wraps `PlatformAdapter.acquireLock` to provide "single lifecycle writer
- * per job" and "single coordinator writer" guarantees described in
- * solution.md §7. On `lock-held` from a DIFFERENT call stack this never
- * retries in a loop and never steals a lock from a live (or unverifiable)
- * owner. Age/timestamps are never used to seize a lock.
- *
- * Verified-gone recovery (plan item 0.1, WP-02): on `lock-held`, the lock
- * file's holder record (`{pid, acquiredAt, processStartTime?, hostname?}`)
- * is read. The lock is recovered only when the owner is verified gone
- * (`isLockOwnerGone`), which means all of the following hold:
- *   - the holder was written on this host (a recorded hostname must equal
- *     `os.hostname()`; legacy records with no hostname are treated as local,
- *     because storage roots are required to be local, see paths.ts), and
- *   - either the pid no longer exists (`kill(pid, 0)` → ESRCH; EPERM means
- *     alive), or the pid exists but belongs to a different process: the
- *     recorded `processStartTime` differs from the live process's start time.
- * A missing, empty, corrupt or unreadable holder record is never recovered,
- * because liveness can't be verified, so the original `lock-held` propagates.
- * When the owner is verified gone, the stale file is renamed into
- * `quarantine/` (never deleted), and the O_EXCL acquisition is retried exactly
- * once. Recoverers are serialized by a short-lived `<lock>.recovery` guard
- * lock. The quarantined file's identity (dev/ino + content) is also re-checked
- * after the rename, so a live lock that was moved by mistake is restored in
- * place.
- *
- * Reentrancy (integration-owner fix): `Repositories.jobs.update()` already
- * acquires this same per-job lock internally (see repositories.ts). Any
- * caller that legitimately needs a single atomic "read current record under
- * lock, decide, then call `jobs.update()`" critical section — e.g. T12's
- * recovery reconciler, or T14's coordinator admission path — would
- * otherwise deadlock against itself, since the underlying OS-held lock
- * (`PlatformAdapter.acquireLock`, an O_EXCL file create) is not reentrant.
- *
- * To avoid every caller inventing its own "write around the repository"
- * workaround (as T12 initially had to), `withJobLock`/`withCoordinatorLock`
- * track currently-held locks per async execution context via
- * `AsyncLocalStorage`: a nested call for the SAME lock name, from code
- * running inside an outer `withJobLock`/`withCoordinatorLock` call for that
- * same name, runs `fn` directly without re-acquiring the OS lock. A nested
- * call for a *different* name still acquires its own OS lock normally.
- * Mutual exclusion across different call stacks / processes is unaffected —
- * only same-stack reentrancy is special-cased.
+ * Reentrant within one async call stack (via `AsyncLocalStorage`), because `jobs.update()` takes
+ * the same per-job lock and callers need a read-decide-update critical section. Cross-stack and
+ * cross-process exclusion is unchanged.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
@@ -55,27 +19,21 @@ import type { PlatformAdapter } from "../types.js";
 import { lockPath, quarantineDir } from "./paths.js";
 
 interface LockContext {
-  /** Lock names currently held by this (possibly nested) call stack. */
   held: Set<string>;
 }
 
 const lockContext = new AsyncLocalStorage<LockContext>();
 
-// ---------------------------------------------------------------------------
-// Lock holder records + verified-gone check (exported for WP-11's daemon lock, D9)
-// ---------------------------------------------------------------------------
-
-/** Parsed contents of a lock file. Legacy files carry only `pid` + `acquiredAt`. */
+/** Legacy lock files carry only `pid` + `acquiredAt`. */
 export interface LockHolder {
   pid: number;
   acquiredAt?: string;
-  /** Process start time as recorded by the POSIX lock writer; absent on Windows / legacy files. */
+  /** Absent on Windows / legacy files. */
   processStartTime?: string;
-  /** `os.hostname()` of the writer; absent on legacy files. */
+  /** Absent on legacy files (treated as local). */
   hostname?: string;
 }
 
-/** Injectable probes for `isLockOwnerGone` (tests only; defaults are the real platform helpers). */
 export interface LockOwnerProbes {
   hostname: () => string;
   pidExists: (pid: number) => Promise<boolean>;
@@ -117,11 +75,7 @@ function parseLockHolder(raw: string): LockHolder | undefined {
   return holder;
 }
 
-/**
- * Read a lock file through one handle, so the identity (dev/ino) and the
- * content belong to the same file. Returns `undefined` if the file can't be
- * read at all (missing, or a transient sharing violation).
- */
+/** One handle for both stat and content, so dev/ino and content belong to the same file. */
 async function snapshotLockFile(path: string): Promise<LockFileSnapshot | undefined> {
   let handle: fs.FileHandle | undefined;
   try {
@@ -136,22 +90,12 @@ async function snapshotLockFile(path: string): Promise<LockFileSnapshot | undefi
   }
 }
 
-/**
- * Read and validate the holder record of a lock file. Returns `undefined`
- * when the file is missing, empty, corrupt, unreadable or has an invalid pid.
- * Callers must treat `undefined` as "liveness unverifiable" (never recover).
- */
+/** `undefined` means liveness is unverifiable; callers must never recover in that case. */
 export async function readLockHolder(path: string): Promise<LockHolder | undefined> {
   return (await snapshotLockFile(path))?.holder;
 }
 
-/**
- * True only on positive evidence that the lock's owner process is gone:
- * same host (or a legacy record with no hostname), and either the pid doesn't
- * exist or it has been reused (the recorded start time differs from the live
- * one). If anything can't be verified (another host, start time unreadable,
- * probe errors) the result is `false`. Lock age is never considered.
- */
+/** True only on positive evidence the owner is gone; anything unverifiable yields false. */
 export async function isLockOwnerGone(holder: LockHolder, probes: Partial<LockOwnerProbes> = {}): Promise<boolean> {
   const p: LockOwnerProbes = { ...defaultProbes, ...probes };
   try {
@@ -166,19 +110,21 @@ export async function isLockOwnerGone(holder: LockHolder, probes: Partial<LockOw
   }
 }
 
-// ---------------------------------------------------------------------------
-// Recovery
-// ---------------------------------------------------------------------------
-
 function isLockHeld(error: unknown): boolean {
   return error instanceof BackgroundJobError && error.code === "lock-held";
 }
 
 /**
- * Rename `path` into `quarantine` if it is still the exact file described by
- * `expected`. If the moved file turns out to be different (it was replaced
- * between the check and the rename), it is put back without overwriting
- * anything.
+ * Quarantines `path` only if it is still the exact file in `expected`; never removes a different file.
+ *
+ * Link-first: a hard link `<path>.retire-<dev>-<ino>` claims the file currently at `path`. Its name is
+ * unique per inode and the claim pins the inode, so only one caller claims a given stale file, and a
+ * delayed caller with an old snapshot finds a mismatch and drops only its own claim. `path` is unlinked
+ * only after the claimed file is verified to match the snapshot.
+ *
+ * Known unhandled case: a recoverer that crashes between claiming and unlinking leaves the claim behind,
+ * so that stale file is not recovered until the claim is removed by hand. Without hard-link support
+ * nothing is recovered (fails closed).
  */
 async function quarantineIfUnchanged(
   path: string,
@@ -186,43 +132,38 @@ async function quarantineIfUnchanged(
   quarantine: string,
 ): Promise<"moved" | "missing" | "changed"> {
   await fs.mkdir(quarantine, { recursive: true, mode: 0o700 });
-  const target = join(quarantine, `${basename(path)}.stale-${Date.now()}-${randomUUID()}`);
+  const claim = `${path}.retire-${expected.dev}-${expected.ino}`;
   try {
-    await fs.rename(path, target);
+    await fs.link(path, claim);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "missing";
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return "missing";
+    if (code === "EEXIST" || code === "EPERM" || code === "ENOTSUP" || code === "ENOSYS" || code === "EXDEV") {
+      return "changed";
+    }
     throw error;
   }
-  // Defence in depth: under the recovery guard nothing else should replace a
-  // dead owner's file, but confirm that the file we moved is the one we verified.
-  const moved = await snapshotLockFile(target);
-  if (moved && moved.dev === expected.dev && moved.ino === expected.ino && moved.raw === expected.raw) {
-    return "moved";
+  const claimed = await snapshotLockFile(claim);
+  if (!claimed || claimed.dev !== expected.dev || claimed.ino !== expected.ino || claimed.raw !== expected.raw) {
+    await fs.unlink(claim).catch(() => {});
+    return "changed";
   }
-  // Not the file we verified. Restore it with link(), which fails rather than
-  // overwrite if a new lock appeared at `path` in the meantime.
   try {
-    await fs.link(target, path);
-    await fs.unlink(target).catch(() => {});
+    await fs.unlink(path);
   } catch (error) {
-    throw new BackgroundJobError(
-      "storage-unavailable",
-      `Stale-lock recovery moved a lock that changed underneath it and could not restore it: ${path} ` +
-        `(preserved at ${target}; ${String((error as Error).message ?? error)})`,
-    );
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      await fs.unlink(claim).catch(() => {});
+      throw error;
+    }
   }
-  return "changed";
+  await fs.rename(claim, join(quarantine, `${basename(path)}.stale-${Date.now()}-${randomUUID()}`));
+  return "moved";
 }
 
 /**
- * Try to recover `path` after a `lock-held` failure. Returns true when the
- * caller should retry the O_EXCL acquisition once: either the stale file was
- * quarantined, or it had already disappeared. Returns false (meaning keep
- * `lock-held`) when the owner is alive or unverifiable, or when another
- * recoverer is busy.
- *
- * Exported for WP-11's lifetime daemon lock (D9), so it doesn't have to
- * reimplement the race handling.
+ * True when the caller should retry the O_EXCL acquisition once (stale file quarantined or already
+ * gone); false to keep `lock-held` (owner alive/unverifiable, or another recoverer is busy).
+ * Exported for the daemon lock.
  */
 export async function tryRecoverStaleLock(
   root: string,
@@ -266,7 +207,6 @@ export async function tryRecoverStaleLock(
   }
 }
 
-/** `adapter.acquireLock(path)` with one verified-gone recovery attempt on `lock-held`. */
 async function acquireWithStaleRecovery(
   adapter: PlatformAdapter,
   root: string,
@@ -284,8 +224,7 @@ async function acquireWithStaleRecovery(
 async function withNamedLock<T>(root: string, name: string, fn: () => Promise<T>): Promise<T> {
   const current = lockContext.getStore();
 
-  // Reentrant case: this exact lock is already held by an outer frame in the
-  // same logical call stack — run directly, no second OS-level acquisition.
+  // Reentrant: an outer frame in this call stack already holds this lock.
   if (current?.held.has(name)) {
     return fn();
   }
@@ -302,12 +241,10 @@ async function withNamedLock<T>(root: string, name: string, fn: () => Promise<T>
   }
 }
 
-/** Acquire the per-job lifecycle lock, run `fn`, then always release. Reentrant within one call stack. */
 export async function withJobLock<T>(root: string, jobId: string, fn: () => Promise<T>): Promise<T> {
   return withNamedLock(root, `job-${jobId}`, fn);
 }
 
-/** Acquire the single coordinator-wide writer lock, run `fn`, then always release. Reentrant within one call stack. */
 export async function withCoordinatorLock<T>(root: string, fn: () => Promise<T>): Promise<T> {
   return withNamedLock(root, "coordinator", fn);
 }

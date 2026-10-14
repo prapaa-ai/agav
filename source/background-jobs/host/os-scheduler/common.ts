@@ -1,9 +1,3 @@
-/**
- * WP-12 (plan 1.3, §8.4) — shared types and helpers for OS-scheduler entries.
- *
- * Everything that touches the system (child processes, files, PATH lookup) is
- * injected so tests never install anything real.
- */
 import { execFile as nodeExecFile } from "node:child_process";
 import { promises as nodeFs, constants as fsConstants } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -11,7 +5,6 @@ import * as path from "node:path";
 
 import { BACKGROUND_TICK_INTERNAL_FLAG, getBackgroundTickArgs, isStandaloneBinary } from "../../packaging/manifest.js";
 
-/** What the OS scheduler runs: `<executable> <...args>`. */
 export interface SchedulerTarget {
   executable: string;
   args: string[];
@@ -22,10 +15,8 @@ export interface ExecFileResult {
   stderr: string;
 }
 
-/** Resolves on exit code 0; rejects (with `code`/`stdout`/`stderr` when available) otherwise. */
 export type ExecFileFn = (file: string, args: string[]) => Promise<ExecFileResult>;
 
-/** The subset of `fs.promises` the installers use. */
 export interface SchedulerFs {
   readFile(path: string, encoding: "utf8"): Promise<string>;
   writeFile(path: string, data: string | Uint8Array, options?: { mode?: number }): Promise<void>;
@@ -44,21 +35,15 @@ export interface SchedulerContext {
 }
 
 /**
- * Legacy tick command written by older installs (`<exe> [entry] job tick`).
- * It routes through the full CLI (and loads the Ink UI) every minute; new
- * entries use the headless `BACKGROUND_TICK_INTERNAL_FLAG` instead. Still
- * recognised when parsing existing entries so `--status` can flag them.
+ * Legacy tick form (`<exe> [entry] job tick`) loads the full CLI every minute; new entries use the
+ * headless `BACKGROUND_TICK_INTERNAL_FLAG`. Still recognised so `--status` can flag old entries.
  */
 export const TICK_SUBCOMMAND = ["job", "tick"] as const;
 export const STALE_ENTRY_MESSAGE = "Background scheduler entry is stale or outdated — re-run `agav job tick --install`";
 
 export type TickCommandForm = "current" | "legacy";
 
-/**
- * Split an entry's args into the leading CLI-entry paths and the tick form:
- * `[...leading, --internal-background-jobs-tick]` (current) or
- * `[...leading, "job", "tick"]` (legacy). Undefined when neither matches.
- */
+/** Splits args into leading CLI-entry paths and the tick form; undefined when neither form matches. */
 export function classifyTickArgs(args: readonly string[]): { form: TickCommandForm; leading: string[] } | undefined {
   const n = args.length;
   if (n >= 1 && args[n - 1] === BACKGROUND_TICK_INTERNAL_FLAG) return { form: "current", leading: args.slice(0, n - 1) };
@@ -111,7 +96,6 @@ export async function readIfExists(fs: SchedulerFs, p: string): Promise<string |
   }
 }
 
-/** Write to a sibling temp file, then rename over the destination. */
 export async function writeFileAtomic(
   ctx: Pick<SchedulerContext, "fs" | "platform">,
   target: string,
@@ -141,7 +125,6 @@ export async function unlinkIfExists(fs: SchedulerFs, p: string): Promise<boolea
   }
 }
 
-/** Whether every file the target needs (executable and, for Node installs, the CLI entry) still exists. */
 export async function targetExists(fs: SchedulerFs, target: SchedulerTarget): Promise<boolean> {
   if (!(await fileExists(fs, target.executable))) return false;
   const leading = classifyTickArgs(target.args)?.leading ?? [];
@@ -161,18 +144,11 @@ export function errorMessage(error: unknown): string {
   return String(error);
 }
 
-// ---------------------------------------------------------------------------
-// Executable resolution (§8.4)
-// ---------------------------------------------------------------------------
-
 export interface ResolveTargetDeps {
   platform?: NodeJS.Platform;
   execPath?: string;
-  /** CLI entry script for Node installs (default: `process.argv[1]`). */
   entryPath?: string;
-  /** Running as a Bun standalone binary (default: `isStandaloneBinary()`). */
   standalone?: boolean;
-  /** Locate `name` on PATH; undefined when absent. */
   which?: (name: string) => Promise<string | undefined>;
   realpath?: (p: string) => Promise<string>;
 }
@@ -201,14 +177,7 @@ async function defaultWhich(name: string, platform: NodeJS.Platform): Promise<st
   return undefined;
 }
 
-/**
- * Resolve the absolute command the OS scheduler should run:
- * `<exe> [entry] --internal-background-jobs-tick` (headless; never loads the
- * Ink UI). Standalone binaries run themselves; Node installs
- * run `process.execPath` with the resolved CLI entry. When the executable
- * lives under a versioned Homebrew Cellar path, the stable shim on PATH is
- * used instead if `realpath(which <name>)` is our executable.
- */
+/** Under a versioned Homebrew Cellar path, prefers the stable PATH shim if it resolves to our executable. */
 export async function resolveSchedulerTarget(deps: ResolveTargetDeps = {}): Promise<SchedulerTarget> {
   const platform = deps.platform ?? process.platform;
   const realpath = deps.realpath ?? ((p: string) => nodeFs.realpath(p));

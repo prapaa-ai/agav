@@ -1,25 +1,8 @@
 /**
- * WP-11 (plan item 1.4) — foreground background-jobs daemon.
- *
- * `agav job daemon start` runs this loop in the foreground: it holds a
- * lifetime exclusive lock at `lockPath(root, "daemon")` (D9), runs one tick
- * immediately and then every `intervalMs` (default 15 s) on a ref'd interval,
- * never overlapping ticks, until SIGINT/SIGTERM (or, on Windows, a stop request
- * over the per-user, per-root named pipe
- * `\\.\pipe\agav-job-daemon-<user>-<sha256(root)[:12]>`, which must carry the
- * random `stopToken` recorded in the user-private lock file — V-5). Shutdown
- * stops the interval, awaits the in-flight tick, then releases the lock.
- *
- * The lock file doubles as the pidfile/status file. It records
- * `{pid, hostname, startedAt, acquiredAt, version, processStartTime?}`, which
- * is a superset of the WP-02 holder record, so `readLockHolder` /
- * `isLockOwnerGone` / `tryRecoverStaleLock` apply unchanged. A held lock is
- * recovered only when the owner is verified gone (same host, and the pid is
- * dead or reused). Age is never used, and a corrupt holder stays locked.
- *
- * Layering: this module only imports storage/platform helpers. The tick
- * function (config reload + `runBackgroundTick`) is injected by
- * `source/cli/job-cli.ts`, so host/ never imports the coordinator.
+ * Foreground background-jobs daemon. The lock file doubles as the pidfile/status file;
+ * a held lock is recovered only when the owner is verified gone (same host, pid dead
+ * or reused). Age is never used, and a corrupt holder stays locked.
+ * The tick function is injected, so host/ never imports the coordinator.
  */
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
@@ -38,25 +21,15 @@ import {
 export const DAEMON_LOCK_NAME = "daemon";
 export const DAEMON_TICK_INTERVAL_MS = 15_000;
 export const DAEMON_STOP_TIMEOUT_MS = 10_000;
-/**
- * Legacy fixed pipe name (pre V-5). No longer used by the daemon or `stop`;
- * kept as an exported constant / `sendPipeStopRequest` default for API
- * compatibility. See `daemonPipePath`.
- */
+/** Legacy fixed pipe name; only kept as the `sendPipeStopRequest` default. See `daemonPipePath`. */
 export const DAEMON_PIPE_PATH = "\\\\.\\pipe\\agav-job-daemon";
 const DAEMON_PIPE_PREFIX = "\\\\.\\pipe\\agav-job-daemon-";
 
-/** Contents of `daemon.lock`. */
 export interface DaemonLockRecord extends LockHolder {
   startedAt?: string;
   version?: string;
-  /** Windows only (V-5): the per-user / per-root stop pipe the daemon listens on. */
   pipePath?: string;
-  /**
-   * Windows only (V-5): random secret the pipe server requires in the stop
-   * message. The lock lives in the user's private storage root, so only that
-   * user can read it.
-   */
+  /** Windows only: secret the stop message must carry; the lock lives in the user's private root. */
   stopToken?: string;
 }
 
@@ -74,18 +47,12 @@ function currentUsername(): string {
   return process.env["USERNAME"] ?? process.env["USER"] ?? "unknown";
 }
 
-/** Pipe-name-safe form of a username (case-insensitive like Windows accounts). */
 function sanitizeUsername(name: string): string {
   const cleaned = name.toLowerCase().replace(/[^a-z0-9._-]/g, "_").slice(0, 64);
   return cleaned || "unknown";
 }
 
-/**
- * V-5: per-user, per-storage-root stop pipe name:
- * `\\.\pipe\agav-job-daemon-<user>-<first 12 hex of sha256(resolved root)>`.
- * Deterministic, so `stop` can recompute it for locks that predate the
- * recorded `pipePath` field.
- */
+/** Per-user, per-root stop pipe name; deterministic so `stop` can recompute it for locks without `pipePath`. */
 export function daemonPipePath(root: string, username: string = currentUsername()): string {
   const digest = createHash("sha256").update(resolvePath(root)).digest("hex").slice(0, 12);
   return `${DAEMON_PIPE_PREFIX}${sanitizeUsername(username)}-${digest}`;
@@ -101,16 +68,11 @@ function tokensEqual(a: string, b: string): boolean {
   return ab.length === bb.length && timingSafeEqual(ab, bb);
 }
 
-// ---------------------------------------------------------------------------
-// Minimal injectable surfaces
-// ---------------------------------------------------------------------------
-
 export interface DaemonTimers {
   setInterval: (fn: () => void, ms: number) => unknown;
   clearInterval: (handle: unknown) => void;
 }
 
-/** Register a signal handler; returns an unregister function. */
 export type SignalRegistrar = (signal: NodeJS.Signals, handler: () => void) => () => void;
 
 /** Subset of a `net.Socket` used by the pipe channel. */
@@ -153,20 +115,13 @@ async function defaultNet(): Promise<PipeNet> {
   return (await import("node:net")) as unknown as PipeNet;
 }
 
-// ---------------------------------------------------------------------------
-// Lifetime lock (D9)
-// ---------------------------------------------------------------------------
-
 export interface DaemonLockDeps {
-  /** WP-02 liveness probes (tests). */
   probes?: Partial<LockOwnerProbes>;
-  /** Override stale recovery (tests). Default: WP-02 `tryRecoverStaleLock`. */
   recoverStaleLock?: (root: string, path: string) => Promise<boolean>;
   hostname?: () => string;
   pid?: number;
   now?: () => Date;
   readStartTime?: (pid: number) => Promise<string | undefined>;
-  /** V-5 (Windows): stop-pipe name + token to record in the lock. */
   stopChannel?: { pipePath: string; stopToken: string };
 }
 
@@ -191,11 +146,6 @@ async function createLockFile(path: string, record: DaemonLockRecord): Promise<b
   return true;
 }
 
-/**
- * Acquire `daemon.lock` with O_EXCL. On EEXIST, attempt one WP-02
- * verified-gone recovery and retry once. Never steals from a live or
- * unverifiable owner.
- */
 export async function acquireDaemonLock(
   root: string,
   version: string,
@@ -234,10 +184,6 @@ export async function acquireDaemonLock(
   };
   return { acquired: true, record, release };
 }
-
-// ---------------------------------------------------------------------------
-// Status
-// ---------------------------------------------------------------------------
 
 export type DaemonStatus =
   | { state: "running"; record: DaemonLockRecord }
@@ -286,14 +232,9 @@ export async function getDaemonStatus(
   return { state: "running", record };
 }
 
-// ---------------------------------------------------------------------------
-// Daemon loop
-// ---------------------------------------------------------------------------
-
 export interface DaemonOptions extends DaemonLockDeps {
   root: string;
   version: string;
-  /** One tick. Should not throw; a rejection is logged and the loop continues. */
   tick: () => Promise<void>;
   intervalMs?: number;
   timers?: DaemonTimers;
@@ -306,9 +247,7 @@ export interface DaemonOptions extends DaemonLockDeps {
 
 export interface DaemonHandle {
   record: DaemonLockRecord;
-  /** Resolves after a graceful shutdown completes (lock released). */
   stopped: Promise<void>;
-  /** Request graceful shutdown; resolves once stopped. Idempotent. */
   stop: () => Promise<void>;
 }
 
@@ -403,16 +342,13 @@ export async function startDaemon(opts: DaemonOptions): Promise<StartDaemonResul
   return { started: true, handle: { record: lock.record, stopped, stop } };
 }
 
-// ---------------------------------------------------------------------------
-// Windows named-pipe stop channel
-// ---------------------------------------------------------------------------
-
 const PIPE_MAX_REQUEST_BYTES = 1024;
+/** How long shutdown waits for already-answered clients to hang up before destroying them. */
+const PIPE_CLOSE_GRACE_MS = 1000;
 
 /**
- * Daemon side: listen on the pipe. Only a `stop <token>` line carrying the
- * token recorded in `daemon.lock` triggers `onStop` (V-5); anything else is
- * rejected. Returns a close function.
+ * Only a `stop <token>` line carrying the token from `daemon.lock` triggers `onStop`.
+ * The returned close function destroys still-connected clients so shutdown never waits on an idle one.
  */
 export async function startPipeStopServer(args: {
   net: PipeNet;
@@ -421,10 +357,16 @@ export async function startPipeStopServer(args: {
   token: string;
   onStop: () => void;
 }): Promise<() => Promise<void>> {
+  // socket -> already answered (its reply is flushing; destroyed after a grace period).
+  const clients = new Map<PipeSocket, boolean>();
   const server = args.net.createServer((socket) => {
     let buffer = "";
     let answered = false;
+    clients.set(socket, false);
     socket.on("error", () => {});
+    socket.on("close", () => {
+      clients.delete(socket);
+    });
     socket.on("data", (chunk) => {
       if (answered) return;
       buffer += chunk.toString();
@@ -432,11 +374,13 @@ export async function startPipeStopServer(args: {
       if (nl < 0) {
         if (buffer.length > PIPE_MAX_REQUEST_BYTES) {
           answered = true;
+          clients.set(socket, true);
           socket.end(`${JSON.stringify({ ok: false, error: "request too large" })}\n`);
         }
         return;
       }
       answered = true;
+      clients.set(socket, true);
       const line = buffer.slice(0, nl).trim();
       const match = /^stop (\S+)$/.exec(line);
       if (match && tokensEqual(match[1]!, args.token)) {
@@ -455,29 +399,58 @@ export async function startPipeStopServer(args: {
   });
   return () =>
     new Promise<void>((resolve) => {
-      server.close(() => resolve());
+      const destroyClients = (onlyIdle: boolean): void => {
+        for (const [socket, answered] of clients) {
+          if (onlyIdle && answered) continue;
+          clients.delete(socket);
+          try {
+            socket.destroy();
+          } catch {
+            // already gone
+          }
+        }
+      };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const done = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
+        resolve();
+      };
+      server.close(done);
+      destroyClients(true);
+      timer = setTimeout(() => {
+        destroyClients(false);
+        done();
+      }, PIPE_CLOSE_GRACE_MS);
+      timer.unref?.();
     });
 }
 
-/**
- * Client side: send `stop <token>` (or a bare legacy `stop` when no token is
- * known) over the pipe and wait for the acknowledgement.
- */
+/** Sends `stop <token>` (bare `stop` for legacy locks). On `timeoutMs` the socket is destroyed and `timedOut: true` returned. */
 export function sendPipeStopRequest(
   net: PipeNet,
   path: string = DAEMON_PIPE_PATH,
   token?: string,
-): Promise<{ ok: boolean; pid?: number; error?: string }> {
+  timeoutMs?: number,
+): Promise<{ ok: boolean; pid?: number; error?: string; timedOut?: boolean }> {
   return new Promise((resolve) => {
     const socket = net.connect(path);
     let buffer = "";
     let done = false;
-    const finish = (result: { ok: boolean; pid?: number; error?: string }): void => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (result: { ok: boolean; pid?: number; error?: string; timedOut?: boolean }): void => {
       if (done) return;
       done = true;
+      if (timer !== undefined) clearTimeout(timer);
       socket.destroy();
       resolve(result);
     };
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(
+        () => finish({ ok: false, error: "timed out waiting for the daemon to answer", timedOut: true }),
+        Math.max(0, timeoutMs),
+      );
+      timer.unref?.();
+    }
     socket.on("connect", () => {
       socket.write(token !== undefined ? `stop ${token}\n` : "stop\n");
     });
@@ -500,10 +473,6 @@ export function sendPipeStopRequest(
     socket.on("close", () => finish({ ok: false, error: "connection closed without response" }));
   });
 }
-
-// ---------------------------------------------------------------------------
-// Stop
-// ---------------------------------------------------------------------------
 
 export interface StopDaemonOptions {
   root: string;
@@ -539,12 +508,20 @@ export async function stopDaemon(opts: StopDaemonOptions): Promise<StopDaemonRes
     return { outcome: "refused", reason: `daemon lock belongs to host ${record.hostname}` };
   }
   const platform = opts.platform ?? process.platform;
+  const now = opts.now ?? Date.now;
+  const timeoutMs = opts.timeoutMs ?? DAEMON_STOP_TIMEOUT_MS;
+  const deadline = now() + timeoutMs;
 
   if (platform === "win32") {
-    // V-5: use the pipe name + token recorded in daemon.lock; older locks
-    // without the fields fall back to recomputing the per-user/per-root name.
+    // Older locks without the recorded pipe name fall back to recomputing it.
     const pipePath = opts.pipePath ?? record.pipePath ?? daemonPipePath(opts.root);
-    const reply = await sendPipeStopRequest(opts.net ?? (await defaultNet()), pipePath, record.stopToken);
+    const reply = await sendPipeStopRequest(
+      opts.net ?? (await defaultNet()),
+      pipePath,
+      record.stopToken,
+      Math.max(0, deadline - now()),
+    );
+    if (reply.timedOut) return { outcome: "timeout", pid: record.pid };
     if (!reply.ok) return { outcome: "refused", reason: `pipe stop failed: ${reply.error ?? "unknown error"}` };
     if (reply.pid !== undefined && reply.pid !== record.pid) {
       return { outcome: "refused", reason: `pipe answered for pid ${reply.pid}, lock holder is ${record.pid}` };
@@ -559,8 +536,6 @@ export async function stopDaemon(opts: StopDaemonOptions): Promise<StopDaemonRes
   }
 
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const now = opts.now ?? Date.now;
-  const deadline = now() + (opts.timeoutMs ?? DAEMON_STOP_TIMEOUT_MS);
   const path = daemonLockPath(opts.root);
   for (;;) {
     const current = await readLockHolder(path);

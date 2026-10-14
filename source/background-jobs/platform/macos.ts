@@ -1,41 +1,4 @@
-/**
- * T03 — macOS PlatformAdapter implementation.
- *
- * NOTE: implemented against documented macOS/POSIX behavior; not executed on
- * macOS. See T03 handoff report for verification limitations.
- *
- * Implements the frozen `PlatformAdapter` contract from `../types.ts` (T01).
- * Reuses shared POSIX helpers from `./posix-common.ts` (also T01-owned,
- * shared with T02's `linux.ts` per that file's header comment: "Coordinate
- * shared POSIX primitives through T01's owner rather than editing T02's
- * files"). This module adds only macOS-specific behavior: Seatbelt
- * (`sandbox-exec`) detection and documentation of macOS-specific caveats
- * (no cgroup equivalent, APFS case-insensitive-but-case-preserving default
- * volumes). Process-group launch/stop/verify logic is the "same POSIX
- * baseline" referenced in solution.md §5 and is intentionally implemented
- * the same way as T02's `linux.ts`, not duplicated with divergent logic.
- *
- * Design notes tying back to solution.md:
- *   - §5 table, "Isolation" row: "Validate supported Seatbelt tooling/policy;
- *     acknowledge tooling deprecation/availability limitations." Apple has
- *     been progressively deprecating/restricting `sandbox-exec` and its
- *     profile-language behavior differs across OS releases, so this adapter
- *     only ever asserts "the binary resolves on PATH", never "the profile
- *     syntax this repo uses is guaranteed to be accepted" — see
- *     `detectCapabilities()`.
- *   - §5 table, "Workload ownership" row: "Separate process group; disclose
- *     that daemonized/escaped descendants are outside the baseline."
- *   - §5 table, "Strong stop" row: "Group stop with escape caveat; no
- *     portable cgroup equivalent." — macOS has no cgroups at all, so
- *     `supportsDelegatedCgroup` is unconditionally `false` here (no probing
- *     needed, unlike Linux's cheap-but-inconclusive cgroup v2 check).
- *   - §5 table, "Filesystem and access" row: "Same, including symlink and
- *     filesystem casing considerations." — see `canonicalizePath()`.
- *   - §6 "PID existence alone is never sufficient to authorize a signal" and
- *     "never signal an unverified historical PID" — see `verifyAlive()` and
- *     `stopOwnedScope`/`forceStopOwnedScope`, which re-derive the pgid from
- *     the caller-supplied ownership handle every call, matching T02.
- */
+// Not exercised on macOS CI; written against documented macOS/POSIX behavior.
 import { spawn } from "node:child_process";
 import {
   canonicalizePathPosix,
@@ -60,16 +23,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-/**
- * Detect `sandbox-exec` the same way `source/utils/sandbox.ts`'s `canExec`/
- * `detectSandboxBackend` do: probe through `/bin/sh -c "command -v <bin>"`,
- * which works regardless of which shell is the user's login shell and
- * doesn't depend on `which` being installed. Kept as its own local copy
- * (rather than importing source/utils/sandbox.ts) because that module is
- * owned by existing CLI sandboxing code, not this subsystem's platform
- * adapters — the two are independent probes that happen to use the same
- * detection style, not a shared dependency.
- */
+// Probes via `/bin/sh -c "command -v"` so it works for any login shell and without `which`.
 async function canExecViaShell(cmd: string): Promise<boolean> {
   try {
     await execFileAsync("/bin/sh", ["-c", `command -v ${cmd}`], { timeout: 3000 });
@@ -91,10 +45,7 @@ async function detectCapabilities(): Promise<PlatformCapabilities> {
 
   const seatbeltBinaryFound = await canExecViaShell("sandbox-exec");
   if (seatbeltBinaryFound) {
-    // Report the backend as available only because the binary resolves;
-    // still disclose the deprecation/version-variance caveat per
-    // solution.md §5 rather than implying full policy-compatibility
-    // verification happened.
+    // Binary resolving is all we verify; the limitation text discloses the rest.
     availableIsolationBackends.push("seatbelt");
     limitations.push(SEATBELT_LIMITATION);
   } else {
@@ -104,54 +55,24 @@ async function detectCapabilities(): Promise<PlatformCapabilities> {
   return {
     platform: "darwin",
     availableIsolationBackends,
-    // process-group is the only ownership scope this adapter actually
-    // implements launch/stop semantics for, matching the Linux adapter and
-    // solution.md §5's "Same POSIX baseline" / "Separate process group"
-    // guidance for macOS workload ownership.
     strongestOwnershipScope: "process-group",
-    supportsGracefulApplicationShutdown: true, // SIGTERM is always deliverable on macOS/POSIX.
-    // Unconditionally false: cgroups do not exist on macOS at all, so there
-    // is nothing to probe (unlike Linux's cheap writable-cgroup-v2 check
-    // which still fails closed on the stronger claim). See
-    // NO_CGROUP_LIMITATION above.
-    supportsDelegatedCgroup: false,
-    // No native helper is required for basic process-group ownership on
-    // macOS — the same plain Node child_process POSIX baseline as Linux
-    // suffices (solution.md §5 "Same POSIX baseline").
+    supportsGracefulApplicationShutdown: true,
+    supportsDelegatedCgroup: false, // cgroups don't exist on macOS; nothing to probe
     nativeHelperAvailable: true,
     limitations,
   };
 }
 
 /**
- * Delegate to the shared POSIX canonicalization helper (realpath + existence
- * check) — POSIX symlink-resolution semantics are identical on macOS.
- *
- * Filesystem casing caveat (solution.md §5 "Filesystem and access" row:
- * "Same, including symlink and filesystem casing considerations"): macOS's
- * default APFS volume is case-insensitive but case-preserving. `realpath`
- * on such a volume does NOT normalize/correct the casing of path segments
- * that differ only in case from what's actually on disk — it resolves
- * symlinks and relative segments, but two paths that differ only in case
- * (e.g. "/Users/me/Project" vs "/Users/me/project") can both resolve
- * successfully to filesystem-equivalent-but-string-different results
- * depending on what was passed in, because APFS case-insensitive lookup
- * accepts either spelling while preserving whichever casing was used at
- * create time. This adapter deliberately does NOT attempt to "fix" or
- * normalize case here — doing so would require macOS-specific
- * directory-entry enumeration this adapter cannot verify from this sandbox,
- * and silently rewriting a caller-supplied path's case could mask a
- * genuine mismatch. Callers that need case-canonical comparison (e.g. spec
- * hashing, duplicate-path detection) must apply their own additional
- * case-folding/comparison logic on top of this helper's result; this
- * function only resolves symlinks and verifies existence, like its Linux
- * counterpart.
+ * Known limitation: default APFS volumes are case-insensitive but case-preserving,
+ * and `realpath` does not normalize case, so paths differing only in case can
+ * resolve to different strings. Callers needing case-canonical comparison must
+ * fold case themselves.
  */
 async function canonicalizePath(path: string): Promise<string> {
   return canonicalizePathPosix(path);
 }
 
-/** Delegate to the shared POSIX O_EXCL lock helper — identical semantics on macOS. */
 async function acquireLock(path: string): Promise<() => Promise<void>> {
   return acquireExclusiveLockPosix(path);
 }
@@ -171,8 +92,7 @@ async function launchDetachedSupervisor(args: {
 
   const child = spawn(process.execPath, [supervisorEntry, ...argv], {
     detached: true,
-    // The supervisor owns its own log files (T10); this adapter's only job
-    // is to start it fully detached from the current TTY/parent lifetime.
+    // The supervisor owns its own log files.
     stdio: "ignore",
     cwd,
     env,
@@ -185,7 +105,6 @@ async function launchDetachedSupervisor(args: {
     earlyExit = { code, signal };
   });
 
-  // Let the parent CLI process exit without waiting on this child.
   child.unref();
 
   const pid = child.pid;
@@ -196,12 +115,8 @@ async function launchDetachedSupervisor(args: {
     );
   }
 
-  // Give the child a short window to fail fast (bad entry path, immediate
-  // crash, exec failure) before we declare it launched. This is a liveness
-  // sanity check, not a correctness guarantee — a child could still crash
-  // a moment later, which is why the caller (T11/T12) still relies on
-  // heartbeat/handshake for authoritative "running" state. Same approach
-  // and rationale as the Linux adapter.
+  // Short window to catch fail-fast launches (bad entry path, exec failure). Not a
+  // guarantee: callers still rely on heartbeat/handshake for authoritative state.
   await sleep(SPAWN_SETTLE_MS);
 
   if (spawnError) {
@@ -214,32 +129,16 @@ async function launchDetachedSupervisor(args: {
     );
   }
 
-  // readProcessStartTimePosix first tries the Linux-only /proc/<pid>/stat
-  // path, which does not exist on macOS and will throw/be caught internally
-  // — that failure is expected and intentional on this platform (there is
-  // no macOS-specific code needed here; the existing try/catch in
-  // posix-common.ts already falls through). The function then falls back to
-  // the portable `ps -o lstart= -p <pid>` probe, which is the branch that
-  // actually executes and succeeds on macOS, giving a best-effort creation
-  // timestamp used to disambiguate PID reuse.
+  // On macOS this resolves via the `ps` fallback (no /proc).
   const creationIdentity = await readProcessStartTimePosix(pid);
   if (creationIdentity === undefined) {
-    // Not fatal — verifyAlive() documents and handles the weaker fallback —
-    // but this is worth surfacing because it means PID-reuse detection for
-    // this particular supervisor degrades to pid-exists-only. (No
-    // `limitations` channel is available on DetachedLaunchResult, so this
-    // is the only place that can be noted; left here for maintainers, same
-    // as the Linux adapter.)
+    // Not fatal, but PID-reuse detection for this supervisor degrades to pid-exists-only
+    // (DetachedLaunchResult has no `limitations` channel to report it).
   }
 
   const identity: ProcessIdentity = { pid, creationIdentity: creationIdentity ?? "" };
 
-  // On POSIX, spawning with detached:true makes the child the leader of its
-  // own new process group/session, so its pgid equals its own pid — true on
-  // macOS as on Linux. The ownership handle is the pgid in string form;
-  // stop/force-stop re-derive the pgid from this handle, never from any
-  // other cached historical pid (solution.md §6: "never signal an
-  // unverified historical PID").
+  // detached:true makes the child its own group leader, so pgid == pid.
   const ownershipHandle = String(pid);
 
   return {
@@ -253,28 +152,21 @@ async function verifyAlive(identity: ProcessIdentity): Promise<boolean> {
   if (!(await pidExistsPosix(identity.pid))) return false;
 
   if (!identity.creationIdentity) {
-    // Weaker check: the original launch could not read a creation-identity
-    // disambiguator (e.g. `ps -o lstart=` failed at launch time — extremely
-    // unusual, but possible under restrictive sandboxing). Falling back to
-    // pid-exists-only re-introduces the PID-reuse risk that solution.md §6
-    // explicitly warns about ("PID existence alone is never sufficient to
-    // authorize a signal"). Same documented tradeoff as the Linux adapter.
+    // Launch couldn't read a start time (e.g. `ps` failed): pid-exists-only, which
+    // re-introduces PID-reuse risk.
     return true;
   }
 
   const currentStart = await readProcessStartTimePosix(identity.pid);
-  // If we can no longer read the start time (process gone, or the `ps`
-  // probe failed) but kill(pid, 0) still said it exists, treat as not
-  // verifiably the same process rather than guessing alive.
+  // Unreadable now although the pid exists: treat as not verifiably the same process.
   if (currentStart === undefined) return false;
   return currentStart === identity.creationIdentity;
 }
 
-/** True once `kill(-pgid, 0)` reports ESRCH, i.e. no processes remain in the group. */
 function processGroupIsEmpty(pgid: number): boolean {
   try {
     process.kill(-pgid, 0);
-    return false; // still has at least one member
+    return false;
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
     if (err.code === "ESRCH") return true;
@@ -318,11 +210,7 @@ async function stopOwnedScope(
 ): Promise<StopOutcome> {
   const pgid = parsePgid(ownershipHandle, ownershipScope);
 
-  // Re-derive the pgid fresh from the caller-supplied handle every call;
-  // never reuse any previously cached pid/pgid from elsewhere in this
-  // module (solution.md §6: never signal an unverified historical PID).
-  // Same group strategy as the Linux adapter (solution.md §5 "Graceful
-  // stop" row: "Same group strategy").
+  // The pgid is always re-derived from the caller's handle, never a cached historical pid.
   signalProcessGroup(pgid, "SIGTERM");
 
   const emptyAfterGrace = await waitForGroupEmpty(pgid, graceMs);
@@ -335,7 +223,6 @@ async function stopOwnedScope(
     };
   }
 
-  // Still alive after grace: escalate to force-stop.
   const forced = await forceStopOwnedScope(ownershipHandle, ownershipScope);
   return {
     observedStopped: forced.observedStopped,
@@ -352,8 +239,7 @@ async function forceStopOwnedScope(
   const pgid = parsePgid(ownershipHandle, ownershipScope);
 
   signalProcessGroup(pgid, "SIGKILL");
-  // SIGKILL is not instantaneous for a process that's blocked in
-  // uninterruptible I/O; poll briefly rather than asserting immediately.
+  // SIGKILL isn't instant for processes in uninterruptible I/O; poll briefly.
   const verified = await waitForGroupEmpty(pgid, 1000);
 
   return {

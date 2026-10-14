@@ -1,19 +1,4 @@
-/**
- * T08 — File-backed grant store.
- *
- * `Grant` persistence is not part of T05's `Repositories` contract (see
- * types.ts: the `Repositories` interface has no `grants` field), so this
- * module owns its own small on-disk layout, reusing T05's general-purpose
- * atomic-file primitives (`writeAtomic`/`readJsonIfExists`) directly rather
- * than duplicating atomic-publication logic.
- *
- * On-disk layout under `root`:
- *   grants/<grantId>.json   — one Grant per file, single writer via this module
- *
- * This module performs no authorization policy decisions itself — see
- * `service.ts` / `policy.ts` for that. It only persists and queries `Grant`
- * records.
- */
+// Grants live outside `Repositories`: one file per grant at grants/<grantId>.json. No policy decisions here.
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -24,7 +9,7 @@ function grantsDir(root: string): string {
   return join(root, "grants");
 }
 
-/** Matches the collision-resistant ids this subsystem issues (uuid-ish); mirrors storage/paths.ts. */
+/** Mirrors storage/paths.ts; guards against path traversal. */
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 function grantPath(root: string, grantId: string): string {
@@ -47,13 +32,9 @@ async function listGrantIds(root: string): Promise<string[]> {
 export interface GrantStore {
   put(grant: Grant): Promise<void>;
   get(grantId: GrantId): Promise<Grant | undefined>;
-  /**
-   * Find the newest non-revoked grant matching `action` + `specHash`. Used
-   * by the authorization service to implement recurring-consent reuse: an
-   * identical spec with an existing active grant does not require a new one.
-   */
+  /** Newest non-revoked grant for `action` + `specHash` (recurring-consent reuse). */
   findActiveBySpecHash(action: GrantAction, specHash: string): Promise<Grant | undefined>;
-  /** Sets `revokedAt` on the grant. Does not touch any job/supervisor state. */
+  /** Only sets `revokedAt`; does not touch job/supervisor state. */
   revoke(grantId: GrantId): Promise<void>;
   list(): Promise<Grant[]>;
 }

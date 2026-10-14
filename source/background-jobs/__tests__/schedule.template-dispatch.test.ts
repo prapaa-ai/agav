@@ -111,10 +111,11 @@ describe("schedule engine — template env/limits dispatch (WP-07)", () => {
       session: autoAcceptSession,
     });
 
-    // Grant hash equals the hash of the template exactly as createSchedule
-    // persisted it (pre-change behaviour: hash over template + recurrence).
+    // Grant hash covers the template exactly as createSchedule persisted it,
+    // including the effective environment resolved before consent.
+    expect(schedule.launchSpecTemplate.env).toMatchObject({ PATH: expect.any(String) });
     const expectedHash = hashLaunchSpecForConsent({
-      ...existingStyleTemplate(),
+      ...schedule.launchSpecTemplate,
       recurrence: { scheduleId: schedule.scheduleId, scheduleVersion: 1, cron: "* * * * *", timezone: "UTC" },
     });
     const grant = await createGrantStore(tempDir).get(schedule.grantId);
@@ -127,7 +128,7 @@ describe("schedule engine — template env/limits dispatch (WP-07)", () => {
     expect(results).toEqual([{ scheduleId: schedule.scheduleId, outcome: "dispatched" }]);
     expect(fake.calls).toHaveLength(1);
     const request = fake.calls[0]!;
-    expect(request.env).toEqual({});
+    expect(request.env).toEqual(schedule.launchSpecTemplate.env);
     expect(request.limits).toEqual(DEFAULT_RESOURCE_LIMITS);
     expect(request.headless).toBeUndefined();
 
@@ -149,7 +150,7 @@ describe("schedule engine — template env/limits dispatch (WP-07)", () => {
     const fake = createFakeCoordinator();
     const { engine } = buildEngine(fake);
     const limits = { ...DEFAULT_RESOURCE_LIMITS, maxConcurrentJobs: 9 };
-    await engine.createSchedule({
+    const schedule = await engine.createSchedule({
       cron: "* * * * *",
       timezone: "UTC",
       launchSpecTemplate: { ...existingStyleTemplate(), env: { FOO: "bar" }, limits },
@@ -159,7 +160,8 @@ describe("schedule engine — template env/limits dispatch (WP-07)", () => {
     const results = await engine.evaluateOnce({ nowUtc: new Date("2024-06-01T12:00:30Z"), connectedSessions: [] });
     expect(results[0]?.outcome).toBe("dispatched");
     const request = fake.calls[0]!;
-    expect(request.env).toEqual({ FOO: "bar" });
+    expect(request.env).toMatchObject({ FOO: "bar", PATH: expect.any(String) });
+    expect(request.env).toEqual(schedule.launchSpecTemplate.env);
     expect(request.limits).toEqual(limits);
 
     const spec = await normalizeLikeCoordinator(request, true);

@@ -69,18 +69,9 @@ export interface AgavConfig {
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
   showThinking?: boolean;
-  /**
-   * Opt-in switch for the background-jobs subsystem (see solution.md). When
-   * unset or false, `run_background_job`/`/job` are inert — discoverable
-   * but refuse to launch or inspect anything. Defaults to disabled so no
-   * background command is ever launched merely because the feature shipped.
-   */
+  /** Opt-in; when unset or false, `run_background_job` and `/job` refuse to do anything. */
   backgroundJobsEnabled?: boolean;
-  /**
-   * Master switch for headless background automation (`agav job tick` /
-   * daemon). "paused" makes tick/daemon exit early. Defaults to "on".
-   * Global-only (listed in PROJECT_CONFIG_DENY).
-   */
+  /** "paused" makes `agav job tick`/daemon do nothing. Global-only (PROJECT_CONFIG_DENY). */
   backgroundAutomation?: "on" | "paused";
 }
 
@@ -344,6 +335,41 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "backgroundAutomation",
 ]);
 
+/** Ignore invalid hand-edited values instead of passing unsupported effort levels to providers. */
+function sanitizeConfig(merged: AgavConfig): void {
+  if (!isEffortLevel(merged.effort)) {
+    merged.effort = DEFAULT_CONFIG.effort;
+  }
+  if (!Number.isInteger(merged.maxIterations) || merged.maxIterations < 1) {
+    merged.maxIterations = DEFAULT_CONFIG.maxIterations;
+  }
+  if (!Number.isInteger(merged.errorRetries) || merged.errorRetries < 0) {
+    merged.errorRetries = DEFAULT_CONFIG.errorRetries;
+  }
+  if (merged.backgroundAutomation !== "on" && merged.backgroundAutomation !== "paused") {
+    merged.backgroundAutomation = DEFAULT_CONFIG.backgroundAutomation;
+  }
+}
+
+/**
+ * Read-only global config (defaults + ~/.agav/config.json) for unattended
+ * entry points. Never touches the cwd or creates files, and skips env/API-key
+ * resolution.
+ */
+export async function loadGlobalConfig(): Promise<AgavConfig> {
+  let globalConfig: Partial<AgavConfig> = {};
+  try {
+    const raw = await readFile(CONFIG_PATH, "utf-8");
+    globalConfig = JSON.parse(raw);
+  } catch {}
+  const merged = deepMerge(
+    { ...DEFAULT_CONFIG } as unknown as Record<string, unknown>,
+    globalConfig as unknown as Record<string, unknown>,
+  ) as unknown as AgavConfig;
+  sanitizeConfig(merged);
+  return merged;
+}
+
 /** Load config from global and project files, then apply environment-derived overrides. */
 export async function loadConfig(): Promise<AgavConfig> {
   await ensureProjectConfigTemplate();
@@ -371,19 +397,7 @@ export async function loadConfig(): Promise<AgavConfig> {
     projectConfig as unknown as Record<string, unknown>,
   ) as unknown as AgavConfig;
 
-  // Ignore invalid hand-edited values instead of passing unsupported effort levels to providers.
-  if (!isEffortLevel(merged.effort)) {
-    merged.effort = DEFAULT_CONFIG.effort;
-  }
-  if (!Number.isInteger(merged.maxIterations) || merged.maxIterations < 1) {
-    merged.maxIterations = DEFAULT_CONFIG.maxIterations;
-  }
-  if (!Number.isInteger(merged.errorRetries) || merged.errorRetries < 0) {
-    merged.errorRetries = DEFAULT_CONFIG.errorRetries;
-  }
-  if (merged.backgroundAutomation !== "on" && merged.backgroundAutomation !== "paused") {
-    merged.backgroundAutomation = DEFAULT_CONFIG.backgroundAutomation;
-  }
+  sanitizeConfig(merged);
 
   // Treat allowed tools as additive so projects can extend, not erase, a user's global allowlist.
   if (projectConfig.allowedTools) {

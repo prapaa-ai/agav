@@ -1,7 +1,3 @@
-/**
- * WP-12 — macOS scheduler entry: a per-user LaunchAgent
- * (`~/Library/LaunchAgents/dev.agav.job-tick.plist`, `StartInterval=60`).
- */
 import type { SchedulerContext, SchedulerTarget } from "./common.js";
 import { readIfExists, unlinkIfExists, writeFileAtomic } from "./common.js";
 

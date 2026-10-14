@@ -108,12 +108,7 @@ const TOOL_META: Record<string, ToolMeta> = {
   run_background_job: {
     label: "Background job",
     formatSummary: (input) => {
-      // Two call shapes reach here: (a) the agent-loop's confirmation popup
-      // for a pending launch passes { action, spec }, where `spec` is the
-      // normalized LaunchSpec being approved (see agent/loop.ts's
-      // confirmBackgroundAction wiring) — not the tool's own flat
-      // parameters; (b) a direct-tool-call summary would pass the tool's
-      // own flat { action, command, jobId, ... } shape. Handle both.
+      // Input is either the confirmation popup's { action, spec } or the tool's own flat parameters.
       const action = typeof input.action === "string" ? input.action : "";
       const spec = input.spec as Record<string, unknown> | undefined;
       const invocation = spec?.invocation as Record<string, unknown> | undefined;

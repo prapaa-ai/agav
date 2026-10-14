@@ -67,7 +67,6 @@ export function scheduleCommandSummary(schedule: ScheduleRecord): string {
   return invocation.mode === "shell" ? invocation.commandText : "(direct invocation)";
 }
 
-/** Launch template for a recurring shell command run from the current directory. */
 export function shellLaunchTemplate(commandText: string): Omit<LaunchSpec, "requestId" | "createdAt"> {
   return {
     invocation: { mode: "shell", interpreter: osPlatform() === "win32" ? "cmd" : "posix-sh", commandText },

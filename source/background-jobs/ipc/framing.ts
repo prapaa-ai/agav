@@ -1,18 +1,6 @@
-/**
- * Length-prefixed JSON message framing (T06).
- *
- * Wire format: a 4-byte big-endian unsigned length prefix followed by that
- * many bytes of UTF-8 encoded JSON. This is used for both directions of the
- * duplex IPC connection (client -> server requests, server -> client
- * responses/events).
- *
- * Bounded per solution.md §6 "bounded message framing": `FrameDecoder` never
- * buffers past `maxFrameBytes` worth of pending data for a single frame. If
- * the declared length prefix (or the amount of unparsed buffered data before
- * a length prefix is even known) would exceed that bound, decoding throws a
- * `FrameSizeExceededError` and the caller MUST close/destroy the connection
- * — the decoder does not attempt to resynchronize a corrupt/hostile stream.
- */
+// Wire format: 4-byte big-endian length prefix + UTF-8 JSON, in both directions.
+// FrameDecoder never buffers past `maxFrameBytes` per frame; on a violation the caller
+// MUST close the connection (no attempt is made to resynchronize a corrupt/hostile stream).
 
 export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024; // 16 MiB
 
@@ -32,10 +20,6 @@ export class FrameParseError extends Error {
   }
 }
 
-/**
- * Encode an arbitrary JSON-serializable value into a single length-prefixed
- * frame buffer ready to write to a socket.
- */
 export function encodeFrame(obj: unknown): Buffer {
   const json = Buffer.from(JSON.stringify(obj), "utf8");
   if (json.length > 0xffffffff) {
@@ -47,17 +31,9 @@ export function encodeFrame(obj: unknown): Buffer {
 }
 
 /**
- * Incremental decoder: feed raw bytes via `push()`, receive fully decoded
- * JSON messages via the `onMessage` callback supplied at construction. Also
- * exposes an async-iterator interface (`for await (const msg of decoder)`)
- * for callers that prefer that style; both delivery mechanisms see every
- * message exactly once per decoder instance — do not mix them on the same
- * decoder.
- *
- * On a bounds violation or malformed frame, `onError` is invoked (and/or the
- * async iterator throws) and the decoder enters a permanently failed state:
- * further `push()` calls are no-ops. The owning connection must be closed by
- * the caller; this class never touches sockets directly.
+ * Feed bytes via `push()`; messages arrive via `onMessage` or the async iterator
+ * (don't mix the two on one decoder). After a bounds violation or malformed frame the
+ * decoder is permanently failed and further `push()` calls are no-ops.
  */
 export class FrameDecoder {
   private buffer: Buffer = Buffer.alloc(0);
@@ -66,7 +42,6 @@ export class FrameDecoder {
   private readonly onMessage?: (msg: unknown) => void;
   private readonly onError?: (err: Error) => void;
 
-  // Support for the async-iterator consumption style.
   private pendingWaiters: Array<{
     resolve: (result: IteratorResult<unknown>) => void;
     reject: (err: Error) => void;
@@ -85,14 +60,11 @@ export class FrameDecoder {
     this.onError = options?.onError;
   }
 
-  /** Feed newly received bytes. Safe to call repeatedly as data arrives. */
   push(chunk: Buffer): void {
     if (this.failed) return;
     this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
 
-    // Reject early if we've buffered more than the bound without a complete
-    // frame yet (covers both a huge declared length and a client that never
-    // sends a valid length prefix at all).
+    // Reject early once over the bound without a complete frame.
     if (this.buffer.length > this.maxFrameBytes + LENGTH_PREFIX_BYTES) {
       this.fail(new FrameSizeExceededError(this.buffer.length - LENGTH_PREFIX_BYTES, this.maxFrameBytes));
       return;
@@ -142,7 +114,7 @@ export class FrameDecoder {
     }
   }
 
-  /** Signal no more data will arrive (e.g. socket closed). Ends iteration cleanly. */
+  /** Call when the socket closes; ends iteration cleanly. */
   end(): void {
     this.iterDone = true;
     while (this.pendingWaiters.length > 0) {

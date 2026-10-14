@@ -1,27 +1,14 @@
 /**
- * T05 — Durable storage and record repositories.
- *
- * Implements the frozen `Repositories` contract from `types.ts` (T01).
- * No coordinator/supervisor business logic lives here — only persistence,
- * atomic publication, single-writer locking and ID/prefix resolution per
- * solution.md §7.
- *
- * On-disk layout under `root` (see paths.ts for exact derivations):
- *   specs/<requestId>.json                — immutable LaunchSpec, one writer ever
- *   jobs/<jobId>.json                      — JobRecord, single lifecycle writer per job (withJobLock)
- *   control-intents/<intentId>.json        — one ControlIntent per file; `listForJob` scans + filters
- *   events/<eventId>.json                  — CompletionEventRecord
- *   acks/<eventId>--<clientId>.json        — AcknowledgementRecord, persisted independently of events
- *   schedules/<scheduleId>.json            — ScheduleRecord
- *   occurrences/<occurrenceId>.json        — ScheduleOccurrenceRecord, reserved via exclusive create
- *   locks/*.lock                           — OS-held lock files (single-writer-lock.ts)
- *   quarantine/                            — corrupt records moved aside instead of silently dropped
- *
- * Control intents are one-file-per-intent (rather than one array file per
- * job) so that `create`/`update` are each a single atomic publication with
- * no read-modify-write race across intents for the same job; `listForJob`
- * reads the whole directory and filters by `jobId`, which is cheap at the
- * expected intent volume (stop/cleanup requests are rare per job).
+ * On-disk layout under `root` (see paths.ts):
+ *   specs/<requestId>.json                — immutable LaunchSpec
+ *   jobs/<jobId>.json                     — JobRecord, single lifecycle writer per job (withJobLock)
+ *   control-intents/<intentId>.json       — one file per intent, so create/update need no read-modify-write
+ *   events/<eventId>.json                 — CompletionEventRecord
+ *   acks/<eventId>--<clientId>.json       — AcknowledgementRecord, independent of events
+ *   schedules/<scheduleId>.json           — ScheduleRecord
+ *   occurrences/<occurrenceId>.json       — ScheduleOccurrenceRecord, reserved via exclusive create
+ *   locks/*.lock                          — see single-writer-lock.ts
+ *   quarantine/                           — corrupt records moved aside instead of silently dropped
  */
 import { readdir } from "node:fs/promises";
 
@@ -60,7 +47,6 @@ import {
 } from "./paths.js";
 import { withJobLock } from "./single-writer-lock.js";
 
-/** List json-record ids (filenames minus `.json`) in a directory; empty if the directory does not exist yet. */
 async function listIds(dir: string): Promise<string[]> {
   try {
     const files = await readdir(dir);
@@ -71,7 +57,6 @@ async function listIds(dir: string): Promise<string[]> {
   }
 }
 
-/** List `<a>--<b>` compound ids, returning the `a` and `b` components. */
 async function listAckIds(dir: string): Promise<Array<{ eventId: string; clientId: string }>> {
   try {
     const files = await readdir(dir);
@@ -92,7 +77,6 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value, Object.keys(value as Record<string, unknown>).sort());
 }
 
-/** Deep-equality good enough for comparing persisted JSON records (order-independent on top-level keys). */
 function deepEqualJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(sortKeysDeep(a)) === JSON.stringify(sortKeysDeep(b));
 }
@@ -118,9 +102,7 @@ export function createFileRepositories(root: string): Repositories {
       const existing = await readJsonIfExists<LaunchSpec>(path, quarantine);
       if (existing !== undefined) {
         if (deepEqualJson(existing, spec)) {
-          // Idempotent retry with the identical spec succeeds silently
-          // (solution.md §6: "stable request IDs make retries refer to the
-          // original launch").
+          // Idempotent retry with the identical spec.
           return;
         }
         throw new BackgroundJobError(
@@ -233,9 +215,7 @@ export function createFileRepositories(root: string): Repositories {
       await writeAtomic(path, JSON.stringify(ack, null, 2));
     },
     async get(eventId: EventId): Promise<AcknowledgementRecord | undefined> {
-      // Any client's ack is sufficient evidence the event is acknowledged;
-      // return the first one found (acks are keyed by eventId+clientId so
-      // multiple clients could in principle each ack independently).
+      // Any client's ack counts; return the first found.
       const ids = await listAckIds(acksDir(root));
       for (const { eventId: evId, clientId } of ids) {
         if (evId !== eventId) continue;
@@ -266,8 +246,7 @@ export function createFileRepositories(root: string): Repositories {
 
   const occurrences: Repositories["occurrences"] = {
     async reserve(record: ScheduleOccurrenceRecord): Promise<boolean> {
-      // Atomic-create-exclusive: "already reserved" is an expected outcome
-      // used to prevent duplicate scheduling (solution.md §11), not an error.
+      // "Already reserved" (false) is expected and is what prevents duplicate scheduling.
       const path = occurrencePath(root, record.occurrenceId);
       return createExclusive(path, JSON.stringify(record, null, 2));
     },

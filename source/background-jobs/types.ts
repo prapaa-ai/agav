@@ -1,36 +1,14 @@
 /**
- * T01 — Frozen contracts for the background-jobs subsystem.
- *
- * This file is the single synchronization barrier described in subtasks.md.
- * It defines shared types, protocol/schema versions, lifecycle/uncertainty
- * states, launch-spec shape, capability reporting, storage ownership and
- * platform-adapter primitives so that every other component (T02-T18) can be
- * implemented against stable interfaces without importing each other's
- * internals.
- *
- * Ownership: this module belongs to the integration owner (T01). Other tasks
- * MUST NOT edit it directly — request a versioned contract change instead.
- *
- * Contract change log: additive optional members (StartJobRequest.env/limits,
- * CoordinatorClient.findByRequestId, error code "store-version-newer") per
- * docs/design/job-workflow-implementation-plan.md Phase 0 (WP-01). No
- * LaunchSpec/JobRecord or spec-hash input changes.
+ * Shared contracts for the background-jobs subsystem.
  *
  * Module boundaries (no reverse dependencies):
  *   platform/*        -> implements PlatformAdapter, no imports from storage/ipc/etc.
- *   storage/*         -> consumes platform primitives only
- *   ipc/*             -> consumes platform primitives only
- *   launch-spec.ts    -> pure normalization, consumes platform path/env helpers
- *   authorization.ts  -> consumes storage + launch-spec, never imports coordinator
+ *   storage/*, ipc/*  -> consume platform primitives only
+ *   authorization     -> consumes storage + launch-spec, never imports coordinator
  *   logging/*         -> reports failures via callback, never imports supervisor/coordinator
- *   supervisor/*      -> consumes storage, ipc, launch-spec, logging, platform; does not
- *                        depend on coordinator lifetime
- *   recovery.ts       -> consumes storage + ipc; returns decisions, does not orchestrate
- *   mailbox.ts        -> consumes storage + ipc; no UI imports
- *   coordinator.ts    -> consumes authorization, supervisor launcher, recovery, mailbox,
- *                        schedule-engine; is the only orchestration owner
- *   schedule-engine.ts-> consumes storage + authorization + coordinator client API
- *   tools/, commands/ -> consume coordinator client API only, never launch directly
+ *   supervisor/*      -> does not depend on coordinator lifetime
+ *   coordinator       -> the only orchestration owner
+ *   tools/, commands/ -> consume the coordinator client API only, never launch directly
  */
 
 // ---------------------------------------------------------------------------
@@ -69,14 +47,10 @@ export type OccurrenceId = string;
 export type ClientId = string;
 
 // ---------------------------------------------------------------------------
-// Lifecycle vs. stop-control (kept deliberately separate per solution.md §6)
+// Lifecycle vs. stop-control (kept deliberately separate)
 // ---------------------------------------------------------------------------
 
-/**
- * Authoritative job lifecycle. "unknown" and "recovery-required" are first
- * class — they are not errors, they are states a client must be able to
- * render and act on explicitly.
- */
+/** "unknown" and "recovery-required" are first-class states, not errors. */
 export type LifecycleState =
   | "accepted" // capacity reserved + intent persisted, supervisor not yet confirmed
   | "starting" // supervisor handshake in progress, workload not yet observed running
@@ -159,17 +133,13 @@ export const DEFAULT_RESOURCE_LIMITS: ResourceLimits = {
   completedLogRetentionDays: 7,
 };
 
-/**
- * The complete, approved launch specification. Consent is bound to the hash
- * of this object (see `specHash` in JobRecord / Grant); any material change
- * requires renewed approval.
- */
+/** Consent is bound to the hash of this object (`specHash`); any material change requires renewed approval. */
 export interface LaunchSpec {
   requestId: RequestId;
   invocation: InvocationSpec;
   /** Canonicalized, existence-verified working directory (post symlink/junction resolution). */
   cwd: string;
-  /** Minimal constructed environment; never contains raw secret values (see EnvPlan). */
+  /** Minimal constructed environment; never contains raw secret values. */
   env: Record<string, string>;
   /** Names of credentials resolved at launch time; values never persisted here. */
   credentialRefs: string[];
@@ -183,7 +153,7 @@ export interface LaunchSpec {
 }
 
 // ---------------------------------------------------------------------------
-// Capability reporting (T02/T03/T04 fill these in; never silently assume)
+// Capability reporting (never silently assume)
 // ---------------------------------------------------------------------------
 
 export interface PlatformCapabilities {
@@ -200,7 +170,7 @@ export interface PlatformCapabilities {
 }
 
 // ---------------------------------------------------------------------------
-// Platform adapter primitives (T02/T03/T04 implement; others consume only this)
+// Platform adapter primitives
 // ---------------------------------------------------------------------------
 
 export interface ProcessIdentity {
@@ -224,11 +194,7 @@ export interface StopOutcome {
   limitations: string[];
 }
 
-/**
- * Boundary every OS-specific implementation must satisfy. Storage/IPC/
- * supervisor code must only ever talk to this interface, never to
- * node:child_process or OS primitives directly, so behavior stays uniform.
- */
+/** Storage/IPC/supervisor code talks to this interface, never to node:child_process or OS primitives directly. */
 export interface PlatformAdapter {
   readonly platform: "linux" | "darwin" | "win32";
 
@@ -259,7 +225,7 @@ export interface PlatformAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// Storage ownership: one authoritative writer per record kind (solution.md §7)
+// Storage ownership: one authoritative writer per record kind
 // ---------------------------------------------------------------------------
 
 export interface JobRecord {
@@ -272,11 +238,9 @@ export interface JobRecord {
   identity?: ProcessIdentity;
   ownershipHandle?: string;
   ownershipScope?: ProcessOwnershipScope;
-  /** The per-job SUPERVISOR process's own identity (distinct from `identity`, which is the workload's). Used so a future cleanup/reaping flow can terminate the supervisor itself via PlatformAdapter.stopOwnedScope. Optional: older records predating this field, and any job whose launch failed before the supervisor's identity was recorded, will not have it. */
+  /** The supervisor's own identity/ownership (distinct from the workload's), so cleanup can terminate it. Absent if launch failed before it was recorded. */
   supervisorIdentity?: ProcessIdentity;
-  /** Opaque ownership handle for the supervisor process itself (see PlatformAdapter.DetachedLaunchResult.ownershipHandle). */
   supervisorOwnershipHandle?: string;
-  /** Ownership scope for the supervisor process itself (see PlatformAdapter.DetachedLaunchResult.ownershipScope). */
   supervisorOwnershipScope?: ProcessOwnershipScope;
   /** Random value established at supervisor handshake; distinguishes PID reuse. */
   nonce: string;
@@ -325,11 +289,7 @@ export interface ScheduleRecord {
   grantId: GrantId;
   enabled: boolean;
   createdAt: string;
-  /**
-   * Set while a schedule is paused (disabled but resumable). Revocation is
-   * permanent and predates pausing, so a disabled record WITHOUT this field
-   * is revoked — see `isScheduleRevoked`.
-   */
+  /** Set while paused (disabled but resumable); a disabled record WITHOUT this is revoked (see `isScheduleRevoked`). */
   pausedAt?: string;
 }
 
@@ -348,7 +308,7 @@ export interface ScheduleOccurrenceRecord {
   createdAt: string;
 }
 
-/** Repository boundary for T05. Coordinator/supervisor never read/write files directly. */
+/** Coordinator/supervisor never read/write files directly. */
 export interface Repositories {
   specs: {
     put(spec: LaunchSpec): Promise<void>;
@@ -434,10 +394,7 @@ export type BackgroundJobErrorCode =
   | "lock-held"
   | "recovery-required"
   | "unsupported-platform"
-  /**
-   * On-disk store VERSION is newer than BACKGROUND_JOBS_STORAGE_VERSION.
-   * Additive contract change per docs/design/job-workflow-implementation-plan.md Phase 0 (0.10).
-   */
+  /** On-disk store VERSION is newer than BACKGROUND_JOBS_STORAGE_VERSION. */
   | "store-version-newer";
 
 export class BackgroundJobError extends Error {
@@ -448,7 +405,7 @@ export class BackgroundJobError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Coordinator client API (T14 implements; T16 tools/commands consume only this)
+// Coordinator client API
 // ---------------------------------------------------------------------------
 
 export interface StartJobRequest {
@@ -458,19 +415,13 @@ export interface StartJobRequest {
   envInherit?: string[];
   isolation: IsolationPolicy;
   headless?: boolean;
-  // Additive, optional contract change per
-  // docs/design/job-workflow-implementation-plan.md Phase 0 (0.8, decision D3).
   /** Explicit env values overlaid on the minimal inherited env (distinct from `envInherit`, a list of names). */
   env?: Record<string, string>;
   /** Partial limits merged over DEFAULT_RESOURCE_LIMITS during launch-spec normalization. */
   limits?: Partial<ResourceLimits>;
   /**
-   * Additive, optional: dispatch under an already-approved schedule grant.
-   * When present the coordinator revalidates `grantId` against `template`
-   * (the exact stored, approved spec) instead of authorizing under the
-   * caller's session, and launches from `template` (invocation, cwd, env,
-   * isolation, limits, recurrence, headless) rather than the request's own
-   * fields.
+   * Dispatch under an already-approved schedule grant: the coordinator revalidates `grantId`
+   * against `template` and launches from `template` rather than the request's own fields.
    */
   scheduleGrant?: { grantId: GrantId; template: Omit<LaunchSpec, "requestId" | "createdAt"> };
 }
@@ -494,11 +445,7 @@ export interface LogTail {
   cursor: string;
 }
 
-/**
- * The one entry point tools, slash commands, headless clients and schedules
- * must all go through. No background command is ever launched by any other
- * code path.
- */
+/** The only entry point for launching background commands (tools, slash commands, headless, schedules). */
 export interface CoordinatorClient {
   start(request: StartJobRequest, session: SessionPolicySnapshot): Promise<JobSummary>;
   list(): Promise<JobSummary[]>;
@@ -508,10 +455,6 @@ export interface CoordinatorClient {
   stop(jobIdOrPrefix: string, session: SessionPolicySnapshot): Promise<JobSummary>;
   cleanup(jobIdOrPrefix: string, session: SessionPolicySnapshot): Promise<void>;
   capabilities(): Promise<PlatformCapabilities>;
-  /**
-   * Look up a job by its stable request id. Optional — callers must
-   * feature-check. Additive contract change per
-   * docs/design/job-workflow-implementation-plan.md Phase 0 (0.5, decision D7).
-   */
+  /** Optional — callers must feature-check. */
   findByRequestId?(requestId: RequestId): Promise<JobSummary | undefined>;
 }

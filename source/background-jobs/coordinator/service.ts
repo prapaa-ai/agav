@@ -1,35 +1,4 @@
-/**
- * T14 — The coordinator: the one entry point through which every background
- * job tool/slash-command/headless client/schedule must pass (per the
- * `CoordinatorClient` doc in types.ts). This file is the only module in
- * this subsystem allowed to import authorization, launch-spec normalization,
- * supervisor launching, recovery and mailbox together (README.md).
- *
- * Boundaries honored here:
- *   - Pure launch-spec validation lives in `../launch-spec/normalize.js`
- *     (T07); this file only supplies the platform/filesystem hooks it needs.
- *   - All authorization decisions go through `../authorization/service.js`
- *     (T08); this file never re-implements grant/consent logic.
- *   - Capacity bookkeeping is `./admission.js`; actually starting the
- *     supervisor process is `./launcher.js`. Both are deliberately split out
- *     so this file stays an orchestration script, not a grab-bag.
- *   - Fresh liveness evidence for `poll`/`wait`/`stop` comes from
- *     `../recovery/reconcile.js` (T12) rather than trusting stale on-disk
- *     state, exactly as solution.md §6 requires.
- *   - Completion-event access for T16's future notification UI is exposed
- *     via the `mailbox` extension property (see bottom of this file) backed
- *     by `../mailbox/mailbox-service.js` (T13).
- *
- * Schedule engine (T15) extension point: `CoordinatorClient` intentionally
- * has no schedule methods yet (T15 is a separate, not-yet-built task per
- * subtasks.md). `../types.ts`'s module-boundary comment documents
- * `schedule-engine.ts -> consumes storage + authorization + coordinator
- * client API`, i.e. T15 is expected to consume the `CoordinatorClient`
- * returned by `createCoordinator()` from the *outside*, the same way T16's
- * tools/commands do, rather than this file reaching into scheduling logic.
- * No scheduling code is implemented here; this is a documented extension
- * point, not a stub method.
- */
+// poll/wait/stop use fresh liveness evidence from recovery/reconcile rather than stale on-disk state.
 import { randomUUID } from "node:crypto";
 
 import {
@@ -62,47 +31,29 @@ import { reserveCapacity } from "./admission.js";
 import { launchSupervisorForJob, socketNameForJob } from "./launcher.js";
 import { join } from "node:path";
 
-/**
- * Extension surface beyond the frozen `CoordinatorClient` interface.
- * `CoordinatorClient` does not forbid additional properties, and T16 needs a
- * way to reach the mailbox/repositories/authorization service directly for
- * notification presentation and advanced/debugging use — see task brief.
- * These are NOT part of the frozen contract; callers that only hold a
- * `CoordinatorClient`-typed reference cannot see them.
- */
+/** Extras beyond `CoordinatorClient`, not visible to callers holding only that type. */
 export interface CoordinatorExtensions {
   mailbox: MailboxService;
   repositories: Repositories;
   authorization: AuthorizationService;
-  /** Resolved, canonicalized storage root this coordinator instance is bound to. */
   root: string;
-  /**
-   * Implementation of the optional `CoordinatorClient.findByRequestId`
-   * (plan item 0.5, D7). Always present on a real coordinator.
-   */
   findByRequestId(requestId: string): Promise<JobSummary | undefined>;
   /**
-   * Reconcile possibly-orphaned jobs against live evidence (for WP-08's
-   * startup reconcile, D5). Targets `running`/`unknown` jobs, plus
-   * `accepted`/`starting` jobs whose LaunchSpec was created more than
-   * `olderThanMs` ago (default 2 minutes). Per-job failures are skipped, not
-   * thrown; returns the summaries of the jobs that were reconciled.
+   * Reconcile possibly-orphaned jobs (startup sweep): `running`/`unknown` jobs, plus
+   * `accepted`/`starting` jobs created more than `olderThanMs` ago (default 2 min).
+   * Per-job failures are skipped, not thrown.
    */
   reconcile(opts?: { olderThanMs?: number }): Promise<JobSummary[]>;
 }
 
 export type Coordinator = CoordinatorClient & CoordinatorExtensions;
 
-/**
- * Bounded retry policy for coordinator-lock contention during admission
- * (plan item 0.2). Fields are overridable for deterministic tests.
- */
+/** Bounded retry policy for coordinator-lock contention during admission; overridable for tests. */
 export interface AdmissionRetryOptions {
   /** Total attempts including the first (default 10). */
   maxAttempts?: number;
-  /** Sleep source (default `setTimeout`-based). */
   sleep?: (ms: number) => Promise<void>;
-  /** Uniform [0, 1) random source used for jitter (default `Math.random`). */
+  /** Uniform [0, 1) jitter source. */
   random?: () => number;
 }
 
@@ -118,7 +69,7 @@ const WAIT_FALLBACK_POLL_INTERVAL_MS = 500;
 const ADMISSION_LOCK_MAX_ATTEMPTS = 10;
 const ADMISSION_LOCK_MIN_DELAY_MS = 20;
 const ADMISSION_LOCK_MAX_DELAY_MS = 100;
-/** D5: accepted/starting jobs younger than this are assumed to still be launching. */
+/** Accepted/starting jobs younger than this are assumed to still be launching. */
 const DEFAULT_RECONCILE_OLDER_THAN_MS = 2 * 60 * 1000;
 
 function socketPathFor(root: string, jobId: string): string {
@@ -138,29 +89,18 @@ function toJobSummary(record: JobRecord): JobSummary {
 }
 
 function toConsentSpec(spec: LaunchSpec): ConsentRelevantSpec {
-  // Mirrors `Omit<LaunchSpec, 'requestId' | 'createdAt'>` structurally;
-  // destructure explicitly rather than relying on object-shape coincidence
-  // so a future LaunchSpec field addition is forced through this file too.
   const { requestId: _requestId, createdAt: _createdAt, ...rest } = spec;
   return rest;
 }
 
 function logsDirFor(root: string, jobId: string): string {
-  // MUST match supervisor/lifecycle.ts's private `logsDir()` derivation
-  // exactly, since this is the fallback path once a supervisor's IPC
-  // connection is no longer reachable (solution.md: "logs must outlive the
-  // live IPC connection").
+  // Must match supervisor/lifecycle.ts's `logsDir()`; used when the supervisor's IPC is unreachable.
   return join(root, "jobs", jobId, "logs");
 }
 
 async function findJobByRequestId(repositories: Repositories, requestId: string): Promise<JobRecord | undefined> {
-  // No dedicated requestId -> jobId index exists in the frozen Repositories
-  // contract (see types.ts); `repositories.jobs.list()` + filter is the
-  // documented acceptable approach for Phase B's expected small job counts
-  // (see task brief).
-  // `start()` returns the existing job for a reused requestId, so normally
-  // at most one record matches; if several ever do, prefer the newest
-  // (latest `startedAt`; records without one keep list order).
+  // No requestId index exists, so scan the (small) job list. Normally at most one match;
+  // if several, prefer the newest `startedAt`.
   const all = await repositories.jobs.list();
   let newest: JobRecord | undefined;
   for (const job of all) {
@@ -171,15 +111,9 @@ async function findJobByRequestId(repositories: Repositories, requestId: string)
 }
 
 /**
- * Run `fn` under the coordinator lock, retrying on transient `lock-held`
- * contention (plan item 0.2). Mirrors `updateJobRetryingOnLockHeld` below,
- * but with a jittered 20–100 ms backoff and at most `maxAttempts` (10)
- * attempts in total. Only `BackgroundJobError("lock-held")` raised while
- * ACQUIRING the lock is retried. `withCoordinatorLock` only throws that
- * before `fn` runs, and `fn` itself never runs more than once per successful
- * acquisition, so the locked check-then-create stays atomic. Errors thrown by
- * `fn` (capacity-exceeded, storage errors, ...) propagate immediately.
- * When attempts are exhausted the last `lock-held` error is rethrown as-is.
+ * Run `fn` under the coordinator lock, retrying (jittered backoff) only on `lock-held`
+ * raised while ACQUIRING the lock. `fn` never runs more than once, so check-then-create
+ * stays atomic; errors from `fn` propagate immediately.
  */
 async function withCoordinatorLockRetrying<T>(
   root: string,
@@ -215,19 +149,10 @@ async function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Bounded retry for a `repositories.jobs.update()` call that may transiently
- * contend with the job's own live supervisor (a different OS process)
- * writing its own update at roughly the same moment — e.g. Fix B's
- * post-launch `supervisorOwnershipHandle` persistence racing the
- * supervisor's own `{ state: "starting", nonce }` update at startup.
- * `PlatformAdapter.acquireLock` deliberately never retries/steals on
- * `lock-held` (solution.md §7: "a hung writer is unavailable until it exits
- * or is explicitly recovered") — that policy is correct for a genuinely
- * STUCK lock, but this contention only ever lasts a few milliseconds, so a
- * short bounded retry here is this call site's own decision about expected
- * transient contention, mirroring the identical pattern already used by
- * `recovery/reconcile.ts`'s `withJobLockRetrying`. If the lock is still held
- * after all retries, the `lock-held` error propagates untouched.
+ * Short bounded retry for `jobs.update()` racing the job's own supervisor process (e.g. our
+ * post-launch supervisor-ownership write vs its startup `{ state: "starting", nonce }` update).
+ * `acquireLock` never retries/steals, which is right for a stuck lock but this contention
+ * lasts milliseconds. Mirrors `withJobLockRetrying` in recovery/reconcile.ts.
  */
 async function updateJobRetryingOnLockHeld(
   repos: Repositories,
@@ -250,13 +175,7 @@ async function updateJobRetryingOnLockHeld(
   throw lastError;
 }
 
-/**
- * Try an IPC round-trip against the job's running supervisor. Returns
- * `undefined` (never throws) if the supervisor is unreachable — callers
- * decide the appropriate fallback (disk-backed logs, `reconcileJob`, etc.)
- * per solution.md "logs must outlive the live IPC connection" and "a real
- * detached supervisor process might exit once terminal+IPC server closed".
- */
+/** IPC round-trip to the supervisor; returns `undefined` (never throws) if unreachable so callers can fall back. */
 async function tryIpcRequest(socketPath: string, request: unknown, timeoutMs = 5000): Promise<unknown | undefined> {
   let client: IpcClient | undefined;
   try {
@@ -271,9 +190,7 @@ async function tryIpcRequest(socketPath: string, request: unknown, timeoutMs = 5
 
 export async function createCoordinator(opts?: CreateCoordinatorOptions): Promise<Coordinator> {
   const root = await resolveStorageRoot(opts?.root);
-  // 0.10 (D6): refuse a store stamped by a newer build (`store-version-newer`)
-  // before touching it, then stamp the VERSION marker if absent. Never
-  // rewrites an existing marker.
+  // Refuse a store stamped by a newer build before touching it; never rewrite an existing marker.
   await checkStorageVersion(root);
   await ensureStorageVersionFile(root);
   const repositories = createFileRepositories(root);
@@ -358,9 +275,7 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       const requestedIsolation = approved?.isolation ?? request.isolation;
       const headless = approved === undefined ? request.headless : approved.headless;
 
-      // (b) Resolve isolation BEFORE spending any authorization/capacity
-      // effort — solution.md §4: "Determine the actual isolation backend
-      // before approval. Required isolation unavailable means refusal."
+      // Resolve isolation BEFORE spending any authorization/capacity effort.
       const capabilities = await adapter.detectCapabilities();
       const isolationResolution = authorizationService.resolveIsolation(requestedIsolation, capabilities);
       // Discovery alone cannot enforce isolation: the current supervisor
@@ -378,23 +293,18 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
         );
       }
 
-      // (a) Normalize into a full LaunchSpec.
       const spec = await normalizeLaunchSpec({
         requestId: request.requestId,
         invocation,
         cwd,
         platform: adapter.platform,
         isolation: requestedIsolation,
-        // This coordinator only implements the baseline POSIX/Windows
-        // process-group / job-object ownership scope that each platform
-        // adapter reports as its strongest; stronger per-request scopes
-        // are not negotiated at this layer in Phase B.
+        // Always the adapter's strongest scope; per-request scopes are not negotiated.
         ownershipScope: capabilities.strongestOwnershipScope,
         envInherit: approved === undefined ? request.envInherit : undefined,
-        // 0.8 (D3): explicit env values / partial limits forwarded by callers
-        // such as the schedule engine. Absent → identical spec to before.
         // Schedule dispatch uses the approved template's env/limits/recurrence.
         env: approved === undefined ? request.env : approved.env,
+        envExact: approved !== undefined,
         limits: approved === undefined ? request.limits : approved.limits,
         recurrence: approved?.recurrence,
         headless,
@@ -403,14 +313,12 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
 
       const consentSpec = toConsentSpec(spec);
 
-      // (c) Authorize the start action. Schedule dispatch was already
-      // authorized by revalidating its grant against the approved template
-      // above; it must not mint a fresh grant under the caller's session.
+      // Schedule dispatch was already authorized by grant revalidation above; it must not mint a fresh grant.
       if (approved === undefined) {
         await authorizeOrThrow("start", consentSpec, session, { headless });
       }
 
-      // (d) Idempotent retry handling.
+      // Idempotent retry: a reused requestId returns the existing job.
       const existingSpec = await repositories.specs.get(request.requestId);
       if (existingSpec !== undefined) {
         const existingHash = hashLaunchSpecForConsent(toConsentSpec(existingSpec));
@@ -424,19 +332,13 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
 
         const existingJob = await findJobByRequestId(repositories, request.requestId);
         if (existingJob === undefined) {
-          // Spec was persisted but no job record exists yet (e.g. a crash
-          // between spec.put and jobs.create during a prior attempt). Fall
-          // through to normal admission below using the already-persisted,
-          // byte-identical spec rather than re-normalizing/re-persisting.
+          // Crash between spec.put and jobs.create on a prior attempt: fall through to admission.
         } else {
           return toJobSummary(existingJob);
         }
       }
 
-      // (e) Admission: capacity check + job creation under the coordinator
-      // lock, so check-then-create is atomic against concurrent admissions.
-      // Transient lock contention is retried with bounded jittered backoff
-      // (0.2); the whole locked callback is retried, never split.
+      // Capacity check + job creation under the coordinator lock so check-then-create is atomic.
       const jobId = await withCoordinatorLockRetrying(root, async () => {
         const reservation = await reserveCapacity(repositories, root, spec.limits);
         if (!reservation.granted) {
@@ -456,41 +358,25 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
           protocolVersion: BACKGROUND_JOBS_PROTOCOL_VERSION,
           state: "accepted",
           stopState: "none",
-          // The supervisor itself establishes the real handshake nonce once
-          // it starts (see supervisor/lifecycle.ts#start: `const nonce =
-          // randomUUID(); await this.updateJob({ state: "starting", nonce
-          // });`). An empty placeholder here is intentionally overwritten by
-          // that very first supervisor update, matching T11's actual
-          // behavior.
+          // Placeholder; the supervisor sets the real handshake nonce on its first update.
           nonce: "",
         };
         await repositories.jobs.create(record);
         return newJobId;
       }, opts?.admissionRetry);
 
-      // (f) Launch OUTSIDE the coordinator lock — never hold a lock while
-      // spawning a process.
+      // Launch OUTSIDE the coordinator lock; never hold it while spawning.
       const launchResult = await launchSupervisorForJob({ jobId, requestId: request.requestId, root, repositories });
 
-      // (f2) Fix B: persist the SUPERVISOR's own process identity/ownership
-      // onto the job record immediately, before the short poll window
-      // below, so a later `cleanup()` call can terminate the supervisor
-      // process itself via `PlatformAdapter.stopOwnedScope` (see
-      // launcher.ts's module doc and types.ts's JobRecord doc). This is a
-      // shallow-merge patch (see storage/repositories.ts#update: `{
-      // ...existing, ...patch }`), so it cannot clobber fields the
-      // supervisor's OWN concurrent `jobs.update()` calls are writing (e.g.
-      // `state`/`nonce`) — the two writers only ever touch disjoint field
-      // sets, and the file lock (`withJobLock`) still serializes the
-      // underlying read-modify-write so the merge itself is race-free.
+      // Persist the supervisor's identity so cleanup() can reap it. A shallow-merge patch on
+      // fields disjoint from the supervisor's own writes (state/nonce); the job lock serializes the update.
       await updateJobRetryingOnLockHeld(repositories, jobId, {
         supervisorIdentity: launchResult.identity,
         supervisorOwnershipHandle: launchResult.ownershipHandle,
         supervisorOwnershipScope: launchResult.ownershipScope,
       });
 
-      // (g) Short, bounded poll so start() returns quickly without blocking
-      // until completion (solution.md §2).
+      // Short bounded poll: start() must not block until completion.
       const deadline = Date.now() + START_POLL_WINDOW_MS;
       let latest = await repositories.jobs.get(jobId);
       while (latest !== undefined && latest.state === "accepted" && Date.now() < deadline) {
@@ -530,10 +416,7 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
         return { text: reply.text, truncated: reply.truncated, cursor: reply.cursor ?? logOpts?.cursor ?? "" };
       }
 
-      // Supervisor unreachable (terminal/unknown/exited): fall back to
-      // reading directly from the job's log directory on disk, using the
-      // SAME derivation JobSupervisor uses, so logs remain readable after
-      // the supervisor process has exited.
+      // Supervisor unreachable: read from disk so logs outlive the supervisor process.
       const dir = logsDirFor(root, jobId);
       if (logOpts?.cursor !== undefined || logOpts?.maxBytes === undefined) {
         const result = await readCursor(dir, stream, logOpts?.cursor, logOpts?.maxBytes);
@@ -553,12 +436,8 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
 
       const socketPath = socketPathFor(root, jobId);
 
-      // Race the IPC wait request against cancellation. IpcClient.request()
-      // has no native AbortSignal support (see ipc/client.ts), so
-      // cancellation is implemented at this layer: if `signal` fires first,
-      // close the IPC client and return the last known poll() result
-      // immediately — solution.md §6: "Cancellation or timeout of wait
-      // releases only the observer and returns current state."
+      // IpcClient.request() has no AbortSignal support, so race it against `signal` here;
+      // cancellation only releases the observer and returns current state.
       let ipcClient: IpcClient | undefined;
       try {
         ipcClient = await IpcClient.connectWithRetry(socketPath, { retries: 1, delayMs: 100, timeoutMs: 1500 });
@@ -611,11 +490,7 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
         }
       }
 
-      // IPC unreachable: the supervisor may have already exited after
-      // reaching a terminal state and closing its IPC server (T11's
-      // documented design — see entry.ts/lifecycle.ts: the process has no
-      // explicit keep-alive beyond its own open handles). Fall back to
-      // polling `reconcileJob` until terminal or cancelled.
+      // IPC unreachable (supervisor may have exited after a terminal state): poll until terminal or cancelled.
       while (true) {
         if (signal?.aborted) {
           return client.poll(jobId);
@@ -637,8 +512,6 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       const spec = await requireSpecForJob(record);
       const consentSpec = toConsentSpec(spec);
 
-      // Per T08: 'stop' is never blocked by deny-writes, but still requires
-      // its own grant/auto-accept/ask flow like any other action.
       await authorizeOrThrow("stop", consentSpec, session);
 
       const socketPath = socketPathFor(root, jobId);
@@ -648,9 +521,7 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
         return toJobSummary(reply.job);
       }
 
-      // Unreachable: the supervisor is likely already gone. Get a truthful
-      // current state via reconciliation rather than claiming a stop
-      // succeeded against a process that isn't there.
+      // Supervisor likely gone: report reconciled state rather than claiming a stop succeeded.
       const { summary } = await reconcileAndSummarize(jobId);
       return summary;
     },
@@ -666,10 +537,7 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
 
       await authorizeOrThrow("cleanup", consentSpec, session);
 
-      // Re-check with fresh evidence before allowing cleanup of anything
-      // that might still be active/unknown — solution.md §9: "Cleanup is
-      // explicit and sensitive. Automatic log expiry does not delete
-      // active/unknown ownership evidence."
+      // Re-check with fresh evidence: never clean up active/unknown jobs (protects ownership evidence).
       const { record: fresh } = await reconcileAndSummarize(jobId);
       if (!isTerminalLifecycle(fresh.state)) {
         throw new BackgroundJobError(
@@ -679,23 +547,10 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
         );
       }
 
-      // Fix B (reaping): the job is confirmed terminal, so its supervisor
-      // process (if still alive) is no longer doing anything useful except
-      // waiting out its own idle-exit timer (see supervisor/lifecycle.ts's
-      // SUPERVISOR_IDLE_EXIT_MS). `cleanup()` is an explicit, authorized
-      // action, so it is safe to force this along immediately via the SAME
-      // cross-platform `stopOwnedScope` abstraction already used for
-      // workloads, but ONLY after fresh process-creation verification. This
-      // is best-effort: a failure here (supervisor already exited, already
-      // reaped, platform adapter error, ...) must never cause `cleanup()`
-      // itself to throw, since the primary cleanup contract — authorizing
-      // and confirming terminal state — already succeeded.
-      // An unverified persisted PID may now belong to unrelated work. Leave
-      // that supervisor to its own idle-exit timer rather than signalling it.
-      // Terminal recovery returns records without probing supervisor identity.
-      // A numeric group handle alone is not ownership; reject weak identities
-      // and mismatched leaders. Probe then signal remains a best-effort POSIX
-      // race, not retained native handle ownership.
+      // Reap the idle supervisor now instead of waiting for its idle-exit timer, best-effort
+      // (failures must not fail cleanup). A persisted PID may have been reused by unrelated
+      // work, and a numeric group handle alone is not ownership, so weak identities and
+      // mismatched leaders are skipped. Probe-then-signal is still a POSIX race.
       const identity = fresh.supervisorIdentity;
       if (fresh.supervisorOwnershipScope === "process-group" &&
           identity !== undefined &&
@@ -712,18 +567,11 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
             3000,
           );
         } catch {
-          // Best-effort only; swallow per the doc above.
+          // Best-effort only.
         }
       }
 
-      // Phase-B simplification, documented per task brief: this
-      // implementation authorizes, validates job state, and now (Fix B)
-      // also terminates the job's own supervisor PROCESS once it is
-      // confirmed terminal. Actual log/record FILE deletion policy is still
-      // explicitly deferred to a future phase per solution.md §9's
-      // "explicit and sensitive" cleanup requirements, to avoid prematurely
-      // deleting evidence without a fully reviewed retention/export flow.
-      // No data/log files are deleted by this call.
+      // Known limitation: no log/record files are deleted yet (retention/export policy undecided).
     },
 
     async capabilities(): Promise<PlatformCapabilities> {
@@ -744,9 +592,7 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
         try {
           let eligible = record.state === "running" || record.state === "unknown";
           if (record.state === "accepted" || record.state === "starting") {
-            // JobRecord has no creation timestamp; the LaunchSpec persisted
-            // just before the record carries `createdAt`. A missing or
-            // unparseable spec timestamp counts as old (orphaned).
+            // JobRecord has no creation time; use the LaunchSpec's `createdAt`. Missing/unparseable counts as old.
             const spec = await repositories.specs.get(record.requestId);
             const createdMs = spec === undefined ? Number.NaN : Date.parse(spec.createdAt);
             eligible = Number.isNaN(createdMs) || createdMs <= cutoff;
@@ -761,7 +607,6 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       return results;
     },
 
-    // --- Extensions beyond the frozen CoordinatorClient interface ---
     mailbox: mailboxService,
     repositories,
     authorization: authorizationService,

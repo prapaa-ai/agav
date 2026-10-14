@@ -25,10 +25,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   height?: number;
   /** Shown in place of "Working…" while a running action awaits a decision from the parent. */
   prompt?: string;
-  /**
-   * Optional full terms for `prompt`. They wrap and scroll above the always-visible
-   * `controls` line, which replaces the one-line `prompt` (that is truncated).
-   */
+  /** Full terms for `prompt`; they scroll above the always-visible `controls` line, which replaces `prompt`. */
   promptDetails?: { lines: string[]; controls: string };
 }) {
   const [items, setItems] = useState<ResourceItem[]>([]);
@@ -59,8 +56,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   const canRemove = Boolean(adapter.remove && item && item.removable !== false);
   const removeLabel = adapter.removeLabel ?? "Delete";
   const canToggle = Boolean(adapter.setEnabled && item?.enabled !== undefined);
-  // Details wrap and scroll in a capped viewport so the controls line never
-  // leaves the screen; a plain `prompt` keeps the original one-line rendering.
+  // Capped viewport keeps the controls line on screen.
   const detailLines = prompt && promptDetails ? promptDetails.lines : undefined;
   const promptContentRows = detailLines
     ? detailLines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / Math.max(1, (stdout.columns || 80)))), 0)

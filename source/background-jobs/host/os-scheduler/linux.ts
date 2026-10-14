@@ -1,7 +1,3 @@
-/**
- * WP-12 — Linux scheduler entry: a `systemd --user` timer, falling back to a
- * crontab line tagged `# agav-job-tick` when `systemctl --user` is unavailable.
- */
 import type { SchedulerContext, SchedulerTarget } from "./common.js";
 import { errorMessage, readIfExists, unlinkIfExists, writeFileAtomic } from "./common.js";
 
@@ -13,13 +9,11 @@ export function systemdUserDir(homedir: string): string {
   return `${homedir}/.config/systemd/user`;
 }
 
-/** Quote one argument for a systemd `ExecStart=` line. */
 export function quoteSystemdArg(arg: string): string {
   if (arg !== "" && /^[A-Za-z0-9_@%+=:,./-]+$/.test(arg)) return arg.replace(/%/g, "%%");
   return `"${arg.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%").replace(/\$/g, "$$$$")}"`;
 }
 
-/** Quote one argument for a POSIX shell (crontab runs `/bin/sh -c`). */
 export function quoteShellArg(arg: string): string {
   if (arg !== "" && /^[A-Za-z0-9_@+=:,./-]+$/.test(arg)) return arg;
   return `'${arg.replace(/'/g, `'\\''`)}'`;
@@ -64,7 +58,6 @@ function isTagged(line: string): boolean {
   return line.trimEnd().endsWith(CRON_TAG);
 }
 
-/** Replace any tagged line with `line` (or drop it when undefined); other lines are preserved. */
 export function updateCrontab(existing: string, line: string | undefined): string {
   const kept = existing.split("\n").filter((l) => !isTagged(l));
   while (kept.length > 0 && kept[kept.length - 1] === "") kept.pop();
@@ -72,7 +65,6 @@ export function updateCrontab(existing: string, line: string | undefined): strin
   return kept.length === 0 ? "" : `${kept.join("\n")}\n`;
 }
 
-/** Parse ExecStart from a generated service unit. */
 export function parseSystemdService(text: string): SchedulerTarget | undefined {
   const line = text.split("\n").find((l) => l.startsWith("ExecStart="));
   if (!line) return undefined;
@@ -140,15 +132,10 @@ function splitQuoted(input: string, mode: "systemd" | "shell"): string[] {
   return mode === "systemd" ? out.map((w) => w.replace(/%%/g, "%").replace(/\$\$/g, "$")) : out;
 }
 
-// ---------------------------------------------------------------------------
-// Installer
-// ---------------------------------------------------------------------------
-
 export type LinuxBackend = "systemd" | "cron";
 
 export interface LinuxInstallResult {
   backend: LinuxBackend;
-  /** Files written (systemd) — empty for cron. */
   files: string[];
 }
 

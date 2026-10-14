@@ -1,58 +1,17 @@
-/**
- * T11 — Supervisor orchestration core.
- *
- * `JobSupervisor` is the process-independent orchestration core for a single
- * background job. It is constructed and driven directly by `entry.ts` when
- * running as a real detached OS process, and can equally be constructed and
- * driven directly by tests without ever going through a detached process
- * (per README.md: "supervisor/* ... does not depend on coordinator
- * lifetime", and per this task's brief: "independently testable WITHOUT
- * actually running as a detached OS process").
- *
- * Responsibilities owned here:
- *   - Spawning the workload as an owned child process (the supervisor is a
- *     plain Node process; it does NOT go through `source/utils/sandbox.ts`
- *     or any other process-launch helper — this is a `background-jobs/*`
- *     module and must stay self-contained per the module boundaries in
- *     types.ts/README.md).
- *   - Piping workload stdout/stderr into a `SegmentedLogWriter`.
- *   - Publishing the single authoritative `JobRecord` lifecycle through
- *     `repositories.jobs.update()` (never writing job state any other way).
- *   - Running an `IpcServer` so coordinator/test clients can poll/log/
- *     wait/stop this job without depending on the coordinator being alive.
- *   - Keeping "lifecycle" (JobRecord.state) and "stop-control"
- *     (JobRecord.stopState) strictly separate per solution.md §6: only the
- *     child's `exit` handler may set a terminal lifecycle state; only
- *     `requestStop` may advance stop-control state.
- *
- * Known simplifications (documented, not blocking per task brief):
- *   - `identity.creationIdentity` is stored as a minimal placeholder
- *     (`String(pid)`) at spawn time. A stronger creation-identity capture
- *     (e.g. `/proc/<pid>/stat` start time, matching
- *     `platform/linux.ts#readProcessStartTimePosix`) would reduce PID-reuse
- *     risk, but `PlatformAdapter` does not expose that primitive directly
- *     to non-platform callers (only `verifyAlive(identity)` does, and that
- *     requires an identity to already exist). This supervisor owns the
- *     child process handle directly for its entire lifetime (not just a
- *     bare pid), so reuse confusion is not actually possible from this
- *     process's own point of view; the placeholder only matters to
- *     *external* observers (e.g. recovery/T12) re-verifying after a
- *     supervisor crash, which is explicitly out of scope for T11.
- *   - `wait` is implemented as an in-process event-emitter resolved once on
- *     terminal state; IPC `wait` requests are answered by awaiting that
- *     promise so each client's `respond()` is deferred without blocking the
- *     IPC server from handling concurrent clients. There is no explicit
- *     server-side wait-cancellation message — a client cancels by closing
- *     its connection, which this minimal implementation and `IpcServer`
- *     already handle naturally (per task brief: the richer
- *     cancellation-aware coordinator-level wait is T14's job).
- */
+// Orchestration core for one background job, constructible without a detached process (for tests).
+// Lifecycle (JobRecord.state) and stop-control (stopState) are kept separate: only the child's
+// close handler sets a terminal lifecycle state; only requestStop advances stopState.
+//
+// Known limitations:
+//   - `identity.creationIdentity` is just `String(pid)`; the supervisor holds the child handle so
+//     PID reuse can't confuse it, but external observers re-verifying after a supervisor crash get
+//     only a weak identity.
+//   - IPC `wait` has no server-side cancellation message; a client cancels by closing its connection.
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { join } from "node:path";
 
-/** stdin is "ignore" (null), stdout/stderr are piped so we can drain them. */
 type WorkloadChild = ChildProcessByStdio<null, Readable, Readable>;
 
 import type {
@@ -70,36 +29,20 @@ import { buildCompletionExcerpt, readCursor, readTail } from "../logging/segment
 import { describeLoggingFailureAction } from "../logging/failure-policy.js";
 import { IpcServer } from "../ipc/server.js";
 
-/** Default grace period given to the workload between SIGTERM and SIGKILL escalation. */
+/** Grace period between SIGTERM and SIGKILL escalation. */
 export const DEFAULT_STOP_GRACE_MS = 5000;
 
 /**
- * Fix A (primary fix for "no code path can ever terminate a supervisor
- * process" — see task brief): once this job's lifecycle reaches a terminal
- * state (completed/failed/interrupted), the supervisor self-exits after
- * this much idle time (no IPC activity AND no currently-connected IPC
- * client) has elapsed. 5 minutes is intentionally generous so a user
- * polling/reading logs shortly after completion still finds the supervisor
- * alive to serve `poll`/`log`/`wait`, while still guaranteeing the process
- * does not leak forever. This NEVER fires before the job is terminal — an
- * in-progress job's supervisor must never self-exit while its workload
- * might still be running or its stop-control sequence might still be in
- * flight (T11's "the supervisor decides its own lifetime" design is
- * unchanged; this only bounds that lifetime once there is nothing left to
- * supervise).
+ * Once the job is terminal, the supervisor self-exits after this much idle time (no IPC
+ * activity and no connected client), so it can't leak forever. Never applies before the
+ * job is terminal.
  */
 export const SUPERVISOR_IDLE_EXIT_MS = 5 * 60 * 1000;
 
-/** How often the idle-exit timer re-checks elapsed-since-last-activity. */
 const IDLE_EXIT_CHECK_INTERVAL_MS = 30 * 1000;
 
-/**
- * How often the owned process group is re-probed after the direct child has
- * exited while descendants are still alive (see `waitForOwnedScopeToDrain`).
- */
 const OWNED_SCOPE_POLL_INTERVAL_MS = 500;
 
-/** Bytes of stdout/stderr retained in a completion event's excerpt. */
 const COMPLETION_EXCERPT_BYTES = 8 * 1024;
 
 export interface JobSupervisorOptions {
@@ -108,13 +51,10 @@ export interface JobSupervisorOptions {
   repositories: Repositories;
   root: string;
   socketPath: string;
-  /** Overridable for fast tests; defaults to DEFAULT_STOP_GRACE_MS. */
   stopGraceMs?: number;
   /** Maximum duration of one log operation before retiring the writer. */
   logOperationTimeoutMs?: number;
-  /** Overridable for fast tests; defaults to SUPERVISOR_IDLE_EXIT_MS. */
   idleExitMs?: number;
-  /** Overridable for fast tests; defaults to IDLE_EXIT_CHECK_INTERVAL_MS (30s). */
   idleExitCheckIntervalMs?: number;
 }
 
@@ -160,6 +100,10 @@ export class JobSupervisor {
   private scopeWaitCancelled = false;
   /** Wakes the pending owned-scope poll sleep early (teardown only). */
   private cancelScopeWaitSleep: (() => void) | undefined;
+  /** Owned scope still had live members after the direct child exited. */
+  private scopeSurvivedChildExit = false;
+  /** A stop terminated descendants that outlived the direct child. */
+  private stopInterruptedSurvivors = false;
   /** Resolves once finalization starts waiting for surviving descendants. */
   private markScopeDrainPending: () => void = () => {};
   private readonly scopeDrainPending: Promise<void> = new Promise<void>((resolve) => {
@@ -169,22 +113,12 @@ export class JobSupervisor {
   private readonly terminalWaiters: Array<(job: JobRecord | undefined) => void> = [];
   private terminalJob: JobRecord | undefined;
 
-  /** Updated at the very start of `handleIpcRequest`; see Fix A's idle-exit timer. */
   private lastActivityAt: number = Date.now();
-  /** Set once the job goes terminal; cleared (and its interval cleared) by `shutdown()`/self-exit. */
   private idleExitInterval: NodeJS.Timeout | undefined;
 
-  /**
-   * `repositories.jobs.update()`'s underlying lock (acquireExclusiveLockPosix)
-   * throws immediately on contention rather than queueing/retrying (by
-   * design — see storage/single-writer-lock.ts doc). Within a single
-   * supervisor process there can legitimately be two independent call sites
-   * racing to update the same job (e.g. `requestStop`'s stop-control
-   * updates and the child `exit` handler's terminal-lifecycle update). To
-   * avoid spurious `lock-held` errors from that intra-process race, all
-   * updates from this instance are serialized through this promise chain;
-   * cross-process contention still relies on the lock itself.
-   */
+  // The job lock throws on contention instead of queueing, so this instance's updates
+  // (e.g. requestStop vs. the child close handler) are serialized to avoid spurious
+  // `lock-held`. Cross-process contention is handled by updateJobRetryingOnLockHeld.
   private updateChain: Promise<void> = Promise.resolve();
 
   constructor(opts: JobSupervisorOptions) {
@@ -200,10 +134,8 @@ export class JobSupervisor {
   }
 
   /**
-   * Full launch sequence. See module doc / task brief for the step-by-step
-   * contract. Never throws out of a confirmed-failure spawn; only throws for
-   * genuine caller bugs (missing job record) or storage failures that
-   * prevent any observation at all.
+   * Never throws for a confirmed spawn failure (it is published as "failed"); throws only
+   * for caller bugs (missing job record) or storage failures that prevent any observation.
    */
   async start(spec: LaunchSpec): Promise<void> {
     if (this.started) return;
@@ -228,8 +160,7 @@ export class JobSupervisor {
     const nonce = randomUUID();
     await this.updateJob({ state: "starting", nonce });
 
-    // Start the IPC server as early as possible so pollers can observe
-    // "starting" state even before the workload spawns.
+    // Start early so pollers can observe "starting" before the workload spawns.
     await this.startIpcServer();
 
     const { executable, args } =
@@ -244,9 +175,7 @@ export class JobSupervisor {
       onFailure: (reason) => {
         const action = describeLoggingFailureAction(reason);
         if (action.action === "request-stop" && !this.stopRequested) {
-          // Fire-and-forget: logging failures must never throw out of the
-          // write path (SegmentedLogWriter's own contract), and this
-          // callback itself must not throw either.
+          // Fire-and-forget: this callback must not throw.
           this.retireLogWriter(writer, new Error(action.diagnostic));
         }
       },
@@ -278,22 +207,14 @@ export class JobSupervisor {
         stdio: ["ignore", "pipe", "pipe"],
       }) as WorkloadChild;
     } catch (error) {
-      // Synchronous spawn throw (rare, but possible for some invalid
-      // argument combinations). Treat identically to an async spawn error:
-      // a confirmed, known terminal failure, not an uncertain one.
+      // Synchronous throw: same as an async spawn error, a confirmed failure.
       await this.publishSpawnFailure(error instanceof Error ? error : new Error(String(error)));
       return;
     }
 
-    // IMPORTANT: attach 'error'/'exit' listeners synchronously, immediately
-    // after spawn() returns — before any `await`. Node can emit 'exit' for
-    // a very fast-completing child (e.g. `exit 7`, a quick `echo`) on the
-    // next event-loop tick; if we only attached the real exit handler after
-    // awaiting `writer.init()`/the ipc-server start/the jobs.update() calls
-    // below, that event could already have fired and be silently lost
-    // (EventEmitter does not replay past events to late listeners). Instead
-    // we capture the terminal event (if any) into local state here and
-    // process it below once the rest of the "running" setup is confirmed.
+    // Listeners (and the stdio drains below) must be attached synchronously after spawn(),
+    // before any `await`: a fast child can emit 'close' on the next tick and EventEmitter
+    // doesn't replay. Terminal events are captured here and processed once "running" is persisted.
     let earlySpawnError: Error | undefined;
     let earlyClose: { code: number | null; signal: NodeJS.Signals | null } | undefined;
     let sawSpawn = false;
@@ -302,17 +223,11 @@ export class JobSupervisor {
       if (!sawSpawn && earlyClose === undefined) {
         earlySpawnError = err instanceof Error ? err : new Error(String(err));
       }
-      // A late 'error' after we've already observed "running" (e.g. an
-      // EPIPE on write) is intentionally not treated as a lifecycle event
-      // here; `close` remains the single source of truth for terminal
-      // lifecycle once the workload is confirmed running.
+      // A late 'error' after "running" is not a lifecycle event; `close` is the source of truth.
     });
     child.once("spawn", () => {
       sawSpawn = true;
     });
-    // Also attach stdout/stderr drains synchronously (before any `await`)
-    // so no output chunk emitted between a very fast process's spawn and
-    // our setup below is ever missed.
     child.stdout.on("data", (chunk: Buffer) => {
       child.stdout.pause();
       this.queueLogWrite(writer, "stdout", chunk, child.stdout);
@@ -321,21 +236,13 @@ export class JobSupervisor {
       child.stderr.pause();
       this.queueLogWrite(writer, "stderr", chunk, child.stderr);
     });
-    // Use 'close' rather than 'exit' as the terminal lifecycle trigger:
-    // 'exit' can fire before buffered stdout/stderr data has been fully
-    // delivered for a very fast-completing child, which would race the
-    // completion excerpt (buildCompletionExcerpt) against still-unflushed
-    // log writes. 'close' is guaranteed to fire only after the stdio
-    // streams themselves have ended (same convention as
-    // source/utils/sandbox.ts's executeProcess, which uses 'close' for its
-    // `finish` callback for the identical reason).
+    // 'close', not 'exit': 'exit' can fire before buffered output is delivered, racing the
+    // completion excerpt against unflushed log writes.
     child.on("close", (code, signal) => {
       earlyClose = { code, signal };
       if (publishedRunning) this.runBackground(this.finalizeChild(code, signal));
     });
 
-    // Give the 'error'/'spawn' race a chance to resolve before deciding
-    // whether the spawn itself succeeded.
     await new Promise<void>((resolve) => {
       if (sawSpawn || earlySpawnError) {
         resolve();
@@ -356,7 +263,6 @@ export class JobSupervisor {
       state: "running",
       identity: {
         pid: child.pid,
-        // Known simplification: see module doc "Known simplifications".
         creationIdentity: isWindows ? "unavailable" : String(child.pid),
       },
       ownershipHandle: String(child.pid),
@@ -367,11 +273,8 @@ export class JobSupervisor {
     publishedRunning = true;
     this.workloadPublished = true;
     if (earlyClose) {
-      // Normally this settles once the terminal state is published. If the
-      // direct child exited but descendants survive, finalization keeps
-      // waiting for them; start() must not block on that (a stop request or
-      // poll must still be serviceable), so it returns as soon as that wait
-      // begins and the finalization continues as an owned background task.
+      // If descendants survive the direct child, finalization keeps waiting; start() must
+      // not block on that (stop/poll must stay serviceable), so it continues in the background.
       const finalization = this.finalizeChild(earlyClose.code, earlyClose.signal);
       finalization.catch(() => {});
       const settled = await Promise.race([
@@ -390,7 +293,6 @@ export class JobSupervisor {
   /** Own detached callbacks so teardown cannot race their durable publication. */
   private runBackground(task: Promise<void>): void {
     const handled = task.catch(error => {
-      // Retain the last good on-disk state; never invent/acknowledge a result.
       console.error("background job supervisor operation failed:", error);
     }).finally(() => this.backgroundTasks.delete(handled));
     this.backgroundTasks.add(handled);
@@ -409,9 +311,8 @@ export class JobSupervisor {
         timer = setTimeout(() => reject(new Error("logging operation timed out")), this.logOperationTimeoutMs);
       })]);
     } catch (error) {
-      // No new operation may ever use this writer. Its pending I/O is not
-      // cancellable: close it ONLY after it settles, not concurrently with
-      // append/rotation. A late completion cannot race a replacement writer.
+      // Pending I/O isn't cancellable: close the writer only after it settles, never
+      // concurrently with append/rotation.
       this.retireLogWriter(writer, error);
       void pending.then(() => writer.close(), () => writer.close()).catch(() => {});
       throw error;
@@ -439,12 +340,9 @@ export class JobSupervisor {
     }).finally(() => pipe.resume());
   }
 
-  /** Serializes all job-record mutations from this instance (see `updateChain` doc). */
   private updateJob(patch: Partial<JobRecord>): Promise<void> {
     const next = this.updateChain.then(() => this.updateJobRetryingOnLockHeld(patch));
-    // Swallow so a failed update doesn't poison the chain for subsequent
-    // updates; callers that need to observe failure still get it via the
-    // returned promise from this call.
+    // A failed update must not poison the chain; callers still see it via `next`.
     this.updateChain = next.then(
       () => undefined,
       () => undefined,
@@ -452,38 +350,10 @@ export class JobSupervisor {
     return next;
   }
 
-  /**
-   * Bug fix (flaky "persists supervisorOwnershipHandle" test —
-   * `coordinator.service.test.ts`): `repositories.jobs.update()`'s
-   * underlying lock (`acquireExclusiveLockPosix`) throws immediately on
-   * CROSS-PROCESS contention rather than queueing/retrying (by design —
-   * see storage/single-writer-lock.ts's doc). `coordinator/service.ts#start`
-   * persists `supervisorIdentity`/`supervisorOwnershipHandle` onto the job
-   * record (Fix B) immediately after `launchSupervisorForJob` returns —
-   * i.e. at almost exactly the same moment this just-spawned supervisor
-   * process is making its own first `updateJob({state: "starting", nonce})`
-   * call. Both writers target the SAME job record from two DIFFERENT OS
-   * processes, so `updateChain`'s intra-process serialization (see its own
-   * doc above) does not help here — only one of the two processes wins the
-   * underlying O_EXCL lock file and the other gets a `lock-held` error.
-   * `coordinator/service.ts` already defends its own side of this exact
-   * race with `updateJobRetryingOnLockHeld` (mirroring
-   * `recovery/reconcile.ts`'s `withJobLockRetrying`), but this supervisor
-   * side had no equivalent retry: an uncaught `lock-held` error here
-   * propagates out of `JobSupervisor.start()`, out of `entry.ts`'s
-   * `main()`, into `main().catch(fatal)`, which calls `process.exit(1)` —
-   * killing the brand-new supervisor process just milliseconds after it
-   * was spawned, well before it ever starts the workload or the IPC
-   * server. The job record is then left stuck in "starting" forever with
-   * no live supervisor, which is exactly what intermittently produced
-   * `supervisorPidForJob()` finding no matching process in the flaky test
-   * (a genuine production bug, not a test-only timing issue: a real user
-   * could just as easily lose their supervisor this way on a loaded
-   * machine). The fix mirrors the coordinator's own established pattern: a
-   * few short, bounded retries absorb this expected, brief (milliseconds)
-   * cross-process contention; a lock that is still held after all retries
-   * is a genuine problem and the error still propagates untouched.
-   */
+  // The coordinator persists supervisor identity onto the same job record at about the time
+  // this process makes its first update; the lock throws on cross-process contention, which
+  // would otherwise kill the new supervisor and leave the job stuck in "starting". A few short
+  // retries absorb that; a lock still held afterwards is a real problem and propagates.
   private async updateJobRetryingOnLockHeld(patch: Partial<JobRecord>): Promise<void> {
     const attempts = 5;
     const delayMs = 30;
@@ -510,19 +380,15 @@ export class JobSupervisor {
     });
     const job = await this.repositories.jobs.get(this.jobId);
     this.resolveTerminalWaiters(job);
-    void error; // message already implicit in the confirmed "failed" state; nothing else to attach it to here.
+    void error; // nothing to attach the message to
   }
 
   /**
-   * The direct child's exit does not mean the owned process group has
-   * finished (`sleep 300 & exit 0` leaves a live descendant). Before any
-   * terminal state is published, probe the owned scope; while members survive,
-   * keep the job non-terminal ("running" is left untouched) and keep stop
-   * machinery usable: `requestStop`/`executeRequestedStop` signal the whole
-   * group via the adapter (TERM -> grace -> KILL), independent of the exited
-   * child. Polls at a modest interval (no busy loop). Resolves true once the
-   * group is empty (or the probe is inconclusive/unsupported, which preserves
-   * the previous direct-child-only behaviour), false if torn down first.
+   * The direct child exiting doesn't mean the owned group finished (`sleep 300 & exit 0`
+   * leaves a descendant). While members survive the job stays non-terminal and stop still
+   * works (it signals the whole group via the adapter). Resolves true once the group is
+   * empty or the probe is inconclusive/unsupported (prior direct-child-only behaviour),
+   * false if torn down first.
    */
   private async waitForOwnedScopeToDrain(): Promise<boolean> {
     const pid = this.child?.pid;
@@ -536,6 +402,7 @@ export class JobSupervisor {
       }
     };
     if (!(await alive())) return true;
+    this.scopeSurvivedChildExit = true;
     this.markScopeDrainPending();
     for (;;) {
       // On teardown, one last probe: if the group has just emptied, still
@@ -561,17 +428,17 @@ export class JobSupervisor {
   private async handleChildExit(code: number | null, signal: NodeJS.Signals | null): Promise<void> {
     const dir = logsDir(this.root, this.jobId);
 
-    // Do not publish a terminal state while descendants in the owned process
-    // group are still running (see `waitForOwnedScopeToDrain`).
     if (!(await this.waitForOwnedScopeToDrain())) return;
+    // The drain may have been won by a stop that is still recording its outcome.
+    if (this.scopeSurvivedChildExit && this.stopRequested) await this.executeRequestedStop().catch(() => {});
 
-    // Determine outcome. Per solution.md §6: a normal exit (code !== null)
-    // is a legitimate completion even if a stop was in flight, UNLESS the
-    // exit signal matches the signal our own stop logic sent (in which case
-    // it is an interrupted/stop-induced termination).
+    // A normal exit is a completion even if a stop was in flight, unless the exit signal
+    // is the one our own stop sent (then it is interrupted).
     let outcome: "completed" | "failed" | "interrupted";
     if (process.platform === "win32" && this.child?.killed && code === 1) {
       // Node's Windows TerminateProcess uses exit code 1, not an exit signal.
+      outcome = "interrupted";
+    } else if (this.stopInterruptedSurvivors) {
       outcome = "interrupted";
     } else if (code !== null) {
       outcome = code === 0 ? "completed" : "failed";
@@ -580,10 +447,7 @@ export class JobSupervisor {
     } else if (this.stopRequested) {
       outcome = "interrupted";
     } else {
-      // Killed by an external signal we did not request: still a confirmed,
-      // known terminal event; report as failed (abnormal exit) rather than
-      // uncertain, matching JobRecord.state's "failed" meaning ("confirmed
-      // abnormal exit, exit code/signal known").
+      // Killed by an external signal we didn't request: confirmed abnormal exit.
       outcome = "failed";
     }
 
@@ -628,8 +492,7 @@ export class JobSupervisor {
     };
     await this.repositories.events.create(event);
 
-    // Publish the observed terminal result and stable completion-event ID
-    // together, in one atomic update (solution.md §10).
+    // Result and completion-event ID are published in one atomic update.
     await this.updateJob({
       state: outcome,
       exitCode: code,
@@ -651,33 +514,17 @@ export class JobSupervisor {
     this.terminalJob = job;
     const waiters = this.terminalWaiters.splice(0, this.terminalWaiters.length);
     for (const resolve of waiters) resolve(job);
-    // Fix A: the job has just reached a terminal lifecycle state (this
-    // method is only ever called from `handleChildExit`/`publishSpawnFailure`,
-    // the two places that happens). Start the idle-exit timer now — never
-    // earlier, so a running/starting/accepted job's supervisor can never
-    // self-exit while its workload might still be running or its
-    // stop-control sequence might still be in flight.
     if (job && isTerminalLifecycle(job.state)) this.startIdleExitTimerIfNeeded();
   }
 
-  /**
-   * Fix A — automatic idle self-exit. Started once (idempotent) as soon as
-   * the job goes terminal. Uses a periodic re-check (rather than a single
-   * `setTimeout` fired once) so a client actively polling/reading logs right
-   * up to the edge of the window keeps resetting the effective deadline —
-   * see `lastActivityAt`, updated at the top of `handleIpcRequest`.
-   */
+  // Periodic re-check rather than one setTimeout, so a client polling near the end of the
+  // window keeps pushing the deadline out (`lastActivityAt`).
   private startIdleExitTimerIfNeeded(): void {
     if (this.idleExitInterval !== undefined) return; // already running
     const interval = setInterval(() => {
       void this.checkIdleExit().catch(error => console.error("background job supervisor idle exit failed:", error));
     }, this.idleExitCheckIntervalMs);
-    // Never let this timer keep a host process (notably the vitest worker
-    // running this unit test suite) alive past its own natural exit. The
-    // REAL supervisor process's actual reason to stay alive in the meantime
-    // is its open IpcServer socket (and, while running, the workload's own
-    // child handle) — not this bookkeeping timer — so `.unref()` is correct
-    // and safe there too.
+    // Unref'd: the IPC socket, not this timer, keeps the real supervisor alive.
     interval.unref();
     this.idleExitInterval = interval;
   }
@@ -689,13 +536,7 @@ export class JobSupervisor {
     }
   }
 
-  /**
-   * Checked every `IDLE_EXIT_CHECK_INTERVAL_MS` once the job is terminal. If
-   * `idleExitMs` has elapsed with no IPC activity AND no currently-connected
-   * client, tears the supervisor down and exits the real OS process. Exposed
-   * as a method (rather than inlined in the interval callback) so tests can
-   * invoke it directly without waiting out the real interval.
-   */
+  /** Tears down and exits once idle past `idleExitMs` with no connected client. Separate method so tests can call it directly. */
   private async checkIdleExit(): Promise<void> {
     const idleFor = Date.now() - this.lastActivityAt;
     if (idleFor < this.idleExitMs) return;
@@ -704,14 +545,9 @@ export class JobSupervisor {
 
     this.stopIdleExitTimer();
     await this.teardown();
-    // A real detached supervisor process has nothing else keeping its event
-    // loop alive once the IPC server is stopped and the workload (already
-    // terminal) is gone; `process.exit(0)` makes this self-exit explicit
-    // and immediate rather than relying on that incidentally being true.
     process.exit(0);
   }
 
-  /** Resolves once the job reaches a terminal lifecycle state. */
   private waitForTerminal(): Promise<JobRecord | undefined> {
     if (this.terminalJob !== undefined) return Promise.resolve(this.terminalJob);
     return new Promise((resolve) => {
@@ -719,17 +555,11 @@ export class JobSupervisor {
     });
   }
 
-  /**
-   * Idempotent stop request. Manages ONLY `stopState` — never sets a
-   * terminal lifecycle state itself (that remains the exclusive
-   * responsibility of the child `exit` handler, per solution.md §6's
-   * lifecycle-vs-stop-control separation).
-   */
+  /** Idempotent. Manages only `stopState`; never sets a terminal lifecycle state. */
   async requestStop(_reason: string): Promise<void> {
     const current = await this.repositories.jobs.get(this.jobId);
     if (current && isTerminalLifecycle(current.state)) {
-      // Already terminal: nothing to stop, and advancing stopState now
-      // would be misleading. Idempotent no-op.
+      // Already terminal: advancing stopState now would be misleading.
       return;
     }
 
@@ -763,11 +593,10 @@ export class JobSupervisor {
       ? await this.stopWindowsChild(child)
       : await adapter.stopOwnedScope(ownershipHandle, this.workloadOwnershipScope, this.stopGraceMs);
 
-    // If the child already exited naturally while stopOwnedScope was in
-    // flight, the job may already be terminal by now; only advance
-    // stopState, never touch lifecycle fields here. The `updateJob` chain
-    // guarantees this update is applied after any terminal-state update
-    // from `handleChildExit` that was already queued ahead of it.
+    if (outcome.observedStopped && this.scopeSurvivedChildExit) this.stopInterruptedSurvivors = true;
+
+    // The child may have exited naturally while stopOwnedScope was in flight: only advance
+    // stopState here, never lifecycle fields.
     const afterStop = await this.repositories.jobs.get(this.jobId);
     if (process.platform === "win32" && this.shellWorkload && child.killed && outcome.observedStopped) {
       await this.updateJob({ state: "unknown", stopState: "acknowledged",
@@ -814,8 +643,6 @@ export class JobSupervisor {
   }
 
   private async handleIpcRequest(msg: unknown, respond: (reply: unknown) => void): Promise<void> {
-    // Fix A: record any IPC activity so the idle-exit timer's deadline
-    // keeps resetting while a client is actively polling/reading logs.
     this.lastActivityAt = Date.now();
     try {
       if (!msg || typeof msg !== "object") {
@@ -869,17 +696,12 @@ export class JobSupervisor {
     return job?.stopState;
   }
 
-  /** Shared teardown steps used by both `shutdown()` (test/cleanup helper) and Fix A's self-exit path. */
   private async teardown(): Promise<void> {
     // A pending wait for surviving descendants must not block teardown; the
     // job simply stays non-terminal on disk (recovery reconciles it).
     this.scopeWaitCancelled = true;
     this.cancelScopeWaitSleep?.();
-    // Drain any job-record update still in flight (e.g. a `close`/terminal
-    // update queued just before shutdown was requested) before tearing down
-    // resources, so callers (notably tests removing their temp directory
-    // right after `shutdown()` resolves) never race an in-progress atomic
-    // write against filesystem cleanup.
+    // Drain in-flight job-record updates so callers never race an atomic write against cleanup.
     await Promise.all([...this.backgroundTasks]);
     await this.finalization?.catch(() => {});
     await this.logWriteChain;
@@ -897,20 +719,7 @@ export class JobSupervisor {
     }
   }
 
-  /**
-   * Test/cleanup helper: stops the IPC server and closes the log writer. A
-   * real detached supervisor process never calls this directly during
-   * normal operation — it lets the Node process exit naturally once the job
-   * reaches a terminal state and the IPC server has served any final
-   * requests (there is no parent to track; the supervisor decides its own
-   * lifetime) — see `SUPERVISOR_IDLE_EXIT_MS`/`checkIdleExit` for the bound
-   * on that lifetime (Fix A). Also clears the idle-exit interval (if
-   * running) so tests calling `shutdown()` directly don't leave a dangling
-   * timer behind (vitest "no open handles" hygiene) — the interval is
-   * already `.unref()`'d so this is not strictly required for that purpose,
-   * but is still correct/explicit cleanup for a supervisor instance that
-   * will not be used again.
-   */
+  /** Test/cleanup helper; a real supervisor exits via `checkIdleExit`. */
   async shutdown(): Promise<void> {
     this.stopIdleExitTimer();
     await this.teardown();

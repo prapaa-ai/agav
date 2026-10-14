@@ -1,18 +1,7 @@
 /**
- * T15 — Pure, timezone-aware cron evaluation. NO I/O lives here.
- *
- * This is a DIFFERENT, materially independent cron evaluator from
- * `source/config/scheduler.ts`'s `cronMatches`/`fieldMatches` (the OLD
- * prompt-schedule feature). That evaluator is loose (silently ignores
- * malformed field parts) and has no timezone concept — it only ever checks
- * fields against `Date.getMinutes()`/`getHours()` etc. in the host's local
- * time. This subsystem's process schedules need (a) rigorous validation
- * that REJECTS malformed cron strings at creation time rather than silently
- * never matching, and (b) genuine IANA-timezone-aware evaluation
- * independent of the host's local timezone, per solution.md §11's DST/
- * timezone rules. Keeping this self-contained (not importing from
- * `config/scheduler.ts`) also respects the module-boundary rule that
- * `background-jobs/*` does not depend on existing command/config wiring.
+ * Pure, IANA-timezone-aware cron evaluation, intentionally independent of `config/scheduler.ts`:
+ * that evaluator ignores malformed parts and only knows the host's local time, whereas these
+ * schedules need strict validation at creation time and a configurable timezone.
  */
 import { BackgroundJobError } from "../types.js";
 
@@ -45,7 +34,6 @@ const DAY_OF_MONTH_MIN = fieldMin("dayOfMonth");
 const MONTH_MIN = fieldMin("month");
 const DAY_OF_WEEK_MIN = fieldMin("dayOfWeek");
 
-/** Matches `*`, a step form like `*` followed by `/N`, `N`, `N-M`, `N-M` followed by `/S`, or a comma-separated list of those. */
 const PART_PATTERN = /^(\*|\d+)(-\d+)?(\/\d+)?$/;
 
 function validateFieldValue(field: string, spec: FieldSpec): void {
@@ -86,13 +74,7 @@ function validateFieldValue(field: string, spec: FieldSpec): void {
   }
 }
 
-/**
- * Parse and RIGOROUSLY validate a 5-field cron expression. Throws
- * `BackgroundJobError` for any malformed input (wrong field count,
- * out-of-range numbers, garbage characters) rather than silently accepting
- * it and never matching — this is the key difference from the legacy
- * prompt-schedule evaluator in `source/config/scheduler.ts`.
- */
+/** Throws on any malformed input rather than accepting an expression that would never match. */
 export function parseCronExpression(cron: string): CronFields {
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) {
@@ -114,11 +96,7 @@ export function parseCronExpression(cron: string): CronFields {
   return fields;
 }
 
-/**
- * `min` is the field's minimum value; wildcard steps (`*` followed by `/N`)
- * start counting from it (e.g. day-of-month and month cycle 1, 3, 5, ...).
- * `N/S` (no explicit end) starts at N and runs to the end of the field.
- */
+/** Wildcard steps count from the field's `min` (day-of-month and month cycle 1, 3, 5, ...). */
 function fieldMatchesValue(field: string, value: number, min: number): boolean {
   if (field === "*") return true;
   for (const part of field.split(",")) {
@@ -164,17 +142,7 @@ const WEEKDAY_INDEX: Record<string, number> = {
   Sat: 6,
 };
 
-/**
- * `Intl.DateTimeFormat` construction is comparatively expensive (it parses
- * and compiles the IANA zone's rule set), so we cache one formatter per
- * timezone string instead of constructing one on every call. Without this,
- * `computeNextOccurrence`'s per-candidate-minute loop — which can run up to
- * `MAX_ITERATIONS` (~4 years of minutes) for a structurally-impossible cron
- * expression — rebuilds the formatter roughly two million times and takes
- * on the order of minutes instead of well under a second. This was
- * discovered because the "structurally impossible expression" test
- * (`0 0 30 2 *`, which never matches) timed out before this cache existed.
- */
+/** Constructing `Intl.DateTimeFormat` is expensive and the search loop runs up to ~2M iterations, so cache one per timezone. */
 const LOCAL_FIELDS_FORMATTER_CACHE = new Map<string, Intl.DateTimeFormat>();
 
 function getLocalFieldsFormatter(timezone: string): Intl.DateTimeFormat {
@@ -196,13 +164,6 @@ function getLocalFieldsFormatter(timezone: string): Intl.DateTimeFormat {
   return formatter;
 }
 
-/**
- * Compute the local calendar fields (year/month/day/hour/minute/weekday)
- * that `utc` corresponds to in `timezone`, using `Intl.DateTimeFormat` —
- * the standard dependency-free approach for IANA-timezone-aware conversion
- * in Node (this repo has no date/timezone library dependency; confirmed by
- * inspecting package.json).
- */
 function toLocalFields(utc: Date, timezone: string): LocalCalendarFields {
   const formatter = getLocalFieldsFormatter(timezone);
   const parts = formatter.formatToParts(utc);
@@ -218,13 +179,7 @@ function toLocalFields(utc: Date, timezone: string): LocalCalendarFields {
   };
 }
 
-/**
- * Build a UTC Date from local calendar fields interpreted in `timezone`, by
- * taking a UTC-at-face-value guess and correcting for the timezone's offset
- * at that instant. Used to convert a candidate LOCAL minute back into a
- * concrete UTC instant to test against the cron fields and to verify
- * round-trip correctness (DST spring-forward detection).
- */
+/** Converts a local wall-clock minute to a UTC instant; the caller round-trips the result to detect DST gaps. */
 function localFieldsToUtcGuess(fields: LocalCalendarFields, timezone: string): Date {
   const naiveUtcMs = Date.UTC(fields.year, fields.month - 1, fields.day, fields.hour, fields.minute, 0);
   // The naive instant can lie on the other side of an offset transition.
@@ -249,50 +204,33 @@ function localFieldsToUtcGuess(fields: LocalCalendarFields, timezone: string): D
   return new Date(Number.isFinite(earliestMs) ? earliestMs : naiveUtcMs);
 }
 
-/** Deterministic identity for a LOCAL calendar occurrence, independent of which UTC instant realizes it. */
+/** Independent of which UTC instant realizes the minute, so a DST fall-back repeat yields the same key. */
 function localKeyFor(fields: LocalCalendarFields, timezone: string): string {
   const pad = (n: number): string => String(n).padStart(2, "0");
   return `${timezone}|${fields.year}-${pad(fields.month)}-${pad(fields.day)}T${pad(fields.hour)}:${pad(fields.minute)}`;
 }
 
-const MAX_ITERATIONS = 4 * 366 * 24 * 60; // ~4 years of candidate minutes; a generous safety bound, not an expected real-world cost.
+const MAX_ITERATIONS = 4 * 366 * 24 * 60; // ~4 years of candidate minutes
 
 /**
- * Find the next UTC instant (strictly after `afterUtc`) at which the LOCAL
- * time in `timezone` matches `fields`. Returns `undefined` if no match is
- * found within the safety bound (a structurally-impossible cron expression,
- * not an expected real-world case).
+ * Next UTC instant strictly after `afterUtc` whose local time in `timezone` matches `fields`;
+ * `undefined` if none within the bound (a structurally impossible expression).
  *
- * DST handling (solution.md §11):
- *   - Spring-forward (nonexistent local time, e.g. 2:30 AM during a
- *     02:00->03:00 jump): detected by round-tripping the candidate UTC
- *     instant back through `toLocalFields` and confirming it yields the
- *     SAME local hour/minute we targeted. If Node's `Intl`/`Date` arithmetic
- *     shifts it elsewhere (because that wall-clock time never existed),
- *     the candidate is skipped rather than accepted at a shifted time.
- *   - Fall-back (one local time occurring twice in UTC terms): `localKey`
- *     is built purely from LOCAL calendar fields, so both UTC realizations
- *     of the same local minute produce the identical key — reservation
- *     logic (`occurrence-reservation.ts`) naturally treats the second as
- *     "already handled" via that key, satisfying "repeated local times run
- *     at most once per local occurrence" without any special-casing here.
+ * DST: a spring-forward nonexistent local time is skipped (detected by round-tripping the candidate).
+ * A fall-back repeated minute yields the same `localKey`, so reservation runs it at most once.
  */
 export function computeNextOccurrence(
   fields: CronFields,
   timezone: string,
   afterUtc: Date,
 ): { utc: Date; localKey: string } | undefined {
-  // Start from the local-minute immediately after `afterUtc`, truncated to
-  // minute resolution (cron has no second-level granularity).
   const afterLocal = toLocalFields(afterUtc, timezone);
   let candidateUtcMs = Date.UTC(afterLocal.year, afterLocal.month - 1, afterLocal.day, afterLocal.hour, afterLocal.minute, 0);
-  // Step forward in LOCAL-minute space: compute candidate local fields,
-  // advance by one local minute, convert back to a UTC guess, and repeat.
+  // Steps forward in local-minute space, converting each candidate back to UTC.
   let localCandidate: LocalCalendarFields = { ...afterLocal };
   const localSearchEndMs = candidateUtcMs + MAX_ITERATIONS * 60_000;
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
-    // Advance to the next local minute.
     let { year, month, day, hour, minute } = localCandidate;
     minute += 1;
     if (minute >= 60) {
@@ -300,10 +238,7 @@ export function computeNextOccurrence(
       hour += 1;
       if (hour >= 24) {
         hour = 0;
-        // Use a naive UTC-space day increment and re-derive calendar fields
-        // via Date's own month/day rollover handling (Date.UTC normalizes
-        // out-of-range day/month values), then re-read through toLocalFields
-        // for a canonical representation.
+        // Date.UTC normalizes the out-of-range day/month rollover.
         const rolled = new Date(Date.UTC(year, month - 1, day + 1, 0, 0, 0));
         year = rolled.getUTCFullYear();
         month = rolled.getUTCMonth() + 1;
@@ -316,9 +251,7 @@ export function computeNextOccurrence(
       day,
       hour,
       minute,
-      // Weekday is recomputed below from the realized UTC instant, since a
-      // naive local-field rollover does not know the weekday directly.
-      weekday: 0,
+      weekday: 0, // set below
     };
 
     const naiveLocalMs = Date.UTC(year, month - 1, day, hour, minute);

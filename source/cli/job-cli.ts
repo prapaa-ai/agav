@@ -26,15 +26,15 @@ export interface JobCliDeps {
   runTick?: (opts: BackgroundTickOptions) => Promise<BackgroundTickSummary>;
   stdout?: (s: string) => void;
   stderr?: (s: string) => void;
-  /** WP-11: injectable daemon environment (tests). */
+  /** Injectable daemon environment (tests). */
   daemon?: JobDaemonDeps;
-  /** WP-12: injectable OS-scheduler environment for `tick --install/--uninstall/--status` (tests). */
+  /** Injectable OS-scheduler environment (tests). */
   osScheduler?: OsSchedulerDeps;
 }
 
-/** Overrides for `agav job daemon …` (all optional; defaults are the real process/OS). */
+/** Test overrides for `agav job daemon …`; defaults are the real process/OS. */
 export interface JobDaemonDeps {
-  /** Storage root holding `locks/daemon.lock`. Default: coordinator root (start) / resolveStorageRoot() (stop/status). */
+  /** Storage root holding `locks/daemon.lock`. */
   root?: string;
   version?: string;
   intervalMs?: number;
@@ -80,7 +80,6 @@ export async function runJobCli(argv: string[], deps: JobCliDeps = {}): Promise<
       stdout(USAGE);
       return 0;
     case "tick":
-      // WP-12: `tick --install | --uninstall | --status` are handled here.
       return runTickCommand(rest, deps, stdout, stderr);
     case "daemon":
       return runDaemonCommand(rest, deps, stdout, stderr);
@@ -188,7 +187,7 @@ async function runDaemonStart(
   stdout: (s: string) => void,
   stderr: (s: string) => void,
 ): Promise<number> {
-  const loadConfig = deps.loadConfig ?? (async () => (await import("../config/config.js")).loadConfig());
+  const loadConfig = deps.loadConfig ?? (async () => (await import("../config/config.js")).loadGlobalConfig());
   const integration = deps.getCoordinator && deps.reconcile && deps.runTick
     ? undefined
     : await import("../background-jobs-integration.js");
@@ -196,15 +195,12 @@ async function runDaemonStart(
   const reconcile = deps.reconcile ?? integration!.reconcileOnStartup;
   const runTick = deps.runTick ?? integration!.runBackgroundTick;
 
-  // V-11: the daemon lock lives under the storage root, which we resolve
-  // WITHOUT constructing the coordinator, so `startDaemon` acquires the lock
-  // before the coordinator / startup reconcile touch the store. A second
-  // `daemon start` therefore fails fast on the lock.
+  // Resolve the root without constructing the coordinator so the daemon lock is
+  // taken before anything touches the store; a second `daemon start` fails fast.
   const root = d.root ?? (await (await import("../background-jobs/storage/paths.js")).resolveStorageRoot());
   const version = d.version ?? (await import("../version.js")).VERSION;
 
-  // Coordinator construction + startup reconcile, run once after the lock is
-  // held. Ticks await it so no tick runs before reconcile completes.
+  // Runs once after the lock is held; ticks await it so none runs before reconcile completes.
   let readyPromise: Promise<Coordinator> | null = null;
   const ready = (): Promise<Coordinator> => {
     readyPromise ??= (async () => {
@@ -315,7 +311,7 @@ async function runTickCommand(
     return runTickSchedulerCommand(schedulerAction, deps.osScheduler ?? {}, stdout, stderr);
   }
 
-  const loadConfig = deps.loadConfig ?? (async () => (await import("../config/config.js")).loadConfig());
+  const loadConfig = deps.loadConfig ?? (async () => (await import("../config/config.js")).loadGlobalConfig());
   const config = await loadConfig();
 
   if (config.backgroundJobsEnabled !== true) {
@@ -356,7 +352,6 @@ async function runTickCommand(
   return summary.errors > 0 ? 1 : 0;
 }
 
-/** WP-12: `agav job tick --install | --uninstall | --status`. */
 async function runTickSchedulerCommand(
   action: string,
   osDeps: OsSchedulerDeps,

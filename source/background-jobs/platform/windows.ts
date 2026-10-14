@@ -1,62 +1,9 @@
-/**
- * T04 — Windows PlatformAdapter implementation (fail-closed, no native
- * helper bundled in this delivery).
- *
- * NOTE: implemented against documented Node.js/Windows API behavior; not
- * executed on Windows, and no native Job Object helper binary is bundled in
- * this delivery. See T04 handoff report for what remains for a
- * production-grade Windows implementation (native helper, suspended-launch
- * +Job-assign+resume, tree termination, nested-Job incompatibility
- * detection).
- *
- * Per README.md (T01's recorded decision) and solution.md §5/§7:
- *   "The Windows native helper (T04) is out of scope for a C/C++ binary in
- *   this environment; it is implemented as a Node-based helper using
- *   node:child_process Job Object bindings where available, with explicit
- *   capability-reporting fallback to refusal (nativeHelperAvailable: false)
- *   when the binding is missing."
- *
- * There is, in fact, no `node:child_process` Job Object binding available in
- * stock Node.js today (Node does not expose CreateJobObject/AssignProcessTo
- * JobObject/ResumeThread anywhere in its public API surface). This file
- * therefore always takes the documented fallback branch: it reports
- * `nativeHelperAvailable: false` and refuses to claim any ownership scope
- * stronger than "unverified".
- *
- * solution.md §5 (Windows column) requires:
- *   - Workload ownership: "Native helper owns a Job Object; launch
- *     suspended, assign, then resume. No workload breakaway." — NOT done
- *     here; see detectCapabilities().limitations.
- *   - Graceful stop: "Configured application shutdown where supported;
- *     otherwise disclose forced termination. POSIX signal names are not a
- *     graceful Windows contract." — we disclose forced-only termination.
- *   - Strong stop: "Job Object tree termination and observed active-process
- *     accounting." — NOT available without the native helper; this adapter
- *     can only terminate the single supervisor pid it was given.
- *   - Isolation: "Job Objects are ownership/resource controls, not
- *     filesystem/network sandboxes." — this adapter reports zero available
- *     isolation backends; see detectCapabilities().
- *
- * solution.md §5 closing paragraph: "Incompatible inherited/nested Jobs make
- * launch unavailable, not a reason to fall back to raw PID killing." and §12:
- * "Replace raw PID/log-inactivity reconciliation... No POSIX-signal or
- * PID-walk fallback masquerades as tree ownership." This file follows that
- * directive literally: it never walks or kills a process *tree* by PID. It
- * only ever signals the single supervisor process identified by its own
- * ownership handle, and it reports `verifiedNoDescendants: false` and a
- * loud limitation every single time, rather than ever claiming tree
- * ownership it cannot back up.
- *
- * Defensive note for callers (mainly T08's authorization service): this
- * adapter's `detectCapabilities()` always reports `availableIsolationBackends:
- * []`. Per solution.md §4 ("Determine the actual isolation backend before
- * approval. Required isolation unavailable means refusal."), any caller
- * requesting `isolation.required` with a backend other than "none" MUST fail
- * closed itself using this reported empty list — this adapter does not (and
- * architecturally cannot, per the PlatformAdapter contract in types.ts)
- * independently enforce isolation policy; it only ever reports what is
- * available.
- */
+// Fail-closed Windows adapter: not exercised on Windows, and no native Job Object
+// helper is bundled. Stock Node cannot create/assign Job Objects, so this adapter
+// reports `nativeHelperAvailable: false` and ownership scope "unverified", and only
+// ever signals the single supervisor pid (never walks or kills a tree by PID).
+// It reports `availableIsolationBackends: []`, but cannot enforce isolation policy:
+// callers requiring isolation must refuse based on that empty list.
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { realpath } from "node:fs/promises";
@@ -74,10 +21,6 @@ import {
   type IsolationBackend,
 } from "../types.js";
 
-// ---------------------------------------------------------------------------
-// Capability reporting (solution.md §5/§7, README.md's recorded T04 decision)
-// ---------------------------------------------------------------------------
-
 const LIMITATIONS: readonly string[] = [
   "No native Windows Job Object helper binary is bundled in this delivery (no C/C++ toolchain target in this environment; see README.md's recorded T04 decision). " +
     "Job Object tree ownership (suspended launch, AssignProcessToJobObject, ResumeThread) is therefore unavailable.",
@@ -94,86 +37,39 @@ const LIMITATIONS: readonly string[] = [
 ];
 
 async function detectCapabilities(): Promise<PlatformCapabilities> {
-  // No Job Object binding exists in stock node:child_process; always take
-  // the documented refusal/fallback path rather than ever guessing "maybe
-  // available" (solution.md §4: "fail closed... never silently assume").
   const nativeHelperAvailable = false;
 
-  // Job Objects are ownership controls, not isolation/sandbox backends
-  // (solution.md §5 Windows row, "Isolation" concern) — this adapter never
-  // reports anything here, so any caller requesting isolation.required with
-  // backend !== "none" must refuse (see module-level comment above).
   const availableIsolationBackends: IsolationBackend[] = [];
 
   return {
     platform: "win32",
     availableIsolationBackends,
-    // Without a Job Object we cannot guarantee a stop reaches the full
-    // descendant tree, nor can we verify tree membership at all — the only
-    // honest answer is "unverified" (types.ts: "ownership could not be
-    // established; refuse unless explicitly accepted").
+    // Without a Job Object, tree membership can't be verified at all.
     strongestOwnershipScope: "unverified",
-    // Requires native helper cooperation with the target process to deliver
-    // a configured shutdown message; unavailable here (see LIMITATIONS).
     supportsGracefulApplicationShutdown: false,
-    // Delegated cgroups are a Linux-only concept; always false on win32.
     supportsDelegatedCgroup: false,
     nativeHelperAvailable,
     limitations: [...LIMITATIONS],
   };
 }
 
-// ---------------------------------------------------------------------------
-// Path canonicalization
-// ---------------------------------------------------------------------------
-
 /**
- * Resolve symlinks/junctions and verify existence via Node's native
- * `fs.realpath`, which on Windows already understands drive letters, UNC
- * paths (`\\server\share\...`) and NTFS reparse points (junctions/symlinks)
- * without any extra platform-specific code here.
- *
- * Deliberately NOT attempted here: "fixing" case. NTFS is case-insensitive
- * but case-preserving — two paths that differ only in case may refer to the
- * same file, but this adapter does not normalize case, matching solution.md
- * §5's framing of case-insensitivity as something to "acknowledge", not
- * silently rewrite (rewriting could mask a caller's own typo/assumption
- * bugs under a false sense of exact-match correctness).
+ * Known limitation: NTFS is case-insensitive but case-preserving and case is not
+ * normalized here; callers needing case-canonical comparison must fold case themselves.
  */
 async function canonicalizePath(path: string): Promise<string> {
   return realpath(path);
 }
 
-// ---------------------------------------------------------------------------
-// Locking
-// ---------------------------------------------------------------------------
-
 /**
- * File-based mutual exclusion via O_CREAT|O_EXCL exclusive create. This is
- * portable: Node's `fs.open` flags map onto the underlying Win32
- * CreateFile call with CREATE_NEW semantics on NTFS, so the same
- * create-or-fail atomicity holds on Windows as on POSIX.
+ * O_EXCL lock file (never deleted/replaced while held, never seized by age); on
+ * EEXIST throws `lock-held`. The holder record has no `processStartTime` (no Windows
+ * probe without a native addon), so stale recovery can only prove "gone" when the pid
+ * no longer exists; a reused pid keeps the lock held, which fails safe.
  *
- * This is explicitly file-based mutual exclusion, not a native Windows
- * named mutex/semaphore object — it is a stable lock *file* (never
- * deleted/replaced while held, per solution.md §7) whose presence is the
- * signal, matching the POSIX adapters' lock semantics so storage code (T05)
- * can treat all platforms uniformly through this one `acquireLock` contract.
- *
- * The lock file records `{pid, acquiredAt, hostname}`. There is no
- * `processStartTime`: Node exposes no Windows process creation time without
- * a native addon (see LIMITATIONS). On EEXIST this primitive never removes
- * another holder's lock; it throws `lock-held`. Verified-gone recovery lives
- * in `storage/single-writer-lock.ts`. On Windows it can only prove "gone"
- * when the pid no longer exists, so a reused pid keeps the lock held. That
- * fails safe, and the lock is never seized by age.
- *
- * Windows sharing violations (an antivirus scanner or indexer briefly holding
- * a handle, or a lock file still pending deletion after a release) show up
- * as EBUSY/EPERM/EACCES. Both the exclusive create and the release unlink
- * retry those with bounded exponential backoff (plan item 0.1). If they
- * persist, the original error is rethrown from acquire, never translated
- * into success or `lock-held`.
+ * Sharing violations (antivirus/indexer holding a handle, or a lock file pending
+ * deletion) surface as EBUSY/EPERM/EACCES; create and release retry them with bounded
+ * backoff, then rethrow the original error (never translated to success or `lock-held`).
  */
 const SHARING_VIOLATION_CODES: ReadonlySet<string> = new Set(["EBUSY", "EPERM", "EACCES"]);
 const SHARING_VIOLATION_RETRY_DELAYS_MS: readonly number[] = [10, 25, 50, 100, 200];
@@ -220,10 +116,6 @@ async function acquireLock(path: string): Promise<() => Promise<void>> {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Launch
-// ---------------------------------------------------------------------------
-
 const SPAWN_SETTLE_MS = 80;
 
 async function sleep(ms: number): Promise<void> {
@@ -256,7 +148,6 @@ async function launchDetachedSupervisor(args: {
     earlyExit = { code, signal };
   });
 
-  // Let the parent CLI process exit without waiting on this child.
   child.unref();
 
   const pid = child.pid;
@@ -267,8 +158,7 @@ async function launchDetachedSupervisor(args: {
     );
   }
 
-  // Short fail-fast window, same rationale as the POSIX adapters: catches
-  // immediate exec/crash failures; not a liveness guarantee by itself.
+  // Fail-fast window only; not a liveness guarantee.
   await sleep(SPAWN_SETTLE_MS);
 
   if (spawnError) {
@@ -281,20 +171,12 @@ async function launchDetachedSupervisor(args: {
     );
   }
 
-  // KNOWN-WEAKER GUARANTEE, specific to this Node-only Windows path: with no
-  // native helper there is no Job Object to assign this process into, so we
-  // cannot report `ownershipScope: "job-object"` — doing so would falsely
-  // claim tree ownership this adapter does not hold (solution.md §5/§12:
-  // "No POSIX-signal or PID-walk fallback masquerades as tree ownership.").
-  // We report "unverified" instead, and `ownershipHandle` is nothing more
-  // than the bare pid, best-effort only.
+  // Known limitation: with no Job Object we report "unverified", not "job-object";
+  // the handle is just the bare pid.
   const ownershipHandle = String(pid);
 
-  // Node does not expose Windows process creation time (GetProcessTimes)
-  // without a native addon. We cannot honestly populate `creationIdentity`,
-  // so we mark it explicitly "unavailable" rather than leaving it blank or
-  // guessing — callers (recovery/T12) must treat PID-reuse protection on
-  // this path as weaker than the POSIX adapters' /proc-start-time check.
+  // Process creation time isn't available without a native addon, so PID-reuse
+  // protection here is weaker than on POSIX.
   const identity: ProcessIdentity = { pid, creationIdentity: "unavailable" };
 
   return {
@@ -304,23 +186,9 @@ async function launchDetachedSupervisor(args: {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Liveness
-// ---------------------------------------------------------------------------
-
 /**
- * Existence-only liveness check via `process.kill(pid, 0)`, which Node
- * documents as cross-platform: on Windows it uses an existence test rather
- * than actually delivering a signal (there is no POSIX signal-0 semantic on
- * Windows, but Node's implementation still reports "does this pid exist").
- *
- * Because `identity.creationIdentity` is always "unavailable" on this
- * adapter (see launchDetachedSupervisor), this check is existence-only and
- * is therefore vulnerable to PID reuse: if the original supervisor pid has
- * exited and the OS has recycled that pid for an unrelated process, this
- * will incorrectly report "alive". This is a clearly flagged limitation
- * (see detectCapabilities().limitations), not silently treated as
- * equivalent to the POSIX adapters' creation-time-verified check.
+ * Existence-only check (`creationIdentity` is always "unavailable"), so a recycled pid
+ * is wrongly reported alive. Known limitation, disclosed in `limitations`.
  */
 async function verifyAlive(identity: ProcessIdentity): Promise<boolean> {
   try {
@@ -328,8 +196,7 @@ async function verifyAlive(identity: ProcessIdentity): Promise<boolean> {
     return true;
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
-    // EPERM means the pid exists but we lack permission to signal it — still
-    // evidence of existence (mirrors the POSIX adapters' handling).
+    // EPERM: exists but not signalable by us.
     if (err.code === "EPERM") return true;
     return false;
   }
@@ -347,16 +214,7 @@ async function waitForPidGone(pid: number, graceMs: number): Promise<boolean> {
   return !(await stillAlive());
 }
 
-// ---------------------------------------------------------------------------
-// Stop / force-stop
-// ---------------------------------------------------------------------------
-
-/**
- * No Job Object tree ownership exists on this path (see module-level
- * comment and detectCapabilities().limitations). This limitation string is
- * attached to every StopOutcome produced here so callers never mistake a
- * single-process kill for tree ownership.
- */
+// Attached to every StopOutcome so a single-process kill is never mistaken for tree ownership.
 const TREE_LIMITATION =
   "No Windows Job Object is available on this path, so only the single supervisor process identified by its pid was targeted. " +
   "Child/descendant processes spawned by the workload are NOT guaranteed to be terminated (no Job Object tree kill available). " +
@@ -372,12 +230,7 @@ function parsePid(ownershipHandle: string): number {
 }
 
 function assertSupportedScope(ownershipScope: ProcessOwnershipScope): void {
-  // This adapter never produces a "job-object" ownershipHandle (see
-  // launchDetachedSupervisor), so it only ever expects to be asked to stop
-  // "unverified" scopes it created itself. A caller asking this adapter to
-  // stop a "job-object" scope would imply a native helper this build does
-  // not have; refuse rather than guess at Job Object semantics we can't
-  // perform.
+  // A "job-object" scope would imply a native helper this build lacks; refuse rather than guess.
   if (ownershipScope !== "unverified") {
     throw new BackgroundJobError(
       "unsupported-platform",
@@ -388,16 +241,9 @@ function assertSupportedScope(ownershipScope: ProcessOwnershipScope): void {
 }
 
 /**
- * Windows has no portable SIGTERM-equivalent that Node can deliver to an
- * arbitrary process without that process explicitly handling a custom
- * console-control-event (which Node also does not expose portably).
- * `process.kill(pid)` on Windows always force-terminates immediately via
- * TerminateProcess — there is no separate graceful/forceful distinction
- * available at this layer. Both stopOwnedScope and forceStopOwnedScope
- * therefore do the same single-pid termination; the only difference is
- * stopOwnedScope polls up to `graceMs` for the (already-forceful)
- * termination to be observed, matching the PlatformAdapter contract's
- * shape even though there is no real "graceful request" step to perform.
+ * Windows has no graceful signal Node can deliver: `process.kill(pid)` is always
+ * TerminateProcess. Stop and force-stop therefore do the same single-pid kill;
+ * stop just polls up to `graceMs` to observe it.
  */
 async function stopOwnedScope(
   ownershipHandle: string,
@@ -408,8 +254,6 @@ async function stopOwnedScope(
   const pid = parsePid(ownershipHandle);
 
   try {
-    // On Windows, Node's process.kill(pid) with no signal (or any signal
-    // argument) maps to TerminateProcess — there is no softer delivery.
     process.kill(pid);
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
@@ -420,11 +264,8 @@ async function stopOwnedScope(
 
   return {
     observedStopped,
-    // Nothing "escalates" beyond TerminateProcess on this path; Node issued
-    // the only forceful primitive it has immediately.
     escalated: false,
-    // No tree accounting exists at all without a Job Object — always false,
-    // explicitly, never inferred from the single-pid check succeeding.
+    // Never inferred from the single-pid check: no tree accounting without a Job Object.
     verifiedNoDescendants: false,
     limitations: [TREE_LIMITATION],
   };
@@ -444,8 +285,6 @@ async function forceStopOwnedScope(
     if (err.code !== "ESRCH") throw error;
   }
 
-  // process.kill on Windows is already forceful (TerminateProcess); poll
-  // briefly to observe the outcome rather than asserting immediately.
   const observedStopped = await waitForPidGone(pid, 1000);
 
   return {

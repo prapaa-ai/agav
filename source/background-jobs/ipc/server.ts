@@ -1,28 +1,7 @@
-/**
- * IPC server (T06): accepts connections on a Unix domain socket / Windows
- * named pipe, performs a version-negotiation handshake, and dispatches
- * framed request messages to a caller-supplied handler, writing back framed
- * responses.
- *
- * Authentication model (documented per solution.md §6 "restricted access,
- * version negotiation"): Unix domain sockets and Windows named pipes are
- * already restricted by OS filesystem/pipe ACL permissions to processes
- * running as the same (or privileged) user — we deliberately do NOT
- * reinvent that with an application-level credential scheme. As
- * defense-in-depth, the directory housing the socket file should be created
- * with mode 0o700 by the storage-root owner (T05) so only the owning user
- * can even traverse to the socket path; this server does not create that
- * directory itself (it only unlinks/binds the socket file), but documents
- * the expectation here for callers wiring up the storage root.
- *
- * On top of OS-level access control we add a lightweight protocol-version
- * handshake: the first message a client sends on a new connection must be
- * `{type: 'hello', protocolVersion: number}`. Any other first message, or a
- * mismatched protocol version, is rejected with
- * `{type: 'reject', reason: 'version-mismatch'}` followed by closing the
- * connection — this is explicitly NOT an authorization decision (see
- * `session.ts`), only a wire-compatibility check.
- */
+// Access control relies on OS socket/pipe permissions (same user), with no app-level
+// credentials. The socket's directory should be mode 0o700, created by the storage-root
+// owner (this server only unlinks/binds the socket file). The `hello` handshake is a
+// wire-compatibility check only, NOT an authorization decision (see session.ts).
 import { createServer, type Server, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { access, constants as fsConstants, unlink } from "node:fs/promises";
@@ -49,9 +28,7 @@ export interface AckMessage {
 export type IpcEnvelope = { id: string; payload: unknown };
 
 export interface IpcServerHandlers {
-  /** Called once per fully-decoded post-handshake request envelope. */
   onRequest: (msg: unknown, respond: (reply: unknown) => void) => void;
-  /** Optional: observe connect/disconnect for diagnostics. */
   onClientConnected?: (clientId: ClientId) => void;
   onClientDisconnected?: (clientId: ClientId) => void;
 }
@@ -77,16 +54,9 @@ export class IpcServer {
   }
 
   /**
-   * Start listening. On POSIX, a leftover socket file from a previous,
-   * no-longer-running server prevents `listen()` with EADDRINUSE. We must
-   * not blindly `unlink()` any existing file first — a live socket being
-   * actively served by another process must never be deleted out from under
-   * its owner (same spirit as solution.md §7 "stable lock objects must not
-   * be deleted while held"). Instead, we only unlink after *confirming* the
-   * socket is stale: attempt a real connection to it, and only remove the
-   * file if that connection attempt fails with ECONNREFUSED (nothing is
-   * listening) or ENOENT (already gone) — never on a successful connection,
-   * and never on an ambiguous error (e.g. EACCES), which is surfaced as-is.
+   * A stale socket file makes `listen()` fail with EADDRINUSE, but a live socket must
+   * never be unlinked from under its owner. The file is removed only after a probe
+   * connection fails with ECONNREFUSED/ENOENT; ambiguous errors (e.g. EACCES) surface as-is.
    */
   async start(): Promise<void> {
     if (osPlatform() !== "win32") {
@@ -109,12 +79,6 @@ export class IpcServer {
       server.once("listening", onListening);
       server.listen(this.socketPath);
     });
-
-    // Defense-in-depth note: the directory containing `this.socketPath`
-    // should be mode 0o700, owned by the current user, created by whichever
-    // module owns the storage root (T05). We rely on OS socket/pipe ACLs for
-    // actual access restriction rather than re-implementing authentication
-    // here.
   }
 
   private async removeStaleSocketIfAny(): Promise<void> {
@@ -131,8 +95,7 @@ export class IpcServer {
       };
       probe.once("connect", () => {
         cleanup();
-        // Something is actively listening: NOT stale. Do not delete it.
-        resolve(false);
+        resolve(false); // live listener: not stale
       });
       probe.once("error", (err: NodeJS.ErrnoException) => {
         cleanup();
@@ -157,8 +120,7 @@ export class IpcServer {
       maxFrameBytes: this.maxFrameBytes,
       onMessage: (msg) => this.onDecodedMessage(clientId, msg),
       onError: () => {
-        // Oversized or malformed frame: close the connection, do not try to
-        // resynchronize a possibly-hostile/corrupt stream.
+        // Oversized or malformed frame: never resynchronize.
         this.destroyConnection(clientId);
       },
     });
@@ -193,9 +155,7 @@ export class IpcServer {
     }
 
     if (!isEnvelope(msg)) {
-      // Malformed post-handshake message: ignore defensively rather than
-      // crash the server; a well-behaved client never sends this.
-      return;
+      return; // malformed post-handshake message: ignored
     }
 
     this.handlers.onRequest(msg.payload, (reply) => {
@@ -208,8 +168,7 @@ export class IpcServer {
     try {
       socket.write(encodeFrame(obj));
     } catch {
-      // Socket may have closed concurrently; swallow, connection teardown
-      // will be observed via the 'close'/'error' handlers.
+      // Socket may have closed concurrently; teardown is handled by 'close'/'error'.
     }
   }
 
@@ -256,7 +215,4 @@ function isEnvelope(msg: unknown): msg is IpcEnvelope {
   );
 }
 
-// Re-export so consumers can recognize/handle framing errors without
-// reaching into ./framing.ts directly (keeps the public surface of this
-// module self-contained).
 export { FrameParseError, FrameSizeExceededError };

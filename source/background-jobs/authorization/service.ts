@@ -1,14 +1,3 @@
-/**
- * T08 — Shared authorization and recurring consent service.
- *
- * Per the module-boundary note in types.ts: "authorization.ts consumes
- * storage + launch-spec, never imports coordinator" and per subtasks.md §4:
- * "authorization consumes policy/session snapshots rather than the
- * coordinator instance." This module never reads live application/session
- * state itself — every decision is a pure function of its arguments plus
- * the on-disk grant store it owns. No live coordinator is constructed or
- * imported here (none exists yet; T14 is the coordinator owner).
- */
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -45,13 +34,7 @@ export interface AuthorizationService {
   /** Re-checks a previously-granted approval against the current spec before dispatch. */
   revalidateBeforeDispatch(grantId: GrantId, spec: ConsentRelevantSpec): Promise<AuthorizationDecision>;
 
-  /**
-   * Per solution.md §4: "Revocation blocks future launches; it does not
-   * silently terminate existing work." This method MUST NOT attempt to stop
-   * any running job — that is deliberately out of scope here; it is the
-   * coordinator/supervisor's responsibility, triggered by a separate,
-   * explicitly authorized `stop` action.
-   */
+  /** Blocks future launches only; must not stop running jobs (that needs a separately authorized `stop`). */
   revoke(grantId: GrantId): Promise<void>;
 
   resolveIsolation(requested: IsolationPolicy, capabilities: PlatformCapabilities): IsolationResolution;
@@ -75,8 +58,7 @@ export function createAuthorizationService(root: string): AuthorizationService {
     async authorize(action, spec, session, opts) {
       if (session.signal?.aborted) return { allowed: false, reason: "Background action cancelled." };
 
-      // (a) Headless gate is checked BEFORE permissionMode, so auto-accept
-      // can never bypass "absent a handler is not consent" (solution.md §4).
+      // Headless gate runs BEFORE permissionMode so auto-accept can't bypass it.
       if (opts?.headless && !isHeadlessActionApproved(action, session)) {
         return {
           allowed: false,
@@ -84,32 +66,25 @@ export function createAuthorizationService(root: string): AuthorizationService {
         };
       }
 
-      // (b) deny-writes blocks new launches (start/schedule-create) but
-      // never stop/cleanup/schedule-revoke — see policy.ts for rationale.
       if (isBlockedByDenyWrites(action) && session.permissionMode === "deny-writes") {
         return { allowed: false, reason: "deny-writes permission mode blocks this action." };
       }
 
       const specHash = hashLaunchSpecForConsent(spec);
 
-      // (c) Reuse an existing, still-active grant for this exact spec+action.
       const existing = await grantStore.findActiveBySpecHash(action, specHash);
       if (existing !== undefined) {
         return { allowed: true, reason: "Existing grant covers this exact spec.", grant: existing };
       }
 
-      // (d) auto-accept mints a fresh grant on demand.
       if (session.permissionMode === "auto-accept") {
         const grant = mintGrant(action, specHash);
         await grantStore.put(grant);
         return { allowed: true, reason: "auto-accept permission mode.", grant };
       }
 
-      // Confirm only the normalized, consent-relevant specification. The
-      // callback is supplied by the host, not by the model/tool arguments.
-      // deny-writes still allows explicit confirmation for the actions it does
-      // not block (stop/cleanup/schedule-revoke) so existing work can be
-      // stopped; new launches already returned above.
+      // The confirm callback comes from the host, not model/tool arguments.
+      // deny-writes still allows confirmation of stop/cleanup/schedule-revoke.
       const canConfirm = session.permissionMode === "ask" || session.permissionMode === "deny-writes";
       if (canConfirm && !opts?.headless && session.confirmBackgroundAction) {
         const approvedSpec = structuredClone(spec);
@@ -136,8 +111,6 @@ export function createAuthorizationService(root: string): AuthorizationService {
         }
       }
 
-      // (e) 'ask' mode with no existing grant: the caller (T14/T16) must
-      // prompt a human and then call recordExplicitApproval() on consent.
       return {
         allowed: false,
         reason: "Requires interactive confirmation; no existing grant for this exact specification.",
@@ -170,15 +143,11 @@ export function createAuthorizationService(root: string): AuthorizationService {
     },
 
     async revoke(grantId) {
-      // Deliberately does not touch job/supervisor state — see interface doc.
       await grantStore.revoke(grantId);
     },
 
     resolveIsolation(requested, capabilities) {
-      // Per solution.md §4: "Explicitly approved unrestricted execution is a
-      // separate mode; never downgrade silently." backend:'none' is a
-      // distinct, already-approved consent — not an error and not a
-      // fallback target for anything else.
+      // backend:'none' is an explicitly requested unrestricted mode, never a fallback.
       if (requested.backend === "none") {
         return { backend: "none", refused: false };
       }
@@ -187,14 +156,7 @@ export function createAuthorizationService(root: string): AuthorizationService {
         return { backend: requested.backend, refused: false };
       }
 
-      // Per solution.md §4: "Determine the actual isolation backend before
-      // approval. Required isolation unavailable means refusal... never
-      // downgrade silently." There is deliberately no silent-fallback path
-      // here for the non-required case either: whether or not `required` is
-      // set, an unavailable non-'none' backend is refused. The *only* way to
-      // get unrestricted execution is to explicitly request backend:'none',
-      // which is its own, separately-approved consent (handled above) — not
-      // an automatic fallback chosen by this function.
+      // Never downgrade silently: an unavailable backend is refused whether or not `required` is set.
       return {
         backend: requested.backend,
         refused: true,
@@ -203,9 +165,6 @@ export function createAuthorizationService(root: string): AuthorizationService {
     },
 
     aggregateRestrictivePolicy(sessions) {
-      // Per solution.md §11: "Any connected deny-writes session suppresses
-      // process-schedule launches while attached; combine other
-      // restrictions conservatively."
       const denyWritesSession = sessions.find((s) => s.permissionMode === "deny-writes");
       if (denyWritesSession !== undefined) {
         return {

@@ -24,18 +24,16 @@ interface PendingConfirmation {
 
 const CONFIRM_CONTROLS = "y: Approve · n/ESC: Deny";
 
-/** One-line summary; the manager shows only this when it cannot render `confirmationDetails`. */
+/** Fallback when the manager cannot render `confirmationDetails`. */
 function confirmationPrompt({ action, spec }: PendingConfirmation): string {
   const info = describeBackgroundConfirmation(action, spec);
   return `${info.label}: ${info.command}? ${CONFIRM_CONTROLS}`;
 }
 
-/** Full terms (cwd, isolation, schedule, reuse) with the approval keys kept on their own, always-visible line. */
 function confirmationDetails({ action, spec }: PendingConfirmation): { lines: string[]; controls: string } {
   return { lines: backgroundConfirmationLines(describeBackgroundConfirmation(action, spec)), controls: CONFIRM_CONTROLS };
 }
 
-/** Jobs and their schedules share one manager; Tab switches like /skills marketplace. */
 export function JobsTUI({ onExit, permissionMode }: JobsTUIProps) {
   const [schedules, setSchedules] = useState(false);
   const [pending, setPending] = useState<PendingConfirmation | null>(null);
