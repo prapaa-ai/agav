@@ -39,6 +39,151 @@ describe("parseArgs", () => {
     expect(flags.cwd).toBeUndefined();
   });
 
+  it("parses --name with space separation", () => {
+    const flags = parseArgs(["--name", "My run"]);
+    expect(flags.name).toBe("My run");
+  });
+
+  it("parses --name= with equals separation", () => {
+    const flags = parseArgs(["--name=My run"]);
+    expect(flags.name).toBe("My run");
+  });
+
+  it("preserves embedded equals signs in --name= value", () => {
+    const flags = parseArgs(["--name=a=b"]);
+    expect(flags.name).toBe("a=b");
+  });
+
+  it("leaves flags.name undefined if --name is omitted", () => {
+    const flags = parseArgs(["--help"]);
+    expect(flags.name).toBeUndefined();
+  });
+
+  it("parses empty and whitespace-only --name values", () => {
+    expect(parseArgs(["--name="]).name).toBe("");
+    expect(parseArgs(["--name", ""]).name).toBe("");
+    expect(parseArgs(["--name", "   "]).name).toBe("   ");
+    expect(parseArgs(["--name=   "]).name).toBe("   ");
+  });
+
+  it("handles missing flag value at end of argv for --name consistently with neighboring string flags", () => {
+    const flags = parseArgs(["--name"]);
+    expect(flags.name).toBe("");
+  });
+
+  it("rejects --name combined with --print or -P", () => {
+    const mockExit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const mockStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    parseArgs(["--print", "prompt", "--name", "My run"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--name is only supported for interactive sessions"));
+
+    mockExit.mockClear();
+    mockStderr.mockClear();
+
+    parseArgs(["-P", "prompt", "--name=My run"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--name is only supported for interactive sessions"));
+
+    mockExit.mockClear();
+    mockStderr.mockClear();
+
+    parseArgs(["--name", "My run", "-P", "prompt"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--name is only supported for interactive sessions"));
+
+    mockExit.mockClear();
+    mockStderr.mockClear();
+
+    // When --name has a missing value preceding --print or -P
+    parseArgs(["--name", "--print", "prompt"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--name is only supported for interactive sessions"));
+
+    mockExit.mockClear();
+    mockStderr.mockClear();
+
+    parseArgs(["--name", "-P", "prompt"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--name is only supported for interactive sessions"));
+
+    mockExit.mockClear();
+    mockStderr.mockClear();
+
+    // Even when name is empty or whitespace
+    parseArgs(["-P", "prompt", "--name="]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--name is only supported for interactive sessions"));
+
+    mockExit.mockRestore();
+    mockStderr.mockRestore();
+  });
+
+  it("does not consume another option flag as the --name value when value is missing", () => {
+    const flags = parseArgs(["--name", "--model", "gpt-4o"]);
+    expect(flags.name).toBe("");
+    expect(flags.model).toBe("gpt-4o");
+  });
+
+  it("rejects --name combined with run", () => {
+    const mockExit = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    const mockStderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    parseArgs(["run", "prompt", "--name", "My run"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--name is only supported for interactive sessions"));
+
+    mockExit.mockClear();
+    mockStderr.mockClear();
+
+    parseArgs(["run", "--name=My run", "prompt"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--name is only supported for interactive sessions"));
+
+    mockExit.mockClear();
+    mockStderr.mockClear();
+
+    parseArgs(["--name", "My run", "run", "prompt"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--name is only supported for interactive sessions"));
+
+    mockExit.mockClear();
+    mockStderr.mockClear();
+
+    // Even when missing value at end or whitespace
+    parseArgs(["run", "prompt", "--name"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--name is only supported for interactive sessions"));
+
+    mockExit.mockClear();
+    mockStderr.mockClear();
+
+    parseArgs(["run", "--name=   ", "prompt"]);
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockStderr).toHaveBeenCalledWith(expect.stringContaining("--name is only supported for interactive sessions"));
+
+    mockExit.mockRestore();
+    mockStderr.mockRestore();
+  });
+
+  it("permits ordinary --print and run invocations without --name", () => {
+    const printFlags = parseArgs(["--print", "prompt"]);
+    expect(printFlags.print).toBe(true);
+    expect(printFlags.printPrompt).toBe("prompt");
+    expect(printFlags.name).toBeUndefined();
+
+    const shortPrintFlags = parseArgs(["-P", "prompt"]);
+    expect(shortPrintFlags.print).toBe(true);
+    expect(shortPrintFlags.printPrompt).toBe("prompt");
+    expect(shortPrintFlags.name).toBeUndefined();
+
+    const runFlags = parseArgs(["run", "prompt"]);
+    expect(runFlags.run).toBe(true);
+    expect(runFlags.runPrompt).toBe("prompt");
+    expect(runFlags.name).toBeUndefined();
+  });
+
   it("recognizes subcommands even when flags precede them", () => {
     const runFlags = parseArgs(["--cwd", "/repo", "run"]);
     expect(runFlags.run).toBe(true);

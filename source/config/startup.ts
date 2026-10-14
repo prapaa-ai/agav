@@ -178,3 +178,18 @@ export function providerConfigurationError(config: AgavConfig): string | null {
     case "ollama": return null;
   }
 }
+
+/**
+ * Resolve the initial session name for startup.
+ * Explicit non-empty CLI name sets the initial name for new sessions.
+ * Resuming an existing session preserves the existing session's name and avoids renaming it.
+ */
+export function resolveInitialSessionName(
+  cliName?: string,
+  resumedSession?: { id?: string; name?: string },
+): string | undefined {
+  if (resumedSession?.id) {
+    return resumedSession.name;
+  }
+  return typeof cliName === "string" && cliName.trim() ? cliName.trim() : undefined;
+}
