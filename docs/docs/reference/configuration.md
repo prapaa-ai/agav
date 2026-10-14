@@ -85,6 +85,8 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | `sandboxRequired` | When `true`, refuse to start if no OS-level sandbox (Seatbelt, Bubblewrap, or Docker) is available |
 | `allowedTools` | Tool names or scoped patterns that can run without confirmation |
 | `systemPrompt` | Additional project instructions |
+| `backgroundJobsEnabled` | Opt in (default `false`) to the `run_background_job` tool and `/job`. Jobs run outside the shell sandbox. See [Background jobs](/features/background-jobs). |
+| `backgroundAutomation` | `on` (default) or `paused`. `paused` makes `agav job tick` and `agav job daemon` do nothing. Global config only. |
 | `hooks` | Optional commands for `afterEdit`, `afterShell`, and `preCommit` |
 | `theme` | Partial terminal color overrides |
 | `mcpServers` | Named MCP server definitions (stdio and remote) |
@@ -139,6 +141,7 @@ To prevent a malicious repository from redirecting API requests or escalating pe
 - **Endpoint overrides:** `openaiBaseURL`, `openaiHeaders`, `ollamaEndpoint`, `ollamaHost`, `ollamaPort`
 - **API keys:** `anthropicApiKey`, `openaiApiKey`, `openrouterApiKey`, `nvidiaApiKey`, `deepseekApiKey`, `geminiApiKey`, `ollamaApiKey`
 - **Permission escalation:** `permissionMode`
+- **Unattended automation:** `backgroundAutomation`
 
 These fields are stripped from `./.agav/config.json` before it is merged, so a value placed there is **silently ignored** rather than applied — Agav does not warn about it. This ensures that cloning an untrusted repository cannot silently redirect your credentials to a third-party server or bypass tool confirmations. Set these fields in global config or via environment variables instead.
 
