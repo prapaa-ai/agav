@@ -12,8 +12,9 @@ import { promises as fs } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 
 import { getAgavDir } from "../../config/config.js";
-import { BackgroundJobError } from "../types.js";
+import { BACKGROUND_JOBS_STORAGE_VERSION, BackgroundJobError } from "../types.js";
 import { getPlatformAdapter } from "../platform/index.js";
+import { writeAtomic } from "./atomic-file.js";
 
 /** Matches the "collision-resistant" identifiers this subsystem issues (uuid-ish). */
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_-]+$/;
@@ -149,6 +150,77 @@ export function controlIntentPath(root: string, intentId: string): string {
 export function lockPath(root: string, name: string): string {
   assertSafeId(name);
   return join(locksDir(root), `${name}.lock`);
+}
+
+// ---------------------------------------------------------------------------
+// Store VERSION marker (plan item 0.10, decision D6)
+// ---------------------------------------------------------------------------
+
+/** `<root>/VERSION`: plain-text integer storage version of this store. */
+export function storageVersionPath(root: string): string {
+  return join(root, "VERSION");
+}
+
+/**
+ * Read the store's on-disk VERSION. Returns `undefined` when the file does
+ * not exist (stores created by builds that predate the marker). A file that
+ * isn't a positive integer is reported as `storage-unavailable` rather than
+ * guessed at.
+ */
+export async function readStorageVersion(root: string): Promise<number | undefined> {
+  const path = storageVersionPath(root);
+  let raw: string;
+  try {
+    raw = await fs.readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  const trimmed = raw.trim();
+  if (!/^[0-9]+$/.test(trimmed) || Number(trimmed) < 1 || !Number.isSafeInteger(Number(trimmed))) {
+    throw new BackgroundJobError(
+      "storage-unavailable",
+      `Background-jobs store VERSION file is not a valid version number: ${path} (contents: ${JSON.stringify(trimmed.slice(0, 32))}).`,
+    );
+  }
+  return Number(trimmed);
+}
+
+/**
+ * Write the current storage version to `<root>/VERSION` if the file is
+ * absent. An existing file is never rewritten, so a store created or
+ * upgraded by a newer build keeps its marker. Writing the marker into an
+ * older store that lacks one is harmless: on-disk record shapes are
+ * unchanged at version 1. Publication is atomic temp+rename (`writeAtomic`),
+ * so readers never observe a partial file; concurrent first-time writers
+ * all publish the same content.
+ */
+export async function ensureStorageVersionFile(root: string): Promise<void> {
+  const path = storageVersionPath(root);
+  try {
+    await fs.stat(path);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  await writeAtomic(path, `${BACKGROUND_JOBS_STORAGE_VERSION}\n`);
+}
+
+/**
+ * Throw `store-version-newer` when the on-disk VERSION is greater than the
+ * version this build supports (`BACKGROUND_JOBS_STORAGE_VERSION`). A missing
+ * file is accepted (legacy store). Returns the on-disk version, if any.
+ */
+export async function checkStorageVersion(root: string): Promise<number | undefined> {
+  const version = await readStorageVersion(root);
+  if (version !== undefined && version > BACKGROUND_JOBS_STORAGE_VERSION) {
+    throw new BackgroundJobError(
+      "store-version-newer",
+      `Background-jobs store at ${root} has storage version ${version}, but this build supports up to ` +
+        `version ${BACKGROUND_JOBS_STORAGE_VERSION}. Upgrade agav to use this store.`,
+    );
+  }
+  return version;
 }
 
 /**

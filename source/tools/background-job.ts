@@ -126,11 +126,13 @@ export const backgroundJobTool: ToolDefinition = {
       "keep running after this turn ends (servers, long builds, watchers). Requires \"backgroundJobsEnabled\": true " +
       "in the agav config; otherwise this tool refuses every action. Actions: " +
       "start (launch a new background job from a shell command), list (show all known jobs), " +
-      "poll (show current state of one job), log (show captured output of one job), " +
+      "poll (show current state of one job), log (show captured stdout or stderr of one job; by default the " +
+      "first 64 KiB, or only the last N bytes with tail=N), " +
       "wait (block, cancellably, until a job reaches a terminal state), stop (request termination of one job). " +
       "Also supports recurring process-schedules: schedule-create (register a cron-based schedule for a shell " +
       "command), schedule-list (show all known schedules), schedule-revoke (disable a schedule by exact id). Note: " +
-      "creating a schedule only registers it — no periodic timer in this delivery automatically triggers it yet.",
+      "schedules are checked about every 30 seconds, but only while an interactive agav session with " +
+      "background jobs enabled is running. Nothing triggers them while agav is closed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -148,9 +150,20 @@ export const backgroundJobTool: ToolDefinition = {
           description:
             "Job id or unambiguous id prefix. Required for poll/log/wait/stop; ignored for start/list.",
         },
+        stream: {
+          type: "string",
+          enum: ["stdout", "stderr"],
+          description: "Which output stream to read for action:\"log\". Defaults to \"stdout\".",
+        },
+        tail: {
+          type: "number",
+          description:
+            "For action:\"log\": return only the last N bytes of the stream (a positive integer). If you leave it " +
+            "out, the first 64 KiB is returned.",
+        },
         maxBytes: {
           type: "number",
-          description: "Optional maximum bytes of log output to return for action:\"log\".",
+          description: "Deprecated alias of \"tail\" for action:\"log\". Ignored when \"tail\" is set.",
         },
         cwd: {
           type: "string",
@@ -247,10 +260,24 @@ export const backgroundJobTool: ToolDefinition = {
         case "log": {
           const jobId = typeof input.jobId === "string" ? input.jobId : undefined;
           if (!jobId) return errorResult('Missing required "jobId" parameter for action:"log".');
-          const maxBytes = input.maxBytes !== undefined ? Number(input.maxBytes) : undefined;
-          const tail = await coordinator.log(jobId, { maxBytes });
+          if (input.stream !== undefined && input.stream !== "stdout" && input.stream !== "stderr") {
+            return errorResult('Invalid "stream" parameter for action:"log": use "stdout" or "stderr".');
+          }
+          const stream: "stdout" | "stderr" = input.stream === "stderr" ? "stderr" : "stdout";
+          let maxBytes: number | undefined;
+          if (input.tail !== undefined) {
+            const tailBytes = Number(input.tail);
+            if (!Number.isInteger(tailBytes) || tailBytes <= 0) {
+              return errorResult('Invalid "tail" parameter for action:"log": use a positive whole number of bytes.');
+            }
+            maxBytes = tailBytes;
+          } else if (input.maxBytes !== undefined) {
+            // Deprecated alias of `tail`; keeps its original lenient handling.
+            maxBytes = Number(input.maxBytes);
+          }
+          const tail = await coordinator.log(jobId, { maxBytes, stream });
           const note = tail.truncated ? "\n[output truncated]" : "";
-          return { output: (tail.text || "(no output captured)") + note, isError: false };
+          return { output: (tail.text || `(no ${stream} output captured)`) + note, isError: false };
         }
 
         case "wait": {

@@ -581,9 +581,11 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   // and stops it based on the opt-in `backgroundJobsEnabled` config flag.
   useEffect(() => {
     if (!config.backgroundJobsEnabled) return;
-    startScheduleTicker(() => ({ permissionMode: config.permissionMode, headlessApprovedActions: [] }));
+    startScheduleTicker(() => ({ permissionMode: config.permissionMode, headlessApprovedActions: [] }), undefined, {
+      getBackgroundAutomation: () => config.backgroundAutomation,
+    });
     return () => stopScheduleTicker();
-  }, [config.backgroundJobsEnabled, config.permissionMode]);
+  }, [config.backgroundJobsEnabled, config.permissionMode, config.backgroundAutomation]);
 
   const hasSubagents = isLoading && subagentStates.length > 0;
 

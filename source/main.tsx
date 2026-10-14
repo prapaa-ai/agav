@@ -143,7 +143,10 @@ export function parseArgs(argv: string[]) {
       continue;
     }
     
-    if (arg === "--help" || arg === "-h") {
+    if ((arg === "--help" || arg === "-h") && flags.job) {
+      // `agav job [tick|daemon] --help` is handled by job-cli's own usage output.
+      flags._.push(arg);
+    } else if (arg === "--help" || arg === "-h") {
       flags.help = true;
     } else if (arg === "--version" || arg === "-v") {
       flags.version = true;
@@ -238,8 +241,11 @@ export function parseArgs(argv: string[]) {
     } else if (arg === "run" && !subcommandSeen) {
       flags.run = true;
       subcommandSeen = true;
+    } else if (arg === "job" && !subcommandSeen) {
+      flags.job = true;
+      subcommandSeen = true;
     } else if (arg.startsWith("-")) {
-      if (subcommandSeen && (flags.agents || flags.skills || flags.mcp)) {
+      if (subcommandSeen && (flags.agents || flags.skills || flags.mcp || flags.job)) {
         flags._.push(arg);
       } else {
         const suggestion = findClosestFlag(arg);
@@ -271,7 +277,7 @@ export function parseArgs(argv: string[]) {
   if (flags.run && pos.length > 0) flags.runPrompt = pos.join(" ");
   if (flags.print && pos.length > 0) flags.printPrompt = pos.join(" ");
   
-  if (!flags.update && !flags.agents && !flags.skills && !flags.mcp && !flags.run && !flags.print && pos.length > 0) {
+  if (!flags.update && !flags.agents && !flags.skills && !flags.mcp && !flags.run && !flags.job && !flags.print && pos.length > 0) {
      process.stderr.write(`error: unexpected arguments: ${pos.join(" ")}\n`);
      process.exit(1);
   }
@@ -547,6 +553,7 @@ export async function main() {
     $ agav skills [command]        Manage skills
     $ agav mcp auth <name>         Sign in to an OAuth-protected MCP server
     $ agav mcp logout <name>       Remove cached MCP OAuth credentials
+    $ agav job tick                Evaluate due background schedules once and exit
     $ agav --print "prompt"
     $ cat file | agav -P "explain this"
 
@@ -629,6 +636,13 @@ export async function main() {
     }
     const exitCode = await runMCPCommand(flags.mcpCommand, args);
     process.exit(exitCode);
+    return;
+  }
+
+  // Headless background jobs: agav job <command>
+  if (flags.job) {
+    const { runJobCli } = await import("./cli/job-cli.js");
+    process.exit(await runJobCli([...(flags._ as string[])]));
     return;
   }
 

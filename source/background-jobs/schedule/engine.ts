@@ -308,6 +308,8 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
               invocation: schedule.launchSpecTemplate.invocation,
               cwd: schedule.launchSpecTemplate.cwd,
               isolation: schedule.launchSpecTemplate.isolation,
+              env: schedule.launchSpecTemplate.env,
+              limits: schedule.launchSpecTemplate.limits,
             },
             { permissionMode: "auto-accept", headlessApprovedActions: [] },
           );

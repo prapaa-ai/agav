@@ -36,6 +36,12 @@ export interface NormalizeLaunchSpecInput {
   isolation: IsolationPolicy;
   ownershipScope: ProcessOwnershipScope;
   envInherit?: string[];
+  /**
+   * Explicit env values (e.g. a schedule template's `env`), overlaid on the
+   * minimal inherited environment so these values win over inherited
+   * essentials. Applied before Windows key-casing normalization (D3).
+   */
+  env?: Record<string, string>;
   credentialRefs?: Record<string, string>;
   limits?: Partial<ResourceLimits>;
   recurrence?: RecurrenceBinding;
@@ -106,7 +112,8 @@ export async function normalizeLaunchSpec(input: NormalizeLaunchSpecInput): Prom
       `Missing or empty credential value(s) for: ${missingCredentials.join(", ")}`,
     );
   }
-  const env = input.platform === "win32" ? normalizeWindowsEnvKeyCasing(baseEnv) : baseEnv;
+  const overlaidEnv = input.env === undefined ? baseEnv : { ...baseEnv, ...input.env };
+  const env = input.platform === "win32" ? normalizeWindowsEnvKeyCasing(overlaidEnv) : overlaidEnv;
 
   const credentialRefs = Object.keys(input.credentialRefs ?? {});
 

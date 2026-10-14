@@ -76,6 +76,12 @@ export interface AgavConfig {
    * background command is ever launched merely because the feature shipped.
    */
   backgroundJobsEnabled?: boolean;
+  /**
+   * Master switch for headless background automation (`agav job tick` /
+   * daemon). "paused" makes tick/daemon exit early. Defaults to "on".
+   * Global-only (listed in PROJECT_CONFIG_DENY).
+   */
+  backgroundAutomation?: "on" | "paused";
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -156,6 +162,12 @@ const PROJECT_CONFIG_TEMPLATE = {
     description: "Opt in to the background-jobs subsystem, enabling the run_background_job tool and /job command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
     type: "boolean",
     eg: false,
+  },
+  backgroundAutomation: {
+    description: "Pause or resume headless background automation (agav job tick / daemon). Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    enum: ["on", "paused"],
+    type: "string",
+    eg: "on",
   },
   anthropicApiKey: {
     description: "Anthropic API key. Prefer the ANTHROPIC_API_KEY environment variable for secrets.",
@@ -257,6 +269,7 @@ const DEFAULT_CONFIG: AgavConfig = {
   maxTokens: 16384,
   maxIterations: 800,
   errorRetries: 5,
+  backgroundAutomation: "on",
 };
 
 /** Merge nested config objects while letting later sources override scalar values. */
@@ -328,6 +341,7 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "deepseekApiKey",
   "geminiApiKey",
   "permissionMode",
+  "backgroundAutomation",
 ]);
 
 /** Load config from global and project files, then apply environment-derived overrides. */
@@ -366,6 +380,9 @@ export async function loadConfig(): Promise<AgavConfig> {
   }
   if (!Number.isInteger(merged.errorRetries) || merged.errorRetries < 0) {
     merged.errorRetries = DEFAULT_CONFIG.errorRetries;
+  }
+  if (merged.backgroundAutomation !== "on" && merged.backgroundAutomation !== "paused") {
+    merged.backgroundAutomation = DEFAULT_CONFIG.backgroundAutomation;
   }
 
   // Treat allowed tools as additive so projects can extend, not erase, a user's global allowlist.

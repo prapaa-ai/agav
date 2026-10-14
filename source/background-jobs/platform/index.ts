@@ -9,6 +9,7 @@
 import { platform as osPlatform } from "node:os";
 import type { PlatformAdapter } from "../types.js";
 import { BackgroundJobError } from "../types.js";
+import { readProcessStartTimePosix } from "./posix-common.js";
 
 let cached: PlatformAdapter | null = null;
 
@@ -27,6 +28,38 @@ export async function getPlatformAdapter(): Promise<PlatformAdapter> {
   }
   cached = adapter;
   return adapter;
+}
+
+/**
+ * Liveness helpers used by stale-lock recovery (`storage/single-writer-lock.ts`).
+ * They are plain functions rather than `PlatformAdapter` members because the
+ * frozen adapter contract in types.ts has no lock-holder probe.
+ */
+
+/**
+ * False only on positive evidence that no process with `pid` exists
+ * (`kill(pid, 0)` → ESRCH). EPERM means the process exists but belongs to
+ * someone else, so it's alive. Any other error is treated as alive too: when
+ * in doubt, never recover the lock. Node implements signal 0 on every OS.
+ */
+export async function lockOwnerPidExists(pid: number): Promise<boolean> {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/**
+ * Best-effort process start time for PID-reuse detection, in the same format
+ * the POSIX lock writer records. Windows has no start-time probe without a
+ * native addon (see windows.ts limitations), so it returns `undefined` there,
+ * and callers must treat that as "cannot detect reuse".
+ */
+export async function readLockOwnerStartTime(pid: number): Promise<string | undefined> {
+  if (osPlatform() === "win32") return undefined;
+  return readProcessStartTimePosix(pid);
 }
 
 /** Test-only override so unit tests can inject a fake adapter without mocking node:os. */

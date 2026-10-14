@@ -46,7 +46,7 @@ import {
   type SessionPolicySnapshot,
   type StartJobRequest,
 } from "../types.js";
-import { resolveStorageRoot } from "../storage/paths.js";
+import { checkStorageVersion, ensureStorageVersionFile, resolveStorageRoot } from "../storage/paths.js";
 import { createFileRepositories } from "../storage/repositories.js";
 import { withCoordinatorLock } from "../storage/single-writer-lock.js";
 import { createAuthorizationService, type AuthorizationService } from "../authorization/service.js";
@@ -76,17 +76,50 @@ export interface CoordinatorExtensions {
   authorization: AuthorizationService;
   /** Resolved, canonicalized storage root this coordinator instance is bound to. */
   root: string;
+  /**
+   * Implementation of the optional `CoordinatorClient.findByRequestId`
+   * (plan item 0.5, D7). Always present on a real coordinator.
+   */
+  findByRequestId(requestId: string): Promise<JobSummary | undefined>;
+  /**
+   * Reconcile possibly-orphaned jobs against live evidence (for WP-08's
+   * startup reconcile, D5). Targets `running`/`unknown` jobs, plus
+   * `accepted`/`starting` jobs whose LaunchSpec was created more than
+   * `olderThanMs` ago (default 2 minutes). Per-job failures are skipped, not
+   * thrown; returns the summaries of the jobs that were reconciled.
+   */
+  reconcile(opts?: { olderThanMs?: number }): Promise<JobSummary[]>;
 }
 
 export type Coordinator = CoordinatorClient & CoordinatorExtensions;
 
+/**
+ * Bounded retry policy for coordinator-lock contention during admission
+ * (plan item 0.2). Fields are overridable for deterministic tests.
+ */
+export interface AdmissionRetryOptions {
+  /** Total attempts including the first (default 10). */
+  maxAttempts?: number;
+  /** Sleep source (default `setTimeout`-based). */
+  sleep?: (ms: number) => Promise<void>;
+  /** Uniform [0, 1) random source used for jitter (default `Math.random`). */
+  random?: () => number;
+}
+
 export interface CreateCoordinatorOptions {
   root?: string;
+  /** Test hook: override the admission lock-retry policy. */
+  admissionRetry?: AdmissionRetryOptions;
 }
 
 const START_POLL_WINDOW_MS = 2000;
 const START_POLL_INTERVAL_MS = 100;
 const WAIT_FALLBACK_POLL_INTERVAL_MS = 500;
+const ADMISSION_LOCK_MAX_ATTEMPTS = 10;
+const ADMISSION_LOCK_MIN_DELAY_MS = 20;
+const ADMISSION_LOCK_MAX_DELAY_MS = 100;
+/** D5: accepted/starting jobs younger than this are assumed to still be launching. */
+const DEFAULT_RECONCILE_OLDER_THAN_MS = 2 * 60 * 1000;
 
 function socketPathFor(root: string, jobId: string): string {
   return getSocketPath(root, socketNameForJob(jobId));
@@ -125,8 +158,56 @@ async function findJobByRequestId(repositories: Repositories, requestId: string)
   // contract (see types.ts); `repositories.jobs.list()` + filter is the
   // documented acceptable approach for Phase B's expected small job counts
   // (see task brief).
+  // `start()` returns the existing job for a reused requestId, so normally
+  // at most one record matches; if several ever do, prefer the newest
+  // (latest `startedAt`; records without one keep list order).
   const all = await repositories.jobs.list();
-  return all.find((job) => job.requestId === requestId);
+  let newest: JobRecord | undefined;
+  for (const job of all) {
+    if (job.requestId !== requestId) continue;
+    if (newest === undefined || (job.startedAt ?? "") > (newest.startedAt ?? "")) newest = job;
+  }
+  return newest;
+}
+
+/**
+ * Run `fn` under the coordinator lock, retrying on transient `lock-held`
+ * contention (plan item 0.2). Mirrors `updateJobRetryingOnLockHeld` below,
+ * but with a jittered 20–100 ms backoff and at most `maxAttempts` (10)
+ * attempts in total. Only `BackgroundJobError("lock-held")` raised while
+ * ACQUIRING the lock is retried. `withCoordinatorLock` only throws that
+ * before `fn` runs, and `fn` itself never runs more than once per successful
+ * acquisition, so the locked check-then-create stays atomic. Errors thrown by
+ * `fn` (capacity-exceeded, storage errors, ...) propagate immediately.
+ * When attempts are exhausted the last `lock-held` error is rethrown as-is.
+ */
+async function withCoordinatorLockRetrying<T>(
+  root: string,
+  fn: () => Promise<T>,
+  opts: AdmissionRetryOptions | undefined,
+): Promise<T> {
+  const maxAttempts = Math.max(1, opts?.maxAttempts ?? ADMISSION_LOCK_MAX_ATTEMPTS);
+  const sleepFn = opts?.sleep ?? sleep;
+  const random = opts?.random ?? Math.random;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let fnStarted = false;
+    try {
+      return await withCoordinatorLock(root, () => {
+        fnStarted = true;
+        return fn();
+      });
+    } catch (error) {
+      if (fnStarted || !(error instanceof BackgroundJobError) || error.code !== "lock-held") throw error;
+      lastError = error;
+      if (attempt < maxAttempts - 1) {
+        const span = ADMISSION_LOCK_MAX_DELAY_MS - ADMISSION_LOCK_MIN_DELAY_MS;
+        const jitter = Math.min(span, Math.max(0, Math.floor(random() * (span + 1))));
+        await sleepFn(ADMISSION_LOCK_MIN_DELAY_MS + jitter);
+      }
+    }
+  }
+  throw lastError;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -190,6 +271,11 @@ async function tryIpcRequest(socketPath: string, request: unknown, timeoutMs = 5
 
 export async function createCoordinator(opts?: CreateCoordinatorOptions): Promise<Coordinator> {
   const root = await resolveStorageRoot(opts?.root);
+  // 0.10 (D6): refuse a store stamped by a newer build (`store-version-newer`)
+  // before touching it, then stamp the VERSION marker if absent. Never
+  // rewrites an existing marker.
+  await checkStorageVersion(root);
+  await ensureStorageVersionFile(root);
   const repositories = createFileRepositories(root);
   const authorizationService = createAuthorizationService(root);
   const mailboxService = createMailboxService(repositories);
@@ -268,6 +354,10 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
         // are not negotiated at this layer in Phase B.
         ownershipScope: capabilities.strongestOwnershipScope,
         envInherit: request.envInherit,
+        // 0.8 (D3): explicit env values / partial limits forwarded by callers
+        // such as the schedule engine. Absent → identical spec to before.
+        env: request.env,
+        limits: request.limits,
         headless: request.headless,
         canonicalizeCwd: (path) => adapter.canonicalizePath(path),
       });
@@ -302,7 +392,9 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
 
       // (e) Admission: capacity check + job creation under the coordinator
       // lock, so check-then-create is atomic against concurrent admissions.
-      const jobId = await withCoordinatorLock(root, async () => {
+      // Transient lock contention is retried with bounded jittered backoff
+      // (0.2); the whole locked callback is retried, never split.
+      const jobId = await withCoordinatorLockRetrying(root, async () => {
         const reservation = await reserveCapacity(repositories, root, spec.limits);
         if (!reservation.granted) {
           throw new BackgroundJobError(
@@ -331,7 +423,7 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
         };
         await repositories.jobs.create(record);
         return newJobId;
-      });
+      }, opts?.admissionRetry);
 
       // (f) Launch OUTSIDE the coordinator lock — never hold a lock while
       // spawning a process.
@@ -594,6 +686,36 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
     async capabilities(): Promise<PlatformCapabilities> {
       const adapter = await getPlatformAdapter();
       return adapter.detectCapabilities();
+    },
+
+    async findByRequestId(requestId: string): Promise<JobSummary | undefined> {
+      const record = await findJobByRequestId(repositories, requestId);
+      return record === undefined ? undefined : toJobSummary(record);
+    },
+
+    async reconcile(reconcileOpts?: { olderThanMs?: number }): Promise<JobSummary[]> {
+      const olderThanMs = reconcileOpts?.olderThanMs ?? DEFAULT_RECONCILE_OLDER_THAN_MS;
+      const cutoff = Date.now() - olderThanMs;
+      const results: JobSummary[] = [];
+      for (const record of await repositories.jobs.list()) {
+        try {
+          let eligible = record.state === "running" || record.state === "unknown";
+          if (record.state === "accepted" || record.state === "starting") {
+            // JobRecord has no creation timestamp; the LaunchSpec persisted
+            // just before the record carries `createdAt`. A missing or
+            // unparseable spec timestamp counts as old (orphaned).
+            const spec = await repositories.specs.get(record.requestId);
+            const createdMs = spec === undefined ? Number.NaN : Date.parse(spec.createdAt);
+            eligible = Number.isNaN(createdMs) || createdMs <= cutoff;
+          }
+          if (!eligible) continue;
+          const { summary } = await reconcileAndSummarize(record.jobId);
+          results.push(summary);
+        } catch {
+          // Best-effort sweep: one unreadable/contended job must not stop the rest.
+        }
+      }
+      return results;
     },
 
     // --- Extensions beyond the frozen CoordinatorClient interface ---

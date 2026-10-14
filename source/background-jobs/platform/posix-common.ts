@@ -11,6 +11,7 @@
  */
 import { constants, promises as fs } from "node:fs";
 import { realpath } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -23,18 +24,37 @@ export async function canonicalizePathPosix(path: string): Promise<string> {
 }
 
 /**
+ * The current process's start time never changes, so read it once per
+ * process (on macOS `readProcessStartTimePosix` spawns `ps`, which would
+ * otherwise run on every lock acquisition).
+ */
+let ownStartTime: Promise<string | undefined> | undefined;
+function readOwnProcessStartTime(): Promise<string | undefined> {
+  ownStartTime ??= readProcessStartTimePosix(process.pid).catch(() => undefined);
+  return ownStartTime;
+}
+
+/**
  * Exclusive lock using O_EXCL file creation — a stable lock object that is
  * never deleted/replaced while held (solution.md §7: "Stable lock objects
  * must not be deleted/replaced while held. A stale timestamp is not
  * permission to steal ownership.").
  *
- * The lock file contains the holder's pid and an ISO timestamp purely for
- * diagnostics; staleness is never used to seize the lock. Only an explicit
- * recovery flow (T12) may remove an abandoned lock after independently
- * verifying the owner process is gone.
+ * The lock file records the holder's identity: `pid`, `processStartTime`
+ * (from `readProcessStartTimePosix`, when readable) and `hostname`, plus an
+ * ISO `acquiredAt` timestamp purely for diagnostics. Staleness (age) is
+ * never used to seize the lock. This primitive itself never removes another
+ * holder's lock: on EEXIST it throws `lock-held`. Recovery lives one layer
+ * up (`storage/single-writer-lock.ts`, `isLockOwnerGone`) and only moves an
+ * abandoned lock aside after independently verifying the owner process is
+ * gone — same host, and the pid is dead or has been reused (start time
+ * differs). A missing/corrupt holder record is never recovered.
  */
 export async function acquireExclusiveLockPosix(lockPath: string): Promise<() => Promise<void>> {
   await fs.mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+  // Read before the O_EXCL create so the window in which the lock file exists
+  // but is still empty (which readers treat as "unverifiable, held") is short.
+  const processStartTime = await readOwnProcessStartTime();
   let handle: fs.FileHandle;
   try {
     handle = await fs.open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
@@ -47,7 +67,14 @@ export async function acquireExclusiveLockPosix(lockPath: string): Promise<() =>
     throw error;
   }
   try {
-    await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }));
+    await handle.writeFile(
+      JSON.stringify({
+        pid: process.pid,
+        acquiredAt: new Date().toISOString(),
+        ...(processStartTime !== undefined ? { processStartTime } : {}),
+        hostname: hostname(),
+      }),
+    );
   } finally {
     await handle.close();
   }

@@ -36,14 +36,48 @@ const USAGE =
   "  /job                                            Open manager (usage in headless mode)\n" +
   "  /job list                                       Show all known background jobs\n" +
   "  /job poll <id>                                  Show the current state of one job\n" +
-  "  /job log <id> [maxBytes]                        Show captured output of one job\n" +
+  "  /job log <id> [--stderr] [--tail N]             Show captured output of one job (first 64 KiB, or last N bytes)\n" +
   "  /job stop <id>                                  Request termination of one job\n" +
   "  /job schedule list                              Show all registered schedules\n" +
   '  /job schedule create "<cron>" <timezone> <cmd>  Register a recurring background command\n' +
   "  /job schedule revoke <scheduleId>               Revoke a schedule by exact id (does not stop already-running jobs)\n" +
   "  /job capabilities                               Show platform capability/status report\n\n" +
   'Background jobs must be enabled via "backgroundJobsEnabled": true in your agav config.\n' +
-  "Note: creating a schedule only registers it — no periodic timer in this delivery automatically triggers scheduled launches yet.";
+  "Note: schedules are checked about every 30 seconds, but only while an interactive agav session with background jobs enabled is running. Nothing triggers them while agav is closed.";
+
+const LOG_USAGE = "Usage: /job log <id> [--stderr] [--tail N]";
+
+/**
+ * Parses the arguments after `/job log <id>`. `--stderr` picks the stream and
+ * `--tail N` (or `--tail=N`) asks for the last N bytes. A bare number is still
+ * accepted as the old `[maxBytes]` form. It's a deprecated alias of `--tail`.
+ */
+function parseLogArgs(args: string[]): { stream: "stdout" | "stderr"; maxBytes?: number } | { error: string } {
+  let stream: "stdout" | "stderr" = "stdout";
+  let tail: number | undefined;
+  let legacyMaxBytes: number | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--stderr") {
+      stream = "stderr";
+    } else if (arg === "--stdout") {
+      stream = "stdout";
+    } else if (arg === "--tail" || arg.startsWith("--tail=")) {
+      const raw = arg === "--tail" ? args[++i] : arg.slice("--tail=".length);
+      const value = raw === undefined ? NaN : Number(raw);
+      if (!Number.isInteger(value) || value <= 0) {
+        return { error: `--tail needs a positive whole number of bytes. ${LOG_USAGE}` };
+      }
+      tail = value;
+    } else if (!arg.startsWith("--")) {
+      const value = Number(arg);
+      legacyMaxBytes = Number.isFinite(value) ? value : undefined;
+    } else {
+      return { error: `Unknown option "${arg}". ${LOG_USAGE}` };
+    }
+  }
+  return { stream, maxBytes: tail ?? legacyMaxBytes };
+}
 
 function formatList(summaries: JobSummary[]): string {
   if (summaries.length === 0) return "No background jobs found.";
@@ -99,11 +133,12 @@ export const jobCommand: SlashCommand = {
 
       if (action === "log") {
         const id = parts[1];
-        if (!id) return message("Usage: /job log <id> [maxBytes]");
-        const maxBytes = parts[2] ? Number(parts[2]) : undefined;
-        const tail = await coordinator.log(id, { maxBytes: Number.isFinite(maxBytes) ? maxBytes : undefined });
+        if (!id) return message(LOG_USAGE);
+        const parsed = parseLogArgs(parts.slice(2));
+        if ("error" in parsed) return message(parsed.error);
+        const tail = await coordinator.log(id, { maxBytes: parsed.maxBytes, stream: parsed.stream });
         const note = tail.truncated ? "\n[output truncated]" : "";
-        return message((tail.text || "(no output captured)") + note);
+        return message((tail.text || `(no ${parsed.stream} output captured)`) + note);
       }
 
       if (action === "stop") {

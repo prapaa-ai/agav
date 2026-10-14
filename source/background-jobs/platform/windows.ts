@@ -62,6 +62,7 @@ import { promises as fs } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname } from "node:path";
+import { hostname } from "node:os";
 import {
   BackgroundJobError,
   type PlatformAdapter,
@@ -159,18 +160,44 @@ async function canonicalizePath(path: string): Promise<string> {
  * signal, matching the POSIX adapters' lock semantics so storage code (T05)
  * can treat all platforms uniformly through this one `acquireLock` contract.
  *
- * Windows sharing-violation retries (e.g. antivirus/indexer holding a
- * transient handle) are explicitly NOT handled here — solution.md §7
- * assigns "Handle Windows sharing violations with bounded retries" to the
- * storage/publication layer (T05), not to this lock primitive. This
- * function either atomically creates the lock or fails; retry policy around
- * transient Windows-specific failures belongs one layer up.
+ * The lock file records `{pid, acquiredAt, hostname}`. There is no
+ * `processStartTime`: Node exposes no Windows process creation time without
+ * a native addon (see LIMITATIONS). On EEXIST this primitive never removes
+ * another holder's lock; it throws `lock-held`. Verified-gone recovery lives
+ * in `storage/single-writer-lock.ts`. On Windows it can only prove "gone"
+ * when the pid no longer exists, so a reused pid keeps the lock held. That
+ * fails safe, and the lock is never seized by age.
+ *
+ * Windows sharing violations (an antivirus scanner or indexer briefly holding
+ * a handle, or a lock file still pending deletion after a release) show up
+ * as EBUSY/EPERM/EACCES. Both the exclusive create and the release unlink
+ * retry those with bounded exponential backoff (plan item 0.1). If they
+ * persist, the original error is rethrown from acquire, never translated
+ * into success or `lock-held`.
  */
+const SHARING_VIOLATION_CODES: ReadonlySet<string> = new Set(["EBUSY", "EPERM", "EACCES"]);
+const SHARING_VIOLATION_RETRY_DELAYS_MS: readonly number[] = [10, 25, 50, 100, 200];
+
+async function withSharingViolationRetry<T>(op: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await op();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const delay = SHARING_VIOLATION_RETRY_DELAYS_MS[attempt];
+      if (code === undefined || !SHARING_VIOLATION_CODES.has(code) || delay === undefined) throw error;
+      await sleep(delay);
+    }
+  }
+}
+
 async function acquireLock(path: string): Promise<() => Promise<void>> {
   await fs.mkdir(dirname(path), { recursive: true });
   let handle: fs.FileHandle;
   try {
-    handle = await fs.open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+    handle = await withSharingViolationRetry(() =>
+      fs.open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY),
+    );
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
     if (err.code === "EEXIST") {
@@ -179,7 +206,9 @@ async function acquireLock(path: string): Promise<() => Promise<void>> {
     throw error;
   }
   try {
-    await handle.writeFile(JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }));
+    await handle.writeFile(
+      JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString(), hostname: hostname() }),
+    );
   } finally {
     await handle.close();
   }
@@ -187,7 +216,7 @@ async function acquireLock(path: string): Promise<() => Promise<void>> {
   return async () => {
     if (released) return;
     released = true;
-    await fs.unlink(path).catch(() => {});
+    await withSharingViolationRetry(() => fs.unlink(path)).catch(() => {});
   };
 }
 

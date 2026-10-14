@@ -11,6 +11,11 @@
  * Ownership: this module belongs to the integration owner (T01). Other tasks
  * MUST NOT edit it directly — request a versioned contract change instead.
  *
+ * Contract change log: additive optional members (StartJobRequest.env/limits,
+ * CoordinatorClient.findByRequestId, error code "store-version-newer") per
+ * docs/design/job-workflow-implementation-plan.md Phase 0 (WP-01). No
+ * LaunchSpec/JobRecord or spec-hash input changes.
+ *
  * Module boundaries (no reverse dependencies):
  *   platform/*        -> implements PlatformAdapter, no imports from storage/ipc/etc.
  *   storage/*         -> consumes platform primitives only
@@ -428,7 +433,12 @@ export type BackgroundJobErrorCode =
   | "storage-unavailable"
   | "lock-held"
   | "recovery-required"
-  | "unsupported-platform";
+  | "unsupported-platform"
+  /**
+   * On-disk store VERSION is newer than BACKGROUND_JOBS_STORAGE_VERSION.
+   * Additive contract change per docs/design/job-workflow-implementation-plan.md Phase 0 (0.10).
+   */
+  | "store-version-newer";
 
 export class BackgroundJobError extends Error {
   constructor(public readonly code: BackgroundJobErrorCode, message: string) {
@@ -448,6 +458,12 @@ export interface StartJobRequest {
   envInherit?: string[];
   isolation: IsolationPolicy;
   headless?: boolean;
+  // Additive, optional contract change per
+  // docs/design/job-workflow-implementation-plan.md Phase 0 (0.8, decision D3).
+  /** Explicit env values overlaid on the minimal inherited env (distinct from `envInherit`, a list of names). */
+  env?: Record<string, string>;
+  /** Partial limits merged over DEFAULT_RESOURCE_LIMITS during launch-spec normalization. */
+  limits?: Partial<ResourceLimits>;
 }
 
 export interface JobSummary {
@@ -480,4 +496,10 @@ export interface CoordinatorClient {
   stop(jobIdOrPrefix: string, session: SessionPolicySnapshot): Promise<JobSummary>;
   cleanup(jobIdOrPrefix: string, session: SessionPolicySnapshot): Promise<void>;
   capabilities(): Promise<PlatformCapabilities>;
+  /**
+   * Look up a job by its stable request id. Optional — callers must
+   * feature-check. Additive contract change per
+   * docs/design/job-workflow-implementation-plan.md Phase 0 (0.5, decision D7).
+   */
+  findByRequestId?(requestId: RequestId): Promise<JobSummary | undefined>;
 }
