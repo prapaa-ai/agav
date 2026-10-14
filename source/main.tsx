@@ -41,7 +41,7 @@ const KNOWN_FLAGS = [
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
   "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--trajectory",
-  "--name",
+  "--name", "--search",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -234,6 +234,8 @@ export function parseArgs(argv: string[]) {
       flags.maxTurns = parseMaxTurns(argv[++i] ?? "");
     } else if (arg.startsWith("--max-turns=")) {
       flags.maxTurns = parseMaxTurns(arg.slice("--max-turns=".length));
+    } else if (arg === "--search") {
+      flags.search = true;
     } else if (arg === "update" && !subcommandSeen) {
       flags.update = true;
       subcommandSeen = true;
@@ -337,7 +339,7 @@ export async function runPipeMode(
     return 1;
   }
 
-  const toolRegistry = createToolRegistry();
+  const toolRegistry = createToolRegistry(config);
   // Headless execution has no session plan creation or plan context injection.
   // Do not advertise an updater that cannot work (or mutate another session's plan).
   toolRegistry.unregister("update_plan");
@@ -591,6 +593,7 @@ export async function main() {
                          Shared allowance for subagents, native agents, and skills;
                          continuations and retries retain it, new prompts reset it.
                          Tool execution itself does not spend an additional turn.
+    --search             Enable web search tool for this session
 
   Agent Commands
     $ agav agents list             List installed agents
@@ -731,6 +734,9 @@ export async function main() {
       process.exit(1);
     }
     config.effort = flags.effort;
+  }
+  if (flags.search === true) {
+    config.search = true;
   }
 
   if (!config.systemPrompt) {
