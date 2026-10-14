@@ -10,6 +10,7 @@
  * storage + authorization + coordinator client API").
  */
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 
 import {
   BackgroundJobError,
@@ -98,8 +99,12 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
       const scheduleId = randomUUID();
       // Validate timezone before prompting or persisting an approval.
       new Intl.DateTimeFormat("en", { timeZone: input.timezone });
+      // Resolve cwd BEFORE approval so the grant hash covers the absolute
+      // directory, not a relative one that would resolve differently when a
+      // later trigger runs from another project.
       const launchSpecTemplate = {
         ...input.launchSpecTemplate,
+        cwd: resolve(input.launchSpecTemplate.cwd),
         recurrence: { scheduleId, scheduleVersion: 1, cron: input.cron, timezone: input.timezone },
       };
       const decision = await authorizationService.authorize(
@@ -127,13 +132,9 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
 
     // Per solution.md §4/§11: revocation blocks future triggers; it does
     // NOT touch any existing reserved/in-flight occurrence or running job.
-    // This is a simple read-then-write with no extra locking for this
-    // first cut (acceptable simplification per the task brief) — a
-    // concurrent createSchedule/revokeSchedule race on the SAME scheduleId
-    // is not expected (schedule mutation is not a high-concurrency path),
-    // and worst case a lost update here only delays an already-intended
-    // revocation until the next explicit retry, never resurrects a
-    // previously revoked schedule.
+    // Authorization may block on a human prompt, so the schedule is re-read
+    // before committing and the revocation is applied to that fresh record:
+    // revoke always wins over a concurrent pause/resume.
     async revokeSchedule(scheduleId, session) {
       const schedule = await repositories.schedules.get(scheduleId);
       if (schedule === undefined) {
@@ -143,8 +144,12 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
       if (!decision.allowed) {
         throw new BackgroundJobError("authorization-denied", decision.reason);
       }
+      const current = await repositories.schedules.get(scheduleId);
+      if (current === undefined) {
+        throw new BackgroundJobError("not-found", `No schedule found for scheduleId "${scheduleId}".`);
+      }
       // Clearing the pause marker is what makes revocation permanent.
-      await repositories.schedules.put({ ...schedule, enabled: false, pausedAt: undefined });
+      await repositories.schedules.put({ ...current, enabled: false, pausedAt: undefined });
     },
 
     async listSchedules() {
@@ -176,7 +181,20 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
         const grant = await authorizationService.revalidateBeforeDispatch(schedule.grantId, schedule.launchSpecTemplate);
         if (!grant.allowed) throw new BackgroundJobError("authorization-denied", grant.reason);
       }
-      const updated: ScheduleRecord = { ...schedule, enabled, pausedAt: enabled ? undefined : new Date().toISOString() };
+      // Authorization/revalidation may have blocked on a human prompt; recheck
+      // the stored record so a concurrent revoke (or another pause/resume)
+      // is never overwritten with the stale snapshot read above.
+      const current = await repositories.schedules.get(scheduleId);
+      if (current === undefined) {
+        throw new BackgroundJobError("not-found", `No schedule found for scheduleId "${scheduleId}".`);
+      }
+      if (isScheduleRevoked(current)) {
+        throw new BackgroundJobError("authorization-denied", "This schedule was revoked and cannot be re-enabled. Create a new schedule instead.");
+      }
+      if (current.enabled !== schedule.enabled || current.pausedAt !== schedule.pausedAt) {
+        throw new BackgroundJobError("authorization-denied", "This schedule was changed by another session while approval was pending. Retry the pause/resume.");
+      }
+      const updated: ScheduleRecord = { ...current, enabled, pausedAt: enabled ? undefined : new Date().toISOString() };
       await repositories.schedules.put(updated);
       return updated;
     },
@@ -297,10 +315,11 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
         // supervisor/launcher path (module-boundary rule in types.ts). The
         // schedule's grant already represents consent for this exact spec
         // (established at createSchedule time and reconfirmed just above
-        // via revalidateBeforeDispatch); a synthetic auto-accept session is
-        // used here because schedule triggering is not tied to any one
-        // human's live interactive session state beyond the
-        // restrictive-policy check already performed separately above.
+        // via revalidateBeforeDispatch). `scheduleGrant` makes the
+        // coordinator launch from that exact approved template and
+        // revalidate the existing grant rather than minting a new one under
+        // the session below, which is deliberately non-minting ("ask" with
+        // no confirmation handler) so nothing can be approved through it.
         try {
           await coordinator.start(
             {
@@ -310,8 +329,9 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
               isolation: schedule.launchSpecTemplate.isolation,
               env: schedule.launchSpecTemplate.env,
               limits: schedule.launchSpecTemplate.limits,
+              scheduleGrant: { grantId: schedule.grantId, template: schedule.launchSpecTemplate },
             },
-            { permissionMode: "auto-accept", headlessApprovedActions: [] },
+            { permissionMode: "ask", headlessApprovedActions: [] },
           );
           await repositories.occurrences.update(record!.occurrenceId, { status: "dispatched" });
           results.push({ scheduleId: schedule.scheduleId, outcome: "dispatched" });

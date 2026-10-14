@@ -25,6 +25,8 @@ export interface ToolContext {
   signal?: AbortSignal;
   /** Trusted host policy; never populated from model arguments. */
   backgroundPolicy?: import("../background-jobs/types.js").SessionPolicySnapshot;
+  /** Trusted host fact: true when no human can be asked (print/run mode). Never populated from model arguments. */
+  headless?: boolean;
   /** Parent context for an explicitly dispatched skill, separate from arguments. */
   conversation?: import("../providers/types.js").Message[];
   systemPrompt?: string;

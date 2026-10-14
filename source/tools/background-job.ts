@@ -18,8 +18,10 @@
  * per solution.md §4, but there is no per-call timeout and no sandboxing by
  * default. Jobs persist across the current turn and session.
  *
- * Phase-B limitation: no headless consent flow exists yet, so the
- * `SessionPolicySnapshot` built here always has `headlessApprovedActions: []`.
+ * Headless (print/run) mode: the host sets `context.headless`; start requests
+ * carry `headless: true` so the coordinator enforces the headless consent gate.
+ * No headless grant source exists yet, so the `SessionPolicySnapshot` built
+ * here always has `headlessApprovedActions: []` and headless writes are denied.
  */
 import { platform as osPlatform } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -27,9 +29,11 @@ import { randomUUID } from "node:crypto";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import { loadConfig } from "../config/config.js";
 import { getSharedCoordinator, getSharedScheduleEngine } from "../background-jobs-integration.js";
+import { isHeadlessActionApproved } from "../background-jobs/authorization/policy.js";
 import {
   BackgroundJobError,
   DEFAULT_RESOURCE_LIMITS,
+  type GrantAction,
   type InvocationSpec,
   type JobSummary,
   type LaunchSpec,
@@ -211,6 +215,17 @@ export const backgroundJobTool: ToolDefinition = {
 
     const session = context?.backgroundPolicy ?? sessionPolicyFromConfig(config.permissionMode);
 
+    // The coordinator/schedule engine only apply the headless consent gate where
+    // a request carries `headless` (start). For the other write actions enforce
+    // the same rule here: with no human to ask, only an explicitly pre-approved
+    // action may proceed. `context.headless` is host-supplied, never model input.
+    const headlessGate = (grantAction: GrantAction): ToolResult | undefined =>
+      context?.headless === true && !isHeadlessActionApproved(grantAction, session)
+        ? errorResult(
+            `This action requires confirmation; it was not approved. (Headless execution requires an explicit applicable grant for "${grantAction}"; none is present.)`,
+          )
+        : undefined;
+
     try {
       const coordinator = await getSharedCoordinator();
 
@@ -235,6 +250,8 @@ export const backgroundJobTool: ToolDefinition = {
             // expose an isolation-selection UI; the same trust boundary as
             // run_command already applies (same OS user).
             isolation: { backend: "none", required: false },
+            // Trusted host fact (print/run mode), never from model input.
+            ...(context?.headless === true ? { headless: true } : {}),
           };
           const summary = await coordinator.start(request, session);
           return {
@@ -293,6 +310,8 @@ export const backgroundJobTool: ToolDefinition = {
         case "stop": {
           const jobId = typeof input.jobId === "string" ? input.jobId : undefined;
           if (!jobId) return errorResult('Missing required "jobId" parameter for action:"stop".');
+          const headlessDenied = headlessGate("stop");
+          if (headlessDenied) return headlessDenied;
           const summary = await coordinator.stop(jobId, session);
           return { output: formatSummary(summary), isError: false };
         }
@@ -310,6 +329,8 @@ export const backgroundJobTool: ToolDefinition = {
           if (!timezone || timezone.trim() === "") {
             return errorResult('Missing required "timezone" parameter for action:"schedule-create".');
           }
+          const headlessDenied = headlessGate("schedule-create");
+          if (headlessDenied) return headlessDenied;
           const launchSpecTemplate: Omit<LaunchSpec, "requestId" | "createdAt"> = {
             invocation: { mode: "shell", interpreter: defaultShellInterpreter(), commandText: command },
             cwd: typeof input.cwd === "string" && input.cwd.trim() !== "" ? input.cwd : process.cwd(),
@@ -350,6 +371,8 @@ export const backgroundJobTool: ToolDefinition = {
           const schedules = await scheduleEngine.listSchedules();
           const match = schedules.find((s) => s.scheduleId === scheduleId);
           if (!match) return errorResult(`No schedule found with id "${scheduleId}".`);
+          const headlessDenied = headlessGate("schedule-revoke");
+          if (headlessDenied) return headlessDenied;
           await scheduleEngine.revokeSchedule(scheduleId, session);
           return {
             output:

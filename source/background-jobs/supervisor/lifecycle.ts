@@ -63,7 +63,7 @@ import type {
   StopControlState,
 } from "../types.js";
 import { BackgroundJobError, isTerminalLifecycle } from "../types.js";
-import { getPlatformAdapter } from "../platform/index.js";
+import { getPlatformAdapter, ownedScopeHasLiveMembers } from "../platform/index.js";
 import { buildShellInvocation } from "../launch-spec/shell.js";
 import { SegmentedLogWriter } from "../logging/segment-writer.js";
 import { buildCompletionExcerpt, readCursor, readTail } from "../logging/segment-reader.js";
@@ -92,6 +92,12 @@ export const SUPERVISOR_IDLE_EXIT_MS = 5 * 60 * 1000;
 
 /** How often the idle-exit timer re-checks elapsed-since-last-activity. */
 const IDLE_EXIT_CHECK_INTERVAL_MS = 30 * 1000;
+
+/**
+ * How often the owned process group is re-probed after the direct child has
+ * exited while descendants are still alive (see `waitForOwnedScopeToDrain`).
+ */
+const OWNED_SCOPE_POLL_INTERVAL_MS = 500;
 
 /** Bytes of stdout/stderr retained in a completion event's excerpt. */
 const COMPLETION_EXCERPT_BYTES = 8 * 1024;
@@ -150,6 +156,15 @@ export class JobSupervisor {
   /** Signal our own stop logic sent, used to disambiguate a race at child exit. */
   private stopSignalSent: NodeJS.Signals | undefined;
   private started = false;
+  /** Set by teardown so a pending owned-scope drain wait gives up without publishing. */
+  private scopeWaitCancelled = false;
+  /** Wakes the pending owned-scope poll sleep early (teardown only). */
+  private cancelScopeWaitSleep: (() => void) | undefined;
+  /** Resolves once finalization starts waiting for surviving descendants. */
+  private markScopeDrainPending: () => void = () => {};
+  private readonly scopeDrainPending: Promise<void> = new Promise<void>((resolve) => {
+    this.markScopeDrainPending = resolve;
+  });
 
   private readonly terminalWaiters: Array<(job: JobRecord | undefined) => void> = [];
   private terminalJob: JobRecord | undefined;
@@ -351,7 +366,21 @@ export class JobSupervisor {
 
     publishedRunning = true;
     this.workloadPublished = true;
-    if (earlyClose) await this.finalizeChild(earlyClose.code, earlyClose.signal);
+    if (earlyClose) {
+      // Normally this settles once the terminal state is published. If the
+      // direct child exited but descendants survive, finalization keeps
+      // waiting for them; start() must not block on that (a stop request or
+      // poll must still be serviceable), so it returns as soon as that wait
+      // begins and the finalization continues as an owned background task.
+      const finalization = this.finalizeChild(earlyClose.code, earlyClose.signal);
+      finalization.catch(() => {});
+      const settled = await Promise.race([
+        finalization.then(() => true),
+        this.scopeDrainPending.then(() => false),
+      ]);
+      if (!settled) this.runBackground(finalization);
+      else await finalization;
+    }
     if (this.stopRequested) await this.executeRequestedStop();
 
     // Fast close events are deferred until running is persisted; serialization
@@ -484,8 +513,57 @@ export class JobSupervisor {
     void error; // message already implicit in the confirmed "failed" state; nothing else to attach it to here.
   }
 
+  /**
+   * The direct child's exit does not mean the owned process group has
+   * finished (`sleep 300 & exit 0` leaves a live descendant). Before any
+   * terminal state is published, probe the owned scope; while members survive,
+   * keep the job non-terminal ("running" is left untouched) and keep stop
+   * machinery usable: `requestStop`/`executeRequestedStop` signal the whole
+   * group via the adapter (TERM -> grace -> KILL), independent of the exited
+   * child. Polls at a modest interval (no busy loop). Resolves true once the
+   * group is empty (or the probe is inconclusive/unsupported, which preserves
+   * the previous direct-child-only behaviour), false if torn down first.
+   */
+  private async waitForOwnedScopeToDrain(): Promise<boolean> {
+    const pid = this.child?.pid;
+    if (pid === undefined) return true;
+    const handle = String(pid);
+    const alive = async (): Promise<boolean> => {
+      try {
+        return await ownedScopeHasLiveMembers(handle, this.workloadOwnershipScope);
+      } catch {
+        return false; // inconclusive probe: fall back to prior behaviour
+      }
+    };
+    if (!(await alive())) return true;
+    this.markScopeDrainPending();
+    for (;;) {
+      // On teardown, one last probe: if the group has just emptied, still
+      // publish the terminal state; only give up when members really survive.
+      if (this.scopeWaitCancelled) return !(await alive());
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          this.cancelScopeWaitSleep = undefined;
+          resolve();
+        }, OWNED_SCOPE_POLL_INTERVAL_MS);
+        timer.unref();
+        this.cancelScopeWaitSleep = () => {
+          clearTimeout(timer);
+          this.cancelScopeWaitSleep = undefined;
+          resolve();
+        };
+      });
+      if (!(await alive())) return true;
+      if (this.scopeWaitCancelled) return false;
+    }
+  }
+
   private async handleChildExit(code: number | null, signal: NodeJS.Signals | null): Promise<void> {
     const dir = logsDir(this.root, this.jobId);
+
+    // Do not publish a terminal state while descendants in the owned process
+    // group are still running (see `waitForOwnedScopeToDrain`).
+    if (!(await this.waitForOwnedScopeToDrain())) return;
 
     // Determine outcome. Per solution.md §6: a normal exit (code !== null)
     // is a legitimate completion even if a stop was in flight, UNLESS the
@@ -793,6 +871,10 @@ export class JobSupervisor {
 
   /** Shared teardown steps used by both `shutdown()` (test/cleanup helper) and Fix A's self-exit path. */
   private async teardown(): Promise<void> {
+    // A pending wait for surviving descendants must not block teardown; the
+    // job simply stays non-terminal on disk (recovery reconciles it).
+    this.scopeWaitCancelled = true;
+    this.cancelScopeWaitSleep?.();
     // Drain any job-record update still in flight (e.g. a `close`/terminal
     // update queued just before shutdown was requested) before tearing down
     // resources, so callers (notably tests removing their temp directory

@@ -3,13 +3,18 @@ import { useInput } from "../ink/index.js";
 import { ResourceManager, type ResourceAction } from "./resource-manager.js";
 import { createJobsAdapter, createJobSchedulesAdapter, jobCapabilities, stopJob } from "../resources/job-adapters.js";
 import type { GrantAction, SessionPolicySnapshot } from "../background-jobs/types.js";
+import {
+  backgroundConfirmationLines,
+  describeBackgroundConfirmation,
+  type BackgroundConfirmSpec,
+} from "./background-confirmation.js";
 
 export interface JobsTUIProps {
   onExit: () => void;
   permissionMode: SessionPolicySnapshot["permissionMode"];
 }
 
-type ConfirmSpec = Parameters<NonNullable<SessionPolicySnapshot["confirmBackgroundAction"]>>[1];
+type ConfirmSpec = BackgroundConfirmSpec;
 
 interface PendingConfirmation {
   action: GrantAction;
@@ -17,18 +22,17 @@ interface PendingConfirmation {
   resolve(ok: boolean): void;
 }
 
-const ACTION_LABELS: Partial<Record<GrantAction, string>> = {
-  stop: "Stop running job",
-  "schedule-revoke": "Stop future runs of schedule",
-  "schedule-create": "Allow schedule to launch",
-  start: "Start job",
-};
+const CONFIRM_CONTROLS = "y: Approve · n/ESC: Deny";
 
+/** One-line summary; the manager shows only this when it cannot render `confirmationDetails`. */
 function confirmationPrompt({ action, spec }: PendingConfirmation): string {
-  const command = spec.invocation.mode === "shell"
-    ? spec.invocation.commandText
-    : [spec.invocation.executable, ...spec.invocation.args].join(" ");
-  return `${ACTION_LABELS[action] ?? action}: ${command}? y: Approve · n/ESC: Deny`;
+  const info = describeBackgroundConfirmation(action, spec);
+  return `${info.label}: ${info.command}? ${CONFIRM_CONTROLS}`;
+}
+
+/** Full terms (cwd, isolation, schedule, reuse) with the approval keys kept on their own, always-visible line. */
+function confirmationDetails({ action, spec }: PendingConfirmation): { lines: string[]; controls: string } {
+  return { lines: backgroundConfirmationLines(describeBackgroundConfirmation(action, spec)), controls: CONFIRM_CONTROLS };
 }
 
 /** Jobs and their schedules share one manager; Tab switches like /skills marketplace. */
@@ -61,5 +65,5 @@ export function JobsTUI({ onExit, permissionMode }: JobsTUIProps) {
     ]),
     { key: "c", label: "Capabilities", run: async () => ({ detail: await jobCapabilities() }) },
   ];
-  return <ResourceManager key={String(schedules)} adapter={schedules ? scheduleAdapter : jobs} onExit={onExit} actions={actions} prompt={pending ? confirmationPrompt(pending) : undefined} />;
+  return <ResourceManager key={String(schedules)} adapter={schedules ? scheduleAdapter : jobs} onExit={onExit} actions={actions} prompt={pending ? confirmationPrompt(pending) : undefined} promptDetails={pending ? confirmationDetails(pending) : undefined} />;
 }

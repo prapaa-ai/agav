@@ -464,6 +464,15 @@ export interface StartJobRequest {
   env?: Record<string, string>;
   /** Partial limits merged over DEFAULT_RESOURCE_LIMITS during launch-spec normalization. */
   limits?: Partial<ResourceLimits>;
+  /**
+   * Additive, optional: dispatch under an already-approved schedule grant.
+   * When present the coordinator revalidates `grantId` against `template`
+   * (the exact stored, approved spec) instead of authorizing under the
+   * caller's session, and launches from `template` (invocation, cwd, env,
+   * isolation, limits, recurrence, headless) rather than the request's own
+   * fields.
+   */
+  scheduleGrant?: { grantId: GrantId; template: Omit<LaunchSpec, "requestId" | "createdAt"> };
 }
 
 export interface JobSummary {
@@ -474,6 +483,9 @@ export interface JobSummary {
   startedAt?: string;
   endedAt?: string;
   exitCode?: number | null;
+  /** Launch command text and working directory, filled by list()/poll() from the persisted LaunchSpec when readable. */
+  command?: string;
+  cwd?: string;
 }
 
 export interface LogTail {

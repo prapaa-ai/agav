@@ -107,7 +107,11 @@ export function createAuthorizationService(root: string): AuthorizationService {
 
       // Confirm only the normalized, consent-relevant specification. The
       // callback is supplied by the host, not by the model/tool arguments.
-      if (session.permissionMode === "ask" && !opts?.headless && session.confirmBackgroundAction) {
+      // deny-writes still allows explicit confirmation for the actions it does
+      // not block (stop/cleanup/schedule-revoke) so existing work can be
+      // stopped; new launches already returned above.
+      const canConfirm = session.permissionMode === "ask" || session.permissionMode === "deny-writes";
+      if (canConfirm && !opts?.headless && session.confirmBackgroundAction) {
         const approvedSpec = structuredClone(spec);
         let onAbort: (() => void) | undefined;
         try {

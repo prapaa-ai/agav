@@ -121,13 +121,22 @@ async function loadJobOrigins(): Promise<JobOrigins> {
   }
 }
 
+const TITLE_COMMAND_MAX = 60;
+
+/** One-line titles only; the detail view always shows the full command. */
+function truncateCommand(command: string): string {
+  const oneLine = command.replace(/\s+/g, " ").trim();
+  return oneLine.length > TITLE_COMMAND_MAX ? `${oneLine.slice(0, TITLE_COMMAND_MAX - 1)}…` : oneLine;
+}
+
 function jobItem(summary: JobSummary, origins?: JobOrigins): ResourceItem {
   const exit = summary.exitCode === undefined || summary.exitCode === null ? "-" : String(summary.exitCode);
   const schedule = origins?.byRequestId.get(summary.requestId);
   const known = origins?.known ?? false;
+  const independentLabel = summary.command ? `independent run "${truncateCommand(summary.command)}"` : "independent run";
   const originLabel = schedule
     ? `schedule "${scheduleCommandSummary(schedule)}" (${schedule.cron})`
-    : known ? "independent run" : "origin unknown";
+    : known ? independentLabel : "origin unknown";
   const originDetail = schedule
     ? `origin: schedule ${schedule.scheduleId} (cron: "${schedule.cron}", timezone: ${schedule.timezone}, command: ${scheduleCommandSummary(schedule)})`
     : known ? "origin: independent run (not launched by a schedule)" : "origin: unknown (schedules could not be loaded)";
@@ -136,8 +145,13 @@ function jobItem(summary: JobSummary, origins?: JobOrigins): ResourceItem {
     id: summary.jobId,
     title: `${shortId(summary.jobId)}  ${summary.state}  · ${originLabel}`,
     description: `started ${displayTime(summary.startedAt)} · ended ${displayTime(summary.endedAt)} · exit ${exit}`,
-    detail: `${formatJobSummary(summary)}\n${originDetail}`,
-    searchText: `${summary.jobId} ${summary.requestId} ${summary.state} ${originSearch}`.trimEnd(),
+    detail: [
+      formatJobSummary(summary),
+      ...(summary.command ? [`command: ${summary.command}`] : []),
+      ...(summary.cwd ? [`cwd: ${summary.cwd}`] : []),
+      originDetail,
+    ].join("\n"),
+    searchText: [summary.jobId, summary.requestId, summary.state, originSearch, summary.command, summary.cwd].filter(Boolean).join(" "),
   };
 }
 
@@ -237,7 +251,10 @@ export function createJobSchedulesAdapter(session: SessionPolicySnapshot): Resou
     title: "Background job schedules",
     list,
     get: async (id) => (await list()).find((item) => item.id === id),
-    notice: "Disable pauses a schedule; revoking (d) is permanent. Neither stops jobs already launched.",
+    notice: "Disable pauses a schedule; Revoke (d) is permanent. Neither stops jobs already launched.",
+    removeLabel: "Revoke",
+    removedLabel: "Revoked",
+    removeConfirm: "This is permanent: no future jobs will launch (already launched jobs keep running; the schedule stays listed as revoked).",
     fields: [
       { name: "cron", label: "Cron (five fields)", required: true },
       { name: "timezone", label: "Timezone (IANA, e.g. UTC)", required: true },

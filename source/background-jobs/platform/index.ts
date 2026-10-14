@@ -9,7 +9,7 @@
 import { platform as osPlatform } from "node:os";
 import type { PlatformAdapter } from "../types.js";
 import { BackgroundJobError } from "../types.js";
-import { readProcessStartTimePosix } from "./posix-common.js";
+import { processGroupHasLiveMembersPosix, readProcessStartTimePosix } from "./posix-common.js";
 
 let cached: PlatformAdapter | null = null;
 
@@ -60,6 +60,21 @@ export async function lockOwnerPidExists(pid: number): Promise<boolean> {
 export async function readLockOwnerStartTime(pid: number): Promise<string | undefined> {
   if (osPlatform() === "win32") return undefined;
   return readProcessStartTimePosix(pid);
+}
+
+/**
+ * Whether the owned workload scope still has live members after the direct
+ * child has exited. Only meaningful for POSIX `process-group` scopes (the
+ * workload is spawned detached, so its pgid equals the handle pid); every other
+ * scope (notably Windows, which has no verifiable group) reports `false`, i.e.
+ * "nothing known to be left", preserving the prior direct-child-only behavior.
+ * Probe failures other than ESRCH/EPERM propagate to the caller.
+ */
+export async function ownedScopeHasLiveMembers(ownershipHandle: string, ownershipScope: string): Promise<boolean> {
+  if (osPlatform() === "win32" || ownershipScope !== "process-group") return false;
+  const pgid = Number(ownershipHandle);
+  if (!Number.isInteger(pgid) || pgid <= 0) return false;
+  return processGroupHasLiveMembersPosix(pgid);
 }
 
 /** Test-only override so unit tests can inject a fake adapter without mocking node:os. */

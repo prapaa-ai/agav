@@ -16,10 +16,10 @@
  * prompt-schedule feature, unrelated and left untouched) and does not reuse
  * the `/schedule` name.
  */
-import type { SlashCommand, CommandResult } from "./types.js";
+import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import { openResourceManager } from "./resource-manager.js";
 import { getSharedCoordinator, getSharedScheduleEngine } from "../background-jobs-integration.js";
-import type { JobSummary, SessionPolicySnapshot } from "../background-jobs/types.js";
+import { BackgroundJobError, type JobSummary, type SessionPolicySnapshot } from "../background-jobs/types.js";
 import {
   describeBackgroundJobError,
   formatCapabilities,
@@ -95,6 +95,23 @@ function formatList(summaries: JobSummary[]): string {
 
 function message(text: string): CommandResult {
   return { type: "message", text };
+}
+
+/**
+ * The text commands cannot show an approval prompt themselves. When the action
+ * only failed for lack of confirmation, open the interactive manager (which
+ * can) and say which key completes the action; otherwise keep the plain
+ * message, pointing at the manager for headless callers.
+ */
+async function confirmationNeeded(error: unknown, manualHint: string, context: CommandContext): Promise<CommandResult | undefined> {
+  if (!(error instanceof BackgroundJobError) || error.code !== "authorization-denied"
+    || !/interactive confirmation/i.test(error.message)) return undefined;
+  const interactive = openResourceManager("jobs", context);
+  if (interactive) {
+    context.showStatus(`This action needs your approval. Opening the /job manager: ${manualHint}`);
+    return interactive;
+  }
+  return message(`${describeBackgroundJobError(error)}\nUse the interactive /job manager to approve it (${manualHint}).`);
 }
 
 export const jobCommand: SlashCommand = {
@@ -209,6 +226,15 @@ export const jobCommand: SlashCommand = {
 
       return message(`Unknown action. ${USAGE}`);
     } catch (error) {
+      const sub = parts[1]?.toLowerCase();
+      const hint = action === "stop" ? "select the job and press x to stop it"
+        : sub === "create" ? "Tab to Schedules, then n to create the schedule"
+        : sub === "revoke" ? "Tab to Schedules, select the schedule and press d to revoke it"
+        : undefined;
+      if (hint) {
+        const needsApproval = await confirmationNeeded(error, hint, context);
+        if (needsApproval) return needsApproval;
+      }
       return message(describeBackgroundJobError(error));
     }
   },

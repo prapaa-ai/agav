@@ -38,6 +38,13 @@ const FIELD_SPECS: FieldSpec[] = [
   { name: "dayOfWeek", min: 0, max: 6 },
 ];
 
+const fieldMin = (name: keyof CronFields): number => FIELD_SPECS.find((s) => s.name === name)!.min;
+const MINUTE_MIN = fieldMin("minute");
+const HOUR_MIN = fieldMin("hour");
+const DAY_OF_MONTH_MIN = fieldMin("dayOfMonth");
+const MONTH_MIN = fieldMin("month");
+const DAY_OF_WEEK_MIN = fieldMin("dayOfWeek");
+
 /** Matches `*`, a step form like `*` followed by `/N`, `N`, `N-M`, `N-M` followed by `/S`, or a comma-separated list of those. */
 const PART_PATTERN = /^(\*|\d+)(-\d+)?(\/\d+)?$/;
 
@@ -107,7 +114,12 @@ export function parseCronExpression(cron: string): CronFields {
   return fields;
 }
 
-function fieldMatchesValue(field: string, value: number): boolean {
+/**
+ * `min` is the field's minimum value; wildcard steps (`*` followed by `/N`)
+ * start counting from it (e.g. day-of-month and month cycle 1, 3, 5, ...).
+ * `N/S` (no explicit end) starts at N and runs to the end of the field.
+ */
+function fieldMatchesValue(field: string, value: number, min: number): boolean {
   if (field === "*") return true;
   for (const part of field.split(",")) {
     const stepMatch = /^(.+)\/(\d+)$/.exec(part);
@@ -115,7 +127,7 @@ function fieldMatchesValue(field: string, value: number): boolean {
       const range = stepMatch[1]!;
       const step = Number(stepMatch[2]);
       if (range === "*") {
-        if (value % step === 0) return true;
+        if (value >= min && (value - min) % step === 0) return true;
         continue;
       }
       const rangeMatch = /^(\d+)(?:-(\d+))?$/.exec(range);
@@ -314,14 +326,14 @@ export function computeNextOccurrence(
     localCandidate.weekday = new Date(naiveLocalMs).getUTCDay();
     // Date fields can be checked in local calendar space. Skip a whole
     // nonmatching day before doing any expensive timezone conversions.
-    if (!fieldMatchesValue(fields.dayOfMonth, day) ||
-        !fieldMatchesValue(fields.month, month) ||
-        !fieldMatchesValue(fields.dayOfWeek, localCandidate.weekday)) {
+    if (!fieldMatchesValue(fields.dayOfMonth, day, DAY_OF_MONTH_MIN) ||
+        !fieldMatchesValue(fields.month, month, MONTH_MIN) ||
+        !fieldMatchesValue(fields.dayOfWeek, localCandidate.weekday, DAY_OF_WEEK_MIN)) {
       localCandidate.hour = 23;
       localCandidate.minute = 59;
       continue;
     }
-    if (!fieldMatchesValue(fields.hour, hour) || !fieldMatchesValue(fields.minute, minute)) continue;
+    if (!fieldMatchesValue(fields.hour, hour, HOUR_MIN) || !fieldMatchesValue(fields.minute, minute, MINUTE_MIN)) continue;
 
     const candidateUtc = localFieldsToUtcGuess(localCandidate, timezone);
     candidateUtcMs = candidateUtc.getTime();
@@ -340,11 +352,11 @@ export function computeNextOccurrence(
     localCandidate = realized;
 
     if (
-      fieldMatchesValue(fields.minute, realized.minute) &&
-      fieldMatchesValue(fields.hour, realized.hour) &&
-      fieldMatchesValue(fields.dayOfMonth, realized.day) &&
-      fieldMatchesValue(fields.month, realized.month) &&
-      fieldMatchesValue(fields.dayOfWeek, realized.weekday)
+      fieldMatchesValue(fields.minute, realized.minute, MINUTE_MIN) &&
+      fieldMatchesValue(fields.hour, realized.hour, HOUR_MIN) &&
+      fieldMatchesValue(fields.dayOfMonth, realized.day, DAY_OF_MONTH_MIN) &&
+      fieldMatchesValue(fields.month, realized.month, MONTH_MIN) &&
+      fieldMatchesValue(fields.dayOfWeek, realized.weekday, DAY_OF_WEEK_MIN)
     ) {
       return { utc: candidateUtc, localKey: localKeyFor(realized, timezone) };
     }

@@ -27,6 +27,10 @@ export interface ResourceAdapter {
   remove?(id: string): Promise<void>;
   setEnabled?(id: string, enabled: boolean): Promise<void>;
   notice?: string;
+  /** Wording for `remove` when "Delete" misdescribes it (e.g. revoking leaves the item listed). Defaults: Delete / Deleted / "This cannot be undone." */
+  removeLabel?: string;
+  removedLabel?: string;
+  removeConfirm?: string;
   /** Footer label for ENTER/i when "Inspect" undersells what the detail view shows. */
   inspectLabel?: string;
 }

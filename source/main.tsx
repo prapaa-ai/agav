@@ -368,6 +368,8 @@ export async function runPipeMode(
         maxTokens: config.maxTokens,
         iterationsBudget: iterationsBudget,
         permissionMode,
+        // print/run mode has no human to confirm background jobs.
+        headless: true,
         allowedTools: options.allowedToolsOverride,
       });
 

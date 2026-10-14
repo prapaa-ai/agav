@@ -295,6 +295,25 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
     return spec;
   }
 
+  /** Best effort display info from the persisted spec; a missing/unreadable spec must not break list/poll. */
+  async function launchInfo(record: JobRecord): Promise<Pick<JobSummary, "command" | "cwd">> {
+    try {
+      const spec = await repositories.specs.get(record.requestId);
+      if (spec === undefined) return {};
+      const { invocation } = spec;
+      const command = invocation.mode === "shell"
+        ? invocation.commandText
+        : [invocation.executable, ...invocation.args].join(" ");
+      return { command, cwd: spec.cwd };
+    } catch {
+      return {};
+    }
+  }
+
+  async function withLaunchInfo(record: JobRecord): Promise<JobSummary> {
+    return { ...toJobSummary(record), ...(await launchInfo(record)) };
+  }
+
   async function reconcileAndSummarize(jobId: string): Promise<{ record: JobRecord; summary: JobSummary }> {
     const result = await reconcileJob({
       jobId,
@@ -321,17 +340,35 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
     async start(request: StartJobRequest, session: SessionPolicySnapshot): Promise<JobSummary> {
       const adapter = await getPlatformAdapter();
 
+      // Schedule dispatch: launch from the exact template the schedule grant
+      // covers, never from the caller's own fields or session. The grant is
+      // revalidated against that template below instead of re-authorizing.
+      const approved = request.scheduleGrant?.template;
+      if (request.scheduleGrant !== undefined && approved !== undefined) {
+        const grantDecision = await authorizationService.revalidateBeforeDispatch(
+          request.scheduleGrant.grantId,
+          approved,
+        );
+        if (!grantDecision.allowed) {
+          throw new BackgroundJobError("authorization-denied", grantDecision.reason);
+        }
+      }
+      const invocation = approved?.invocation ?? request.invocation;
+      const cwd = approved?.cwd ?? request.cwd;
+      const requestedIsolation = approved?.isolation ?? request.isolation;
+      const headless = approved === undefined ? request.headless : approved.headless;
+
       // (b) Resolve isolation BEFORE spending any authorization/capacity
       // effort — solution.md §4: "Determine the actual isolation backend
       // before approval. Required isolation unavailable means refusal."
       const capabilities = await adapter.detectCapabilities();
-      const isolationResolution = authorizationService.resolveIsolation(request.isolation, capabilities);
+      const isolationResolution = authorizationService.resolveIsolation(requestedIsolation, capabilities);
       // Discovery alone cannot enforce isolation: the current supervisor
       // only implements bare workload spawn. Refuse rather than downgrade.
-      if (request.isolation.backend !== "none" && !isolationResolution.refused) {
+      if (requestedIsolation.backend !== "none" && !isolationResolution.refused) {
         throw new BackgroundJobError(
           "isolation-unavailable",
-          `Background workload isolation backend "${request.isolation.backend}" is not implemented. Request explicit backend "none" only with unrestricted-execution consent.`,
+          `Background workload isolation backend "${requestedIsolation.backend}" is not implemented. Request explicit backend "none" only with unrestricted-execution consent.`,
         );
       }
       if (isolationResolution.refused) {
@@ -344,28 +381,34 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       // (a) Normalize into a full LaunchSpec.
       const spec = await normalizeLaunchSpec({
         requestId: request.requestId,
-        invocation: request.invocation,
-        cwd: request.cwd,
+        invocation,
+        cwd,
         platform: adapter.platform,
-        isolation: request.isolation,
+        isolation: requestedIsolation,
         // This coordinator only implements the baseline POSIX/Windows
         // process-group / job-object ownership scope that each platform
         // adapter reports as its strongest; stronger per-request scopes
         // are not negotiated at this layer in Phase B.
         ownershipScope: capabilities.strongestOwnershipScope,
-        envInherit: request.envInherit,
+        envInherit: approved === undefined ? request.envInherit : undefined,
         // 0.8 (D3): explicit env values / partial limits forwarded by callers
         // such as the schedule engine. Absent → identical spec to before.
-        env: request.env,
-        limits: request.limits,
-        headless: request.headless,
+        // Schedule dispatch uses the approved template's env/limits/recurrence.
+        env: approved === undefined ? request.env : approved.env,
+        limits: approved === undefined ? request.limits : approved.limits,
+        recurrence: approved?.recurrence,
+        headless,
         canonicalizeCwd: (path) => adapter.canonicalizePath(path),
       });
 
       const consentSpec = toConsentSpec(spec);
 
-      // (c) Authorize the start action.
-      await authorizeOrThrow("start", consentSpec, session, { headless: request.headless });
+      // (c) Authorize the start action. Schedule dispatch was already
+      // authorized by revalidating its grant against the approved template
+      // above; it must not mint a fresh grant under the caller's session.
+      if (approved === undefined) {
+        await authorizeOrThrow("start", consentSpec, session, { headless });
+      }
 
       // (d) Idempotent retry handling.
       const existingSpec = await repositories.specs.get(request.requestId);
@@ -462,13 +505,13 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
 
     async list(): Promise<JobSummary[]> {
       const records = await repositories.jobs.list();
-      return records.map(toJobSummary);
+      return Promise.all(records.map(withLaunchInfo));
     },
 
     async poll(jobIdOrPrefix: string): Promise<JobSummary> {
       const jobId = await resolveJobId(jobIdOrPrefix);
-      const { summary } = await reconcileAndSummarize(jobId);
-      return summary;
+      const { record, summary } = await reconcileAndSummarize(jobId);
+      return { ...summary, ...(await launchInfo(record)) };
     },
 
     async log(jobIdOrPrefix: string, logOpts?: { maxBytes?: number; cursor?: string; stream?: LogStream }): Promise<LogTail> {

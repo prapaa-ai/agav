@@ -5,6 +5,7 @@ import type { DiffLine } from "../utils/diff.js";
 import { getTheme } from "../config/theme.js";
 import { KeybindingResolver, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { terminalToolValue } from "../utils/display-path.js";
+import { describeBackgroundConfirmation, parseBackgroundConfirmInput } from "./background-confirmation.js";
 
 /** Represents the user's approval decision for a tool request. */
 export type ConfirmChoice = "yes" | "no" | "always";
@@ -33,6 +34,34 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
       onConfirm("always");
     }
   });
+
+  // Background jobs run outside the sandbox and approval is reusable, so the
+  // nested spec is shown in full rather than as an 80-character argument.
+  const background = toolName === "run_background_job" ? parseBackgroundConfirmInput(input) : undefined;
+  if (background) {
+    const info = describeBackgroundConfirmation(background.action, background.spec);
+    return (
+      <Box flexDirection="column" paddingX={1}>
+        {subagentTask && (
+          <Text dimColor>Subagent "{subagentTask}" requests:</Text>
+        )}
+        <Text bold color="yellow">{info.label}?</Text>
+        <Text>  Command: {info.command}</Text>
+        <Text>  Directory: {info.cwd}</Text>
+        <Text color={info.unrestricted ? "red" : undefined} bold={info.unrestricted}>  Isolation: {info.isolation}</Text>
+        {info.schedule ? <Text>  Schedule: {info.schedule}</Text> : null}
+        {info.extras.map((line) => <Text key={line}>  {line}</Text>)}
+        <Text dimColor>  {info.reuse}</Text>
+        <Box marginTop={1}>
+          <Text>
+            <Text bold color="green">[Y]es</Text>
+            <Text> / </Text>
+            <Text bold color="red">[N]o</Text>
+          </Text>
+        </Box>
+      </Box>
+    );
+  }
 
   const label = getToolLabel(toolName);
   const summary = getToolSummary(toolName, input);

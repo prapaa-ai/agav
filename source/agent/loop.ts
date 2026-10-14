@@ -61,6 +61,8 @@ interface LoopParams {
   permissionMode?: PermissionMode;
   /** Host's background permission, independent of generic session Always. */
   backgroundPermissionMode?: PermissionMode;
+  /** Host is non-interactive (print/run mode); background actions then need an explicit headless grant. */
+  headless?: boolean;
   allowedTools?: string[];
   hooks?: import("../config/config.js").AgavHooks;
   /**
@@ -578,6 +580,8 @@ export async function* runAgentLoop(
           const result = await toolRegistry.execute(entry.name, entry.input, {
             signal,
             ...(dispatchContext ? { conversation: dispatchContext, systemPrompt, permissionMode } : {}),
+            // Host-supplied, never from tool input.
+            ...(entry.name === "run_background_job" && params.headless === true ? { headless: true } : {}),
             backgroundPolicy: entry.name === "run_background_job" ? {
               // Background consent is exact-spec: generic Always/allowedTools
               // choices must not widen an ask-mode background grant.

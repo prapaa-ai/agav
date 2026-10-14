@@ -128,6 +128,50 @@ export function signalProcessGroup(pgid: number, signal: NodeJS.Signals): void {
   }
 }
 
+/**
+ * True while the process group `pgid` still has at least one live member.
+ * `kill(-pgid, 0)`: ESRCH means the group is gone; EPERM means it exists but
+ * is not signalable by us (still alive). Any other error is rethrown.
+ *
+ * Where `/proc` is available, members that are only zombies (exited but not
+ * yet reaped, e.g. under a non-reaping PID 1) are not counted as live, so a
+ * finished job is not held open forever. If `/proc` is unavailable (macOS) or
+ * no member of the group can be positively classified, this conservatively
+ * reports the group as alive.
+ */
+export async function processGroupHasLiveMembersPosix(pgid: number): Promise<boolean> {
+  try {
+    process.kill(-pgid, 0);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return false;
+    if (code !== "EPERM") throw error;
+  }
+  let entries: string[];
+  try {
+    entries = await fs.readdir("/proc");
+  } catch {
+    return true;
+  }
+  let sawZombie = false;
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    let stat: string;
+    try {
+      stat = await fs.readFile(`/proc/${entry}/stat`, "utf8");
+    } catch {
+      continue; // exited meanwhile, or not readable
+    }
+    const closeParen = stat.lastIndexOf(")");
+    if (closeParen < 0) continue;
+    const fields = stat.slice(closeParen + 2).split(" "); // [state, ppid, pgrp, ...]
+    if (Number(fields[2]) !== pgid) continue;
+    if (fields[0] === "Z" || fields[0] === "X") sawZombie = true;
+    else return true;
+  }
+  return !sawZombie;
+}
+
 export async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }

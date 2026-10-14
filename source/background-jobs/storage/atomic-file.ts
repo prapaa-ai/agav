@@ -103,10 +103,70 @@ export async function readJsonIfExists<T>(path: string, quarantineDir?: string):
  * Used for records whose "already exists" outcome is expected/benign
  * (e.g. schedule-occurrence reservations) rather than an error — callers
  * get a boolean instead of a thrown error for the EEXIST case.
+ *
+ * The full contents are written and fsynced to a sibling temp file first,
+ * then published with `link(tmp, path)`, which fails with EEXIST if the
+ * destination exists and never replaces it. A reader therefore can never
+ * observe a partially written (or empty) file at `path`. The temp file is
+ * always unlinked afterwards.
+ *
+ * Fallback: on filesystems without hard-link support (EPERM/ENOTSUP/ENOSYS/
+ * EXDEV) we fall back to `open(path, "wx")`. `rename` is deliberately NOT
+ * used because it would replace an existing record. The fallback keeps
+ * exclusivity but cannot guarantee readers never see the file before its
+ * contents are written.
  */
 export async function createExclusive(path: string, data: string): Promise<boolean> {
   const dir = dirname(path);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+  const tmpPath = join(dir, `.tmp-${randomUUID()}`);
+
+  let handle: fs.FileHandle | undefined;
+  try {
+    handle = await fs.open(tmpPath, "wx", 0o600);
+    await handle.writeFile(data, "utf8");
+    await handle.sync();
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    handle = undefined;
+    await fs.unlink(tmpPath).catch(() => {});
+    throw error;
+  }
+  await handle.close().catch(() => {});
+
+  try {
+    await fs.link(tmpPath, path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EEXIST") {
+      await fs.unlink(tmpPath).catch(() => {});
+      return false;
+    }
+    if (code === "EPERM" || code === "ENOTSUP" || code === "ENOSYS" || code === "EXDEV") {
+      await fs.unlink(tmpPath).catch(() => {});
+      return createExclusiveWithoutLink(path, data);
+    }
+    await fs.unlink(tmpPath).catch(() => {});
+    throw error;
+  }
+  await fs.unlink(tmpPath).catch(() => {});
+
+  // Best-effort directory fsync so the new directory entry is durable.
+  try {
+    const dirHandle = await fs.open(dir, "r");
+    try {
+      await dirHandle.sync();
+    } finally {
+      await dirHandle.close().catch(() => {});
+    }
+  } catch {
+    // Not supported on every platform (e.g. Windows); ignore.
+  }
+  return true;
+}
+
+/** Fallback for filesystems without hard links: exclusive create, never replaces an existing file. */
+async function createExclusiveWithoutLink(path: string, data: string): Promise<boolean> {
   let handle: fs.FileHandle;
   try {
     handle = await fs.open(path, "wx", 0o600);

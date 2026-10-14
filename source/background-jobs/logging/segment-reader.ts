@@ -190,6 +190,11 @@ function decodeCursor(encoded: string | undefined): Cursor {
 
 const DEFAULT_CURSOR_MAX_BYTES = 64 * 1024;
 
+/** True when the listing contains a segment with a higher index than `index` (i.e. `index` is no longer the active segment). */
+function hasLaterSegment(segments: SegmentInfo[], index: number): boolean {
+  return segments.some((s) => s.index > index);
+}
+
 /**
  * Cursor-based incremental read: resumes from the position encoded in
  * `cursor` (or the start, if absent) and reads forward up to `maxBytes`,
@@ -232,9 +237,16 @@ export async function readCursor(
     const startOffset = segment.index === index ? Math.min(offset, segment.size) : 0;
     const available = segment.size - startOffset;
     if (available <= 0) {
-      // Fully consumed this segment already; advance cursor to the next one.
-      index = segment.index + 1;
-      offset = 0;
+      // Fully consumed this segment already. Only advance to the next
+      // segment once a later one exists; otherwise the writer may still
+      // append to this segment, so park the cursor at its end.
+      if (hasLaterSegment(segments, segment.index)) {
+        index = segment.index + 1;
+        offset = 0;
+      } else {
+        index = segment.index;
+        offset = segment.size;
+      }
       continue;
     }
     const take = Math.min(available, remaining);
@@ -242,7 +254,7 @@ export async function readCursor(
     parts.push(buf);
     remaining -= buf.length;
     const newOffset = startOffset + buf.length;
-    if (newOffset >= segment.size) {
+    if (newOffset >= segment.size && hasLaterSegment(segments, segment.index)) {
       index = segment.index + 1;
       offset = 0;
     } else {
