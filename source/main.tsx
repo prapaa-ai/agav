@@ -30,6 +30,7 @@ import {
   isProviderName,
   noProviderCredentialsError,
   providerConfigurationError,
+  resolveInitialSessionName,
   resolveStartupSelection,
   selectConfiguredProvider,
   type ProviderName,
@@ -40,6 +41,7 @@ const KNOWN_FLAGS = [
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
   "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--trajectory",
+  "--name",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -167,6 +169,15 @@ export function parseArgs(argv: string[]) {
       flags.outputSchema = argv[++i] ?? "";
     } else if (arg.startsWith("--output-schema=")) {
       flags.outputSchema = arg.slice("--output-schema=".length);
+    } else if (arg === "--name") {
+      const nextArg = argv[i + 1];
+      if (nextArg !== undefined && !nextArg.startsWith("-")) {
+        flags.name = argv[++i]!;
+      } else {
+        flags.name = "";
+      }
+    } else if (arg.startsWith("--name=")) {
+      flags.name = arg.slice("--name=".length);
     } else if (arg === "--trajectory" || arg.startsWith("--trajectory=")) {
       const path = arg === "--trajectory" ? argv[++i] : arg.slice("--trajectory=".length);
       if (!path?.trim() || (arg === "--trajectory" && path.startsWith("-"))) {
@@ -254,6 +265,11 @@ export function parseArgs(argv: string[]) {
 
   if (flags.trajectoryPath && !flags.run && !flags.print && !flags.help && !flags.version) {
     process.stderr.write("Error: --trajectory is only supported with run or --print (-P).\n");
+    process.exit(1);
+  }
+
+  if (flags.name !== undefined && (flags.run || flags.print)) {
+    process.stderr.write("Error: --name is only supported for interactive sessions.\n");
     process.exit(1);
   }
 
@@ -553,6 +569,7 @@ export async function main() {
   Options
     --provider, -p       LLM provider: anthropic, openai, openrouter, gemini, vertex-ai, or ollama (default: anthropic)
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
+    --name <title>       Set initial name for the session
     --cwd <dir>          Set the working directory for the session
     --effort             Reasoning effort: low, medium, high, or max (default: high)
     --ollama-host        Ollama host (default: localhost)
@@ -967,7 +984,12 @@ export async function main() {
   // rather than adding its timeout to startup. Both settle rather than reject.
   const [gitContext, enhancedKeyboard] = await Promise.all([getGitContext(), detectKittyKeyboard()]);
 
-  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={resumeSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} />, {
+  const initialSessionName = resolveInitialSessionName(
+    typeof flags.name === "string" ? flags.name : undefined,
+    resumeSessionId ? { id: resumeSessionId, name: resumeSessionName } : undefined,
+  );
+
+  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} />, {
     exitOnCtrlC: true,
     // Alt-screen keeps the UI self-contained (no scrollback pollution, no
     // flicker on terminals without DEC 2026). In-app scrolling is handled by
