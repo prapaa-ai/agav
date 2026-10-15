@@ -61,7 +61,7 @@ jobs:
           - target: darwin-x64
             os: macos-15-intel
           - target: linux-x64
-            os: ubuntu-24.04
+            os: ubuntu-latest
           - target: linux-arm64
             os: ubuntu-24.04-arm
           # Windows binaries must be built natively on a Windows runner.

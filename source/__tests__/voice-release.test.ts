@@ -50,7 +50,7 @@ describe("native voice release packaging", () => {
     const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
     const job = workflow.jobs["build-binaries"];
     expect(Object.fromEntries(job.strategy.matrix.include.map((entry: any) => [entry.target, entry.os]))).toEqual({
-      "darwin-arm64": "macos-latest", "darwin-x64": "macos-15-intel", "linux-x64": "ubuntu-24.04", "linux-arm64": "ubuntu-24.04-arm",
+      "darwin-arm64": "macos-latest", "darwin-x64": "macos-15-intel", "linux-x64": "ubuntu-latest", "linux-arm64": "ubuntu-24.04-arm",
       "windows-x64": "windows-latest", "windows-x64-baseline": "windows-latest",
     });
     const embedIndex = job.steps.findIndex((step: any) => step.run?.includes("scripts/embed-voice-helper.mjs"));
