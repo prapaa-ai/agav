@@ -9,6 +9,7 @@ order: 1
 Agav combines a core toolset with extension points that add reusable knowledge and external capabilities.
 
 - [Built-in tools](/features/built-in-tools) cover files, search, shell, testing, language servers, notebooks, GitHub, web access, plans, and memory.
+- [Voice input](/features/voice-input) provides editable live English dictation with local recognition and an embedded native helper.
 - [Skills](/features/skills) package reusable instructions and tool policies, with a built-in marketplace, validation, and automatic improvement.
 - [MCP](/features/mcp) connects stdio subprocess servers and remote HTTP/SSE endpoints that expose tools, resources, and prompts.
 - [Plugins and subagents](/features/plugins-and-subagents) add JavaScript tools and parallel task execution.

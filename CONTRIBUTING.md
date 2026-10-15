@@ -71,6 +71,36 @@ pnpm start -- run "your prompt"         # Non-interactive agent mode
 pnpm start -- --provider gemini         # Use a specific provider
 ```
 
+### Optional native voice builds
+
+Everyday development (`pnpm install`, `pnpm dev`, tests, typecheck, and
+`pnpm build:binary`) does not require CMake or a C/C++ compiler. Default local
+binaries omit the embedded voice helper.
+
+```bash
+pnpm build:binary --voice          # Native target with voice
+pnpm build:binary:voice            # Equivalent shortcut
+pnpm build:binary --all-features   # Native target with all optional features
+```
+
+Voice compilation requires CMake 3.24+, a C/C++17 toolchain and a build backend
+(Make/Ninja or MSBuild). The first build fetches pinned native dependencies.
+Python 3 is optional for extra protocol tests. Alternatively, set
+`AGAV_VOICE_HELPER_PATH` to a matching prebuilt helper when building with `--voice`;
+its optional `.avx2` sibling is embedded for compatible x64 CPUs. The generator
+restores `source/voice/bundled-runtime.ts` on exit; do not commit generated payloads.
+
+`pnpm build:binary:all` means **all targets and all features**, including voice.
+Provide every target's prebuilt helper through `AGAV_VOICE_HELPER_DIR`; one native
+compiler/helper cannot cover all targets. Missing helpers fail rather than omit
+voice. Release CI builds and embeds helpers on native runners.
+
+For voice while running from source, use `AGAV_VOICE_HELPER_BIN` to select an
+existing helper. The English model can still be downloaded interactively through
+`/voice`, or selected with `AGAV_VOICE_MODEL`. See
+[native helper build/protocol details](native/voice/README.md) and
+[voice user documentation](docs/docs/features/voice-input.md).
+
 ### Adding a new tool
 
 1. Create `source/tools/your-tool.ts` implementing `ToolDefinition`
