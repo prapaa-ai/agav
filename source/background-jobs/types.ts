@@ -370,12 +370,23 @@ export interface AuthorizationDecision {
   grant?: Grant;
 }
 
+/** The existing job an action targets. Display-only: it is not part of the consent hash. */
+export interface ConfirmSubject {
+  jobId: JobId;
+  /** The schedule that launched the job; absent for an independent run. */
+  parent?: { scheduleId: ScheduleId; cron?: string };
+}
+
 /** Session-wide restrictive policy snapshot; authorization consumes this, never the live coordinator. */
 export interface SessionPolicySnapshot {
   permissionMode: "ask" | "auto-accept" | "deny-writes";
   headlessApprovedActions: GrantAction[];
   /** Trusted interactive host callback; never populated from tool arguments. */
-  confirmBackgroundAction?: (action: GrantAction, spec: Omit<LaunchSpec, "requestId" | "createdAt">) => Promise<boolean>;
+  confirmBackgroundAction?: (
+    action: GrantAction,
+    spec: Omit<LaunchSpec, "requestId" | "createdAt">,
+    subject?: ConfirmSubject,
+  ) => Promise<boolean>;
   signal?: AbortSignal;
 }
 

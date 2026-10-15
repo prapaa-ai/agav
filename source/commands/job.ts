@@ -1,6 +1,7 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import { openResourceManager } from "./resource-manager.js";
 import { getSharedCoordinator, getSharedScheduleEngine } from "../background-jobs-integration.js";
+import type { Coordinator } from "../background-jobs/coordinator/index.js";
 import { BackgroundJobError, type JobSummary, type SessionPolicySnapshot } from "../background-jobs/types.js";
 import {
   describeBackgroundJobError,
@@ -30,16 +31,19 @@ const USAGE =
 const LOG_USAGE = "Usage: /job log <id> [--stderr] [--tail N]";
 
 /** A bare number is the deprecated `[maxBytes]` form, an alias of `--tail`. */
-function parseLogArgs(args: string[]): { stream: "stdout" | "stderr"; maxBytes?: number } | { error: string } {
+function parseLogArgs(args: string[]): { stream: "stdout" | "stderr"; streamExplicit: boolean; maxBytes?: number } | { error: string } {
   let stream: "stdout" | "stderr" = "stdout";
+  let streamExplicit = false;
   let tail: number | undefined;
   let legacyMaxBytes: number | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--stderr") {
       stream = "stderr";
+      streamExplicit = true;
     } else if (arg === "--stdout") {
       stream = "stdout";
+      streamExplicit = true;
     } else if (arg === "--tail" || arg.startsWith("--tail=")) {
       const raw = arg === "--tail" ? args[++i] : arg.slice("--tail=".length);
       const value = raw === undefined ? NaN : Number(raw);
@@ -54,7 +58,7 @@ function parseLogArgs(args: string[]): { stream: "stdout" | "stderr"; maxBytes?:
       return { error: `Unknown option "${arg}". ${LOG_USAGE}` };
     }
   }
-  return { stream, maxBytes: tail ?? legacyMaxBytes };
+  return { stream, streamExplicit, maxBytes: tail ?? legacyMaxBytes };
 }
 
 function formatList(summaries: JobSummary[]): string {
@@ -69,6 +73,32 @@ function formatList(summaries: JobSummary[]): string {
     return `${id} ${state} ${started} ${ended} ${exit}`;
   });
   return [header, ...rows].join("\n");
+}
+
+/**
+ * With no explicit stream, a failed job's reason usually sits in stderr, so append it
+ * (and the exit code) rather than only reporting empty stdout. Best effort: a status
+ * lookup failure must not hide the log itself.
+ */
+async function describeFailure(coordinator: Coordinator, id: string, maxBytes: number | undefined): Promise<string | undefined> {
+  try {
+    const summary = await coordinator.poll(id);
+    if (summary.state !== "failed") return undefined;
+    const exit = summary.exitCode === undefined || summary.exitCode === null ? "no exit code" : `exit code ${summary.exitCode}`;
+    const stderr = await coordinator.log(id, { maxBytes, stream: "stderr" });
+    const body = stderr.text.trimEnd();
+    return `Job failed (${exit}).` + (body ? `\n── stderr ──\n${body}` : "\nNo stderr output was captured.");
+  } catch {
+    return undefined;
+  }
+}
+
+function sessionFor(context: CommandContext): SessionPolicySnapshot {
+  return {
+    permissionMode: context.config.permissionMode,
+    headlessApprovedActions: [],
+    confirmBackgroundAction: context.confirmBackgroundAction,
+  };
 }
 
 function message(text: string): CommandResult {
@@ -128,16 +158,15 @@ export const jobCommand: SlashCommand = {
         if ("error" in parsed) return message(parsed.error);
         const tail = await coordinator.log(id, { maxBytes: parsed.maxBytes, stream: parsed.stream });
         const note = tail.truncated ? "\n[output truncated]" : "";
-        return message((tail.text || `(no ${parsed.stream} output captured)`) + note);
+        const failure = parsed.streamExplicit ? undefined : await describeFailure(coordinator, id, parsed.maxBytes);
+        const body = (tail.text || (failure ? "" : `(no ${parsed.stream} output captured)`)) + note;
+        return message(failure ? [body.trimEnd(), failure].filter(Boolean).join("\n\n") : body);
       }
 
       if (action === "stop") {
         const id = parts[1];
         if (!id) return message("Usage: /job stop <id>");
-        const summary = await coordinator.stop(id, {
-          permissionMode: context.config.permissionMode,
-          headlessApprovedActions: [],
-        });
+        const summary = await coordinator.stop(id, sessionFor(context));
         return message(formatJobSummary(summary));
       }
 
@@ -166,7 +195,7 @@ export const jobCommand: SlashCommand = {
             return message('Usage: /job schedule create "<cron>" <timezone> <command>');
           }
           const [, cron, timezone, command] = match;
-          const session: SessionPolicySnapshot = { permissionMode: context.config.permissionMode, headlessApprovedActions: [] };
+          const session = sessionFor(context);
           const schedule = await scheduleEngine.createSchedule({
             cron: cron!,
             timezone: timezone!,
@@ -186,7 +215,7 @@ export const jobCommand: SlashCommand = {
           const schedules = await scheduleEngine.listSchedules();
           const foundMatch = schedules.find((s) => s.scheduleId === scheduleId);
           if (!foundMatch) return message(`No schedule found with id "${scheduleId}".`);
-          const session: SessionPolicySnapshot = { permissionMode: context.config.permissionMode, headlessApprovedActions: [] };
+          const session = sessionFor(context);
           await scheduleEngine.revokeSchedule(scheduleId, session);
           return message(
             `Revoked schedule ${scheduleId}. Future launches from this schedule are blocked. ` +

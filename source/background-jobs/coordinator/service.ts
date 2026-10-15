@@ -5,6 +5,7 @@ import {
   BACKGROUND_JOBS_PROTOCOL_VERSION,
   BackgroundJobError,
   isTerminalLifecycle,
+  type ConfirmSubject,
   type CoordinatorClient,
   type JobRecord,
   type JobSummary,
@@ -241,11 +242,28 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
     return { record: result.record, summary: toJobSummary(result.record) };
   }
 
+  /** Best effort: the schedule that launched `record`, found through its occurrences. */
+  async function confirmSubjectFor(record: JobRecord): Promise<ConfirmSubject> {
+    const subject: ConfirmSubject = { jobId: record.jobId };
+    try {
+      for (const schedule of await repositories.schedules.list()) {
+        const occurrences = await repositories.occurrences.listForSchedule(schedule.scheduleId);
+        if (occurrences.some((o) => o.requestId === record.requestId)) {
+          subject.parent = { scheduleId: schedule.scheduleId, cron: schedule.cron };
+          break;
+        }
+      }
+    } catch {
+      // Display-only; an unreadable schedule store must not block a stop.
+    }
+    return subject;
+  }
+
   async function authorizeOrThrow(
     action: "start" | "stop" | "cleanup",
     spec: ConsentRelevantSpec,
     session: SessionPolicySnapshot,
-    opts2?: { headless?: boolean },
+    opts2?: { headless?: boolean; subject?: ConfirmSubject },
   ): Promise<void> {
     const decision = await authorizationService.authorize(action, spec, session, opts2);
     if (!decision.allowed) {
@@ -509,10 +527,14 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       if (record === undefined) {
         throw new BackgroundJobError("not-found", `No JobRecord found for jobId "${jobId}".`);
       }
+      // Fresh liveness evidence first: a finished job has nothing to stop, so don't ask for approval.
+      const current = await reconcileAndSummarize(jobId);
+      if (isTerminalLifecycle(current.record.state)) return current.summary;
+
       const spec = await requireSpecForJob(record);
       const consentSpec = toConsentSpec(spec);
 
-      await authorizeOrThrow("stop", consentSpec, session);
+      await authorizeOrThrow("stop", consentSpec, session, { subject: await confirmSubjectFor(record) });
 
       const socketPath = socketPathFor(root, jobId);
       const reply = await tryIpcRequest(socketPath, { type: "stop" }, 15000);

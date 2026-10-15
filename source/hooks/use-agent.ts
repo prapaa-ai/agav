@@ -151,6 +151,8 @@ interface UseAgentReturn {
   cancelSubagent: (id: string) => void;
   clearMessages: () => void;
   confirmTool: (choice: ConfirmResult) => void;
+  /** Queue a confirmation outside an agent turn (e.g. from a slash command). */
+  requestConfirmation: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
   conversation: ConversationState;
   toolRegistry: ToolRegistry;
   saveNow: (extraUsage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
@@ -568,6 +570,11 @@ export function useAgent(
     // spent waiting for the user to approve/deny a tool call.
     updateTurnStart(Date.now());
   }, []);
+
+  const requestConfirmation = useCallback(
+    (toolName: string, input: Record<string, unknown>) => confirmationQueueRef.current.enqueue({ toolName, input }),
+    [],
+  );
 
   /**
    * Resolve a pending manual-context-window request. `tokens` is undefined
@@ -1501,6 +1508,7 @@ export function useAgent(
     pendingConfirmation,
     pendingContextWindowRequest,
     resolveContextWindowRequest,
+    requestConfirmation,
     tokenUsage,
     loadedPlugins,
     mcpServers,

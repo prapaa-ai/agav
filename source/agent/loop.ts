@@ -589,8 +589,8 @@ export async function* runAgentLoop(
               headlessApprovedActions: [],
               signal,
               confirmBackgroundAction: confirmTool
-                ? async (action, spec) => {
-                    const choice = await confirmTool("run_background_job", { action, spec });
+                ? async (action, spec, subject) => {
+                    const choice = await confirmTool("run_background_job", { action, spec, subject });
                     return choice === "yes" || choice === "always";
                   }
                 : undefined,

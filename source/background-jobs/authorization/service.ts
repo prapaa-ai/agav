@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type {
   AuthorizationDecision,
+  ConfirmSubject,
   Grant,
   GrantAction,
   GrantId,
@@ -25,7 +26,7 @@ export interface AuthorizationService {
     action: GrantAction,
     spec: ConsentRelevantSpec,
     session: SessionPolicySnapshot,
-    opts?: { headless?: boolean },
+    opts?: { headless?: boolean; subject?: ConfirmSubject },
   ): Promise<AuthorizationDecision>;
 
   /** Mints+persists a grant unconditionally; used after a human says yes in 'ask' mode. */
@@ -96,7 +97,9 @@ export function createAuthorizationService(root: string): AuthorizationService {
             if (session.signal?.aborted) resolve(false);
           });
           const accepted = await Promise.race([
-            session.confirmBackgroundAction(action, structuredClone(approvedSpec)),
+            opts?.subject === undefined
+              ? session.confirmBackgroundAction(action, structuredClone(approvedSpec))
+              : session.confirmBackgroundAction(action, structuredClone(approvedSpec), opts.subject),
             cancelled,
           ]);
           if (accepted !== true || session.signal?.aborted || hashLaunchSpecForConsent(spec) !== specHash) {

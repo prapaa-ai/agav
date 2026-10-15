@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useInput } from "../ink/index.js";
 import { ResourceManager, type ResourceAction } from "./resource-manager.js";
 import { createJobsAdapter, createJobSchedulesAdapter, jobCapabilities, stopJob } from "../resources/job-adapters.js";
-import type { GrantAction, SessionPolicySnapshot } from "../background-jobs/types.js";
+import type { ConfirmSubject, GrantAction, SessionPolicySnapshot } from "../background-jobs/types.js";
 import {
   backgroundConfirmationLines,
   describeBackgroundConfirmation,
@@ -19,19 +19,20 @@ type ConfirmSpec = BackgroundConfirmSpec;
 interface PendingConfirmation {
   action: GrantAction;
   spec: ConfirmSpec;
+  subject?: ConfirmSubject;
   resolve(ok: boolean): void;
 }
 
 const CONFIRM_CONTROLS = "y: Approve · n/ESC: Deny";
 
 /** Fallback when the manager cannot render `confirmationDetails`. */
-function confirmationPrompt({ action, spec }: PendingConfirmation): string {
-  const info = describeBackgroundConfirmation(action, spec);
+function confirmationPrompt({ action, spec, subject }: PendingConfirmation): string {
+  const info = describeBackgroundConfirmation(action, spec, subject);
   return `${info.label}: ${info.command}? ${CONFIRM_CONTROLS}`;
 }
 
-function confirmationDetails({ action, spec }: PendingConfirmation): { lines: string[]; controls: string } {
-  return { lines: backgroundConfirmationLines(describeBackgroundConfirmation(action, spec)), controls: CONFIRM_CONTROLS };
+function confirmationDetails({ action, spec, subject }: PendingConfirmation): { lines: string[]; controls: string } {
+  return { lines: backgroundConfirmationLines(describeBackgroundConfirmation(action, spec, subject)), controls: CONFIRM_CONTROLS };
 }
 
 export function JobsTUI({ onExit, permissionMode }: JobsTUIProps) {
@@ -43,7 +44,7 @@ export function JobsTUI({ onExit, permissionMode }: JobsTUIProps) {
   const session = useMemo<SessionPolicySnapshot>(() => ({
     permissionMode,
     headlessApprovedActions: [],
-    confirmBackgroundAction: (action, spec) => new Promise<boolean>((resolve) => setPending({ action, spec, resolve })),
+    confirmBackgroundAction: (action, spec, subject) => new Promise<boolean>((resolve) => setPending({ action, spec, subject, resolve })),
   }), [permissionMode]);
   const jobs = useMemo(() => createJobsAdapter(), []);
   const scheduleAdapter = useMemo(() => createJobSchedulesAdapter(session), [session]);

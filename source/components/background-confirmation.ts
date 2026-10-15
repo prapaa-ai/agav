@@ -1,5 +1,5 @@
 import stringWidth from "string-width";
-import type { GrantAction, LaunchSpec } from "../background-jobs/types.js";
+import type { ConfirmSubject, GrantAction, LaunchSpec } from "../background-jobs/types.js";
 
 /** Consent-relevant spec handed to `confirmBackgroundAction`. */
 export type BackgroundConfirmSpec = Omit<LaunchSpec, "requestId" | "createdAt">;
@@ -20,6 +20,8 @@ export interface BackgroundConfirmation {
   /** True when no sandbox applies; callers should make this stand out. */
   unrestricted: boolean;
   schedule?: string;
+  /** Set for actions on an existing job (stop): a short summary instead of the full launch terms. */
+  job?: { id: string; parent: string };
   extras: string[];
   /** Explains that approval outlives this single invocation. */
   reuse: string;
@@ -61,7 +63,7 @@ function reuseNotice(action: GrantAction): string {
 }
 
 /** Gathers every term the user must see before approving; nothing here is truncated. */
-export function describeBackgroundConfirmation(action: GrantAction, spec: BackgroundConfirmSpec): BackgroundConfirmation {
+export function describeBackgroundConfirmation(action: GrantAction, spec: BackgroundConfirmSpec, subject?: ConfirmSubject): BackgroundConfirmation {
   const command = !spec.invocation ? "(unspecified)"
     : spec.invocation.mode === "shell"
       ? spec.invocation.commandText
@@ -72,8 +74,17 @@ export function describeBackgroundConfirmation(action: GrantAction, spec: Backgr
   if (envNames.length > 0) extras.push(`Environment: ${visible(envNames.join(", "))}`);
   if (spec.credentialRefs?.length) extras.push(`Credentials: ${visible(spec.credentialRefs.join(", "))}`);
   if (spec.headless) extras.push("Headless: yes");
+  const job = action === "stop" && subject
+    ? {
+        id: visible(subject.jobId),
+        parent: subject.parent
+          ? `schedule ${visible(subject.parent.scheduleId)}${subject.parent.cron ? ` (cron "${visible(subject.parent.cron)}")` : ""}`
+          : "none (independent run)",
+      }
+    : undefined;
   return {
     label: BACKGROUND_ACTION_LABELS[action] ?? action,
+    job,
     command: visible(command),
     cwd: visible(spec.cwd ?? "(unspecified)"),
     isolation: isolation.text,
@@ -87,6 +98,7 @@ export function describeBackgroundConfirmation(action: GrantAction, spec: Backgr
 }
 
 export function backgroundConfirmationLines(info: BackgroundConfirmation): string[] {
+  if (info.job) return [`${info.label}: ${info.command}?`, `Job: ${info.job.id}`, `Parent: ${info.job.parent}`];
   return [
     `${info.label}: ${info.command}?`,
     `Directory: ${info.cwd}`,
@@ -99,13 +111,16 @@ export function backgroundConfirmationLines(info: BackgroundConfirmation): strin
 
 export function parseBackgroundConfirmInput(
   input: Record<string, unknown>,
-): { action: GrantAction; spec: BackgroundConfirmSpec } | undefined {
-  const { action, spec } = input;
+): { action: GrantAction; spec: BackgroundConfirmSpec; subject?: ConfirmSubject } | undefined {
+  const { action, spec, subject } = input;
   if (typeof action !== "string" || typeof spec !== "object" || spec === null) return undefined;
   const candidate = spec as Partial<BackgroundConfirmSpec>;
   const invocation = candidate.invocation;
   if (typeof candidate.cwd !== "string" || !candidate.isolation || !invocation) return undefined;
   if (invocation.mode === "shell" ? typeof invocation.commandText !== "string"
     : !(typeof invocation.executable === "string" && Array.isArray(invocation.args))) return undefined;
-  return { action: action as GrantAction, spec: candidate as BackgroundConfirmSpec };
+  const parsedSubject = typeof subject === "object" && subject !== null && typeof (subject as ConfirmSubject).jobId === "string"
+    ? (subject as ConfirmSubject)
+    : undefined;
+  return { action: action as GrantAction, spec: candidate as BackgroundConfirmSpec, subject: parsedSubject };
 }

@@ -52,8 +52,12 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
   });
 
   if (background) {
-    const info = describeBackgroundConfirmation(background.action, background.spec);
-    const lines: { text: string; color?: string; bold?: boolean; dim?: boolean }[] = [
+    const info = describeBackgroundConfirmation(background.action, background.spec, background.subject);
+    const lines: { text: string; color?: string; bold?: boolean; dim?: boolean }[] = info.job ? [
+      { text: `  Job: ${info.command}` },
+      { text: `  ID: ${info.job.id}` },
+      { text: `  Parent: ${info.job.parent}` },
+    ] : [
       { text: `  Command: ${info.command}` },
       { text: `  Directory: ${info.cwd}` },
       { text: `  Isolation: ${info.isolation}`, color: info.unrestricted ? "red" : undefined, bold: info.unrestricted },

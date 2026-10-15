@@ -13,6 +13,7 @@ import { isHeadlessActionApproved } from "../background-jobs/authorization/polic
 import {
   BackgroundJobError,
   DEFAULT_RESOURCE_LIMITS,
+  type CoordinatorClient,
   type GrantAction,
   type InvocationSpec,
   type JobSummary,
@@ -59,6 +60,23 @@ function formatSummary(summary: JobSummary): string {
   if (summary.endedAt) lines.push(`endedAt: ${summary.endedAt}`);
   if (summary.exitCode !== undefined) lines.push(`exitCode: ${summary.exitCode}`);
   return lines.join("\n");
+}
+
+/** A failed job's reason usually sits in stderr; surface it when the caller did not pick a stream. */
+async function describeFailure(
+  coordinator: Pick<CoordinatorClient, "poll" | "log">,
+  jobId: string,
+  maxBytes: number | undefined,
+): Promise<string | undefined> {
+  try {
+    const summary = await coordinator.poll(jobId);
+    if (summary.state !== "failed") return undefined;
+    const exit = summary.exitCode === undefined || summary.exitCode === null ? "no exit code" : `exit code ${summary.exitCode}`;
+    const stderr = (await coordinator.log(jobId, { maxBytes, stream: "stderr" })).text.trimEnd();
+    return `Job failed (${exit}).` + (stderr ? `\n── stderr ──\n${stderr}` : "\nNo stderr output was captured.");
+  } catch {
+    return undefined;
+  }
 }
 
 function formatList(summaries: JobSummary[]): string {
@@ -269,7 +287,9 @@ export const backgroundJobTool: ToolDefinition = {
           }
           const tail = await coordinator.log(jobId, { maxBytes, stream });
           const note = tail.truncated ? "\n[output truncated]" : "";
-          return { output: (tail.text || `(no ${stream} output captured)`) + note, isError: false };
+          const failure = input.stream === undefined ? await describeFailure(coordinator, jobId, maxBytes) : undefined;
+          const body = (tail.text || (failure ? "" : `(no ${stream} output captured)`)) + note;
+          return { output: failure ? [body.trimEnd(), failure].filter(Boolean).join("\n\n") : body, isError: false };
         }
 
         case "wait": {

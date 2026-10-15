@@ -201,6 +201,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     pendingConfirmation,
     pendingContextWindowRequest,
     resolveContextWindowRequest,
+    requestConfirmation,
     tokenUsage,
     loadedPlugins,
     mcpServers,
@@ -955,6 +956,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             ),
             setPickerActive,
             suspendTerminal: suspendTerminalSync,
+            confirmBackgroundAction: async (action, spec, subject) => {
+              const choice = await requestConfirmation("run_background_job", { action, spec, subject });
+              return choice === "yes" || choice === "always";
+            },
             showResourceTUI: stdout.isTTY && process.stdin.isTTY ? (kind: ResourceKind, onDone: () => void, marketplace = false) => {
               if (kind === "agents") {
                 agentsTUIResolveRef.current = onDone;

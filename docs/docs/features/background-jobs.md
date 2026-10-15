@@ -62,7 +62,11 @@ Job IDs can be given as unambiguous prefixes.
 
 In the manager, the job list shows each job's command and directory, and search matches both. Press `x` to stop the selected job. In the Schedules tab, `n` creates a schedule, `t` pauses or resumes one, and `d` revokes it.
 
-If a text command needs your approval (see below), it opens the manager so you can approve it there. The original action is not re-run for you; repeat it in the manager.
+`/job stop`, `/job schedule create`, and `/job schedule revoke` show the approval prompt inline in the interactive app. If no prompt is available, they open the manager so you can approve there; the original action is not re-run for you. An unknown or ambiguous job ID is reported as an error and never opens the manager.
+
+`/job log <id>` shows stdout. For a job that failed, it also appends the exit code and its stderr, so you do not have to rerun with `--stderr`. Passing `--stdout` or `--stderr` shows only that stream.
+
+When you exit Agav, the exit message lists the IDs of any background jobs still running, next to the session resume hint.
 
 ## Approval and permission modes
 

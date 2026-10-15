@@ -963,16 +963,35 @@ export async function main() {
     process.exit(1);
   }
 
-  /** Print a subtle reminder pointing at the most recent resumable session. */
+  /** Ids of background jobs still running (or of unknown state), for the exit hint. Never throws. */
+  async function runningJobIds(): Promise<string[]> {
+    if (config.backgroundJobsEnabled !== true) return [];
+    try {
+      const { getSharedCoordinator } = await import("./background-jobs-integration.js");
+      const { isTerminalLifecycle } = await import("./background-jobs/types.js");
+      const coordinator = await getSharedCoordinator();
+      const active = (await coordinator.list()).filter((job) => !isTerminalLifecycle(job.state));
+      // list() reads persisted state; poll() reconciles with live evidence so a crashed job is not listed.
+      const fresh = await Promise.all(active.map((job) => coordinator.poll(job.jobId).catch(() => job)));
+      return fresh.filter((job) => !isTerminalLifecycle(job.state)).map((job) => job.jobId);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Print a subtle reminder pointing at the most recent resumable session, and any jobs left running. */
   async function showResumeHint() {
     try {
       const { listSessions } = await import("./config/history.js");
       const sessions = await listSessions();
-      if (sessions.length > 0) {
-        const latest = sessions[0]!;
-        const shortId = latest.id;
-        process.stderr.write(`\n${dim(`To resume: agav --resume ${shortId}`)}\n\n`);
-      }
+      const jobIds = await Promise.race([
+        runningJobIds(),
+        new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 2000).unref()),
+      ]);
+      const lines: string[] = [];
+      if (sessions.length > 0) lines.push(`To resume: agav --resume ${sessions[0]!.id}`);
+      if (jobIds.length > 0) lines.push(`Running background jobs: ${jobIds.join(", ")}  (inspect with /job)`);
+      if (lines.length > 0) process.stderr.write(`\n${lines.map((line) => dim(line)).join("\n")}\n\n`);
     } catch { }
   }
 
