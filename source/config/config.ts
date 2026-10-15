@@ -69,6 +69,7 @@ export interface AgavConfig {
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
   showThinking?: boolean;
+  search?: boolean;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -234,6 +235,11 @@ const PROJECT_CONFIG_TEMPLATE = {
         args: ["-y", "@modelcontextprotocol/server-everything"],
       },
     },
+  },
+  search: {
+    description: "Whether web search is enabled.",
+    type: "boolean",
+    eg: true,
   },
 } as const;
 
