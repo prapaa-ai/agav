@@ -6,14 +6,16 @@ import type { LLMProvider, StreamEvent, StreamParams } from "../providers/types.
 vi.mock("../tools/registry-factory.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../tools/registry-factory.js")>();
   const { ToolRegistry } = await import("../tools/registry.js");
-  return { ...actual, createToolRegistry: () => {
-    const registry = new ToolRegistry();
-    registry.register({
-      schema: { name: "read_file", description: "Read a fixture", inputSchema: { type: "object" } },
-      execute: async () => ({ output: "fixture", isError: false }),
-    });
-    return registry;
-  } };
+  return {
+    ...actual, createToolRegistry: () => {
+      const registry = new ToolRegistry();
+      registry.register({
+        schema: { name: "read_file", description: "Read a fixture", inputSchema: { type: "object" } },
+        execute: async () => ({ output: "fixture", isError: false }),
+      });
+      return registry;
+    }
+  };
 });
 
 const schema = { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] };
@@ -50,7 +52,7 @@ describe("print-mode prompt iteration budget", () => {
     expect(await runPipeMode("Return a result", config, provider, { stdinContent: "", outputSchema: schema, stream: true })).toBe(1);
     expect(provider.stream).toHaveBeenCalledTimes(1);
     expect(stdout()).toBe("");
-    expect(stderr()).toMatch(/JSON Schema validation.*maximum iterations/);
+    expect(stderr()).toMatch(/JSON Schema validation.*Iteration budget exhausted/);
     expect(stderr()).not.toContain("retrying once");
   });
 
@@ -82,7 +84,7 @@ describe("print-mode prompt iteration budget", () => {
     const provider = providerFor([text("Analysis only"), text("Still no edits")]);
     expect(await runPipeMode("Fix the fixture", { ...config, maxIterations }, provider, { stdinContent: "" })).toBe(1);
     expect(provider.stream).toHaveBeenCalledTimes(maxIterations);
-    expect(stderr()).toContain("Agent reached maximum iterations");
+    expect(stderr()).toContain("skipping no-edit retry");
   });
 
   it("accepts valid output on the last request without a retry", async () => {

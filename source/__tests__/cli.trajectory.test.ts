@@ -14,8 +14,8 @@ vi.mock("../config/config.js", async (original) => ({ ...await original<typeof i
 vi.mock("../config/keybindings.js", () => ({ loadKeybindings: async () => ({}) }));
 vi.mock("../config/history.js", () => ({ listSessions: async () => [] }));
 vi.mock("../providers/registry.js", () => ({ createProvider: vi.fn() }));
-vi.mock("../ink/index.js", () => ({ render: vi.fn(() => ({ waitUntilExit: async () => {} })) }));
-vi.mock("../utils/auto-update.js", () => ({ checkAndUpdate: async () => {} }));
+vi.mock("../ink/index.js", () => ({ render: vi.fn(() => ({ waitUntilExit: async () => { } })) }));
+vi.mock("../utils/auto-update.js", () => ({ checkAndUpdate: async () => { } }));
 vi.mock("../utils/git.js", () => ({ getGitContext: async () => null }));
 vi.mock("../utils/terminal-keyboard.js", () => ({ detectKittyKeyboard: async () => false }));
 vi.mock("../utils/system-prompt.js", () => ({ refreshDynamicContext: async () => "" }));
@@ -23,14 +23,16 @@ vi.mock("../utils/temp-output.js", () => ({ tempOutputManager: { pruneStale: vi.
 vi.mock("../tools/registry-factory.js", async (original) => {
   const actual = await original<typeof import("../tools/registry-factory.js")>();
   const { ToolRegistry } = await import("../tools/registry.js");
-  return { ...actual, createToolRegistry: () => {
-    const registry = new ToolRegistry();
-    registry.register({
-      schema: { name: "read_file", description: "Read a trajectory fixture", inputSchema: { type: "object" } },
-      execute: async () => ({ output: "trajectory fixture contents", isError: false }),
-    });
-    return registry;
-  } };
+  return {
+    ...actual, createToolRegistry: () => {
+      const registry = new ToolRegistry();
+      registry.register({
+        schema: { name: "read_file", description: "Read a trajectory fixture", inputSchema: { type: "object" } },
+        execute: async () => ({ output: "trajectory fixture contents", isError: false }),
+      });
+      return registry;
+    }
+  };
 });
 
 const config: AgavConfig = {
@@ -88,7 +90,7 @@ beforeEach(async () => {
   vi.spyOn(process, "exit").mockImplementation(() => { throw exited; });
   vi.spyOn(process.stdout, "write").mockReturnValue(true);
   vi.spyOn(process.stderr, "write").mockReturnValue(true);
-  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.spyOn(console, "log").mockImplementation(() => { });
   vi.spyOn(process, "stdin", "get").mockReturnValue({ isTTY: true } as typeof process.stdin);
   vi.spyOn(process, "on").mockImplementation(() => process);
   vi.spyOn(globalThis, "fetch").mockImplementation(async () => { throw new Error("Network is forbidden in trajectory tests"); });
@@ -248,7 +250,7 @@ describe("real pipe-mode trajectory export", () => {
     provider = providerFor([text("not JSON")]);
     expect(await runPipeMode("Return a result", { ...config, maxIterations: 1 }, provider, options({ outputSchema: schema }))).toBe(1);
     expect(provider.stream).toHaveBeenCalledTimes(1);
-    expect(stderr()).toMatch(/JSON Schema validation.*maximum iterations/);
+    expect(stderr()).toMatch(/JSON Schema validation.*Iteration budget exhausted/);
     expect((await exported()).usage).toEqual(zeroUsage);
   });
 
@@ -286,8 +288,10 @@ describe("real pipe-mode trajectory export", () => {
       .toEqual(Array.from({ length: 6 }, (_, i) => `cycle-${i + 1}`));
     expect(blocks.filter(block => block.type === "tool_result")).toHaveLength(6);
     expect(result.messages.some(message => messageText(message) === "Compact summary")).toBe(false);
-    expect(result.usage).toEqual({ input_tokens: 60 + summaries * 20, output_tokens: 6 + summaries * 5,
-      cache_read_tokens: summaries * 2, cache_write_tokens: summaries * 3 });
+    expect(result.usage).toEqual({
+      input_tokens: 60 + summaries * 20, output_tokens: 6 + summaries * 5,
+      cache_read_tokens: summaries * 2, cache_write_tokens: summaries * 3
+    });
   });
 
   it("returns 1 and reports a real filesystem export failure on stderr", async () => {

@@ -10,8 +10,8 @@ vi.mock("../config/config.js", async (original) => ({ ...await original<typeof i
 vi.mock("../config/keybindings.js", () => ({ loadKeybindings: async () => ({}) }));
 vi.mock("../config/history.js", () => ({ listSessions: async () => [] }));
 vi.mock("../providers/registry.js", () => ({ createProvider: vi.fn() }));
-vi.mock("../ink/index.js", () => ({ render: vi.fn(() => ({ waitUntilExit: async () => {} })) }));
-vi.mock("../utils/auto-update.js", () => ({ checkAndUpdate: async () => {} }));
+vi.mock("../ink/index.js", () => ({ render: vi.fn(() => ({ waitUntilExit: async () => { } })) }));
+vi.mock("../utils/auto-update.js", () => ({ checkAndUpdate: async () => { } }));
 vi.mock("../utils/git.js", () => ({ getGitContext: async () => null }));
 vi.mock("../utils/terminal-keyboard.js", () => ({ detectKittyKeyboard: async () => false }));
 vi.mock("../utils/system-prompt.js", () => ({ refreshDynamicContext: async () => "" }));
@@ -24,16 +24,18 @@ let provider: LLMProvider & { stream: ReturnType<typeof vi.fn> };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  provider = { name: "mock", stream: vi.fn(() => (async function* (): AsyncGenerator<StreamEvent> {
-    yield { type: "text_delta", text: "done" };
-    yield { type: "message_end", stopReason: "end_turn" };
-  })()) };
+  provider = {
+    name: "mock", stream: vi.fn(() => (async function* (): AsyncGenerator<StreamEvent> {
+      yield { type: "text_delta", text: "done" };
+      yield { type: "message_end", stopReason: "end_turn" };
+    })())
+  };
   vi.mocked(loadConfig).mockResolvedValue({ ...config });
   vi.mocked(createProvider).mockReturnValue(provider);
   vi.spyOn(process, "exit").mockImplementation(() => { throw exited; });
   vi.spyOn(process.stdout, "write").mockImplementation(() => true);
   vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-  vi.spyOn(console, "log").mockImplementation(() => {});
+  vi.spyOn(console, "log").mockImplementation(() => { });
   // Avoid stdin reads and the interactive non-TTY guard, not the entry paths.
   vi.spyOn(process, "stdin", "get").mockReturnValue({ isTTY: true } as typeof process.stdin);
   vi.spyOn(process, "on").mockImplementation(() => process);
@@ -72,7 +74,7 @@ describe("--max-turns production CLI", () => {
     await invoke([mode, "fix the bug", "--max-turns=2"]);
     expect(process.exit).toHaveBeenCalledWith(1); // The retry cannot obtain a third request.
     expect(provider.stream).toHaveBeenCalledTimes(2);
-    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("maximum iterations"));
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("Iteration budget exhausted"));
     expect(render).not.toHaveBeenCalled();
   });
 
