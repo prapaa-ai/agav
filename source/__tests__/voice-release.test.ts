@@ -116,6 +116,7 @@ describe("native voice release packaging", () => {
       fs.appendFileSync(process.env.TOOL_LOG, JSON.stringify(args) + '\\n');
       if (args.includes('-B')) {
         const scratch = args[args.indexOf('-B') + 1];
+        fs.mkdirSync(scratch, { recursive: true });
         const binary = path.join(scratch, 'agav-voice');
         fs.writeFileSync(binary, '#!/bin/sh\\nif [ "$1" = "--protocol-version" ]; then printf "1\\\\n"; else printf "self-test passed\\\\n"; fi\\n');
         fs.chmodSync(binary, 0o755);

@@ -85,7 +85,10 @@ describe("embed-voice-helper generator", () => {
     expect(result.status, result.stderr).toBe(0);
     const data = await bundle();
     expect(data.size).toBe(bytes.length);
-    expect(gunzipSync(Buffer.from(data.gzipBase64, "base64"))).toEqual(bytes);
+    expect(data.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    const restored = gunzipSync(Buffer.from(data.gzipBase64, "base64"));
+    expect(restored.length).toBe(bytes.length);
+    expect(restored.equals(bytes)).toBe(true);
   });
   it.each(["darwin-riscv64", "win32-arm64", "toString", "../linux-x64"])("rejects unknown target %s", async target => {
     await writeFile(input, fixture("darwin-arm64"));
