@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
     revokeSchedule: vi.fn(),
     listRuns: vi.fn(),
     setScheduleEnabled: vi.fn(),
+    deleteSchedule: vi.fn(),
   },
   props: undefined as undefined | { adapter: ResourceAdapter; prompt?: string; actions: { key: string; label: string; run(item: ResourceItem | undefined): unknown }[] },
 }));
@@ -28,7 +29,7 @@ vi.mock("../background-jobs-integration.js", () => ({
 }));
 
 const { CommandRegistry } = await import("../commands/registry.js");
-const { createJobsAdapter, createJobSchedulesAdapter, stopJob, jobCapabilities, sortJobsNewestFirst } = await import("../resources/job-adapters.js");
+const { createJobsAdapter, createJobSchedulesAdapter, stopJob, revokeSchedule, jobCapabilities, sortJobsNewestFirst } = await import("../resources/job-adapters.js");
 
 const summary: JobSummary = {
   jobId: "0123456789abcdef",
@@ -114,7 +115,8 @@ describe("jobs adapter", () => {
     const [item] = await adapter.list();
     expect(item).toMatchObject({ id: summary.jobId, title: "01234567  running  · independent run" });
     expect(item!.description).toContain("exit -");
-    expect(adapter.remove).toBeUndefined();
+    expect(adapter.remove).toBeTypeOf("function");
+    expect(item!.removable).toBe(false); // Running jobs are listed but cannot be deleted.
     expect(adapter.setEnabled).toBeUndefined();
     const detail = (await adapter.get(summary.jobId))!.detail;
     expect(mocks.coordinator.log).toHaveBeenCalledWith(summary.jobId, { maxBytes: 65536, stream: "stdout" });
@@ -177,18 +179,18 @@ describe("jobs adapter", () => {
 });
 
 describe("job schedules adapter", () => {
-  it("only allows revoking enabled schedules", async () => {
+  it("allows deleting inactive schedules but not enabled or revoked schedules", async () => {
     mocks.engine.listSchedules.mockResolvedValue([
       schedule(true),
       { ...schedule(false, "2024-02-01T00:00:00Z"), scheduleId: "paused" },
       { ...schedule(false), scheduleId: "revoked" },
     ]);
     const [active, paused, revoked] = await createJobSchedulesAdapter(session).list();
-    expect(active).toMatchObject({ title: "npm test", enabled: true, removable: true });
+    expect(active).toMatchObject({ title: "npm test", enabled: true, removable: false });
     expect(active!.detail).toContain("Status: enabled");
     expect(paused).toMatchObject({ title: "npm test", enabled: false, removable: true });
     expect(paused!.detail).toContain("Status: paused since");
-    expect(revoked).toMatchObject({ title: "npm test [revoked]", enabled: undefined, removable: false });
+    expect(revoked).toMatchObject({ title: "npm test [revoked]", enabled: undefined, removable: true });
     expect(revoked!.detail).toContain("Status: revoked");
   });
 
@@ -230,7 +232,7 @@ describe("job schedules adapter", () => {
       cron: "0 9 * * *", timezone: "UTC", session,
       launchSpecTemplate: expect.objectContaining({ invocation: expect.objectContaining({ mode: "shell", commandText: "npm test" }) }),
     }));
-    await adapter.remove!("sched-0123456789");
+    await revokeSchedule("sched-0123456789", session);
     expect(mocks.engine.revokeSchedule).toHaveBeenCalledWith("sched-0123456789", session);
   });
 });
@@ -277,7 +279,7 @@ describe("JobsTUI", () => {
       ui.action("Tab").run(undefined);
       await ui.settle();
       expect(mocks.props!.adapter.title).toBe("Background job schedules");
-      expect(mocks.props!.actions.map((a) => a.key)).toEqual(["Tab", "c"]);
+      expect(mocks.props!.actions.map((a) => a.key)).toEqual(["Tab", "x", "c"]);
     } finally {
       ui.cleanup();
     }
