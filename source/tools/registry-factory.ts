@@ -1,4 +1,5 @@
 import { ToolRegistry } from "./registry.js";
+import type { AgavConfig } from "../config/config.js";
 import { fileReadTool } from "./file-read.js";
 import { fileWriteTool } from "./file-write.js";
 import { editFileTool } from "./file-edit.js";
@@ -15,6 +16,7 @@ import { githubTool } from "./github.js";
 import { overviewTool } from "./overview.js";
 import { testRunnerTool } from "./test-runner.js";
 import { memoryTool } from "./memory.js";
+import { backgroundJobTool } from "./background-job.js";
 
 /**
  * The set of tool names that ship with agav. Exported so that skill validation
@@ -41,6 +43,7 @@ export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
   "save_memory",
   "subagent",
   "activate_skill",
+  "run_background_job",
 ]);
 
 /** Built-ins available only when explicitly requested by a skill or native agent. */
@@ -70,6 +73,7 @@ const BUILTIN_TOOLS = [
   overviewTool,
   testRunnerTool,
   memoryTool,
+  backgroundJobTool,
 ];
 
 /** Create a registry containing the named Agav built-in tools. */
@@ -82,7 +86,19 @@ export function createBuiltinToolRegistry(toolNames: Iterable<string>): ToolRegi
   return registry;
 }
 
+export interface ToolRegistryOptions {
+  search?: boolean;
+}
+
 /** Register the default built-in tool set used by interactive and print-mode sessions. */
-export function createToolRegistry(): ToolRegistry {
-  return createBuiltinToolRegistry([...KNOWN_TOOL_NAMES].filter((name) => !OPTIONAL_TOOL_NAMES.has(name)));
+export function createToolRegistry(options?: ToolRegistryOptions | AgavConfig): ToolRegistry {
+  const toolNames = new Set(
+    [...KNOWN_TOOL_NAMES].filter((name) => !OPTIONAL_TOOL_NAMES.has(name))
+  );
+  if (options?.search === false) {
+    toolNames.delete("web_search");
+  } else if (options?.search === true) {
+    toolNames.add("web_search");
+  }
+  return createBuiltinToolRegistry(toolNames);
 }

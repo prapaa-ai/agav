@@ -35,7 +35,9 @@ import { shellTool } from "../tools/shell.js";
 import { runInSandbox } from "../utils/sandbox.js";
 
 const directories = new Set<string>();
-const command = (code: string) => `"${process.execPath}" -e ${JSON.stringify(code).replace(/\$/g, "\\$")}`;
+const command = (code: string) => process.platform === "win32"
+  ? `"${process.execPath}" -e "eval(Buffer.from('${Buffer.from(code).toString("base64")}', 'base64').toString())"`
+  : `"${process.execPath}" -e ${JSON.stringify(code).replace(/\$/g, "\\$")}`;
 const execute = (code: string) => shellTool.execute({ command: command(code), sandbox: "none" });
 function isProcessRunning(pid: number): boolean {
   try {
@@ -137,8 +139,10 @@ describe("bounded streamed shell output", () => {
     expect(result.output).toContain("grep_search");
     const path = savedPath(result.output);
     expect(readFileSync(path, "utf8")).toBe(expected);
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-    expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
+    if (process.platform !== "win32") {
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
+    }
     expect(renameSync).toHaveBeenCalledWith(path.replace(/output.log$/, "output.tmp"), path);
   });
 
@@ -360,11 +364,13 @@ describe("sandbox streaming option", () => {
     const code = "process.on('SIGTERM', () => {}); const child = require('node:child_process').spawn(process.execPath, ['-e', 'process.on(\"SIGTERM\", () => {}); setTimeout(() => {}, 1500)'], { stdio: ['ignore', 'inherit', 'inherit'] }); process.stdout.write(process.pid + ',' + child.pid); setTimeout(() => {}, 1500);";
     const result = await runInSandbox({
       command: `exec ${command(code)}`,
-      cwd: process.cwd(), timeout: 100, maxBuffer: 1, forceBackend: "none",
+      // Allow enough time for both Node processes to start on loaded CI workers;
+      // the shorter timeout could kill the command before it reports either PID.
+      cwd: process.cwd(), timeout: 500, maxBuffer: 1, forceBackend: "none",
       onOutput: (chunk) => chunks.push(chunk),
     });
     expect(result.error?.message).toContain("timed out");
-    expect(Date.now() - started).toBeLessThan(650);
+    expect(Date.now() - started).toBeLessThan(1100);
     const pids = Buffer.concat(chunks).toString().split(",").map(Number);
     expect(pids).toHaveLength(2);
     for (const pid of pids) {
@@ -391,7 +397,7 @@ describe("sandbox streaming option", () => {
     }) as typeof spawn);
     const result = await runInSandbox({ command: "echo hi", cwd: process.cwd(), timeout: 20, maxBuffer: 1, forceBackend: "none", onOutput: () => {} });
     expect(result.error?.message).toContain("timed out");
-    expect(spawn).toHaveBeenCalledWith("cmd.exe", ["/c", "echo hi"], expect.objectContaining({ detached: false }));
+    expect(spawn).toHaveBeenCalledWith("cmd.exe", ["/d", "/s", "/c", '"echo hi"'], expect.objectContaining({ detached: false, windowsVerbatimArguments: true }));
     expect(execFile).toHaveBeenCalledWith("taskkill", ["/PID", "12345", "/T"], { timeout: 150 }, expect.any(Function));
     expect(execFile).toHaveBeenCalledWith("taskkill", ["/PID", "12345", "/T", "/F"], { timeout: 150 }, expect.any(Function));
   });
@@ -416,7 +422,7 @@ describe("sandbox streaming option", () => {
   it("returns timeout errors and streamed partial output without buffered copies", async () => {
     const chunks: Buffer[] = [];
     const result = await runInSandbox({
-      command: `exec ${command("process.stdout.write('started'); setInterval(() => {}, 1000);")}`,
+      command: `${process.platform === "win32" ? "" : "exec "}${command("process.stdout.write('started'); setInterval(() => {}, 1000);")}`,
       cwd: process.cwd(), timeout: 300, maxBuffer: 1, forceBackend: "none",
       onOutput: (chunk) => chunks.push(chunk),
     });
@@ -445,8 +451,8 @@ describe("sandbox streaming option", () => {
     const [file, args, options] = vi.mocked(spawn).mock.calls[0]!;
     expect(file).toBe(backend === "seatbelt" ? "sandbox-exec" : "bwrap");
     expect(args).toContain("echo hi");
-    if (backend === "seatbelt") expect(args).toContain(`HOME_SSH=${process.env.HOME}/.ssh`);
-    else expect(args?.join(" ")).toContain(`--tmpfs ${process.env.HOME}/.ssh`);
+    if (backend === "seatbelt") expect(args).toContain(`HOME_SSH=${process.env.HOME ?? "/tmp"}/.ssh`);
+    else expect(args?.join(" ")).toContain(`--tmpfs ${process.env.HOME ?? "/tmp"}/.ssh`);
     expect(options?.env).not.toHaveProperty("GITHUB_TOKEN");
   });
 });

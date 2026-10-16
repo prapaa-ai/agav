@@ -69,6 +69,12 @@ export interface CommandContext {
    * Not needed by the React TUIs — those render inside Ink.
    */
   suspendTerminal: () => () => void
+  /** Inline approval prompt for background-job actions; absent when no interactive UI can show one. */
+  confirmBackgroundAction?: (
+    action: import("../background-jobs/types.js").GrantAction,
+    spec: Omit<import("../background-jobs/types.js").LaunchSpec, "requestId" | "createdAt">,
+    subject?: import("../background-jobs/types.js").ConfirmSubject,
+  ) => Promise<boolean>
   showResourceTUI?: (kind: import("../resources/types.js").ResourceKind, onDone: () => void, marketplace?: boolean) => void
   showAgentsTUI: (onDone: () => void) => void
   showSkillsTUI: (onDone: () => void) => void
