@@ -7,6 +7,8 @@ export interface ResourceItem {
   searchText?: string;
   enabled?: boolean;
   removable?: boolean;
+  /** Offered the job "Stop" action (live jobs only). */
+  stoppable?: boolean;
   values?: Record<string, string>;
 }
 

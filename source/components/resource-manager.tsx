@@ -14,6 +14,12 @@ export interface ResourceActionView {
 export interface ResourceAction {
   key: string;
   label: string;
+  /** Hidden and ignored for items it returns false for (items are never passed when none is selected). */
+  when?(item: ResourceItem): boolean;
+  /** Also available from the detail view, acting on the inspected item. */
+  inDetail?: boolean;
+  /** Ask y/n with this text before running (for permanent operations). */
+  confirm?: string;
   run(item: ResourceItem | undefined): void | string | ResourceActionView | Promise<void | string | ResourceActionView>;
 }
 
@@ -32,6 +38,8 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   const [index, setIndex] = useState(0);
   const [view, setView] = useState<"list" | "detail" | "create" | "edit" | "delete">("list");
   const [detail, setDetail] = useState<ResourceItem>();
+  // What the y/n "delete" view will run; set by `d` or by an action that declares `confirm`.
+  const [pendingConfirm, setPendingConfirm] = useState<{ label: string; text: string; run(): Promise<void | string>; doneLabel: string }>();
   const [values, setValues] = useState<Record<string, string>>({});
   const [fieldIndex, setFieldIndex] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -55,6 +63,26 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   const form = view === "create" || view === "edit";
   const canRemove = Boolean(adapter.remove && item && item.removable !== false);
   const removeLabel = adapter.removeLabel ?? "Delete";
+  const actionApplies = (a: ResourceAction, target: ResourceItem | undefined) => !a.when || (target !== undefined && a.when(target));
+  const detailTarget = detail && detail.id ? detail : undefined;
+  const detailCanRemove = Boolean(adapter.remove && detailTarget && detailTarget.removable !== false);
+  const detailActions = actions.filter((a) => a.inDetail && actionApplies(a, detailTarget));
+  const removeConfirmation = (target: ResourceItem) => ({
+    label: removeLabel,
+    text: adapter.removeConfirm ?? "This cannot be undone.",
+    run: () => adapter.remove!(target.id),
+    doneLabel: `${adapter.removedLabel ?? "Deleted"}.`,
+  });
+  const actionConfirmation = (action: ResourceAction, target: ResourceItem) => ({
+    label: action.label,
+    text: action.confirm!,
+    // Confirmed actions are operations; a returned report view is not shown from the confirm step.
+    run: async () => {
+      const result = await action.run(target);
+      return typeof result === "string" ? result : undefined;
+    },
+    doneLabel: `${action.label} done.`,
+  });
   const canToggle = Boolean(adapter.setEnabled && item?.enabled !== undefined);
   // Capped viewport keeps the controls line on screen.
   const detailLines = prompt && promptDetails ? promptDetails.lines : undefined;
@@ -111,11 +139,11 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     if (busyRef.current) return;
     if (view === "delete") {
       if (key.escape || input.toLowerCase() === "n") { setView("list"); return; }
-      if (input.toLowerCase() === "y" && detail && adapter.remove) void run(async () => {
-        await adapter.remove!(detail.id);
+      if (input.toLowerCase() === "y" && pendingConfirm) void run(async () => {
+        const result = await pendingConfirm.run();
         await reload();
         setView("list");
-        setStatus(`${adapter.removedLabel ?? "Deleted"}.`);
+        setStatus(typeof result === "string" ? result : pendingConfirm.doneLabel);
       });
       return;
     }
@@ -142,6 +170,19 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
       if (key.escape || input === "b") { setScrollOffset(Number.POSITIVE_INFINITY); setView("list"); }
       else if (key.upArrow) scroll.current?.scrollBy(1);
       else if (key.downArrow) scroll.current?.scrollBy(-1);
+      else if (input === "d" && detailCanRemove && detailTarget) { setPendingConfirm(removeConfirmation(detailTarget)); setView("delete"); }
+      else {
+        const action = detailActions.find((a) => a.key === input);
+        if (action && detailTarget && action.confirm) { setPendingConfirm(actionConfirmation(action, detailTarget)); setView("delete"); }
+        else if (action && detailTarget) void run(async () => {
+          const result = await action.run(detailTarget);
+          if (typeof result === "string" && mounted.current) {
+            await reload();
+            setView("list");
+            setStatus(result);
+          }
+        });
+      }
       return;
     }
     if (handleSearchKey(input, key)) { setIndex(0); return; }
@@ -159,15 +200,17 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     else if (input === "t" && canToggle) void run(async () => {
       await adapter.setEnabled!(item!.id, !item!.enabled); await reload(); setStatus(adapter.notice ?? "Updated.");
     });
-    else if (input === "d" && canRemove) { setDetail(item); setView("delete"); }
+    else if (input === "d" && canRemove && item) { setDetail(item); setPendingConfirm(removeConfirmation(item)); setView("delete"); }
     else if (input === "n" && adapter.create) { setValues({}); setFieldIndex(0); setView("create"); setStatus(""); }
     else if (input === "e" && adapter.update && item) { setDetail(item); setValues(item.values ?? {}); setFieldIndex(0); setView("edit"); setStatus(""); }
     else {
-      const action = actions.find((a) => a.key === input || (a.key === "Tab" && key.tab));
-      if (action) void run(async () => {
+      const action = actions.find((a) => (a.key === input || (a.key === "Tab" && key.tab)) && actionApplies(a, item));
+      if (action && action.confirm && item) { setDetail(item); setPendingConfirm(actionConfirmation(action, item)); setView("delete"); }
+      else if (action) void run(async () => {
         const result = await action.run(item);
         if (result && typeof result === "object" && mounted.current) {
-          setDetail({ ...(item ?? { id: "", title: "", description: "" }), detail: result.detail });
+          // A report, not the item itself: never offer delete/stop on it.
+          setDetail({ ...(item ?? { id: "", title: "", description: "" }), detail: result.detail, removable: false, stoppable: false });
           setScrollOffset(Number.POSITIVE_INFINITY);
           setView("detail");
         } else if (typeof result === "string" && mounted.current) {
@@ -194,7 +237,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
           <Text dimColor>  {entry.description.replace(/\s+/g, " ").slice(0, Math.max(20, (stdout.columns || 80) - 6))}</Text>
         </Box>) : <Text dimColor>No resources found.</Text>)}
         {view === "detail" && <Text>{detail?.detail}</Text>}
-        {view === "delete" && <Text color="yellow">{removeLabel} "{detail?.title}"? {adapter.removeConfirm ?? "This cannot be undone."} y: Confirm · n/ESC: Cancel</Text>}
+        {view === "delete" && <Text color="yellow">{pendingConfirm?.label} "{detail?.title}"? {pendingConfirm?.text} y: Confirm · n/ESC: Cancel</Text>}
         {form && fields.map((f, i) => <Box key={f.name} flexDirection="column">
           <Text color={i === fieldIndex ? "cyan" : undefined}>{i === fieldIndex ? "→ " : "  "}{f.label}{f.options ? ` (${f.options.join(" / ")})` : ""}: {values[f.name] ?? ""}{i === fieldIndex ? "█" : ""}</Text>
         </Box>)}
@@ -209,10 +252,13 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     {prompt ? <Text color="yellow" wrap={detailLines ? "wrap" : "truncate-end"}>{detailLines ? promptDetails!.controls : prompt}</Text> : busy && <Text color="yellow">Working…</Text>}
     {status && <Text color="yellow">{status}</Text>}
     {view === "list" && <Text dimColor>Page {page + 1}/{pages}{adapter.notice ? ` · ${adapter.notice}` : ""}</Text>}
-    <Text dimColor>{form ? "Tab/↑↓: Field | ENTER: Save | ESC: Cancel" : view === "detail" ? "↑↓: Scroll | b/ESC: Back" : view === "delete" ? `y: ${removeLabel} | n/ESC: Cancel` : [
+    <Text dimColor>{form ? "Tab/↑↓: Field | ENTER: Save | ESC: Cancel" : view === "detail" ? [
+      "↑↓: Scroll", "b/ESC: Back", detailCanRemove && `d: ${removeLabel}`,
+      ...detailActions.map((a) => `${a.key}: ${a.label}`),
+    ].filter(Boolean).join(" | ") : view === "delete" ? `y: ${pendingConfirm?.label ?? removeLabel} | n/ESC: Cancel` : [
       "↑↓: Navigate", "←→: Page", `ENTER/i: ${adapter.inspectLabel ?? "Inspect"}`, "s: Search", "r: Refresh",
       adapter.create && "n: Create", adapter.update && item && "e: Edit", canToggle && "t: Enable/disable", canRemove && `d: ${removeLabel}`,
-      ...actions.map((a) => `${a.key}: ${a.label}`), "ESC: Exit/clear",
+      ...actions.filter((a) => actionApplies(a, item)).map((a) => `${a.key}: ${a.label}`), "ESC: Exit/clear",
     ].filter(Boolean).join(" | ")}</Text>
   </Box>;
 }

@@ -4,7 +4,9 @@ import { randomUUID } from "node:crypto";
 import {
   BACKGROUND_JOBS_PROTOCOL_VERSION,
   BackgroundJobError,
+  isLiveLifecycle,
   isTerminalLifecycle,
+  PreSpawnLaunchError,
   type ConfirmSubject,
   type CoordinatorClient,
   type JobRecord,
@@ -31,6 +33,7 @@ import { readCursor, readTail, type LogStream } from "../logging/segment-reader.
 import { reserveCapacity } from "./admission.js";
 import { launchSupervisorForJob, socketNameForJob } from "./launcher.js";
 import { join } from "node:path";
+import { rm } from "node:fs/promises";
 
 /** Extras beyond `CoordinatorClient`, not visible to callers holding only that type. */
 export interface CoordinatorExtensions {
@@ -39,6 +42,12 @@ export interface CoordinatorExtensions {
   authorization: AuthorizationService;
   root: string;
   findByRequestId(requestId: string): Promise<JobSummary | undefined>;
+  /**
+   * Permanently remove a finished (completed/failed/interrupted) job and its persisted state
+   * (record, control intents, completion events/acks, logs, and its spec when no other job shares it).
+   * Refuses any job that is not terminal under fresh liveness evidence (`invalid-state`).
+   */
+  deleteJob(jobIdOrPrefix: string): Promise<void>;
   /**
    * Reconcile possibly-orphaned jobs (startup sweep): `running`/`unknown` jobs, plus
    * `accepted`/`starting` jobs created more than `olderThanMs` ago (default 2 min).
@@ -336,28 +345,28 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
         await authorizeOrThrow("start", consentSpec, session, { headless });
       }
 
-      // Idempotent retry: a reused requestId returns the existing job.
-      const existingSpec = await repositories.specs.get(request.requestId);
-      if (existingSpec !== undefined) {
-        const existingHash = hashLaunchSpecForConsent(toConsentSpec(existingSpec));
+      // Request identity, capacity check and job creation share one coordinator-lock transaction so
+      // concurrent identical requests cannot both observe "not found" and launch twice.
+      const admission = await withCoordinatorLockRetrying<{ existing: JobRecord } | { jobId: string }>(root, async () => {
         const newHash = hashLaunchSpecForConsent(consentSpec);
-        if (existingHash !== newHash) {
-          throw new BackgroundJobError(
-            "spec-changed",
-            "Request ID reused with different launch specification.",
-          );
+        let specToStore = spec;
+
+        // Idempotent retry: a reused requestId returns the existing job.
+        const existingSpec = await repositories.specs.get(request.requestId);
+        if (existingSpec !== undefined) {
+          if (hashLaunchSpecForConsent(toConsentSpec(existingSpec)) !== newHash) {
+            throw new BackgroundJobError(
+              "spec-changed",
+              "Request ID reused with different launch specification.",
+            );
+          }
+          const existingJob = await findJobByRequestId(repositories, request.requestId);
+          if (existingJob !== undefined) return { existing: existingJob };
+          // Crash between specs.put and jobs.create on a prior attempt: the consent hash matches, so
+          // reuse the persisted spec (its original createdAt) instead of rewriting it, then admit.
+          specToStore = existingSpec;
         }
 
-        const existingJob = await findJobByRequestId(repositories, request.requestId);
-        if (existingJob === undefined) {
-          // Crash between spec.put and jobs.create on a prior attempt: fall through to admission.
-        } else {
-          return toJobSummary(existingJob);
-        }
-      }
-
-      // Capacity check + job creation under the coordinator lock so check-then-create is atomic.
-      const jobId = await withCoordinatorLockRetrying(root, async () => {
         const reservation = await reserveCapacity(repositories, root, spec.limits);
         if (!reservation.granted) {
           throw new BackgroundJobError(
@@ -366,13 +375,13 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
           );
         }
 
-        await repositories.specs.put(spec);
+        await repositories.specs.put(specToStore);
 
         const newJobId = randomUUID();
         const record: JobRecord = {
           jobId: newJobId,
           requestId: request.requestId,
-          specHash: hashLaunchSpecForConsent(consentSpec),
+          specHash: newHash,
           protocolVersion: BACKGROUND_JOBS_PROTOCOL_VERSION,
           state: "accepted",
           stopState: "none",
@@ -380,11 +389,29 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
           nonce: "",
         };
         await repositories.jobs.create(record);
-        return newJobId;
+        return { jobId: newJobId };
       }, opts?.admissionRetry);
 
+      if ("existing" in admission) return toJobSummary(admission.existing);
+      const jobId = admission.jobId;
+
       // Launch OUTSIDE the coordinator lock; never hold it while spawning.
-      const launchResult = await launchSupervisorForJob({ jobId, requestId: request.requestId, root, repositories });
+      let launchResult;
+      try {
+        launchResult = await launchSupervisorForJob({ jobId, requestId: request.requestId, root, repositories });
+      } catch (error) {
+        // A definite pre-spawn failure means nothing ever ran: terminalize the job so its capacity
+        // reservation is released. Ambiguous failures keep the reservation for reconciliation.
+        if (error instanceof PreSpawnLaunchError) {
+          await updateJobRetryingOnLockHeld(repositories, jobId, {
+            state: "failed",
+            endedAt: new Date().toISOString(),
+            exitCode: null,
+            uncertaintyReason: `Supervisor launch failed before spawn: ${error.message}`,
+          }).catch(() => undefined);
+        }
+        throw error;
+      }
 
       // Persist the supervisor's identity so cleanup() can reap it. A shallow-merge patch on
       // fields disjoint from the supervisor's own writes (state/nonce); the job lock serializes the update.
@@ -527,9 +554,10 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       if (record === undefined) {
         throw new BackgroundJobError("not-found", `No JobRecord found for jobId "${jobId}".`);
       }
-      // Fresh liveness evidence first: a finished job has nothing to stop, so don't ask for approval.
+      // Fresh liveness evidence first: only a live job can be stopped, so anything else
+      // (finished, unknown, recovery-required) is reported as-is without asking for approval.
       const current = await reconcileAndSummarize(jobId);
-      if (isTerminalLifecycle(current.record.state)) return current.summary;
+      if (!isLiveLifecycle(current.record.state)) return current.summary;
 
       const spec = await requireSpecForJob(record);
       const consentSpec = toConsentSpec(spec);
@@ -594,6 +622,30 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       }
 
       // Known limitation: no log/record files are deleted yet (retention/export policy undecided).
+    },
+
+    async deleteJob(jobIdOrPrefix: string): Promise<void> {
+      const jobId = await resolveJobId(jobIdOrPrefix);
+      const record = await repositories.jobs.get(jobId);
+      if (record === undefined) {
+        throw new BackgroundJobError("not-found", `No JobRecord found for jobId "${jobId}".`);
+      }
+      // Fresh evidence, never the stored state: a job that looks finished but is still live must survive.
+      const { record: fresh } = await reconcileAndSummarize(jobId);
+      if (!isTerminalLifecycle(fresh.state)) {
+        throw new BackgroundJobError(
+          "invalid-state",
+          `Cannot delete job "${jobId}": it is not finished (state: "${fresh.state}"). Only completed, failed or interrupted jobs can be deleted.`,
+        );
+      }
+
+      // Best-effort pieces first, the JobRecord last: until it is gone the job stays listed and the delete can be retried.
+      await repositories.controlIntents.deleteForJob(jobId);
+      await repositories.events.deleteForJob(jobId);
+      await rm(join(root, "jobs", jobId), { recursive: true, force: true });
+      const sharesSpec = (await repositories.jobs.list()).some((j) => j.jobId !== jobId && j.requestId === fresh.requestId);
+      if (!sharesSpec) await repositories.specs.delete(fresh.requestId);
+      await repositories.jobs.delete(jobId);
     },
 
     async capabilities(): Promise<PlatformCapabilities> {

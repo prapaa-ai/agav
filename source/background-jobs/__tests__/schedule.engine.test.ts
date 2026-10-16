@@ -302,4 +302,113 @@ describe("schedule engine", () => {
     expect(secondEntry?.outcome).toBe("skipped-overlap");
     expect(fakeCoordinator.calls.length).toBe(1);
   });
+
+  describe("schedule-wide overlap prevention", () => {
+    const EVERY_MINUTE = "* * * * *";
+
+    /** Coordinator whose start() persists a job record, like the real one, optionally after a delay. */
+    function createPersistingCoordinator(repositories: ReturnType<typeof createFileRepositories>, delayMs = 0) {
+      const fake = createFakeCoordinator();
+      const originalStart = fake.start.bind(fake);
+      fake.start = async (request, session) => {
+        const summary = await originalStart(request, session);
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await repositories.jobs.create({
+          jobId: summary.jobId,
+          requestId: request.requestId,
+          specHash: "h",
+          protocolVersion: 1,
+          state: "running",
+          stopState: "none",
+          nonce: "",
+        });
+        return summary;
+      };
+      return fake;
+    }
+
+    async function seedOccurrence(
+      repositories: ReturnType<typeof createFileRepositories>,
+      scheduleId: string,
+      createdAt: string,
+    ) {
+      await repositories.occurrences.reserve({
+        occurrenceId: randomUUID(),
+        scheduleId,
+        occurrenceKey: "seeded-slot",
+        requestId: randomUUID(),
+        status: "reserved",
+        createdAt,
+      });
+    }
+
+    it("an adjacent slot is skipped while the previous slot's job is still active", async () => {
+      const repositories = createFileRepositories(tempDir);
+      const fakeCoordinator = createPersistingCoordinator(repositories);
+      const { engine } = buildEngine(fakeCoordinator);
+      const record = await engine.createSchedule({
+        cron: EVERY_MINUTE, timezone: "UTC",
+        launchSpecTemplate: buildLaunchSpecTemplate(), session: autoAcceptSession,
+      });
+
+      const first = await engine.evaluateOnce({ nowUtc: new Date("2024-06-01T09:00:00Z"), connectedSessions: [] });
+      const second = await engine.evaluateOnce({ nowUtc: new Date("2024-06-01T09:01:00Z"), connectedSessions: [] });
+
+      expect(first.find((r) => r.scheduleId === record.scheduleId)?.outcome).toBe("dispatched");
+      expect(second.find((r) => r.scheduleId === record.scheduleId)?.outcome).toBe("skipped-overlap");
+      expect(fakeCoordinator.calls).toHaveLength(1);
+    });
+
+    it("concurrent evaluations of adjacent slots launch only one job", async () => {
+      const repositories = createFileRepositories(tempDir);
+      const fakeCoordinator = createPersistingCoordinator(repositories, 100);
+      const { engine } = buildEngine(fakeCoordinator);
+      const record = await engine.createSchedule({
+        cron: EVERY_MINUTE, timezone: "UTC",
+        launchSpecTemplate: buildLaunchSpecTemplate(), session: autoAcceptSession,
+      });
+
+      const [a, b] = await Promise.all([
+        engine.evaluateOnce({ nowUtc: new Date("2024-06-01T09:00:00Z"), connectedSessions: [] }),
+        engine.evaluateOnce({ nowUtc: new Date("2024-06-01T09:01:00Z"), connectedSessions: [] }),
+      ]);
+
+      const outcomes = [a, b].map((r) => r.find((x) => x.scheduleId === record.scheduleId)?.outcome).sort();
+      expect(outcomes).toEqual(["dispatched", "skipped-overlap"]);
+      expect(fakeCoordinator.calls).toHaveLength(1);
+    });
+
+    it("a fresh reservation without a job record counts as active", async () => {
+      const repositories = createFileRepositories(tempDir);
+      const fakeCoordinator = createFakeCoordinator();
+      const { engine } = buildEngine(fakeCoordinator);
+      const record = await engine.createSchedule({
+        cron: EVERY_MINUTE, timezone: "UTC",
+        launchSpecTemplate: buildLaunchSpecTemplate(), session: autoAcceptSession,
+      });
+      const nowUtc = new Date("2024-06-01T09:00:00Z");
+      await seedOccurrence(repositories, record.scheduleId, new Date(Date.now() - 5_000).toISOString());
+
+      const results = await engine.evaluateOnce({ nowUtc, connectedSessions: [] });
+
+      expect(results.find((r) => r.scheduleId === record.scheduleId)?.outcome).toBe("skipped-overlap");
+      expect(fakeCoordinator.calls).toHaveLength(0);
+    });
+
+    it("a stale reservation from a crashed dispatch does not block the schedule forever", async () => {
+      const repositories = createFileRepositories(tempDir);
+      const fakeCoordinator = createFakeCoordinator();
+      const { engine } = buildEngine(fakeCoordinator);
+      const record = await engine.createSchedule({
+        cron: EVERY_MINUTE, timezone: "UTC",
+        launchSpecTemplate: buildLaunchSpecTemplate(), session: autoAcceptSession,
+      });
+      const nowUtc = new Date("2024-06-01T09:00:00Z");
+      await seedOccurrence(repositories, record.scheduleId, new Date(Date.now() - 60 * 60_000).toISOString());
+
+      const results = await engine.evaluateOnce({ nowUtc, connectedSessions: [] });
+
+      expect(results.find((r) => r.scheduleId === record.scheduleId)?.outcome).toBe("dispatched");
+    });
+  });
 });

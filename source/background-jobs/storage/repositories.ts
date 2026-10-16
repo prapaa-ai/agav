@@ -10,7 +10,7 @@
  *   locks/*.lock                          — see single-writer-lock.ts
  *   quarantine/                           — corrupt records moved aside instead of silently dropped
  */
-import { readdir } from "node:fs/promises";
+import { readdir, rm } from "node:fs/promises";
 
 import type {
   AcknowledgementRecord,
@@ -55,6 +55,11 @@ async function listIds(dir: string): Promise<string[]> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
+}
+
+/** Removing something already gone is success, so a half-finished delete can be retried. */
+async function removeIfExists(path: string): Promise<void> {
+  await rm(path, { force: true });
 }
 
 async function listAckIds(dir: string): Promise<Array<{ eventId: string; clientId: string }>> {
@@ -115,6 +120,9 @@ export function createFileRepositories(root: string): Repositories {
     async get(requestId: RequestId): Promise<LaunchSpec | undefined> {
       return readJsonIfExists<LaunchSpec>(specPath(root, requestId), quarantine);
     },
+    async delete(requestId: RequestId): Promise<void> {
+      await removeIfExists(specPath(root, requestId));
+    },
   };
 
   const jobs: Repositories["jobs"] = {
@@ -153,6 +161,11 @@ export function createFileRepositories(root: string): Repositories {
       const ids = await listIds(jobsDir(root));
       return resolvePrefixHelper(ids, prefix);
     },
+    async delete(jobId: JobId): Promise<void> {
+      await withJobLock(root, jobId, async () => {
+        await removeIfExists(jobPath(root, jobId));
+      });
+    },
   };
 
   const controlIntents: Repositories["controlIntents"] = {
@@ -182,6 +195,12 @@ export function createFileRepositories(root: string): Repositories {
       }
       return records;
     },
+    async deleteForJob(jobId: JobId): Promise<void> {
+      for (const id of await listIds(controlIntentsDir(root))) {
+        const record = await readJsonIfExists<ControlIntent>(controlIntentPath(root, id), quarantine);
+        if (record !== undefined && record.jobId === jobId) await removeIfExists(controlIntentPath(root, id));
+      }
+    },
   };
 
   const events: Repositories["events"] = {
@@ -206,6 +225,17 @@ export function createFileRepositories(root: string): Repositories {
         if (record !== undefined) pending.push(record);
       }
       return pending;
+    },
+    async deleteForJob(jobId: JobId): Promise<void> {
+      const acked = await listAckIds(acksDir(root));
+      for (const id of await listIds(eventsDir(root))) {
+        const record = await readJsonIfExists<CompletionEventRecord>(eventPath(root, id), quarantine);
+        if (record === undefined || record.jobId !== jobId) continue;
+        for (const ack of acked) {
+          if (ack.eventId === id) await removeIfExists(ackPath(root, ack.eventId, ack.clientId));
+        }
+        await removeIfExists(eventPath(root, id));
+      }
     },
   };
 
@@ -242,6 +272,9 @@ export function createFileRepositories(root: string): Repositories {
       }
       return records;
     },
+    async delete(scheduleId: ScheduleId): Promise<void> {
+      await removeIfExists(schedulePath(root, scheduleId));
+    },
   };
 
   const occurrences: Repositories["occurrences"] = {
@@ -267,6 +300,12 @@ export function createFileRepositories(root: string): Repositories {
         if (record !== undefined && record.scheduleId === scheduleId) records.push(record);
       }
       return records;
+    },
+    async deleteForSchedule(scheduleId: ScheduleId): Promise<void> {
+      for (const id of await listIds(occurrencesDir(root))) {
+        const record = await readJsonIfExists<ScheduleOccurrenceRecord>(occurrencePath(root, id), quarantine);
+        if (record !== undefined && record.scheduleId === scheduleId) await removeIfExists(occurrencePath(root, id));
+      }
     },
   };
 

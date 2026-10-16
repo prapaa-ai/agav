@@ -2,9 +2,10 @@ import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import { openResourceManager } from "./resource-manager.js";
 import { getSharedCoordinator, getSharedScheduleEngine } from "../background-jobs-integration.js";
 import type { Coordinator } from "../background-jobs/coordinator/index.js";
-import { BackgroundJobError, type JobSummary, type SessionPolicySnapshot } from "../background-jobs/types.js";
+import { BackgroundJobError, isLiveLifecycle, type JobSummary, type SessionPolicySnapshot } from "../background-jobs/types.js";
 import {
   describeBackgroundJobError,
+  describeStopResult,
   formatCapabilities,
   formatJobSummary,
   scheduleCommandSummary,
@@ -167,6 +168,7 @@ export const jobCommand: SlashCommand = {
         const id = parts[1];
         if (!id) return message("Usage: /job stop <id>");
         const summary = await coordinator.stop(id, sessionFor(context));
+        if (summary.stopState === "none" && !isLiveLifecycle(summary.state)) return message(describeStopResult(summary));
         return message(formatJobSummary(summary));
       }
 
@@ -231,7 +233,7 @@ export const jobCommand: SlashCommand = {
       const sub = parts[1]?.toLowerCase();
       const hint = action === "stop" ? "select the job and press x to stop it"
         : sub === "create" ? "Tab to Schedules, then n to create the schedule"
-        : sub === "revoke" ? "Tab to Schedules, select the schedule and press d to revoke it"
+        : sub === "revoke" ? "Tab to Schedules, select the schedule and press x to revoke it"
         : undefined;
       if (hint) {
         const needsApproval = await confirmationNeeded(error, hint, context);
