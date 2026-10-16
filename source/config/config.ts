@@ -73,6 +73,7 @@ export interface AgavConfig {
   backgroundJobsEnabled?: boolean;
   /** "paused" makes `agav job tick`/daemon do nothing. Global-only (PROJECT_CONFIG_DENY). */
   backgroundAutomation?: "on" | "paused";
+  search?: boolean;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -249,6 +250,11 @@ const PROJECT_CONFIG_TEMPLATE = {
         args: ["-y", "@modelcontextprotocol/server-everything"],
       },
     },
+  },
+  search: {
+    description: "Whether web search is enabled.",
+    type: "boolean",
+    eg: true,
   },
 } as const;
 
