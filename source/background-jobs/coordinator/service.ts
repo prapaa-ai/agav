@@ -367,6 +367,9 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
           specToStore = existingSpec;
         }
 
+        // Schedule dispatch: prove (atomically with job creation) that this dispatch is still owned.
+        await request.scheduleGrant?.beforeAdmit?.();
+
         const reservation = await reserveCapacity(repositories, root, spec.limits);
         if (!reservation.granted) {
           throw new BackgroundJobError(
@@ -626,26 +629,44 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
 
     async deleteJob(jobIdOrPrefix: string): Promise<void> {
       const jobId = await resolveJobId(jobIdOrPrefix);
-      const record = await repositories.jobs.get(jobId);
-      if (record === undefined) {
+      if ((await repositories.jobs.get(jobId)) === undefined) {
         throw new BackgroundJobError("not-found", `No JobRecord found for jobId "${jobId}".`);
       }
-      // Fresh evidence, never the stored state: a job that looks finished but is still live must survive.
-      const { record: fresh } = await reconcileAndSummarize(jobId);
-      if (!isTerminalLifecycle(fresh.state)) {
-        throw new BackgroundJobError(
-          "invalid-state",
-          `Cannot delete job "${jobId}": it is not finished (state: "${fresh.state}"). Only completed, failed or interrupted jobs can be deleted.`,
-        );
+      // Fresh liveness evidence, gathered OUTSIDE the lock (it can take seconds). Only a stored
+      // terminal state is trusted below, and terminal states are never re-written.
+      try {
+        await reconcileAndSummarize(jobId);
+      } catch (error) {
+        // A concurrent delete may have removed the record mid-reconcile.
+        if ((await repositories.jobs.get(jobId)) === undefined) {
+          throw new BackgroundJobError("not-found", `No JobRecord found for jobId "${jobId}".`);
+        }
+        throw error;
       }
 
-      // Best-effort pieces first, the JobRecord last: until it is gone the job stays listed and the delete can be retried.
-      await repositories.controlIntents.deleteForJob(jobId);
-      await repositories.events.deleteForJob(jobId);
-      await rm(join(root, "jobs", jobId), { recursive: true, force: true });
-      const sharesSpec = (await repositories.jobs.list()).some((j) => j.jobId !== jobId && j.requestId === fresh.requestId);
-      if (!sharesSpec) await repositories.specs.delete(fresh.requestId);
-      await repositories.jobs.delete(jobId);
+      // Same lock as admission, so a concurrent delete or same-request retry cannot interleave:
+      // everything below is re-read inside it. Without this, a stale "no one shares this spec" check
+      // could delete the spec of a job a retry created after the first delete.
+      await withCoordinatorLockRetrying(root, async () => {
+        const fresh = await repositories.jobs.get(jobId);
+        if (fresh === undefined) {
+          throw new BackgroundJobError("not-found", `No JobRecord found for jobId "${jobId}".`);
+        }
+        if (!isTerminalLifecycle(fresh.state)) {
+          throw new BackgroundJobError(
+            "invalid-state",
+            `Cannot delete job "${jobId}": it is not finished (state: "${fresh.state}"). Only completed, failed or interrupted jobs can be deleted.`,
+          );
+        }
+
+        // Best-effort pieces first, the JobRecord last: until it is gone the job stays listed and the delete can be retried.
+        await repositories.controlIntents.deleteForJob(jobId);
+        await repositories.events.deleteForJob(jobId);
+        await rm(join(root, "jobs", jobId), { recursive: true, force: true });
+        const sharesSpec = (await repositories.jobs.list()).some((j) => j.jobId !== jobId && j.requestId === fresh.requestId);
+        if (!sharesSpec) await repositories.specs.delete(fresh.requestId);
+        await repositories.jobs.delete(jobId);
+      }, opts?.admissionRetry);
     },
 
     async capabilities(): Promise<PlatformCapabilities> {

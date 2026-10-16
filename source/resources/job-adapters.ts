@@ -2,6 +2,7 @@ import { platform as osPlatform } from "node:os";
 
 import { getSharedCoordinator, getSharedScheduleEngine } from "../background-jobs-integration.js";
 import type { ScheduleRun } from "../background-jobs/schedule/engine.js";
+import { classifyOccurrence } from "../background-jobs/schedule/ownership.js";
 import {
   BackgroundJobError,
   DEFAULT_RESOURCE_LIMITS,
@@ -269,7 +270,9 @@ function scheduleItem(s: ScheduleRecord, runs: ScheduleRun[]): ResourceItem {
     // Revocation is permanent: nothing left to toggle or revoke.
     enabled: revoked ? undefined : s.enabled,
     // Display hint only; deleteSchedule() re-checks under the schedule lock.
-    removable: !s.enabled && !runs.some((run) => run.job ? !isTerminalLifecycle(run.job.state) : run.occurrence.status === "reserved"),
+    // Same rule as the engine (schedule/ownership.ts). An expired jobless reservation does not block:
+    // deleteSchedule() fences it before removing the schedule.
+    removable: !s.enabled && !runs.some((run) => classifyOccurrence(run.occurrence, run.job, Date.now()) === "active"),
     searchText: `${s.scheduleId} ${s.cron} ${s.timezone}`,
   };
 }

@@ -18,9 +18,10 @@ import {
 import type { AuthorizationService } from "../authorization/service.js";
 import { buildMinimalEnvironment, normalizeWindowsEnvKeyCasing } from "../launch-spec/environment.js";
 import { getPlatformAdapter } from "../platform/index.js";
-import { withJobLock } from "../storage/single-writer-lock.js";
+import { withCoordinatorLock, withJobLock } from "../storage/single-writer-lock.js";
 import { computeNextOccurrence, parseCronExpression } from "./cron.js";
 import { reserveOccurrence } from "./occurrence-reservation.js";
+import { classifyOccurrence } from "./ownership.js";
 
 export type ScheduleEvaluationOutcome =
   | "dispatched"
@@ -79,9 +80,6 @@ export interface CreateScheduleEngineArgs {
   root: string;
 }
 
-/** A reservation without a job record counts as an in-flight dispatch for this long. */
-const PENDING_DISPATCH_WINDOW_MS = 2 * 60 * 1000;
-
 export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEngine {
   const { repositories, coordinator, authorizationService } = args;
   void args.root;
@@ -101,22 +99,60 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
     }
   }
 
-  /** Must run under the schedule lock. Reads fresh job state; never a cache. */
-  async function hasActiveOwnership(scheduleId: ScheduleId): Promise<boolean> {
+  // Same retry shape as the schedule lock: acquisition never waits, and holders keep it briefly.
+  async function withCoordinatorLockRetrying<T>(fn: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await withCoordinatorLock(args.root, fn);
+      } catch (error) {
+        if (!(error instanceof BackgroundJobError && error.code === "lock-held") || attempt >= 100) throw error;
+        await sleep(25 + Math.floor(Math.random() * 25));
+      }
+    }
+  }
+
+  /**
+   * Must run under the schedule lock. Returns whether the schedule is still owned by a job or a
+   * live pending dispatch, reading fresh state (never a cache; ownership rule: ./ownership.ts).
+   *
+   * Jobless reservations older than the window are not simply ignored: elapsed time does not prove
+   * their dispatcher stopped (it may only be suspended). They are FENCED first, under the coordinator
+   * lock that also guards job creation, so either the dispatcher's job already exists (the schedule
+   * stays owned) or its reservation is marked recovery-required and its `beforeAdmit` check aborts it.
+   */
+  async function scheduleIsOwned(scheduleId: ScheduleId): Promise<boolean> {
     const occurrences = await repositories.occurrences.listForSchedule(scheduleId);
     if (occurrences.length === 0) return false;
     const jobs = await repositories.jobs.list();
     const now = Date.now();
-    return occurrences.some((occ) => {
-      if (!occ.requestId) return false;
-      const job = jobs.find((j) => j.requestId === occ.requestId);
-      if (job !== undefined) return !isTerminalLifecycle(job.state);
-      // No job record yet: a recent "reserved" occurrence is a dispatch in flight. Older ones are
-      // crashed dispatches and must not block the schedule forever.
-      if (occ.status !== "reserved") return false;
-      const createdAt = Date.parse(occ.createdAt);
-      return Number.isNaN(createdAt) || now - createdAt < PENDING_DISPATCH_WINDOW_MS;
+    let owned = false;
+    const expired: ScheduleOccurrenceRecord[] = [];
+    for (const occ of occurrences) {
+      const ownership = classifyOccurrence(occ, jobs.find((j) => j.requestId === occ.requestId), now);
+      if (ownership === "active") owned = true;
+      else if (ownership === "expired") expired.push(occ);
+    }
+    if (expired.length === 0) return owned;
+
+    await withCoordinatorLockRetrying(async () => {
+      const freshJobs = await repositories.jobs.list();
+      const freshOccurrences = await repositories.occurrences.listForSchedule(scheduleId);
+      for (const occ of expired) {
+        const job = freshJobs.find((j) => j.requestId === occ.requestId);
+        if (job !== undefined) {
+          // The dispatcher got its job in after all: it owns the schedule while that job is live.
+          if (!isTerminalLifecycle(job.state)) owned = true;
+          continue;
+        }
+        const current = freshOccurrences.find((o) => o.occurrenceId === occ.occurrenceId);
+        if (current === undefined || current.status !== "reserved") continue;
+        await repositories.occurrences.update(occ.occurrenceId, {
+          status: "recovery-required",
+          reason: "Dispatch expired without creating a job; fenced so a resumed dispatcher cannot launch.",
+        });
+      }
     });
+    return owned;
   }
 
   return {
@@ -203,7 +239,7 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
             `Cannot delete schedule "${scheduleId}": it is still enabled. Pause or revoke it first.`,
           );
         }
-        if (await hasActiveOwnership(scheduleId)) {
+        if (await scheduleIsOwned(scheduleId)) {
           throw new BackgroundJobError(
             "invalid-state",
             `Cannot delete schedule "${scheduleId}": a job it launched is still active or a launch is pending.`,
@@ -328,7 +364,7 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
           // One active job per schedule, checked atomically with the reservation so adjacent-slot
           // passes (possibly on other hosts) cannot both launch. Counts non-terminal jobs (unknown /
           // recovery-required included) and still-pending reservations that have no job record yet.
-          if (await hasActiveOwnership(schedule.scheduleId)) {
+          if (await scheduleIsOwned(schedule.scheduleId)) {
             overlapping = true;
             return;
           }
@@ -360,7 +396,22 @@ export function createScheduleEngine(args: CreateScheduleEngineArgs): ScheduleEn
               isolation: schedule.launchSpecTemplate.isolation,
               env: schedule.launchSpecTemplate.env,
               limits: schedule.launchSpecTemplate.limits,
-              scheduleGrant: { grantId: schedule.grantId, template: schedule.launchSpecTemplate },
+              scheduleGrant: {
+                grantId: schedule.grantId,
+                template: schedule.launchSpecTemplate,
+                // Runs under the coordinator lock right before the job record is created: a
+                // dispatcher resumed after its reservation expired and was fenced must not launch.
+                beforeAdmit: async () => {
+                  const mine = (await repositories.occurrences.listForSchedule(schedule.scheduleId))
+                    .find((o) => o.occurrenceId === record!.occurrenceId);
+                  if (mine === undefined || mine.status !== "reserved") {
+                    throw new BackgroundJobError(
+                      "invalid-state",
+                      "This dispatch expired and was fenced; its occurrence was not launched.",
+                    );
+                  }
+                },
+              },
             },
             { permissionMode: "ask", headlessApprovedActions: [] },
           );

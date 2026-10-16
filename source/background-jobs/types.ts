@@ -463,7 +463,16 @@ export interface StartJobRequest {
    * Dispatch under an already-approved schedule grant: the coordinator revalidates `grantId`
    * against `template` and launches from `template` rather than the request's own fields.
    */
-  scheduleGrant?: { grantId: GrantId; template: Omit<LaunchSpec, "requestId" | "createdAt"> };
+  scheduleGrant?: {
+    grantId: GrantId;
+    template: Omit<LaunchSpec, "requestId" | "createdAt">;
+    /**
+     * Run inside the admission transaction (coordinator lock held), after the idempotent-retry check
+     * and before the job record is created. Throwing aborts the launch. A schedule dispatcher uses it
+     * to prove its reservation was not fenced, atomically with creating the job.
+     */
+    beforeAdmit?: () => Promise<void>;
+  };
 }
 
 export interface JobSummary {
