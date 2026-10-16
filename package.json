@@ -18,9 +18,9 @@
     "test": "vitest run source",
     "test:coverage": "vitest run --coverage",
     "test:installer": "sh scripts/tests/run-installer-tests.sh",
-    "build:binary": "bash scripts/build-binary.sh native",
-    "build:binary:voice": "bash scripts/build-binary.sh native --voice",
-    "build:binary:all": "bash scripts/build-binary.sh all",
+    "build:binary": "node scripts/build-binary.mjs native",
+    "build:binary:voice": "node scripts/build-binary.mjs native --voice",
+    "build:binary:all": "node scripts/build-binary.mjs all",
     "prepare": "husky"
   },
   "engines": {

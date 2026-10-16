@@ -76,8 +76,9 @@ describe("native voice release packaging", () => {
   });
   it("routes package binary builds through the fail-closed wrapper", () => {
     const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-    expect(pkg.scripts["build:binary"]).toBe("bash scripts/build-binary.sh native");
-    expect(pkg.scripts["build:binary:all"]).toBe("bash scripts/build-binary.sh all");
+    expect(pkg.scripts["build:binary"]).toBe("node scripts/build-binary.mjs native");
+    expect(pkg.scripts["build:binary:voice"]).toBe("node scripts/build-binary.mjs native --voice");
+    expect(pkg.scripts["build:binary:all"]).toBe("node scripts/build-binary.mjs all");
     const builder = readFileSync("scripts/build-voice-helper.mjs", "utf8");
     expect(builder).toContain('run("ctest"');
     expect(builder).toContain("-static-libstdc++ -static-libgcc");
