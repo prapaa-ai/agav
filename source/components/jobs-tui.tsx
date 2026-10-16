@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useInput } from "../ink/index.js";
 import { ResourceManager, type ResourceAction } from "./resource-manager.js";
-import { createJobsAdapter, createJobSchedulesAdapter, jobCapabilities, stopJob } from "../resources/job-adapters.js";
+import { createJobsAdapter, createJobSchedulesAdapter, jobCapabilities, revokeSchedule, REVOKE_SCHEDULE_CONFIRM, stopJob } from "../resources/job-adapters.js";
+import type { ResourceItem } from "../resources/types.js";
 import type { ConfirmSubject, GrantAction, SessionPolicySnapshot } from "../background-jobs/types.js";
 import {
   backgroundConfirmationLines,
@@ -59,8 +60,12 @@ export function JobsTUI({ onExit, permissionMode }: JobsTUIProps) {
   });
   const actions: ResourceAction[] = [
     { key: "Tab", label: schedules ? "Jobs" : "Schedules", run: () => setSchedules(!schedules) },
-    ...(schedules ? [] : [
-      { key: "x", label: "Stop", run: async (item: Parameters<ResourceAction["run"]>[0]) => item ? stopJob(item.id, session) : undefined },
+    ...(schedules ? [
+      // Revoked schedules report `enabled: undefined`; there is nothing left to revoke.
+      { key: "x", label: "Revoke", inDetail: true, confirm: REVOKE_SCHEDULE_CONFIRM, when: (item: ResourceItem) => item.enabled !== undefined, run: async (item: Parameters<ResourceAction["run"]>[0]) => item ? revokeSchedule(item.id, session) : undefined },
+    ] : [
+      // Only live jobs can be stopped, so the action is hidden (and no approval is requested) otherwise.
+      { key: "x", label: "Stop", inDetail: true, when: (item: ResourceItem) => item.stoppable === true, run: async (item: Parameters<ResourceAction["run"]>[0]) => item ? stopJob(item.id, session) : undefined },
     ]),
     { key: "c", label: "Capabilities", run: async () => ({ detail: await jobCapabilities() }) },
   ];

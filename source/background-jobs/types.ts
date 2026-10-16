@@ -74,6 +74,11 @@ export function isTerminalLifecycle(state: LifecycleState): boolean {
   return state === "completed" || state === "failed" || state === "interrupted";
 }
 
+/** Accepted/starting/running: the only states a stop request can act on. */
+export function isLiveLifecycle(state: LifecycleState): boolean {
+  return state === "accepted" || state === "starting" || state === "running";
+}
+
 export function isUncertainLifecycle(state: LifecycleState): boolean {
   return state === "unknown" || state === "recovery-required";
 }
@@ -313,6 +318,8 @@ export interface Repositories {
   specs: {
     put(spec: LaunchSpec): Promise<void>;
     get(requestId: RequestId): Promise<LaunchSpec | undefined>;
+    /** No-op when absent. */
+    delete(requestId: RequestId): Promise<void>;
   };
   jobs: {
     create(record: JobRecord): Promise<void>;
@@ -322,16 +329,21 @@ export interface Repositories {
     list(): Promise<JobRecord[]>;
     /** Resolve an unambiguous full id from a prefix; throws on ambiguity. */
     resolvePrefix(prefix: string): Promise<JobId>;
+    /** Takes the job lock; no-op when absent. Callers must have verified the job is not live. */
+    delete(jobId: JobId): Promise<void>;
   };
   controlIntents: {
     create(intent: ControlIntent): Promise<void>;
     update(id: string, patch: Partial<ControlIntent>): Promise<void>;
     listForJob(jobId: JobId): Promise<ControlIntent[]>;
+    deleteForJob(jobId: JobId): Promise<void>;
   };
   events: {
     create(event: CompletionEventRecord): Promise<void>;
     get(eventId: EventId): Promise<CompletionEventRecord | undefined>;
     listPending(): Promise<CompletionEventRecord[]>;
+    /** Also removes the acknowledgements of the deleted events. */
+    deleteForJob(jobId: JobId): Promise<void>;
   };
   acks: {
     create(ack: AcknowledgementRecord): Promise<void>;
@@ -341,11 +353,14 @@ export interface Repositories {
     put(record: ScheduleRecord): Promise<void>;
     get(scheduleId: ScheduleId): Promise<ScheduleRecord | undefined>;
     list(): Promise<ScheduleRecord[]>;
+    /** No-op when absent. */
+    delete(scheduleId: ScheduleId): Promise<void>;
   };
   occurrences: {
     reserve(record: ScheduleOccurrenceRecord): Promise<boolean>; // false => already reserved
     update(occurrenceId: OccurrenceId, patch: Partial<ScheduleOccurrenceRecord>): Promise<void>;
     listForSchedule(scheduleId: ScheduleId): Promise<ScheduleOccurrenceRecord[]>;
+    deleteForSchedule(scheduleId: ScheduleId): Promise<void>;
   };
 }
 
@@ -405,6 +420,8 @@ export type BackgroundJobErrorCode =
   | "lock-held"
   | "recovery-required"
   | "unsupported-platform"
+  /** The target exists but is in a state that does not allow the requested operation (e.g. deleting a live job). */
+  | "invalid-state"
   /** On-disk store VERSION is newer than BACKGROUND_JOBS_STORAGE_VERSION. */
   | "store-version-newer";
 
@@ -412,6 +429,18 @@ export class BackgroundJobError extends Error {
   constructor(public readonly code: BackgroundJobErrorCode, message: string) {
     super(message);
     this.name = "BackgroundJobError";
+  }
+}
+
+/**
+ * A supervisor launch failure that happened BEFORE any process could have been spawned
+ * (e.g. missing supervisor asset), so the job definitely never ran and its capacity can be
+ * released. Any other launch failure is ambiguous and is left for reconciliation.
+ */
+export class PreSpawnLaunchError extends BackgroundJobError {
+  constructor(code: BackgroundJobErrorCode, message: string) {
+    super(code, message);
+    this.name = "PreSpawnLaunchError";
   }
 }
 
@@ -434,7 +463,16 @@ export interface StartJobRequest {
    * Dispatch under an already-approved schedule grant: the coordinator revalidates `grantId`
    * against `template` and launches from `template` rather than the request's own fields.
    */
-  scheduleGrant?: { grantId: GrantId; template: Omit<LaunchSpec, "requestId" | "createdAt"> };
+  scheduleGrant?: {
+    grantId: GrantId;
+    template: Omit<LaunchSpec, "requestId" | "createdAt">;
+    /**
+     * Run inside the admission transaction (coordinator lock held), after the idempotent-retry check
+     * and before the job record is created. Throwing aborts the launch. A schedule dispatcher uses it
+     * to prove its reservation was not fenced, atomically with creating the job.
+     */
+    beforeAdmit?: () => Promise<void>;
+  };
 }
 
 export interface JobSummary {

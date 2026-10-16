@@ -2,10 +2,13 @@ import { platform as osPlatform } from "node:os";
 
 import { getSharedCoordinator, getSharedScheduleEngine } from "../background-jobs-integration.js";
 import type { ScheduleRun } from "../background-jobs/schedule/engine.js";
+import { classifyOccurrence } from "../background-jobs/schedule/ownership.js";
 import {
   BackgroundJobError,
   DEFAULT_RESOURCE_LIMITS,
+  isLiveLifecycle,
   isScheduleRevoked,
+  isTerminalLifecycle,
   type JobSummary,
   type LaunchSpec,
   type PlatformCapabilities,
@@ -42,6 +45,14 @@ export function formatCapabilities(caps: PlatformCapabilities): string {
   ].join("\n");
 }
 
+/** `stop()` leaves `stopState` at "none" when it found nothing live to stop (it never prompted). */
+export function describeStopResult(summary: JobSummary): string {
+  if (summary.stopState === "none" && !isLiveLifecycle(summary.state)) {
+    return `Job ${shortId(summary.jobId)} is not running (state: ${summary.state}); there is nothing to stop.`;
+  }
+  return `Stop requested for ${shortId(summary.jobId)} (state: ${summary.state}, stop: ${summary.stopState}).`;
+}
+
 export function describeBackgroundJobError(error: unknown): string {
   if (!(error instanceof BackgroundJobError)) {
     return `Background job operation failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -53,6 +64,8 @@ export function describeBackgroundJobError(error: unknown): string {
       return "Too many background jobs are already running (limit reached).";
     case "not-found":
       return `No matching background job was found: ${error.message}`;
+    case "invalid-state":
+      return error.message;
     case "ambiguous-id":
       return `The job id prefix is ambiguous: ${error.message}`;
     case "unsupported-platform":
@@ -151,6 +164,9 @@ function jobItem(summary: JobSummary, origins?: JobOrigins): ResourceItem {
       originDetail,
     ].join("\n"),
     searchText: [summary.jobId, summary.requestId, summary.state, originSearch, summary.command, summary.cwd].filter(Boolean).join(" "),
+    stoppable: isLiveLifecycle(summary.state),
+    // Display hint only; deleteJob() re-checks against fresh liveness evidence.
+    removable: isTerminalLifecycle(summary.state),
   };
 }
 
@@ -173,6 +189,10 @@ export function createJobsAdapter(): ResourceAdapter {
   return {
     title: "Background jobs",
     inspectLabel: "Details & logs",
+    removeLabel: "Delete",
+    removedLabel: "Deleted",
+    removeConfirm: "This permanently removes the job, its logs and its saved command. This cannot be undone.",
+    remove: (id) => deleteJob(id),
     list: () => friendly(async () => {
       const [summaries, origins] = await Promise.all([(await getSharedCoordinator()).list(), loadJobOrigins()]);
       return sortJobsNewestFirst(summaries).map((summary) => jobItem(summary, origins));
@@ -196,7 +216,21 @@ export function createJobsAdapter(): ResourceAdapter {
 export async function stopJob(id: string, session: SessionPolicySnapshot): Promise<string> {
   return friendly(async () => {
     const summary = await (await getSharedCoordinator()).stop(id, session);
-    return `Stop requested for ${shortId(summary.jobId)} (state: ${summary.state}, stop: ${summary.stopState}).`;
+    return describeStopResult(summary);
+  });
+}
+
+export async function deleteJob(id: string): Promise<void> {
+  return friendly(async () => (await getSharedCoordinator()).deleteJob(id));
+}
+
+export const REVOKE_SCHEDULE_CONFIRM =
+  "This is permanent: no future jobs will launch (already launched jobs keep running; the schedule stays listed as revoked).";
+
+export async function revokeSchedule(id: string, session: SessionPolicySnapshot): Promise<string> {
+  return friendly(async () => {
+    await (await getSharedScheduleEngine()).revokeSchedule(id, session);
+    return "Revoked.";
   });
 }
 
@@ -235,7 +269,10 @@ function scheduleItem(s: ScheduleRecord, runs: ScheduleRun[]): ResourceItem {
     ].join("\n"),
     // Revocation is permanent: nothing left to toggle or revoke.
     enabled: revoked ? undefined : s.enabled,
-    removable: !revoked,
+    // Display hint only; deleteSchedule() re-checks under the schedule lock.
+    // Same rule as the engine (schedule/ownership.ts). An expired jobless reservation does not block:
+    // deleteSchedule() fences it before removing the schedule.
+    removable: !s.enabled && !runs.some((run) => classifyOccurrence(run.occurrence, run.job, Date.now()) === "active"),
     searchText: `${s.scheduleId} ${s.cron} ${s.timezone}`,
   };
 }
@@ -250,10 +287,11 @@ export function createJobSchedulesAdapter(session: SessionPolicySnapshot): Resou
     title: "Background job schedules",
     list,
     get: async (id) => (await list()).find((item) => item.id === id),
-    notice: "Disable pauses a schedule; Revoke (d) is permanent. Neither stops jobs already launched.",
-    removeLabel: "Revoke",
-    removedLabel: "Revoked",
-    removeConfirm: "This is permanent: no future jobs will launch (already launched jobs keep running; the schedule stays listed as revoked).",
+    notice: "Disable pauses a schedule; Revoke (x) is permanent. Neither stops jobs already launched.",
+    removeLabel: "Delete",
+    removedLabel: "Deleted",
+    removeConfirm: "This permanently removes the schedule and its run history. Jobs it already launched are kept.",
+    remove: (id) => friendly(() => getSharedScheduleEngine().then((engine) => engine.deleteSchedule(id))),
     fields: [
       { name: "cron", label: "Cron (five fields)", required: true },
       { name: "timezone", label: "Timezone (IANA, e.g. UTC)", required: true },
@@ -268,7 +306,6 @@ export function createJobSchedulesAdapter(session: SessionPolicySnapshot): Resou
       });
       return `Created schedule ${schedule.scheduleId}.`;
     }),
-    remove: (id) => friendly(() => getSharedScheduleEngine().then((engine) => engine.revokeSchedule(id, session))),
     setEnabled: (id, enabled) => friendly(async () => { await (await getSharedScheduleEngine()).setScheduleEnabled(id, enabled, session); }),
   };
 }

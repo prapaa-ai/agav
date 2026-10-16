@@ -12,6 +12,7 @@ import { dirname } from "node:path";
 import { hostname } from "node:os";
 import {
   BackgroundJobError,
+  PreSpawnLaunchError,
   type PlatformAdapter,
   type PlatformCapabilities,
   type ProcessIdentity,
@@ -152,7 +153,9 @@ async function launchDetachedSupervisor(args: {
 
   const pid = child.pid;
   if (pid === undefined) {
-    throw new BackgroundJobError(
+    // Node assigns no pid only when the OS refused to create the process (ENOENT, EACCES, EAGAIN...),
+    // so nothing ran: a definite failure the coordinator may release capacity for.
+    throw new PreSpawnLaunchError(
       "storage-unavailable",
       `Failed to launch detached supervisor: no pid assigned (${spawnError?.message ?? "unknown spawn failure"}).`,
     );

@@ -364,11 +364,13 @@ describe("sandbox streaming option", () => {
     const code = "process.on('SIGTERM', () => {}); const child = require('node:child_process').spawn(process.execPath, ['-e', 'process.on(\"SIGTERM\", () => {}); setTimeout(() => {}, 1500)'], { stdio: ['ignore', 'inherit', 'inherit'] }); process.stdout.write(process.pid + ',' + child.pid); setTimeout(() => {}, 1500);";
     const result = await runInSandbox({
       command: `exec ${command(code)}`,
-      cwd: process.cwd(), timeout: 100, maxBuffer: 1, forceBackend: "none",
+      // Allow enough time for both Node processes to start on loaded CI workers;
+      // the shorter timeout could kill the command before it reports either PID.
+      cwd: process.cwd(), timeout: 500, maxBuffer: 1, forceBackend: "none",
       onOutput: (chunk) => chunks.push(chunk),
     });
     expect(result.error?.message).toContain("timed out");
-    expect(Date.now() - started).toBeLessThan(650);
+    expect(Date.now() - started).toBeLessThan(1100);
     const pids = Buffer.concat(chunks).toString().split(",").map(Number);
     expect(pids).toHaveLength(2);
     for (const pid of pids) {

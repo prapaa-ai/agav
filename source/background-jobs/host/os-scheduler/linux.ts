@@ -21,12 +21,20 @@ export function quoteShellArg(arg: string): string {
 
 export function generateSystemdService(target: SchedulerTarget): string {
   const execStart = [target.executable, ...target.args].map(quoteSystemdArg).join(" ");
+  // Lifetime/ownership: the tick spawns detached supervisors (and their workloads) that must
+  // outlive this oneshot. `detached: true` only creates a new process group/session; it does NOT
+  // leave the service's cgroup, and the default KillMode=control-group makes systemd kill every
+  // process in that cgroup once the tick exits. KillMode=process limits the stop-time kill to the
+  // main tick process, so launched jobs keep running (their own supervisors own their lifecycle).
+  // SendSIGKILL=no is belt and braces: no SIGKILL sweep of leftover cgroup members after a timeout.
   return [
     "[Unit]",
     "Description=Agav background jobs tick",
     "",
     "[Service]",
     "Type=oneshot",
+    "KillMode=process",
+    "SendSIGKILL=no",
     `ExecStart=${execStart}`,
     "",
   ].join("\n");
