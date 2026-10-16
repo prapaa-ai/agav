@@ -69,6 +69,10 @@ export interface AgavConfig {
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
   showThinking?: boolean;
+  /** Opt-in; when unset or false, `run_background_job` and `/job` refuse to do anything. */
+  backgroundJobsEnabled?: boolean;
+  /** "paused" makes `agav job tick`/daemon do nothing. Global-only (PROJECT_CONFIG_DENY). */
+  backgroundAutomation?: "on" | "paused";
   search?: boolean;
 }
 
@@ -145,6 +149,17 @@ const PROJECT_CONFIG_TEMPLATE = {
     description: "Whether to display the model's reasoning/thinking text as it streams. Toggle with Ctrl+T at runtime.",
     type: "boolean",
     eg: false,
+  },
+  backgroundJobsEnabled: {
+    description: "Opt in to the background-jobs subsystem, enabling the run_background_job tool and /job command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
+    type: "boolean",
+    eg: false,
+  },
+  backgroundAutomation: {
+    description: "Pause or resume headless background automation (agav job tick / daemon). Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    enum: ["on", "paused"],
+    type: "string",
+    eg: "on",
   },
   anthropicApiKey: {
     description: "Anthropic API key. Prefer the ANTHROPIC_API_KEY environment variable for secrets.",
@@ -251,6 +266,7 @@ const DEFAULT_CONFIG: AgavConfig = {
   maxTokens: 16384,
   maxIterations: 800,
   errorRetries: 5,
+  backgroundAutomation: "on",
 };
 
 /** Merge nested config objects while letting later sources override scalar values. */
@@ -322,7 +338,43 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "deepseekApiKey",
   "geminiApiKey",
   "permissionMode",
+  "backgroundAutomation",
 ]);
+
+/** Ignore invalid hand-edited values instead of passing unsupported effort levels to providers. */
+function sanitizeConfig(merged: AgavConfig): void {
+  if (!isEffortLevel(merged.effort)) {
+    merged.effort = DEFAULT_CONFIG.effort;
+  }
+  if (!Number.isInteger(merged.maxIterations) || merged.maxIterations < 1) {
+    merged.maxIterations = DEFAULT_CONFIG.maxIterations;
+  }
+  if (!Number.isInteger(merged.errorRetries) || merged.errorRetries < 0) {
+    merged.errorRetries = DEFAULT_CONFIG.errorRetries;
+  }
+  if (merged.backgroundAutomation !== "on" && merged.backgroundAutomation !== "paused") {
+    merged.backgroundAutomation = DEFAULT_CONFIG.backgroundAutomation;
+  }
+}
+
+/**
+ * Read-only global config (defaults + ~/.agav/config.json) for unattended
+ * entry points. Never touches the cwd or creates files, and skips env/API-key
+ * resolution.
+ */
+export async function loadGlobalConfig(): Promise<AgavConfig> {
+  let globalConfig: Partial<AgavConfig> = {};
+  try {
+    const raw = await readFile(CONFIG_PATH, "utf-8");
+    globalConfig = JSON.parse(raw);
+  } catch {}
+  const merged = deepMerge(
+    { ...DEFAULT_CONFIG } as unknown as Record<string, unknown>,
+    globalConfig as unknown as Record<string, unknown>,
+  ) as unknown as AgavConfig;
+  sanitizeConfig(merged);
+  return merged;
+}
 
 /** Load config from global and project files, then apply environment-derived overrides. */
 export async function loadConfig(): Promise<AgavConfig> {
@@ -351,16 +403,7 @@ export async function loadConfig(): Promise<AgavConfig> {
     projectConfig as unknown as Record<string, unknown>,
   ) as unknown as AgavConfig;
 
-  // Ignore invalid hand-edited values instead of passing unsupported effort levels to providers.
-  if (!isEffortLevel(merged.effort)) {
-    merged.effort = DEFAULT_CONFIG.effort;
-  }
-  if (!Number.isInteger(merged.maxIterations) || merged.maxIterations < 1) {
-    merged.maxIterations = DEFAULT_CONFIG.maxIterations;
-  }
-  if (!Number.isInteger(merged.errorRetries) || merged.errorRetries < 0) {
-    merged.errorRetries = DEFAULT_CONFIG.errorRetries;
-  }
+  sanitizeConfig(merged);
 
   // Treat allowed tools as additive so projects can extend, not erase, a user's global allowlist.
   if (projectConfig.allowedTools) {

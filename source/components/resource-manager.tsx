@@ -6,18 +6,27 @@ import { filterResources, resourcePage } from "../resources/types.js";
 import { useSearch, SearchBar } from "./agents-search.js";
 import { wheelSelect, stepIndex } from "./wheel-select.js";
 
+/** Returned by an action to open its own read-only view (e.g. a report) in the detail pane. */
+export interface ResourceActionView {
+  detail: string;
+}
+
 export interface ResourceAction {
   key: string;
   label: string;
-  run(item: ResourceItem | undefined): void | string | Promise<void | string>;
+  run(item: ResourceItem | undefined): void | string | ResourceActionView | Promise<void | string | ResourceActionView>;
 }
 
-export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, height }: {
+export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, height, prompt, promptDetails }: {
   adapter: ResourceAdapter;
   onExit(): void;
   actions?: ResourceAction[];
   onBusyChange?(busy: boolean): void;
   height?: number;
+  /** Shown in place of "Working…" while a running action awaits a decision from the parent. */
+  prompt?: string;
+  /** Full terms for `prompt`; they scroll above the always-visible `controls` line, which replaces `prompt`. */
+  promptDetails?: { lines: string[]; controls: string };
 }) {
   const [items, setItems] = useState<ResourceItem[]>([]);
   const [index, setIndex] = useState(0);
@@ -33,6 +42,8 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   const [rows, setRows] = useState(stdout.rows || 24);
   const scroll = useRef<ScrollBoxControls | null>(null);
   const [scrollOffset, setScrollOffset] = useState(Number.POSITIVE_INFINITY);
+  const promptScroll = useRef<ScrollBoxControls | null>(null);
+  const [promptOffset, setPromptOffset] = useState(Number.POSITIVE_INFINITY);
   const { searchQuery, searching, handleSearchKey, handleSearchPaste } = useSearch();
   const availableRows = height ?? Math.max(8, rows - 2);
   const pageSize = Math.max(1, Math.floor((availableRows - 8) / 2));
@@ -43,7 +54,17 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   const field = fields[fieldIndex];
   const form = view === "create" || view === "edit";
   const canRemove = Boolean(adapter.remove && item && item.removable !== false);
+  const removeLabel = adapter.removeLabel ?? "Delete";
   const canToggle = Boolean(adapter.setEnabled && item?.enabled !== undefined);
+  // Capped viewport keeps the controls line on screen.
+  const detailLines = prompt && promptDetails ? promptDetails.lines : undefined;
+  const promptContentRows = detailLines
+    ? detailLines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / Math.max(1, (stdout.columns || 80)))), 0)
+    : 0;
+  const promptRows = detailLines ? Math.min(promptContentRows, Math.max(3, Math.floor((availableRows - 7) / 2))) : 0;
+  const promptOverflows = promptContentRows > promptRows;
+  const promptExtraRows = promptRows + (promptOverflows ? 1 : 0);
+  useEffect(() => { setPromptOffset(Number.POSITIVE_INFINITY); }, [prompt]);
 
   const reload = async () => {
     const loaded = await adapter.list();
@@ -82,6 +103,11 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     else if (view === "list" && handleSearchPaste(text)) setIndex(0);
   });
   useInput((input, key) => {
+    if (detailLines && busyRef.current) {
+      if (key.upArrow) promptScroll.current?.scrollBy(1);
+      else if (key.downArrow) promptScroll.current?.scrollBy(-1);
+      return;
+    }
     if (busyRef.current) return;
     if (view === "delete") {
       if (key.escape || input.toLowerCase() === "n") { setView("list"); return; }
@@ -89,7 +115,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
         await adapter.remove!(detail.id);
         await reload();
         setView("list");
-        setStatus("Deleted.");
+        setStatus(`${adapter.removedLabel ?? "Deleted"}.`);
       });
       return;
     }
@@ -140,7 +166,11 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
       const action = actions.find((a) => a.key === input || (a.key === "Tab" && key.tab));
       if (action) void run(async () => {
         const result = await action.run(item);
-        if (typeof result === "string" && mounted.current) {
+        if (result && typeof result === "object" && mounted.current) {
+          setDetail({ ...(item ?? { id: "", title: "", description: "" }), detail: result.detail });
+          setScrollOffset(Number.POSITIVE_INFINITY);
+          setView("detail");
+        } else if (typeof result === "string" && mounted.current) {
           await reload();
           setStatus(result);
         }
@@ -154,7 +184,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     <Text bold color="cyan">{adapter.title} · {view === "list" ? "List" : view === "detail" ? "Inspect" : view}</Text>
     {view === "list" && <SearchBar query={searchQuery} searching={searching} resultCount={filtered.length} itemLabel="resource" />}
     <Box flexGrow={1} flexShrink={1} flexDirection="column">
-      <ScrollBox key={view} height={Math.max(2, availableRows - 7)} controls={scroll} scrollOffset={scrollOffset} onScrollChange={(offset) => {
+      <ScrollBox key={view} height={Math.max(2, availableRows - 7 - promptExtraRows)} controls={scroll} scrollOffset={scrollOffset} onScrollChange={(offset) => {
         // A fresh viewport first measures zero rows. Keep the top sentinel until
         // its content is measured instead of pinning the new detail to the bottom.
         if (Number.isFinite(scrollOffset) || offset > 0) setScrollOffset(offset);
@@ -164,18 +194,24 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
           <Text dimColor>  {entry.description.replace(/\s+/g, " ").slice(0, Math.max(20, (stdout.columns || 80) - 6))}</Text>
         </Box>) : <Text dimColor>No resources found.</Text>)}
         {view === "detail" && <Text>{detail?.detail}</Text>}
-        {view === "delete" && <Text color="yellow">Delete "{detail?.title}"? This cannot be undone. y: Confirm · n/ESC: Cancel</Text>}
+        {view === "delete" && <Text color="yellow">{removeLabel} "{detail?.title}"? {adapter.removeConfirm ?? "This cannot be undone."} y: Confirm · n/ESC: Cancel</Text>}
         {form && fields.map((f, i) => <Box key={f.name} flexDirection="column">
           <Text color={i === fieldIndex ? "cyan" : undefined}>{i === fieldIndex ? "→ " : "  "}{f.label}{f.options ? ` (${f.options.join(" / ")})` : ""}: {values[f.name] ?? ""}{i === fieldIndex ? "█" : ""}</Text>
         </Box>)}
       </ScrollBox>
     </Box>
-    {busy && <Text color="yellow">Working…</Text>}
+    {detailLines && <ScrollBox height={promptRows} controls={promptScroll} scrollOffset={promptOffset} onScrollChange={(offset) => {
+      if (Number.isFinite(promptOffset) || offset > 0) setPromptOffset(offset);
+    }}>
+      {detailLines.map((line, i) => <Text key={i} color="yellow">{line}</Text>)}
+    </ScrollBox>}
+    {detailLines && promptOverflows && <Text dimColor>↑↓: Scroll details</Text>}
+    {prompt ? <Text color="yellow" wrap={detailLines ? "wrap" : "truncate-end"}>{detailLines ? promptDetails!.controls : prompt}</Text> : busy && <Text color="yellow">Working…</Text>}
     {status && <Text color="yellow">{status}</Text>}
     {view === "list" && <Text dimColor>Page {page + 1}/{pages}{adapter.notice ? ` · ${adapter.notice}` : ""}</Text>}
-    <Text dimColor>{form ? "Tab/↑↓: Field | ENTER: Save | ESC: Cancel" : view === "detail" ? "↑↓: Scroll | b/ESC: Back" : view === "delete" ? "y: Delete | n/ESC: Cancel" : [
-      "↑↓: Navigate", "←→: Page", "ENTER/i: Inspect", "s: Search", "r: Refresh",
-      adapter.create && "n: Create", adapter.update && item && "e: Edit", canToggle && "t: Enable/disable", canRemove && "d: Delete",
+    <Text dimColor>{form ? "Tab/↑↓: Field | ENTER: Save | ESC: Cancel" : view === "detail" ? "↑↓: Scroll | b/ESC: Back" : view === "delete" ? `y: ${removeLabel} | n/ESC: Cancel` : [
+      "↑↓: Navigate", "←→: Page", `ENTER/i: ${adapter.inspectLabel ?? "Inspect"}`, "s: Search", "r: Refresh",
+      adapter.create && "n: Create", adapter.update && item && "e: Edit", canToggle && "t: Enable/disable", canRemove && `d: ${removeLabel}`,
       ...actions.map((a) => `${a.key}: ${a.label}`), "ESC: Exit/clear",
     ].filter(Boolean).join(" | ")}</Text>
   </Box>;

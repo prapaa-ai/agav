@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Agav background jobs tick every minute
+
+[Timer]
+OnCalendar=minutely
+Persistent=false
+Unit=agav-job-tick.service
+
+[Install]
+WantedBy=timers.target

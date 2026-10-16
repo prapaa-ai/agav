@@ -23,6 +23,10 @@ export interface ToolResult {
 export interface ToolContext {
   env?: Record<string, string>;
   signal?: AbortSignal;
+  /** Trusted host policy; never populated from model arguments. */
+  backgroundPolicy?: import("../background-jobs/types.js").SessionPolicySnapshot;
+  /** True when no human can be asked (print/run mode). Host-supplied, never from model arguments. */
+  headless?: boolean;
   /** Parent context for an explicitly dispatched skill, separate from arguments. */
   conversation?: import("../providers/types.js").Message[];
   systemPrompt?: string;

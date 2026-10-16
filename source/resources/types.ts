@@ -27,9 +27,14 @@ export interface ResourceAdapter {
   remove?(id: string): Promise<void>;
   setEnabled?(id: string, enabled: boolean): Promise<void>;
   notice?: string;
+  /** Wording overrides for `remove` (defaults: Delete / Deleted / "This cannot be undone."). */
+  removeLabel?: string;
+  removedLabel?: string;
+  removeConfirm?: string;
+  inspectLabel?: string;
 }
 
-export type ResourceKind = "agents" | "skills" | "memory" | "schedule" | "history" | "search-history";
+export type ResourceKind = "agents" | "skills" | "memory" | "schedule" | "history" | "search-history" | "jobs";
 
 export function filterResources(items: ResourceItem[], query: string): ResourceItem[] {
   const q = query.toLowerCase();

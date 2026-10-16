@@ -16,6 +16,7 @@ import { githubTool } from "./github.js";
 import { overviewTool } from "./overview.js";
 import { testRunnerTool } from "./test-runner.js";
 import { memoryTool } from "./memory.js";
+import { backgroundJobTool } from "./background-job.js";
 
 /**
  * The set of tool names that ship with agav. Exported so that skill validation
@@ -42,6 +43,7 @@ export const KNOWN_TOOL_NAMES: ReadonlySet<string> = new Set([
   "save_memory",
   "subagent",
   "activate_skill",
+  "run_background_job",
 ]);
 
 /** Built-ins available only when explicitly requested by a skill or native agent. */
@@ -71,6 +73,7 @@ const BUILTIN_TOOLS = [
   overviewTool,
   testRunnerTool,
   memoryTool,
+  backgroundJobTool,
 ];
 
 /** Create a registry containing the named Agav built-in tools. */

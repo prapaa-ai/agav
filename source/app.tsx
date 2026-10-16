@@ -26,6 +26,7 @@ import { isInternalUserMessage } from "./agent/internal-prompts.js";
 import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
+import { JobsTUI } from "./components/jobs-tui.js";
 import { ResourceManager } from "./components/resource-manager.js";
 import { createResourceAdapter } from "./resources/adapters.js";
 import type { ResourceKind, ResourceAdapter } from "./resources/types.js";
@@ -42,6 +43,7 @@ import { useClipboardImageDetector } from "./hooks/use-paste-handler.js";
 import { KeybindingResolver, GLOBAL_ACTIONS, formatKeybinding, formatKeybindings, normalizeKeyEvent, type Keybindings } from "./config/keybindings.js";
 import { getLoopStatus, stopActiveLoop } from "./commands/loop.js";
 import { loadScheduledTasks, cronMatches, markTaskRun } from "./config/scheduler.js";
+import { startScheduleTicker, stopScheduleTicker } from "./background-jobs-integration.js";
 import { getSandboxName, runInSandbox } from "./utils/sandbox.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
 import { terminalRelativePaths } from "./utils/display-path.js";
@@ -180,6 +182,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [skillsTUIActive, setSkillsTUIActive] = useState(false);
   const skillsTUIResolveRef = useRef<(() => void) | null>(null);
   const [skillsMarketplace, setSkillsMarketplace] = useState(true);
+  const [jobsTUIActive, setJobsTUIActive] = useState(false);
+  const jobsTUIResolveRef = useRef<(() => void) | null>(null);
   const [resourceAdapter, setResourceAdapter] = useState<ResourceAdapter | null>(null);
   const resourceTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
@@ -197,6 +201,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     pendingConfirmation,
     pendingContextWindowRequest,
     resolveContextWindowRequest,
+    requestConfirmation,
     tokenUsage,
     loadedPlugins,
     mcpServers,
@@ -565,6 +570,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     }, 30_000);
     return () => clearInterval(checker);
   }, [submit]);
+
+  // Evaluates background process schedules (distinct from the LLM prompt-schedule checker above).
+  useEffect(() => {
+    if (!config.backgroundJobsEnabled) return;
+    startScheduleTicker(() => ({ permissionMode: config.permissionMode, headlessApprovedActions: [] }), undefined, {
+      getBackgroundAutomation: () => config.backgroundAutomation,
+    });
+    return () => stopScheduleTicker();
+  }, [config.backgroundJobsEnabled, config.permissionMode, config.backgroundAutomation]);
 
   const hasSubagents = isLoading && subagentStates.length > 0;
 
@@ -942,6 +956,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             ),
             setPickerActive,
             suspendTerminal: suspendTerminalSync,
+            confirmBackgroundAction: async (action, spec, subject) => {
+              const choice = await requestConfirmation("run_background_job", { action, spec, subject });
+              return choice === "yes" || choice === "always";
+            },
             showResourceTUI: stdout.isTTY && process.stdin.isTTY ? (kind: ResourceKind, onDone: () => void, marketplace = false) => {
               if (kind === "agents") {
                 agentsTUIResolveRef.current = onDone;
@@ -950,6 +968,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
                 skillsTUIResolveRef.current = onDone;
                 setSkillsMarketplace(marketplace);
                 setSkillsTUIActive(true);
+              } else if (kind === "jobs") {
+                jobsTUIResolveRef.current = onDone;
+                setJobsTUIActive(true);
               } else {
                 resourceTUIResolveRef.current = onDone;
                 setResourceAdapter(createResourceAdapter(kind));
@@ -1368,6 +1389,19 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               setInput("");
               const resolve = skillsTUIResolveRef.current;
               skillsTUIResolveRef.current = null;
+              resolve?.();
+            }}
+          />
+        )}
+        {jobsTUIActive && (
+          <JobsTUI
+            permissionMode={config.permissionMode}
+            onExit={() => {
+              setJobsTUIActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = jobsTUIResolveRef.current;
+              jobsTUIResolveRef.current = null;
               resolve?.();
             }}
           />

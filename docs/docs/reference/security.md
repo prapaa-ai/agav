@@ -84,6 +84,10 @@ Windows has no kernel-level sandbox. As a best-effort mitigation, Agav:
 - Sets `AGAV_SANDBOX_ACTIVE=1` so well-behaved child tools can self-restrict
 - Strips `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (and lowercase variants) to reduce network reach
 
+### Background jobs
+
+With `backgroundJobsEnabled`, the `run_background_job` tool starts commands that run **outside** the shell sandbox, with no timeout and full access as your OS user. Each start, schedule create, stop, and schedule revoke is a separate approved action. The prompt shows the full command, directory, and isolation, and an approval stays valid for that exact spec until it changes. `deny-writes` blocks new jobs and schedules but still lets you confirm a stop or revoke. In print and `agav run` mode these actions are refused without an existing grant. See [Background jobs](/features/background-jobs#approval-and-permission-modes).
+
 ### Cancellation is not isolation
 
 **Esc** cancels an interactive turn while keeping Agav open; **Ctrl+C** exits unless it copies an active Agav selection. See [Keybindings](/reference/keybindings#cancel-versus-exit).
