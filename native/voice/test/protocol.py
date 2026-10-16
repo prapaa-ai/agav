@@ -4,7 +4,8 @@ import math
 import os
 import pathlib
 import signal
-import selectors
+import queue
+import threading
 import struct
 import subprocess
 import sys
@@ -16,7 +17,7 @@ BINARY = sys.argv.pop(1)
 
 
 def run(*args, stdin=""):
-    return subprocess.run([BINARY, *args], input=stdin, text=True,
+    return subprocess.run([BINARY, *args], input=stdin, text=True, encoding="utf-8",
                           capture_output=True, timeout=20)
 
 
@@ -114,19 +115,22 @@ class Protocol(unittest.TestCase):
                                   env=dict(os.environ, AGAV_VOICE_BACKEND="cpu",
                                            AGAV_VOICE_PROFILE="1")) as process:
                 try:
-                    # Unbuffered fd polling provides a bounded read without relying
-                    # on TextIO read-ahead, which can hide ready lines from select.
-                    pending = bytearray()
+                    # Read in a worker thread: Windows selectors cannot poll pipes.
+                    lines = queue.Queue()
+                    def read_output():
+                        try:
+                            for line in process.stdout:
+                                lines.put(line)
+                        finally:
+                            lines.put(None)
+                    reader = threading.Thread(target=read_output, daemon=True)
+                    reader.start()
                     def receive():
-                        with selectors.DefaultSelector() as selector:
-                            selector.register(process.stdout, selectors.EVENT_READ)
-                            while b"\n" not in pending:
-                                self.assertTrue(selector.select(30), "Timed out waiting for helper")
-                                block = os.read(process.stdout.fileno(), 4096)
-                                self.assertTrue(block, "Unexpected helper EOF")
-                                pending.extend(block)
-                        line, _, tail = pending.partition(b"\n")
-                        pending[:] = tail
+                        try:
+                            line = lines.get(timeout=30)
+                        except queue.Empty:
+                            self.fail("Timed out waiting for helper")
+                        self.assertIsNotNone(line, "Unexpected helper EOF")
                         return json.loads(line)
                     self.assertEqual(receive(), {"type": "phase", "phase": "preparing"})
                     self.assertEqual(receive(), {"type": "ready", "protocol": 1})

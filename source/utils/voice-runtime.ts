@@ -150,7 +150,8 @@ export async function ensureVoiceRuntime(signal: AbortSignal): Promise<string> {
     return path;
   }
   const optimized = metadata(bundle.avx2);
-  const optimizedPath = `${path}.avx2`;
+  // Keep .exe as the final extension so Windows can launch the optimized PE.
+  const optimizedPath = process.platform === "win32" ? path.replace(/\.exe$/i, ".avx2.exe") : `${path}.avx2`;
   await materializeRuntime(optimizedPath, optimized, signal);
   selectedRuntime = { baseline: path, path: optimizedPath };
   return optimizedPath;

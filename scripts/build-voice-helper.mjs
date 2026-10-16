@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -11,8 +12,34 @@ const targets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win3
 let scratch;
 let staging;
 const started = performance.now();
-function run(command, args, timeout) {
-  const result = spawnSync(command, args, { stdio: "inherit", shell: false, timeout });
+function hasMsvcToolchain() {
+  const programFiles = process.env["ProgramFiles(x86)"] ?? process.env.ProgramFiles;
+  if (!programFiles) return false;
+  const vswhere = join(programFiles, "Microsoft Visual Studio", "Installer", "vswhere.exe");
+  if (!existsSync(vswhere)) return false;
+  const result = spawnSync(vswhere, ["-latest", "-version", "[17.0,18.0)", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"], { encoding: "utf8", shell: false });
+  return !result.error && result.status === 0 && result.stdout.trim() !== "";
+}
+function hasMinGWToolchain() {
+  return ["gcc.exe", "g++.exe", "mingw32-make.exe"].every(command => {
+    const result = spawnSync("where.exe", [command], { encoding: "utf8", shell: false });
+    return !result.error && result.status === 0;
+  });
+}
+function selectWindowsToolchain() {
+  const override = process.env.AGAV_VOICE_TOOLCHAIN;
+  if (override !== undefined) {
+    if (!["msvc", "mingw"].includes(override)) throw new Error("AGAV_VOICE_TOOLCHAIN must be msvc or mingw");
+    return override;
+  }
+  // Prefer GCC when both toolchains are installed; CMake's VS discovery can
+  // fail even when vswhere finds an installation (for example, Build Tools).
+  if (hasMinGWToolchain()) return "mingw";
+  if (hasMsvcToolchain()) return "msvc";
+  throw new Error("No supported Windows C/C++ toolchain found. Install Visual Studio 2022 C++ tools or MinGW-w64, or set AGAV_VOICE_TOOLCHAIN to select one.");
+}
+function run(command, args, timeout, env = process.env) {
+  const result = spawnSync(command, args, { stdio: "inherit", shell: false, timeout, env });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} failed (${result.status ?? result.signal}).`);
 }
@@ -21,9 +48,17 @@ try {
   if (target !== `${process.platform}-${process.arch}`) throw new Error(`Build ${target} on its native runner; current host is ${process.platform}-${process.arch}.`);
   scratch = await mkdtemp(join(tmpdir(), "agav-native-voice-"));
   const output = resolve(directory);
-  const args = ["-S", join(root, "native", "voice"), "-B", scratch, "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"];
+  const windowsToolchain = process.platform === "win32" ? selectWindowsToolchain() : null;
+  const args = ["-S", join(root, "native", "voice"), "-B", scratch, "-DCMAKE_BUILD_TYPE=Release"];
+  if (process.platform !== "win32" || windowsToolchain === "msvc") args.push("-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded");
   // Use CMake's native Visual Studio generator (not Git Bash's MinGW).
-  if (process.platform === "win32") args.push("-A", "x64");
+  if (process.platform === "win32") {
+    if (windowsToolchain === "msvc") {
+      args.push("-G", "Visual Studio 17 2022", "-A", "x64");
+    } else {
+      args.push("-G", "MinGW Makefiles", "-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc");
+    }
+  }
   if (process.platform === "linux") args.push("-DCMAKE_EXE_LINKER_FLAGS=-static-libstdc++ -static-libgcc");
   if (process.env.AGAV_VOICE_METAL !== undefined) {
     const metal = process.env.AGAV_VOICE_METAL.toUpperCase();
@@ -33,8 +68,16 @@ try {
   args.push("-DAGAV_VOICE_AVX2=OFF");
   run("cmake", args);
   run("cmake", ["--build", scratch, "--config", "Release", "--parallel", "4"]);
-  run("ctest", ["--test-dir", scratch, "-C", "Release", "--output-on-failure"]);
-  const binary = process.platform === "win32" ? join(scratch, "Release", "agav-voice.exe") : join(scratch, "agav-voice");
+  const testEnv = process.platform === "win32" && windowsToolchain === "mingw"
+    ? { ...process.env, PYTHONUTF8: "1" }
+    : process.env;
+  run("ctest", ["--test-dir", scratch, "-C", "Release", "--output-on-failure"], undefined, testEnv);
+  const binaryPath = buildDir => join(
+    buildDir,
+    ...(process.platform === "win32" && windowsToolchain === "msvc" ? ["Release"] : []),
+    process.platform === "win32" ? "agav-voice.exe" : "agav-voice",
+  );
+  const binary = binaryPath(scratch);
   if (process.platform === "darwin") run("codesign", ["--sign", "-", "--force", binary]);
   const protocol = spawnSync(binary, ["--protocol-version"], { encoding: "utf8", shell: false, timeout: 10_000 });
   if (protocol.error) throw protocol.error;
@@ -55,11 +98,11 @@ try {
     const optimizedArgs = args.map(arg => arg === scratch ? optimizedBuild : arg === "-DAGAV_VOICE_AVX2=OFF" ? "-DAGAV_VOICE_AVX2=ON" : arg);
     run("cmake", optimizedArgs);
     run("cmake", ["--build", optimizedBuild, "--config", "Release", "--parallel", "4"]);
-    const optimizedBinary = process.platform === "win32" ? join(optimizedBuild, "Release", "agav-voice.exe") : join(optimizedBuild, "agav-voice");
+    const optimizedBinary = binaryPath(optimizedBuild);
     if (process.platform === "darwin") run("codesign", ["--sign", "-", "--force", optimizedBinary]);
     const probe = spawnSync(binary, ["--supports-avx2"], { encoding: "utf8", shell: false, timeout: 10_000 });
     if (!probe.error && probe.status === 0 && probe.stdout.trim() === "1" && !probe.stderr.trim()) {
-      run("ctest", ["--test-dir", optimizedBuild, "-C", "Release", "--output-on-failure"]);
+      run("ctest", ["--test-dir", optimizedBuild, "-C", "Release", "--output-on-failure"], undefined, testEnv);
       run(optimizedBinary, ["--self-test"], 30_000);
     }
     await copyFile(optimizedBinary, join(staging, `${name}.avx2`));

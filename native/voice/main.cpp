@@ -26,6 +26,7 @@
 #include <vector>
 #ifdef _WIN32
 #include <windows.h>
+#include <shellapi.h>
 #include <conio.h>
 #include <psapi.h>
 #else
@@ -618,6 +619,29 @@ void native_log(enum ggml_log_level, const char *text, void *) { if (text) std::
 
 int main(int argc, char **argv) {
     try {
+#ifdef _WIN32
+        int wide_argc = 0;
+        LPWSTR *wide_argv = CommandLineToArgvW(GetCommandLineW(), &wide_argc);
+        check(wide_argv != nullptr, "Cannot read Windows command-line arguments.");
+        struct ArgumentCleanup { LPWSTR *argv; ~ArgumentCleanup() { LocalFree(argv); } } cleanup{wide_argv};
+        std::vector<std::string> utf8_arguments;
+        utf8_arguments.reserve(static_cast<size_t>(wide_argc));
+        for (int i = 0; i < wide_argc; ++i) {
+            const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1,
+                                                   nullptr, 0, nullptr, nullptr);
+            check(length > 0, "Cannot convert Windows command-line argument to UTF-8.");
+            std::vector<char> converted(static_cast<size_t>(length));
+            check(WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide_argv[i], -1,
+                                      converted.data(), length, nullptr, nullptr) == length,
+                  "Cannot convert Windows command-line argument to UTF-8.");
+            utf8_arguments.emplace_back(converted.data());
+        }
+        std::vector<char *> utf8_argv;
+        utf8_argv.reserve(utf8_arguments.size());
+        for (auto &argument : utf8_arguments) utf8_argv.push_back(argument.data());
+        argc = wide_argc;
+        argv = utf8_argv.data();
+#endif
         const auto args = options(argc, argv);
         if (args.protocol) { std::cout << "1\n"; return 0; }
         if (args.cpu_probe) { std::cout << (agav_voice::supports_avx2() ? "1\n" : "0\n"); return 0; }

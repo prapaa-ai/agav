@@ -108,6 +108,18 @@ describe("bundled voice runtime", () => {
     }
     await noStaging();
   });
+  it("keeps the executable extension on optimized Windows helpers", async () => {
+    host("win32", "x64");
+    state.bundle!.target = "win32-x64";
+    const optimized = Buffer.from("optimized Windows executable fixture");
+    state.bundle!.avx2 = { ...state.bundle!, size: optimized.length, sha256: createHash("sha256").update(optimized).digest("hex"), gzipBase64: gzipSync(optimized).toString("base64") };
+    state.probe = "1";
+    const baseline = getVoiceRuntimePath();
+    const optimizedPath = baseline.replace(".exe", ".avx2.exe");
+    expect(await ensureVoiceRuntime(controller.signal)).toBe(optimizedPath);
+    expect(await fs.readFile(optimizedPath)).toEqual(optimized);
+    expect(getVoiceRuntimePath()).toBe(optimizedPath);
+  });
   it("forces baseline on x64 without executing the capability probe", async () => {
     host("linux", "x64"); state.bundle!.target = "linux-x64";
     state.bundle!.avx2 = { ...state.bundle! }; state.probe = "1";
