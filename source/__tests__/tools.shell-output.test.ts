@@ -391,7 +391,7 @@ describe("sandbox streaming option", () => {
     }) as typeof spawn);
     const result = await runInSandbox({ command: "echo hi", cwd: process.cwd(), timeout: 20, maxBuffer: 1, forceBackend: "none", onOutput: () => {} });
     expect(result.error?.message).toContain("timed out");
-    expect(spawn).toHaveBeenCalledWith("cmd.exe", ["/c", "echo hi"], expect.objectContaining({ detached: false }));
+    expect(spawn).toHaveBeenCalledWith("cmd.exe", ["/d", "/s", "/c", '"echo hi"'], expect.objectContaining({ detached: false, windowsVerbatimArguments: true }));
     expect(execFile).toHaveBeenCalledWith("taskkill", ["/PID", "12345", "/T"], { timeout: 150 }, expect.any(Function));
     expect(execFile).toHaveBeenCalledWith("taskkill", ["/PID", "12345", "/T", "/F"], { timeout: 150 }, expect.any(Function));
   });
