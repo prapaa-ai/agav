@@ -96,6 +96,10 @@ const TOOL_META: Record<string, ToolMeta> = {
     label: "GitHub",
     formatSummary: (input) => String(input.operation ?? ""),
   },
+  subagent_model: {
+    label: "Subagent Model",
+    formatSummary: (input) => `${String(input.activeModel ?? "current model")} → ${String(input.model ?? "requested model")}`,
+  },
   subagent: {
     label: "Subagent",
     formatSummary: (input) => {

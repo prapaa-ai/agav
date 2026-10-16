@@ -105,6 +105,7 @@ export interface PendingConfirmation {
   resolve: (choice: ConfirmResult) => void;
   subagentId?: string;
   subagentTask?: string;
+  explicitApprovalOnly?: boolean;
 }
 
 export interface PendingContextWindowRequest {
@@ -338,6 +339,7 @@ export function useAgent(
           effort: configRef.current.effort,
           iterationsBudget: currentIterationsBudgetRef.current ?? { remaining: configRef.current.maxIterations, total: configRef.current.maxIterations },
         }),
+        getProviderConfig: () => configRef.current,
         confirmationQueue: confirmationQueueRef.current,
         onProgressUpdate: setSubagentStates,
         onSteerApplied: (_id, title, directives) => {

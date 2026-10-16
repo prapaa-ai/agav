@@ -3,7 +3,9 @@ import type { LLMProvider } from "../providers/types.js";
 import type { ToolRegistry } from "./registry.js";
 import type { ConfirmationQueue } from "../agent/confirmation-queue.js";
 import type { SubagentProgress } from "../agent/subagent-types.js";
-import type { EffortLevel, PermissionMode } from "../config/config.js";
+import type { AgavConfig, EffortLevel, PermissionMode } from "../config/config.js";
+import { fetchAvailableModels } from "../commands/model.js";
+import { createProvider } from "../providers/registry.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
@@ -20,8 +22,9 @@ export interface SubagentToolDeps {
     systemPrompt: string;
     permissionMode: PermissionMode;
     effort: EffortLevel;
-    iterationsBudget: { remaining: number, total: number }
+    iterationsBudget: { remaining: number, total: number };
   };
+  getProviderConfig?: () => AgavConfig;
   confirmationQueue: ConfirmationQueue;
   onProgressUpdate: (subagents: SubagentProgress[]) => void;
   onSteerApplied?: (id: string, title: string, directives: string[]) => void;
@@ -89,6 +92,10 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
               "A clear, self-contained description of what the subagent should accomplish. " +
               "Include file paths, function names, and any context needed.",
           },
+          model: {
+            type: "string",
+            description: "Only set this when the user explicitly requested a different model. Omit to use the active model. The requested model must exist and requires explicit per-call user approval."
+          },
         },
         required: ["title", "task"],
       },
@@ -110,6 +117,47 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
 
       const id = `sa-${++counter}`;
       const config = deps.getConfig();
+      const requestedModel = typeof input.model === "string" && input.model.trim()
+        ? input.model.trim()
+        : config.model;
+      let childProvider = deps.provider;
+      let childModel = config.model;
+
+      if (requestedModel !== config.model) {
+        const providerConfig = deps.getProviderConfig?.();
+        if (!providerConfig) {
+          return { output: "Cannot select a different subagent model: provider configuration is unavailable.", isError: true };
+        }
+        const { models } = await fetchAvailableModels(providerConfig);
+        const selectedModel = models.find((candidate) => candidate.id === requestedModel);
+        if (!selectedModel) {
+          return { output: `Model '${requestedModel}' does not exist or is not available.`, isError: true };
+        }
+
+        const approval = await deps.confirmationQueue.enqueue({
+          toolName: "subagent_model",
+          input: { title, model: requestedModel, activeModel: config.model },
+          subagentTask: title,
+          explicitApprovalOnly: true,
+        });
+        if (approval !== "yes") {
+          return { output: `Subagent model change to '${requestedModel}' was not approved.`, isError: true };
+        }
+
+        try {
+          childProvider = createProvider({
+            ...providerConfig,
+            provider: selectedModel.provider as AgavConfig["provider"],
+            model: requestedModel,
+          });
+          childModel = requestedModel;
+        } catch (error) {
+          return {
+            output: `Model '${requestedModel}' exists but could not be initialized: ${error instanceof Error ? error.message : String(error)}`,
+            isError: true,
+          };
+        }
+      }
 
       const childRegistry = new ToolRegistryClass();
       for (const tool of deps.parentToolRegistry.list()) {
@@ -119,7 +167,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       }
 
       const conversation = new ConversationState();
-      conversation.setModel(config.model);
+      conversation.setModel(childModel);
       conversation.addUserMessage(task);
 
       const steers = formatSteersForPrompt();
@@ -205,10 +253,10 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         };
 
         const loop = runAgentLoop({
-          provider: deps.provider,
+          provider: childProvider,
           conversation,
           toolRegistry: childRegistry,
-          model: config.model,
+          model: childModel,
           systemPrompt: subagentSystemPrompt,
           signal: childController.signal,
           confirmTool,
