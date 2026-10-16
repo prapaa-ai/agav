@@ -193,6 +193,9 @@ describe("parseArgs", () => {
 
     const updateFlags = parseArgs(["--cwd", "/repo", "update"]);
     expect(updateFlags.update).toBe(true);
+
+    const sessionFlags = parseArgs(["--cwd", "/repo", "sessions"]);
+    expect(sessionFlags.sessions).toBe(true);
   });
 
   it("treats missing or empty --cwd values as process exits", () => {
