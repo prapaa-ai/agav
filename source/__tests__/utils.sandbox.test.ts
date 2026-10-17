@@ -125,6 +125,58 @@ describe("utils/sandbox", () => {
     expect(vi.mocked(spawn).mock.calls[0]?.[2]?.env).toBeUndefined();
   });
 
+  it.each([false, true])("preserves quoted Windows shell syntax (streaming: %s)", async (streaming) => {
+    vi.resetModules();
+    const os = await import("node:os");
+    vi.mocked(os.platform).mockReturnValue("win32");
+    const sandbox = await import("../utils/sandbox.js");
+    const commands = [
+      '"C:\\Program Files\\nodejs\\npx.cmd" hyperframes --version',
+      '"C:\\Program Files\\tools\\inspect.cmd" "argument with spaces" "" "C:\\output dir\\"',
+      '"C:\\Program Files\\tools\\inspect.cmd" "a&b" && echo done',
+      '"C:\\Program Files\\tools\\inspect.cmd" | findstr output > "result file.txt"',
+    ];
+    try {
+      for (const command of commands) {
+        const result = await sandbox.runInSandbox({
+          command, cwd: "C:\\project dir", timeout: 1000, maxBuffer: 1024,
+          ...(streaming ? { onOutput: () => {} } : {}),
+        });
+        expect(result.error).toBeNull();
+        expect(spawn).toHaveBeenLastCalledWith("cmd.exe", ["/d", "/s", "/c", `"${command}"`], expect.objectContaining({
+          cwd: "C:\\project dir", detached: false, windowsVerbatimArguments: true,
+        }));
+      }
+    } finally {
+      vi.mocked(os.platform).mockReset();
+    }
+  });
+
+  it.each([false, true])("does not apply cmd quoting to Windows Docker execution (streaming: %s)", async (streaming) => {
+    vi.resetModules();
+    const os = await import("node:os");
+    vi.mocked(os.platform).mockReturnValue("win32");
+    const cp = await import("node:child_process");
+    vi.mocked(cp.execFile).mockImplementation((...args: any[]) => {
+      args.at(-1)(null, "", "");
+      return {} as any;
+    });
+    const sandbox = await import("../utils/sandbox.js");
+    const command = 'printf "%s" "argument with spaces"';
+    try {
+      await sandbox.runInSandbox({ command, cwd: "C:\\project dir", timeout: 1000, maxBuffer: 1024,
+        forceBackend: "docker", ...(streaming ? { onOutput: () => {} } : {}),
+      });
+      const calls = streaming ? vi.mocked(cp.spawn).mock.calls : vi.mocked(cp.execFile).mock.calls;
+      const call = calls.find(([file, args]) => file === "docker" && args?.includes("run"));
+      expect(call).toBeDefined();
+      expect(call![1]).toContain(command);
+      expect(call![2]).not.toHaveProperty("windowsVerbatimArguments", true);
+    } finally {
+      vi.mocked(os.platform).mockReset();
+    }
+  });
+
   it("flags destructive commands", () => {
     expect(isDestructiveCommand("rm -rf /")).toBe(true);
     expect(isDestructiveCommand("git push --force origin main")).toBe(true);
