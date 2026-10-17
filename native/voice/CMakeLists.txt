@@ -5,6 +5,13 @@ project(agav_voice VERSION 1.0.0 LANGUAGES C CXX)
 include(FetchContent)
 include(CTest)
 find_package(Threads REQUIRED)
+if(MINGW)
+    # libstdc++'s threading implementation can pull in winpthread even when
+    # libgcc/libstdc++ are static. Use static archive selection for all MinGW
+    # runtimes (including transitive pthread links), not just those two.
+    # Keep this in CMake so direct builds and both x64 variants share it.
+    add_link_options(-static -static-libgcc -static-libstdc++)
+endif()
 option(AGAV_VOICE_METAL "Enable Apple's optional Metal inference backend" ${APPLE})
 if(AGAV_VOICE_METAL AND NOT APPLE)
     message(FATAL_ERROR "AGAV_VOICE_METAL requires macOS")
