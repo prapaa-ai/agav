@@ -17,7 +17,7 @@ type FakeStdin = EventEmitter & {
 };
 
 type FakeStdout = EventEmitter & { destroy: () => void };
-type FakeChild = EventEmitter & { stdin: FakeStdin; stdout: FakeStdout; unref: () => void };
+type FakeChild = EventEmitter & { stdin: FakeStdin; stdout: FakeStdout; unref: () => void; kill: () => boolean };
 
 const makeChild = (): FakeChild => {
   const child = new EventEmitter() as FakeChild;
@@ -31,6 +31,7 @@ const makeChild = (): FakeChild => {
   child.stdin = stdin;
   child.stdout = Object.assign(new EventEmitter(), { destroy: vi.fn() });
   child.unref = vi.fn();
+  child.kill = vi.fn(() => true);
   return child;
 };
 
@@ -93,6 +94,7 @@ describe("writeClipboard (native write path)", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     process.env = { ...originalEnv };
   });
 
@@ -135,7 +137,46 @@ describe("writeClipboard (native write path)", () => {
     expect(child.stdin.ended).toBe(true);
   });
 
-  it("falls back when an installed native tool cannot access the display", async () => {
+  it("does not send OSC 52 after a stdin-pipe tool reports a nonzero exit", async () => {
+    const child = makeChild();
+    execFileMock.mockReturnValue(child);
+    const { writeClipboard } = await loadClipboard({
+      platform: "linux",
+      availableCommands: ["xclip"],
+    });
+    const { stream, chunks } = makeStdout();
+
+    writeClipboard(stream, "fallback");
+    child.emit("spawn");
+    child.emit("error", new Error("error after launch"));
+    const callback = execFileMock.mock.calls[0]![2] as (error: Error) => void;
+    callback(new Error("cannot open display"));
+
+    // The tool might have taken ownership before exiting with an error.
+    expect(child.stdin.written).toBe("fallback");
+    expect(chunks).toEqual([]);
+  });
+
+  it("does not send OSC 52 if stdin throws after the native tool was launched", async () => {
+    const child = makeChild();
+    child.stdin.end = () => {
+      child.stdin.written = "partial";
+      throw new Error("pipe closed");
+    };
+    execFileMock.mockReturnValue(child);
+    const { writeClipboard } = await loadClipboard({
+      platform: "linux",
+      availableCommands: ["xclip"],
+    });
+    const { stream, chunks } = makeStdout();
+
+    expect(() => writeClipboard(stream, "partial write")).not.toThrow();
+
+    expect(child.stdin.written).toBe("partial");
+    expect(chunks).toEqual([]);
+  });
+
+  it("falls back if a stdin-pipe tool fails to launch", async () => {
     const child = makeChild();
     execFileMock.mockReturnValue(child);
     const { writeClipboard, osc52Copy } = await loadClipboard({
@@ -145,8 +186,9 @@ describe("writeClipboard (native write path)", () => {
     const { stream, chunks } = makeStdout();
 
     writeClipboard(stream, "fallback");
+    child.emit("error", Object.assign(new Error("spawn failed"), { code: "ENOENT" }));
     const callback = execFileMock.mock.calls[0]![2] as (error: Error) => void;
-    callback(new Error("cannot open display"));
+    callback(new Error("spawn failed"));
 
     expect(chunks).toEqual([osc52Copy("fallback")]);
   });
@@ -174,7 +216,8 @@ describe("writeClipboard (native write path)", () => {
     expect(child.unref).toHaveBeenCalled();
     expect(chunks).toEqual([]);
     expect(onCopy).not.toHaveBeenCalled();
-    child.stdout.emit("data", Buffer.from("READY\n"));
+    child.stdout.emit("data", Buffer.from("RE"));
+    child.stdout.emit("data", Buffer.from("ADY\n"));
     expect(onCopy).toHaveBeenCalledWith("Copied to clipboard");
   });
 
@@ -191,11 +234,52 @@ describe("writeClipboard (native write path)", () => {
     subscribeClipboardCopy(onCopy);
 
     writeClipboard(stream, "fallback");
-    child.emit("exit", 1);
+    child.emit("close", 1);
     child.emit("error", new Error("spawn failed"));
 
     expect(chunks).toEqual([osc52Copy("fallback")]);
     expect(onCopy).toHaveBeenCalledWith("Copy sent to terminal");
+  });
+
+  it("kills a GTK helper that never becomes ready and falls back once", async () => {
+    process.env["DISPLAY"] = ":1";
+    const child = makeChild();
+    spawnMock.mockReturnValue(child);
+    const { writeClipboard, osc52Copy, subscribeClipboardCopy } = await loadClipboard({
+      platform: "linux",
+      availableCommands: ["python3"],
+    });
+    const { stream, chunks } = makeStdout();
+    const onCopy = vi.fn();
+    subscribeClipboardCopy(onCopy);
+    vi.useFakeTimers();
+
+    writeClipboard(stream, "hung import");
+    vi.advanceTimersByTime(2000);
+
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(chunks).toEqual([osc52Copy("hung import")]);
+    expect(onCopy).toHaveBeenCalledWith("Copy sent to terminal");
+
+    child.stdout.emit("data", Buffer.from("READY\n"));
+    child.emit("close", null);
+    expect(chunks).toHaveLength(1);
+    expect(onCopy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not choose the untested GTK helper on Wayland", async () => {
+    process.env["DISPLAY"] = ":1";
+    process.env["WAYLAND_DISPLAY"] = "wayland-0";
+    const { writeClipboard, osc52Copy } = await loadClipboard({
+      platform: "linux",
+      availableCommands: ["python3"],
+    });
+    const { stream, chunks } = makeStdout();
+
+    writeClipboard(stream, "Wayland text");
+
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(chunks).toEqual([osc52Copy("Wayland text")]);
   });
 
   it("does not touch stdin on the PowerShell path (payload is in the argument)", async () => {

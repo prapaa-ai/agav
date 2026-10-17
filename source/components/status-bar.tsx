@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Box, Text, Spinner } from "../ink/index.js";
 import { getRandomHint } from "../utils/hints.js";
 import { terminalRelativePaths } from "../utils/display-path.js";
+import type { ClipboardNotice } from "../ink/termio/clipboard.js";
 import {
   defaultStatusBarLayout,
   enabledStatusBarItems,
@@ -14,7 +15,7 @@ import {
 
 /** Props for the status bar footer. */
 interface Props {
-  copyNotice?: string | null;
+  copyNotice?: ClipboardNotice | null;
   model: string;
   provider: string;
   effort: string;
@@ -187,14 +188,14 @@ export default function StatusBar({
       {loopStatus && (
         <Text color="yellow" dimColor>{loopStatus}</Text>
       )}
-      {copyNotice ? (
-        <Text color={copyNotice === "Copied to clipboard" ? "green" : "cyan"}>
-          {copyNotice === "Copied to clipboard" ? "✓ " : ""}{copyNotice}
-        </Text>
-      ) : psLoading ? (
+      {psLoading ? (
         <Text color="cyan" dimColor><Spinner />{" ps: thinking..."}</Text>
       ) : psResponse ? (
         <Text color="cyan" dimColor>{"↪ ps: "}{terminalRelativePaths(psResponse)}</Text>
+      ) : copyNotice ? (
+        <Text color={copyNotice === "Copied to clipboard" ? "green" : "cyan"}>
+          {copyNotice === "Copied to clipboard" ? "✓ " : ""}{copyNotice}
+        </Text>
       ) : hintEnabled ? (
         <Text dimColor italic>
           {"💡 "}{displayHint}

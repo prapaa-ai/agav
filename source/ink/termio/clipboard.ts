@@ -1,5 +1,5 @@
 // Clipboard support. Tries platform-native commands first (pbcopy on macOS,
-// xclip/xsel/wl-copy or GTK on Linux, PowerShell/clip on Windows) and falls
+// xclip/xsel/wl-copy or GTK on X11 Linux, PowerShell/clip on Windows) and falls
 // back to OSC 52 when no native method is available.
 
 import { platform } from "node:os";
@@ -71,9 +71,9 @@ const resolveClipboardCmd = (): { cmd: string; args: string[] } | null => {
 		if (commandExists("xsel")) {
 			return { cmd: "xsel", args: ["--clipboard", "--input"] };
 		}
-		// GNOME installs GTK and Python GI on many desktops without installing
-		// xclip/xsel. VTE terminals do not accept OSC 52, so use GTK directly.
-		if ((process.env["DISPLAY"] || process.env["WAYLAND_DISPLAY"]) && commandExists("python3")) {
+		// On X11 GNOME, GTK/Python GI can provide a clipboard without xclip/xsel.
+		// The GTK helper has only been verified on X11; prefer wl-copy on Wayland.
+		if (process.env["DISPLAY"] && !process.env["WAYLAND_DISPLAY"] && commandExists("python3")) {
 			return { cmd: "python3-gtk", args: [] };
 		}
 	}
@@ -82,6 +82,7 @@ const resolveClipboardCmd = (): { cmd: string; args: string[] } | null => {
 };
 
 const clipboardCmd = resolveClipboardCmd();
+const GTK_STARTUP_TIMEOUT_MS = 2000;
 
 export type ClipboardNotice = "Copied to clipboard" | "Copy sent to terminal";
 const copyListeners = new Set<(notice: ClipboardNotice) => void>();
@@ -122,7 +123,9 @@ Gtk.main()
 
 /**
  * Copy text via the platform-native clipboard command resolved at startup.
- * Returns true when a command was launched. Runtime failures invoke onFailure.
+ * Returns true when a command was launched. onFailure is used only when the
+ * native path cannot have completed a copy; stdin-pipe exit errors are
+ * ambiguous and must not trigger a second clipboard write.
  *
  * On Windows, `clip.exe` reads stdin using the console's active code page
  * (usually CP437 or CP1252), not UTF-8, so non-ASCII characters like `•`,
@@ -137,19 +140,41 @@ const nativeCopy = (text: string, onSuccess: () => void, onFailure: () => void):
 				detached: true,
 				stdio: ["pipe", "pipe", "ignore"],
 			});
-			let ready = false;
-			child.on("error", onFailure);
-			child.on("exit", code => {
-				if (!ready || code !== 0) onFailure();
-			});
+			let settled = false;
+			let readiness = "";
+			const timeout = setTimeout(() => {
+				if (settled) return;
+				settled = true;
+				child.kill();
+				onFailure();
+			}, GTK_STARTUP_TIMEOUT_MS);
+			timeout.unref();
+			const fail = () => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timeout);
+				onFailure();
+			};
+			child.on("error", fail);
+			// `close` runs after stdout is drained, so a late READY marker wins
+			// over the exit status before we decide to use OSC 52.
+			child.on("close", () => fail());
 			child.stdout.on("data", data => {
-				if (ready || !String(data).includes("READY")) return;
-				ready = true;
+				if (settled) return;
+				readiness = (readiness + String(data)).slice(-32);
+				if (!readiness.includes("READY")) return;
+				settled = true;
+				clearTimeout(timeout);
 				onSuccess();
 				child.stdout.destroy();
 			});
 			child.stdin.on("error", () => {});
-			child.stdin.end(text);
+			try {
+				child.stdin.end(text);
+			} catch {
+				child.kill();
+				fail();
+			}
 			child.unref();
 			return true;
 		}
@@ -179,13 +204,25 @@ const nativeCopy = (text: string, onSuccess: () => void, onFailure: () => void):
 		// (over a bare spawn) gives us the completion callback that reaps the
 		// child, but it has no `input` option for the async form — the payload
 		// still has to go through child.stdin explicitly.
-		const child = execFile(clipboardCmd.cmd, clipboardCmd.args, (error) => {
-			if (error) onFailure();
-			else onSuccess();
+		const child = execFile(clipboardCmd.cmd, clipboardCmd.args, error => {
+			// A nonzero exit can follow a partial or complete clipboard write.
+			// Sending OSC 52 then could overwrite the text a native tool copied.
+			if (!error) onSuccess();
 		});
-		child.on("error", () => {}); // swallow unexpected runtime errors
+		let launched = false;
+		child.once("spawn", () => { launched = true; });
+		child.on("error", () => {
+			// ChildProcess can also emit error after launch. Only a failed
+			// spawn proves that no clipboard write occurred.
+			if (!launched) onFailure();
+		});
 		child.stdin?.on("error", () => {}); // guard against EPIPE if the tool exits early
-		child.stdin?.end(text); // write payload and signal EOF in one call
+		try {
+			child.stdin?.end(text); // write payload and signal EOF in one call
+		} catch {
+			// The tool was launched and may already have consumed bytes. Do not
+			// send a second copy through OSC 52 after a possible partial write.
+		}
 		return true;
 	} catch {
 		return false;
