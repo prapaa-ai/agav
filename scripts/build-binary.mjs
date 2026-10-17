@@ -43,11 +43,11 @@ const supportedTargets = new Set([
   "native", "darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64",
   "windows-x64", "windows-x64-baseline",
 ]);
-if (!supportedTargets.has(target)) throw new Error(`Unsupported binary target: ${target}`);
+if (target !== "all" && !supportedTargets.has(target)) throw new Error(`Unsupported binary target: ${target}`);
 
 const host = `${process.platform}-${process.arch}`;
 const voiceTarget = target === "native" ? host : target.startsWith("windows-") ? "win32-x64" : target;
-if (!["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win32-x64"].includes(voiceTarget)) {
+if (target !== "all" && !["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64", "win32-x64"].includes(voiceTarget)) {
   throw new Error(`Unsupported native voice helper target: ${voiceTarget}`);
 }
 

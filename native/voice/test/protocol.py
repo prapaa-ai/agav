@@ -241,6 +241,35 @@ class Protocol(unittest.TestCase):
             path.write_bytes(b"invalid WAV")
             self.assertIn("Cannot decode", events(run("--input-wav", str(path)))[-1]["message"])
 
+    def test_model_loader_opens_unicode_paths_without_microphone(self):
+        # Invalid magic proves the file was opened/read, not merely that a
+        # generic load error was returned. Include non-BMP UTF-16 surrogate pairs
+        # and exercise both ASCII and Unicode filenames below a Unicode directory.
+        with tempfile.TemporaryDirectory(prefix="agav-model-世界-\U0001f399-") as directory:
+            for name in ("model.bin", "模型-\U0001f399.bin"):
+                with self.subTest(name=name):
+                    path = pathlib.Path(directory) / name
+                    path.write_bytes(b"BAD!")
+                    with subprocess.Popen([BINARY, "--model", str(path)],
+                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                          stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                                          env=dict(os.environ, AGAV_VOICE_BACKEND="cpu")) as process:
+                        try:
+                            # Keep stdin open so EOF cannot mask the load error.
+                            process.wait(timeout=20)
+                            stdout, stderr = process.communicate(timeout=5)
+                            self.assertEqual(process.returncode, 1, stderr)
+                            self.assertEqual([json.loads(line) for line in stdout.splitlines()], [
+                                {"type": "phase", "phase": "preparing"},
+                                {"type": "error", "message": "Cannot load local whisper model. Supply a valid English .en model."},
+                            ])
+                            self.assertIn("invalid model data (bad magic)", stderr)
+                        finally:
+                            if process.poll() is None:
+                                process.kill()
+                                process.communicate()
+                    path.unlink()
+
     def test_eof_cancels_without_model_or_microphone(self):
         result = run("--model", os.path.join(tempfile.gettempdir(), "agav-nonexistent-model.bin"))
         self.assertNotEqual(result.returncode, 0)

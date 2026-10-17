@@ -216,6 +216,7 @@ public:
     using Recognize = std::function<std::string(const std::vector<float> &, const Abort &)>;
     using Partial = std::function<void(const std::string &)>;
     static constexpr size_t window = 5 * sample_rate;
+    static constexpr size_t interim_threshold = sample_rate / 2;
 private:
     Audio &audio;
     Abort cancelled;
@@ -263,9 +264,11 @@ private:
                     pause = energy(audio.samples.data() + i, std::min(size_t(1600), end - i)) < 100.0 / 32768;
                 const auto now = std::chrono::steady_clock::now();
                 // Sample and wall clocks bound update rate; slow inference coalesces
-                // updates. Backlogs use bounded, non-overlapping chunks, not 120s passes.
+                // updates. Start after a half-second of new audio so short
+                // utterances can reach the prompt before Enter/Stop. Backlogs
+                // use bounded, non-overlapping chunks, not 120s passes.
                 if (end > decoded && (final ||
-                    ((end - decoded >= sample_rate || pause || end == begin + window) && now - last >= cadence))) {
+                    ((end - decoded >= interim_threshold || pause || end == begin + window) && now - last >= cadence))) {
                     last = now; // start-to-start cadence, not inference-end-to-start
                     // New silence cannot change a previously decoded speech draft.
                     // Use the existing conservative energy threshold, never a louder VAD.
@@ -614,6 +617,32 @@ Options options(int argc, char **argv) {
     }
     return result;
 }
+// whisper.cpp v1.7.6 widens file paths only with MSVC, not MinGW.
+whisper_context *load_model(const std::string &path, whisper_context_params params) {
+#ifdef _WIN32
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1, nullptr, 0);
+    if (length <= 0) return nullptr;
+    std::vector<wchar_t> wide_path(static_cast<size_t>(length));
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path.c_str(), -1,
+                            wide_path.data(), length) != length) return nullptr;
+    std::unique_ptr<FILE, decltype(&std::fclose)> file(_wfopen(wide_path.data(), L"rb"), std::fclose);
+    if (!file) return nullptr;
+    whisper_model_loader loader{};
+    loader.context = file.get();
+    loader.read = [](void *context, void *output, size_t size) {
+        return std::fread(output, 1, size, static_cast<FILE *>(context));
+    };
+    loader.eof = [](void *context) {
+        auto *input = static_cast<FILE *>(context);
+        return std::feof(input) != 0 || std::ferror(input) != 0;
+    };
+    // RAII owns the file, including initialization failures and exceptions.
+    loader.close = [](void *) {};
+    return whisper_init_with_params(&loader, params);
+#else
+    return whisper_init_from_file_with_params(path.c_str(), params);
+#endif
+}
 void native_log(enum ggml_log_level, const char *text, void *) { if (text) std::fputs(text, stderr); }
 } // namespace
 
@@ -682,7 +711,7 @@ int main(int argc, char **argv) {
         auto load = [&] {
             auto params = whisper_context_default_params();
             params.use_gpu = gpu;
-            return Context(whisper_init_from_file_with_params(args.model.c_str(), params), whisper_free);
+            return Context(load_model(args.model, params), whisper_free);
         };
         const auto load_start = std::chrono::steady_clock::now();
         context = load();

@@ -8,13 +8,13 @@ import { parse } from "yaml";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-// Exercise the actual shell wrapper in an isolated repository. Native compilation
+// Exercise the Node entrypoint used by package builds in an isolated repository. Native compilation
 // and Bun are stand-ins: no network/toolchain or production source mutation.
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "agav-binary-test-"));
   roots.push(root);
   for (const dir of ["scripts", "source/voice", "bin"]) mkdirSync(join(root, dir), { recursive: true });
-  copyFileSync("scripts/build-binary.sh", join(root, "scripts/build-binary.sh"));
+  copyFileSync("scripts/build-binary.mjs", join(root, "scripts/build-binary.mjs"));
   writeFileSync(join(root, "source/voice/bundled-runtime.ts"), "original stub\n");
   writeFileSync(join(root, "scripts/gen-bundled-skills.mjs"), "");
   writeFileSync(join(root, "scripts/embed-voice-helper.mjs"), `
@@ -35,12 +35,21 @@ function fixture() {
     chmodSync(helper, 0o755);
   `);
   const bun = join(root, "bin/bun");
-  writeFileSync(bun, '#!/bin/bash\ncat source/voice/bundled-runtime.ts > compiled-bundle\nprintf "%s\\n" "$@" > bun-args\nfor arg in "$@"; do case "$arg" in dist/*) cp compiled-bundle "$arg" ;; esac; done\nexit "${FAIL_BUN:-0}"\n');
+  writeFileSync(bun, `#!/usr/bin/env node
+    const fs = require('node:fs');
+    const args = process.argv.slice(2);
+    if (args[0] === '--version') process.exit(0);
+    const bundle = fs.readFileSync('source/voice/bundled-runtime.ts');
+    fs.writeFileSync('compiled-bundle', bundle);
+    fs.writeFileSync('bun-args', args.join('\\n'));
+    fs.writeFileSync(args[args.indexOf('--outfile') + 1], bundle);
+    process.exit(Number(process.env.FAIL_BUN || 0));
+  `);
   chmodSync(bun, 0o755);
   const helper = join(root, "prebuilt");
   writeFileSync(helper, '#!/bin/sh\nprintf "${HELPER_PROTOCOL:-1}\\n"\n');
   chmodSync(helper, 0o755);
-  return { root, helper, run: (args: string[], env: NodeJS.ProcessEnv = {}) => spawnSync("bash", [join(root, "scripts/build-binary.sh"), ...args], {
+  return { root, helper, run: (args: string[], env: NodeJS.ProcessEnv = {}) => spawnSync(process.execPath, [join(root, "scripts/build-binary.mjs"), ...args], {
     cwd: tmpdir(), encoding: "utf8", env: { ...process.env, AGAV_VOICE_HELPER_PATH: "", AGAV_VOICE_HELPER_DIR: "", PATH: `${join(root, "bin")}:${process.env.PATH}`, ...env },
   }) };
 }
