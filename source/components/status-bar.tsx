@@ -14,6 +14,7 @@ import {
 
 /** Props for the status bar footer. */
 interface Props {
+  copyNotice?: string | null;
   model: string;
   provider: string;
   effort: string;
@@ -93,6 +94,7 @@ export function buildStatusBarText(segments: StatusBarSegments, layout?: StatusB
 
 /** Renders model, token, and hint status information. */
 export default function StatusBar({
+  copyNotice,
   model,
   provider,
   effort,
@@ -185,7 +187,11 @@ export default function StatusBar({
       {loopStatus && (
         <Text color="yellow" dimColor>{loopStatus}</Text>
       )}
-      {psLoading ? (
+      {copyNotice ? (
+        <Text color={copyNotice === "Copied to clipboard" ? "green" : "cyan"}>
+          {copyNotice === "Copied to clipboard" ? "✓ " : ""}{copyNotice}
+        </Text>
+      ) : psLoading ? (
         <Text color="cyan" dimColor><Spinner />{" ps: thinking..."}</Text>
       ) : psResponse ? (
         <Text color="cyan" dimColor>{"↪ ps: "}{terminalRelativePaths(psResponse)}</Text>

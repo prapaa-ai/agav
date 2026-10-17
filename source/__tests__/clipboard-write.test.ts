@@ -16,7 +16,8 @@ type FakeStdin = EventEmitter & {
   end: (chunk?: string) => void;
 };
 
-type FakeChild = EventEmitter & { stdin: FakeStdin };
+type FakeStdout = EventEmitter & { destroy: () => void };
+type FakeChild = EventEmitter & { stdin: FakeStdin; stdout: FakeStdout; unref: () => void };
 
 const makeChild = (): FakeChild => {
   const child = new EventEmitter() as FakeChild;
@@ -28,15 +29,19 @@ const makeChild = (): FakeChild => {
     stdin.ended = true;
   };
   child.stdin = stdin;
+  child.stdout = Object.assign(new EventEmitter(), { destroy: vi.fn() });
+  child.unref = vi.fn();
   return child;
 };
 
 const execFileMock = vi.fn();
 const execFileSyncMock = vi.fn();
+const spawnMock = vi.fn();
 
 vi.mock("node:child_process", () => ({
   execFile: (...args: unknown[]) => execFileMock(...args),
   execFileSync: (...args: unknown[]) => execFileSyncMock(...args),
+  spawn: (...args: unknown[]) => spawnMock(...args),
 }));
 
 const platformMock = vi.fn();
@@ -81,6 +86,7 @@ describe("writeClipboard (native write path)", () => {
   beforeEach(() => {
     execFileMock.mockReset();
     execFileSyncMock.mockReset();
+    spawnMock.mockReset();
     platformMock.mockReset();
     delete process.env["TMUX"];
     delete process.env["WAYLAND_DISPLAY"];
@@ -129,6 +135,69 @@ describe("writeClipboard (native write path)", () => {
     expect(child.stdin.ended).toBe(true);
   });
 
+  it("falls back when an installed native tool cannot access the display", async () => {
+    const child = makeChild();
+    execFileMock.mockReturnValue(child);
+    const { writeClipboard, osc52Copy } = await loadClipboard({
+      platform: "linux",
+      availableCommands: ["xclip"],
+    });
+    const { stream, chunks } = makeStdout();
+
+    writeClipboard(stream, "fallback");
+    const callback = execFileMock.mock.calls[0]![2] as (error: Error) => void;
+    callback(new Error("cannot open display"));
+
+    expect(chunks).toEqual([osc52Copy("fallback")]);
+  });
+
+  it("uses a persistent GTK clipboard owner on GNOME without xclip or xsel", async () => {
+    process.env["DISPLAY"] = ":1";
+    const child = makeChild();
+    spawnMock.mockReturnValue(child);
+
+    const { writeClipboard, subscribeClipboardCopy } = await loadClipboard({
+      platform: "linux",
+      availableCommands: ["python3"],
+    });
+    const { stream, chunks } = makeStdout();
+    const onCopy = vi.fn();
+    subscribeClipboardCopy(onCopy);
+
+    writeClipboard(stream, "GNOME text");
+
+    expect(spawnMock.mock.calls[0]![0]).toBe("python3");
+    expect(spawnMock.mock.calls[0]![1]).toEqual(["-c", expect.stringContaining("Gtk.main()")]);
+    expect(spawnMock.mock.calls[0]![2]).toMatchObject({ detached: true });
+    expect(child.stdin.written).toBe("GNOME text");
+    expect(child.stdin.ended).toBe(true);
+    expect(child.unref).toHaveBeenCalled();
+    expect(chunks).toEqual([]);
+    expect(onCopy).not.toHaveBeenCalled();
+    child.stdout.emit("data", Buffer.from("READY\n"));
+    expect(onCopy).toHaveBeenCalledWith("Copied to clipboard");
+  });
+
+  it("falls back to OSC 52 if GTK is unavailable at runtime", async () => {
+    process.env["DISPLAY"] = ":1";
+    const child = makeChild();
+    spawnMock.mockReturnValue(child);
+    const { writeClipboard, osc52Copy, subscribeClipboardCopy } = await loadClipboard({
+      platform: "linux",
+      availableCommands: ["python3"],
+    });
+    const { stream, chunks } = makeStdout();
+    const onCopy = vi.fn();
+    subscribeClipboardCopy(onCopy);
+
+    writeClipboard(stream, "fallback");
+    child.emit("exit", 1);
+    child.emit("error", new Error("spawn failed"));
+
+    expect(chunks).toEqual([osc52Copy("fallback")]);
+    expect(onCopy).toHaveBeenCalledWith("Copy sent to terminal");
+  });
+
   it("does not touch stdin on the PowerShell path (payload is in the argument)", async () => {
     const child = makeChild();
     execFileMock.mockReturnValue(child);
@@ -147,17 +216,25 @@ describe("writeClipboard (native write path)", () => {
   });
 
   it("falls back to OSC 52 when no native clipboard tool is installed", async () => {
-    const { writeClipboard, osc52Copy } = await loadClipboard({
+    const { writeClipboard, osc52Copy, subscribeClipboardCopy } = await loadClipboard({
       platform: "linux",
       availableCommands: [], // nothing available -> clipboardCmd is null
     });
     const { stream, chunks } = makeStdout();
+    const onCopy = vi.fn();
+    const unsubscribe = subscribeClipboardCopy(onCopy);
 
     writeClipboard(stream, "fallback");
 
     // No native command was invoked; the OSC 52 escape was written instead.
     expect(execFileMock).not.toHaveBeenCalled();
     expect(chunks).toEqual([osc52Copy("fallback")]);
+    expect(onCopy).toHaveBeenCalledTimes(1);
+    expect(onCopy).toHaveBeenCalledWith("Copy sent to terminal");
+
+    unsubscribe();
+    writeClipboard(stream, "another copy");
+    expect(onCopy).toHaveBeenCalledTimes(1);
   });
 
   it("does not throw if the native tool errors after spawn (EPIPE guard)", async () => {
