@@ -280,13 +280,11 @@ describe("concurrent-host schedule safety (WP-13)", () => {
     const runs = new Array<number>(HOSTS).fill(0);
     let active = 0;
     let maxActive = 0;
-    let firstRoundAcquired = 0;
+    // Retries overlap first attempts, so no caller is guaranteed to acquire on its first attempt.
     await Promise.all(
-      Array.from({ length: HOSTS }, (_, i) => {
-        let attempt = 0;
-        return retryWhileHeld(async () => {
+      Array.from({ length: HOSTS }, (_, i) =>
+        retryWhileHeld(async () => {
           const lock = await acquireDaemonLock(root, "test");
-          if (attempt++ === 0 && lock.acquired) firstRoundAcquired += 1;
           if (!lock.acquired) return false;
           active += 1;
           maxActive = Math.max(maxActive, active);
@@ -295,13 +293,13 @@ describe("concurrent-host schedule safety (WP-13)", () => {
           active -= 1;
           await lock.release();
           return true;
-        });
-      }),
+        }),
+      ),
     );
 
-    expect(firstRoundAcquired).toBeGreaterThanOrEqual(1);
     expect(runs).toEqual(new Array<number>(HOSTS).fill(1));
     expect(maxActive).toBe(1);
+    expect(active).toBe(0);
     const quarantined = await readdir(quarantineDir(root));
     expect(quarantined).toHaveLength(1);
     expect(quarantined[0]!.startsWith(`${basename(path)}.stale-`)).toBe(true);

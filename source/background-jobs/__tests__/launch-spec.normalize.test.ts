@@ -161,11 +161,13 @@ describe("normalizeLaunchSpec — cwd canonicalization", () => {
 describe("normalizeLaunchSpec — environment / credentials", () => {
   const originalPath = process.env.PATH;
   const originalHome = process.env.HOME;
+  const originalTmpdir = process.env.TMPDIR;
   const originalSecret = process.env.AGAV_TEST_SECRET_LEAK_CHECK;
 
   beforeEach(() => {
     process.env.PATH = "/usr/bin:/bin";
     process.env.HOME = "/home/tester";
+    delete process.env.TMPDIR;
     process.env.AGAV_TEST_SECRET_LEAK_CHECK = "do-not-leak-me";
   });
 
@@ -174,6 +176,8 @@ describe("normalizeLaunchSpec — environment / credentials", () => {
     else process.env.PATH = originalPath;
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
+    if (originalTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originalTmpdir;
     if (originalSecret === undefined) delete process.env.AGAV_TEST_SECRET_LEAK_CHECK;
     else process.env.AGAV_TEST_SECRET_LEAK_CHECK = originalSecret;
   });
