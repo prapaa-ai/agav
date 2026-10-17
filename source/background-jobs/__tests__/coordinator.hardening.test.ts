@@ -24,6 +24,7 @@ vi.mock("../coordinator/launcher.js", async (importOriginal) => {
 });
 
 import { createCoordinator, type AdmissionRetryOptions } from "../coordinator/service.js";
+import { launchSupervisorForJob } from "../coordinator/launcher.js";
 import { getPlatformAdapter } from "../platform/index.js";
 import { lockPath } from "../storage/paths.js";
 import { BackgroundJobError, type SessionPolicySnapshot, type StartJobRequest } from "../types.js";
@@ -161,5 +162,68 @@ describe("coordinator admission lock retry (0.2)", () => {
     });
     expect(calls.count).toBe(1);
     expect(retry.sleeps).toEqual([]);
+  });
+});
+
+
+describe("post-launch supervisor ownership persistence", () => {
+  it("survives contention beyond the old five-attempt budget without relaunching", async () => {
+    const coordinator = await createCoordinator({ root: base });
+    const update = coordinator.repositories.jobs.update.bind(coordinator.repositories.jobs);
+    let ownershipAttempts = 0;
+    vi.spyOn(coordinator.repositories.jobs, "update").mockImplementation(async (id, patch) => {
+      if (patch.supervisorIdentity && ++ownershipAttempts <= 6) {
+        throw new BackgroundJobError("lock-held", "supervisor is publishing its state");
+      }
+      return update(id, patch);
+    });
+    vi.mocked(launchSupervisorForJob).mockClear();
+
+    const summary = await coordinator.start(request(), session);
+
+    expect(ownershipAttempts).toBe(7);
+    expect(launchSupervisorForJob).toHaveBeenCalledTimes(1);
+    expect(await coordinator.repositories.jobs.get(summary.jobId)).toMatchObject({
+      state: "running",
+      supervisorIdentity: { pid: 0, creationIdentity: "unavailable" },
+      supervisorOwnershipHandle: "fake",
+      supervisorOwnershipScope: "unverified",
+    });
+  });
+
+  it("bounds retries for a persistently held job lock", async () => {
+    const coordinator = await createCoordinator({ root: base });
+    const update = coordinator.repositories.jobs.update.bind(coordinator.repositories.jobs);
+    let ownershipAttempts = 0;
+    vi.spyOn(coordinator.repositories.jobs, "update").mockImplementation(async (id, patch) => {
+      if (patch.supervisorIdentity) {
+        ownershipAttempts++;
+        throw new BackgroundJobError("lock-held", "persistent contention");
+      }
+      return update(id, patch);
+    });
+    vi.mocked(launchSupervisorForJob).mockClear();
+
+    await expect(coordinator.start(request(), session)).rejects.toMatchObject({
+      code: "lock-held", message: "persistent contention",
+    });
+    expect(ownershipAttempts).toBe(21);
+    expect(launchSupervisorForJob).toHaveBeenCalledTimes(1);
+  }, 10000);
+
+  it("does not retry unrelated ownership persistence errors", async () => {
+    const coordinator = await createCoordinator({ root: base });
+    const update = coordinator.repositories.jobs.update.bind(coordinator.repositories.jobs);
+    let ownershipAttempts = 0;
+    vi.spyOn(coordinator.repositories.jobs, "update").mockImplementation(async (id, patch) => {
+      if (patch.supervisorIdentity) {
+        ownershipAttempts++;
+        throw new Error("disk failure");
+      }
+      return update(id, patch);
+    });
+
+    await expect(coordinator.start(request(), session)).rejects.toThrow("disk failure");
+    expect(ownershipAttempts).toBe(1);
   });
 });
