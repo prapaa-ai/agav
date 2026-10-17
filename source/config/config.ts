@@ -534,11 +534,23 @@ export async function saveStatusBarLayout(
   } else {
     stored.statusBar = layout;
   }
-  const tmpPath = `${CONFIG_PATH}.tmp.${process.pid}`;
+  // Unpredictable temp name (random suffix, not the guessable pid) in the same
+  // directory as the target so the final rename stays atomic on one filesystem.
+  const { randomBytes } = await import("node:crypto");
+  const tmpPath = `${CONFIG_PATH}.tmp.${randomBytes(8).toString("hex")}`;
   const serialized = JSON.stringify(stored, null, 2) + "\n";
-  await writeFile(tmpPath, serialized);
-  const { rename } = await import("node:fs/promises");
-  await rename(tmpPath, CONFIG_PATH);
+  const { rename, unlink } = await import("node:fs/promises");
+  // "wx" (O_CREAT | O_EXCL) refuses to open an existing path, so a pre-planted
+  // symlink at tmpPath can never be followed; mode 0o600 keeps the config —
+  // which may hold encrypted API keys — owner-only even before the rename.
+  try {
+    await writeFile(tmpPath, serialized, { mode: 0o600, flag: "wx" });
+    await rename(tmpPath, CONFIG_PATH);
+  } catch (err) {
+    // Never leave an orphaned temp file behind on any failure.
+    await unlink(tmpPath).catch(() => {});
+    throw err;
+  }
 }
 
 /** Return the root directory used for Agav's global state files. */

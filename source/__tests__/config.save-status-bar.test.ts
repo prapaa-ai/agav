@@ -4,6 +4,7 @@ vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
   rename: vi.fn().mockResolvedValue(undefined),
+  unlink: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../utils/fs.js", () => ({
   ensureDir: vi.fn().mockResolvedValue(undefined),
@@ -17,6 +18,7 @@ const fs = await import("node:fs/promises");
 const readFile = vi.mocked(fs.readFile);
 const writeFile = vi.mocked(fs.writeFile);
 const rename = vi.mocked(fs.rename);
+const unlink = vi.mocked(fs.unlink);
 
 /** The object written to the temp file in the last saveStatusBarLayout call. */
 function lastWritten(): Record<string, unknown> {
@@ -30,6 +32,7 @@ describe("saveStatusBarLayout", () => {
     readFile.mockReset();
     writeFile.mockReset();
     rename.mockReset().mockResolvedValue(undefined);
+    unlink.mockReset().mockResolvedValue(undefined);
   });
 
   it("writes only the statusBar key, preserving every other stored key verbatim", async () => {
@@ -77,6 +80,37 @@ describe("saveStatusBarLayout", () => {
     expect(from).toBe(tmpPath);
     expect(to).not.toContain(".tmp.");
     expect(to).toContain("config.json");
+  });
+
+  it("creates the temp file owner-only and refuses to follow an existing path", async () => {
+    readFile.mockResolvedValue("{}");
+    const { saveStatusBarLayout } = await import("../config/config.js");
+    await saveStatusBarLayout([{ id: "model" as const, enabled: true }]);
+
+    const opts = writeFile.mock.calls.at(-1)![2] as { mode?: number; flag?: string };
+    expect(opts?.mode).toBe(0o600);
+    expect(opts?.flag).toBe("wx");
+  });
+
+  it("uses an unpredictable temp name, not the process pid", async () => {
+    readFile.mockResolvedValue("{}");
+    const { saveStatusBarLayout } = await import("../config/config.js");
+    await saveStatusBarLayout([{ id: "model" as const, enabled: true }]);
+
+    const tmpPath = writeFile.mock.calls.at(-1)![0] as string;
+    expect(tmpPath).not.toContain(`.tmp.${process.pid}`);
+  });
+
+  it("cleans up the temp file and rethrows when the rename fails", async () => {
+    readFile.mockResolvedValue("{}");
+    rename.mockRejectedValueOnce(new Error("EXDEV"));
+    const { saveStatusBarLayout } = await import("../config/config.js");
+
+    await expect(saveStatusBarLayout([{ id: "model" as const, enabled: true }])).rejects.toThrow("EXDEV");
+
+    const tmpPath = writeFile.mock.calls.at(-1)![0] as string;
+    expect(unlink).toHaveBeenCalledTimes(1);
+    expect(unlink.mock.calls.at(-1)![0]).toBe(tmpPath);
   });
 
   it("starts from an empty object when the config file is missing or corrupt", async () => {
