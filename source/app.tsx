@@ -72,6 +72,8 @@ interface Props {
   repoBranch?: string;
   /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
   enhancedKeyboard?: boolean;
+  /** Show the changelog once on the first interactive launch after an update. */
+  showChangelogOnLaunch?: boolean;
 }
 
 const BANNER: DisplayMessage = {
@@ -90,7 +92,7 @@ interface QueuedRequest {
 let sysMessageId = 0;
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
-export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false }: Props) {
+export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false }: Props) {
 
   const [input, setInput] = useState("");
   const readPromptRef = useRef<(() => string) | null>(null);
@@ -475,6 +477,28 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
     }
   }, [agentCommands]);
+
+  // First interactive launch after an update: show the changelog once. The
+  // pending display was already consumed in main.tsx, so this renders it into
+  // the transcript where the user can read it and scroll past to continue.
+  // Any retrieval failure is swallowed so it can never disrupt startup.
+  const changelogShownRef = useRef(false);
+  useEffect(() => {
+    if (!showChangelogOnLaunch || changelogShownRef.current) return;
+    changelogShownRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { getChangelogIfAvailable } = await import("./utils/auto-update.js");
+        const text = await getChangelogIfAvailable();
+        if (cancelled || !text) return;
+        addDisplayMessage({ id: `changelog-launch-${++sysMessageId}`, role: "system", content: text });
+      } catch {
+        // Never surface changelog failures during startup.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showChangelogOnLaunch, addDisplayMessage]);
 
   // Track agent session lock for UI display.
   const [agentLockState, setAgentLockState] = useState<{ name: string; full: boolean } | null>(null);

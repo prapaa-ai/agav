@@ -14,7 +14,7 @@ vi.mock("node:os", async () => {
   return { ...actual, default: actual, homedir: () => home };
 });
 
-const { getChangelog } = await import("../utils/auto-update.js");
+const { getChangelog, getChangelogIfAvailable } = await import("../utils/auto-update.js");
 const { changelogCommand } = await import("../commands/changelog.js");
 const header = "Agav v0.2.4 (updated from v0.2.3)\n\n";
 const missing = "No changelog available. Update state not found.";
@@ -656,5 +656,26 @@ describe("getChangelog full cached release notes", () => {
   it("retains the missing-state message for unreadable JSON", async () => {
     await writeFile(statePath, "not JSON");
     expect(await getChangelog()).toBe(missing);
+  });
+});
+
+describe("getChangelogIfAvailable (first-launch auto-display)", () => {
+  it("returns the full changelog when cached release notes exist", async () => {
+    await seed("## Changes\n\n- Cached notes");
+    expect(await getChangelogIfAvailable()).toBe(header + "## Changes\n\n- Cached notes");
+  });
+
+  it("returns null when no update state exists, so startup stays silent", async () => {
+    expect(await getChangelogIfAvailable()).toBeNull();
+  });
+
+  it.each(["", undefined])("returns null when release notes are empty (%j)", async (releaseNotes) => {
+    await writeFile(statePath, JSON.stringify({ lastCheck: 1, latestVersion: "v0.2.4", releaseNotes }));
+    expect(await getChangelogIfAvailable()).toBeNull();
+  });
+
+  it("returns null for unreadable state rather than an explanatory sentinel", async () => {
+    await writeFile(statePath, "not JSON");
+    expect(await getChangelogIfAvailable()).toBeNull();
   });
 });

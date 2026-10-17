@@ -552,6 +552,20 @@ function extractBullets(body: string): string[] {
     .filter((l) => l.length > 0 && l.length < 120);
 }
 
+/**
+ * The changelog for auto-display, or null when there is nothing useful to show.
+ *
+ * Unlike getChangelog (which the /changelog command uses and which returns an
+ * explanatory sentinel on purpose), the first-launch auto-display should stay
+ * silent when no cached release notes exist — e.g. after an external reinstall
+ * that never ran the in-app updater.
+ */
+export async function getChangelogIfAvailable(): Promise<string | null> {
+  const state = await loadState();
+  if (!state?.releaseNotes) return null;
+  return getChangelog();
+}
+
 export async function getChangelog(): Promise<string> {
   const state = await loadState();
   if (!state?.releaseNotes) {
