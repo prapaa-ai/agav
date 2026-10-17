@@ -186,6 +186,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         id,
         title,
         task,
+        model: childModel,
         status: "running",
         toolCalls: [],
         thinkingText: "",
