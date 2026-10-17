@@ -1228,6 +1228,12 @@ export function useAgent(
                 break;
               }
 
+              case "retry":
+                setMessages((prev) => [...prev, {
+                  id: nextId(), role: "system", content: event.message,
+                }]);
+                break;
+
               case "error": {
                 // Cancellation (including retry backoff) is not a hard UI error.
                 if (abortController.signal.aborted) throw event.error;

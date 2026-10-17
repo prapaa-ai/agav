@@ -422,6 +422,9 @@ export async function runPipeMode(
           case "assistant_message_complete":
             finalText = event.text;
             break;
+          case "retry":
+            process.stderr.write(`  ${icons.warning} ${event.message}\n`);
+            break;
           case "error":
             process.stderr.write(`Error: ${event.error.message}\n`);
             exitCode = 1;
