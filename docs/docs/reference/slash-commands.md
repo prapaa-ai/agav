@@ -8,7 +8,7 @@ order: 3
 
 Type `/` in an interactive session to autocomplete commands. Run `/help` to see the commands loaded in the current session, or `/help <command>` for detailed usage. Skills and MCP servers can add commands at runtime, so they are not listed individually here.
 
-Most slash commands run when Agav is idle. These commands can also run while Agav is streaming, executing tools, or otherwise doing in-flight work: `/help`, `/exit`, `/loop`, `/steer`, `/context`, `/memory`, `/remember`, and `/forget`.
+Most slash commands run when Agav is idle. These commands can also run while Agav is streaming, executing tools, or otherwise doing in-flight work: `/help`, `/exit`, `/loop`, `/steer`, `/context`, `/status`, `/memory`, `/remember`, and `/forget`.
 
 Other commands, such as `/model` and `/clear`, are not dispatched while a turn is busy. Their text stays in the prompt; submit it again once Agav is idle, or press **Esc** to cancel the turn first. They are not queued for automatic execution. While generation is paused, input that is not an allowed mid-turn command is treated as new direction for the turn, so wait until idle to run other slash commands. Mid-turn command dispatch also requires no pending attachments.
 
@@ -25,6 +25,7 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | `/fast`, `/deep` | Switch to the current provider's fast or most capable model shortcut. |
 | `/compact` | Summarize older conversation content to free context-window space. |
 | `/context` | Show a token-use breakdown for the system prompt, tools, MCP tools, skills, and messages. |
+| `/status` | Show session, model, permissions, working directory, and token usage at a glance. |
 | `/export` | Write the current conversation, including tool activity, to a timestamped Markdown file in the working directory. |
 | `/voice` | Dictate an editable prompt with offline Agav-managed native transcription; offers verified setup downloads and an idle prompt without attachments. See [Voice Input](/features/voice-input). |
 | `/ps <question>` | Run a brief independent side query with read-only conversation context, without interrupting the active main task. It cannot use tools or plugins. |
