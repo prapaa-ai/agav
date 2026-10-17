@@ -29,6 +29,7 @@ import { openCommand } from "./open.js"
 import { mcpCommand } from "./mcp.js"
 import { copyCommand } from "./copy.js"
 import { voiceCommand } from "./voice.js"
+import { customizeCommand } from "./customize.js"
 export { MID_TURN_SAFE_COMMANDS, isCommandAllowedMidTurn } from "./mid-turn.js"
 
 /** Store slash commands and dispatch raw user input to the matching handler. */
@@ -74,6 +75,7 @@ export class CommandRegistry {
     this.register(copyCommand)
     this.register(mcpCommand)
     this.register(voiceCommand)
+    this.register(customizeCommand)
   }
 
   /** Add a command to the registry by name. */
