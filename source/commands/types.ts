@@ -36,6 +36,8 @@ export interface CommandContext {
   clearMessages: () => void
   /** Re-read the plan from disk so the on-screen plan panel matches it. */
   refreshPlan: () => void
+  /** Open local dictation in the interactive composer; absent in headless mode. */
+  startVoiceInput?: () => void
   showStatus: (text: string) => void
   saveSession: () => void
   refreshDisplay: () => void
