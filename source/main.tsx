@@ -1055,7 +1055,19 @@ export async function main() {
     resumeSessionId ? { id: resumeSessionId, name: resumeSessionName } : undefined,
   );
 
-  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} />, {
+  // First interactive launch after an update shows the changelog once. This is
+  // reached only in interactive mode (print/run already exited above), so
+  // non-interactive runs never display it or consume the pending display.
+  // consumeChangelogDisplay never throws, so it cannot block startup.
+  let showChangelogOnLaunch = false;
+  try {
+    const { consumeChangelogDisplay } = await import("./config/launch-state.js");
+    showChangelogOnLaunch = await consumeChangelogDisplay();
+  } catch {
+    // Never block startup on changelog/launch-state failures.
+  }
+
+  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} />, {
     exitOnCtrlC: true,
     // Alt-screen keeps the UI self-contained (no scrollback pollution, no
     // flicker on terminals without DEC 2026). In-app scrolling is handled by

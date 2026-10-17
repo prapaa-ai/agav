@@ -552,6 +552,39 @@ function extractBullets(body: string): string[] {
     .filter((l) => l.length > 0 && l.length < 120);
 }
 
+/** How many bullets the first-launch summary shows before deferring to /changelog. */
+const CHANGELOG_SUMMARY_BULLETS = 8;
+
+/**
+ * A compact "What's new" summary for the first-launch auto-display, or null
+ * when there is nothing useful to show.
+ *
+ * This is intentionally *not* the full changelog: the first interactive launch
+ * after an update shows a short, bounded summary (mirroring the post-auto-update
+ * "What's new" output) and points the user at /changelog for the full notes.
+ * The /changelog command remains the full, unabridged view.
+ *
+ * Returns null when no cached release notes exist (e.g. after an external
+ * reinstall that never ran the in-app updater) or when the notes yield no
+ * bullet points, so startup stays silent rather than printing an empty box.
+ */
+export async function getChangelogSummary(): Promise<string | null> {
+  const state = await loadState();
+  if (!state?.releaseNotes) return null;
+
+  const bullets = extractBullets(state.releaseNotes);
+  if (bullets.length === 0) return null;
+
+  const version = state.latestVersion || "Agav";
+  const from = state.updatedFrom ? ` (updated from v${state.updatedFrom})` : "";
+  const lines = [`Agav ${version}${from} — What's new:`, ""];
+  for (const bullet of bullets.slice(0, CHANGELOG_SUMMARY_BULLETS)) {
+    lines.push(`- ${bullet}`);
+  }
+  lines.push("", "Run /changelog for full details.");
+  return lines.join("\n");
+}
+
 export async function getChangelog(): Promise<string> {
   const state = await loadState();
   if (!state?.releaseNotes) {

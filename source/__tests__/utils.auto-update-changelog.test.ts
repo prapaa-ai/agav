@@ -14,7 +14,7 @@ vi.mock("node:os", async () => {
   return { ...actual, default: actual, homedir: () => home };
 });
 
-const { getChangelog } = await import("../utils/auto-update.js");
+const { getChangelog, getChangelogSummary } = await import("../utils/auto-update.js");
 const { changelogCommand } = await import("../commands/changelog.js");
 const header = "Agav v0.2.4 (updated from v0.2.3)\n\n";
 const missing = "No changelog available. Update state not found.";
@@ -656,5 +656,55 @@ describe("getChangelog full cached release notes", () => {
   it("retains the missing-state message for unreadable JSON", async () => {
     await writeFile(statePath, "not JSON");
     expect(await getChangelog()).toBe(missing);
+  });
+});
+
+describe("getChangelogSummary (first-launch auto-display)", () => {
+  it("returns a compact bullet summary, not the full changelog", async () => {
+    await seed("## Changes\n\n### Features\n\n- First thing\n- Second thing\n\n### Fixes\n\n- A fix");
+    expect(await getChangelogSummary()).toBe(
+      "Agav v0.2.4 (updated from v0.2.3) — What's new:\n\n"
+      + "- First thing\n- Second thing\n- A fix\n\n"
+      + "Run /changelog for full details.",
+    );
+  });
+
+  it("omits the updated-from suffix when it is not recorded", async () => {
+    await seed("- Only change", undefined);
+    const state = JSON.parse(await readFile(statePath, "utf8"));
+    delete state.updatedFrom;
+    await writeFile(statePath, JSON.stringify(state));
+    expect(await getChangelogSummary()).toBe(
+      "Agav v0.2.4 — What's new:\n\n- Only change\n\nRun /changelog for full details.",
+    );
+  });
+
+  it("caps the summary at eight bullets", async () => {
+    const notes = Array.from({ length: 12 }, (_, i) => `- Change ${i + 1}`).join("\n");
+    await seed(notes);
+    const summary = (await getChangelogSummary())!;
+    const shown = summary.split("\n").filter((l) => l.startsWith("- "));
+    expect(shown).toHaveLength(8);
+    expect(shown[0]).toBe("- Change 1");
+    expect(shown[7]).toBe("- Change 8");
+  });
+
+  it("returns null when no update state exists, so startup stays silent", async () => {
+    expect(await getChangelogSummary()).toBeNull();
+  });
+
+  it("returns null when the notes contain no bullet points", async () => {
+    await seed("## Changes\n\nJust a prose paragraph with no list items.");
+    expect(await getChangelogSummary()).toBeNull();
+  });
+
+  it.each(["", undefined])("returns null when release notes are empty (%j)", async (releaseNotes) => {
+    await writeFile(statePath, JSON.stringify({ lastCheck: 1, latestVersion: "v0.2.4", releaseNotes }));
+    expect(await getChangelogSummary()).toBeNull();
+  });
+
+  it("returns null for unreadable state rather than an explanatory sentinel", async () => {
+    await writeFile(statePath, "not JSON");
+    expect(await getChangelogSummary()).toBeNull();
   });
 });
