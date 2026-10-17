@@ -27,7 +27,8 @@ let root: string;
 let repositories: Repositories;
 
 beforeEach(async () => {
-  base = await mkdtemp(join(tmpdir(), "agav-bg-recovery-test-"));
+  // Keep the canonical macOS temp path short enough for a Unix socket.
+  base = await mkdtemp(join(tmpdir(), "agav-rec-"));
   root = await resolveStorageRoot(base);
   repositories = createFileRepositories(root);
 });
