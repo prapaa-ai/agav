@@ -185,6 +185,7 @@ function executeProcess(
     // Noninteractive commands intentionally have no controlling terminal.
     // Own a Unix process group so cancellation also reaches inherited children.
     detached: !windows,
+    windowsVerbatimArguments: options.windowsVerbatimArguments,
   });
   let error: Error | null = null;
   let timedOut = false;
@@ -463,6 +464,7 @@ function runUnsandboxed(
   const shell = isWindows ? "cmd.exe" : "/bin/sh";
   // Match Node's cmd.exe shell invocation: cmd parses the quoted command tail
   // itself, so ordinary Windows argv escaping would corrupt embedded quotes.
+  // /s strips only this outer quote pair.
   const shellArgs = isWindows ? ["/d", "/s", "/c", `"${command}"`] : ["-c", command];
   return new Promise((resolve) => {
     executeProcess(

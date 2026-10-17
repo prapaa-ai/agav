@@ -102,7 +102,8 @@ describe("model sandbox policy", () => {
       const { shellTool: windowsShellTool } = await import("../tools/shell.js");
       expect((await windowsShellTool.execute({ command: "echo harmless", inheritEnv: true })).isError).toBe(false);
       expect(spawn).toHaveBeenCalledWith("cmd.exe", ["/d", "/s", "/c", '"echo harmless"'], expect.objectContaining({
-        detached: false, windowsVerbatimArguments: true,
+        detached: false,
+        windowsVerbatimArguments: true,
         env: expect.not.objectContaining({ AGAV_TEST_API_TOKEN: "harmless-secret" }),
       }));
     });
@@ -115,7 +116,8 @@ describe("model sandbox policy", () => {
         ...deps(), permissionMode: "ask", confirmTool: vi.fn(async () => "yes" as const),
       });
       expect(spawn).toHaveBeenCalledWith("cmd.exe", ["/d", "/s", "/c", '"echo harmless"'], expect.objectContaining({
-        detached: false, windowsVerbatimArguments: true,
+        detached: false,
+        windowsVerbatimArguments: true,
         env: expect.not.objectContaining({ AGAV_TEST_API_TOKEN: "harmless-secret" }),
       }));
     });

@@ -105,6 +105,29 @@ const TOOL_META: Record<string, ToolMeta> = {
       return task.length > 50 ? task.slice(0, 50) + "..." : task;
     },
   },
+  run_background_job: {
+    label: "Background job",
+    formatSummary: (input) => {
+      // Input is either the confirmation popup's { action, spec } or the tool's own flat parameters.
+      const action = typeof input.action === "string" ? input.action : "";
+      const spec = input.spec as Record<string, unknown> | undefined;
+      const invocation = spec?.invocation as Record<string, unknown> | undefined;
+      let commandText = "";
+      if (invocation?.mode === "shell") {
+        commandText = String(invocation.commandText ?? "");
+      } else if (invocation?.mode === "direct") {
+        const args = Array.isArray(invocation.args) ? invocation.args : [];
+        commandText = [invocation.executable, ...args].join(" ");
+      } else if (typeof input.command === "string") {
+        commandText = input.command;
+      }
+      const trimmed = commandText.length > 60 ? commandText.slice(0, 60) + "..." : commandText;
+      if (action && trimmed) return `${action}: ${trimmed}`;
+      if (action) return action;
+      if (trimmed) return trimmed;
+      return typeof input.jobId === "string" ? `job ${input.jobId}` : "";
+    },
+  },
 };
 
 const DEFAULT_META: ToolMeta = {

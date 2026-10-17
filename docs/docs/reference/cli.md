@@ -81,6 +81,20 @@ When you start a plain `agav` session, the provider and model are resolved in th
 | `AGAV_MARKETPLACE_URL` | Override the default agent marketplace URL |
 | `LIBREOFFICE_PATH` | Office document conversion executable |
 
+## Background job subcommands
+
+Unattended evaluation of [background job schedules](/features/background-jobs#when-schedules-are-evaluated). These read only the global config and require `backgroundJobsEnabled`.
+
+```bash
+agav job tick                  # Evaluate due schedules once and exit
+agav job tick --install        # Register an OS entry that runs the tick every minute
+agav job tick --status         # Show the entry (exit 0 installed, 3 not installed)
+agav job tick --uninstall      # Remove the entry; job state is kept
+agav job daemon start          # Run a foreground daemon that ticks every 15 seconds
+agav job daemon stop           # Stop the running daemon
+agav job daemon status         # Exit 0 if running, 3 if not
+```
+
 ## Agent subcommands
 
 ```bash

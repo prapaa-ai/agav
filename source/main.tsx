@@ -144,8 +144,11 @@ export function parseArgs(argv: string[]) {
       i++;
       continue;
     }
-
-    if (arg === "--help" || arg === "-h") {
+    
+    if ((arg === "--help" || arg === "-h") && flags.job) {
+      // `agav job [tick|daemon] --help` is handled by job-cli's own usage output.
+      flags._.push(arg);
+    } else if (arg === "--help" || arg === "-h") {
       flags.help = true;
     } else if (arg === "--version" || arg === "-v") {
       flags.version = true;
@@ -254,8 +257,11 @@ export function parseArgs(argv: string[]) {
     } else if (arg === "run" && !subcommandSeen) {
       flags.run = true;
       subcommandSeen = true;
+    } else if (arg === "job" && !subcommandSeen) {
+      flags.job = true;
+      subcommandSeen = true;
     } else if (arg.startsWith("-")) {
-      if (subcommandSeen && (flags.agents || flags.skills || flags.mcp || flags.sessions)) {
+      if (subcommandSeen && (flags.agents || flags.skills || flags.mcp || flags.sessions || flags.job)) {
         flags._.push(arg);
       } else {
         const suggestion = findClosestFlag(arg);
@@ -293,7 +299,7 @@ export function parseArgs(argv: string[]) {
   if (flags.run && pos.length > 0) flags.runPrompt = pos.join(" ");
   if (flags.print && pos.length > 0) flags.printPrompt = pos.join(" ");
   
-  if (!flags.update && !flags.agents && !flags.skills && !flags.sessions && !flags.mcp && !flags.run && !flags.print && pos.length > 0) {
+  if (!flags.update && !flags.agents && !flags.skills && !flags.sessions && !flags.mcp && !flags.run && !flags.job && !flags.print && pos.length > 0) {
      process.stderr.write(`error: unexpected arguments: ${pos.join(" ")}\n`);
      process.exit(1);
   }
@@ -384,6 +390,8 @@ export async function runPipeMode(
         maxTokens: config.maxTokens,
         iterationsBudget: iterationsBudget,
         permissionMode,
+        // print/run mode has no human to confirm background jobs.
+        headless: true,
         allowedTools: options.allowedToolsOverride,
       });
 
@@ -577,6 +585,7 @@ export async function main() {
     $ agav sessions delete <id>    Delete a saved session (alias: rm)
     $ agav mcp auth <name>         Sign in to an OAuth-protected MCP server
     $ agav mcp logout <name>       Remove cached MCP OAuth credentials
+    $ agav job tick                Evaluate due background schedules once and exit
     $ agav --print "prompt"
     $ cat file | agav -P "explain this"
 
@@ -661,6 +670,13 @@ export async function main() {
     }
     const exitCode = await runMCPCommand(flags.mcpCommand, args);
     process.exit(exitCode);
+    return;
+  }
+
+  // Headless background jobs: agav job <command>
+  if (flags.job) {
+    const { runJobCli } = await import("./cli/job-cli.js");
+    process.exit(await runJobCli([...(flags._ as string[])]));
     return;
   }
 
@@ -975,16 +991,35 @@ export async function main() {
     process.exit(1);
   }
 
-  /** Print a subtle reminder pointing at the most recent resumable session. */
+  /** Ids of background jobs still running (or of unknown state), for the exit hint. Never throws. */
+  async function runningJobIds(): Promise<string[]> {
+    if (config.backgroundJobsEnabled !== true) return [];
+    try {
+      const { getSharedCoordinator } = await import("./background-jobs-integration.js");
+      const { isTerminalLifecycle } = await import("./background-jobs/types.js");
+      const coordinator = await getSharedCoordinator();
+      const active = (await coordinator.list()).filter((job) => !isTerminalLifecycle(job.state));
+      // list() reads persisted state; poll() reconciles with live evidence so a crashed job is not listed.
+      const fresh = await Promise.all(active.map((job) => coordinator.poll(job.jobId).catch(() => job)));
+      return fresh.filter((job) => !isTerminalLifecycle(job.state)).map((job) => job.jobId);
+    } catch {
+      return [];
+    }
+  }
+
+  /** Print a subtle reminder pointing at the most recent resumable session, and any jobs left running. */
   async function showResumeHint() {
     try {
       const { listSessions } = await import("./config/history.js");
       const sessions = await listSessions();
-      if (sessions.length > 0) {
-        const latest = sessions[0]!;
-        const shortId = latest.id;
-        process.stderr.write(`\n${dim(`To resume: agav --resume ${shortId}`)}\n\n`);
-      }
+      const jobIds = await Promise.race([
+        runningJobIds(),
+        new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 2000).unref()),
+      ]);
+      const lines: string[] = [];
+      if (sessions.length > 0) lines.push(`To resume: agav --resume ${sessions[0]!.id}`);
+      if (jobIds.length > 0) lines.push(`Running background jobs: ${jobIds.join(", ")}  (inspect with /job)`);
+      if (lines.length > 0) process.stderr.write(`\n${lines.map((line) => dim(line)).join("\n")}\n\n`);
     } catch { }
   }
 

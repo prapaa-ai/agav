@@ -24,6 +24,12 @@ interface Props {
   canExpandPaste?: boolean;
   onRemoveAttachment?: () => void;
   onClearAttachments?: () => void;
+  /** Replace externally owned text without reporting it as a user edit. */
+  onRegisterReplace?: (replace: (text: string, preserveCursor?: boolean) => void) => void;
+  /** Keep the composer visible while another controller owns keyboard input. */
+  readOnly?: boolean;
+  /** Other controller exclusively handles plain Enter/Escape/Ctrl+C. */
+  ownsVoiceControls?: () => boolean;
   onRegisterInsert?: (fn: (label: string) => void) => void;
   /** Shares the synchronous buffer with other keyboard handlers before React commits. */
   onRegisterRead?: (read: () => string) => void;
@@ -268,7 +274,7 @@ function isWithinRoot(root: string, candidate: string): boolean {
 }
 
 /** Renders the interactive prompt with history, completion, and paste handling. */
-export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, canExpandPaste = false, onRemoveAttachment, onClearAttachments, onRegisterInsert, onRegisterRead, onRegisterExpand, onOpenAttachment, disabled, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages, agentLock, agentNames = [] }: Props) {
+export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPaste, canExpandPaste = false, onRemoveAttachment, onClearAttachments, onRegisterInsert, onRegisterReplace, onRegisterRead, onRegisterExpand, onOpenAttachment, disabled, readOnly = false, ownsVoiceControls, suppressHistory = false, commands = [], keybindings, enhancedKeyboard = false, resumeUserMessages, agentLock, agentNames = [] }: Props) {
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
   const [, bumpCursor] = useState(0);
@@ -464,6 +470,17 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     onRegisterRead?.(() => liveRef.current.value);
   }, [onRegisterRead]);
 
+  useEffect(() => {
+    onRegisterReplace?.((nextValue, preserveCursor = false) => {
+      if (!preserveCursor) preferredColumnRef.current = null;
+      const old = liveRef.current;
+      const following = old.cursor === old.value.length && selAnchorRef.current === null;
+      liveRef.current = { value: nextValue, cursor: preserveCursor && !following ? Math.min(old.cursor, nextValue.length) : nextValue.length };
+      lastEmittedRef.current = nextValue;
+      bumpCursor(n => n + 1);
+    });
+  }, [onRegisterReplace]);
+
   // Register insert function so parent can insert text at cursor (e.g. Ctrl+I image)
   useEffect(() => {
     if (onRegisterInsert) {
@@ -575,13 +592,15 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
   useInput(
     (rawInput, rawKey) => {
-      if (disabled) return;
+      if (disabled || readOnly) return;
       // Shadow the render-scope text and caret with the live ones. The render
       // scope is a snapshot from the last commit, and the whole point is that
       // this key may have arrived before that commit caught up.
       const value = liveRef.current.value;
       const cursorPos = Math.min(liveRef.current.cursor, value.length);
       const { input, key } = normalizeKeyEvent(rawInput, rawKey);
+      if (ownsVoiceControls?.() && (key.escape || (key.ctrl && input === "c") ||
+          (key.return && !key.shift && !key.ctrl && !key.meta && !key.super && !key.hyper))) return;
       const match = keyResolverRef.current.feed(input, key);
       if (match.pending) return;
 
@@ -888,7 +907,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         setSelectedSuggestion(0);
       }
     },
-    { isActive: !disabled },
+    { isActive: !disabled && !readOnly },
   );
 
   if (disabled) return null;
