@@ -489,8 +489,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     let cancelled = false;
     (async () => {
       try {
-        const { getChangelogIfAvailable } = await import("./utils/auto-update.js");
-        const text = await getChangelogIfAvailable();
+        const { getChangelogSummary } = await import("./utils/auto-update.js");
+        const text = await getChangelogSummary();
         if (cancelled || !text) return;
         addDisplayMessage({ id: `changelog-launch-${++sysMessageId}`, role: "system", content: text });
       } catch {
