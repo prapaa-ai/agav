@@ -181,6 +181,7 @@ function executeProcess(
     cwd: options.cwd,
     env: options.env,
     stdio: ["ignore", "pipe", "pipe"],
+    ...(options.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     // Noninteractive commands intentionally have no controlling terminal.
     // Own a Unix process group so cancellation also reaches inherited children.
     detached: !windows,
@@ -461,13 +462,17 @@ function runUnsandboxed(
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const isWindows = platform() === "win32";
   const shell = isWindows ? "cmd.exe" : "/bin/sh";
-  // cmd parses shell text, not CRT argv. /s strips only this outer quote pair.
+  // Match Node's cmd.exe shell invocation: cmd parses the quoted command tail
+  // itself, so ordinary Windows argv escaping would corrupt embedded quotes.
+  // /s strips only this outer quote pair.
   const shellArgs = isWindows ? ["/d", "/s", "/c", `"${command}"`] : ["-c", command];
   return new Promise((resolve) => {
     executeProcess(
       shell,
       shellArgs,
-      { timeout, maxBuffer, cwd, env: inheritEnv ? undefined : filterEnv(), windowsVerbatimArguments: isWindows },
+      { timeout, maxBuffer, cwd, env: inheritEnv ? undefined : filterEnv(),
+        ...(isWindows ? { windowsVerbatimArguments: true } : {}),
+      },
       onOutput,
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });

@@ -146,7 +146,8 @@ function isTerminal(summary: { state: string }): boolean {
 }
 
 beforeEach(async () => {
-  base = await mkdtemp(join(tmpdir(), "agav-bg-coordinator-test-"));
+  // Keep the canonical macOS temp path short enough for a Unix socket.
+  base = await mkdtemp(join(tmpdir(), "agav-coord-"));
   coordinator = await createCoordinator({ root: base });
   jobsToCleanUp = [];
 });
@@ -192,7 +193,7 @@ afterEach(async () => {
 describe("CoordinatorClient — capabilities", () => {
   it("resolves without throwing", async () => {
     const caps = await coordinator.capabilities();
-    expect(caps.platform).toBe("linux");
+    expect(caps.platform).toBe(process.platform);
     expect(Array.isArray(caps.limitations)).toBe(true);
   });
 });

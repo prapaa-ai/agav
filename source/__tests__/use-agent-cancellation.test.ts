@@ -6,16 +6,7 @@ import { useAgent } from "../hooks/use-agent.js";
 import { RetryProvider } from "../providers/retry.js";
 import type { LLMProvider } from "../providers/types.js";
 
-// Isolate the UI boundary while exercising the real retry timer/AbortError.
-vi.mock("../agent/loop.js", () => ({ runAgentLoop: async function* (params: any) {
-  try {
-    for await (const event of params.provider.stream({ model: params.model, messages: [], signal: params.signal })) {
-      if (event.type !== "error") yield event;
-    }
-  } catch (error) {
-    yield { type: "error", error };
-  }
-} }));
+// Exercise the real agent loop and retry backoff; isolate only session side effects.
 vi.mock("../config/history.js", () => ({ saveSession: vi.fn() }));
 vi.mock("../config/session-state.js", () => ({ saveSessionState: vi.fn() }));
 vi.mock("../plugins/loader.js", () => ({ loadPlugins: async () => [] }));
@@ -45,7 +36,10 @@ describe("useAgent cancellation", () => {
     try {
       await instance.waitUntilRenderFlush();
       await agent!.submit("hello");
-      await vi.waitFor(() => expect(attempts).toBe(1));
+      await vi.waitFor(() => expect(agent!.messages.some(message => message.content.includes("Retrying"))).toBe(true));
+      expect(attempts).toBe(1);
+      expect(agent!.isLoading).toBe(true);
+      expect(agent!.messages.filter(message => message.isError)).toEqual([]);
       agent!.cancel();
       await vi.waitFor(() => expect(agent!.isLoading).toBe(false));
       expect(attempts).toBe(1);

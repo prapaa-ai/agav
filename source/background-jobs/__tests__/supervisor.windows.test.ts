@@ -14,7 +14,8 @@ import { isTerminalLifecycle, type InvocationSpec as Invocation, type JobRecord,
 async function withJob(invocation: Invocation, body: (ctx: {
   client: IpcClient; spec: LaunchSpec; job: () => Promise<JobRecord | undefined>;
 }) => Promise<void>, prepare?: (cwd: string) => Promise<void>): Promise<void> {
-  const base = await mkdtemp(join(tmpdir(), "agav-supervisor-windows-"));
+  // Keep the canonical macOS temp path short enough for a Unix socket.
+  const base = await mkdtemp(join(tmpdir(), "agav-win-"));
   const cwd = join(base, "cwd with spaces ü");
   await mkdir(cwd);
   await prepare?.(cwd);

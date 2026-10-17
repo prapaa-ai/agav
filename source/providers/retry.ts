@@ -74,20 +74,29 @@ export class RetryProvider implements LLMProvider {
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      let emittedContent = false;
       try {
         params.signal?.throwIfAborted();
-        yield* this.inner.stream(params);
+        for await (const event of this.inner.stream(params)) {
+          // Replaying visible output or a partial tool call cannot be rolled back
+          // safely, especially when stdout is streamed in headless mode.
+          if ((event.type === "text_delta" || event.type === "thinking_delta") && event.text.length > 0
+            || event.type === "tool_call_start" || event.type === "tool_call_delta"
+            || event.type === "tool_call_end" || event.type === "message_end"
+            || event.type === "error") {
+            emittedContent = true;
+          }
+          yield event;
+        }
         return;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
 
-        if (!params.signal?.aborted && attempt < this.maxRetries && isRetryable(err)) {
+        if (!emittedContent && !params.signal?.aborted && attempt < this.maxRetries && isRetryable(err)) {
           const delay = getRetryDelay(attempt, err);
           yield {
-            type: "error" as const,
-            error: new Error(
-              `Request failed (${lastError.message}). Retrying in ${Math.ceil(delay / 1000)}s... (attempt ${attempt + 1}/${this.maxRetries})`,
-            ),
+            type: "retry",
+            message: `Request failed (${lastError.message}). Retrying in ${Math.ceil(delay / 1000)}s... (attempt ${attempt + 1}/${this.maxRetries})`,
           };
           await delayWithSignal(delay, undefined, { signal: params.signal });
           continue;

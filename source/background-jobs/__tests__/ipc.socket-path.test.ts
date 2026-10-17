@@ -18,6 +18,20 @@ unix("Unix socket path bounds", () => {
     expect(Buffer.byteLength(path)).toBeLessThanOrEqual(100);
   });
 
+  it("keeps the full fallback hash at the path limit", () => {
+    const root = `/tmp/${"x".repeat(78)}`; // 83 bytes + slash + 16 hex characters.
+    const path = getSocketPath(root, "job-long-name");
+    expect(Buffer.byteLength(path)).toBe(100);
+    expect(path.slice(root.length + 1)).toMatch(/^[a-f0-9]{16}$/);
+  });
+
+  it.each([84, 98])("rejects a %i-byte root rather than shortening the hash", (bytes) => {
+    const root = `/tmp/${"x".repeat(bytes - 5)}`;
+    for (const name of ["job-long-name", "job-1", "job-6"]) {
+      expect(() => getSocketPath(root, name.repeat(4))).toThrow(/shorter storage root/);
+    }
+  });
+
   it("fails clearly when even the hashed path cannot fit under the root", () => {
     expect(() => getSocketPath(`/tmp/${"x".repeat(100)}`, "job")).toThrow(/shorter storage root/);
   });

@@ -42,6 +42,16 @@ Press **Ctrl+C** with no text selected in Agav to exit, whether idle or busy. If
 
 The `cancel` action is configurable. Ctrl+C is also handled by the terminal UI before configurable actions, so rebinding `interrupt` does not turn Ctrl+C into a stay-in-session cancel shortcut. Use Esc for that.
 
+## Voice recording controls
+
+During `/voice`, the prompt remains editable while listening and finalizing.
+**Enter** sends the displayed draft once microphone cleanup is acknowledged;
+click **Stop** to finish without sending and continue editing. **Esc** or
+**Ctrl+C** cancels dictation or a pending voice send instead of exiting Agav.
+During model-download consent, **Y** approves and **N/Esc** declines; Enter alone
+does not approve. These voice controls use their fixed keys rather than the
+configurable prompt-submit/cancel bindings. See [Voice Input](/features/voice-input).
+
 ## Override bindings
 
 Values can be a string or an array. Chords separate strokes with spaces:

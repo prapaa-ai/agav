@@ -92,7 +92,8 @@ describe("RetryProvider stream and error retries", () => {
     }
 
     expect(attempts).toBe(2);
-    expect(events.some((e) => e.type === "error")).toBe(true);
+    expect(events.some((e) => e.type === "retry")).toBe(true);
+    expect(events.some((e) => e.type === "error")).toBe(false);
     expect(events.some((e) => e.type === "text_delta" && e.text === "recovered")).toBe(true);
   });
 
@@ -106,7 +107,7 @@ describe("RetryProvider stream and error retries", () => {
     });
     const stream = new RetryProvider(inner).stream({ ...dummyParams, signal: controller.signal })[Symbol.asyncIterator]();
     try {
-      expect((await stream.next()).value?.type).toBe("error");
+      expect((await stream.next()).value?.type).toBe("retry");
       const pending = stream.next();
       controller.abort();
       await expect(pending).rejects.toThrow();

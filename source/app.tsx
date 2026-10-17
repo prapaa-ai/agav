@@ -1,10 +1,12 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
-import { Box, Text, ScrollBox, Spinner, useInput, useApp, useStdout, measureElement } from "./ink/index.js";
+import { Box, Text, ScrollBox, Spinner, useInput, useApp, useStdout, useStdin, measureElement } from "./ink/index.js";
 import type { DOMElement, ScrollBoxControls, WheelEventData } from "./ink/index.js";
 import MessageList from "./components/message-list.js";
 import type { DisplayMessage } from "./components/message-list.js";
 import StreamingResponse from "./components/streaming-response.js";
 import InputPrompt from "./components/input-prompt.js";
+import VoiceModelSetup from "./components/voice-model-setup.js";
+import VoiceInputPanel from "./components/voice-input.js";
 import StatusBar from "./components/status-bar.js";
 import RequestQueue from "./components/request-queue.js";
 import { renderMarkdown } from "./components/markdown-text.js";
@@ -21,12 +23,18 @@ import type { AgavConfig } from "./config/config.js";
 import type { LLMProvider } from "./providers/types.js";
 import { createProvider } from "./providers/registry.js";
 import type { ContentBlock, InvocationReason } from "./providers/types.js";
+import { cleanVoiceTranscript } from "./utils/voice-transcript.js";
+import { advanceVoiceDraft } from "./utils/voice-draft.js";
 import { useAgent } from "./hooks/use-agent.js";
+import { useVoiceInput } from "./hooks/use-voice-input.js";
 import { isInternalUserMessage } from "./agent/internal-prompts.js";
 import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { JobsTUI } from "./components/jobs-tui.js";
+import { CustomizeTUI } from "./components/customize-tui.js";
+import type { StatusBarSegments } from "./components/status-bar.js";
+import { normalizeStatusBarLayout, isDefaultStatusBarLayout, type StatusBarLayout } from "./config/status-bar-layout.js";
 import { ResourceManager } from "./components/resource-manager.js";
 import { createResourceAdapter } from "./resources/adapters.js";
 import type { ResourceKind, ResourceAdapter } from "./resources/types.js";
@@ -67,6 +75,8 @@ interface Props {
   repoBranch?: string;
   /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
   enhancedKeyboard?: boolean;
+  /** Show the changelog once on the first interactive launch after an update. */
+  showChangelogOnLaunch?: boolean;
 }
 
 const BANNER: DisplayMessage = {
@@ -85,9 +95,12 @@ interface QueuedRequest {
 let sysMessageId = 0;
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
-export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false }: Props) {
+export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false }: Props) {
 
   const [input, setInput] = useState("");
+  const readPromptRef = useRef<(() => string) | null>(null);
+  const insertLabelRef = useRef<((label: string) => void) | null>(null);
+
   const [queuedRequests, setQueuedRequests] = useState<QueuedRequest[]>([]);
   const queueRef = useRef<QueuedRequest[]>([]);
   const [queueActive, setQueueActive] = useState(false);
@@ -186,6 +199,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const jobsTUIResolveRef = useRef<(() => void) | null>(null);
   const [resourceAdapter, setResourceAdapter] = useState<ResourceAdapter | null>(null);
   const resourceTUIResolveRef = useRef<(() => void) | null>(null);
+  const [customizeTUIActive, setCustomizeTUIActive] = useState(false);
+  const customizeTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
@@ -242,26 +257,105 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     iterationsBudget
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
+  const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
+  const { stdout } = useStdout();
+  const { stdin } = useStdin();
+
+  /** Show a single-line status update via the system-message channel. */
+  const showStatusLine = useCallback((text: string, isError = false) => {
+    setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: text, isError }]);
+  }, []);
+
+  const voiceDraftVersion = useRef(0);
+  const replaceVoicePromptRef = useRef<((text: string, preserveCursor?: boolean) => void) | null>(null);
+  const voiceDraftBase = useRef("");
+  const acceptedVoiceText = useRef("");
+  const voiceUserEdited = useRef(false);
+  const voiceRecordingEnded = useRef(false);
+  const stripVoiceArtifacts = () => {
+    const live = readPromptRef.current?.() ?? input;
+    const cleaned = cleanVoiceTranscript(live);
+    if (cleaned !== live.trim()) {
+      replaceVoicePromptRef.current?.(cleaned, true);
+      setInput(cleaned);
+    }
+    return cleaned;
+  };
+  const voicePendingSend = useRef<{ text: string; version: number } | null>(null);
+  const updateVoicePrompt = (text: string) => {
+    if (composerEditVersionRef.current !== voiceDraftVersion.current) return false;
+    replaceVoicePromptRef.current?.(text);
+    setInput(text);
+    return true;
+  };
+  const [voiceFeedback, setVoiceFeedback] = useState<"ready" | "cancelled" | "error" | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const reconcileVoiceDraft = (text: string, final = false) => {
+    if (voicePendingSend.current) return;
+    const speech = cleanVoiceTranscript(text);
+    const next = advanceVoiceDraft(acceptedVoiceText.current, speech);
+    const live = readPromptRef.current?.() ?? input;
+    acceptedVoiceText.current = next.accepted;
+    let value = live;
+    if (next.suffix) value += (value && !/\s$/.test(value) ? " " : "") + next.suffix;
+    if (!final && !voiceRecordingEnded.current) {
+      const markers = text.match(/\[[^\]]+\]|\([^)]*\)|<\|[^|]*\|>|[♪♫]+/g) ?? [];
+      for (const marker of markers) {
+        if (!cleanVoiceTranscript(marker) && !value.includes(marker)) value += (value && !/\s$/.test(value) ? " " : "") + marker;
+      }
+    } else value = cleanVoiceTranscript(value);
+    // Punctuation-only final refinement is safe only on an untouched draft.
+    if (final && !voiceUserEdited.current && value.trim().replace(/[.,!?;:]+$/, "") === speech.replace(/[.,!?;:]+$/, "")) value = speech;
+    if (final && !voiceUserEdited.current && value && !/\s$/.test(value)) value += " ";
+    if (value !== live) {
+      replaceVoicePromptRef.current?.(value, true);
+      setInput(value);
+    }
+  };
+  const voice = useVoiceInput((text) => {
+    reconcileVoiceDraft(text, true);
+    if (!voicePendingSend.current) setVoiceFeedback("ready");
+  }, error => {
+    voicePendingSend.current = null;
+    stripVoiceArtifacts();
+    setVoiceFeedback("error");
+    setVoiceError(error.message);
+  }, text => {
+    reconcileVoiceDraft(text);
+  });
+  useEffect(() => {
+    if (voice.phase === "transcribing" || voice.phase === "stopping") {
+      voiceRecordingEnded.current = true;
+      stripVoiceArtifacts();
+    }
+  }, [voice.phase]);
+  const stopVoiceForEditing = () => {
+    voiceRecordingEnded.current = true;
+    stripVoiceArtifacts();
+    voice.stop();
+  };
+  const cancelVoice = useCallback(() => {
+    voicePendingSend.current = null;
+    voice.cancel();
+    updateVoicePrompt(voiceDraftBase.current);
+    stripVoiceArtifacts();
+    setVoiceFeedback("cancelled");
+  }, [voice.cancel]);
+  // A session switch invalidates pending dictation; cleanup also runs on unmount.
+  useEffect(() => () => { voicePendingSend.current = null; voice.cancel(); }, [sessionId, voice.cancel]);
   /**
    * Exit cleanly. Aborts any in-flight agent turn (streaming/tool call) and
    * stops the repeating prompt loop before tearing down Ink, so `/exit` works
    * mid-turn instead of being ignored until the CLI is idle.
    */
   const exit = useCallback(() => {
+    voice.cancel();
     updateQueue([]);
     shellAbortRef.current?.abort();
     cancel();
     stopActiveLoop();
     exitInk();
-  }, [cancel, exitInk, updateQueue]);
-
-  const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
-  const { stdout } = useStdout();
-
-  /** Show a single-line status update via the system-message channel. */
-  const showStatusLine = useCallback((text: string, isError = false) => {
-    setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: text, isError }]);
-  }, []);
+  }, [cancel, exitInk, updateQueue, voice.cancel]);
 
   /** Preview a pasted-text attachment in the document. */
   const previewAttachment = useCallback((attachment: Attachment) => {
@@ -389,6 +483,28 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     }
   }, [agentCommands]);
 
+  // First interactive launch after an update: show the changelog once. The
+  // pending display was already consumed in main.tsx, so this renders it into
+  // the transcript where the user can read it and scroll past to continue.
+  // Any retrieval failure is swallowed so it can never disrupt startup.
+  const changelogShownRef = useRef(false);
+  useEffect(() => {
+    if (!showChangelogOnLaunch || changelogShownRef.current) return;
+    changelogShownRef.current = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { getChangelogSummary } = await import("./utils/auto-update.js");
+        const text = await getChangelogSummary();
+        if (cancelled || !text) return;
+        addDisplayMessage({ id: `changelog-launch-${++sysMessageId}`, role: "system", content: text });
+      } catch {
+        // Never surface changelog failures during startup.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showChangelogOnLaunch, addDisplayMessage]);
+
   // Track agent session lock for UI display.
   const [agentLockState, setAgentLockState] = useState<{ name: string; full: boolean } | null>(null);
 
@@ -400,8 +516,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     insertLabel(attachment.label);
   }, []);
 
-  const readPromptRef = useRef<(() => string) | null>(null);
-  const insertLabelRef = useRef<((label: string) => void) | null>(null);
   const expandTileRef = useRef<((id: number, fullText: string) => boolean) | null>(null);
   // The most recent paste that was compacted into a tile, so an identical
   // paste immediately after it is recognized as "expand this" rather than
@@ -452,7 +566,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   // Disable paste capture while any picker (wizard, model selector, etc.) is active
   // so paste events don't silently land in the hidden InputPrompt buffer
-  useClipboardImageDetector(handleClipboardImage, !pickerActive && !queueActive && !pendingConfirmation && !pendingContextWindowRequest, handleLargePaste, handleShortPaste);
+  useClipboardImageDetector(handleClipboardImage, !voice.phase && !pickerActive && !queueActive && !pendingConfirmation && !pendingContextWindowRequest, handleLargePaste, handleShortPaste);
 
   /** Run a side query independently so it never delays the active agent turn. */
   const runPsQuery = useCallback(async (query: { text: string; blocks: ContentBlock[] }) => {
@@ -553,13 +667,16 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       const now = new Date();
       const currentMinute = now.getHours() * 60 + now.getMinutes();
       if (currentMinute === lastCheckedMinute) return;
+      if (voice.isActive()) return;
       lastCheckedMinute = currentMinute;
       try {
         const tasks = await loadScheduledTasks();
+        if (voice.isActive()) { lastCheckedMinute = -1; return; }
         for (const task of tasks) {
           if (!task.enabled) continue;
           if (cronMatches(task.cron, now)) {
             await markTaskRun(task.id);
+            if (voice.isActive()) { lastCheckedMinute = -1; return; }
             submit(task.prompt, undefined, undefined, undefined, {
               source: "schedule",
               detail: `${task.name} · cron ${task.cron}`,
@@ -569,7 +686,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       } catch { }
     }, 30_000);
     return () => clearInterval(checker);
-  }, [submit]);
+  }, [submit, voice.isActive]);
 
   // Evaluates background process schedules (distinct from the LLM prompt-schedule checker above).
   useEffect(() => {
@@ -604,6 +721,27 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
   useInput((rawChar, rawKey) => {
+    if (voice.isActive()) {
+      const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
+      if (key.eventType === "release" || key.eventType === "repeat") return;
+      if (voice.phase === "model-consent") {
+        if (!key.ctrl && !key.meta && char.toLowerCase() === "y") voice.confirmDownload();
+        else if (key.escape || char.toLowerCase() === "n" || (key.ctrl && char === "c")) cancelVoice();
+        return;
+      }
+      if (key.escape || (key.ctrl && char === "c")) cancelVoice();
+      else if (key.return && !key.shift && !key.ctrl && !key.meta && !key.super && !key.hyper) {
+        if (voice.phase === "recording" || voice.phase === "transcribing") {
+          voiceRecordingEnded.current = true;
+          const draft = stripVoiceArtifacts();
+          if (draft.trim() && !voicePendingSend.current) {
+            voicePendingSend.current = { text: draft, version: composerEditVersionRef.current };
+          }
+        }
+        voice.stop();
+      }
+      return;
+    }
     if (pickerActive || (queueActive && !(rawKey.ctrl && rawChar === "c"))) return;
     if (rawKey.ctrl && rawChar === "q" && queueRef.current.length > 0 && !pendingConfirmation && !pendingContextWindowRequest) {
       setQueueActive(true);
@@ -745,10 +883,28 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   /** Route input either to slash commands, side queries, or the main agent turn. */
   const handleSubmit = useCallback(
     async (value: string, invocationReason?: InvocationReason, queued?: QueuedRequest) => {
+      if (voice.isActive()) return;
+      setVoiceFeedback(null);
       const promptAttachments = queued?.attachments ?? attachments;
       const trimmed = value.trim();
       const composerEditVersion = composerEditVersionRef.current;
 
+      if (trimmed.split(/\s+/)[0] === "/voice") {
+        if (invocationReason || queued) {
+          showStatusLine("Voice input requires a direct user action; automated workflows cannot open the microphone.", true);
+          return;
+        }
+        if (promptAttachments.length) {
+          showStatusLine("Remove pending attachments before starting /voice. Your draft and attachments are preserved.", true);
+          return;
+        }
+      }
+      // Dictation must not be queued to unexpectedly open the microphone later.
+      if (trimmed.split(/\s+/)[0] === "/voice" &&
+          (isLoading || requestPendingRef.current || shellAbortRef.current || queueRef.current.length)) {
+        showStatusLine("Voice input is available when the prompt is idle.", true);
+        return;
+      }
       if (trimmed === "/queue" || trimmed === "/queue retry") {
         setInput("");
         if (trimmed === "/queue retry") setQueueBlocked(false);
@@ -984,6 +1140,22 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               skillsTUIResolveRef.current = onDone;
               setSkillsTUIActive(true);
             },
+            showCustomizeTUI: stdout.isTTY && process.stdin.isTTY ? (onDone: () => void) => {
+              customizeTUIResolveRef.current = onDone;
+              setCustomizeTUIActive(true);
+            } : undefined,
+            startVoiceInput: stdout.isTTY && stdin.isTTY ? () => {
+              // Capture the version after the slash command clears its composer.
+              setVoiceFeedback(null);
+              setVoiceError(null);
+              voicePendingSend.current = null;
+              voiceRecordingEnded.current = false;
+              acceptedVoiceText.current = "";
+              voiceUserEdited.current = false;
+              voiceDraftBase.current = ""; // /voice clears its own command text before activation.
+              voiceDraftVersion.current = composerEditVersionRef.current;
+              voice.start();
+            } : undefined,
             iterationsBudget: iterationsBudget
           },);
 
@@ -1085,15 +1257,27 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine],
+    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY],
   );
+
+  // Explicit Enter sends the snapshot only after the helper has released ownership.
+  useEffect(() => {
+    if (voice.phase !== null || voice.isActive()) return;
+    const pending = voicePendingSend.current;
+    if (!pending) return;
+    voicePendingSend.current = null;
+    if (pending.version !== composerEditVersionRef.current) return;
+    void handleSubmit(pending.text).catch(error => {
+      showStatusLine(error instanceof Error ? error.message : String(error), true);
+    });
+  }, [voice.phase, voice.isActive, handleSubmit, showStatusLine]);
 
   // Start one request at a time; retain failures rather than dropping user input.
   useEffect(() => {
     // An older idle render can flush after submit has accepted a new turn.
     // Wait for the render carrying that completion (and its new loading state).
     if (requestCompletion !== requestCompletionRef.current || isLoading || requestPendingRef.current || runningShellCommand || runningSkillName ||
-        pendingConfirmation || pendingContextWindowRequest || pickerActive || queueActive || queueBlocked) return;
+        pendingConfirmation || pendingContextWindowRequest || pickerActive || queueActive || queueBlocked || voice.isActive()) return;
     const request = queueRef.current[0];
     if (!request) return;
     updateQueue(queueRef.current.slice(1));
@@ -1103,7 +1287,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       showStatusLine(err instanceof Error ? err.message : String(err), true);
     });
   }, [isLoading, runningShellCommand, runningSkillName, pendingConfirmation, pendingContextWindowRequest,
-    pickerActive, queueActive, queueBlocked, queuedRequests, requestCompletion, handleSubmit, updateQueue, showStatusLine]);
+    pickerActive, queueActive, queueBlocked, queuedRequests, requestCompletion, handleSubmit, updateQueue, showStatusLine, voice.phase, voice.isActive]);
 
   const displayError = error;
   const allMessages = useMemo(() => {
@@ -1345,7 +1529,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           onClose={() => setQueueActive(false)} onActivate={() => setQueueActive(true)} columns={termCols}
         />
         {queueBlocked && queuedRequests.length > 0 && <Text color="yellow">Queue paused · /queue retry to retry</Text>}
-        {pendingConfirmation && (
+        {!voice.phase && pendingConfirmation && (
           <ToolConfirm
             toolName={pendingConfirmation.toolName}
             input={pendingConfirmation.input}
@@ -1358,7 +1542,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           />
         )}
 
-        {!pendingConfirmation && pendingContextWindowRequest && (
+        {!voice.phase && !pendingConfirmation && pendingContextWindowRequest && (
           <ContextWindowPrompt
             model={pendingContextWindowRequest.model}
             defaultValue={DEFAULT_UNKNOWN_CONTEXT_WINDOW}
@@ -1419,10 +1603,71 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           }} />
         )}
 
+        {customizeTUIActive && (
+          <CustomizeTUI
+            initialLayout={config.statusBar}
+            preview={{
+              model: `${config.provider}/${config.model}`,
+              effort: `effort: ${config.effort}`,
+              messages: `${messages.filter((m) => m.role === "user").length} msgs`,
+              usage: tokenUsage.inputTokens + tokenUsage.outputTokens > 0 ? "… tokens" : "0 tokens",
+              duration: lastTurnDurationMs != null ? "⏱ …" : "",
+              sandbox: `sandbox: ${getSandboxName()}`,
+              session: (sessionName ?? (sessionId ? sessionId.slice(0, 8) : "")) ? `session: ${sessionName ?? sessionId!.slice(0, 8)}` : "",
+              hint: getRandomHint(keybindings, enhancedKeyboard),
+            } satisfies StatusBarSegments}
+            onChange={(layout: StatusBarLayout) => {
+              // Reflect edits in the live footer immediately. Store the default
+              // as `undefined` so a reset leaves no redundant config entry.
+              const normalized = normalizeStatusBarLayout(layout);
+              setConfig((prev) => ({ ...prev, statusBar: isDefaultStatusBarLayout(normalized) ? undefined : normalized }));
+            }}
+            onExit={(layout: StatusBarLayout) => {
+              setCustomizeTUIActive(false);
+              setPickerActive(false);
+              setInput("");
+              const normalized = normalizeStatusBarLayout(layout);
+              const toStore = isDefaultStatusBarLayout(normalized) ? undefined : normalized;
+              setConfig((prev) => ({ ...prev, statusBar: toStore }));
+              // Persist only the statusBar key so session-only overrides and
+              // encrypted keys in config.json are preserved.
+              void (async () => {
+                try {
+                  const { saveStatusBarLayout } = await import("./config/config.js");
+                  await saveStatusBarLayout(toStore);
+                } catch {
+                  // Never let a persistence failure break the session.
+                }
+              })();
+              const resolve = customizeTUIResolveRef.current;
+              customizeTUIResolveRef.current = null;
+              resolve?.();
+            }}
+          />
+        )}
+
+        {(voice.phase === "model-consent" || voice.phase === "downloading") && voice.model && <VoiceModelSetup
+          model={voice.model} downloading={voice.phase === "downloading"} bytes={voice.downloadedBytes}
+          onDownload={voice.confirmDownload} onCancel={cancelVoice}
+        />}
+        {voice.phase && voice.phase !== "model-consent" && voice.phase !== "downloading" && <VoiceInputPanel
+          phase={voice.phase} level={voice.level} elapsedSeconds={voice.elapsedSeconds}
+          columns={stdout.columns || 80} onStop={stopVoiceForEditing} onCancel={cancelVoice}
+        />}
+        {!voice.phase && voiceFeedback && <Box flexDirection="column" marginTop={1}>
+          <Text color={voiceFeedback === "error" ? "red" : undefined}>
+            {voiceFeedback === "ready" ? "Voice draft ready · Review and edit before sending" :
+              voiceFeedback === "cancelled" ? "Voice cancelled · Recording discarded" : "Voice unavailable · Typed input still works"}
+          </Text>
+          {voiceFeedback === "error" && <Text dimColor>{voiceError}</Text>}
+          {voiceFeedback === "error" && <Text dimColor>Check microphone access and local setup: /help voice</Text>}
+        </Box>}
         {!pendingConfirmation && !pendingContextWindowRequest && (
           <Box marginTop={1}><InputPrompt
             value={input}
             onChange={(value) => {
+              if (voice.isActive()) voiceUserEdited.current = true;
+              setVoiceFeedback(null);
               composerEditVersionRef.current++;
               // A matching paste only expands the tile it just created. Once
               // the prompt has changed, an identical paste elsewhere is a new
@@ -1443,11 +1688,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               setAttachments([]);
               lastPasteRef.current = null;
             }}
+            onRegisterReplace={(replace) => { replaceVoicePromptRef.current = replace; }}
             onRegisterRead={(read) => { readPromptRef.current = read; }}
             onRegisterInsert={(fn) => { insertLabelRef.current = fn; }}
             onRegisterExpand={(fn) => { expandTileRef.current = fn; }}
             onOpenAttachment={handleOpenAttachment}
             disabled={pickerActive || queueActive}
+            readOnly={voice.phase === "preparing" || voice.phase === "model-consent" || voice.phase === "downloading" || voice.phase === "cancelling"}
+            ownsVoiceControls={voice.isActive}
             suppressHistory={isLoading}
             commands={[
               { name: "queue", description: "Manage queued requests (retry to resume)" },
@@ -1489,6 +1737,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           lastTurnDurationMs={lastTurnDurationMs}
           isLoading={isLoading}
           agentLock={agentLockState ?? undefined}
+          layout={config.statusBar}
         />
       </Box>
     </Box>

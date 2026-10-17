@@ -36,6 +36,8 @@ export interface CommandContext {
   clearMessages: () => void
   /** Re-read the plan from disk so the on-screen plan panel matches it. */
   refreshPlan: () => void
+  /** Open local dictation in the interactive composer; absent in headless mode. */
+  startVoiceInput?: () => void
   showStatus: (text: string) => void
   saveSession: () => void
   refreshDisplay: () => void
@@ -76,6 +78,8 @@ export interface CommandContext {
   showResourceTUI?: (kind: import("../resources/types.js").ResourceKind, onDone: () => void, marketplace?: boolean) => void
   showAgentsTUI: (onDone: () => void) => void
   showSkillsTUI: (onDone: () => void) => void
+  /** Open the /customize overlay; only the interactive app supplies this. */
+  showCustomizeTUI?: (onDone: () => void) => void
 }
 
 /** Represents the result of executing a slash command. */

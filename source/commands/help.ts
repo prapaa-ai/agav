@@ -8,6 +8,7 @@ const CATEGORIES: Record<string, string[]> = {
   "Skills": ["skills"],
   "Workflow": ["plan", "steer", "loop", "schedule", "watch"],
   "Memory": ["memory", "remember", "forget"],
+  "Appearance": ["customize"],
   "Safety": ["undo"],
   "Debug": ["context", "debug", "changelog", "exit", "help"],
 };

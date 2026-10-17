@@ -12,7 +12,8 @@ import { IpcClient } from "../ipc/client.js";
 import type { LaunchSpec, JobRecord } from "../types.js";
 
 async function fixture(body: (ctx: { supervisor: JobSupervisor; spec: LaunchSpec; socket: string; job: () => Promise<JobRecord | undefined>; base: string }) => Promise<void>) {
-  const base = await mkdtemp(join(tmpdir(), "agav-review-fix-"));
+  // Keep the canonical macOS temp path short enough for a Unix socket.
+  const base = await mkdtemp(join(tmpdir(), "agav-rev-"));
   const root = await resolveStorageRoot(join(base, "state"));
   const repositories = createFileRepositories(root);
   const jobId = randomUUID(), requestId = randomUUID();

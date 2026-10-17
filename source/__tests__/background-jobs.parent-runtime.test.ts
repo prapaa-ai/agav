@@ -92,8 +92,17 @@ describe("real parent background execution", () => {
     expect(stopped.result.isError, stopped.result.output).toBe(false);
     expect(stopped.approvals).toHaveLength(1);
     expect(stopped.approvals[0].action).toBe("stop");
-    const polled = await parent({ action: "poll", jobId: id });
-    expect(polled.result.output).toContain(process.platform === "win32" ? "state: unknown" : "state: interrupted");
+    const expectedState = process.platform === "win32" ? "state: unknown" : "state: interrupted";
+    // Stop-control acknowledgement can precede the child-close handler's final publication.
+    const deadline = Date.now() + 10000;
+    let polled = await parent({ action: "poll", jobId: id });
+    while (!polled.result.output.includes(expectedState) && Date.now() < deadline) {
+      expect(polled.result.isError, polled.result.output).toBe(false);
+      await new Promise(r => setTimeout(r, 200));
+      polled = await parent({ action: "poll", jobId: id });
+    }
+    expect(polled.result.isError, polled.result.output).toBe(false);
+    expect(polled.result.output).toContain(expectedState);
     if (process.platform === "win32") {
       expect(polled.result.output).toContain("stopState: acknowledged");
       expect(polled.result.output).not.toContain("stopState: observed-stopped");

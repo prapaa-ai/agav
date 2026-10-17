@@ -15,6 +15,7 @@ import {
 } from "./internal-prompts.js";
 
 export type AgentEvent =
+  | { type: "retry"; message: string }
   | { type: "planning"; plan: string }
   | { type: "thinking"; text: string }
   | { type: "streaming_text"; text: string }
@@ -368,6 +369,10 @@ export async function* runAgentLoop(
 
           case "message_end":
             stopReason = event.stopReason;
+            break;
+
+          case "retry":
+            yield event;
             break;
 
           case "error":

@@ -69,6 +69,9 @@ export interface AgavConfig {
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
   showThinking?: boolean;
+  /** Customized footer layout (which segments show and their order). Reconciled
+   * against the current catalog on use; see config/status-bar-layout.ts. */
+  statusBar?: import("./status-bar-layout.js").StatusBarLayout;
   /** Opt-in; when unset or false, `run_background_job` and `/job` refuse to do anything. */
   backgroundJobsEnabled?: boolean;
   /** "paused" makes `agav job tick`/daemon do nothing. Global-only (PROJECT_CONFIG_DENY). */
@@ -498,6 +501,56 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
   if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
   await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
+}
+
+/**
+ * Persist only the status bar layout to the global config file, preserving every
+ * other key exactly as written on disk.
+ *
+ * This is deliberately a surgical read-merge-write rather than saveConfig(): the
+ * live AgavConfig carries session-only overrides (CLI --model/--effort, decrypted
+ * API keys, env-derived values) that must never be baked into config.json. We
+ * reuse the raw stored object so already-encrypted API keys stay encrypted and
+ * untouched. The write is atomic (temp file + rename) so a crash mid-write can
+ * never leave a truncated, unparseable config.
+ *
+ * `undefined` removes the key, restoring the default footer.
+ */
+export async function saveStatusBarLayout(
+  layout: import("./status-bar-layout.js").StatusBarLayout | undefined,
+): Promise<void> {
+  await ensureDir(AGAV_DIR);
+  let stored: Record<string, unknown> = {};
+  try {
+    stored = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+    if (typeof stored !== "object" || stored === null) stored = {};
+  } catch {
+    // Missing or corrupt file: start from an empty object so we still persist
+    // the layout rather than failing. A corrupt file is effectively replaced.
+    stored = {};
+  }
+  if (layout === undefined) {
+    delete stored.statusBar;
+  } else {
+    stored.statusBar = layout;
+  }
+  // Unpredictable temp name (random suffix, not the guessable pid) in the same
+  // directory as the target so the final rename stays atomic on one filesystem.
+  const { randomBytes } = await import("node:crypto");
+  const tmpPath = `${CONFIG_PATH}.tmp.${randomBytes(8).toString("hex")}`;
+  const serialized = JSON.stringify(stored, null, 2) + "\n";
+  const { rename, unlink } = await import("node:fs/promises");
+  // "wx" (O_CREAT | O_EXCL) refuses to open an existing path, so a pre-planted
+  // symlink at tmpPath can never be followed; mode 0o600 keeps the config —
+  // which may hold encrypted API keys — owner-only even before the rename.
+  try {
+    await writeFile(tmpPath, serialized, { mode: 0o600, flag: "wx" });
+    await rename(tmpPath, CONFIG_PATH);
+  } catch (err) {
+    // Never leave an orphaned temp file behind on any failure.
+    await unlink(tmpPath).catch(() => {});
+    throw err;
+  }
 }
 
 /** Return the root directory used for Agav's global state files. */

@@ -161,16 +161,16 @@ async function sleep(ms: number): Promise<void> {
 /**
  * Short bounded retry for `jobs.update()` racing the job's own supervisor process (e.g. our
  * post-launch supervisor-ownership write vs its startup `{ state: "starting", nonce }` update).
- * `acquireLock` never retries/steals, which is right for a stuck lock but this contention
- * lasts milliseconds. Mirrors `withJobLockRetrying` in recovery/reconcile.ts.
+ * `acquireLock` never retries/steals. Allow two seconds of backoff for transient
+ * publication contention on busy hosts, then surface a persistently held lock.
  */
 async function updateJobRetryingOnLockHeld(
   repos: Repositories,
   jobId: string,
   patch: Partial<JobRecord>,
 ): Promise<void> {
-  const attempts = 5;
-  const delayMs = 30;
+  const attempts = 21;
+  const delayMs = 100;
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
