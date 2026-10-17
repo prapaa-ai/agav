@@ -60,6 +60,10 @@ interface LoopParams {
   signal?: AbortSignal;
   confirmTool?: ConfirmToolFn;
   permissionMode?: PermissionMode;
+  /** Host's background permission, independent of generic session Always. */
+  backgroundPermissionMode?: PermissionMode;
+  /** Host is non-interactive (print/run mode); background actions then need an explicit headless grant. */
+  headless?: boolean;
   allowedTools?: string[];
   hooks?: import("../config/config.js").AgavHooks;
   /**
@@ -287,7 +291,7 @@ export async function* runAgentLoop(
     if (isLastStep && !seededCall) {
       conversation.addInternalUserMessage(MAX_STEPS_PROMPT);
     }
-    
+
     let textAccum = "";
     const toolCalls = new Map<
       string,
@@ -496,11 +500,12 @@ export async function* runAgentLoop(
         && isAllowed(call.name, input, params.allowedTools, { requirePattern: true });
       const denyWrites = permissionMode === "deny-writes";
       const trustedSafe = toolDestructiveFlag === false && SAFE_TOOLS.has(call.name);
-      const needsConfirm = (isDestructive && !destructiveApproved)
+      const backgroundManaged = call.name === "run_background_job";
+      const needsConfirm = !backgroundManaged && ((isDestructive && !destructiveApproved)
         || (!SAFE_TOOLS.has(call.name)
           && !trustedSafe
           && permissionMode !== "auto-accept"
-          && !isAllowed(call.name, input, params.allowedTools));
+          && !isAllowed(call.name, input, params.allowedTools)));
       if ((denyWrites && (isDestructive || WRITE_TOOLS.has(call.name))) || (needsConfirm && (denyWrites || !confirmTool))) {
         const reason = denyWrites
           ? "Write operations are denied (--deny-writes mode)."
@@ -577,7 +582,25 @@ export async function* runAgentLoop(
 
       const execResults = await Promise.all(
         entries.map(async (entry) => {
-          const result = await toolRegistry.execute(entry.name, entry.input, { signal, ...(dispatchContext ? { conversation: dispatchContext, systemPrompt, permissionMode } : {}) });
+          const result = await toolRegistry.execute(entry.name, entry.input, {
+            signal,
+            ...(dispatchContext ? { conversation: dispatchContext, systemPrompt, permissionMode } : {}),
+            // Host-supplied, never from tool input.
+            ...(entry.name === "run_background_job" && params.headless === true ? { headless: true } : {}),
+            backgroundPolicy: entry.name === "run_background_job" ? {
+              // Background consent is exact-spec: generic Always/allowedTools
+              // choices must not widen an ask-mode background grant.
+              permissionMode: params.backgroundPermissionMode ?? params.permissionMode ?? "ask",
+              headlessApprovedActions: [],
+              signal,
+              confirmBackgroundAction: confirmTool
+                ? async (action, spec, subject) => {
+                    const choice = await confirmTool("run_background_job", { action, spec, subject });
+                    return choice === "yes" || choice === "always";
+                  }
+                : undefined,
+            } : undefined,
+          });
           return { ...entry, result };
         }),
       );

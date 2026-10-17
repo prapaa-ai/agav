@@ -59,11 +59,11 @@ jobs:
           - target: darwin-arm64
             os: macos-latest
           - target: darwin-x64
-            os: macos-latest
+            os: macos-15-intel
           - target: linux-x64
             os: ubuntu-latest
           - target: linux-arm64
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
           # Windows binaries must be built natively on a Windows runner.
           # Cross-compiling from Linux (--target=bun-windows-x64 on ubuntu)
           # produces a binary whose embedded Bun runtime does not correctly
@@ -113,6 +113,15 @@ jobs:
       # here too, or every published binary ships whatever text was committed.
       - name: Generate bundled skills manifest
         run: node scripts/gen-bundled-skills.mjs
+      - name: Build, test and embed native voice helper
+        run: |
+          VOICE_TARGET=$(node -p 'process.platform + "-" + process.arch')
+          VOICE_ASSETS=$(mktemp -d "${RUNNER_TEMP}/voice-assets.XXXXXX")
+          trap 'rm -rf "$VOICE_ASSETS"' EXIT
+          node scripts/build-voice-helper.mjs "$VOICE_TARGET" "$VOICE_ASSETS"
+          HELPER="$VOICE_ASSETS/agav-voice-$VOICE_TARGET"
+          if [[ "$VOICE_TARGET" == win32-* ]]; then HELPER="$HELPER.exe"; fi
+          node scripts/embed-voice-helper.mjs "$VOICE_TARGET" "$HELPER" source/voice/bundled-runtime.ts
       - name: Build binary
         run: |
           mkdir -p dist

@@ -36,6 +36,8 @@ export interface CommandContext {
   clearMessages: () => void
   /** Re-read the plan from disk so the on-screen plan panel matches it. */
   refreshPlan: () => void
+  /** Open local dictation in the interactive composer; absent in headless mode. */
+  startVoiceInput?: () => void
   showStatus: (text: string) => void
   saveSession: () => void
   refreshDisplay: () => void
@@ -67,6 +69,12 @@ export interface CommandContext {
    * Not needed by the React TUIs — those render inside Ink.
    */
   suspendTerminal: () => () => void
+  /** Inline approval prompt for background-job actions; absent when no interactive UI can show one. */
+  confirmBackgroundAction?: (
+    action: import("../background-jobs/types.js").GrantAction,
+    spec: Omit<import("../background-jobs/types.js").LaunchSpec, "requestId" | "createdAt">,
+    subject?: import("../background-jobs/types.js").ConfirmSubject,
+  ) => Promise<boolean>
   showResourceTUI?: (kind: import("../resources/types.js").ResourceKind, onDone: () => void, marketplace?: boolean) => void
   showAgentsTUI: (onDone: () => void) => void
   showSkillsTUI: (onDone: () => void) => void

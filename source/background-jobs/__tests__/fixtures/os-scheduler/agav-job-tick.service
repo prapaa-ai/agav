@@ -1,0 +1,8 @@
+[Unit]
+Description=Agav background jobs tick
+
+[Service]
+Type=oneshot
+KillMode=process
+SendSIGKILL=no
+ExecStart=/usr/local/bin/node /usr/local/lib/node_modules/agav/build/cli.js --internal-background-jobs-tick
