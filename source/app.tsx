@@ -32,6 +32,9 @@ import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { JobsTUI } from "./components/jobs-tui.js";
+import { CustomizeTUI } from "./components/customize-tui.js";
+import type { StatusBarSegments } from "./components/status-bar.js";
+import { normalizeStatusBarLayout, isDefaultStatusBarLayout, type StatusBarLayout } from "./config/status-bar-layout.js";
 import { ResourceManager } from "./components/resource-manager.js";
 import { createResourceAdapter } from "./resources/adapters.js";
 import type { ResourceKind, ResourceAdapter } from "./resources/types.js";
@@ -196,6 +199,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const jobsTUIResolveRef = useRef<(() => void) | null>(null);
   const [resourceAdapter, setResourceAdapter] = useState<ResourceAdapter | null>(null);
   const resourceTUIResolveRef = useRef<(() => void) | null>(null);
+  const [customizeTUIActive, setCustomizeTUIActive] = useState(false);
+  const customizeTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
@@ -1135,6 +1140,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               skillsTUIResolveRef.current = onDone;
               setSkillsTUIActive(true);
             },
+            showCustomizeTUI: stdout.isTTY && process.stdin.isTTY ? (onDone: () => void) => {
+              customizeTUIResolveRef.current = onDone;
+              setCustomizeTUIActive(true);
+            } : undefined,
             startVoiceInput: stdout.isTTY && stdin.isTTY ? () => {
               // Capture the version after the slash command clears its composer.
               setVoiceFeedback(null);
@@ -1593,6 +1602,49 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           }} />
         )}
 
+        {customizeTUIActive && (
+          <CustomizeTUI
+            initialLayout={config.statusBar}
+            preview={{
+              model: `${config.provider}/${config.model}`,
+              effort: `effort: ${config.effort}`,
+              messages: `${messages.filter((m) => m.role === "user").length} msgs`,
+              usage: tokenUsage.inputTokens + tokenUsage.outputTokens > 0 ? "… tokens" : "0 tokens",
+              duration: lastTurnDurationMs != null ? "⏱ …" : "",
+              sandbox: `sandbox: ${getSandboxName()}`,
+              session: (sessionName ?? (sessionId ? sessionId.slice(0, 8) : "")) ? `session: ${sessionName ?? sessionId!.slice(0, 8)}` : "",
+              hint: getRandomHint(keybindings, enhancedKeyboard),
+            } satisfies StatusBarSegments}
+            onChange={(layout: StatusBarLayout) => {
+              // Reflect edits in the live footer immediately. Store the default
+              // as `undefined` so a reset leaves no redundant config entry.
+              const normalized = normalizeStatusBarLayout(layout);
+              setConfig((prev) => ({ ...prev, statusBar: isDefaultStatusBarLayout(normalized) ? undefined : normalized }));
+            }}
+            onExit={(layout: StatusBarLayout) => {
+              setCustomizeTUIActive(false);
+              setPickerActive(false);
+              setInput("");
+              const normalized = normalizeStatusBarLayout(layout);
+              const toStore = isDefaultStatusBarLayout(normalized) ? undefined : normalized;
+              setConfig((prev) => ({ ...prev, statusBar: toStore }));
+              // Persist only the statusBar key so session-only overrides and
+              // encrypted keys in config.json are preserved.
+              void (async () => {
+                try {
+                  const { saveStatusBarLayout } = await import("./config/config.js");
+                  await saveStatusBarLayout(toStore);
+                } catch {
+                  // Never let a persistence failure break the session.
+                }
+              })();
+              const resolve = customizeTUIResolveRef.current;
+              customizeTUIResolveRef.current = null;
+              resolve?.();
+            }}
+          />
+        )}
+
         {(voice.phase === "model-consent" || voice.phase === "downloading") && voice.model && <VoiceModelSetup
           model={voice.model} downloading={voice.phase === "downloading"} bytes={voice.downloadedBytes}
           onDownload={voice.confirmDownload} onCancel={cancelVoice}
@@ -1684,6 +1736,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           lastTurnDurationMs={lastTurnDurationMs}
           isLoading={isLoading}
           agentLock={agentLockState ?? undefined}
+          layout={config.statusBar}
         />
       </Box>
     </Box>
