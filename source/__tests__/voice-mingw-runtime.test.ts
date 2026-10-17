@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+// Real CMake configure/build steps can exceed Vitest's 5s default on shared CI runners.
+const nativeBuildTestTimeoutMs = 30_000;
+
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const available = (command: string) => spawnSync(command, ["--version"], { encoding: "utf8" }).status === 0;
@@ -57,7 +60,7 @@ describe("MinGW voice runtime linkage", () => {
     for (const option of ["-static", "-static-libgcc", "-static-libstdc++"]) {
       expect(link.split(/\s+/)).toContain(option);
     }
-  });
+  }, nativeBuildTestTimeoutMs);
 
   it.skipIf(!cmakeAvailable || process.platform === "win32")("does not force static system libraries on non-MinGW toolchains", () => {
     const build = fixture().configure(false);
@@ -68,7 +71,7 @@ describe("MinGW voice runtime linkage", () => {
     const probe = spawnSync(join(build, "agav-voice"), [], { encoding: "utf8" });
     expect(probe.status, probe.stderr).toBe(0);
     expect(probe.stdout).toBe("runtime probe42\n");
-  });
+  }, nativeBuildTestTimeoutMs);
 
   it.skipIf(!crossAvailable).each([false, true])("builds PE without MinGW runtime DLL imports (AVX2=%s)", avx2 => {
     const f = fixture();
@@ -81,5 +84,5 @@ describe("MinGW voice runtime linkage", () => {
     expect(imports.status, imports.stderr).toBe(0);
     expect(imports.stdout).toMatch(/DLL Name:/i);
     expect(imports.stdout).not.toMatch(/DLL Name:\s*(?:libwinpthread-1|libgcc_s[^\s]*|libstdc\+\+-6)\.dll/i);
-  });
+  }, nativeBuildTestTimeoutMs);
 });
