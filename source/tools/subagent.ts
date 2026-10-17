@@ -1,10 +1,13 @@
+import { createHash } from "node:crypto";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { ToolRegistry } from "./registry.js";
 import type { ConfirmationQueue } from "../agent/confirmation-queue.js";
 import type { SubagentProgress } from "../agent/subagent-types.js";
 import type { AgavConfig, EffortLevel, PermissionMode } from "../config/config.js";
-import { fetchAvailableModels } from "../commands/model.js";
+import { fetchAvailableModels, findMatchingModels } from "../commands/model.js";
+import type { FetchedModel } from "../commands/model.js";
+import { isProviderName } from "../config/startup.js";
 import { createProvider } from "../providers/registry.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
 import { ConversationState } from "../agent/conversation.js";
@@ -37,6 +40,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
   let counter = 0;
   const active = new Map<string, SubagentProgress>();
   const controllers = new Map<string, AbortController>();
+  let modelCatalogCache: { key: string; models: Promise<FetchedModel[]> } | undefined;
 
   // Throttle UI updates to ~15 fps so concurrent subagents don't flood
   // React with state updates on every streaming_text delta.
@@ -122,16 +126,46 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         : config.model;
       let childProvider = deps.provider;
       let childModel = config.model;
+      let contextWindow: number | undefined;
 
       if (requestedModel !== config.model) {
         const providerConfig = deps.getProviderConfig?.();
         if (!providerConfig) {
           return { output: "Cannot select a different subagent model: provider configuration is unavailable.", isError: true };
         }
-        const { models } = await fetchAvailableModels(providerConfig);
-        const selectedModel = models.find((candidate) => candidate.id === requestedModel);
+        // Config is read per call in use-agent; only reuse a catalog while the
+        // provider settings which affect its contents remain unchanged.
+        const catalogConfig = JSON.stringify({
+          anthropicApiKey: providerConfig.anthropicApiKey,
+          openaiApiKey: providerConfig.openaiApiKey,
+          openrouterApiKey: providerConfig.openrouterApiKey,
+          nvidiaApiKey: providerConfig.nvidiaApiKey,
+          deepseekApiKey: providerConfig.deepseekApiKey,
+          geminiApiKey: providerConfig.geminiApiKey,
+          vertexAICredentialsPath: providerConfig.vertexAICredentialsPath,
+          vertexAILocation: providerConfig.vertexAILocation,
+          ollamaEndpoint: providerConfig.ollamaEndpoint,
+          ollamaHost: providerConfig.ollamaHost,
+          ollamaPort: providerConfig.ollamaPort,
+        });
+        const catalogKey = createHash("sha256").update(catalogConfig).digest("hex");
+        if (modelCatalogCache?.key !== catalogKey) {
+          const models = fetchAvailableModels(providerConfig).then(({ models }) => models);
+          modelCatalogCache = { key: catalogKey, models };
+          void models.catch(() => {
+            if (modelCatalogCache?.models === models) modelCatalogCache = undefined;
+          });
+        }
+        const models = await modelCatalogCache.models;
+        const matches = findMatchingModels(models, requestedModel);
+        const selectedModel = matches.find((candidate) => candidate.provider === providerConfig.provider)
+          ?? matches.find((candidate) => candidate.id === requestedModel)
+          ?? (matches.length === 1 ? matches[0] : undefined);
         if (!selectedModel) {
-          return { output: `Model '${requestedModel}' does not exist or is not available.`, isError: true };
+          return { output: `Model '${requestedModel}' does not exist or is not available${matches.length > 1 ? " unambiguously" : ""}.`, isError: true };
+        }
+        if (!isProviderName(selectedModel.provider)) {
+          return { output: `Model '${requestedModel}' has an unsupported provider and cannot be initialized.`, isError: true };
         }
 
         const approval = await deps.confirmationQueue.enqueue({
@@ -147,10 +181,11 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         try {
           childProvider = createProvider({
             ...providerConfig,
-            provider: selectedModel.provider as AgavConfig["provider"],
-            model: requestedModel,
+            provider: selectedModel.provider,
+            model: selectedModel.id,
           });
-          childModel = requestedModel;
+          childModel = selectedModel.id;
+          contextWindow = selectedModel.contextWindow;
         } catch (error) {
           return {
             output: `Model '${requestedModel}' exists but could not be initialized: ${error instanceof Error ? error.message : String(error)}`,
@@ -168,6 +203,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
 
       const conversation = new ConversationState();
       conversation.setModel(childModel);
+      conversation.setContextWindow(contextWindow);
       conversation.addUserMessage(task);
 
       const steers = formatSteersForPrompt();
