@@ -56,7 +56,7 @@ import { getSandboxName, runInSandbox } from "./utils/sandbox.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
 import { terminalRelativePaths } from "./utils/display-path.js";
 import { openTarget } from "./utils/open-target.js";
-import { writeClipboard } from "./ink/termio/clipboard.js";
+import { subscribeClipboardCopy, writeClipboard, type ClipboardNotice } from "./ink/termio/clipboard.js";
 import type { OpenRef } from "./utils/open-ref.js";
 import AttachmentPreview, { type PreviewContent } from "./components/attachment-preview.js";
 import { readFileContext } from "./utils/file-context.js";
@@ -258,8 +258,22 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
+  const [copyNotice, setCopyNotice] = useState<ClipboardNotice | null>(null);
   const { stdout } = useStdout();
   const { stdin } = useStdin();
+
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = subscribeClipboardCopy((notice) => {
+      setCopyNotice(notice);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setCopyNotice(null), 2000);
+    });
+    return () => {
+      unsubscribe();
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
 
   /** Show a single-line status update via the system-message channel. */
   const showStatusLine = useCallback((text: string, isError = false) => {
@@ -760,7 +774,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       if (key.escape) { setPreview(null); return; }
       if (char === "c" && ((!key.ctrl && !key.meta && !key.super) || key.super)) {
         if (stdout) writeClipboard(stdout, preview.text);
-        showStatusLine("Copied preview to clipboard.");
         return;
       }
     }
@@ -1718,6 +1731,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         )}
 
         <StatusBar
+          copyNotice={copyNotice}
           isPaused={isGenerationPaused || !!pendingConfirmation}
           model={config.model}
           provider={config.provider}
