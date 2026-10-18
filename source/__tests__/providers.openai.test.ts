@@ -139,3 +139,47 @@ describe("OpenAIProvider responses streaming", () => {
     expect(events).toContainEqual({ type: "message_end", stopReason: "completed" });
   });
 });
+
+describe("OpenAIProvider effort mapping", () => {
+  it("maps minimal effort to low for chat completions", async () => {
+    mockChatStream([
+      { choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] },
+    ]);
+
+    const provider = new OpenAIProvider("test-key", "chat");
+    await collectEvents(provider, { model: "o3-mini", effort: "minimal" });
+
+    expect(createChatCompletion).toHaveBeenCalledTimes(1);
+    const callArgs = createChatCompletion.mock.calls[0]?.[0];
+    expect(callArgs.reasoning_effort).toBe("low");
+  });
+
+  it("maps minimal effort to low for responses api", async () => {
+    mockResponsesStream([
+      { type: "response.completed", response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1 } } },
+    ]);
+
+    const provider = new OpenAIProvider("test-key", "responses");
+    await collectEvents(provider, { model: "o3-mini", effort: "minimal" });
+
+    expect(createResponse).toHaveBeenCalledTimes(1);
+    const callArgs = createResponse.mock.calls[0]?.[0];
+    expect(callArgs.reasoning).toEqual({ effort: "low", summary: "concise" });
+  });
+
+  it("steers with concise prompt when model lacks native effort", async () => {
+    mockChatStream([
+      { choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] },
+    ]);
+
+    const provider = new OpenAIProvider("test-key", "chat");
+    await collectEvents(provider, { model: "gpt-4o", effort: "minimal", systemPrompt: "Original prompt" });
+
+    expect(createChatCompletion).toHaveBeenCalledTimes(1);
+    const callArgs = createChatCompletion.mock.calls[0]?.[0];
+    expect(callArgs.reasoning_effort).toBeUndefined();
+    expect(callArgs.messages[0].content).toContain("Be concise. Answer directly. Skip analysis unless asked.");
+    expect(callArgs.messages[0].content).toContain("Original prompt");
+  });
+});
+

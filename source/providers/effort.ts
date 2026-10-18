@@ -1,12 +1,14 @@
 import type { EffortLevel } from "../config/config.js";
 
 const EFFORT_PROMPTS: Partial<Record<EffortLevel, string>> = {
+  minimal: "Be concise. Answer directly. Skip analysis unless asked.",
   low: "Be concise. Answer directly. Skip analysis unless asked.",
   high: "Think carefully. Consider edge cases. Verify your reasoning.",
   max: "Be exhaustive. Consider multiple approaches. Verify all claims.",
 };
 
 const OLLAMA_EFFORT_PROMPTS: Partial<Record<EffortLevel, string>> = {
+  minimal: EFFORT_PROMPTS.low,
   low: EFFORT_PROMPTS.low,
   high:
     "Think carefully before answering. Break complex problems into clear steps, inspect all relevant context, consider edge cases and likely failure modes, and verify the result. Keep the final response focused and practical.",
@@ -17,6 +19,7 @@ const OLLAMA_EFFORT_PROMPTS: Partial<Record<EffortLevel, string>> = {
 export type OpenAIEffortLevel = "low" | "medium" | "high" | "xhigh";
 
 const OPENAI_EFFORT_LEVELS: Record<EffortLevel, OpenAIEffortLevel> = {
+  minimal: "low",
   low: "low",
   medium: "medium",
   high: "high",
@@ -26,6 +29,21 @@ const OPENAI_EFFORT_LEVELS: Record<EffortLevel, OpenAIEffortLevel> = {
 /** Translate Agav's provider-neutral levels to OpenAI's reasoning_effort enum. */
 export function mapOpenAIEffort(effort: EffortLevel): OpenAIEffortLevel {
   return OPENAI_EFFORT_LEVELS[effort];
+}
+
+export type AnthropicEffortLevel = "low" | "medium" | "high" | "max";
+
+const ANTHROPIC_EFFORT_LEVELS: Record<EffortLevel, AnthropicEffortLevel> = {
+  minimal: "low",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  max: "max",
+};
+
+/** Translate Agav's provider-neutral levels to Anthropic's output_config.effort enum. */
+export function mapAnthropicEffort(effort: EffortLevel): AnthropicEffortLevel {
+  return ANTHROPIC_EFFORT_LEVELS[effort];
 }
 
 /** Models known to accept their provider's native effort request parameter. */
@@ -72,6 +90,7 @@ export function applyEffortPrompt(systemPrompt: string | undefined, effort: Effo
 }
 
 const GEMINI_THINKING_BUDGETS: Record<EffortLevel, number> = {
+  minimal: 0,
   low: 0,
   medium: 1024,
   high: 8192,

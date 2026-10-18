@@ -36,10 +36,12 @@ describe("config", () => {
 
   it("accepts valid effort levels", async () => {
     const mod = await import("../config/config.js");
+    expect(mod.isEffortLevel("minimal")).toBe(true);
     expect(mod.isEffortLevel("low")).toBe(true);
     expect(mod.isEffortLevel("max")).toBe(true);
     expect(mod.isEffortLevel("super-high")).toBe(false);
-    expect(mod.EFFORT_LEVELS).toEqual(["low", "medium", "high", "max"]);
+    expect(mod.EFFORT_LEVELS).toEqual(["minimal", "low", "medium", "high", "max"]);
+    expect(mod.PROJECT_CONFIG_TEMPLATE.effort.enum).toEqual(["minimal", "low", "medium", "high", "max"]);
   });
 
   it("falls back to defaults for invalid config values", async () => {
@@ -55,6 +57,28 @@ describe("config", () => {
     expect(result.effort).toBe("high");
     expect(result.provider).toBe("anthropic");
     expect(result.permissionMode).toBe("ask");
+  });
+
+  it("loads minimal effort from config file and rejects invalid effort", async () => {
+    const mod = await import("../config/config.js");
+
+    readFile.mockImplementation(async (path: any) => {
+      if (String(path).endsWith("config.json")) {
+        return JSON.stringify({ effort: "minimal" });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    const minimalConfig = await mod.loadConfig();
+    expect(minimalConfig.effort).toBe("minimal");
+
+    readFile.mockImplementation(async (path: any) => {
+      if (String(path).endsWith("config.json")) {
+        return JSON.stringify({ effort: "invalid-effort" });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    const invalidConfig = await mod.loadConfig();
+    expect(invalidConfig.effort).toBe("high");
   });
 
   it("refreshes the project config template without changing user settings", async () => {
