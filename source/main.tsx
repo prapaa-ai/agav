@@ -1,6 +1,6 @@
 import { render } from "./ink/index.js";
 import App from "./app.js";
-import { isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
+import { EFFORT_LEVELS, isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
 import { createProvider } from "./providers/registry.js";
 import type { LLMProvider } from "./providers/types.js";
 import { fetchAvailableModels, findMatchingModels, type FetchedModel } from "./commands/model.js";
@@ -597,7 +597,7 @@ export async function main() {
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
     --name <title>       Set initial name for the session
     --cwd <dir>          Set the working directory for the session
-    --effort             Reasoning effort: low, medium, high, or max (default: high)
+    --effort             Reasoning effort: minimal, low, medium, high, or max (default: high)
     --ollama-host        Ollama host (default: localhost)
     --ollama-port        Ollama port (default: 11434)
     --ollama-endpoint    Full Ollama base URL, e.g. http://192.168.1.5:11434
@@ -771,7 +771,7 @@ export async function main() {
   }
   if (typeof flags.effort === "string") {
     if (!isEffortLevel(flags.effort)) {
-      console.error(`Unknown effort level: ${flags.effort}. Use "low", "medium", "high", or "max".`);
+      console.error(`Unknown effort level: ${flags.effort}. Use ${EFFORT_LEVELS.map((e) => `"${e}"`).join(", ")}.`);
       process.exit(1);
     }
     config.effort = flags.effort;

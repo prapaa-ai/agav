@@ -1,6 +1,6 @@
 import { createSign } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { applyEffortPrompt, mapOpenAIEffort, supportsNativeEffort } from "./effort.js";
+import { applyEffortPrompt, mapAnthropicEffort, mapOpenAIEffort, supportsNativeEffort } from "./effort.js";
 import type { ContentBlock, LLMProvider, Message, StreamEvent, StreamParams, ToolSchema } from "./types.js";
 
 const CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
@@ -374,7 +374,7 @@ export class VertexAIProvider implements LLMProvider {
     const accessToken = await this.auth.getAccessToken();
     const model = vertexClaudeModelName(params.model);
     const nativeEffort = params.effort && supportsNativeEffort("anthropic", model)
-      ? params.effort
+      ? mapAnthropicEffort(params.effort)
       : undefined;
     const systemPrompt = nativeEffort
       ? params.systemPrompt

@@ -5,9 +5,9 @@ import { ensureDir } from "../utils/fs.js";
 import { decrypt, encrypt } from "../utils/encrypt.js";
 
 export type PermissionMode = "ask" | "auto-accept" | "deny-writes";
-export type EffortLevel = "low" | "medium" | "high" | "max";
+export type EffortLevel = "minimal" | "low" | "medium" | "high" | "max";
 
-export const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "max"];
+export const EFFORT_LEVELS: readonly EffortLevel[] = ["minimal", "low", "medium", "high", "max"];
 
 const DEFAULT_MARKETPLACE_FALLBACK = "https://raw.githubusercontent.com/prapaa-ai/agav-marketplace/main";
 
@@ -94,7 +94,7 @@ export function expandHome(path: string): string {
   return path;
 }
 
-const PROJECT_CONFIG_TEMPLATE = {
+export const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
     enum: ["openai", "openrouter", "nvidia", "ollama", "anthropic", "gemini", "vertex-ai"],
@@ -108,7 +108,7 @@ const PROJECT_CONFIG_TEMPLATE = {
   },
   effort: {
     description: "Reasoning effort requested from models that support it.",
-    enum: ["low", "medium", "high", "max"],
+    enum: ["minimal", "low", "medium", "high", "max"],
     type: "string",
     eg: "medium",
   },
