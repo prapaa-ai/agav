@@ -1537,6 +1537,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             mcpServerName={pendingConfirmation.mcpServerName}
             onConfirm={confirmTool}
             subagentTask={pendingConfirmation.subagentTask}
+            explicitApprovalOnly={pendingConfirmation.explicitApprovalOnly}
             keybindings={keybindings}
           />
         )}

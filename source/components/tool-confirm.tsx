@@ -18,11 +18,12 @@ interface Props {
   mcpServerName?: string;
   onConfirm: (choice: ConfirmChoice) => void;
   subagentTask?: string;
+  explicitApprovalOnly?: boolean;
   keybindings: Keybindings;
 }
 
 /** Prompts the user to approve or reject a pending tool action. */
-export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, keybindings }: Props) {
+export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, explicitApprovalOnly, keybindings }: Props) {
   const keyResolver = React.useRef(new KeybindingResolver(keybindings, ["cancel", "submit"]));
   const { stdout } = useStdout();
   const [rows, setRows] = React.useState(stdout.rows || 24);
@@ -46,7 +47,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
       onConfirm("yes");
     } else if (char === "n" || char === "N" || match.action === "cancel") {
       onConfirm("no");
-    } else if (char === "a" || char === "A") {
+    } else if ((char === "a" || char === "A") && !explicitApprovalOnly) {
       onConfirm("always");
     }
   });
@@ -115,7 +116,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
         <Text dimColor>Subagent "{subagentTask}" requests:</Text>
       )}
       <Text bold color="yellow">
-        Allow {label}?{mcpServer ? <Text dimColor bold={false}>{` (MCP: ${mcpServer})`}</Text> : null}
+        {explicitApprovalOnly ? "Explicit approval required: " : "Allow "}{label}?{mcpServer ? <Text dimColor bold={false}>{` (MCP: ${mcpServer})`}</Text> : null}
       </Text>
       {summary ? <Text dimColor>  {summary}</Text> : null}
       {details ? <Text dimColor>{details}</Text> : null}
@@ -146,8 +147,10 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
           <Text bold color="green">[Y]es</Text>
           <Text> / </Text>
           <Text bold color="red">[N]o</Text>
-          <Text> / </Text>
-          <Text bold color="cyan">[A]lways</Text>
+          {!explicitApprovalOnly && <>
+            <Text> / </Text>
+            <Text bold color="cyan">[A]lways</Text>
+          </>}
         </Text>
       </Box>
     </Box>

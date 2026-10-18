@@ -51,6 +51,7 @@ function CompactView({ progress, elapsed, totalTools, prefix }: {
         <Text dimColor>{"  "}{prefix}</Text>
         <Text color="green">{"✓ "}</Text>
         <Text bold color="cyan">{progress.title}</Text>
+        {progress.model && <Text dimColor> · {progress.model}</Text>}
         <Text dimColor> ({totalTools} tool{totalTools !== 1 ? "s" : ""}, {elapsed}s{tokenSummary})</Text>
       </Box>
     );
@@ -95,6 +96,7 @@ function DetailView({ progress, elapsed }: {
           <Text color="red">{"✗ "}</Text>
         )}
         <Text bold color="cyan">{progress.title}</Text>
+        {progress.model && <Text dimColor> · {progress.model}</Text>}
         <Text dimColor> ({elapsed}s)</Text>
       </Box>
 
