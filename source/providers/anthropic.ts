@@ -7,7 +7,7 @@ import type {
   ContentBlock,
   ToolSchema,
 } from "./types.js";
-import { applyEffortPrompt, supportsNativeEffort } from "./effort.js";
+import { applyEffortPrompt, mapAnthropicEffort, supportsNativeEffort } from "./effort.js";
 
 const CONTEXT_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -43,7 +43,7 @@ export class AnthropicProvider implements LLMProvider {
   // Translate Anthropic's streaming event model into the provider-agnostic event stream used by the app.
   async *stream(params: StreamParams): AsyncIterable<StreamEvent> {
     const nativeEffort = params.effort && supportsNativeEffort(this.name, params.model)
-      ? params.effort
+      ? mapAnthropicEffort(params.effort)
       : undefined;
     const systemPrompt = nativeEffort
       ? params.systemPrompt

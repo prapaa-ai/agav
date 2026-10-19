@@ -8,7 +8,7 @@ let exitCleanupInstalled = false;
 function execCommand(
   file: string,
   args: string[],
-  options: { timeout: number; maxBuffer: number; cwd?: string; env?: Record<string, string> },
+  options: { timeout: number; maxBuffer: number; cwd?: string; env?: Record<string, string>; windowsVerbatimArguments?: boolean },
   callback: (error: Error | null, stdout: string, stderr: string) => void,
   signal?: AbortSignal,
 ): void {
@@ -161,7 +161,7 @@ type OutputCallback = (chunk: Buffer, stream: "stdout" | "stderr") => void;
 function executeProcess(
   file: string,
   args: string[],
-  options: { timeout: number; maxBuffer: number; cwd?: string; env?: Record<string, string> },
+  options: { timeout: number; maxBuffer: number; cwd?: string; env?: Record<string, string>; windowsVerbatimArguments?: boolean },
   onOutput: OutputCallback | undefined,
   callback: (error: Error | null, stdout: string, stderr: string) => void,
   signal?: AbortSignal,
@@ -181,9 +181,11 @@ function executeProcess(
     cwd: options.cwd,
     env: options.env,
     stdio: ["ignore", "pipe", "pipe"],
+    ...(options.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     // Noninteractive commands intentionally have no controlling terminal.
     // Own a Unix process group so cancellation also reaches inherited children.
     detached: !windows,
+    windowsVerbatimArguments: options.windowsVerbatimArguments,
   });
   let error: Error | null = null;
   let timedOut = false;
@@ -460,12 +462,17 @@ function runUnsandboxed(
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
   const isWindows = platform() === "win32";
   const shell = isWindows ? "cmd.exe" : "/bin/sh";
-  const shellArgs = isWindows ? ["/c", command] : ["-c", command];
+  // Match Node's cmd.exe shell invocation: cmd parses the quoted command tail
+  // itself, so ordinary Windows argv escaping would corrupt embedded quotes.
+  // /s strips only this outer quote pair.
+  const shellArgs = isWindows ? ["/d", "/s", "/c", `"${command}"`] : ["-c", command];
   return new Promise((resolve) => {
     executeProcess(
       shell,
       shellArgs,
-      { timeout, maxBuffer, cwd, env: inheritEnv ? undefined : filterEnv() },
+      { timeout, maxBuffer, cwd, env: inheritEnv ? undefined : filterEnv(),
+        ...(isWindows ? { windowsVerbatimArguments: true } : {}),
+      },
       onOutput,
       (error, stdout, stderr) => {
         resolve({ stdout, stderr, error });

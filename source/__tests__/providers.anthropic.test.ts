@@ -116,3 +116,42 @@ describe("AnthropicProvider cache breakpoints", () => {
     expect((messages[1].content[0] as Record<string, unknown>).cache_control).toBeUndefined();
   });
 });
+
+describe("AnthropicProvider effort mapping", () => {
+  it("maps minimal effort to low in output_config for 4.5+ models", async () => {
+    await drain(new AnthropicProvider("key"), {
+      model: "claude-sonnet-4-5-20250929",
+      effort: "minimal",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+
+    const req = lastRequest();
+    expect(req.output_config).toEqual({ effort: "low" });
+  });
+
+  it("passes high effort in output_config for 4.5+ models", async () => {
+    await drain(new AnthropicProvider("key"), {
+      model: "claude-sonnet-4-5-20250929",
+      effort: "high",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+
+    const req = lastRequest();
+    expect(req.output_config).toEqual({ effort: "high" });
+  });
+
+  it("steers with concise prompt when model does not support native effort", async () => {
+    await drain(new AnthropicProvider("key"), {
+      model: "claude-3-7-sonnet",
+      effort: "minimal",
+      systemPrompt: "My system prompt",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    });
+
+    const req = lastRequest();
+    expect(req.output_config).toBeUndefined();
+    expect(req.system[0].text).toContain("Be concise. Answer directly. Skip analysis unless asked.");
+    expect(req.system[0].text).toContain("My system prompt");
+  });
+});
+

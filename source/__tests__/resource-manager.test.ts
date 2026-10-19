@@ -113,6 +113,16 @@ describe("shared resource manager", () => {
     } finally { ui.instance.unmount(); }
   });
 
+  it("labels inspection with the adapter's own wording when it provides one", async () => {
+    const plain = await mount();
+    try { expect(plain.output()).toContain("ENTER/i: Inspect"); } finally { plain.instance.unmount(); }
+    const custom = await mount({ inspectLabel: "Details & logs" });
+    try {
+      expect(custom.output()).toContain("ENTER/i: Details & logs");
+      expect(custom.output()).not.toContain("ENTER/i: Inspect");
+    } finally { custom.instance.unmount(); }
+  });
+
   it("never deletes before confirmation and allows cancellation", async () => {
     const ui = await mount();
     try {

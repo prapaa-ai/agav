@@ -428,4 +428,37 @@ describe("VertexAIProvider", () => {
     expect(tokens).toEqual(["access-token", "access-token", "access-token"]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("maps minimal effort to low for Claude on Vertex AI", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", expires_in: 3600 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('data: {"type":"message_stop"}\n\n', { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+
+    const provider = new VertexAIProvider(credentialsPath);
+    for await (const _ of provider.stream({
+      model: "vertex/claude-sonnet-4-5@20250929",
+      effort: "minimal",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    })) { /* drain */ }
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(body.output_config).toEqual({ effort: "low" });
+  });
+
+  it("maps minimal effort to low for chat completions on Vertex AI", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", expires_in: 3600 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response('data: [DONE]\n\n', { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+
+    const provider = new VertexAIProvider(credentialsPath);
+    for await (const _ of provider.stream({
+      model: "vertex/gemini-2.5-flash",
+      effort: "minimal",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    })) { /* drain */ }
+
+    const body = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(body.reasoning_effort).toBe("low");
+  });
 });
+

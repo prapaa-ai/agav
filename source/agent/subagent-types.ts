@@ -4,6 +4,7 @@ export interface SubagentProgress {
   id: string;
   title: string;
   task: string;
+  model?: string;
   status: "running" | "done" | "error";
   toolCalls: ToolCallInfo[];
   thinkingText: string;

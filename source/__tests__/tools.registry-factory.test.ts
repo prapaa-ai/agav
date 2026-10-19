@@ -36,6 +36,7 @@ describe("tools/registry-factory", () => {
       "overview",
       "run_tests",
       "save_memory",
+      "run_background_job",
     ]);
   });
 

@@ -27,6 +27,7 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | `/context` | Show a token-use breakdown for the system prompt, tools, MCP tools, skills, and messages. |
 | `/status` | Show session, model, permissions, working directory, and token usage at a glance. |
 | `/export` | Write the current conversation, including tool activity, to a timestamped Markdown file in the working directory. |
+| `/voice` | Dictate an editable prompt with offline Agav-managed native transcription; offers verified setup downloads and an idle prompt without attachments. See [Voice Input](/features/voice-input). |
 | `/ps <question>` | Run a brief independent side query with read-only conversation context, without interrupting the active main task. It cannot use tools or plugins. |
 
 ## Sessions and workflow
@@ -44,6 +45,7 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | `/steer <directive>` | Add durable direction for later turns. Use `/steer list`, `/steer remove <number>`, or `/steer clear` to manage directives. |
 | `/loop` | Show the active loop. `/loop <interval> <prompt>` repeats an agent prompt; intervals support `s`, `m`, and `h`. `/loop <prompt>` defaults to ten minutes, and `/loop stop` cancels it. |
 | `/schedule` | List saved tasks. Use `/schedule add "<five-field cron>" <prompt>`, then `enable`, `disable`, or `remove <id>` to manage them. |
+| `/job` | Open the background-jobs manager (requires `backgroundJobsEnabled`). Subcommands: `list`, `poll <id>`, `log <id> [--stderr] [--tail N]`, `stop <id>`, `schedule list\|create\|revoke`, and `capabilities`. See [Background jobs](/features/background-jobs). |
 | `/watch <path\|glob> <command>` | Run a shell command after matching files change. `/watch stop` cancels it; glob patterns are supported. |
 | `/undo`, `/undo list` | Revert the most recent tracked file change or inspect the current in-memory undo stack. |
 

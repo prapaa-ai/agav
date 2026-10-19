@@ -2,9 +2,20 @@ import React, { useState, useEffect } from "react";
 import { Box, Text, Spinner } from "../ink/index.js";
 import { getRandomHint } from "../utils/hints.js";
 import { terminalRelativePaths } from "../utils/display-path.js";
+import type { ClipboardNotice } from "../ink/termio/clipboard.js";
+import {
+  defaultStatusBarLayout,
+  enabledStatusBarItems,
+  isStatusBarItemEnabled,
+  normalizeStatusBarLayout,
+  INLINE_STATUS_BAR_ITEMS,
+  type StatusBarItemId,
+  type StatusBarLayout,
+} from "../config/status-bar-layout.js";
 
 /** Props for the status bar footer. */
 interface Props {
+  copyNotice?: ClipboardNotice | null;
   model: string;
   provider: string;
   effort: string;
@@ -24,6 +35,8 @@ interface Props {
   isLoading?: boolean;
   isPaused?: boolean;
   agentLock?: { name: string; full: boolean };
+  /** Customized footer layout; omitted/invalid falls back to the default. */
+  layout?: StatusBarLayout;
 }
 
 /** Formats token counts into a compact display string. */
@@ -53,8 +66,36 @@ function formatDuration(ms: number): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
+/**
+ * The already-formatted text for each footer segment. The renderer and the
+ * `/customize` preview both turn this into a single line via the shared layout,
+ * so the preview is always faithful to the real footer.
+ */
+export type StatusBarSegments = Partial<Record<StatusBarItemId, string>>;
+
+/**
+ * Join the enabled segments in the layout's order with the footer's separator,
+ * skipping any segment that has no text for the current session (e.g. no
+ * sandbox or no session name). Exported so the customization preview reuses the
+ * exact rendering the footer uses.
+ */
+export function buildStatusBarText(segments: StatusBarSegments, layout?: StatusBarLayout): string {
+  const resolved = normalizeStatusBarLayout(layout ?? defaultStatusBarLayout());
+  const inline = new Set<StatusBarItemId>(INLINE_STATUS_BAR_ITEMS);
+  const pieces: string[] = [];
+  for (const id of enabledStatusBarItems(resolved)) {
+    // The hint is a separate line, never an inline segment, so it can never
+    // join the comma-separated list even if its text is supplied.
+    if (!inline.has(id)) continue;
+    const text = segments[id];
+    if (text) pieces.push(text);
+  }
+  return pieces.join(" · ");
+}
+
 /** Renders model, token, and hint status information. */
 export default function StatusBar({
+  copyNotice,
   model,
   provider,
   effort,
@@ -74,6 +115,7 @@ export default function StatusBar({
   isLoading,
   isPaused,
   agentLock,
+  layout,
 }: Props) {
   const total = inputTokens + outputTokens;
   const parts = [];
@@ -110,21 +152,34 @@ export default function StatusBar({
     return () => clearInterval(timer);
   }, [turnStartTime, isPaused]);
 
-  // Build the turn duration segment
-  let durationSegment = "";
+  // Build the turn duration segment (without a leading separator; the layout
+  // joiner inserts separators between enabled segments).
+  let durationText = "";
   if (isLoading && turnStartTime) {
-    durationSegment = ` · ⏱ ${formatDuration(elapsed)}`;
+    durationText = `⏱ ${formatDuration(elapsed)}`;
   } else if (lastTurnDurationMs != null) {
-    durationSegment = ` · ⏱ ${formatDuration(lastTurnDurationMs)}`;
+    durationText = `⏱ ${formatDuration(lastTurnDurationMs)}`;
   }
 
   const displayHint = hint ?? getRandomHint();
+  const hintEnabled = isStatusBarItemEnabled(normalizeStatusBarLayout(layout ?? defaultStatusBarLayout()), "hint");
+
+  // Each segment's formatted text, keyed by its layout id. Empty strings are
+  // skipped by buildStatusBarText, so an absent sandbox/session/duration leaves
+  // no dangling separator — identical to the historical footer.
+  const statusText = buildStatusBarText({
+    model: `${provider}/${model}`,
+    effort: `effort: ${effort}`,
+    messages: `${messageCount} msgs`,
+    usage: parts.join(" "),
+    duration: durationText,
+    sandbox: sandboxBackend || "",
+    session: branchName ? `session: ${branchName}` : "",
+  }, layout);
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      <Text dimColor>
-        {provider}/{model} · effort: {effort} · {messageCount} msgs · {parts.join(" ")}{durationSegment}{sandboxBackend ? ` · ${sandboxBackend}` : ""}{branchName ? ` · session: ${branchName}` : ""}
-      </Text>
+      <Text dimColor>{statusText}</Text>
       {agentLock && (
         <Text color={agentLock.full ? "red" : "yellow"} dimColor>
           {"🔒 agent: "}{agentLock.name}{agentLock.full ? " (full)" : " (read-only)"}
@@ -137,10 +192,25 @@ export default function StatusBar({
         <Text color="cyan" dimColor><Spinner />{" ps: thinking..."}</Text>
       ) : psResponse ? (
         <Text color="cyan" dimColor>{"↪ ps: "}{terminalRelativePaths(psResponse)}</Text>
-      ) : (
+      ) : copyNotice ? (
+        <Text color={copyNotice === "Copied to clipboard" ? "green" : "cyan"}>
+          {copyNotice === "Copied to clipboard" ? "✓ " : ""}{copyNotice}
+        </Text>
+      ) : hintEnabled ? (
         <Text dimColor italic>
           {"💡 "}{displayHint}
         </Text>
+      ) : (
+        // Reserve this row even when nothing fills it. The copy notice, ps
+        // response and hint all share this single slot; letting it collapse to
+        // zero rows would change the dynamic frame's height the moment a copy
+        // notice appears, shifting every content row by one. The global
+        // selection highlight is keyed by absolute frame-row index, so that
+        // shift leaves the top selected line rendered unhighlighted until the
+        // notice clears and the frame height returns. Keeping the row present
+        // makes the notice replace content on a stable row instead of adding
+        // one, so the selection stays correct throughout.
+        <Text> </Text>
       )}
     </Box>
   );

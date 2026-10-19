@@ -502,3 +502,53 @@ describe("GeminiProvider history replay", () => {
     expect(callId).toBe("gemini_call_8");
   });
 });
+
+describe("GeminiProvider effort mapping", () => {
+  it("maps minimal effort to thinkingBudget 0 for native thinking models", async () => {
+    let capturedBody: any;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, opts: any) => {
+        capturedBody = JSON.parse(opts.body);
+        return { ok: true, body: sseBody([]) };
+      }),
+    );
+
+    const provider = new GeminiProvider("test-key");
+    for await (const _ of provider.stream({
+      model: "gemini-2.5-flash",
+      effort: "minimal",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    })) {
+      /* drain */
+    }
+
+    expect(capturedBody.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  });
+
+  it("steers with concise prompt when Gemini model lacks native effort", async () => {
+    let capturedBody: any;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, opts: any) => {
+        capturedBody = JSON.parse(opts.body);
+        return { ok: true, body: sseBody([]) };
+      }),
+    );
+
+    const provider = new GeminiProvider("test-key");
+    for await (const _ of provider.stream({
+      model: "gemini-1.5-pro",
+      effort: "minimal",
+      systemPrompt: "My system prompt",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+    })) {
+      /* drain */
+    }
+
+    expect(capturedBody.generationConfig.thinkingConfig).toBeUndefined();
+    expect(capturedBody.systemInstruction.parts[0].text).toContain("Be concise. Answer directly. Skip analysis unless asked.");
+    expect(capturedBody.systemInstruction.parts[0].text).toContain("My system prompt");
+  });
+});
+

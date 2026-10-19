@@ -5,9 +5,9 @@ import { ensureDir } from "../utils/fs.js";
 import { decrypt, encrypt } from "../utils/encrypt.js";
 
 export type PermissionMode = "ask" | "auto-accept" | "deny-writes";
-export type EffortLevel = "low" | "medium" | "high" | "max";
+export type EffortLevel = "minimal" | "low" | "medium" | "high" | "max";
 
-export const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "max"];
+export const EFFORT_LEVELS: readonly EffortLevel[] = ["minimal", "low", "medium", "high", "max"];
 
 const DEFAULT_MARKETPLACE_FALLBACK = "https://raw.githubusercontent.com/prapaa-ai/agav-marketplace/main";
 
@@ -69,6 +69,13 @@ export interface AgavConfig {
   agentMarketplace?: string; // URL to agent marketplace repository
   hideAbsolutePath?: boolean;
   showThinking?: boolean;
+  /** Customized footer layout (which segments show and their order). Reconciled
+   * against the current catalog on use; see config/status-bar-layout.ts. */
+  statusBar?: import("./status-bar-layout.js").StatusBarLayout;
+  /** Opt-in; when unset or false, `run_background_job` and `/job` refuse to do anything. */
+  backgroundJobsEnabled?: boolean;
+  /** "paused" makes `agav job tick`/daemon do nothing. Global-only (PROJECT_CONFIG_DENY). */
+  backgroundAutomation?: "on" | "paused";
   search?: boolean;
 }
 
@@ -87,7 +94,7 @@ export function expandHome(path: string): string {
   return path;
 }
 
-const PROJECT_CONFIG_TEMPLATE = {
+export const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
     enum: ["openai", "openrouter", "nvidia", "ollama", "anthropic", "gemini", "vertex-ai"],
@@ -101,7 +108,7 @@ const PROJECT_CONFIG_TEMPLATE = {
   },
   effort: {
     description: "Reasoning effort requested from models that support it.",
-    enum: ["low", "medium", "high", "max"],
+    enum: ["minimal", "low", "medium", "high", "max"],
     type: "string",
     eg: "medium",
   },
@@ -145,6 +152,17 @@ const PROJECT_CONFIG_TEMPLATE = {
     description: "Whether to display the model's reasoning/thinking text as it streams. Toggle with Ctrl+T at runtime.",
     type: "boolean",
     eg: false,
+  },
+  backgroundJobsEnabled: {
+    description: "Opt in to the background-jobs subsystem, enabling the run_background_job tool and /job command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
+    type: "boolean",
+    eg: false,
+  },
+  backgroundAutomation: {
+    description: "Pause or resume headless background automation (agav job tick / daemon). Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    enum: ["on", "paused"],
+    type: "string",
+    eg: "on",
   },
   anthropicApiKey: {
     description: "Anthropic API key. Prefer the ANTHROPIC_API_KEY environment variable for secrets.",
@@ -251,6 +269,7 @@ const DEFAULT_CONFIG: AgavConfig = {
   maxTokens: 16384,
   maxIterations: 800,
   errorRetries: 5,
+  backgroundAutomation: "on",
 };
 
 /** Merge nested config objects while letting later sources override scalar values. */
@@ -322,7 +341,43 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "deepseekApiKey",
   "geminiApiKey",
   "permissionMode",
+  "backgroundAutomation",
 ]);
+
+/** Ignore invalid hand-edited values instead of passing unsupported effort levels to providers. */
+function sanitizeConfig(merged: AgavConfig): void {
+  if (!isEffortLevel(merged.effort)) {
+    merged.effort = DEFAULT_CONFIG.effort;
+  }
+  if (!Number.isInteger(merged.maxIterations) || merged.maxIterations < 1) {
+    merged.maxIterations = DEFAULT_CONFIG.maxIterations;
+  }
+  if (!Number.isInteger(merged.errorRetries) || merged.errorRetries < 0) {
+    merged.errorRetries = DEFAULT_CONFIG.errorRetries;
+  }
+  if (merged.backgroundAutomation !== "on" && merged.backgroundAutomation !== "paused") {
+    merged.backgroundAutomation = DEFAULT_CONFIG.backgroundAutomation;
+  }
+}
+
+/**
+ * Read-only global config (defaults + ~/.agav/config.json) for unattended
+ * entry points. Never touches the cwd or creates files, and skips env/API-key
+ * resolution.
+ */
+export async function loadGlobalConfig(): Promise<AgavConfig> {
+  let globalConfig: Partial<AgavConfig> = {};
+  try {
+    const raw = await readFile(CONFIG_PATH, "utf-8");
+    globalConfig = JSON.parse(raw);
+  } catch {}
+  const merged = deepMerge(
+    { ...DEFAULT_CONFIG } as unknown as Record<string, unknown>,
+    globalConfig as unknown as Record<string, unknown>,
+  ) as unknown as AgavConfig;
+  sanitizeConfig(merged);
+  return merged;
+}
 
 /** Load config from global and project files, then apply environment-derived overrides. */
 export async function loadConfig(): Promise<AgavConfig> {
@@ -351,16 +406,7 @@ export async function loadConfig(): Promise<AgavConfig> {
     projectConfig as unknown as Record<string, unknown>,
   ) as unknown as AgavConfig;
 
-  // Ignore invalid hand-edited values instead of passing unsupported effort levels to providers.
-  if (!isEffortLevel(merged.effort)) {
-    merged.effort = DEFAULT_CONFIG.effort;
-  }
-  if (!Number.isInteger(merged.maxIterations) || merged.maxIterations < 1) {
-    merged.maxIterations = DEFAULT_CONFIG.maxIterations;
-  }
-  if (!Number.isInteger(merged.errorRetries) || merged.errorRetries < 0) {
-    merged.errorRetries = DEFAULT_CONFIG.errorRetries;
-  }
+  sanitizeConfig(merged);
 
   // Treat allowed tools as additive so projects can extend, not erase, a user's global allowlist.
   if (projectConfig.allowedTools) {
@@ -455,6 +501,56 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
   if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
   await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
+}
+
+/**
+ * Persist only the status bar layout to the global config file, preserving every
+ * other key exactly as written on disk.
+ *
+ * This is deliberately a surgical read-merge-write rather than saveConfig(): the
+ * live AgavConfig carries session-only overrides (CLI --model/--effort, decrypted
+ * API keys, env-derived values) that must never be baked into config.json. We
+ * reuse the raw stored object so already-encrypted API keys stay encrypted and
+ * untouched. The write is atomic (temp file + rename) so a crash mid-write can
+ * never leave a truncated, unparseable config.
+ *
+ * `undefined` removes the key, restoring the default footer.
+ */
+export async function saveStatusBarLayout(
+  layout: import("./status-bar-layout.js").StatusBarLayout | undefined,
+): Promise<void> {
+  await ensureDir(AGAV_DIR);
+  let stored: Record<string, unknown> = {};
+  try {
+    stored = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+    if (typeof stored !== "object" || stored === null) stored = {};
+  } catch {
+    // Missing or corrupt file: start from an empty object so we still persist
+    // the layout rather than failing. A corrupt file is effectively replaced.
+    stored = {};
+  }
+  if (layout === undefined) {
+    delete stored.statusBar;
+  } else {
+    stored.statusBar = layout;
+  }
+  // Unpredictable temp name (random suffix, not the guessable pid) in the same
+  // directory as the target so the final rename stays atomic on one filesystem.
+  const { randomBytes } = await import("node:crypto");
+  const tmpPath = `${CONFIG_PATH}.tmp.${randomBytes(8).toString("hex")}`;
+  const serialized = JSON.stringify(stored, null, 2) + "\n";
+  const { rename, unlink } = await import("node:fs/promises");
+  // "wx" (O_CREAT | O_EXCL) refuses to open an existing path, so a pre-planted
+  // symlink at tmpPath can never be followed; mode 0o600 keeps the config —
+  // which may hold encrypted API keys — owner-only even before the rename.
+  try {
+    await writeFile(tmpPath, serialized, { mode: 0o600, flag: "wx" });
+    await rename(tmpPath, CONFIG_PATH);
+  } catch (err) {
+    // Never leave an orphaned temp file behind on any failure.
+    await unlink(tmpPath).catch(() => {});
+    throw err;
+  }
 }
 
 /** Return the root directory used for Agav's global state files. */

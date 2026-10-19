@@ -33,4 +33,12 @@ describe("CLI argument parsing", () => {
     expect(flags.provider).toBe("anthropic");
     expect(flags.model).toBe("claude-sonnet-4-20250514");
   });
+
+  it("parses --effort minimal and --effort=minimal", () => {
+    const flags1 = parseArgs(["--effort", "minimal"]);
+    expect(flags1.effort).toBe("minimal");
+
+    const flags2 = parseArgs(["--effort=minimal"]);
+    expect(flags2.effort).toBe("minimal");
+  });
 });

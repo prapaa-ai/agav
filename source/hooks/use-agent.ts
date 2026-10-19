@@ -105,6 +105,7 @@ export interface PendingConfirmation {
   resolve: (choice: ConfirmResult) => void;
   subagentId?: string;
   subagentTask?: string;
+  explicitApprovalOnly?: boolean;
 }
 
 export interface PendingContextWindowRequest {
@@ -151,6 +152,8 @@ interface UseAgentReturn {
   cancelSubagent: (id: string) => void;
   clearMessages: () => void;
   confirmTool: (choice: ConfirmResult) => void;
+  /** Queue a confirmation outside an agent turn (e.g. from a slash command). */
+  requestConfirmation: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
   conversation: ConversationState;
   toolRegistry: ToolRegistry;
   saveNow: (extraUsage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
@@ -336,6 +339,7 @@ export function useAgent(
           effort: configRef.current.effort,
           iterationsBudget: currentIterationsBudgetRef.current ?? { remaining: configRef.current.maxIterations, total: configRef.current.maxIterations },
         }),
+        getProviderConfig: () => configRef.current,
         confirmationQueue: confirmationQueueRef.current,
         onProgressUpdate: setSubagentStates,
         onSteerApplied: (_id, title, directives) => {
@@ -561,12 +565,18 @@ export function useAgent(
 
   /** Resolve the oldest pending tool confirmation with the user's decision. */
   const confirmTool = useCallback((choice: ConfirmResult) => {
-    if (choice === "always") sessionPermissionModeRef.current = "auto-accept";
+    // Only the queue's effective generic Always may widen session permission.
+    const resolvedChoice = confirmationQueueRef.current.resolve(choice);
+    if (resolvedChoice === "always") sessionPermissionModeRef.current = "auto-accept";
     // Reset the turn timer so it only counts active agent work, not time
     // spent waiting for the user to approve/deny a tool call.
     updateTurnStart(Date.now());
-    confirmationQueueRef.current.resolve(choice);
   }, []);
+
+  const requestConfirmation = useCallback(
+    (toolName: string, input: Record<string, unknown>) => confirmationQueueRef.current.enqueue({ toolName, input }),
+    [],
+  );
 
   /**
    * Resolve a pending manual-context-window request. `tokens` is undefined
@@ -973,6 +983,7 @@ export function useAgent(
             signal: abortController.signal,
             confirmTool: confirmToolCallback,
             permissionMode: sessionPermissionModeRef.current ?? config.permissionMode,
+            backgroundPermissionMode: config.permissionMode,
             allowedTools: config.allowedTools,
             hooks: config.hooks,
             // Only the main conversation's loop drains mid-turn /steer
@@ -1218,6 +1229,12 @@ export function useAgent(
                 ]);
                 break;
               }
+
+              case "retry":
+                setMessages((prev) => [...prev, {
+                  id: nextId(), role: "system", content: event.message,
+                }]);
+                break;
 
               case "error": {
                 // Cancellation (including retry backoff) is not a hard UI error.
@@ -1499,6 +1516,7 @@ export function useAgent(
     pendingConfirmation,
     pendingContextWindowRequest,
     resolveContextWindowRequest,
+    requestConfirmation,
     tokenUsage,
     loadedPlugins,
     mcpServers,

@@ -7,6 +7,8 @@ export interface ResourceItem {
   searchText?: string;
   enabled?: boolean;
   removable?: boolean;
+  /** Offered the job "Stop" action (live jobs only). */
+  stoppable?: boolean;
   values?: Record<string, string>;
 }
 
@@ -27,9 +29,14 @@ export interface ResourceAdapter {
   remove?(id: string): Promise<void>;
   setEnabled?(id: string, enabled: boolean): Promise<void>;
   notice?: string;
+  /** Wording overrides for `remove` (defaults: Delete / Deleted / "This cannot be undone."). */
+  removeLabel?: string;
+  removedLabel?: string;
+  removeConfirm?: string;
+  inspectLabel?: string;
 }
 
-export type ResourceKind = "agents" | "skills" | "memory" | "schedule" | "history" | "search-history";
+export type ResourceKind = "agents" | "skills" | "memory" | "schedule" | "history" | "search-history" | "jobs";
 
 export function filterResources(items: ResourceItem[], query: string): ResourceItem[] {
   const q = query.toLowerCase();

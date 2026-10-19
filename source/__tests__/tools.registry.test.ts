@@ -54,6 +54,15 @@ describe("tools/registry", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("forwards trusted background policy even without signal or environment", async () => {
+    const registry = new ToolRegistry();
+    const execute = vi.fn(async () => ({ output: "approved", isError: false }));
+    registry.register({ schema: { name: "run_background_job", description: "test", inputSchema: { type: "object", properties: {} } }, execute });
+    const context = { backgroundPolicy: { permissionMode: "ask" as const, headlessApprovedActions: [], confirmBackgroundAction: async () => true } };
+    await registry.execute("run_background_job", { action: "start" }, context);
+    expect(execute).toHaveBeenCalledWith({ action: "start" }, context);
+  });
+
   it("executes tools and wraps thrown errors", async () => {
     const registry = new ToolRegistry();
     const okTool: ToolDefinition = {

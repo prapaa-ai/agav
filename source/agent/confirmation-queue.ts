@@ -8,6 +8,8 @@ export interface QueuedConfirmation {
   mcpServerName?: string;
   subagentId?: string;
   subagentTask?: string;
+  /** This approval cannot be satisfied by a session-wide or blanket approval. */
+  explicitApprovalOnly?: boolean;
   resolve: (choice: ConfirmResult) => void;
 }
 
@@ -24,7 +26,7 @@ export class ConfirmationQueue {
   }
 
   enqueue(item: Omit<QueuedConfirmation, "resolve">): Promise<ConfirmResult> {
-    if (this.autoAccept) {
+    if (this.autoAccept && item.toolName !== "run_background_job" && !item.explicitApprovalOnly) {
       return Promise.resolve("always" as ConfirmResult);
     }
 
@@ -39,22 +41,28 @@ export class ConfirmationQueue {
     });
   }
 
-  resolve(choice: ConfirmResult): void {
+  resolve(choice: ConfirmResult): ConfirmResult | undefined {
     if (this.activeItem) {
-      this.activeItem.resolve(choice);
+      // These approvals are one-shot: they must not be satisfied or widened by
+      // a blanket approval intended for another tool.
+      if (this.activeItem.explicitApprovalOnly && choice === "always") choice = "no";
+      // Background approval binds only to the displayed specification.
+      if (choice === "always" && this.activeItem.toolName === "run_background_job") choice = "yes";
+      const activeItem = this.activeItem;
+      activeItem.resolve(choice);
       this.activeItem = null;
 
-      if (choice === "always") {
+      if (choice === "always" && !activeItem.explicitApprovalOnly) {
         this.autoAccept = true;
-        for (const queued of this.queue) {
+        this.queue = this.queue.filter((queued) => {
+          if (queued.toolName === "run_background_job" || queued.explicitApprovalOnly) return true;
           queued.resolve("always");
-        }
-        this.queue = [];
-        this.setPending?.(null);
-        return;
+          return false;
+        });
       }
 
       this.dequeue();
+      return choice;
     }
   }
 

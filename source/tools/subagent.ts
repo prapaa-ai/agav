@@ -1,9 +1,14 @@
+import { createHash } from "node:crypto";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { ToolRegistry } from "./registry.js";
 import type { ConfirmationQueue } from "../agent/confirmation-queue.js";
 import type { SubagentProgress } from "../agent/subagent-types.js";
-import type { EffortLevel, PermissionMode } from "../config/config.js";
+import type { AgavConfig, EffortLevel, PermissionMode } from "../config/config.js";
+import { fetchAvailableModels, findMatchingModels } from "../commands/model.js";
+import type { FetchedModel } from "../commands/model.js";
+import { isProviderName } from "../config/startup.js";
+import { createProvider } from "../providers/registry.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
@@ -20,8 +25,9 @@ export interface SubagentToolDeps {
     systemPrompt: string;
     permissionMode: PermissionMode;
     effort: EffortLevel;
-    iterationsBudget: { remaining: number, total: number }
+    iterationsBudget: { remaining: number, total: number };
   };
+  getProviderConfig?: () => AgavConfig;
   confirmationQueue: ConfirmationQueue;
   onProgressUpdate: (subagents: SubagentProgress[]) => void;
   onSteerApplied?: (id: string, title: string, directives: string[]) => void;
@@ -34,6 +40,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
   let counter = 0;
   const active = new Map<string, SubagentProgress>();
   const controllers = new Map<string, AbortController>();
+  let modelCatalogCache: { key: string; models: Promise<FetchedModel[]> } | undefined;
 
   // Throttle UI updates to ~15 fps so concurrent subagents don't flood
   // React with state updates on every streaming_text delta.
@@ -89,6 +96,10 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
               "A clear, self-contained description of what the subagent should accomplish. " +
               "Include file paths, function names, and any context needed.",
           },
+          model: {
+            type: "string",
+            description: "Only set this when the user explicitly requested a different model. Omit to use the active model. The requested model must exist and requires explicit per-call user approval."
+          },
         },
         required: ["title", "task"],
       },
@@ -110,6 +121,78 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
 
       const id = `sa-${++counter}`;
       const config = deps.getConfig();
+      const requestedModel = typeof input.model === "string" && input.model.trim()
+        ? input.model.trim()
+        : config.model;
+      let childProvider = deps.provider;
+      let childModel = config.model;
+      let contextWindow: number | undefined;
+
+      if (requestedModel !== config.model) {
+        const providerConfig = deps.getProviderConfig?.();
+        if (!providerConfig) {
+          return { output: "Cannot select a different subagent model: provider configuration is unavailable.", isError: true };
+        }
+        // Config is read per call in use-agent; only reuse a catalog while the
+        // provider settings which affect its contents remain unchanged.
+        const catalogConfig = JSON.stringify({
+          anthropicApiKey: providerConfig.anthropicApiKey,
+          openaiApiKey: providerConfig.openaiApiKey,
+          openrouterApiKey: providerConfig.openrouterApiKey,
+          nvidiaApiKey: providerConfig.nvidiaApiKey,
+          deepseekApiKey: providerConfig.deepseekApiKey,
+          geminiApiKey: providerConfig.geminiApiKey,
+          vertexAICredentialsPath: providerConfig.vertexAICredentialsPath,
+          vertexAILocation: providerConfig.vertexAILocation,
+          ollamaEndpoint: providerConfig.ollamaEndpoint,
+          ollamaHost: providerConfig.ollamaHost,
+          ollamaPort: providerConfig.ollamaPort,
+        });
+        const catalogKey = createHash("sha256").update(catalogConfig).digest("hex");
+        if (modelCatalogCache?.key !== catalogKey) {
+          const models = fetchAvailableModels(providerConfig).then(({ models }) => models);
+          modelCatalogCache = { key: catalogKey, models };
+          void models.catch(() => {
+            if (modelCatalogCache?.models === models) modelCatalogCache = undefined;
+          });
+        }
+        const models = await modelCatalogCache.models;
+        const matches = findMatchingModels(models, requestedModel);
+        const selectedModel = matches.find((candidate) => candidate.provider === providerConfig.provider)
+          ?? matches.find((candidate) => candidate.id === requestedModel)
+          ?? (matches.length === 1 ? matches[0] : undefined);
+        if (!selectedModel) {
+          return { output: `Model '${requestedModel}' does not exist or is not available${matches.length > 1 ? " unambiguously" : ""}.`, isError: true };
+        }
+        if (!isProviderName(selectedModel.provider)) {
+          return { output: `Model '${requestedModel}' has an unsupported provider and cannot be initialized.`, isError: true };
+        }
+
+        const approval = await deps.confirmationQueue.enqueue({
+          toolName: "subagent_model",
+          input: { title, model: requestedModel, activeModel: config.model },
+          subagentTask: title,
+          explicitApprovalOnly: true,
+        });
+        if (approval !== "yes") {
+          return { output: `Subagent model change to '${requestedModel}' was not approved.`, isError: true };
+        }
+
+        try {
+          childProvider = createProvider({
+            ...providerConfig,
+            provider: selectedModel.provider,
+            model: selectedModel.id,
+          });
+          childModel = selectedModel.id;
+          contextWindow = selectedModel.contextWindow;
+        } catch (error) {
+          return {
+            output: `Model '${requestedModel}' exists but could not be initialized: ${error instanceof Error ? error.message : String(error)}`,
+            isError: true,
+          };
+        }
+      }
 
       const childRegistry = new ToolRegistryClass();
       for (const tool of deps.parentToolRegistry.list()) {
@@ -119,7 +202,8 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       }
 
       const conversation = new ConversationState();
-      conversation.setModel(config.model);
+      conversation.setModel(childModel);
+      conversation.setContextWindow(contextWindow);
       conversation.addUserMessage(task);
 
       const steers = formatSteersForPrompt();
@@ -138,6 +222,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         id,
         title,
         task,
+        model: childModel,
         status: "running",
         toolCalls: [],
         thinkingText: "",
@@ -205,10 +290,10 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         };
 
         const loop = runAgentLoop({
-          provider: deps.provider,
+          provider: childProvider,
           conversation,
           toolRegistry: childRegistry,
-          model: config.model,
+          model: childModel,
           systemPrompt: subagentSystemPrompt,
           signal: childController.signal,
           confirmTool,
