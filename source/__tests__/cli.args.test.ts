@@ -41,4 +41,17 @@ describe("CLI argument parsing", () => {
     const flags2 = parseArgs(["--effort=minimal"]);
     expect(flags2.effort).toBe("minimal");
   });
+
+  it("recognizes the login subcommand and passes its flags through", () => {
+    const flags = parseArgs(["login", "--device", "--issuer", "https://idp", "--client-id", "cli"]);
+    expect(flags.login).toBe(true);
+    // The "login" token is consumed by the subcommand branch; its own flags are
+    // collected as positional args rather than rejected as unknown flags.
+    expect(flags._).toEqual(["--device", "--issuer", "https://idp", "--client-id", "cli"]);
+  });
+
+  it("recognizes the logout subcommand", () => {
+    const flags = parseArgs(["logout"]);
+    expect(flags.logout).toBe(true);
+  });
 });

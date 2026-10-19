@@ -254,6 +254,12 @@ export function parseArgs(argv: string[]) {
     } else if (arg === "mcp" && !subcommandSeen) {
       flags.mcp = true;
       subcommandSeen = true;
+    } else if (arg === "login" && !subcommandSeen) {
+      flags.login = true;
+      subcommandSeen = true;
+    } else if (arg === "logout" && !subcommandSeen) {
+      flags.logout = true;
+      subcommandSeen = true;
     } else if (arg === "run" && !subcommandSeen) {
       flags.run = true;
       subcommandSeen = true;
@@ -261,7 +267,7 @@ export function parseArgs(argv: string[]) {
       flags.job = true;
       subcommandSeen = true;
     } else if (arg.startsWith("-")) {
-      if (subcommandSeen && (flags.agents || flags.skills || flags.mcp || flags.sessions || flags.job)) {
+      if (subcommandSeen && (flags.agents || flags.skills || flags.mcp || flags.sessions || flags.job || flags.login || flags.logout)) {
         flags._.push(arg);
       } else {
         const suggestion = findClosestFlag(arg);
@@ -299,7 +305,7 @@ export function parseArgs(argv: string[]) {
   if (flags.run && pos.length > 0) flags.runPrompt = pos.join(" ");
   if (flags.print && pos.length > 0) flags.printPrompt = pos.join(" ");
   
-  if (!flags.update && !flags.agents && !flags.skills && !flags.sessions && !flags.mcp && !flags.run && !flags.job && !flags.print && pos.length > 0) {
+  if (!flags.update && !flags.agents && !flags.skills && !flags.sessions && !flags.mcp && !flags.run && !flags.job && !flags.print && !flags.login && !flags.logout && pos.length > 0) {
      process.stderr.write(`error: unexpected arguments: ${pos.join(" ")}\n`);
      process.exit(1);
   }
@@ -672,6 +678,15 @@ export async function main() {
       args.splice(Math.max(0, flags.delegatedSeparatorIndex - 1), 0, "--");
     }
     const exitCode = await runMCPCommand(flags.mcpCommand, args);
+    process.exit(exitCode);
+    return;
+  }
+
+  // Enterprise enrollment does not require an LLM provider or a running TUI.
+  if (flags.login || flags.logout) {
+    const { runLoginCommand } = await import("./cli/login-cli.js");
+    const args = (flags._ as string[]).filter((a) => a !== "login" && a !== "logout");
+    const exitCode = await runLoginCommand(flags.logout ? "logout" : "login", args);
     process.exit(exitCode);
     return;
   }
