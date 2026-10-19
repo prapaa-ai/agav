@@ -152,7 +152,33 @@ export function noProviderCredentialsError(): string {
   return `no provider credentials found.\n${providerSetupHints()}`;
 }
 
+/**
+ * Enforce organization selection policy: if an admin restricted which providers
+ * or models may be used (org tier, see config/org-config.ts), reject a config
+ * whose chosen provider/model falls outside the allowlist. Returns null when no
+ * org restriction applies or the selection is permitted.
+ *
+ * Checked before credential errors so an out-of-policy choice is reported as a
+ * policy violation rather than a missing-key message.
+ */
+export function orgPolicyError(config: AgavConfig): string | null {
+  if (config.orgAllowedProviders && config.orgAllowedProviders.length > 0
+    && !config.orgAllowedProviders.includes(config.provider)) {
+    return `Provider ${JSON.stringify(config.provider)} is not permitted by your organization's policy. ` +
+      `Allowed providers: ${config.orgAllowedProviders.join(", ")}.`;
+  }
+  if (config.orgAllowedModels && config.orgAllowedModels.length > 0
+    && !config.orgAllowedModels.includes(config.model)) {
+    return `Model ${JSON.stringify(config.model)} is not permitted by your organization's policy. ` +
+      `Allowed models: ${config.orgAllowedModels.join(", ")}.`;
+  }
+  return null;
+}
+
 export function providerConfigurationError(config: AgavConfig): string | null {
+  const policyError = orgPolicyError(config);
+  if (policyError) return policyError;
+
   switch (config.provider) {
     case "anthropic":
       return config.anthropicApiKey ? null

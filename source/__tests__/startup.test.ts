@@ -3,6 +3,7 @@ import type { AgavConfig } from "../config/config.js";
 import { listSessions } from "../config/history.js";
 import {
   noProviderCredentialsError,
+  orgPolicyError,
   providerConfigurationError,
   resolveStartupSelection,
   selectConfiguredProvider,
@@ -492,6 +493,50 @@ describe("startup provider and model resolution", () => {
       .toContain("OPENROUTER_API_KEY");
     expect(providerConfigurationError({ ...base, provider: "openrouter", openrouterApiKey: "sk-or-test" }))
       .toBeNull();
+  });
+});
+
+describe("organization selection policy", () => {
+  it("returns null when no org restriction is set", () => {
+    expect(orgPolicyError({ ...base })).toBeNull();
+  });
+
+  it("returns null when an empty allowlist is present (no restriction)", () => {
+    expect(orgPolicyError({ ...base, orgAllowedProviders: [], orgAllowedModels: [] })).toBeNull();
+  });
+
+  it("rejects a provider outside the org allowlist", () => {
+    const err = orgPolicyError({ ...base, provider: "openai", orgAllowedProviders: ["anthropic"] });
+    expect(err).toContain("not permitted by your organization");
+    expect(err).toContain("openai");
+  });
+
+  it("permits a provider inside the org allowlist", () => {
+    expect(orgPolicyError({ ...base, provider: "anthropic", orgAllowedProviders: ["anthropic", "openai"] }))
+      .toBeNull();
+  });
+
+  it("rejects a model outside the org allowlist", () => {
+    const err = orgPolicyError({ ...base, model: "forbidden-model", orgAllowedModels: ["configured-claude"] });
+    expect(err).toContain("not permitted by your organization");
+    expect(err).toContain("forbidden-model");
+  });
+
+  it("permits a model inside the org allowlist", () => {
+    expect(orgPolicyError({ ...base, model: "configured-claude", orgAllowedModels: ["configured-claude"] }))
+      .toBeNull();
+  });
+
+  it("surfaces the policy error through providerConfigurationError before a missing-key error", () => {
+    // Out-of-policy provider AND missing key: policy violation must win.
+    const err = providerConfigurationError({
+      ...base,
+      provider: "openai",
+      openaiApiKey: undefined,
+      orgAllowedProviders: ["anthropic"],
+    });
+    expect(err).toContain("not permitted by your organization");
+    expect(err).not.toContain("OPENAI_API_KEY");
   });
 });
 

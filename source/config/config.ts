@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
 import { decrypt, encrypt } from "../utils/encrypt.js";
+import { loadOrgConfig, applyOrgConfig } from "./org-config.js";
 
 export type PermissionMode = "ask" | "auto-accept" | "deny-writes";
 export type EffortLevel = "minimal" | "low" | "medium" | "high" | "max";
@@ -77,6 +78,17 @@ export interface AgavConfig {
   /** "paused" makes `agav job tick`/daemon do nothing. Global-only (PROJECT_CONFIG_DENY). */
   backgroundAutomation?: "on" | "paused";
   search?: boolean;
+  /**
+   * Organization policy (org tier) fields. Populated only when an admin ships an
+   * org config; see config/org-config.ts. These take precedence over global,
+   * project, and environment sources and the user cannot loosen them.
+   */
+  /** Models the org permits selecting; enforced at provider selection. */
+  orgAllowedModels?: string[];
+  /** Providers the org permits; enforced at provider selection. */
+  orgAllowedProviders?: AgavConfig["provider"][];
+  /** Control-plane address seeded by the org, used by a future `agav login`. */
+  controlPlane?: string;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -484,6 +496,12 @@ export async function loadConfig(): Promise<AgavConfig> {
     globalConfig.ollamaApiKey ??
     DEFAULT_CONFIG.ollamaApiKey ?? "",
   ) || undefined;
+
+  // Organization policy applies last so it overrides global, project, and env
+  // sources alike. An admin's managed config is a non-overridable floor; the
+  // user can tighten (e.g. a stricter permissionMode) but never loosen it.
+  const orgConfig = await loadOrgConfig();
+  applyOrgConfig(merged, orgConfig);
 
   return merged;
 }
