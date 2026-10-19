@@ -1,0 +1,117 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { obtainIdTokenViaDevice } from "../enterprise/flow-device.js";
+import { EnterpriseAuthError } from "../enterprise/types.js";
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
+const discoveryDoc = {
+  issuer: "https://idp.corp",
+  device_authorization_endpoint: "https://idp.corp/device",
+  token_endpoint: "https://idp.corp/token",
+};
+
+const deviceDoc = {
+  device_code: "dev-code",
+  user_code: "WDJB-MJHT",
+  verification_uri: "https://idp.corp/activate",
+  interval: 5,
+  expires_in: 300,
+};
+
+const noSleep = async () => {};
+
+/** Build a fetch mock: fixed discovery + device responses, scripted token polls. */
+function makeFetch(tokenSequence: unknown[]) {
+  let pollIndex = 0;
+  return vi.fn(async (url: string) => {
+    const u = String(url);
+    if (u.includes("/.well-known/openid-configuration")) return jsonResponse(discoveryDoc);
+    if (u === "https://idp.corp/device") return jsonResponse(deviceDoc);
+    if (u === "https://idp.corp/token") {
+      const next = tokenSequence[Math.min(pollIndex, tokenSequence.length - 1)];
+      pollIndex++;
+      // pending/slow_down come back as HTTP 400 with a structured error.
+      const status = (next as { error?: string }).error ? 400 : 200;
+      return jsonResponse(next, status);
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  });
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("obtainIdTokenViaDevice", () => {
+  it("prompts the user and returns an id_token once approved", async () => {
+    vi.stubGlobal("fetch", makeFetch([
+      { error: "authorization_pending" },
+      { id_token: "the-id-token", expires_in: 3600 },
+    ]));
+    const prompt = vi.fn();
+    const proof = await obtainIdTokenViaDevice({
+      issuer: "https://idp.corp",
+      clientId: "agav-cli",
+      prompt,
+      sleep: noSleep,
+    });
+    expect(proof.idToken).toBe("the-id-token");
+    expect(proof.flow).toBe("device");
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(prompt.mock.calls[0]![0]).toMatchObject({
+      userCode: "WDJB-MJHT",
+      verificationUri: "https://idp.corp/activate",
+    });
+  });
+
+  it("backs off on slow_down and eventually succeeds", async () => {
+    const sleep = vi.fn(async (_ms: number) => {});
+    vi.stubGlobal("fetch", makeFetch([
+      { error: "slow_down" },
+      { error: "authorization_pending" },
+      { id_token: "idt" },
+    ]));
+    const proof = await obtainIdTokenViaDevice({
+      issuer: "https://idp.corp",
+      clientId: "agav-cli",
+      prompt: () => {},
+      sleep,
+    });
+    expect(proof.idToken).toBe("idt");
+    // First sleep is the base interval (5s); after slow_down it grows by 5s.
+    expect(sleep.mock.calls[0]![0]).toBe(5000);
+    expect(sleep.mock.calls[1]![0]).toBe(10000);
+  });
+
+  it("throws when the user denies the request", async () => {
+    vi.stubGlobal("fetch", makeFetch([{ error: "access_denied" }]));
+    await expect(obtainIdTokenViaDevice({
+      issuer: "https://idp.corp", clientId: "agav-cli", prompt: () => {}, sleep: noSleep,
+    })).rejects.toThrow(/denied/);
+  });
+
+  it("throws when the device code expires", async () => {
+    vi.stubGlobal("fetch", makeFetch([{ error: "expired_token" }]));
+    await expect(obtainIdTokenViaDevice({
+      issuer: "https://idp.corp", clientId: "agav-cli", prompt: () => {}, sleep: noSleep,
+    })).rejects.toThrow(/expired/);
+  });
+
+  it("errors when the IdP does not support the device grant", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ issuer: "https://idp.corp" })));
+    await expect(obtainIdTokenViaDevice({
+      issuer: "https://idp.corp", clientId: "agav-cli", prompt: () => {}, sleep: noSleep,
+    })).rejects.toThrow(EnterpriseAuthError);
+  });
+
+  it("respects an abort signal", async () => {
+    const controller = new AbortController();
+    vi.stubGlobal("fetch", makeFetch([{ error: "authorization_pending" }]));
+    const sleep = vi.fn(async () => { controller.abort(new Error("cancelled")); });
+    await expect(obtainIdTokenViaDevice({
+      issuer: "https://idp.corp", clientId: "agav-cli", prompt: () => {}, sleep, signal: controller.signal,
+    })).rejects.toThrow(/cancelled/);
+  });
+});
