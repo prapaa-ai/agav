@@ -1,0 +1,122 @@
+import { secureURL } from "./secure-url.js";
+import {
+  EnterpriseAuthError,
+  type EnrollmentSession,
+  type IdentityProof,
+} from "./types.js";
+import type { OrgConfig } from "../config/org-config.js";
+
+/**
+ * Flow-agnostic client for the enterprise control plane.
+ *
+ * Every login flow produces an identity proof (an OIDC id_token) and calls
+ * `enroll` here. The control plane verifies the proof server-side (JWKS, iss,
+ * aud, exp, nonce), checks the user's seat/role, and returns the enforced policy
+ * plus a short-lived gateway credential. The control plane is never on the
+ * inference path — it brokers identity and policy only.
+ *
+ * This client does no model traffic; it only exchanges the proof for a session.
+ */
+
+/** Discover the control plane's enrollment endpoint from its base URL. */
+function enrollmentEndpoint(controlPlane: string): URL {
+  const base = secureURL(controlPlane);
+  // Normalize: strip a trailing slash, append the session path.
+  return new URL("session", base.href.endsWith("/") ? base.href : `${base.href}/`);
+}
+
+/**
+ * Narrow and validate the control plane's response into an EnrollmentSession.
+ * Throws on a response missing the policy, so a malformed server reply never
+ * yields a session with no enforcement.
+ */
+function parseSession(data: unknown, controlPlane: string): EnrollmentSession {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new EnterpriseAuthError("Control plane returned a malformed session response.");
+  }
+  const obj = data as Record<string, unknown>;
+  const policy = obj.policy;
+  if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
+    throw new EnterpriseAuthError("Control plane session response is missing a policy.");
+  }
+  return {
+    policy: policy as OrgConfig,
+    gatewayToken: typeof obj.gatewayToken === "string" ? obj.gatewayToken : undefined,
+    expiresAt: typeof obj.expiresAt === "number" ? obj.expiresAt : undefined,
+    subject: typeof obj.subject === "string" ? obj.subject : undefined,
+    controlPlane,
+  };
+}
+
+/**
+ * Exchange an identity proof for an enrollment session.
+ *
+ * @param controlPlane base URL of the control plane (the "starting address")
+ * @param proof        the id_token + flow metadata produced by a login flow
+ * @param signal       optional abort signal (login timeout / cancellation)
+ */
+export async function enroll(
+  controlPlane: string,
+  proof: IdentityProof,
+  signal?: AbortSignal,
+): Promise<EnrollmentSession> {
+  const endpoint = enrollmentEndpoint(controlPlane);
+
+  let response: Response;
+  try {
+    response = await fetch(endpoint.href, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ idToken: proof.idToken, flow: proof.flow, nonce: proof.nonce }),
+      redirect: "error",
+      signal,
+    });
+  } catch (error) {
+    if ((error as Error)?.name === "AbortError") throw error;
+    throw new EnterpriseAuthError(
+      `Could not reach the control plane at ${endpoint.origin}: ${(error as Error).message}`,
+      { cause: error },
+    );
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    await response.body?.cancel();
+    throw new EnterpriseAuthError(
+      "Control plane rejected the sign-in (not authorized or no seat).",
+    );
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new EnterpriseAuthError(
+      `Control plane enrollment failed (HTTP ${response.status}).`,
+    );
+  }
+
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch (error) {
+    throw new EnterpriseAuthError("Control plane returned a non-JSON session response.", {
+      cause: error,
+    });
+  }
+  return parseSession(data, secureURL(controlPlane).origin);
+}
+
+/**
+ * Persist an enrollment session as the cached org policy so subsequent startups
+ * enforce it offline. Bridges the control-plane response to the policy store;
+ * every login flow calls this after a successful `enroll`.
+ */
+export async function persistSession(session: EnrollmentSession): Promise<void> {
+  const { saveEnrolledPolicy } = await import("../config/enterprise-policy-store.js");
+  await saveEnrolledPolicy({
+    policy: session.policy,
+    controlPlane: session.controlPlane,
+    subject: session.subject,
+    expiresAt: session.expiresAt,
+    storedAt: new Date().toISOString(),
+  });
+}
+
+export { enrollmentEndpoint };
