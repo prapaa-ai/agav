@@ -321,6 +321,88 @@ function makeTableExtension(termWidth: number) {
 }
 
 /**
+ * marked-terminal highlights fenced code blocks through its bundled
+ * cli-highlight/highlight.js. When the fence names a language highlight.js does
+ * not ship (e.g. `mermaid`, `jsonc`), highlight.js writes
+ * "Could not find the language '<lang>'..." straight to the console before
+ * falling back to plain styling. That stray stderr line surfaces as red text
+ * under the status bar even though the block itself renders fine.
+ *
+ * cli-highlight is bundled into marked-terminal and not resolvable on its own,
+ * so there is no import to query for supported languages. Instead, probe each
+ * distinct info string once by rendering a tiny block with the console
+ * captured: an unknown language trips the warning, a known one stays silent.
+ * The verdict is cached so the probe runs at most once per info string.
+ *
+ * marked passes the fence's entire info string (e.g. `python title=foo.py`) as
+ * the language, and marked-terminal forwards it verbatim to highlight.js, so the
+ * whole info string — not just its first token — is what must be probed.
+ */
+const _languageSupport = new Map<string, boolean>();
+
+function fenceLanguageSupported(lang: string): boolean {
+  const cached = _languageSupport.get(lang);
+  if (cached !== undefined) return cached;
+
+  let unsupported = false;
+  const originalError = console.error;
+  const originalLog = console.log;
+  const sniff = (message: unknown): boolean =>
+    typeof message === "string" && message.includes("Could not find the language");
+  console.error = (message?: unknown, ...rest: unknown[]) => {
+    if (sniff(message)) {
+      unsupported = true;
+      return;
+    }
+    originalError(message as string, ...(rest as string[]));
+  };
+  console.log = (message?: unknown, ...rest: unknown[]) => {
+    if (sniff(message)) {
+      unsupported = true;
+      return;
+    }
+    originalLog(message as string, ...(rest as string[]));
+  };
+  try {
+    // A throwaway instance keeps the probe from mutating the cached renderer.
+    const probe = new Marked();
+    probe.use(markedTerminal({ code: (s: string) => s, codespan: (s: string) => s }) as any);
+    probe.parse("```" + lang + "\n \n```\n");
+  } catch {
+    // highlight.js also throws for unknown languages; treat that as unsupported.
+    unsupported = true;
+  } finally {
+    console.error = originalError;
+    console.log = originalLog;
+  }
+
+  const supported = !unsupported;
+  _languageSupport.set(lang, supported);
+  return supported;
+}
+
+/**
+ * Drop the language tag from any fenced code block whose language highlight.js
+ * cannot resolve, so the highlighter is never asked for it (and never prints the
+ * "Could not find the language" warning). The block still renders as plain
+ * styled code via the `code` renderer option.
+ */
+function stripUnsupportedFenceLanguages(text: string): string {
+  // Match an opening fence (``` or ~~~), its indentation, and the info string.
+  return text.replace(
+    /^([ \t]*)([`~]{3,})([^\n`]*)$/gm,
+    (match, indent: string, fence: string, info: string) => {
+      const trimmed = info.trim();
+      if (!trimmed) return match;
+      // marked-terminal forwards the whole info string to highlight.js, so probe
+      // it as-is rather than only its first token.
+      if (fenceLanguageSupported(trimmed)) return match;
+      return `${indent}${fence}`;
+    },
+  );
+}
+
+/**
  * marked is configured with a fixed wrap width, so rebuild the instance when
  * the terminal is resized rather than baking the startup width in for good.
  */
@@ -388,7 +470,7 @@ export function renderMarkdown(text: string): string {
   if (cached !== undefined) return cached;
 
   try {
-    const result = getMarked().parse(text);
+    const result = getMarked().parse(stripUnsupportedFenceLanguages(text));
     if (typeof result !== "string") return text;
     let cleaned = result.replace(/\n+$/, "");
     cleaned = cleaned.replace(/^(\s*)\* /gm, "$1• ");
