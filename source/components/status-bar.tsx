@@ -200,7 +200,18 @@ export default function StatusBar({
         <Text dimColor italic>
           {"💡 "}{displayHint}
         </Text>
-      ) : null}
+      ) : (
+        // Reserve this row even when nothing fills it. The copy notice, ps
+        // response and hint all share this single slot; letting it collapse to
+        // zero rows would change the dynamic frame's height the moment a copy
+        // notice appears, shifting every content row by one. The global
+        // selection highlight is keyed by absolute frame-row index, so that
+        // shift leaves the top selected line rendered unhighlighted until the
+        // notice clears and the frame height returns. Keeping the row present
+        // makes the notice replace content on a stable row instead of adding
+        // one, so the selection stays correct throughout.
+        <Text> </Text>
+      )}
     </Box>
   );
 }
