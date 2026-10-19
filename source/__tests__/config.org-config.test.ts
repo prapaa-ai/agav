@@ -4,8 +4,14 @@ vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(),
 }));
 
+vi.mock("../config/enterprise-policy-store.js", () => ({
+  loadEnrolledPolicy: vi.fn(),
+}));
+
 const fs = await import("node:fs/promises");
 const readFile = vi.mocked(fs.readFile);
+const { loadEnrolledPolicy } = await import("../config/enterprise-policy-store.js");
+const mockedLoadEnrolled = vi.mocked(loadEnrolledPolicy);
 
 const {
   applyOrgConfig,
@@ -96,14 +102,41 @@ describe("org-config: isAtLeastAsStrict", () => {
 describe("org-config: loadOrgConfig", () => {
   beforeEach(() => {
     readFile.mockReset();
+    mockedLoadEnrolled.mockReset().mockResolvedValue(undefined);
     delete process.env[ORG_CONFIG_ENV];
   });
 
-  it("returns undefined when no org policy file exists", async () => {
+  it("returns undefined when neither a file nor an enrolled policy exists", async () => {
     readFile.mockImplementation(async () => {
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     });
     expect(await loadOrgConfig()).toBeUndefined();
+  });
+
+  it("falls back to the enrolled policy when no file source exists", async () => {
+    readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    mockedLoadEnrolled.mockResolvedValue({
+      policy: { provider: "anthropic", permissionMode: "ask" },
+      storedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const org = await loadOrgConfig();
+    expect(org?.provider).toBe("anthropic");
+    expect(org?.permissionMode).toBe("ask");
+  });
+
+  it("prefers an admin-shipped file over an enrolled policy", async () => {
+    process.env[ORG_CONFIG_ENV] = "/custom/org.json";
+    readFile.mockImplementation(async (path: unknown) => {
+      if (path === "/custom/org.json") return JSON.stringify({ provider: "openai" });
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    mockedLoadEnrolled.mockResolvedValue({
+      policy: { provider: "anthropic" },
+      storedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const org = await loadOrgConfig();
+    expect(org?.provider).toBe("openai"); // file wins; enrolled not consulted
+    expect(mockedLoadEnrolled).not.toHaveBeenCalled();
   });
 
   it("reads the policy from the path named by the env var", async () => {

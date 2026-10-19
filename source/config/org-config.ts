@@ -76,12 +76,28 @@ function isAtLeastAsStrict(candidate: PermissionMode, floor: PermissionMode): bo
 }
 
 /**
- * Read the org policy from the env-named file, else the first existing system
- * path. Returns undefined when no org policy is present (the common,
- * non-enterprise case) and never throws — a missing or unreadable policy must
- * not break a normal startup.
+ * Read the org policy from the highest-priority available source, in order:
+ *
+ *   1. admin-shipped file — `AGAV_ORG_CONFIG` env path, else a known system path
+ *   2. cached enrolled policy — written by authenticated enrollment (`agav login`)
+ *
+ * An admin-shipped file outranks an enrolled policy: a file placed by IT/MDM on
+ * the machine is a stronger local mandate than a per-user enrollment. Returns
+ * undefined when no org policy is present (the common, non-enterprise case) and
+ * never throws — a missing or unreadable policy must not break a normal startup.
  */
 export async function loadOrgConfig(): Promise<OrgConfig | undefined> {
+  const fromFile = await loadOrgConfigFromFile();
+  if (fromFile) return fromFile;
+
+  // Fall back to a policy delivered by authenticated enrollment.
+  const { loadEnrolledPolicy } = await import("./enterprise-policy-store.js");
+  const enrolled = await loadEnrolledPolicy();
+  return enrolled?.policy;
+}
+
+/** Load the org policy from the admin-shipped file source only. */
+async function loadOrgConfigFromFile(): Promise<OrgConfig | undefined> {
   const candidates: string[] = [];
   const fromEnv = process.env[ORG_CONFIG_ENV];
   if (fromEnv) candidates.push(fromEnv);
