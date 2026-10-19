@@ -6,7 +6,15 @@ import { ResourceManager } from "../components/resource-manager.js";
 import type { ResourceAdapter, ResourceItem } from "../resources/types.js";
 import { filterResources, resourcePage } from "../resources/types.js";
 
-async function mount(overrides: Partial<ResourceAdapter> = {}) {
+const clipboard = vi.hoisted(() => ({ listener: undefined as ((notice: "Copied to clipboard" | "Copy sent to terminal") => void) | undefined }));
+vi.mock("../ink/termio/clipboard.js", () => ({
+  subscribeClipboardCopy: (listener: (notice: string) => void) => {
+    clipboard.listener = listener;
+    return () => { clipboard.listener = undefined; };
+  },
+}));
+
+async function mount(overrides: Partial<ResourceAdapter> = {}, props: { height?: number } = {}) {
   let items: ResourceItem[] = Array.from({ length: 12 }, (_, i) => ({ id: String(i), title: `Item ${i}`, description: `Description ${i}`, detail: `Full detail ${i}`, enabled: true, removable: true }));
   const adapter: ResourceAdapter = {
     title: "Test resources",
@@ -22,7 +30,7 @@ async function mount(overrides: Partial<ResourceAdapter> = {}) {
   Object.assign(stdout, { isTTY: true, columns: 120, rows: 24, write: (text: string) => { output += text; return true; } });
   const stdin = new EventEmitter() as NodeJS.ReadStream;
   Object.assign(stdin, { isTTY: true, setRawMode: () => stdin, resume: () => stdin, pause: () => stdin, read: () => null });
-  const instance = render(h(ResourceManager, { adapter, onExit }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
+  const instance = render(h(ResourceManager, { adapter, onExit, ...props }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
   const settle = async () => { await new Promise((r) => setTimeout(r, 50)); await instance.waitUntilRenderFlush(); };
   const key = async (text: string) => { output = ""; stdin.emit("data", Buffer.from(text)); await settle(); };
   await settle();
@@ -30,6 +38,16 @@ async function mount(overrides: Partial<ResourceAdapter> = {}) {
 }
 
 describe("shared resource manager", () => {
+  it("shows clipboard copy notices while the resource manager is active", async () => {
+    const ui = await mount();
+    try {
+      expect(ui.output()).not.toContain("Copied to clipboard");
+      clipboard.listener?.("Copied to clipboard");
+      await ui.settle();
+      expect(ui.output()).toContain("Copied to clipboard");
+    } finally { ui.instance.unmount(); }
+  });
+
   it("searches incrementally, clears search before exiting, and pages consistently", async () => {
     const ui = await mount();
     try {
@@ -64,6 +82,18 @@ describe("shared resource manager", () => {
       expect(ui.output()).toContain("Page 1/2");
       await ui.key("\x1b");
       expect(ui.onExit).toHaveBeenCalledOnce();
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("keeps short inspection output compact instead of stretching it to the full TUI height", async () => {
+    const entry = { id: "short", title: "Short", description: "desc", detail: "JOB OUTPUT START\nerror: failed\nJOB OUTPUT END" };
+    const ui = await mount({ list: vi.fn(async () => [entry]), get: vi.fn(async () => entry) }, { height: 18 });
+    try {
+      await ui.key("\r");
+      const frame = ui.output().replaceAll(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").split("Test resources · Inspect").at(-1) ?? "";
+      expect(frame).toContain("JOB OUTPUT START");
+      expect(frame).toContain("↑↓: Scroll");
+      expect(frame.trimEnd().split("\n").length).toBeLessThan(10);
     } finally { ui.instance.unmount(); }
   });
 

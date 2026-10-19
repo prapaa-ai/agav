@@ -1312,7 +1312,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   const toolMessages = useMemo(() => messages.filter((m) => m.role === "tool"), [messages]);
 
-  // The footer — the prompt or its confirmation dialog, a modal TUI, and the
+  // The home footer — the prompt or its confirmation dialog and the
   // status bar — is measured rather than guessed. It used to be a flat
   // `termRows - 8`, but the footer is unbounded: a keybindings dump or a
   // multi-line prompt pushes the frame taller than the terminal, the terminal
@@ -1337,6 +1337,49 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     const step = event.ctrl ? Math.max(1, Math.floor(documentHeight / 2)) : 3;
     docControls.current?.scrollBy(event.direction === "up" ? step : -step);
   }, [documentHeight]);
+
+  const statusHint = useMemo(() => getRandomHint(keybindings, enhancedKeyboard), [messages.length, keybindings, enhancedKeyboard]);
+
+  // Resource managers own the entire viewport while active. Keeping them in the
+  // home footer leaves the transcript and status bar visible and steals rows
+  // from their scrollable content (including a second clipboard notice).
+  if (agentsTUIActive || skillsTUIActive || jobsTUIActive || resourceAdapter) {
+    return <Box flexDirection="column" height={termRows}>
+      {agentsTUIActive && <AgentsTUI height={termRows} provider={activeProvider} config={config} onExit={() => {
+        setAgentsTUIActive(false);
+        setPickerActive(false);
+        setInput("");
+        const resolve = agentsTUIResolveRef.current;
+        agentsTUIResolveRef.current = null;
+        resolve?.();
+        refreshAgentCommands();
+      }} />}
+      {skillsTUIActive && <SkillsTUI marketplace={skillsMarketplace} height={termRows} onExit={() => {
+        setSkillsTUIActive(false);
+        setPickerActive(false);
+        setInput("");
+        const resolve = skillsTUIResolveRef.current;
+        skillsTUIResolveRef.current = null;
+        resolve?.();
+      }} />}
+      {jobsTUIActive && <JobsTUI permissionMode={config.permissionMode} height={termRows} onExit={() => {
+        setJobsTUIActive(false);
+        setPickerActive(false);
+        setInput("");
+        const resolve = jobsTUIResolveRef.current;
+        jobsTUIResolveRef.current = null;
+        resolve?.();
+      }} />}
+      {resourceAdapter && <ResourceManager adapter={resourceAdapter} height={termRows} onExit={() => {
+        setResourceAdapter(null);
+        setPickerActive(false);
+        setInput("");
+        const resolve = resourceTUIResolveRef.current;
+        resourceTUIResolveRef.current = null;
+        resolve?.();
+      }} />}
+    </Box>;
+  }
 
   return (
     // Pinned to the terminal height so the frame can never grow past the screen
@@ -1563,59 +1606,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           />
         )}
 
-        {agentsTUIActive && (
-          <AgentsTUI
-            onExit={() => {
-              setAgentsTUIActive(false);
-              setPickerActive(false);
-              setInput(""); // clear any paste that leaked into InputPrompt while wizard was active
-              const resolve = agentsTUIResolveRef.current;
-              agentsTUIResolveRef.current = null;
-              resolve?.();
-              refreshAgentCommands();
-            }}
-            provider={activeProvider}
-            config={config}
-          />
-        )}
-        {skillsTUIActive && (
-          <SkillsTUI
-            marketplace={skillsMarketplace}
-            onExit={() => {
-              setSkillsTUIActive(false);
-              setPickerActive(false);
-              setInput("");
-              const resolve = skillsTUIResolveRef.current;
-              skillsTUIResolveRef.current = null;
-              resolve?.();
-            }}
-          />
-        )}
-        {jobsTUIActive && (
-          <JobsTUI
-            permissionMode={config.permissionMode}
-            onExit={() => {
-              setJobsTUIActive(false);
-              setPickerActive(false);
-              setInput("");
-              const resolve = jobsTUIResolveRef.current;
-              jobsTUIResolveRef.current = null;
-              resolve?.();
-            }}
-          />
-        )}
-
-        {resourceAdapter && (
-          <ResourceManager adapter={resourceAdapter} onExit={() => {
-            setResourceAdapter(null);
-            setPickerActive(false);
-            setInput("");
-            const resolve = resourceTUIResolveRef.current;
-            resourceTUIResolveRef.current = null;
-            resolve?.();
-          }} />
-        )}
-
         {customizeTUIActive && (
           <CustomizeTUI
             initialLayout={config.statusBar}
@@ -1741,7 +1731,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           outputTokens={tokenUsage.outputTokens}
           cacheReadTokens={tokenUsage.cacheReadTokens}
           cacheWriteTokens={tokenUsage.cacheWriteTokens}
-          hint={useMemo(() => getRandomHint(keybindings, enhancedKeyboard), [messages.length, keybindings, enhancedKeyboard])}
+          hint={statusHint}
           psResponse={psResponse}
           psLoading={psLoading}
           loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}

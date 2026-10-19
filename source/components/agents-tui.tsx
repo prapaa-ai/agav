@@ -25,7 +25,7 @@ import { InspectView, ConfigEditView } from "./agents-inspect.js";
 import { MarketplaceTab } from "./agents-marketplace.js";
 import { CreateTab } from "./agents-create.js";
 
-export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
+export function AgentsTUI({ onExit, provider, config, height }: AgentsTUIProps) {
   const [activeTab, setActiveTab] = useState<Tab>("list");
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -68,7 +68,9 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   const [termRows, setTermRows] = useState(stdout.rows || 24);
   const scrollControls = useRef<ScrollBoxControls | null>(null);
   const scrollSlotRef = useRef<DOMElement | null>(null);
-  const [scrollHeight, setScrollHeight] = useState(Math.max(4, termRows - 8));
+  const tuiHeight = Math.min(height ?? termRows, termRows);
+  const [scrollHeight, setScrollHeight] = useState(Math.max(4, tuiHeight - 8));
+  useEffect(() => { setScrollHeight(Math.max(4, tuiHeight - 8)); }, [tuiHeight]);
 
   useEffect(() => {
     const onResize = () => setTermRows(stdout.rows || 24);
@@ -403,7 +405,7 @@ export function AgentsTUI({ onExit, provider, config }: AgentsTUIProps) {
   const selectedAgent = filteredAgents[selectedIndex];
 
   return (
-    <Box flexDirection="column" height={termRows} padding={1}>
+    <Box flexDirection="column" height={tuiHeight} padding={1}>
       <Box flexDirection="column" flexShrink={0}>
       <Box marginBottom={1}>
         <Text bold>Agents Management</Text>
