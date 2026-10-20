@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgavConfig, PermissionMode } from "./config.js";
+import { defaultModelForProvider } from "./provider-defaults.js";
 
 /**
  * Organization-managed configuration ("org tier").
@@ -284,9 +285,17 @@ export function applyOrgConfig(merged: AgavConfig, org: OrgConfig | undefined): 
   if (!org) return merged;
 
   if (org.provider !== undefined) {
+    const providerChanged = merged.provider !== org.provider;
     merged.provider = org.provider;
     // Record the pin so later startup routing / interactive changes can't drop it.
     merged.orgManagedProvider = org.provider;
+    // Establish a compatible pair: when the pin changes the provider and the org
+    // does not also pin a model, the carried model belonged to the old provider
+    // (e.g. anthropic/claude-sonnet -> openai/claude-sonnet). Reset it to the
+    // pinned provider's default so the pair is coherent rather than mismatched.
+    if (providerChanged && org.model === undefined) {
+      merged.model = defaultModelForProvider(org.provider);
+    }
   }
   if (org.model !== undefined) {
     merged.model = org.model;

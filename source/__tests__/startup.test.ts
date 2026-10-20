@@ -8,6 +8,7 @@ import {
   resolveStartupSelection,
   selectConfiguredProvider,
 } from "../config/startup.js";
+import { applyOrgConfig } from "../config/org-config.js";
 import { parseArgs } from "../main.js";
 
 const base: AgavConfig = {
@@ -690,5 +691,70 @@ describe("listSessions and recent session startup resolution", () => {
     const cfg = { ...base, provider: "openai" as const, model: "gpt-5.4-mini", orgManagedProvider: "openai" as const };
     const selection = await resolveStartupSelection(cfg, {});
     expect(selection).toMatchObject({ provider: "openai", model: "gpt-4o" });
+  });
+});
+
+describe("partial managed pins produce a compatible pair (applyOrgConfig -> resolveStartupSelection)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listSessions).mockResolvedValue([]);
+  });
+
+  const anthropicConfig = (): AgavConfig => ({ ...base, provider: "anthropic", model: "claude-sonnet-4-20250514" });
+  const anthropicSession = {
+    id: "s1",
+    createdAt: "2025-01-01T00:00:00.000Z",
+    provider: "anthropic" as const,
+    model: "claude-sonnet-4-20250514",
+    title: "Saved",
+    messages: [],
+  };
+
+  it("applyOrgConfig alone resets the model to the provider default for a provider-only pin", () => {
+    // Starting from an incompatible anthropic config, a provider-only openai pin
+    // must not leave openai + claude-sonnet.
+    const cfg = applyOrgConfig(anthropicConfig(), { provider: "openai" });
+    expect(cfg.provider).toBe("openai");
+    expect(cfg.model).toBe("gpt-5.4-mini"); // openai default, not claude-sonnet
+  });
+
+  it("provider-only pin, plain start with conflicting history → compatible pair", async () => {
+    vi.mocked(listSessions).mockResolvedValue([anthropicSession]);
+    const cfg = applyOrgConfig(anthropicConfig(), { provider: "openai" });
+    const selection = await resolveStartupSelection(cfg, {});
+    expect(selection.provider).toBe("openai");
+    expect(selection.model).toBe("gpt-5.4-mini");
+    expect(providerConfigurationError({ ...selection, openaiApiKey: "k" })).toBeNull();
+  });
+
+  it("provider-only pin, resuming a conflicting session → compatible pair", async () => {
+    const cfg = applyOrgConfig(anthropicConfig(), { provider: "openai" });
+    const selection = await resolveStartupSelection(cfg, { session: anthropicSession });
+    expect(selection.provider).toBe("openai");
+    // Not the resumed Anthropic model paired with the openai pin.
+    expect(selection.model).toBe("gpt-5.4-mini");
+  });
+
+  it("model-only pin, resuming a conflicting session → compatible configured provider", async () => {
+    // Configured openai/gpt-5.4-mini, model-only pin, resume Anthropic. Must keep
+    // the configured openai provider with the pinned model, not anthropic.
+    const cfg = applyOrgConfig(
+      { ...base, provider: "openai", model: "gpt-5.4-mini" },
+      { model: "gpt-5.4-mini" },
+    );
+    const selection = await resolveStartupSelection(cfg, { session: anthropicSession });
+    expect(selection.provider).toBe("openai");
+    expect(selection.model).toBe("gpt-5.4-mini");
+  });
+
+  it("model-only pin, plain start with conflicting history → compatible configured provider", async () => {
+    vi.mocked(listSessions).mockResolvedValue([anthropicSession]);
+    const cfg = applyOrgConfig(
+      { ...base, provider: "openai", model: "gpt-5.4-mini" },
+      { model: "gpt-5.4-mini" },
+    );
+    const selection = await resolveStartupSelection(cfg, {});
+    expect(selection.provider).toBe("openai");
+    expect(selection.model).toBe("gpt-5.4-mini");
   });
 });
