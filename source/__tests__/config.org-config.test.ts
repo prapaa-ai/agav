@@ -88,6 +88,36 @@ describe("org-config: applyOrgConfig", () => {
     expect(cfg.orgAllowedProviders).toEqual(["openai", "anthropic"]);
     expect(cfg.controlPlane).toBe("https://auth.corp.com");
   });
+
+  it("adopts the sole allowed provider and model when exactly one is allowed", () => {
+    const cfg = baseConfig({ provider: "openai", model: "gpt-5.4" });
+    applyOrgConfig(cfg, {
+      allowedProviders: ["anthropic"],
+      allowedModels: ["claude-sonnet-4-20250514"],
+    });
+    // Single-option allowlist → use it, sparing the user from --provider/--model.
+    expect(cfg.provider).toBe("anthropic");
+    expect(cfg.model).toBe("claude-sonnet-4-20250514");
+  });
+
+  it("does not adopt from a multi-option allowlist (user selection enforced later)", () => {
+    const cfg = baseConfig({ provider: "openai", model: "gpt-5.4" });
+    applyOrgConfig(cfg, {
+      allowedProviders: ["anthropic", "openai"],
+      allowedModels: ["a", "b"],
+    });
+    expect(cfg.provider).toBe("openai"); // unchanged
+    expect(cfg.model).toBe("gpt-5.4");
+  });
+
+  it("a hard-pinned provider/model takes precedence over the single-allowed convenience", () => {
+    const cfg = baseConfig();
+    applyOrgConfig(cfg, {
+      provider: "gemini",
+      allowedProviders: ["anthropic"], // pin wins over the allowlist convenience
+    });
+    expect(cfg.provider).toBe("gemini");
+  });
 });
 
 describe("org-config: isAtLeastAsStrict", () => {

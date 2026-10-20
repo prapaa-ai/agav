@@ -157,6 +157,18 @@ export function applyOrgConfig(merged: AgavConfig, org: OrgConfig | undefined): 
   if (org.allowedProviders !== undefined) merged.orgAllowedProviders = org.allowedProviders;
   if (org.controlPlane !== undefined) merged.controlPlane = org.controlPlane;
 
+  // Convenience: when the org allows exactly one provider (or model) and has not
+  // already hard-pinned it, adopt it as the effective value. With only one choice
+  // there is nothing to preserve, so this spares the user from passing
+  // --provider/--model just to match a single-option allowlist. A multi-option
+  // allowlist is left untouched — the user's selection is enforced later.
+  if (org.provider === undefined && org.allowedProviders?.length === 1) {
+    merged.provider = org.allowedProviders[0]!;
+  }
+  if (org.model === undefined && org.allowedModels?.length === 1) {
+    merged.model = org.allowedModels[0]!;
+  }
+
   return merged;
 }
 

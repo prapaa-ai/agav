@@ -779,6 +779,14 @@ export async function main() {
     cliProvider = p;
   }
 
+  // When the organization policy allows exactly one provider and the user did not
+  // name one, treat that provider as the selection. This keeps the single allowed
+  // provider authoritative through startup routing, so an in-policy --model does
+  // not get re-routed to a disallowed provider by the model catalog.
+  if (!cliProvider && config.orgAllowedProviders?.length === 1) {
+    cliProvider = config.orgAllowedProviders[0];
+  }
+
   // Apply explicit CLI connection overrides last so they win over config and environment defaults.
   if (typeof flags.openaiApi === "string" && (flags.openaiApi === "chat" || flags.openaiApi === "responses")) {
     config.openaiApi = flags.openaiApi;
