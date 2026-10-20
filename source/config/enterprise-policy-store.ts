@@ -85,7 +85,13 @@ export async function saveEnrolledPolicy(record: EnrolledPolicy): Promise<void> 
   }
 }
 
-/** Remove the cached policy (e.g. on `agav logout`). Never throws if absent. */
+/**
+ * Remove the cached policy (e.g. on `agav logout`). `force: true` already
+ * tolerates a missing file, so a successful return means no policy remains. A
+ * permission/I/O failure (read-only filesystem, non-writable directory) is
+ * propagated so the caller can report that logout did not take effect — the
+ * policy is still active on the next startup, so reporting success would be a lie.
+ */
 export async function clearEnrolledPolicy(): Promise<void> {
-  await rm(POLICY_PATH, { force: true }).catch(() => {});
+  await rm(POLICY_PATH, { force: true });
 }

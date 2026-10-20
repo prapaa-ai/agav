@@ -2,6 +2,7 @@ import { type AgavConfig } from "./config.js";
 import type { SessionRecord } from "./history.js";
 import { agavHomePath, examplePath, setEnvHint } from "../utils/shell-hints.js";
 import { listSessions } from "./history.js";
+import { managedPinError } from "./org-config.js";
 
 export type ProviderName = AgavConfig["provider"];
 
@@ -162,6 +163,11 @@ export function noProviderCredentialsError(): string {
  * policy violation rather than a missing-key message.
  */
 export function orgPolicyError(config: AgavConfig): string | null {
+  // Hard pins are mandatory and are not expressed as singleton allowlists, so
+  // check them first. They survive startup routing/fallback and later selection.
+  const pinError = managedPinError(config);
+  if (pinError) return pinError;
+
   if (config.orgAllowedProviders && config.orgAllowedProviders.length > 0
     && !config.orgAllowedProviders.includes(config.provider)) {
     return `Provider ${JSON.stringify(config.provider)} is not permitted by your organization's policy. ` +

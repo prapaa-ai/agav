@@ -84,6 +84,32 @@ describe("named-agent final output", () => {
     }));
   });
 
+  it("clamps the child permission mode to the parent org floor", async () => {
+    setEvents([{ type: "turn_complete" }]);
+    // Parent has an org deny-writes floor; a direct auto-accept override on the
+    // child must be clamped so a native writer agent can't escape the policy.
+    await executeNativeAgent(agent, "task", {
+      ...deps,
+      config: { ...config, orgPermissionFloor: "deny-writes" } as AgavConfig,
+      permissionMode: "auto-accept",
+    });
+    expect(runAgentLoop).toHaveBeenCalledWith(expect.objectContaining({
+      permissionMode: "deny-writes",
+      permissionFloor: "deny-writes",
+    }));
+  });
+
+  it("rejects a child model that violates the parent org policy", async () => {
+    setEvents([{ type: "turn_complete" }]);
+    // Parent pins gpt-5.4; a manifest model override to another model must fail.
+    await expect(executeNativeAgent(
+      { ...agent, manifest: { ...agent.manifest, model: "gpt-4o" } },
+      "task",
+      { ...deps, config: { ...config, orgManagedModel: "gpt-5.4" } as AgavConfig },
+    )).rejects.toThrow(/not permitted by your organization/);
+    expect(runAgentLoop).not.toHaveBeenCalled();
+  });
+
   it("uses completed answers even without streaming and clears stale text on empty turns", async () => {
     setEvents([
       { type: "assistant_message_complete", text: "Intermediate" },

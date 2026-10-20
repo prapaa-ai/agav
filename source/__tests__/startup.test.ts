@@ -538,6 +538,30 @@ describe("organization selection policy", () => {
     expect(err).toContain("not permitted by your organization");
     expect(err).not.toContain("OPENAI_API_KEY");
   });
+
+  it("rejects a provider that drifted from a managed hard pin (not a singleton allowlist)", () => {
+    // Policy pins openai; a later CLI/recent-session selection of ollama must be
+    // caught even though there is no allowlist duplicating the pin.
+    const err = orgPolicyError({ ...base, provider: "ollama", orgManagedProvider: "openai" });
+    expect(err).toContain("not permitted by your organization");
+    expect(err).toContain("requires provider");
+  });
+
+  it("rejects a model that drifted from a managed hard pin", () => {
+    const err = orgPolicyError({ ...base, model: "external-model", orgManagedModel: "gpt-5.4" });
+    expect(err).toContain("not permitted by your organization");
+    expect(err).toContain("requires model");
+  });
+
+  it("permits a provider/model that still matches the managed pin", () => {
+    expect(orgPolicyError({
+      ...base,
+      provider: "openai",
+      model: "gpt-5.4",
+      orgManagedProvider: "openai",
+      orgManagedModel: "gpt-5.4",
+    })).toBeNull();
+  });
 });
 
 describe("listSessions and recent session startup resolution", () => {

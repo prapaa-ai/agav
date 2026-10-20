@@ -5,7 +5,7 @@ import {
   type EnrollmentSession,
   type IdentityProof,
 } from "./types.js";
-import type { OrgConfig } from "../config/org-config.js";
+import { sanitizeOrgConfig } from "../config/org-config.js";
 
 /**
  * Flow-agnostic client for the enterprise control plane.
@@ -101,8 +101,17 @@ function parseSession(data: unknown, controlPlane: string): EnrollmentSession {
   if (!policy || typeof policy !== "object" || Array.isArray(policy)) {
     throw new EnterpriseAuthError("Control plane session response is missing a policy.");
   }
+  // Validate and coerce the policy's known fields before accepting it. A
+  // malformed field (e.g. a non-array `allowedTools`) would otherwise be cast,
+  // persisted to the cache, and crash every subsequent startup. Throwing here
+  // leaves any previously-valid cached policy untouched, since persistSession
+  // runs only on a successful enroll.
+  const sanitizedPolicy = sanitizeOrgConfig(policy);
+  if (!sanitizedPolicy) {
+    throw new EnterpriseAuthError("Control plane session response contained a malformed policy.");
+  }
   return {
-    policy: policy as OrgConfig,
+    policy: sanitizedPolicy,
     gatewayToken: typeof obj.gatewayToken === "string" ? obj.gatewayToken : undefined,
     expiresAt: typeof obj.expiresAt === "number" ? obj.expiresAt : undefined,
     subject: typeof obj.subject === "string" ? obj.subject : undefined,

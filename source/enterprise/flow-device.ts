@@ -48,6 +48,29 @@ interface TokenResponse {
   error?: string;
 }
 
+/**
+ * Abortable delay: resolves after `ms`, or rejects promptly if `signal` aborts
+ * mid-wait so a long polling interval / `slow_down` back-off can never outlast
+ * the overall deadline.
+ */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error("Aborted."));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason instanceof Error ? signal!.reason : new Error("Aborted."));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Request a device/user code pair from the device authorization endpoint. */
@@ -115,54 +138,81 @@ export async function obtainIdTokenViaDevice(options: DeviceFlowOptions): Promis
       `Waiting for approval…\n`,
     );
   });
-  const sleep = options.sleep ?? defaultSleep;
   const scope = ["openid", ...(options.scopes ?? [])].filter((s, i, a) => a.indexOf(s) === i).join(" ");
 
-  const meta = await discoverOidc(options.issuer, options.signal);
-  if (!meta.deviceAuthorizationEndpoint || !meta.tokenEndpoint) {
-    throw new EnterpriseAuthError("Identity provider does not support the device authorization grant.");
+  // Bound the whole flow with an overall deadline, combined with the caller's
+  // cancellation. This single signal is threaded through discovery, device
+  // authorization, token polling, and the between-poll delays so a stalled IdP
+  // fetch or a long interval can never keep the login pending past the deadline.
+  const overallMsRequested = (options.timeoutSeconds ?? 300) * 1000;
+  const deadlineController = new AbortController();
+  const deadlineTimer = setTimeout(
+    () => deadlineController.abort(new EnterpriseAuthError("Device sign-in timed out before approval.")),
+    overallMsRequested,
+  );
+  const onCallerAbort = () => deadlineController.abort(
+    options.signal?.reason instanceof Error ? options.signal.reason : new EnterpriseAuthError("Login cancelled."),
+  );
+  if (options.signal) {
+    if (options.signal.aborted) onCallerAbort();
+    else options.signal.addEventListener("abort", onCallerAbort, { once: true });
   }
+  const signal = deadlineController.signal;
+  const sleep = options.sleep ?? ((ms: number) => abortableSleep(ms, signal));
 
-  const device = await requestDeviceCode(meta.deviceAuthorizationEndpoint, options.clientId, scope, options.signal);
-  const expiresInSeconds = device.expires_in ?? 300;
-  prompt({
-    userCode: device.user_code!,
-    verificationUri: device.verification_uri!,
-    verificationUriComplete: device.verification_uri_complete,
-    expiresInSeconds,
-  });
-
-  const overallMs = Math.min((options.timeoutSeconds ?? 300) * 1000, expiresInSeconds * 1000);
-  const deadline = Date.now() + overallMs;
-  let intervalMs = Math.max(1, device.interval ?? 5) * 1000;
-
-  while (Date.now() < deadline) {
-    options.signal?.throwIfAborted();
-    await sleep(intervalMs);
-    options.signal?.throwIfAborted();
-
-    const result = await pollToken(meta.tokenEndpoint, options.clientId, device.device_code!, options.signal);
-
-    if (result.id_token) {
-      return { idToken: result.id_token, flow: "device" };
+  try {
+    const meta = await discoverOidc(options.issuer, signal);
+    if (!meta.deviceAuthorizationEndpoint || !meta.tokenEndpoint) {
+      throw new EnterpriseAuthError("Identity provider does not support the device authorization grant.");
     }
-    switch (result.error) {
-      case "authorization_pending":
-        break; // keep polling at the current interval
-      case "slow_down":
-        intervalMs += 5000; // RFC 8628: back off by 5s
-        break;
-      case "access_denied":
-        throw new EnterpriseAuthError("Sign-in was denied.");
-      case "expired_token":
-        throw new EnterpriseAuthError("The device code expired before approval.");
-      default:
-        if (result.error) throw new EnterpriseAuthError(`Device sign-in failed: ${result.error}`);
-        // No id_token and no error: treat as pending and keep polling.
+
+    const device = await requestDeviceCode(meta.deviceAuthorizationEndpoint, options.clientId, scope, signal);
+    const expiresInSeconds = device.expires_in ?? 300;
+    prompt({
+      userCode: device.user_code!,
+      verificationUri: device.verification_uri!,
+      verificationUriComplete: device.verification_uri_complete,
+      expiresInSeconds,
+    });
+
+    // Also stop at the IdP's device-code expiry, whichever is sooner.
+    const deadline = Date.now() + Math.min(overallMsRequested, expiresInSeconds * 1000);
+    let intervalMs = Math.max(1, device.interval ?? 5) * 1000;
+
+    while (Date.now() < deadline) {
+      signal.throwIfAborted();
+      await sleep(intervalMs);
+      signal.throwIfAborted();
+      // The device code may have expired while we slept; stop before polling or
+      // accepting a token past expiry.
+      if (Date.now() >= deadline) break;
+
+      const result = await pollToken(meta.tokenEndpoint, options.clientId, device.device_code!, signal);
+
+      if (result.id_token) {
+        return { idToken: result.id_token, flow: "device" };
+      }
+      switch (result.error) {
+        case "authorization_pending":
+          break; // keep polling at the current interval
+        case "slow_down":
+          intervalMs += 5000; // RFC 8628: back off by 5s
+          break;
+        case "access_denied":
+          throw new EnterpriseAuthError("Sign-in was denied.");
+        case "expired_token":
+          throw new EnterpriseAuthError("The device code expired before approval.");
+        default:
+          if (result.error) throw new EnterpriseAuthError(`Device sign-in failed: ${result.error}`);
+          // No id_token and no error: treat as pending and keep polling.
+      }
     }
+
+    throw new EnterpriseAuthError("Device sign-in timed out before approval.");
+  } finally {
+    clearTimeout(deadlineTimer);
+    options.signal?.removeEventListener("abort", onCallerAbort);
   }
-
-  throw new EnterpriseAuthError("Device sign-in timed out before approval.");
 }
 
 export { requestDeviceCode, pollToken };

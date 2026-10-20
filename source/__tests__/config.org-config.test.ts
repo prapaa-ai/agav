@@ -17,6 +17,9 @@ const {
   applyOrgConfig,
   loadOrgConfig,
   isAtLeastAsStrict,
+  sanitizeOrgConfig,
+  clampPermissionMode,
+  managedPinError,
   ORG_CONFIG_ENV,
 } = await import("../config/org-config.js");
 import type { AgavConfig } from "../config/config.js";
@@ -126,6 +129,104 @@ describe("org-config: isAtLeastAsStrict", () => {
     expect(isAtLeastAsStrict("ask", "ask")).toBe(true);
     expect(isAtLeastAsStrict("auto-accept", "ask")).toBe(false);
     expect(isAtLeastAsStrict("ask", "deny-writes")).toBe(false);
+  });
+});
+
+describe("org-config: applyOrgConfig records managed constraints", () => {
+  it("records hard pins and the permission floor so later boundaries can re-enforce", () => {
+    const cfg = baseConfig({ permissionMode: "auto-accept" });
+    applyOrgConfig(cfg, { provider: "openai", model: "gpt-5.4", permissionMode: "ask" });
+    expect(cfg.orgManagedProvider).toBe("openai");
+    expect(cfg.orgManagedModel).toBe("gpt-5.4");
+    expect(cfg.orgPermissionFloor).toBe("ask");
+  });
+
+  it("leaves managed-constraint fields unset when the org pins nothing", () => {
+    const cfg = baseConfig();
+    applyOrgConfig(cfg, { allowedModels: ["a", "b"] });
+    expect(cfg.orgManagedProvider).toBeUndefined();
+    expect(cfg.orgManagedModel).toBeUndefined();
+    expect(cfg.orgPermissionFloor).toBeUndefined();
+  });
+});
+
+describe("org-config: managedPinError", () => {
+  it("rejects a provider/model that drifted from a hard pin", () => {
+    // Even without allowlists, a pin is mandatory and must be caught after
+    // later startup routing / selection changes the value.
+    expect(managedPinError({ ...baseConfig({ provider: "ollama" }), orgManagedProvider: "openai" }))
+      .toMatch(/requires provider/);
+    expect(managedPinError({ ...baseConfig({ model: "other" }), orgManagedModel: "gpt-5.4" }))
+      .toMatch(/requires model/);
+  });
+
+  it("passes when the pins are satisfied or absent", () => {
+    expect(managedPinError(baseConfig())).toBeNull();
+    expect(managedPinError({ ...baseConfig({ provider: "openai" }), orgManagedProvider: "openai" })).toBeNull();
+  });
+});
+
+describe("org-config: clampPermissionMode", () => {
+  it("returns the request when no floor is set", () => {
+    expect(clampPermissionMode("auto-accept", undefined)).toBe("auto-accept");
+  });
+
+  it("clamps a looser request up to the floor", () => {
+    expect(clampPermissionMode("auto-accept", "ask")).toBe("ask");
+    expect(clampPermissionMode("ask", "deny-writes")).toBe("deny-writes");
+  });
+
+  it("keeps a request that is already at least as strict as the floor", () => {
+    expect(clampPermissionMode("deny-writes", "ask")).toBe("deny-writes");
+    expect(clampPermissionMode("ask", "ask")).toBe("ask");
+  });
+});
+
+describe("org-config: sanitizeOrgConfig", () => {
+  it("fails closed when a restriction list is the wrong container type", () => {
+    // A non-array allowedTools would make applyOrgConfig throw on every startup.
+    // A security policy must not be silently weakened, so the whole policy is
+    // rejected rather than dropping the malformed restriction.
+    expect(sanitizeOrgConfig({ provider: "openai", allowedTools: { length: 1 } })).toBeUndefined();
+    expect(sanitizeOrgConfig({ allowedModels: "gpt" })).toBeUndefined();
+    expect(sanitizeOrgConfig({ permissionMode: "bogus" })).toBeUndefined();
+  });
+
+  it("filters wrong element types inside a correct list container", () => {
+    const sanitized = sanitizeOrgConfig({ provider: "openai", allowedModels: [1, "ok", null] });
+    expect(sanitized!.provider).toBe("openai");
+    expect(sanitized!.allowedModels).toEqual(["ok"]);
+  });
+
+  it("ignores a scalar field of the wrong type", () => {
+    const sanitized = sanitizeOrgConfig({ provider: 42, model: "claude" });
+    expect(sanitized!.provider).toBeUndefined();
+    expect(sanitized!.model).toBe("claude");
+  });
+
+  it("returns undefined for a non-object input", () => {
+    expect(sanitizeOrgConfig(null)).toBeUndefined();
+    expect(sanitizeOrgConfig([1, 2])).toBeUndefined();
+    expect(sanitizeOrgConfig("x")).toBeUndefined();
+  });
+
+  it("keeps well-formed known fields intact", () => {
+    const sanitized = sanitizeOrgConfig({
+      provider: "anthropic",
+      model: "claude",
+      permissionMode: "deny-writes",
+      allowedTools: ["read_file"],
+      openaiHeaders: { "x-tenant": "a", bad: 1 },
+      controlPlane: "https://auth.corp",
+    });
+    expect(sanitized).toEqual({
+      provider: "anthropic",
+      model: "claude",
+      permissionMode: "deny-writes",
+      allowedTools: ["read_file"],
+      openaiHeaders: { "x-tenant": "a" },
+      controlPlane: "https://auth.corp",
+    });
   });
 });
 

@@ -53,26 +53,41 @@ export async function startLoopbackServer(
   void waitForCode.catch(() => {});
 
   const server: Server = createServer((request, response) => {
-    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    // A malformed request target (e.g. `GET //[/callback`) makes URL parsing
+    // throw ERR_INVALID_URL. Any local client can send one without knowing the
+    // state secret, so handle it as a bad request instead of letting the
+    // uncaught handler exception terminate the CLI mid-login.
+    let url: URL;
+    try {
+      url = new URL(request.url ?? "/", "http://127.0.0.1");
+    } catch {
+      response.writeHead(400).end("Bad request.");
+      return;
+    }
 
     if (request.method !== "GET" || url.pathname !== "/callback") {
       response.writeHead(404).end("Not found.");
       return;
     }
 
-    // The IdP reports a denied/failed authorization via `error`.
-    if (url.searchParams.has("error")) {
-      response.writeHead(400, { "content-type": "text/plain", "cache-control": "no-store" })
-        .end("Authorization denied.");
-      rejectCode(new Error(`Authorization denied: ${url.searchParams.get("error")}`));
-      return;
-    }
-
+    // Validate state before acting on any callback — success OR error. The state
+    // secret proves the callback belongs to this login attempt; without this a
+    // local client that discovers the ephemeral port could cancel sign-in with
+    // a forged `error` callback (denial of service). Mirrors mcp/oauth.ts.
     const state = url.searchParams.get("state") ?? "";
     const stateCount = url.searchParams.getAll("state").length;
     if (stateCount !== 1 || !safeEqual(state, expectedState)) {
       response.writeHead(400).end("Invalid state.");
       // Do not reject: a stray/forged callback must not cancel the real wait.
+      return;
+    }
+
+    // The IdP reports a denied/failed authorization via `error`, but only a
+    // state-validated callback may reject the pending login.
+    if (url.searchParams.has("error")) {
+      response.writeHead(400, { "content-type": "text/plain", "cache-control": "no-store" })
+        .end("Authorization denied.");
+      rejectCode(new Error(`Authorization denied: ${url.searchParams.get("error")}`));
       return;
     }
 

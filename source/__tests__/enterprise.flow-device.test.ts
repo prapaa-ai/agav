@@ -114,4 +114,42 @@ describe("obtainIdTokenViaDevice", () => {
       issuer: "https://idp.corp", clientId: "agav-cli", prompt: () => {}, sleep, signal: controller.signal,
     })).rejects.toThrow(/cancelled/);
   });
+
+  it("stops polling once the overall deadline elapses", async () => {
+    // The IdP keeps returning pending; a tiny overall timeout must terminate the
+    // loop rather than polling forever. The injected sleep advances no real time,
+    // so we drive the deadline by making each poll observe elapsed wall-clock.
+    let now = 0;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      vi.stubGlobal("fetch", makeFetch([{ error: "authorization_pending" }]));
+      const sleep = vi.fn(async () => { now += 60_000; }); // 60s per poll cycle
+      await expect(obtainIdTokenViaDevice({
+        issuer: "https://idp.corp",
+        clientId: "agav-cli",
+        prompt: () => {},
+        sleep,
+        timeoutSeconds: 120, // deadline reached after two sleeps
+      })).rejects.toThrow(/timed out/);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("enforces the overall deadline against a stalled network request", async () => {
+    // Discovery never resolves on its own; only the deadline signal aborts it.
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        });
+      });
+    }));
+    await expect(obtainIdTokenViaDevice({
+      issuer: "https://idp.corp",
+      clientId: "agav-cli",
+      prompt: () => {},
+      timeoutSeconds: 0.05, // 50ms overall deadline
+    })).rejects.toThrow();
+  });
 });

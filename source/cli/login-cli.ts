@@ -62,7 +62,7 @@ async function obtainProof(
 ): Promise<IdentityProof> {
   if (flow === "oidc-token") {
     const { obtainIdTokenViaOidc } = await import("../enterprise/flow-oidc-token.js");
-    return obtainIdTokenViaOidc({ audience: opts.controlPlane });
+    return obtainIdTokenViaOidc({ audience: opts.controlPlane, signal });
   }
 
   // Interactive flows need IdP coordinates. Prefer explicit flags; otherwise ask
@@ -89,13 +89,21 @@ async function obtainProof(
     return obtainIdTokenViaDevice({ issuer, clientId, scopes, signal });
   }
   const { obtainIdTokenViaAuthCode } = await import("../enterprise/flow-auth-code.js");
-  return obtainIdTokenViaAuthCode({ issuer, clientId, scopes, openBrowser: openExternal });
+  return obtainIdTokenViaAuthCode({ issuer, clientId, scopes, openBrowser: openExternal, signal });
 }
 
 /** Entry point for `agav login` / `agav logout`. Returns a process exit code. */
 export async function runLoginCommand(command: string | undefined, args: string[]): Promise<number> {
   if (command === "logout") {
-    await clearEnrolledPolicy();
+    try {
+      await clearEnrolledPolicy();
+    } catch (error) {
+      console.error(
+        `Could not sign out: the enrollment cache could not be removed (${error instanceof Error ? error.message : String(error)}).\n` +
+        "Your organization's settings are still active. Fix the file permissions and try again.",
+      );
+      return 1;
+    }
     console.log("Signed out of your organization. Restart Agav to apply.");
     return 0;
   }

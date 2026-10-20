@@ -89,6 +89,18 @@ export interface AgavConfig {
   orgAllowedProviders?: AgavConfig["provider"][];
   /** Control-plane address seeded by the org, used by a future `agav login`. */
   controlPlane?: string;
+  /**
+   * Managed hard pins and permission floor recorded by applyOrgConfig. Unlike
+   * the pinned `provider`/`model`/`permissionMode` values (which later startup
+   * routing and interactive changes may overwrite), these are retained so every
+   * boundary can re-enforce them. The user can never loosen them.
+   */
+  /** Provider the org hard-pinned; a chosen provider must equal it. */
+  orgManagedProvider?: AgavConfig["provider"];
+  /** Model the org hard-pinned; a chosen model must equal it. */
+  orgManagedModel?: string;
+  /** Loosest permission mode the org allows; the effective mode may only tighten. */
+  orgPermissionFloor?: PermissionMode;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -354,6 +366,15 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "geminiApiKey",
   "permissionMode",
   "backgroundAutomation",
+  // A project-supplied controlPlane would redirect `agav login` to post the
+  // user's identity proof (id_token + nonce) to an attacker-controlled /session.
+  // The control-plane address may come only from the --control-plane flag,
+  // AGAV_CONTROL_PLANE, an admin-shipped org policy, or the built-in default.
+  "controlPlane",
+  // Org-tier selection allowlists are admin-only; a project must not be able to
+  // declare itself in-policy.
+  "orgAllowedModels",
+  "orgAllowedProviders",
 ]);
 
 /** Ignore invalid hand-edited values instead of passing unsupported effort levels to providers. */

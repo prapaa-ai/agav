@@ -80,6 +80,27 @@ describe("enroll", () => {
     await expect(enroll("https://auth.corp", proof)).rejects.toThrow(/missing a policy/);
   });
 
+  it("rejects a malformed policy so it cannot poison the enrollment cache", async () => {
+    // A non-array allowedTools would otherwise be cast and crash every later
+    // startup inside applyOrgConfig. Rejecting here leaves any prior cache intact
+    // (persistSession runs only on a successful enroll).
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ policy: { allowedTools: { length: 1 } } })),
+    );
+    await expect(enroll("https://auth.corp", proof)).rejects.toThrow(/malformed policy/);
+  });
+
+  it("drops malformed fields from an otherwise-valid policy before returning", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ policy: { provider: "openai", allowedModels: [1, "ok"] } })),
+    );
+    const session = await enroll("https://auth.corp", proof);
+    expect(session.policy.provider).toBe("openai");
+    expect(session.policy.allowedModels).toEqual(["ok"]);
+  });
+
   it("throws when the response is not JSON", async () => {
     vi.stubGlobal(
       "fetch",

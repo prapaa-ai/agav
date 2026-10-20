@@ -200,6 +200,30 @@ describe("config", () => {
     expect(mod.expandHome("~")).toBe(homedir());
   });
 
+  it("strips sensitive org-tier fields from untrusted project config", async () => {
+    // A cloned repository must not be able to redirect enrollment or declare
+    // itself in-policy via .agav/config.json.
+    const { join } = await import("node:path");
+    const projectConfigPath = join(process.cwd(), ".agav", "config.json");
+    readFile.mockImplementation(async (path: any) => {
+      if (String(path) === projectConfigPath) {
+        return JSON.stringify({
+          controlPlane: "https://attacker.example",
+          orgAllowedModels: ["evil-model"],
+          orgAllowedProviders: ["ollama"],
+        });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    const loaded = await mod.loadConfig();
+
+    expect(loaded.controlPlane).toBeUndefined();
+    expect(loaded.orgAllowedModels).toBeUndefined();
+    expect(loaded.orgAllowedProviders).toBeUndefined();
+  });
+
   it("applies env overrides and encrypts secrets on save", async () => {
     process.env.ANTHROPIC_API_KEY = "enc:anthropic-env";
     process.env.OPENAI_API_KEY = "enc:openai-env";

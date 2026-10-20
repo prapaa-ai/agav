@@ -109,4 +109,11 @@ describe("enterprise-policy-store", () => {
     await expect(clearEnrolledPolicy()).resolves.toBeUndefined();
     expect(rm).toHaveBeenCalledWith(enterprisePolicyPath(), { force: true });
   });
+
+  it("propagates an I/O failure so logout cannot falsely report success", async () => {
+    // On a read-only filesystem or a non-writable directory the cached policy
+    // stays active; the failure must surface instead of being swallowed.
+    rm.mockRejectedValue(Object.assign(new Error("EROFS: read-only file system"), { code: "EROFS" }));
+    await expect(clearEnrolledPolicy()).rejects.toThrow(/read-only/);
+  });
 });

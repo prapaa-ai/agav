@@ -35,6 +35,7 @@ import {
   selectConfiguredProvider,
   type ProviderName,
 } from "./config/startup.js";
+import { clampPermissionMode } from "./config/org-config.js";
 
 const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
@@ -820,7 +821,8 @@ export async function main() {
   }
 
   if (flags.autoAccept) {
-    config.permissionMode = "auto-accept";
+    // Clamp to the org floor: `-y` must not loosen a managed permission policy.
+    config.permissionMode = clampPermissionMode("auto-accept", config.orgPermissionFloor);
   } else if (flags.denyWrites) {
     config.permissionMode = "deny-writes";
   }

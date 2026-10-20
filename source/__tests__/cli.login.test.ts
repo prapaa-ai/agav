@@ -74,6 +74,14 @@ describe("runLoginCommand: logout", () => {
     expect(code).toBe(0);
     expect(clearEnrolledPolicy).toHaveBeenCalledTimes(1);
   });
+
+  it("reports failure when the cache cannot be removed", async () => {
+    vi.mocked(clearEnrolledPolicy).mockRejectedValueOnce(new Error("EROFS: read-only file system"));
+    const code = await runLoginCommand("logout", []);
+    expect(code).toBe(1);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("still active"));
+    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining("Signed out"));
+  });
 });
 
 describe("runLoginCommand: login", () => {
@@ -110,7 +118,7 @@ describe("runLoginCommand: login", () => {
 
     const code = await runLoginCommand("login", ["--oidc"]);
     expect(code).toBe(0);
-    expect(obtainIdTokenViaOidc).toHaveBeenCalledWith({ audience: "https://auth.corp" });
+    expect(obtainIdTokenViaOidc).toHaveBeenCalledWith({ audience: "https://auth.corp", signal: expect.anything() });
     expect(mockedEnroll).toHaveBeenCalledWith("https://auth.corp", { idToken: "idt", flow: "oidc-token" }, expect.anything());
     expect(persistSession).toHaveBeenCalledTimes(1);
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("ci@corp"));

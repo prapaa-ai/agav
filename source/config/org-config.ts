@@ -70,6 +70,70 @@ export interface OrgConfig {
 /** Order of restrictiveness for permissionMode, strictest first. */
 const PERMISSION_STRICTNESS: PermissionMode[] = ["deny-writes", "ask", "auto-accept"];
 
+/** Narrow an unknown value to a string[] (dropping it entirely if malformed). */
+function asStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((v): v is string => typeof v === "string");
+}
+
+/**
+ * Validate and coerce an untrusted policy object into a safe OrgConfig. Guards
+ * the enforcement path against a bad file or a malformed control-plane
+ * `/session` response: without it a value like `{"allowedTools":{"length":1}}`
+ * would be cast to OrgConfig, then crash every later startup inside
+ * `applyOrgConfig` (e.g. `TypeError: org.allowedTools is not iterable`) and
+ * poison the persistent cache.
+ *
+ * Fail-closed on a structurally wrong known field (e.g. a restriction list that
+ * is not an array): a *security* policy must not be silently weakened by dropping
+ * a malformed restriction, so the whole policy is rejected (undefined) and any
+ * existing valid cache is preserved. Wrong element types inside a correct
+ * container are filtered. Unknown keys and a scalar field of the wrong type are
+ * ignored. Returns undefined for a non-object input.
+ *
+ * This is malformed-input hardening, not an assumption that a trusted source is
+ * adversarial.
+ */
+export function sanitizeOrgConfig(input: unknown): OrgConfig | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const raw = input as Record<string, unknown>;
+  const out: OrgConfig = {};
+
+  if (typeof raw.provider === "string") out.provider = raw.provider as OrgConfig["provider"];
+  if (typeof raw.model === "string") out.model = raw.model;
+  if (typeof raw.openaiBaseURL === "string") out.openaiBaseURL = raw.openaiBaseURL;
+  if (raw.openaiHeaders !== undefined) {
+    if (typeof raw.openaiHeaders !== "object" || Array.isArray(raw.openaiHeaders)) return undefined;
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries(raw.openaiHeaders as Record<string, unknown>)) {
+      if (typeof value === "string") headers[key] = value;
+    }
+    out.openaiHeaders = headers;
+  }
+  if (raw.permissionMode !== undefined) {
+    if (raw.permissionMode !== "deny-writes" && raw.permissionMode !== "ask" && raw.permissionMode !== "auto-accept") {
+      return undefined;
+    }
+    out.permissionMode = raw.permissionMode;
+  }
+  // Restriction lists are security-critical: a wrong container type fails closed.
+  if (raw.allowedModels !== undefined) {
+    if (!Array.isArray(raw.allowedModels)) return undefined;
+    out.allowedModels = asStringArray(raw.allowedModels)!;
+  }
+  if (raw.allowedProviders !== undefined) {
+    if (!Array.isArray(raw.allowedProviders)) return undefined;
+    out.allowedProviders = asStringArray(raw.allowedProviders) as OrgConfig["allowedProviders"];
+  }
+  if (raw.allowedTools !== undefined) {
+    if (!Array.isArray(raw.allowedTools)) return undefined;
+    out.allowedTools = asStringArray(raw.allowedTools)!;
+  }
+  if (typeof raw.controlPlane === "string") out.controlPlane = raw.controlPlane;
+
+  return out;
+}
+
 /** True when `candidate` is at least as strict as `floor`. */
 function isAtLeastAsStrict(candidate: PermissionMode, floor: PermissionMode): boolean {
   return PERMISSION_STRICTNESS.indexOf(candidate) <= PERMISSION_STRICTNESS.indexOf(floor);
@@ -93,7 +157,7 @@ export async function loadOrgConfig(): Promise<OrgConfig | undefined> {
   // Fall back to a policy delivered by authenticated enrollment.
   const { loadEnrolledPolicy } = await import("./enterprise-policy-store.js");
   const enrolled = await loadEnrolledPolicy();
-  return enrolled?.policy;
+  return enrolled ? sanitizeOrgConfig(enrolled.policy) : undefined;
 }
 
 /** Load the org policy from the admin-shipped file source only. */
@@ -106,10 +170,8 @@ async function loadOrgConfigFromFile(): Promise<OrgConfig | undefined> {
   for (const path of candidates) {
     try {
       const raw = await readFile(path, "utf-8");
-      const parsed = JSON.parse(raw) as unknown;
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return parsed as OrgConfig;
-      }
+      const sanitized = sanitizeOrgConfig(JSON.parse(raw));
+      if (sanitized) return sanitized;
     } catch {
       // Missing/unreadable/invalid file at this path: try the next candidate.
     }
@@ -133,13 +195,23 @@ async function loadOrgConfigFromFile(): Promise<OrgConfig | undefined> {
 export function applyOrgConfig(merged: AgavConfig, org: OrgConfig | undefined): AgavConfig {
   if (!org) return merged;
 
-  if (org.provider !== undefined) merged.provider = org.provider;
-  if (org.model !== undefined) merged.model = org.model;
+  if (org.provider !== undefined) {
+    merged.provider = org.provider;
+    // Record the pin so later startup routing / interactive changes can't drop it.
+    merged.orgManagedProvider = org.provider;
+  }
+  if (org.model !== undefined) {
+    merged.model = org.model;
+    merged.orgManagedModel = org.model;
+  }
   if (org.openaiBaseURL !== undefined) merged.openaiBaseURL = org.openaiBaseURL;
   if (org.openaiHeaders !== undefined) merged.openaiHeaders = org.openaiHeaders;
 
   if (org.permissionMode !== undefined) {
     // Floor: never let the effective mode be looser than the org requires.
+    // Record it so later widening (CLI -y, interactive "Always", child agents)
+    // can be clamped back to this floor.
+    merged.orgPermissionFloor = org.permissionMode;
     if (!isAtLeastAsStrict(merged.permissionMode, org.permissionMode)) {
       merged.permissionMode = org.permissionMode;
     }
@@ -172,4 +244,41 @@ export function applyOrgConfig(merged: AgavConfig, org: OrgConfig | undefined): 
   return merged;
 }
 
-export { ORG_CONFIG_ENV, systemOrgConfigPaths, isAtLeastAsStrict };
+/**
+ * Clamp a requested permission mode against the org floor, if any. Returns the
+ * requested mode when it is at least as strict as the floor, otherwise the floor.
+ * Call this wherever permissions widen after config load — CLI `-y`, interactive
+ * "Always", and child-agent modes — so the managed floor always survives.
+ */
+export function clampPermissionMode(
+  requested: PermissionMode,
+  floor: PermissionMode | undefined,
+): PermissionMode {
+  if (!floor) return requested;
+  return isAtLeastAsStrict(requested, floor) ? requested : floor;
+}
+
+/**
+ * Re-assert the org's hard provider/model pins on a resolved config, returning an
+ * error message when a later selection (CLI flags, resumed/recent session,
+ * model-catalog routing) replaced a managed pin with a different value. The pins
+ * are mandatory and cannot be loosened; this is checked after startup routing and
+ * at every selection boundary, not only via the allowlist path.
+ */
+export function managedPinError(config: AgavConfig): string | null {
+  if (config.orgManagedProvider !== undefined && config.provider !== config.orgManagedProvider) {
+    return `Provider ${JSON.stringify(config.provider)} is not permitted by your organization's policy. ` +
+      `Your organization requires provider ${JSON.stringify(config.orgManagedProvider)}.`;
+  }
+  if (config.orgManagedModel !== undefined && config.model !== config.orgManagedModel) {
+    return `Model ${JSON.stringify(config.model)} is not permitted by your organization's policy. ` +
+      `Your organization requires model ${JSON.stringify(config.orgManagedModel)}.`;
+  }
+  return null;
+}
+
+export {
+  ORG_CONFIG_ENV,
+  systemOrgConfigPaths,
+  isAtLeastAsStrict,
+};

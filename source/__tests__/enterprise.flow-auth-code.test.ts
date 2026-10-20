@@ -141,4 +141,30 @@ describe("obtainIdTokenViaAuthCode (end to end)", () => {
       report: () => {},
     })).rejects.toThrow(EnterpriseAuthError);
   });
+
+  it("cancels the pending callback wait when the external signal aborts", async () => {
+    const realFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("127.0.0.1")) return realFetch(url, init);
+      if (u.includes("/.well-known/openid-configuration")) return jsonResponse(discoveryDoc);
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+
+    const controller = new AbortController();
+    // The browser "opens" but never delivers a callback; Ctrl-C (external abort)
+    // must tear down the loopback wait instead of hanging until the timeout.
+    const openBrowser = vi.fn(async () => {
+      setTimeout(() => controller.abort(new EnterpriseAuthError("Login cancelled.")), 10);
+      return true;
+    });
+
+    await expect(obtainIdTokenViaAuthCode({
+      issuer: "https://idp.corp",
+      clientId: "agav-cli",
+      openBrowser,
+      report: () => {},
+      signal: controller.signal,
+    })).rejects.toThrow(/cancelled/i);
+  });
 });

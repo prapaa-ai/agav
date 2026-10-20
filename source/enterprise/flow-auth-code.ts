@@ -30,6 +30,12 @@ export interface AuthCodeOptions {
   openBrowser?: (url: string) => Promise<boolean>;
   /** Injectable status reporter (defaults to stderr). */
   report?: (message: string) => void;
+  /**
+   * External cancellation (e.g. Ctrl-C from the CLI). Combined with the internal
+   * timeout so aborting the caller tears down discovery, the loopback wait, and
+   * the token exchange immediately instead of leaving the login pending.
+   */
+  signal?: AbortSignal;
 }
 
 interface TokenResponse {
@@ -108,8 +114,19 @@ export async function obtainIdTokenViaAuthCode(options: AuthCodeOptions): Promis
   const timeoutMs = (options.timeoutSeconds ?? 300) * 1000;
   const scope = ["openid", ...(options.scopes ?? [])].filter((s, i, a) => a.indexOf(s) === i).join(" ");
 
+  // Combine the internal timeout with the caller's cancellation so either one
+  // tears down every in-flight step (discovery, callback wait, token exchange).
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new EnterpriseAuthError("Login timed out.")), timeoutMs);
+  const onExternalAbort = () => {
+    controller.abort(
+      options.signal?.reason instanceof Error ? options.signal.reason : new EnterpriseAuthError("Login cancelled."),
+    );
+  };
+  if (options.signal) {
+    if (options.signal.aborted) onExternalAbort();
+    else options.signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
 
   try {
     const meta = await discoverOidc(options.issuer, controller.signal);
@@ -152,6 +169,7 @@ export async function obtainIdTokenViaAuthCode(options: AuthCodeOptions): Promis
     }
   } finally {
     clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onExternalAbort);
   }
 }
 
