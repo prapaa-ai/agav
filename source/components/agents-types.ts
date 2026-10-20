@@ -10,6 +10,7 @@ export interface AgentsTUIProps {
   onExit: () => void;
   provider?: import("../providers/types.js").LLMProvider | null;
   config?: import("../config/config.js").AgavConfig;
+  height?: number;
 }
 
 export type AgentReadiness = { ready: boolean; missing: string[] };

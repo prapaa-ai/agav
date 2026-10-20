@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
     setScheduleEnabled: vi.fn(),
     deleteSchedule: vi.fn(),
   },
-  props: undefined as undefined | { adapter: ResourceAdapter; prompt?: string; actions: { key: string; label: string; run(item: ResourceItem | undefined): unknown }[] },
+  props: undefined as undefined | { adapter: ResourceAdapter; height?: number; prompt?: string; actions: { key: string; label: string; run(item: ResourceItem | undefined): unknown }[] },
 }));
 vi.mock("../background-jobs-integration.js", () => ({
   getSharedCoordinator: async () => mocks.coordinator,
@@ -238,7 +238,7 @@ describe("job schedules adapter", () => {
 });
 
 describe("JobsTUI", () => {
-  async function mountJobsTUI() {
+  async function mountJobsTUI(height = 16) {
     vi.resetModules();
     vi.doMock("../components/resource-manager.js", () => ({
       ResourceManager: (props: NonNullable<typeof mocks.props>) => { mocks.props = props; return null; },
@@ -249,7 +249,7 @@ describe("JobsTUI", () => {
     Object.assign(stdout, { isTTY: true, columns: 100, rows: 24, write: () => true });
     const stdin = new EventEmitter() as NodeJS.ReadStream;
     Object.assign(stdin, { isTTY: true, setRawMode: () => stdin, resume: () => stdin, pause: () => stdin, read: () => null });
-    const instance = render(h(JobsTUI, { onExit: vi.fn(), permissionMode: "ask" }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
+    const instance = render(h(JobsTUI, { onExit: vi.fn(), permissionMode: "ask", height }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
     const settle = async () => { await new Promise((r) => setTimeout(r, 50)); await instance.waitUntilRenderFlush(); };
     const key = async (text: string) => { stdin.emit("data", Buffer.from(text)); await settle(); };
     const action = (k: string) => mocks.props!.actions.find((a) => a.key === k)!;
@@ -258,6 +258,15 @@ describe("JobsTUI", () => {
     return { settle, key, action, cleanup };
   }
   const jobItem = { id: summary.jobId, title: "", description: "", detail: "" };
+
+  it("passes the app's available height to the resource manager", async () => {
+    const ui = await mountJobsTUI(16);
+    try {
+      expect(mocks.props!.height).toBe(16);
+    } finally {
+      ui.cleanup();
+    }
+  });
 
   it("switches between jobs and schedules and offers stop only for jobs", async () => {
     const ui = await mountJobsTUI();
