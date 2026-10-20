@@ -136,6 +136,30 @@ describe("obtainIdTokenViaDevice", () => {
     }
   });
 
+  it("aborts an in-progress sleep when the device code expires before it ends", async () => {
+    // expires_in (short) is well below the polling interval (long). The default
+    // abortable sleep must be cut short at expiry instead of sleeping the full
+    // interval, and the failure must be the code-expiry error.
+    const shortExpiryDoc = { ...deviceDoc, expires_in: 0.05, interval: 10 };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/.well-known/openid-configuration")) return jsonResponse(discoveryDoc);
+      if (u === "https://idp.corp/device") return jsonResponse(shortExpiryDoc);
+      if (u === "https://idp.corp/token") return jsonResponse({ error: "authorization_pending" }, 400);
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+    const start = Date.now();
+    await expect(obtainIdTokenViaDevice({
+      issuer: "https://idp.corp",
+      clientId: "agav-cli",
+      prompt: () => {},
+      // No injected sleep: use the real abortable delay so expiry cuts it short.
+      timeoutSeconds: 300,
+    })).rejects.toThrow(/expired/);
+    // Rejected near expiry (~50ms), not after the 10s interval.
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
   it("enforces the overall deadline against a stalled network request", async () => {
     // Discovery never resolves on its own; only the deadline signal aborts it.
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {

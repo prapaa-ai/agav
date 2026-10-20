@@ -29,7 +29,8 @@ export const fastCommand: SlashCommand = {
   usage: "Usage: /fast\n\nSwitches to the fastest model for the current provider.\nUse for simple questions, quick lookups, or when speed matters more than depth.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
     const model = FAST_MODELS[context.config.provider] ?? FAST_MODELS.openai!
-    context.setModel(model)
+    const error = context.setModel(model)
+    if (error) return { type: "message", text: error }
     return { type: "message", text: `Switched to fast model: ${model}` }
   },
 }
@@ -41,7 +42,8 @@ export const deepCommand: SlashCommand = {
   usage: "Usage: /deep\n\nSwitches to the most capable model for the current provider.\nUse for complex reasoning, large refactors, or architecture decisions.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
     const model = DEEP_MODELS[context.config.provider] ?? DEEP_MODELS.openai!
-    context.setModel(model)
+    const error = context.setModel(model)
+    if (error) return { type: "message", text: error }
     return { type: "message", text: `Switched to deep model: ${model}` }
   },
 }

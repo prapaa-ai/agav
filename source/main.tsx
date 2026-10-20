@@ -388,7 +388,13 @@ export async function runPipeMode(
     ? effectiveSystemPrompt
     : `${effectiveSystemPrompt}\n\nYour final response MUST be valid JSON matching this schema: ${schemaJson}. Return only the JSON value, with no markdown fences or commentary.`;
 
-  const permissionMode = options.permissionOverride ?? "auto-accept";
+  // Clamp the headless mode (default or explicit --permission override) to the
+  // org floor: `agav -P` / `agav run` must not auto-accept writes below a managed
+  // deny-writes/ask policy.
+  const permissionMode = clampPermissionMode(
+    options.permissionOverride ?? "auto-accept",
+    config.orgPermissionFloor,
+  );
   const iterationsBudget = { remaining: config.maxIterations, total: config.maxIterations };
 
   const runTurn = async (streamText: boolean): Promise<{ finalText: string; exitCode: number; wroteStreamText: boolean }> => {
@@ -409,6 +415,7 @@ export async function runPipeMode(
         maxTokens: config.maxTokens,
         iterationsBudget: iterationsBudget,
         permissionMode,
+        permissionFloor: config.orgPermissionFloor,
         // print/run mode has no human to confirm background jobs.
         headless: true,
         allowedTools: options.allowedToolsOverride,

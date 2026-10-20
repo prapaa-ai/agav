@@ -70,40 +70,67 @@ export interface OrgConfig {
 /** Order of restrictiveness for permissionMode, strictest first. */
 const PERMISSION_STRICTNESS: PermissionMode[] = ["deny-writes", "ask", "auto-accept"];
 
-/** Narrow an unknown value to a string[] (dropping it entirely if malformed). */
-function asStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.filter((v): v is string => typeof v === "string");
+/**
+ * Providers the org policy may name in `provider` / `allowedProviders`. Kept in
+ * sync with AgavConfig["provider"]; defined locally to avoid importing from
+ * config/startup (which import this module). A compile-time check below ensures
+ * this set exactly matches the union.
+ */
+const VALID_PROVIDERS = [
+  "anthropic", "openai", "openrouter", "nvidia", "deepseek", "ollama", "gemini", "vertex-ai",
+] as const;
+type ValidProvider = (typeof VALID_PROVIDERS)[number];
+// Fails to compile if AgavConfig["provider"] and VALID_PROVIDERS drift apart.
+const _providerExhaustiveness: Record<AgavConfig["provider"], true> = {
+  anthropic: true, openai: true, openrouter: true, nvidia: true,
+  deepseek: true, ollama: true, gemini: true, "vertex-ai": true,
+};
+void _providerExhaustiveness;
+
+function isValidProvider(value: unknown): value is ValidProvider {
+  return typeof value === "string" && (VALID_PROVIDERS as readonly string[]).includes(value);
 }
 
+/** Error for a present-but-invalid org policy (file or enrollment). */
+export class OrgConfigError extends Error {}
+
 /**
- * Validate and coerce an untrusted policy object into a safe OrgConfig. Guards
- * the enforcement path against a bad file or a malformed control-plane
- * `/session` response: without it a value like `{"allowedTools":{"length":1}}`
- * would be cast to OrgConfig, then crash every later startup inside
- * `applyOrgConfig` (e.g. `TypeError: org.allowedTools is not iterable`) and
- * poison the persistent cache.
+ * Validate an untrusted policy object into a safe OrgConfig, or throw
+ * OrgConfigError when a present policy is invalid. This is the strict core used
+ * by both the file loader (which surfaces the error) and sanitizeOrgConfig
+ * (which converts a throw into undefined). Guards the enforcement path against a
+ * bad file or a malformed control-plane `/session` response: without it a value
+ * like `{"allowedTools":{"length":1}}` would be cast to OrgConfig, then crash
+ * every later startup inside `applyOrgConfig` and poison the persistent cache.
  *
- * Fail-closed on a structurally wrong known field (e.g. a restriction list that
- * is not an array): a *security* policy must not be silently weakened by dropping
- * a malformed restriction, so the whole policy is rejected (undefined) and any
- * existing valid cache is preserved. Wrong element types inside a correct
- * container are filtered. Unknown keys and a scalar field of the wrong type are
- * ignored. Returns undefined for a non-object input.
- *
- * This is malformed-input hardening, not an assumption that a trusted source is
- * adversarial.
+ * Fail-closed, never fail-open: a security policy must not be silently weakened.
+ *   - A restriction list (allowedModels/allowedProviders/allowedTools) must be an
+ *     array of non-empty strings; a wrong container, a non-string/empty member,
+ *     or an empty-after-parse list is rejected (an empty list reads as "no
+ *     restriction", so turning a malformed one into [] would loosen policy).
+ *   - `provider` and every `allowedProviders` member must be a known provider.
+ *   - `permissionMode` must be a valid mode.
+ *   - A scalar field of the wrong type and unknown keys are ignored.
  */
-export function sanitizeOrgConfig(input: unknown): OrgConfig | undefined {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+export function parseOrgConfig(input: unknown): OrgConfig {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new OrgConfigError("Organization policy must be a JSON object.");
+  }
   const raw = input as Record<string, unknown>;
   const out: OrgConfig = {};
 
-  if (typeof raw.provider === "string") out.provider = raw.provider as OrgConfig["provider"];
+  if (raw.provider !== undefined) {
+    if (!isValidProvider(raw.provider)) {
+      throw new OrgConfigError(`Organization policy pins an unknown provider: ${JSON.stringify(raw.provider)}.`);
+    }
+    out.provider = raw.provider;
+  }
   if (typeof raw.model === "string") out.model = raw.model;
   if (typeof raw.openaiBaseURL === "string") out.openaiBaseURL = raw.openaiBaseURL;
   if (raw.openaiHeaders !== undefined) {
-    if (typeof raw.openaiHeaders !== "object" || Array.isArray(raw.openaiHeaders)) return undefined;
+    if (typeof raw.openaiHeaders !== "object" || Array.isArray(raw.openaiHeaders)) {
+      throw new OrgConfigError("Organization policy openaiHeaders must be an object.");
+    }
     const headers: Record<string, string> = {};
     for (const [key, value] of Object.entries(raw.openaiHeaders as Record<string, unknown>)) {
       if (typeof value === "string") headers[key] = value;
@@ -112,26 +139,61 @@ export function sanitizeOrgConfig(input: unknown): OrgConfig | undefined {
   }
   if (raw.permissionMode !== undefined) {
     if (raw.permissionMode !== "deny-writes" && raw.permissionMode !== "ask" && raw.permissionMode !== "auto-accept") {
-      return undefined;
+      throw new OrgConfigError(`Organization policy has an invalid permissionMode: ${JSON.stringify(raw.permissionMode)}.`);
     }
     out.permissionMode = raw.permissionMode;
   }
-  // Restriction lists are security-critical: a wrong container type fails closed.
   if (raw.allowedModels !== undefined) {
-    if (!Array.isArray(raw.allowedModels)) return undefined;
-    out.allowedModels = asStringArray(raw.allowedModels)!;
+    out.allowedModels = parseStringRestriction(raw.allowedModels, "allowedModels");
   }
   if (raw.allowedProviders !== undefined) {
-    if (!Array.isArray(raw.allowedProviders)) return undefined;
-    out.allowedProviders = asStringArray(raw.allowedProviders) as OrgConfig["allowedProviders"];
+    const providers = parseStringRestriction(raw.allowedProviders, "allowedProviders");
+    for (const p of providers) {
+      if (!isValidProvider(p)) {
+        throw new OrgConfigError(`Organization policy allowedProviders contains an unknown provider: ${JSON.stringify(p)}.`);
+      }
+    }
+    out.allowedProviders = providers as OrgConfig["allowedProviders"];
   }
   if (raw.allowedTools !== undefined) {
-    if (!Array.isArray(raw.allowedTools)) return undefined;
-    out.allowedTools = asStringArray(raw.allowedTools)!;
+    out.allowedTools = parseStringRestriction(raw.allowedTools, "allowedTools");
   }
   if (typeof raw.controlPlane === "string") out.controlPlane = raw.controlPlane;
 
   return out;
+}
+
+/**
+ * Parse a restriction list: must be a non-empty array whose members are all
+ * non-empty strings. Rejects anything that would collapse into an empty "no
+ * restriction" list rather than silently loosening the policy.
+ */
+function parseStringRestriction(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new OrgConfigError(`Organization policy ${field} must be a non-empty array of strings.`);
+  }
+  for (const member of value) {
+    if (typeof member !== "string" || member.length === 0) {
+      throw new OrgConfigError(`Organization policy ${field} must contain only non-empty strings.`);
+    }
+  }
+  return value as string[];
+}
+
+/**
+ * Validate a policy object, returning undefined when it is absent/non-object or
+ * present-but-invalid. Used on the control-plane `/session` path, where a
+ * rejected (malformed) response must leave any existing valid cache intact
+ * rather than throwing through the caller.
+ */
+export function sanitizeOrgConfig(input: unknown): OrgConfig | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  try {
+    return parseOrgConfig(input);
+  } catch (error) {
+    if (error instanceof OrgConfigError) return undefined;
+    throw error;
+  }
 }
 
 /** True when `candidate` is at least as strict as `floor`. */
@@ -160,7 +222,15 @@ export async function loadOrgConfig(): Promise<OrgConfig | undefined> {
   return enrolled ? sanitizeOrgConfig(enrolled.policy) : undefined;
 }
 
-/** Load the org policy from the admin-shipped file source only. */
+/**
+ * Load the org policy from the admin-shipped file source only.
+ *
+ * Distinguishes an *absent* policy (missing/unreadable file, or invalid JSON —
+ * try the next candidate, ultimately undefined) from a *present but invalid*
+ * policy (a readable file that parses to JSON but fails validation). The latter
+ * throws OrgConfigError so startup reports an actionable error rather than
+ * silently proceeding without the admin's mandatory restrictions.
+ */
 async function loadOrgConfigFromFile(): Promise<OrgConfig | undefined> {
   const candidates: string[] = [];
   const fromEnv = process.env[ORG_CONFIG_ENV];
@@ -168,13 +238,21 @@ async function loadOrgConfigFromFile(): Promise<OrgConfig | undefined> {
   candidates.push(...systemOrgConfigPaths());
 
   for (const path of candidates) {
+    let raw: string;
     try {
-      const raw = await readFile(path, "utf-8");
-      const sanitized = sanitizeOrgConfig(JSON.parse(raw));
-      if (sanitized) return sanitized;
+      raw = await readFile(path, "utf-8");
     } catch {
-      // Missing/unreadable/invalid file at this path: try the next candidate.
+      continue; // Missing/unreadable file: try the next candidate.
     }
+    let json: unknown;
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      continue; // Not valid JSON: treat as absent and try the next candidate.
+    }
+    // The file is present and parses: a validation failure is a present-but-invalid
+    // policy and must surface, not be swallowed.
+    return parseOrgConfig(json);
   }
   return undefined;
 }

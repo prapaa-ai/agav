@@ -91,14 +91,32 @@ describe("enroll", () => {
     await expect(enroll("https://auth.corp", proof)).rejects.toThrow(/malformed policy/);
   });
 
-  it("drops malformed fields from an otherwise-valid policy before returning", async () => {
+  it("rejects a policy whose restriction list has non-string members", async () => {
+    // Fail-closed: a bad member must not be filtered into a weaker restriction;
+    // the whole response is rejected, preserving any prior valid cache.
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(jsonResponse({ policy: { provider: "openai", allowedModels: [1, "ok"] } })),
     );
+    await expect(enroll("https://auth.corp", proof)).rejects.toThrow(/malformed policy/);
+  });
+
+  it("rejects a policy that pins an unknown provider", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ policy: { provider: "not-a-provider" } })),
+    );
+    await expect(enroll("https://auth.corp", proof)).rejects.toThrow(/malformed policy/);
+  });
+
+  it("returns a valid policy with well-formed restrictions", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(jsonResponse({ policy: { provider: "openai", allowedModels: ["gpt-5.4"] } })),
+    );
     const session = await enroll("https://auth.corp", proof);
     expect(session.policy.provider).toBe("openai");
-    expect(session.policy.allowedModels).toEqual(["ok"]);
+    expect(session.policy.allowedModels).toEqual(["gpt-5.4"]);
   });
 
   it("throws when the response is not JSON", async () => {

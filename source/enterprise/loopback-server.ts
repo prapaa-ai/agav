@@ -108,27 +108,56 @@ export async function startLoopbackServer(
     server.close();
   };
 
-  if (signal) {
-    if (signal.aborted) {
-      close();
-      rejectCode(signal.reason instanceof Error ? signal.reason : new Error("Login aborted."));
-    } else {
-      signal.addEventListener("abort", () => {
-        close();
-        rejectCode(signal.reason instanceof Error ? signal.reason : new Error("Login aborted."));
-      }, { once: true });
-    }
+  const abortReason = () =>
+    signal?.reason instanceof Error ? signal.reason : new Error("Login aborted.");
+
+  // Reject immediately for an already-aborted signal: never start a listener.
+  if (signal?.aborted) {
+    rejectCode(abortReason());
+    throw abortReason();
   }
 
+  // Bind the listener. Abort during binding must settle *this* promise too, not
+  // just waitForCode, so the caller's `await startLoopbackServer(...)` completes
+  // (rejects) rather than hanging until the never-arriving listen callback.
   await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
+    const onAbort = () => {
+      close();
+      const reason = abortReason();
+      rejectCode(reason);
+      reject(reason);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    server.once("error", (error) => {
+      signal?.removeEventListener("abort", onAbort);
+      reject(error);
+    });
+    server.listen(0, "127.0.0.1", () => {
+      // Listening: hand abort over to the steady-state handler below and resolve.
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    });
   });
 
   const address = server.address();
   if (!address || typeof address === "string") {
     close();
     throw new Error("Could not bind the loopback redirect server.");
+  }
+
+  // Now that we are listening, an abort tears down the server and rejects the
+  // pending code wait.
+  if (signal) {
+    if (signal.aborted) {
+      close();
+      rejectCode(abortReason());
+    } else {
+      signal.addEventListener("abort", () => {
+        close();
+        rejectCode(abortReason());
+      }, { once: true });
+    }
   }
 
   // Stop the server once the code is delivered so the port is released promptly.

@@ -28,6 +28,14 @@ export function createSkillSlashCommand(skill: SkillDefinition): SlashCommand {
             permissionMode: context.config.permissionMode,
             effort: context.config.effort,
             iterationsBudget: { remaining: context.config.maxIterations, total: context.config.maxIterations },
+            policy: {
+              provider: context.config.provider,
+              orgPermissionFloor: context.config.orgPermissionFloor,
+              orgManagedModel: context.config.orgManagedModel,
+              orgAllowedModels: context.config.orgAllowedModels,
+              orgManagedProvider: context.config.orgManagedProvider,
+              orgAllowedProviders: context.config.orgAllowedProviders,
+            },
             onTokenUsage: context.addTokenUsage,
             onEvent: context.createSkillProgressTracker?.(skill.name, args.trim() || skill.description),
           });

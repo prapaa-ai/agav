@@ -375,6 +375,13 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   // declare itself in-policy.
   "orgAllowedModels",
   "orgAllowedProviders",
+  // Derived managed-constraint fields are set only by the trusted org-policy
+  // overlay (applyOrgConfig). A project must not invent admin-only hard pins or a
+  // permission floor, which would otherwise break ordinary startup/selection with
+  // a bogus "organization requires…" error.
+  "orgManagedProvider",
+  "orgManagedModel",
+  "orgPermissionFloor",
 ]);
 
 /** Ignore invalid hand-edited values instead of passing unsupported effort levels to providers. */

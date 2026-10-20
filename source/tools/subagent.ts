@@ -7,7 +7,7 @@ import type { SubagentProgress } from "../agent/subagent-types.js";
 import type { AgavConfig, EffortLevel, PermissionMode } from "../config/config.js";
 import { fetchAvailableModels, findMatchingModels } from "../commands/model.js";
 import type { FetchedModel } from "../commands/model.js";
-import { isProviderName } from "../config/startup.js";
+import { isProviderName, orgPolicyError } from "../config/startup.js";
 import { createProvider } from "../providers/registry.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
 import { ConversationState } from "../agent/conversation.js";
@@ -26,6 +26,8 @@ export interface SubagentToolDeps {
     permissionMode: PermissionMode;
     effort: EffortLevel;
     iterationsBudget: { remaining: number, total: number };
+    /** Org-managed permission floor; child "Always" cannot widen past it. */
+    orgPermissionFloor?: PermissionMode;
   };
   getProviderConfig?: () => AgavConfig;
   confirmationQueue: ConfirmationQueue;
@@ -168,6 +170,18 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           return { output: `Model '${requestedModel}' has an unsupported provider and cannot be initialized.`, isError: true };
         }
 
+        // A subagent inherits the parent's org policy: a requested model/provider
+        // must satisfy any managed pin or allowlist, so it cannot route inference
+        // around the policy through a different model on a cached/new provider.
+        const childPolicyError = orgPolicyError({
+          ...providerConfig,
+          provider: selectedModel.provider,
+          model: selectedModel.id,
+        });
+        if (childPolicyError) {
+          return { output: `Subagent cannot use that model: ${childPolicyError}`, isError: true };
+        }
+
         const approval = await deps.confirmationQueue.enqueue({
           toolName: "subagent_model",
           input: { title, model: requestedModel, activeModel: config.model },
@@ -298,6 +312,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           signal: childController.signal,
           confirmTool,
           permissionMode: config.permissionMode,
+          permissionFloor: config.orgPermissionFloor,
           effort: config.effort,
           iterationsBudget: config.iterationsBudget,
           drainSteers: steerQueue.drain,

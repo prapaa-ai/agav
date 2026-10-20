@@ -389,11 +389,16 @@ export const modelCommand: SlashCommand = {
       }
 
       const selectedModel = selectedFromAmbiguousMatches ? match!.id : model;
-      context.setModel(selectedModel);
-      if (match && match.provider !== context.config.provider
-        && (selectedFromAmbiguousMatches || !matchesProviderPrefix(selectedModel, context.config.provider))) {
-        context.setProvider(match.provider as import("../config/config.js").AgavConfig["provider"]);
-        return { type: "message", text: `Model changed to: ${selectedModel} (switched to ${match.provider})` };
+      const switchProvider = match && match.provider !== context.config.provider
+        && (selectedFromAmbiguousMatches || !matchesProviderPrefix(selectedModel, context.config.provider));
+      if (switchProvider) {
+        const providerError = context.setProvider(match!.provider as import("../config/config.js").AgavConfig["provider"]);
+        if (providerError) return { type: "message", text: `${providerError}${warningSuffix(warnings)}` };
+      }
+      const modelError = context.setModel(selectedModel);
+      if (modelError) return { type: "message", text: `${modelError}${warningSuffix(warnings)}` };
+      if (switchProvider) {
+        return { type: "message", text: `Model changed to: ${selectedModel} (switched to ${match!.provider})` };
       }
       return { type: "message", text: `Model changed to: ${selectedModel}` };
     }
@@ -429,9 +434,14 @@ export const modelCommand: SlashCommand = {
       return { type: "message", text: `Kept model as ${currentModel}${warningSuffix(warnings)}` };
     }
 
-    context.setModel(picked.id);
-    if (picked.provider !== currentProvider && !matchesProviderPrefix(picked.id, currentProvider)) {
-      context.setProvider(picked.provider as AgavConfig["provider"]);
+    const switchProvider = picked.provider !== currentProvider && !matchesProviderPrefix(picked.id, currentProvider);
+    if (switchProvider) {
+      const providerError = context.setProvider(picked.provider as AgavConfig["provider"]);
+      if (providerError) return { type: "message", text: `${providerError}${warningSuffix(warnings)}` };
+    }
+    const modelError = context.setModel(picked.id);
+    if (modelError) return { type: "message", text: `${modelError}${warningSuffix(warnings)}` };
+    if (switchProvider) {
       return { type: "message", text: `Model changed to: ${picked.id} (switched to ${picked.provider})${warningSuffix(warnings)}` };
     }
     return { type: "message", text: `Model changed to: ${picked.id}${warningSuffix(warnings)}` };

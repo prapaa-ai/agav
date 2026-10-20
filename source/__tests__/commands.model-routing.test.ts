@@ -71,4 +71,24 @@ describe("commands/model-routing", () => {
     await expect(route(fastCommand, "vertex-ai")).resolves.toMatch(/^vertex\//);
     await expect(route(deepCommand, "vertex-ai")).resolves.toMatch(/^vertex\//);
   });
+
+  it("reports the policy error instead of a success message when the change is rejected", async () => {
+    // A rejected model change (e.g. org allowlist) must not surface a misleading
+    // "Switched to …" result.
+    const context = createContext("openai");
+    (context.setModel as ReturnType<typeof vi.fn>).mockReturnValue(
+      'Model "gpt-4o-mini" is not permitted by your organization\'s policy.',
+    );
+    const result = await fastCommand.execute("", context);
+    expect(result).toMatchObject({ type: "message" });
+    expect((result as { text: string }).text).toContain("not permitted by your organization");
+    expect((result as { text: string }).text).not.toContain("Switched to fast model");
+  });
+
+  it("reports success when the change is accepted", async () => {
+    const context = createContext("openai");
+    (context.setModel as ReturnType<typeof vi.fn>).mockReturnValue(null);
+    const result = await deepCommand.execute("", context);
+    expect((result as { text: string }).text).toContain("Switched to deep model");
+  });
 });

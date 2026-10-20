@@ -339,6 +339,7 @@ export function useAgent(
           permissionMode: configRef.current.permissionMode,
           effort: configRef.current.effort,
           iterationsBudget: currentIterationsBudgetRef.current ?? { remaining: configRef.current.maxIterations, total: configRef.current.maxIterations },
+          orgPermissionFloor: configRef.current.orgPermissionFloor,
         }),
         getProviderConfig: () => configRef.current,
         confirmationQueue: confirmationQueueRef.current,
@@ -444,6 +445,7 @@ export function useAgent(
             effort: configRef.current.effort,
             iterationsBudget: currentIterationsBudgetRef.current ?? { remaining: configRef.current.maxIterations, total: configRef.current.maxIterations },
           }),
+          getProviderConfig: () => configRef.current,
           confirmTool: skillConfirmCallback,
           onTokenUsage: (usage) => setTokenUsage((prev) => ({
             inputTokens: prev.inputTokens + usage.inputTokens,
@@ -968,6 +970,10 @@ export function useAgent(
           }
 
           abortController.signal.throwIfAborted();
+          // Keep the confirmation queue aware of the org floor so an "Always" is
+          // not silently escalated to a blanket auto-accept when the floor still
+          // requires confirmation.
+          confirmationQueueRef.current.setPermissionFloor(configRef.current.orgPermissionFloor);
           // Attach volatile context to the tail of this turn's user message. It is
           // left frozen in history rather than rewritten on later turns: editing an
           // earlier message would invalidate the very prefix this split protects,

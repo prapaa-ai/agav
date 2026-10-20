@@ -192,16 +192,27 @@ describe("org-config: sanitizeOrgConfig", () => {
     expect(sanitizeOrgConfig({ permissionMode: "bogus" })).toBeUndefined();
   });
 
-  it("filters wrong element types inside a correct list container", () => {
-    const sanitized = sanitizeOrgConfig({ provider: "openai", allowedModels: [1, "ok", null] });
-    expect(sanitized!.provider).toBe("openai");
-    expect(sanitized!.allowedModels).toEqual(["ok"]);
+  it("fails closed when a restriction list contains a non-string member", () => {
+    // A member of the wrong type could silently drop out and weaken the
+    // restriction, so the whole policy is rejected instead of filtered.
+    expect(sanitizeOrgConfig({ provider: "openai", allowedModels: [1, "ok", null] })).toBeUndefined();
+    expect(sanitizeOrgConfig({ allowedProviders: ["openai", 7] })).toBeUndefined();
+  });
+
+  it("fails closed on an empty restriction list (empty means no restriction)", () => {
+    expect(sanitizeOrgConfig({ allowedModels: [] })).toBeUndefined();
+  });
+
+  it("rejects an unknown provider pin or allowlisted provider", () => {
+    expect(sanitizeOrgConfig({ provider: "not-a-provider" })).toBeUndefined();
+    expect(sanitizeOrgConfig({ allowedProviders: ["openai", "nope"] })).toBeUndefined();
   });
 
   it("ignores a scalar field of the wrong type", () => {
-    const sanitized = sanitizeOrgConfig({ provider: 42, model: "claude" });
-    expect(sanitized!.provider).toBeUndefined();
-    expect(sanitized!.model).toBe("claude");
+    // model is a free-form string; a non-string value is simply dropped.
+    const sanitized = sanitizeOrgConfig({ model: 42, openaiBaseURL: "https://gw/v1" });
+    expect(sanitized!.model).toBeUndefined();
+    expect(sanitized!.openaiBaseURL).toBe("https://gw/v1");
   });
 
   it("returns undefined for a non-object input", () => {
@@ -292,12 +303,23 @@ describe("org-config: loadOrgConfig", () => {
     expect(await loadOrgConfig()).toBeUndefined();
   });
 
-  it("ignores a non-object JSON policy", async () => {
+  it("surfaces an error for a present-but-invalid policy file (non-object JSON)", async () => {
+    // A readable file that parses but is structurally wrong is present-but-invalid
+    // and must be reported, not silently treated as "no policy".
     process.env[ORG_CONFIG_ENV] = "/custom/org.json";
     readFile.mockImplementation(async (path: unknown) => {
       if (path === "/custom/org.json") return JSON.stringify(["not", "an", "object"]);
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     });
-    expect(await loadOrgConfig()).toBeUndefined();
+    await expect(loadOrgConfig()).rejects.toThrow(/must be a JSON object/);
+  });
+
+  it("surfaces an error for a present policy file with an invalid restriction", async () => {
+    process.env[ORG_CONFIG_ENV] = "/custom/org.json";
+    readFile.mockImplementation(async (path: unknown) => {
+      if (path === "/custom/org.json") return JSON.stringify({ provider: "openai", allowedModels: [] });
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    await expect(loadOrgConfig()).rejects.toThrow(/allowedModels/);
   });
 });

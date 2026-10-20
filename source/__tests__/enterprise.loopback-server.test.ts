@@ -88,6 +88,28 @@ describe("loopback-server", () => {
     await expect(server.waitForCode).rejects.toThrow(/timed out/);
   });
 
+  it("rejects startup immediately for an already-aborted signal (no listener started)", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("pre-aborted"));
+    // The startup promise must reject, not resolve with a live listener.
+    await expect(startLoopbackServer("state-123", controller.signal)).rejects.toThrow(/pre-aborted/);
+  });
+
+  it("settles the startup promise when aborted during binding", async () => {
+    const controller = new AbortController();
+    const startup = startLoopbackServer("state-123", controller.signal);
+    // Abort on the next tick — overlapping the listen() binding window.
+    queueMicrotask(() => controller.abort(new Error("aborted-during-bind")));
+    // Must settle (reject) rather than hang forever.
+    const settled = await Promise.race([
+      startup.then(() => "resolved", (e) => (e instanceof Error ? e.message : "rejected")),
+      new Promise<string>((r) => setTimeout(() => r("pending"), 500)),
+    ]);
+    expect(settled === "pending").toBe(false);
+    // If it bound before the abort, tidy up the live server.
+    await startup.then((s) => s.close(), () => {});
+  });
+
   it("does not reject on an error callback with a missing/forged state", async () => {
     // A local client that lacks the state secret must not be able to cancel the
     // pending login with a forged `error` callback (denial of service).

@@ -1064,23 +1064,21 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             setModel: (model: string) => {
               // Enforce the org policy on interactive model changes (/model,
               // /fast, /deep): a managed pin or allowlist applies to every
-              // selection path, not only startup. Reject out-of-policy changes.
+              // selection path, not only startup. Reject out-of-policy changes and
+              // return the error so the command reports failure instead of a
+              // misleading "switched" message.
               const policyError = orgPolicyError({ ...config, model });
-              if (policyError) {
-                setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: policyError }]);
-                return;
-              }
+              if (policyError) return policyError;
               modelSelectionVersion.current++;
               setConfig((prev) => ({ ...prev, model }));
+              return null;
             },
             setProvider: (provider) => {
               const policyError = orgPolicyError({ ...config, provider });
-              if (policyError) {
-                setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: policyError }]);
-                return;
-              }
+              if (policyError) return policyError;
               modelSelectionVersion.current++;
               setConfig((prev) => ({ ...prev, provider }));
+              return null;
             },
             setEffort: (effort) => {
               setConfig((prev) => ({ ...prev, effort }));

@@ -30,8 +30,14 @@ export interface CommandContext {
   /** Changes synchronously when the selected model or provider changes. */
   getModelSelectionVersion?: () => number,
   iterationsBudget?: { remaining: number, total: number },
-  setModel: (model: string) => void
-  setProvider: (provider: AgavConfig["provider"]) => void
+  /**
+   * Apply a model change. Returns an error message when the change is rejected
+   * (e.g. the model violates the organization policy), or null on success, so a
+   * command does not report a successful switch when the selection was blocked.
+   */
+  setModel: (model: string) => string | null
+  /** Apply a provider change. Returns an error message when rejected, else null. */
+  setProvider: (provider: AgavConfig["provider"]) => string | null
   setEffort: (effort: import("../config/config.js").EffortLevel) => void
   clearMessages: () => void
   /** Re-read the plan from disk so the on-screen plan panel matches it. */

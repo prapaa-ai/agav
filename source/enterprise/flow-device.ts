@@ -175,40 +175,64 @@ export async function obtainIdTokenViaDevice(options: DeviceFlowOptions): Promis
       expiresInSeconds,
     });
 
-    // Also stop at the IdP's device-code expiry, whichever is sooner.
-    const deadline = Date.now() + Math.min(overallMsRequested, expiresInSeconds * 1000);
+    // Stop at the earlier of the overall deadline and the IdP's device-code
+    // expiry. Shorten the aborting timer to that deadline so an already-running
+    // sleep or in-flight poll is aborted the instant the code expires — not only
+    // checked between iterations. This prevents a long interval (e.g.
+    // expires_in: 10, interval: 60) from sleeping past expiry, and prevents a
+    // poll that started just before expiry from returning a token afterward.
+    const expiryMs = expiresInSeconds * 1000;
+    // Which constraint binds decides the error message and the abort deadline.
+    const codeExpiresFirst = expiryMs < overallMsRequested;
+    const deadline = Date.now() + Math.min(overallMsRequested, expiryMs);
+    const msUntilDeadline = Math.max(0, deadline - Date.now());
+    clearTimeout(deadlineTimer);
+    const deadlineError = codeExpiresFirst
+      ? new EnterpriseAuthError("The device code expired before approval.")
+      : new EnterpriseAuthError("Device sign-in timed out before approval.");
+    const effectiveDeadlineTimer = setTimeout(() => deadlineController.abort(deadlineError), msUntilDeadline);
     let intervalMs = Math.max(1, device.interval ?? 5) * 1000;
 
-    while (Date.now() < deadline) {
-      signal.throwIfAborted();
-      await sleep(intervalMs);
-      signal.throwIfAborted();
-      // The device code may have expired while we slept; stop before polling or
-      // accepting a token past expiry.
-      if (Date.now() >= deadline) break;
+    try {
+      while (Date.now() < deadline) {
+        signal.throwIfAborted();
+        await sleep(intervalMs);
+        signal.throwIfAborted();
+        // Guard against a non-aborting injected sleep (tests): stop before a
+        // poll if the code already expired.
+        if (Date.now() >= deadline) break;
 
-      const result = await pollToken(meta.tokenEndpoint, options.clientId, device.device_code!, signal);
+        const result = await pollToken(meta.tokenEndpoint, options.clientId, device.device_code!, signal);
 
-      if (result.id_token) {
-        return { idToken: result.id_token, flow: "device" };
+        // A poll may have completed right at expiry; never accept a token past it.
+        signal.throwIfAborted();
+        if (Date.now() >= deadline) break;
+
+        if (result.id_token) {
+          return { idToken: result.id_token, flow: "device" };
+        }
+        switch (result.error) {
+          case "authorization_pending":
+            break; // keep polling at the current interval
+          case "slow_down":
+            intervalMs += 5000; // RFC 8628: back off by 5s
+            break;
+          case "access_denied":
+            throw new EnterpriseAuthError("Sign-in was denied.");
+          case "expired_token":
+            throw new EnterpriseAuthError("The device code expired before approval.");
+          default:
+            if (result.error) throw new EnterpriseAuthError(`Device sign-in failed: ${result.error}`);
+            // No id_token and no error: treat as pending and keep polling.
+        }
       }
-      switch (result.error) {
-        case "authorization_pending":
-          break; // keep polling at the current interval
-        case "slow_down":
-          intervalMs += 5000; // RFC 8628: back off by 5s
-          break;
-        case "access_denied":
-          throw new EnterpriseAuthError("Sign-in was denied.");
-        case "expired_token":
-          throw new EnterpriseAuthError("The device code expired before approval.");
-        default:
-          if (result.error) throw new EnterpriseAuthError(`Device sign-in failed: ${result.error}`);
-          // No id_token and no error: treat as pending and keep polling.
-      }
+    } finally {
+      clearTimeout(effectiveDeadlineTimer);
     }
 
-    throw new EnterpriseAuthError("Device sign-in timed out before approval.");
+    // Loop exited because Date.now() >= deadline (e.g. a non-aborting injected
+    // sleep in tests). Report whichever bound was reached.
+    throw deadlineError;
   } finally {
     clearTimeout(deadlineTimer);
     options.signal?.removeEventListener("abort", onCallerAbort);

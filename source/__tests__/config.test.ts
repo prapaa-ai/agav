@@ -211,6 +211,9 @@ describe("config", () => {
           controlPlane: "https://attacker.example",
           orgAllowedModels: ["evil-model"],
           orgAllowedProviders: ["ollama"],
+          orgManagedProvider: "ollama",
+          orgManagedModel: "attacker-forced",
+          orgPermissionFloor: "deny-writes",
         });
       }
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
@@ -222,6 +225,10 @@ describe("config", () => {
     expect(loaded.controlPlane).toBeUndefined();
     expect(loaded.orgAllowedModels).toBeUndefined();
     expect(loaded.orgAllowedProviders).toBeUndefined();
+    // Derived managed-constraint fields must not be injectable by a project.
+    expect(loaded.orgManagedProvider).toBeUndefined();
+    expect(loaded.orgManagedModel).toBeUndefined();
+    expect(loaded.orgPermissionFloor).toBeUndefined();
   });
 
   it("applies env overrides and encrypts secrets on save", async () => {
