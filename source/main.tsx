@@ -304,7 +304,15 @@ export function parseArgs(argv: string[]) {
   if (flags.mcp && pos.length > 0) flags.mcpCommand = pos[0];
   if (flags.run && pos.length > 0) flags.runPrompt = pos.join(" ");
   if (flags.print && pos.length > 0) flags.printPrompt = pos.join(" ");
-  
+
+  // Recognize login/logout even when they arrive as the first positional — e.g.
+  // after a `--` separator that package managers inject (`pnpm start -- login`),
+  // which routes the token past the subcommand branch into positionals.
+  if (!flags.login && !flags.logout && (pos[0] === "login" || pos[0] === "logout")) {
+    flags[pos[0]] = true;
+    pos.shift();
+  }
+
   if (!flags.update && !flags.agents && !flags.skills && !flags.sessions && !flags.mcp && !flags.run && !flags.job && !flags.print && !flags.login && !flags.logout && pos.length > 0) {
      process.stderr.write(`error: unexpected arguments: ${pos.join(" ")}\n`);
      process.exit(1);

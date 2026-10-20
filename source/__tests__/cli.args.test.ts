@@ -54,4 +54,17 @@ describe("CLI argument parsing", () => {
     const flags = parseArgs(["logout"]);
     expect(flags.logout).toBe(true);
   });
+
+  it("recognizes login after a -- separator (e.g. pnpm start -- login)", () => {
+    const flags = parseArgs(["--", "login", "--oidc"]);
+    expect(flags.login).toBe(true);
+    // The login token is consumed; its own flags remain as positionals.
+    expect(flags._).toEqual(["--oidc"]);
+  });
+
+  it("recognizes logout after a -- separator", () => {
+    const flags = parseArgs(["--", "logout"]);
+    expect(flags.logout).toBe(true);
+    expect(flags._).toEqual([]);
+  });
 });
