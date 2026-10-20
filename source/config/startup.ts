@@ -79,21 +79,31 @@ export async function resolveStartupSelection(
   } else if (options.cliModel !== undefined) {
     result.model = options.cliModel;
   } else {
+    // Plain start: fall back to the most recent session's provider+model as a
+    // pair — but only when it does not conflict with a managed pin. A partial pin
+    // (provider-only or model-only) must not be paired with the other field from
+    // an incompatible session, which would produce a provider/model mismatch that
+    // still passes credential validation but fails at generation time. When
+    // history conflicts with a pin, keep the already-pinned configured pair
+    // (applyOrgConfig has made `config` a compatible pinned pair).
     const recentSessions = (await listSessions()) || [];
-    const lastSession = recentSessions.length ? recentSessions[0] : undefined
+    const lastSession = recentSessions.length ? recentSessions[0] : undefined;
     if (lastSession && isProviderName(lastSession.provider)) {
-      result.provider = lastSession.provider;
-      result.model = lastSession.model;
+      const conflictsWithProviderPin = result.orgManagedProvider !== undefined
+        && lastSession.provider !== result.orgManagedProvider;
+      const conflictsWithModelPin = result.orgManagedModel !== undefined
+        && lastSession.model !== result.orgManagedModel;
+      if (!conflictsWithProviderPin && !conflictsWithModelPin) {
+        result.provider = lastSession.provider;
+        result.model = lastSession.model;
+      }
     }
   }
 
-  // Managed hard pins are authoritative over *implicit* defaults (recent-session
-  // history, provider-default model). Without this, a user enrolling into a
-  // policy that pins openai/gpt-5.4 whose last session used Anthropic would have
-  // the recent-session selection re-applied here and then be rejected at startup
-  // despite requesting no override. Explicit CLI flags are intentionally NOT
-  // corrected — an out-of-policy `--provider`/`--model` must still be rejected by
-  // orgPolicyError rather than silently overridden.
+  // Re-assert managed hard pins over any implicit default, as a safety net for
+  // paths above that set only one field. Explicit CLI flags are intentionally NOT
+  // corrected here — an out-of-policy `--provider`/`--model` must still be
+  // rejected by orgPolicyError rather than silently overridden.
   if (result.orgManagedProvider !== undefined && options.cliProvider === undefined) {
     result.provider = result.orgManagedProvider;
   }

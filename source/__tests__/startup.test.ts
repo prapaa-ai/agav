@@ -638,4 +638,57 @@ describe("listSessions and recent session startup resolution", () => {
     expect(selection).toMatchObject({ provider: "ollama", model: "llama3" });
     expect(orgPolicyError(selection)).toMatch(/not permitted by your organization/);
   });
+
+  it("keeps a compatible pair for a provider-only pin when the recent session conflicts", async () => {
+    // Configured openai/gpt-5.4-mini, pin provider=openai only, latest session is
+    // Anthropic. The Anthropic model must NOT be paired with the openai pin.
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        id: "s1",
+        createdAt: "2025-01-01T00:00:00.000Z",
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+        title: "Saved",
+        messages: [],
+      },
+    ]);
+    const cfg = { ...base, provider: "openai" as const, model: "gpt-5.4-mini", orgManagedProvider: "openai" as const };
+    const selection = await resolveStartupSelection(cfg, {});
+    expect(selection).toMatchObject({ provider: "openai", model: "gpt-5.4-mini" });
+  });
+
+  it("keeps a compatible pair for a model-only pin when the recent session conflicts", async () => {
+    // Configured openai/gpt-5.4-mini, pin model=gpt-5.4-mini only, latest session
+    // is Anthropic. The pinned model must NOT be paired with the Anthropic provider.
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        id: "s1",
+        createdAt: "2025-01-01T00:00:00.000Z",
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+        title: "Saved",
+        messages: [],
+      },
+    ]);
+    const cfg = { ...base, provider: "openai" as const, model: "gpt-5.4-mini", orgManagedModel: "gpt-5.4-mini" };
+    const selection = await resolveStartupSelection(cfg, {});
+    expect(selection).toMatchObject({ provider: "openai", model: "gpt-5.4-mini" });
+  });
+
+  it("still uses recent-session history when it is compatible with a partial pin", async () => {
+    // Pin provider=openai; the latest session is also openai, so its model is fine.
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        id: "s1",
+        createdAt: "2025-01-01T00:00:00.000Z",
+        provider: "openai",
+        model: "gpt-4o",
+        title: "Saved",
+        messages: [],
+      },
+    ]);
+    const cfg = { ...base, provider: "openai" as const, model: "gpt-5.4-mini", orgManagedProvider: "openai" as const };
+    const selection = await resolveStartupSelection(cfg, {});
+    expect(selection).toMatchObject({ provider: "openai", model: "gpt-4o" });
+  });
 });
