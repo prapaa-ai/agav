@@ -145,9 +145,16 @@ Options:
 
 | Option | Purpose |
 | --- | --- |
-| `--control-plane <url>` | Control-plane address. Falls back to the `controlPlane` value in the organization policy. |
+| `--control-plane <url>` | Control-plane address. See resolution order below. |
 | `--issuer <url>` | Identity-provider issuer (required for `--auth-code` and `--device`). |
 | `--client-id <id>` | OAuth client id registered for the Agav CLI (required for interactive flows). |
+
+**Control-plane address resolution** (highest priority first). You do not need to set any of these for the hosted service — `agav login` works out of the box against Agav's hosted control plane:
+
+1. `--control-plane <url>`
+2. the `AGAV_CONTROL_PLANE` environment variable
+3. the `controlPlane` value in the organization policy (for a self-hosted control plane, shipped via MDM or a file)
+4. Agav's built-in hosted default
 
 Flow selection when none is forced:
 

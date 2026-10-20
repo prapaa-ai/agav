@@ -192,7 +192,7 @@ A missing, unreadable, or malformed policy file never breaks startup; Agav simpl
 | `allowedProviders` | **Allowlist** — selecting a provider outside the list is rejected at startup. An empty or omitted list means no restriction. |
 | `allowedModels` | **Allowlist** — selecting a model outside the list is rejected at startup. An empty or omitted list means no restriction. |
 | `allowedTools` | **Additive** — the org's required tools are merged with the user's allowlist. |
-| `controlPlane` | Seed address for future authenticated enrollment. |
+| `controlPlane` | Address of a self-hosted control plane that `agav login` signs in to. Optional — omit it to use Agav's hosted control plane. |
 
 ### How enforcement behaves
 
