@@ -52,6 +52,7 @@ import { AgentsTUI } from "../components/agents-tui.js";
 import { loadAgents, setCachedAgents } from "../agents/loader.js";
 import { loadAgentConfig, getMissingCredentials } from "../agents/credentials.js";
 import render from "../ink/render.js";
+import Ink from "../ink/ink.js";
 
 function agent(name = "test-agent"): AgentDefinition {
   return {
@@ -60,13 +61,16 @@ function agent(name = "test-agent"): AgentDefinition {
   };
 }
 
-async function mount() {
+async function mount(height?: number) {
   let output = "";
   const stdout = new EventEmitter() as NodeJS.WriteStream;
   Object.assign(stdout, { isTTY: true, columns: 160, rows: 30, write: (text: string) => { output += text; return true; } });
   const stdin = new EventEmitter() as NodeJS.ReadStream;
   Object.assign(stdin, { isTTY: true, setRawMode: () => stdin, resume: () => stdin, pause: () => stdin, read: () => null });
-  const instance = render(h(AgentsTUI, { onExit: vi.fn() }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
+  const instance = height === undefined
+    ? render(h(AgentsTUI, { onExit: vi.fn() }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false })
+    : new Ink({ stdout, stdin, stderr: stdout, patchConsole: false, exitOnCtrlC: false, alternateScreen: false, maxFps: 30 });
+  if (instance instanceof Ink) instance.render(h(AgentsTUI, { onExit: vi.fn(), height }));
   const settle = async () => {
     for (let i = 0; i < 3; i++) {
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -75,7 +79,7 @@ async function mount() {
   };
   const key = async (text: string) => { output = ""; stdin.emit("data", Buffer.from(text)); await settle(); };
   await settle();
-  return { instance, key, settle, output: () => output };
+  return { instance, key, settle, output: () => output, frame: () => (instance as unknown as { lastOutput: string }).lastOutput };
 }
 
 beforeEach(() => {
@@ -89,6 +93,13 @@ beforeEach(() => {
 });
 
 describe("agents resource manager parent synchronization", () => {
+  it("keeps the outer TUI within the supplied app height", async () => {
+    const ui = await mount(18);
+    try {
+      expect(ui.frame().split("\n").length).toBeLessThanOrEqual(18);
+    } finally { ui.instance.unmount(); }
+  });
+
   it("clears the marketplace installed guard after confirmed deletion", async () => {
     const ui = await mount();
     try {
