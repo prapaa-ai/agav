@@ -65,8 +65,8 @@ async function obtainProof(
   }
   if (!opts.issuer || !opts.clientId) {
     throw new EnterpriseAuthError(
-      "Interactive login needs an identity provider. Provide --issuer and --client-id, " +
-      "or configure them in your organization policy.",
+      "Agav isn't set up for sign-in in your organization yet. Ask your Agav administrator to finish setup.\n" +
+      "  (Admins: provide --issuer and --client-id, or include them in the organization policy.)",
     );
   }
   if (flow === "device") {
@@ -85,7 +85,7 @@ async function obtainProof(
 export async function runLoginCommand(command: string | undefined, args: string[]): Promise<number> {
   if (command === "logout") {
     await clearEnrolledPolicy();
-    console.log("Signed out. Removed the cached organization policy. Restart Agav to apply.");
+    console.log("Signed out of your organization. Restart Agav to apply.");
     return 0;
   }
 
@@ -100,7 +100,9 @@ export async function runLoginCommand(command: string | undefined, args: string[
   const controlPlane = parsed.controlPlane ?? config.controlPlane;
   if (!controlPlane) {
     console.error(
-      "No control plane configured. Pass --control-plane <url>, or ship it in your organization policy.",
+      "Agav isn't connected to an organization yet, so there's nothing to sign in to.\n" +
+      "If your company uses Agav, ask your Agav administrator for setup instructions.\n" +
+      "  (Admins: set the sign-in address with --control-plane <url>, or include it in the organization policy.)",
     );
     return 1;
   }
@@ -120,7 +122,7 @@ export async function runLoginCommand(command: string | undefined, args: string[
     const session = await enroll(controlPlane, proof, controller.signal);
     await persistSession(session);
     const who = session.subject ? ` as ${session.subject}` : "";
-    console.log(`Signed in${who}. Organization policy applied. Restart Agav to use it.`);
+    console.log(`Signed in${who}. Your organization's settings are now active — restart Agav to use them.`);
     return 0;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

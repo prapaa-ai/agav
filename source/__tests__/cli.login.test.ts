@@ -76,11 +76,15 @@ describe("runLoginCommand: logout", () => {
 });
 
 describe("runLoginCommand: login", () => {
-  it("errors when no control plane is configured", async () => {
+  it("errors with a user-friendly message when not connected to an organization", async () => {
     mockedLoadConfig.mockResolvedValue({} as any);
     const code = await runLoginCommand("login", []);
     expect(code).toBe(1);
-    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("No control plane"));
+    const msg = errSpy.mock.calls[0]![0] as string;
+    // Developer-facing guidance, with the admin detail kept in a parenthetical.
+    expect(msg).toContain("isn't connected to an organization");
+    expect(msg).toContain("Agav administrator");
+    expect(msg).toContain("--control-plane"); // admins still get the exact flag
   });
 
   it("runs the oidc flow, enrolls, and persists the session", async () => {
@@ -102,7 +106,9 @@ describe("runLoginCommand: login", () => {
   it("requires issuer and client-id for interactive flows", async () => {
     const code = await runLoginCommand("login", ["--auth-code"]);
     expect(code).toBe(1);
-    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("--issuer"));
+    const msg = errSpy.mock.calls[0]![0] as string;
+    expect(msg).toContain("isn't set up for sign-in"); // developer-facing
+    expect(msg).toContain("--issuer"); // admin detail
     expect(obtainIdTokenViaAuthCode).not.toHaveBeenCalled();
   });
 
