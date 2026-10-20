@@ -112,8 +112,8 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     const nextHeight = view === "detail"
       ? Math.max(2, Math.min(detailContentRows, availableContent))
       : Math.max(2, measuredHeight || availableContent);
-    if (nextHeight !== scrollHeight) setScrollHeight(nextHeight);
-  });
+    setScrollHeight((current) => current === nextHeight ? current : nextHeight);
+  }, [availableRows, promptExtraRows, copyNotice, view, detailContentRows, columns, busy, status, searching, items.length]);
   useEffect(() => { setPromptOffset(Number.POSITIVE_INFINITY); }, [prompt]);
 
   const reload = async () => {
