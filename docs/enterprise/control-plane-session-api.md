@@ -26,6 +26,36 @@ agav login ──POST /session { idToken, flow, nonce }──► Control Plane
 
 ---
 
+## `GET /auth-config` (optional, enables the SaaS path)
+
+Interactive flows (`auth-code`, `device`) need an OIDC issuer and client id. So
+developers don't have to supply them, `agav login` first calls this endpoint when
+`--issuer`/`--client-id` are not provided. If the control plane publishes them
+here, SaaS sign-in works with a bare `agav login`.
+
+```
+GET {controlPlane}/auth-config        accept: application/json
+```
+
+**Response — `200 OK`:**
+```jsonc
+{
+  "issuer": "https://idp.corp",   // required (HTTPS)
+  "clientId": "agav-cli",         // required
+  "scopes": ["email"]             // optional; "openid" is always added by the CLI
+}
+```
+
+- `404` — the control plane does not advertise coordinates; the CLI falls back to
+  explicit flags, and if none are given, reports that setup isn't finished.
+- Any other non-2xx, non-JSON, or a response missing `issuer`/`clientId` is an
+  error. An insecure (`http:`) `issuer` is rejected.
+- Explicit `--issuer`/`--client-id` on the CLI skip this call entirely.
+
+The `oidc-token` (CI) flow does not use this endpoint.
+
+---
+
 ## Endpoint
 
 ```

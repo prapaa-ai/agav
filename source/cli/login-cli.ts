@@ -58,27 +58,38 @@ function autoSelectFlow(): AuthFlow {
 async function obtainProof(
   flow: AuthFlow,
   opts: { issuer?: string; clientId?: string; controlPlane: string },
+  signal?: AbortSignal,
 ): Promise<IdentityProof> {
   if (flow === "oidc-token") {
     const { obtainIdTokenViaOidc } = await import("../enterprise/flow-oidc-token.js");
     return obtainIdTokenViaOidc({ audience: opts.controlPlane });
   }
-  if (!opts.issuer || !opts.clientId) {
+
+  // Interactive flows need IdP coordinates. Prefer explicit flags; otherwise ask
+  // the control plane for them (the SaaS path, so developers needn't know them).
+  let issuer = opts.issuer;
+  let clientId = opts.clientId;
+  let scopes: string[] | undefined;
+  if (!issuer || !clientId) {
+    const { fetchAuthConfig } = await import("../enterprise/control-plane.js");
+    const authConfig = await fetchAuthConfig(opts.controlPlane, signal);
+    issuer = issuer ?? authConfig?.issuer;
+    clientId = clientId ?? authConfig?.clientId;
+    scopes = authConfig?.scopes;
+  }
+  if (!issuer || !clientId) {
     throw new EnterpriseAuthError(
-      "Agav isn't set up for sign-in in your organization yet. Ask your Agav administrator to finish setup.\n" +
-      "  (Admins: provide --issuer and --client-id, or include them in the organization policy.)",
+      "Agav sign-in isn't fully set up for your organization yet. Ask your Agav administrator to finish setup.\n" +
+      "  (Admins: have the control plane publish its auth-config, or pass --issuer and --client-id.)",
     );
   }
+
   if (flow === "device") {
     const { obtainIdTokenViaDevice } = await import("../enterprise/flow-device.js");
-    return obtainIdTokenViaDevice({ issuer: opts.issuer, clientId: opts.clientId });
+    return obtainIdTokenViaDevice({ issuer, clientId, scopes, signal });
   }
   const { obtainIdTokenViaAuthCode } = await import("../enterprise/flow-auth-code.js");
-  return obtainIdTokenViaAuthCode({
-    issuer: opts.issuer,
-    clientId: opts.clientId,
-    openBrowser: openExternal,
-  });
+  return obtainIdTokenViaAuthCode({ issuer, clientId, scopes, openBrowser: openExternal });
 }
 
 /** Entry point for `agav login` / `agav logout`. Returns a process exit code. */
@@ -113,7 +124,7 @@ export async function runLoginCommand(command: string | undefined, args: string[
       issuer: parsed.issuer,
       clientId: parsed.clientId,
       controlPlane,
-    });
+    }, controller.signal);
     const session = await enroll(controlPlane, proof, controller.signal);
     await persistSession(session);
     const who = session.subject ? ` as ${session.subject}` : "";

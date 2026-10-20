@@ -38,5 +38,19 @@ export interface EnrollmentSession {
   controlPlane: string;
 }
 
+/**
+ * IdP coordinates the control plane hands the CLI so SaaS developers don't have
+ * to know them. Returned by the control plane's auth-config endpoint; used to
+ * run the interactive (auth-code / device) flows.
+ */
+export interface AuthConfig {
+  /** OIDC issuer base URL. */
+  issuer: string;
+  /** OAuth client id registered for the Agav CLI. */
+  clientId: string;
+  /** Optional additional scopes beyond "openid". */
+  scopes?: string[];
+}
+
 /** Error thrown for any enterprise auth/enrollment failure. */
 export class EnterpriseAuthError extends Error {}

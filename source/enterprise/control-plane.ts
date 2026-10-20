@@ -1,6 +1,7 @@
 import { secureURL } from "./secure-url.js";
 import {
   EnterpriseAuthError,
+  type AuthConfig,
   type EnrollmentSession,
   type IdentityProof,
 } from "./types.js";
@@ -18,11 +19,72 @@ import type { OrgConfig } from "../config/org-config.js";
  * This client does no model traffic; it only exchanges the proof for a session.
  */
 
+/** Build an endpoint URL under the control-plane base, validated and normalized. */
+function controlPlaneEndpoint(controlPlane: string, path: string): URL {
+  const base = secureURL(controlPlane);
+  return new URL(path, base.href.endsWith("/") ? base.href : `${base.href}/`);
+}
+
 /** Discover the control plane's enrollment endpoint from its base URL. */
 function enrollmentEndpoint(controlPlane: string): URL {
-  const base = secureURL(controlPlane);
-  // Normalize: strip a trailing slash, append the session path.
-  return new URL("session", base.href.endsWith("/") ? base.href : `${base.href}/`);
+  return controlPlaneEndpoint(controlPlane, "session");
+}
+
+/**
+ * Fetch the IdP coordinates (issuer, client id, scopes) from the control plane
+ * so interactive login works without the developer supplying them — the SaaS
+ * path. Returns undefined when the control plane does not publish them (404),
+ * so the caller can fall back to explicit flags or report a clear error. Other
+ * failures throw.
+ */
+export async function fetchAuthConfig(
+  controlPlane: string,
+  signal?: AbortSignal,
+): Promise<AuthConfig | undefined> {
+  const endpoint = controlPlaneEndpoint(controlPlane, "auth-config");
+
+  let response: Response;
+  try {
+    response = await fetch(endpoint.href, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      redirect: "error",
+      signal,
+    });
+  } catch (error) {
+    if ((error as Error)?.name === "AbortError") throw error;
+    throw new EnterpriseAuthError(
+      `Could not reach the control plane at ${endpoint.origin}: ${(error as Error).message}`,
+      { cause: error },
+    );
+  }
+
+  if (response.status === 404) {
+    // Control plane does not advertise IdP coordinates; caller falls back.
+    await response.body?.cancel();
+    return undefined;
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new EnterpriseAuthError(`Control plane auth-config request failed (HTTP ${response.status}).`);
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = (await response.json()) as Record<string, unknown>;
+  } catch (error) {
+    throw new EnterpriseAuthError("Control plane returned a non-JSON auth-config response.", { cause: error });
+  }
+  const issuer = typeof data.issuer === "string" ? data.issuer : undefined;
+  const clientId = typeof data.clientId === "string" ? data.clientId : undefined;
+  if (!issuer || !clientId) {
+    throw new EnterpriseAuthError("Control plane auth-config is missing issuer or clientId.");
+  }
+  secureURL(issuer); // reject an insecure issuer early
+  const scopes = Array.isArray(data.scopes)
+    ? data.scopes.filter((s): s is string => typeof s === "string")
+    : undefined;
+  return { issuer, clientId, scopes };
 }
 
 /**

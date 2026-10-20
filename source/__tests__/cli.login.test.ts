@@ -6,6 +6,7 @@ vi.mock("../config/config.js", () => ({
 vi.mock("../enterprise/control-plane.js", () => ({
   enroll: vi.fn(),
   persistSession: vi.fn().mockResolvedValue(undefined),
+  fetchAuthConfig: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../config/enterprise-policy-store.js", () => ({
   clearEnrolledPolicy: vi.fn().mockResolvedValue(undefined),
@@ -25,7 +26,7 @@ vi.mock("../utils/open-external.js", () => ({
 }));
 
 const { loadConfig } = await import("../config/config.js");
-const { enroll, persistSession } = await import("../enterprise/control-plane.js");
+const { enroll, persistSession, fetchAuthConfig } = await import("../enterprise/control-plane.js");
 const { clearEnrolledPolicy } = await import("../config/enterprise-policy-store.js");
 const { hasOidcTokenSource, obtainIdTokenViaOidc } = await import("../enterprise/flow-oidc-token.js");
 const { obtainIdTokenViaAuthCode } = await import("../enterprise/flow-auth-code.js");
@@ -115,20 +116,33 @@ describe("runLoginCommand: login", () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("ci@corp"));
   });
 
-  it("requires issuer and client-id for interactive flows", async () => {
+  it("errors only when neither flags nor the control plane provide IdP coordinates", async () => {
+    vi.mocked(fetchAuthConfig).mockResolvedValue(undefined); // control plane publishes nothing
     const code = await runLoginCommand("login", ["--auth-code"]);
     expect(code).toBe(1);
     const msg = errSpy.mock.calls[0]![0] as string;
-    expect(msg).toContain("isn't set up for sign-in"); // developer-facing
-    expect(msg).toContain("--issuer"); // admin detail
+    expect(msg).toContain("isn't fully set up"); // developer-facing
     expect(obtainIdTokenViaAuthCode).not.toHaveBeenCalled();
   });
 
-  it("runs the auth-code flow when issuer and client-id are provided", async () => {
+  it("fetches IdP coordinates from the control plane for the SaaS path", async () => {
+    vi.mocked(fetchAuthConfig).mockResolvedValue({ issuer: "https://idp.saas", clientId: "saas-cli", scopes: ["email"] });
+    vi.mocked(obtainIdTokenViaAuthCode).mockResolvedValue({ idToken: "idt", flow: "auth-code", nonce: "n" });
+    mockedEnroll.mockResolvedValue({ policy: { provider: "openai" }, controlPlane: "https://auth.corp" } as any);
+    const code = await runLoginCommand("login", ["--auth-code"]); // no --issuer/--client-id
+    expect(code).toBe(0);
+    expect(fetchAuthConfig).toHaveBeenCalled();
+    expect(obtainIdTokenViaAuthCode).toHaveBeenCalledWith(
+      expect.objectContaining({ issuer: "https://idp.saas", clientId: "saas-cli", scopes: ["email"] }),
+    );
+  });
+
+  it("runs the auth-code flow with explicit issuer and client-id (no control-plane fetch)", async () => {
     vi.mocked(obtainIdTokenViaAuthCode).mockResolvedValue({ idToken: "idt", flow: "auth-code", nonce: "n" });
     mockedEnroll.mockResolvedValue({ policy: { provider: "openai" }, controlPlane: "https://auth.corp" } as any);
     const code = await runLoginCommand("login", ["--auth-code", "--issuer", "https://idp", "--client-id", "cli"]);
     expect(code).toBe(0);
+    expect(fetchAuthConfig).not.toHaveBeenCalled(); // flags present ⇒ no fetch
     expect(obtainIdTokenViaAuthCode).toHaveBeenCalledWith(
       expect.objectContaining({ issuer: "https://idp", clientId: "cli" }),
     );

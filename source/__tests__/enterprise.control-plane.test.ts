@@ -4,7 +4,7 @@ vi.mock("../config/enterprise-policy-store.js", () => ({
   saveEnrolledPolicy: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { enroll, enrollmentEndpoint, persistSession } from "../enterprise/control-plane.js";
+import { enroll, enrollmentEndpoint, persistSession, fetchAuthConfig } from "../enterprise/control-plane.js";
 import { EnterpriseAuthError, type IdentityProof, type EnrollmentSession } from "../enterprise/types.js";
 import { saveEnrolledPolicy } from "../config/enterprise-policy-store.js";
 
@@ -117,5 +117,44 @@ describe("persistSession", () => {
     expect(saved.subject).toBe("jane@corp.com");
     expect(saved.expiresAt).toBe(1800000000000);
     expect(typeof saved.storedAt).toBe("string");
+  });
+});
+
+describe("fetchAuthConfig", () => {
+  it("returns IdP coordinates from the control plane", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      jsonResponse({ issuer: "https://idp.corp", clientId: "agav-cli", scopes: ["email"] }),
+    ));
+    const cfg = await fetchAuthConfig("https://auth.corp");
+    expect(cfg).toEqual({ issuer: "https://idp.corp", clientId: "agav-cli", scopes: ["email"] });
+  });
+
+  it("requests the /auth-config endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ issuer: "https://idp.corp", clientId: "x" }));
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchAuthConfig("https://auth.corp");
+    expect(String(fetchMock.mock.calls[0]![0])).toBe("https://auth.corp/auth-config");
+  });
+
+  it("returns undefined on 404 (control plane does not advertise coordinates)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, 404)));
+    expect(await fetchAuthConfig("https://auth.corp")).toBeUndefined();
+  });
+
+  it("throws when issuer or clientId is missing", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ issuer: "https://idp.corp" })));
+    await expect(fetchAuthConfig("https://auth.corp")).rejects.toThrow(/missing issuer or clientId/);
+  });
+
+  it("rejects an insecure issuer", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      jsonResponse({ issuer: "http://idp.corp", clientId: "x" }),
+    ));
+    await expect(fetchAuthConfig("https://auth.corp")).rejects.toThrow(/HTTPS/);
+  });
+
+  it("throws on a non-ok, non-404 response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({}, 500)));
+    await expect(fetchAuthConfig("https://auth.corp")).rejects.toThrow(/HTTP 500/);
   });
 });
