@@ -225,11 +225,11 @@ export async function loadOrgConfig(): Promise<OrgConfig | undefined> {
 /**
  * Load the org policy from the admin-shipped file source only.
  *
- * Distinguishes an *absent* policy (missing/unreadable file, or invalid JSON —
- * try the next candidate, ultimately undefined) from a *present but invalid*
- * policy (a readable file that parses to JSON but fails validation). The latter
- * throws OrgConfigError so startup reports an actionable error rather than
- * silently proceeding without the admin's mandatory restrictions.
+ * Fail-closed: only a *genuinely absent* file (ENOENT) permits unmanaged startup
+ * and lets the next candidate be tried. A present file that cannot be read
+ * (permission/I/O error), does not parse as JSON, or parses but fails validation
+ * is a present-but-invalid policy and throws OrgConfigError — a syntax error or a
+ * locked managed file must never silently disable the admin's restrictions.
  */
 async function loadOrgConfigFromFile(): Promise<OrgConfig | undefined> {
   const candidates: string[] = [];
@@ -241,17 +241,27 @@ async function loadOrgConfigFromFile(): Promise<OrgConfig | undefined> {
     let raw: string;
     try {
       raw = await readFile(path, "utf-8");
-    } catch {
-      continue; // Missing/unreadable file: try the next candidate.
+    } catch (error) {
+      // Only a genuinely missing file is "absent" — try the next candidate.
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") continue;
+      // A present-but-unreadable file (permissions, I/O) must not silently
+      // disable enforcement.
+      throw new OrgConfigError(
+        `Organization policy at ${path} could not be read: ${(error as Error).message}`,
+        { cause: error },
+      );
     }
     let json: unknown;
     try {
       json = JSON.parse(raw);
-    } catch {
-      continue; // Not valid JSON: treat as absent and try the next candidate.
+    } catch (error) {
+      // A present file with malformed JSON is present-but-invalid, not absent.
+      throw new OrgConfigError(
+        `Organization policy at ${path} is not valid JSON: ${(error as Error).message}`,
+        { cause: error },
+      );
     }
-    // The file is present and parses: a validation failure is a present-but-invalid
-    // policy and must surface, not be swallowed.
+    // The file is present and parses: a validation failure also surfaces.
     return parseOrgConfig(json);
   }
   return undefined;

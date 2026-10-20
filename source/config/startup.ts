@@ -87,6 +87,20 @@ export async function resolveStartupSelection(
     }
   }
 
+  // Managed hard pins are authoritative over *implicit* defaults (recent-session
+  // history, provider-default model). Without this, a user enrolling into a
+  // policy that pins openai/gpt-5.4 whose last session used Anthropic would have
+  // the recent-session selection re-applied here and then be rejected at startup
+  // despite requesting no override. Explicit CLI flags are intentionally NOT
+  // corrected — an out-of-policy `--provider`/`--model` must still be rejected by
+  // orgPolicyError rather than silently overridden.
+  if (result.orgManagedProvider !== undefined && options.cliProvider === undefined) {
+    result.provider = result.orgManagedProvider;
+  }
+  if (result.orgManagedModel !== undefined && options.cliModel === undefined) {
+    result.model = result.orgManagedModel;
+  }
+
   return result;
 }
 

@@ -216,6 +216,24 @@ describe("commands/model", () => {
     expect(messageText(result)).toContain("Model changed to: deepseek/deepseek-chat-v3.1 (switched to openrouter)");
   });
 
+  it("rejects an out-of-policy pair atomically — neither provider nor model is changed", async () => {
+    stubFetch([], ["anthropic/claude-sonnet-4.5"]);
+
+    const context = createContext({
+      provider: "openai",
+      model: "gpt-5.4",
+      openaiApiKey: "k",
+      openrouterApiKey: "sk-or-v1-test",
+      orgAllowedModels: ["gpt-5.4"],
+    });
+    const result = await modelCommand.execute("anthropic/claude-sonnet-4.5", context);
+
+    expect(messageText(result)).toContain("not permitted by your organization");
+    // Atomic: a rejected model must not leave a changed provider behind.
+    expect(context.setProvider).not.toHaveBeenCalled();
+    expect(context.setModel).not.toHaveBeenCalled();
+  });
+
   it("keeps the direct provider for an OpenRouter slug with the same provider prefix", async () => {
     stubFetch([], ["anthropic/claude-sonnet-4.5"]);
 

@@ -1,6 +1,6 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
 import type { AgavConfig } from "../config/config.js";
-import { providerSetupHints } from "../config/startup.js";
+import { providerSetupHints, orgPolicyError } from "../config/startup.js";
 import { fetchVertexAIModels } from "../providers/vertex-ai.js";
 
 export interface FetchedModel {
@@ -391,12 +391,17 @@ export const modelCommand: SlashCommand = {
       const selectedModel = selectedFromAmbiguousMatches ? match!.id : model;
       const switchProvider = match && match.provider !== context.config.provider
         && (selectedFromAmbiguousMatches || !matchesProviderPrefix(selectedModel, context.config.provider));
-      if (switchProvider) {
-        const providerError = context.setProvider(match!.provider as import("../config/config.js").AgavConfig["provider"]);
-        if (providerError) return { type: "message", text: `${providerError}${warningSuffix(warnings)}` };
-      }
-      const modelError = context.setModel(selectedModel);
-      if (modelError) return { type: "message", text: `${modelError}${warningSuffix(warnings)}` };
+      const nextProvider = switchProvider
+        ? (match!.provider as AgavConfig["provider"])
+        : context.config.provider;
+      // Validate the full proposed pair before committing either setter: a
+      // rejected model must not leave a changed provider paired with the old
+      // model (a broken mismatch). The org-policy check is the only rejection
+      // reason, so pre-checking the pair keeps the update atomic.
+      const pairError = orgPolicyError({ ...context.config, provider: nextProvider, model: selectedModel });
+      if (pairError) return { type: "message", text: `${pairError}${warningSuffix(warnings)}` };
+      if (switchProvider) context.setProvider(nextProvider);
+      context.setModel(selectedModel);
       if (switchProvider) {
         return { type: "message", text: `Model changed to: ${selectedModel} (switched to ${match!.provider})` };
       }
@@ -435,12 +440,13 @@ export const modelCommand: SlashCommand = {
     }
 
     const switchProvider = picked.provider !== currentProvider && !matchesProviderPrefix(picked.id, currentProvider);
-    if (switchProvider) {
-      const providerError = context.setProvider(picked.provider as AgavConfig["provider"]);
-      if (providerError) return { type: "message", text: `${providerError}${warningSuffix(warnings)}` };
-    }
-    const modelError = context.setModel(picked.id);
-    if (modelError) return { type: "message", text: `${modelError}${warningSuffix(warnings)}` };
+    const nextProvider = switchProvider ? (picked.provider as AgavConfig["provider"]) : currentProvider;
+    // Validate the pair up front so a rejected model never leaves a changed
+    // provider paired with the old model.
+    const pairError = orgPolicyError({ ...context.config, provider: nextProvider, model: picked.id });
+    if (pairError) return { type: "message", text: `${pairError}${warningSuffix(warnings)}` };
+    if (switchProvider) context.setProvider(nextProvider);
+    context.setModel(picked.id);
     if (switchProvider) {
       return { type: "message", text: `Model changed to: ${picked.id} (switched to ${picked.provider})${warningSuffix(warnings)}` };
     }

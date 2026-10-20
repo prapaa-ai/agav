@@ -610,4 +610,32 @@ describe("listSessions and recent session startup resolution", () => {
     const sessions = await listSessions();
     expect(sessions).toEqual([]);
   });
+
+  it("keeps managed pins authoritative over an implicit recent-session default", async () => {
+    // Last session used Anthropic, but the org pins openai/gpt-5.4 and the user
+    // gave no explicit override: the pin must win so startup is not then rejected.
+    vi.mocked(listSessions).mockResolvedValue([
+      {
+        id: "session-1",
+        createdAt: "2025-01-01T00:00:00.000Z",
+        provider: "anthropic",
+        model: "claude-sonnet-4-20250514",
+        title: "Saved Session",
+        messages: [],
+      },
+    ]);
+    const pinned = { ...base, orgManagedProvider: "openai" as const, orgManagedModel: "gpt-5.4" };
+    const selection = await resolveStartupSelection(pinned, {});
+    expect(selection).toMatchObject({ provider: "openai", model: "gpt-5.4" });
+  });
+
+  it("does NOT silently correct an explicit out-of-policy CLI selection (left for policy rejection)", async () => {
+    vi.mocked(listSessions).mockResolvedValue([]);
+    const pinned = { ...base, orgManagedProvider: "openai" as const, orgManagedModel: "gpt-5.4" };
+    // An explicit --provider/--model stays as the user typed it so orgPolicyError
+    // can reject it, rather than being quietly overridden by the pin.
+    const selection = await resolveStartupSelection(pinned, { cliProvider: "ollama", cliModel: "llama3" });
+    expect(selection).toMatchObject({ provider: "ollama", model: "llama3" });
+    expect(orgPolicyError(selection)).toMatch(/not permitted by your organization/);
+  });
 });

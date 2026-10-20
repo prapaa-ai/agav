@@ -294,10 +294,29 @@ describe("org-config: loadOrgConfig", () => {
     expect(org?.openaiBaseURL).toBe("https://gw/v1");
   });
 
-  it("never throws on malformed JSON and falls through to undefined", async () => {
+  it("fails closed on a present policy file with malformed JSON", async () => {
+    // A present-but-malformed managed file must not silently disable enforcement:
+    // only a genuinely absent file permits unmanaged startup.
     process.env[ORG_CONFIG_ENV] = "/custom/org.json";
     readFile.mockImplementation(async (path: unknown) => {
       if (path === "/custom/org.json") return "{ not valid json";
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    await expect(loadOrgConfig()).rejects.toThrow(/not valid JSON/);
+  });
+
+  it("fails closed when a present policy file cannot be read (permission/I/O)", async () => {
+    process.env[ORG_CONFIG_ENV] = "/custom/org.json";
+    readFile.mockImplementation(async (path: unknown) => {
+      if (path === "/custom/org.json") throw Object.assign(new Error("denied"), { code: "EACCES" });
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    await expect(loadOrgConfig()).rejects.toThrow(/could not be read/);
+  });
+
+  it("treats a genuinely missing file (ENOENT) as absent and permits unmanaged startup", async () => {
+    process.env[ORG_CONFIG_ENV] = "/custom/org.json";
+    readFile.mockImplementation(async () => {
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     });
     expect(await loadOrgConfig()).toBeUndefined();
