@@ -76,15 +76,27 @@ describe("runLoginCommand: logout", () => {
 });
 
 describe("runLoginCommand: login", () => {
-  it("errors with a user-friendly message when not connected to an organization", async () => {
-    mockedLoadConfig.mockResolvedValue({} as any);
-    const code = await runLoginCommand("login", []);
-    expect(code).toBe(1);
-    const msg = errSpy.mock.calls[0]![0] as string;
-    // Developer-facing guidance, with the admin detail kept in a parenthetical.
-    expect(msg).toContain("isn't connected to an organization");
-    expect(msg).toContain("Agav administrator");
-    expect(msg).toContain("--control-plane"); // admins still get the exact flag
+  it("falls back to the hosted default control plane when nothing is configured", async () => {
+    mockedLoadConfig.mockResolvedValue({} as any); // no org controlPlane
+    delete process.env.AGAV_CONTROL_PLANE;
+    delete process.env.AGAV_DEFAULT_CONTROL_PLANE;
+    vi.mocked(obtainIdTokenViaOidc).mockResolvedValue({ idToken: "idt", flow: "oidc-token" });
+    mockedEnroll.mockResolvedValue({ policy: { provider: "openai" }, controlPlane: "https://auth.agav.dev" } as any);
+
+    const code = await runLoginCommand("login", ["--oidc"]);
+    expect(code).toBe(0);
+    // Login proceeds against the built-in SaaS default, not an error.
+    expect(mockedEnroll).toHaveBeenCalledWith("https://auth.agav.dev", expect.anything(), expect.anything());
+  });
+
+  it("prefers an org-configured control plane over the hosted default", async () => {
+    mockedLoadConfig.mockResolvedValue({ controlPlane: "https://auth.corp" } as any);
+    vi.mocked(obtainIdTokenViaOidc).mockResolvedValue({ idToken: "idt", flow: "oidc-token" });
+    mockedEnroll.mockResolvedValue({ policy: { provider: "openai" }, controlPlane: "https://auth.corp" } as any);
+
+    const code = await runLoginCommand("login", ["--oidc"]);
+    expect(code).toBe(0);
+    expect(mockedEnroll).toHaveBeenCalledWith("https://auth.corp", expect.anything(), expect.anything());
   });
 
   it("runs the oidc flow, enrolls, and persists the session", async () => {

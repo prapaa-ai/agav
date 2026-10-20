@@ -95,17 +95,12 @@ export async function runLoginCommand(command: string | undefined, args: string[
     return 1;
   }
 
-  // Resolve configuration: explicit flags win, else the org policy seed.
+  // Resolve the control-plane address: explicit flag -> env -> org policy
+  // (self-hosted) -> Agav's hosted default. There is always an address, so login
+  // works out of the box against the SaaS control plane.
   const config = await loadConfig();
-  const controlPlane = parsed.controlPlane ?? config.controlPlane;
-  if (!controlPlane) {
-    console.error(
-      "Agav isn't connected to an organization yet, so there's nothing to sign in to.\n" +
-      "If your company uses Agav, ask your Agav administrator for setup instructions.\n" +
-      "  (Admins: set the sign-in address with --control-plane <url>, or include it in the organization policy.)",
-    );
-    return 1;
-  }
+  const { resolveControlPlane } = await import("../enterprise/control-plane-address.js");
+  const controlPlane = resolveControlPlane({ flag: parsed.controlPlane, orgConfig: config.controlPlane });
 
   const flow = parsed.flow ?? autoSelectFlow();
 
