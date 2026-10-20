@@ -67,4 +67,18 @@ describe("CLI argument parsing", () => {
     expect(flags.logout).toBe(true);
     expect(flags._).toEqual([]);
   });
+
+  it("does not mistake 'mcp logout <name>' for the enterprise logout subcommand", () => {
+    const flags = parseArgs(["mcp", "logout", "figma"]);
+    expect(flags.mcp).toBe(true);
+    expect(flags.mcpCommand).toBe("logout");
+    expect(flags.logout).toBeUndefined();          // not hijacked
+    expect(flags._).toEqual(["logout", "figma"]);  // positionals stay intact
+  });
+
+  it("does not mistake 'mcp login <name>' for the enterprise login subcommand", () => {
+    const flags = parseArgs(["mcp", "login", "figma"]);
+    expect(flags.mcp).toBe(true);
+    expect(flags.login).toBeUndefined();
+  });
 });

@@ -307,8 +307,12 @@ export function parseArgs(argv: string[]) {
 
   // Recognize login/logout even when they arrive as the first positional — e.g.
   // after a `--` separator that package managers inject (`pnpm start -- login`),
-  // which routes the token past the subcommand branch into positionals.
-  if (!flags.login && !flags.logout && (pos[0] === "login" || pos[0] === "logout")) {
+  // which routes the token past the subcommand branch into positionals. Only when
+  // no other subcommand is active, so an argument to another command (for example
+  // `agav mcp logout <name>`) is never mistaken for the enterprise subcommand.
+  const anotherSubcommand = flags.update || flags.agents || flags.skills ||
+    flags.sessions || flags.mcp || flags.run || flags.job || flags.print;
+  if (!anotherSubcommand && !flags.login && !flags.logout && (pos[0] === "login" || pos[0] === "logout")) {
     flags[pos[0]] = true;
     pos.shift();
   }
