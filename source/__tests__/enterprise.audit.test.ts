@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AUDIT_SINK_ENV,
   buildAuditEvent,
+  classifyFailureReason,
   emitAuditEvent,
   recordAuditEvent,
   resolveAuditSink,
 } from "../enterprise/audit.js";
+import { EnterpriseAuthError } from "../enterprise/types.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -77,7 +79,7 @@ describe("emitAuditEvent", () => {
 
   it("never throws when the sink is unreachable (best-effort)", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new Error("ECONNREFUSED"));
-    const event = buildAuditEvent({ action: "login.failure", reason: "nope" });
+    const event = buildAuditEvent({ action: "login.failure", reason: "network_error" });
     expect(await emitAuditEvent(event, { sink: "https://siem.corp/ingest", fetchImpl })).toBe(false);
   });
 
@@ -93,10 +95,43 @@ describe("emitAuditEvent", () => {
       flow: "saml",
       controlPlane: "https://auth.corp",
       subject: "a@corp",
-      reason: "ok",
+      reason: "unauthorized",
     });
     const keys = Object.keys(event).sort();
     expect(keys).toEqual(["action", "at", "controlPlane", "flow", "reason", "source", "subject"]);
+  });
+});
+
+describe("classifyFailureReason", () => {
+  it("maps known failure shapes to allowlisted codes", () => {
+    expect(classifyFailureReason(new EnterpriseAuthError("Login cancelled."))).toBe("cancelled");
+    expect(classifyFailureReason(Object.assign(new Error("x"), { name: "AbortError" }))).toBe("cancelled");
+    expect(classifyFailureReason(new EnterpriseAuthError("Login timed out."))).toBe("timed_out");
+    expect(classifyFailureReason(new EnterpriseAuthError("Control plane rejected the sign-in (not authorized or no seat)."))).toBe("unauthorized");
+    expect(classifyFailureReason(new EnterpriseAuthError("Could not reach the control plane at https://auth.corp: ECONNREFUSED"))).toBe("network_error");
+    expect(classifyFailureReason(new EnterpriseAuthError("Could not open a browser. Use device login instead: agav login --device"))).toBe("browser_unavailable");
+    expect(classifyFailureReason(new EnterpriseAuthError("Agav sign-in isn't fully set up for your organization yet."))).toBe("not_configured");
+    expect(classifyFailureReason(new EnterpriseAuthError("No OIDC token available. Set AGAV_OIDC_TOKEN…"))).toBe("no_token_source");
+    expect(classifyFailureReason(new EnterpriseAuthError("Token response did not include an id_token."))).toBe("protocol_error");
+    expect(classifyFailureReason(new EnterpriseAuthError("Control plane enrollment failed (HTTP 500)."))).toBe("protocol_error");
+  });
+
+  it("falls back to the generic 'error' for anything unrecognized", () => {
+    expect(classifyFailureReason(new Error("something weird happened"))).toBe("error");
+    expect(classifyFailureReason("a bare string")).toBe("error");
+  });
+
+  it("never leaks server response content into the reason code (the P1 reproduction)", () => {
+    // A malformed device-authorization body surfaces as a JSON parse error whose
+    // message echoes the offending bytes — which could be a secret. The classifier
+    // must return a fixed code, never anything containing that content.
+    const leaky = new Error(`Unexpected token 'd', "device-secret-123" is not valid JSON`);
+    const reason = classifyFailureReason(leaky);
+    expect(reason).toBe("error"); // allowlisted, generic
+    expect(reason).not.toContain("device-secret-123");
+    // And the full event built from it carries only the code, not the message.
+    const event = buildAuditEvent({ action: "login.failure", reason });
+    expect(JSON.stringify(event)).not.toContain("device-secret-123");
   });
 });
 

@@ -266,14 +266,19 @@ The sink receives one JSON event per `POST`:
   "flow": "saml",                        // the login flow, when applicable
   "controlPlane": "https://auth.corp",   // control-plane ORIGIN only (no path)
   "subject": "user@corp.com",            // present on login.success when known
-  "reason": "…",                         // present on login.failure (non-sensitive)
+  "reason": "unauthorized",              // present on login.failure — an ALLOWLISTED code
   "at": "2025-01-01T00:00:00.000Z",      // ISO-8601
   "source": "agav-cli"                   // stable filter tag
 }
 ```
 
 - **No secrets.** Events never contain an `id_token`, gateway token, authorization
-  code, PKCE verifier, or any URL beyond the control-plane origin.
+  code, PKCE verifier, or any URL beyond the control-plane origin. The `reason` on
+  a failure is a fixed, allowlisted code — **never a raw error message**, which can
+  echo server response content. The codes are: `cancelled`, `timed_out`,
+  `unauthorized`, `network_error`, `browser_unavailable`, `not_configured`,
+  `no_token_source`, `protocol_error`, `error` (generic). Detailed exceptions are
+  kept for local stderr only.
 - **Best-effort.** Emission has a short timeout and swallows all errors; a slow or
   unreachable sink never blocks or fails `agav login`. A non-configured sink emits
   nothing.

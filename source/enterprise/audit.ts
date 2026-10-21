@@ -31,6 +31,36 @@ export type AuditAction =
   | "login.failure"
   | "logout";
 
+/**
+ * Allowlisted, secret-free failure reason codes.
+ *
+ * **Never put a raw error message in an audit event.** Some auth errors carry
+ * server response content — e.g. a malformed device-authorization body surfaces
+ * as a JSON parse error whose message echoes the offending bytes, which could
+ * include a secret. The event must only ever carry one of these fixed codes; the
+ * full exception is retained for *local* reporting (stderr) only. Add codes here
+ * as needed rather than widening to free-form strings.
+ */
+export type AuditReason =
+  /** The user or a signal (Ctrl-C) cancelled the login. */
+  | "cancelled"
+  /** The flow exceeded its deadline. */
+  | "timed_out"
+  /** The control plane / IdP rejected the sign-in (not authorized / no seat). */
+  | "unauthorized"
+  /** A network/transport problem reaching the control plane or IdP. */
+  | "network_error"
+  /** No usable local browser for an interactive flow. */
+  | "browser_unavailable"
+  /** Enterprise sign-in is not fully configured for the org. */
+  | "not_configured"
+  /** No OIDC token source available for the CI flow. */
+  | "no_token_source"
+  /** A protocol-level failure (bad/missing token, malformed response, etc.). */
+  | "protocol_error"
+  /** Any other failure — details go to stderr, never to the event. */
+  | "error";
+
 /** A structured, secret-free audit event emitted toward a SIEM sink. */
 export interface AuditEvent {
   /** What happened. */
@@ -41,12 +71,32 @@ export interface AuditEvent {
   controlPlane?: string;
   /** The subject the session was issued for, when known (login.success). */
   subject?: string;
-  /** A short, non-sensitive reason (failure message, "cancelled", etc.). */
-  reason?: string;
+  /** An allowlisted, non-sensitive reason code (login.failure). Never a raw message. */
+  reason?: AuditReason;
   /** ISO-8601 timestamp the event was created on the client. */
   at: string;
   /** Stable source tag so the SIEM can filter Agav CLI events. */
   source: "agav-cli";
+}
+
+/**
+ * Map an arbitrary login error to an allowlisted, secret-free reason code. The
+ * mapping keys only off the error's *shape* and a small set of stable substrings
+ * the CLI itself emits — never off server-supplied content — so a reason code can
+ * never carry a leaked secret. Anything unrecognized becomes the generic "error".
+ */
+export function classifyFailureReason(error: unknown): AuditReason {
+  const message = error instanceof Error ? error.message : String(error);
+  const name = error instanceof Error ? error.name : "";
+  if (name === "AbortError" || /\bcancell?ed\b/i.test(message)) return "cancelled";
+  if (/timed out|timeout/i.test(message)) return "timed_out";
+  if (/not authorized|no seat|rejected the sign-in/i.test(message)) return "unauthorized";
+  if (/could not reach|request failed|ECONN|ENOTFOUND|network/i.test(message)) return "network_error";
+  if (/could not open a browser|requires a browser/i.test(message)) return "browser_unavailable";
+  if (/isn't fully set up|not .*set up|auth-config/i.test(message)) return "not_configured";
+  if (/no oidc token|token source|token endpoint/i.test(message)) return "no_token_source";
+  if (/id_token|non-json|malformed|HTTP \d{3}|does not support/i.test(message)) return "protocol_error";
+  return "error";
 }
 
 /** Env var naming the SIEM webhook endpoint. Highest-priority sink source. */

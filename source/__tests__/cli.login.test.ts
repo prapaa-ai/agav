@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../config/config.js", () => ({
   loadConfig: vi.fn(),
 }));
+vi.mock("../config/org-config.js", () => ({
+  loadOrgPolicy: vi.fn().mockResolvedValue({}),
+}));
 vi.mock("../enterprise/control-plane.js", () => ({
   enroll: vi.fn(),
   persistSession: vi.fn().mockResolvedValue(undefined),
@@ -10,6 +13,7 @@ vi.mock("../enterprise/control-plane.js", () => ({
 }));
 vi.mock("../config/enterprise-policy-store.js", () => ({
   clearEnrolledPolicy: vi.fn().mockResolvedValue(undefined),
+  loadEnrolledPolicy: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../enterprise/flow-oidc-token.js", () => ({
   hasOidcTokenSource: vi.fn().mockReturnValue(false),
@@ -24,7 +28,10 @@ vi.mock("../enterprise/flow-device.js", () => ({
 vi.mock("../enterprise/flow-saml.js", () => ({
   obtainIdTokenViaSaml: vi.fn(),
 }));
-vi.mock("../enterprise/audit.js", () => ({
+vi.mock("../enterprise/audit.js", async () => ({
+  // Keep the real classifier (it is pure and part of what we assert on) but stub
+  // the network-emitting recorder.
+  ...(await vi.importActual<typeof import("../enterprise/audit.js")>("../enterprise/audit.js")),
   recordAuditEvent: vi.fn().mockResolvedValue(false),
 }));
 vi.mock("../utils/open-external.js", () => ({
@@ -32,8 +39,9 @@ vi.mock("../utils/open-external.js", () => ({
 }));
 
 const { loadConfig } = await import("../config/config.js");
+const { loadOrgPolicy } = await import("../config/org-config.js");
 const { enroll, persistSession, fetchAuthConfig } = await import("../enterprise/control-plane.js");
-const { clearEnrolledPolicy } = await import("../config/enterprise-policy-store.js");
+const { clearEnrolledPolicy, loadEnrolledPolicy } = await import("../config/enterprise-policy-store.js");
 const { hasOidcTokenSource, obtainIdTokenViaOidc } = await import("../enterprise/flow-oidc-token.js");
 const { obtainIdTokenViaAuthCode } = await import("../enterprise/flow-auth-code.js");
 const { obtainIdTokenViaSaml } = await import("../enterprise/flow-saml.js");
@@ -49,6 +57,13 @@ let errSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   vi.clearAllMocks();
   mockedLoadConfig.mockResolvedValue({ controlPlane: "https://auth.corp" } as any);
+  // Re-establish defaults cleared by clearAllMocks.
+  vi.mocked(loadOrgPolicy).mockResolvedValue({} as any);
+  vi.mocked(loadEnrolledPolicy).mockResolvedValue(undefined as any);
+  vi.mocked(clearEnrolledPolicy).mockResolvedValue(undefined);
+  vi.mocked(persistSession).mockResolvedValue(undefined);
+  vi.mocked(fetchAuthConfig).mockResolvedValue(undefined);
+  vi.mocked(recordAuditEvent).mockResolvedValue(false);
   logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
   errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -209,42 +224,79 @@ describe("runLoginCommand: audit → SIEM", () => {
     expect(calls).toContainEqual(
       expect.objectContaining({ action: "login.success", flow: "oidc-token", subject: "ci@corp" }),
     );
-    // The sink from org policy is passed to the recorder.
-    const opts = vi.mocked(recordAuditEvent).mock.calls[0]![1];
-    expect(opts).toEqual({ sink: "https://siem.corp/ingest" });
+    // The attempt event's sink comes from the pre-enrollment config.
+    const attempt = vi.mocked(recordAuditEvent).mock.calls.find((c) => c[0].action === "login.attempt")!;
+    expect(attempt[1]).toEqual({ sink: "https://siem.corp/ingest" });
   });
 
-  it("emits login.failure with the reason when a flow throws", async () => {
+  it("uses a sink that first arrives in the enrolled policy for login.success (P2)", async () => {
+    // First enrollment: no sink configured beforehand, but the authenticated
+    // session introduces auditSink. The success event must use the NEW sink,
+    // re-resolved after persist, not the (empty) pre-enrollment config.
+    mockedLoadConfig.mockResolvedValue({ controlPlane: "https://auth.corp" } as any); // no auditSink yet
+    vi.mocked(obtainIdTokenViaOidc).mockResolvedValue({ idToken: "idt", flow: "oidc-token" });
+    mockedEnroll.mockResolvedValue({ policy: { provider: "openai" }, subject: "ci@corp", controlPlane: "https://auth.corp" } as any);
+    // After persistSession, the effective org policy now carries the sink.
+    vi.mocked(loadOrgPolicy).mockResolvedValue({ config: { auditSink: "https://siem.enrolled/ingest" } } as any);
+
+    const code = await runLoginCommand("login", ["--oidc"]);
+    expect(code).toBe(0);
+    const success = vi.mocked(recordAuditEvent).mock.calls.find((c) => c[0].action === "login.success")!;
+    expect(success[1]).toEqual({ sink: "https://siem.enrolled/ingest" });
+    // The attempt (pre-enrollment) had no sink, confirming the success sink was
+    // re-resolved afterward.
+    const attempt = vi.mocked(recordAuditEvent).mock.calls.find((c) => c[0].action === "login.attempt")!;
+    expect(attempt[1]).toEqual({ sink: undefined });
+  });
+
+  it("emits login.failure with an allowlisted reason code, never the raw message", async () => {
     mockedLoadConfig.mockResolvedValue({ controlPlane: "https://auth.corp", auditSink: "https://siem.corp/ingest" } as any);
-    vi.mocked(obtainIdTokenViaOidc).mockRejectedValue(new Error("no token"));
+    // A leaky parse-style error whose message echoes server content (a secret).
+    vi.mocked(obtainIdTokenViaOidc).mockRejectedValue(
+      new Error(`Unexpected token 'd', "device-secret-123" is not valid JSON`),
+    );
 
     const code = await runLoginCommand("login", ["--oidc"]);
     expect(code).toBe(1);
-    const calls = vi.mocked(recordAuditEvent).mock.calls.map((c) => c[0]);
-    expect(calls).toContainEqual(
-      expect.objectContaining({ action: "login.failure", flow: "oidc-token", reason: "no token" }),
-    );
+    const failure = vi.mocked(recordAuditEvent).mock.calls.find((c) => c[0].action === "login.failure")!;
+    // Mapped to a fixed code; the raw (secret-bearing) message is NOT forwarded.
+    expect(failure[0]).toMatchObject({ action: "login.failure", flow: "oidc-token", reason: "error" });
+    expect(JSON.stringify(failure[0])).not.toContain("device-secret-123");
+    // The full message still reaches stderr for local debugging.
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("device-secret-123"));
   });
 
-  it("emits a logout audit event with the enrollment-sourced sink", async () => {
-    mockedLoadConfig.mockResolvedValue({ controlPlane: "https://auth.corp", auditSink: "https://siem.corp/ingest" } as any);
+  it("uses the enrolled record's actual origin and the effective sink for logout", async () => {
+    // Self-hosted login via --control-plane whose returned policy ships auditSink
+    // but omits controlPlane. The origin must come from the enrolled record's
+    // metadata, NOT config.controlPlane / the hosted default.
+    mockedLoadConfig.mockResolvedValue({} as any); // policy omits controlPlane
+    vi.mocked(loadOrgPolicy).mockResolvedValue({ config: { auditSink: "https://siem.self/ingest" } } as any);
+    vi.mocked(loadEnrolledPolicy).mockResolvedValue({
+      policy: { auditSink: "https://siem.self/ingest" },
+      controlPlane: "https://auth.self-hosted.corp",
+      storedAt: "now",
+    } as any);
+
     const code = await runLoginCommand("logout", []);
     expect(code).toBe(0);
     const logoutCall = vi.mocked(recordAuditEvent).mock.calls.find((c) => c[0].action === "logout")!;
-    expect(logoutCall[0]).toMatchObject({ action: "logout", controlPlane: "https://auth.corp" });
-    // The sink captured from config (which may be enrollment-sourced) is used.
-    expect(logoutCall[1]).toEqual({ sink: "https://siem.corp/ingest" });
+    expect(logoutCall[0]).toMatchObject({ action: "logout", controlPlane: "https://auth.self-hosted.corp" });
+    expect(logoutCall[1]).toEqual({ sink: "https://siem.self/ingest" });
   });
 
   it("reads audit config BEFORE clearing the enrollment cache, then emits after", async () => {
-    // Capture-before-delete: loadConfig (which reads the policy store that holds an
-    // enrollment-sourced auditSink) must run before clearEnrolledPolicy, and the
-    // logout event after it — so a self-hosted sink survives sign-out.
+    // Capture-before-delete: the policy store (which holds an enrollment-sourced
+    // auditSink/origin) must be read before clearEnrolledPolicy, and the logout
+    // event emitted after it — so a self-hosted sink survives sign-out.
     const order: string[] = [];
-    mockedLoadConfig.mockImplementation(async () => {
-      order.push("loadConfig");
-      return { controlPlane: "https://auth.corp", auditSink: "https://siem.corp/ingest" } as any;
+    vi.mocked(loadOrgPolicy).mockImplementation(async () => {
+      order.push("readPolicy");
+      return { config: { auditSink: "https://siem.corp/ingest" } } as any;
     });
+    vi.mocked(loadEnrolledPolicy).mockResolvedValue({
+      policy: {}, controlPlane: "https://auth.corp", storedAt: "now",
+    } as any);
     vi.mocked(clearEnrolledPolicy).mockImplementation(async () => { order.push("clear"); });
     vi.mocked(recordAuditEvent).mockImplementation(async (ev: any) => {
       if (ev.action === "logout") order.push("audit");
@@ -253,11 +305,13 @@ describe("runLoginCommand: audit → SIEM", () => {
 
     const code = await runLoginCommand("logout", []);
     expect(code).toBe(0);
-    expect(order).toEqual(["loadConfig", "clear", "audit"]);
+    // Policy read happens before clear; audit emitted after clear.
+    expect(order.indexOf("readPolicy")).toBeLessThan(order.indexOf("clear"));
+    expect(order.indexOf("clear")).toBeLessThan(order.indexOf("audit"));
   });
 
   it("does not emit a logout event when the cache cannot be cleared", async () => {
-    mockedLoadConfig.mockResolvedValue({ auditSink: "https://siem.corp/ingest" } as any);
+    vi.mocked(loadOrgPolicy).mockResolvedValue({ config: { auditSink: "https://siem.corp/ingest" } } as any);
     vi.mocked(clearEnrolledPolicy).mockRejectedValueOnce(new Error("EROFS"));
     const code = await runLoginCommand("logout", []);
     expect(code).toBe(1);

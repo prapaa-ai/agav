@@ -3,7 +3,7 @@ import { enroll, persistSession } from "../enterprise/control-plane.js";
 import { clearEnrolledPolicy } from "../config/enterprise-policy-store.js";
 import { hasOidcTokenSource } from "../enterprise/flow-oidc-token.js";
 import { openExternal } from "../utils/open-external.js";
-import { recordAuditEvent } from "../enterprise/audit.js";
+import { recordAuditEvent, classifyFailureReason } from "../enterprise/audit.js";
 import { EnterpriseAuthError, type AuthFlow, type IdentityProof } from "../enterprise/types.js";
 
 /**
@@ -167,22 +167,33 @@ export async function runLoginCommand(command: string | undefined, args: string[
     }, controller.signal);
     const session = await enroll(controlPlane, proof, controller.signal);
     await persistSession(session);
+    // Re-resolve the sink AFTER persisting: this login may be the first enrollment
+    // and the sink may arrive *in the returned policy*. loadOrgPolicy re-reads with
+    // the correct precedence (admin-shipped file still outranks the enrolled
+    // policy), so an org that ships auditSink only via enrollment is captured here
+    // while an admin file keeps priority. Falls back to the pre-enrollment value.
+    const successSink = (await resolveEffectiveAuditSink()) ?? auditSink;
     // Await the terminal event: the CLI calls process.exit right after this
     // returns, which would otherwise kill an in-flight fire-and-forget request
     // before it is delivered. recordAuditEvent is bounded (own timeout) and never
     // throws, so awaiting it cannot stall or fail login.
     await recordAuditEvent(
       { action: "login.success", flow, controlPlane: cpOrigin, subject: session.subject },
-      { sink: auditSink },
+      { sink: successSink },
     );
     const who = session.subject ? ` as ${session.subject}` : "";
     console.log(`Signed in${who}. Your organization's settings are now active — restart Agav to use them.`);
     return 0;
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    // Awaited for the same reason as login.success: survive the imminent exit.
-    await recordAuditEvent({ action: "login.failure", flow, controlPlane: cpOrigin, reason }, { sink: auditSink });
-    console.error(reason);
+    // The audit event carries only an ALLOWLISTED reason code — never the raw
+    // message, which can echo server response content (and thus secrets). The
+    // full message still goes to stderr for local debugging. Awaited for the same
+    // reason as login.success: survive the imminent exit.
+    await recordAuditEvent(
+      { action: "login.failure", flow, controlPlane: cpOrigin, reason: classifyFailureReason(error) },
+      { sink: auditSink },
+    );
+    console.error(error instanceof Error ? error.message : String(error));
     return 1;
   } finally {
     process.removeListener("SIGINT", cancel);
@@ -203,19 +214,59 @@ function controlPlaneOrigin(controlPlane: string): string {
 }
 
 /**
- * Resolve the audit settings for a logout, read from config BEFORE the enrollment
- * cache is cleared. Resolves the sink and control-plane origin the same way the
- * login path does, so a self-hosted org's sink receives the sign-out too. Never
- * throws — auditing is best-effort and must not affect logout.
+ * Resolve the effective audit sink with the correct org-policy precedence:
+ * an admin-shipped file outranks the enrolled policy. Returns the org-policy
+ * value (file or, failing that, enrollment); the env fallback (AGAV_AUDIT_SINK)
+ * is applied downstream by recordAuditEvent/resolveAuditSink. Undefined when no
+ * org-policy sink is set. Never throws.
+ */
+async function resolveEffectiveAuditSink(): Promise<string | undefined> {
+  try {
+    const { loadOrgPolicy } = await import("../config/org-config.js");
+    return (await loadOrgPolicy()).config?.auditSink;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolve the audit settings for a logout, read BEFORE the enrollment cache is
+ * cleared. Two subtleties the earlier version got wrong:
+ *
+ *   - **Sink:** read with admin-file-over-enrollment precedence, including a sink
+ *     that only exists in the enrolled policy (loadOrgPolicy reads the policy store
+ *     we are about to delete), so a self-hosted org's sink still receives sign-out.
+ *   - **Origin:** use the enrolled record's *actual* `controlPlane` metadata — the
+ *     origin the session was issued by — not `config.controlPlane` (the policy's
+ *     optional field, which a returned policy may omit). Otherwise a self-hosted
+ *     login via --control-plane whose policy omits `controlPlane` would later be
+ *     logged against the hosted default. Falls back to the resolved address.
+ *
+ * Never throws — auditing is best-effort and must not affect logout.
  */
 async function resolveLogoutAudit(args: string[]): Promise<{ sink?: string; controlPlane?: string }> {
   try {
     const parsed = parseLoginArgs(args);
     const flag = "error" in parsed ? undefined : parsed.controlPlane;
-    const config = await loadConfig();
-    const { resolveControlPlane } = await import("../enterprise/control-plane-address.js");
-    const controlPlane = resolveControlPlane({ flag, orgConfig: config.controlPlane });
-    return { sink: config.auditSink, controlPlane: controlPlaneOrigin(controlPlane) };
+    const sink = await resolveEffectiveAuditSink();
+
+    // Prefer the enrolled record's stored origin (the true issuer). Fall back to
+    // the resolved address (flag -> env -> policy -> hosted default) when there is
+    // no enrolled record (e.g. logout with nothing enrolled).
+    let origin: string | undefined;
+    try {
+      const { loadEnrolledPolicy } = await import("../config/enterprise-policy-store.js");
+      const enrolled = await loadEnrolledPolicy();
+      if (enrolled?.controlPlane) origin = controlPlaneOrigin(enrolled.controlPlane);
+    } catch {
+      // ignore — fall through to the resolved address
+    }
+    if (!origin) {
+      const config = await loadConfig();
+      const { resolveControlPlane } = await import("../enterprise/control-plane-address.js");
+      origin = controlPlaneOrigin(resolveControlPlane({ flag, orgConfig: config.controlPlane }));
+    }
+    return { sink, controlPlane: origin };
   } catch {
     return {};
   }

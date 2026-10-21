@@ -169,7 +169,7 @@ The flows differ only in how the identity proof is obtained; all exchange it wit
 
 ### Audit events (SIEM)
 
-When an audit sink is configured, `agav login`/`agav logout` emit a secret-free JSON event per action (`login.attempt`, `login.success`, `login.failure`, `logout`) to the sink via `POST`. Each event carries the action, the login flow, the control-plane origin, the subject (on success), a non-sensitive reason (on failure), an ISO-8601 timestamp, and `source: "agav-cli"` — never an `id_token`, gateway token, authorization code, or PKCE verifier. Emission is best-effort: a slow, unreachable, or misconfigured sink never blocks or fails login.
+When an audit sink is configured, `agav login`/`agav logout` emit a secret-free JSON event per action (`login.attempt`, `login.success`, `login.failure`, `logout`) to the sink via `POST`. Each event carries the action, the login flow, the control-plane origin, the subject (on success), a reason **code** (on failure), an ISO-8601 timestamp, and `source: "agav-cli"` — never an `id_token`, gateway token, authorization code, or PKCE verifier. The failure `reason` is a fixed, allowlisted code (e.g. `unauthorized`, `network_error`, `timed_out`, `cancelled`, `protocol_error`, `error`), never a raw error message — so a message that happens to echo server content can never leak to the SIEM. Full error details still go to local stderr. Emission is best-effort: a slow, unreachable, or misconfigured sink never blocks or fails login.
 
 Configure the sink (an HTTPS endpoint) by either:
 
