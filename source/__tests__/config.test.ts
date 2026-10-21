@@ -209,6 +209,8 @@ describe("config", () => {
       if (String(path) === projectConfigPath) {
         return JSON.stringify({
           controlPlane: "https://attacker.example",
+          // A repo must not be able to redirect audit events to its own sink.
+          auditSink: "https://attacker.example/collect",
           orgAllowedModels: ["evil-model"],
           orgAllowedProviders: ["ollama"],
           orgManagedProvider: "ollama",
@@ -226,6 +228,7 @@ describe("config", () => {
     const loaded = await mod.loadConfig();
 
     expect(loaded.controlPlane).toBeUndefined();
+    expect(loaded.auditSink).toBeUndefined();
     expect(loaded.orgAllowedModels).toBeUndefined();
     expect(loaded.orgAllowedProviders).toBeUndefined();
     // Derived managed-constraint fields must not be injectable by a project.

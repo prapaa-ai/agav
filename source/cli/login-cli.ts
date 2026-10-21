@@ -3,6 +3,7 @@ import { enroll, persistSession } from "../enterprise/control-plane.js";
 import { clearEnrolledPolicy } from "../config/enterprise-policy-store.js";
 import { hasOidcTokenSource } from "../enterprise/flow-oidc-token.js";
 import { openExternal } from "../utils/open-external.js";
+import { recordAuditEvent } from "../enterprise/audit.js";
 import { EnterpriseAuthError, type AuthFlow, type IdentityProof } from "../enterprise/types.js";
 
 /**
@@ -12,10 +13,13 @@ import { EnterpriseAuthError, type AuthFlow, type IdentityProof } from "../enter
  * control plane for an org policy + short-lived gateway credential, and cache it
  * so subsequent sessions enforce the policy. logout: clear the cached policy.
  *
- * Flow selection (override with --device / --oidc / --auth-code):
+ * Flow selection (override with --device / --oidc / --auth-code / --saml):
  *   - a CI OIDC token source present, or no TTY  -> oidc-token
  *   - a TTY with an openable browser             -> auth-code
  *   - otherwise                                  -> device
+ *
+ * SAML is never auto-selected (it needs an org whose IdP isn't OIDC); the user
+ * opts in with --saml, and the control plane brokers the SAML assertion.
  */
 
 interface LoginArgs {
@@ -33,6 +37,7 @@ function parseLoginArgs(args: string[]): LoginArgs | { error: string } {
     if (arg === "--device") out.flow = "device";
     else if (arg === "--oidc") out.flow = "oidc-token";
     else if (arg === "--auth-code") out.flow = "auth-code";
+    else if (arg === "--saml") out.flow = "saml";
     else if (arg === "--control-plane") out.controlPlane = take();
     else if (arg.startsWith("--control-plane=")) out.controlPlane = arg.slice("--control-plane=".length);
     else if (arg === "--issuer") out.issuer = take();
@@ -63,6 +68,13 @@ async function obtainProof(
   if (flow === "oidc-token") {
     const { obtainIdTokenViaOidc } = await import("../enterprise/flow-oidc-token.js");
     return obtainIdTokenViaOidc({ audience: opts.controlPlane, signal });
+  }
+
+  if (flow === "saml") {
+    // SAML is brokered entirely by the control plane; the CLI needs no IdP
+    // coordinates — the control plane is the SAML Service Provider.
+    const { obtainIdTokenViaSaml } = await import("../enterprise/flow-saml.js");
+    return obtainIdTokenViaSaml({ controlPlane: opts.controlPlane, openBrowser: openExternal, signal });
   }
 
   // Interactive flows need IdP coordinates. Prefer explicit flags; otherwise ask
@@ -104,13 +116,14 @@ export async function runLoginCommand(command: string | undefined, args: string[
       );
       return 1;
     }
+    await auditLogout(args);
     console.log("Signed out of your organization. Restart Agav to apply.");
     return 0;
   }
 
   const parsed = parseLoginArgs(args);
   if ("error" in parsed) {
-    console.error(`${parsed.error}\nUsage: agav login [--device | --oidc | --auth-code] [--control-plane URL] [--issuer URL] [--client-id ID]`);
+    console.error(`${parsed.error}\nUsage: agav login [--device | --oidc | --auth-code | --saml] [--control-plane URL] [--issuer URL] [--client-id ID]`);
     return 1;
   }
 
@@ -123,11 +136,18 @@ export async function runLoginCommand(command: string | undefined, args: string[
 
   const flow = parsed.flow ?? autoSelectFlow();
 
+  // Resolve the audit sink once: org policy (self-hosted) takes precedence over
+  // the AGAV_AUDIT_SINK env var. Events are dropped when neither is set.
+  const auditSink = config.auditSink;
+  const cpOrigin = controlPlaneOrigin(controlPlane);
+
   const controller = new AbortController();
   const cancel = () => controller.abort(new EnterpriseAuthError("Login cancelled."));
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   try {
+    // Fire-and-forget; auditing must never block or fail the login.
+    void recordAuditEvent({ action: "login.attempt", flow, controlPlane: cpOrigin }, { sink: auditSink });
     const proof = await obtainProof(flow, {
       issuer: parsed.issuer,
       clientId: parsed.clientId,
@@ -135,15 +155,54 @@ export async function runLoginCommand(command: string | undefined, args: string[
     }, controller.signal);
     const session = await enroll(controlPlane, proof, controller.signal);
     await persistSession(session);
+    void recordAuditEvent(
+      { action: "login.success", flow, controlPlane: cpOrigin, subject: session.subject },
+      { sink: auditSink },
+    );
     const who = session.subject ? ` as ${session.subject}` : "";
     console.log(`Signed in${who}. Your organization's settings are now active — restart Agav to use them.`);
     return 0;
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    const reason = error instanceof Error ? error.message : String(error);
+    void recordAuditEvent({ action: "login.failure", flow, controlPlane: cpOrigin, reason }, { sink: auditSink });
+    console.error(reason);
     return 1;
   } finally {
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
+  }
+}
+
+/**
+ * Normalize a control-plane URL to its origin for audit events. Falls back to
+ * the raw value if it cannot be parsed, so auditing never throws on a bad URL.
+ */
+function controlPlaneOrigin(controlPlane: string): string {
+  try {
+    return new URL(controlPlane).origin;
+  } catch {
+    return controlPlane;
+  }
+}
+
+/**
+ * Emit a best-effort logout audit event. Resolves the control-plane address and
+ * sink the same way the login path does, so a self-hosted org's sink receives
+ * the sign-out too. Never throws.
+ */
+async function auditLogout(args: string[]): Promise<void> {
+  try {
+    const parsed = parseLoginArgs(args);
+    if ("error" in parsed) return;
+    const config = await loadConfig();
+    const { resolveControlPlane } = await import("../enterprise/control-plane-address.js");
+    const controlPlane = resolveControlPlane({ flag: parsed.controlPlane, orgConfig: config.controlPlane });
+    await recordAuditEvent(
+      { action: "logout", controlPlane: controlPlaneOrigin(controlPlane) },
+      { sink: config.auditSink },
+    );
+  } catch {
+    // Auditing is best-effort; a failure here must not affect logout.
   }
 }
 

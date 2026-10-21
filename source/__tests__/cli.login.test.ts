@@ -21,6 +21,12 @@ vi.mock("../enterprise/flow-auth-code.js", () => ({
 vi.mock("../enterprise/flow-device.js", () => ({
   obtainIdTokenViaDevice: vi.fn(),
 }));
+vi.mock("../enterprise/flow-saml.js", () => ({
+  obtainIdTokenViaSaml: vi.fn(),
+}));
+vi.mock("../enterprise/audit.js", () => ({
+  recordAuditEvent: vi.fn().mockResolvedValue(false),
+}));
 vi.mock("../utils/open-external.js", () => ({
   openExternal: vi.fn().mockResolvedValue(true),
 }));
@@ -30,6 +36,8 @@ const { enroll, persistSession, fetchAuthConfig } = await import("../enterprise/
 const { clearEnrolledPolicy } = await import("../config/enterprise-policy-store.js");
 const { hasOidcTokenSource, obtainIdTokenViaOidc } = await import("../enterprise/flow-oidc-token.js");
 const { obtainIdTokenViaAuthCode } = await import("../enterprise/flow-auth-code.js");
+const { obtainIdTokenViaSaml } = await import("../enterprise/flow-saml.js");
+const { recordAuditEvent } = await import("../enterprise/audit.js");
 const { runLoginCommand, parseLoginArgs, autoSelectFlow } = await import("../cli/login-cli.js");
 
 const mockedLoadConfig = vi.mocked(loadConfig);
@@ -54,6 +62,10 @@ describe("parseLoginArgs", () => {
   it("parses explicit flow and endpoint flags", () => {
     const parsed = parseLoginArgs(["--device", "--issuer", "https://idp", "--client-id=cli", "--control-plane", "https://cp"]);
     expect(parsed).toEqual({ flow: "device", issuer: "https://idp", clientId: "cli", controlPlane: "https://cp" });
+  });
+
+  it("parses the --saml flow flag", () => {
+    expect(parseLoginArgs(["--saml"])).toEqual({ flow: "saml" });
   });
 
   it("flags unknown arguments", () => {
@@ -161,5 +173,66 @@ describe("runLoginCommand: login", () => {
     const code = await runLoginCommand("login", ["--oidc"]);
     expect(code).toBe(1);
     expect(errSpy).toHaveBeenCalledWith("no token");
+  });
+
+  it("runs the SAML flow brokered by the control plane (no IdP coordinates)", async () => {
+    vi.mocked(obtainIdTokenViaSaml).mockResolvedValue({ idToken: "idt", flow: "saml" });
+    mockedEnroll.mockResolvedValue({
+      policy: { provider: "openai" },
+      subject: "saml@corp",
+      controlPlane: "https://auth.corp",
+    } as any);
+
+    const code = await runLoginCommand("login", ["--saml"]);
+    expect(code).toBe(0);
+    expect(fetchAuthConfig).not.toHaveBeenCalled(); // SAML needs no IdP coordinates
+    expect(obtainIdTokenViaSaml).toHaveBeenCalledWith(
+      expect.objectContaining({ controlPlane: "https://auth.corp" }),
+    );
+    expect(mockedEnroll).toHaveBeenCalledWith("https://auth.corp", { idToken: "idt", flow: "saml" }, expect.anything());
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("saml@corp"));
+  });
+});
+
+describe("runLoginCommand: audit → SIEM", () => {
+  it("emits login.attempt and login.success with the control-plane origin", async () => {
+    mockedLoadConfig.mockResolvedValue({ controlPlane: "https://auth.corp", auditSink: "https://siem.corp/ingest" } as any);
+    vi.mocked(obtainIdTokenViaOidc).mockResolvedValue({ idToken: "idt", flow: "oidc-token" });
+    mockedEnroll.mockResolvedValue({ policy: { provider: "openai" }, subject: "ci@corp", controlPlane: "https://auth.corp" } as any);
+
+    const code = await runLoginCommand("login", ["--oidc"]);
+    expect(code).toBe(0);
+    const calls = vi.mocked(recordAuditEvent).mock.calls.map((c) => c[0]);
+    expect(calls).toContainEqual(
+      expect.objectContaining({ action: "login.attempt", flow: "oidc-token", controlPlane: "https://auth.corp" }),
+    );
+    expect(calls).toContainEqual(
+      expect.objectContaining({ action: "login.success", flow: "oidc-token", subject: "ci@corp" }),
+    );
+    // The sink from org policy is passed to the recorder.
+    const opts = vi.mocked(recordAuditEvent).mock.calls[0]![1];
+    expect(opts).toEqual({ sink: "https://siem.corp/ingest" });
+  });
+
+  it("emits login.failure with the reason when a flow throws", async () => {
+    mockedLoadConfig.mockResolvedValue({ controlPlane: "https://auth.corp", auditSink: "https://siem.corp/ingest" } as any);
+    vi.mocked(obtainIdTokenViaOidc).mockRejectedValue(new Error("no token"));
+
+    const code = await runLoginCommand("login", ["--oidc"]);
+    expect(code).toBe(1);
+    const calls = vi.mocked(recordAuditEvent).mock.calls.map((c) => c[0]);
+    expect(calls).toContainEqual(
+      expect.objectContaining({ action: "login.failure", flow: "oidc-token", reason: "no token" }),
+    );
+  });
+
+  it("emits a logout audit event", async () => {
+    mockedLoadConfig.mockResolvedValue({ controlPlane: "https://auth.corp", auditSink: "https://siem.corp/ingest" } as any);
+    const code = await runLoginCommand("logout", []);
+    expect(code).toBe(0);
+    const calls = vi.mocked(recordAuditEvent).mock.calls.map((c) => c[0]);
+    expect(calls).toContainEqual(
+      expect.objectContaining({ action: "logout", controlPlane: "https://auth.corp" }),
+    );
   });
 });

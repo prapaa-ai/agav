@@ -94,6 +94,12 @@ describe("org-config: applyOrgConfig", () => {
     expect(cfg.controlPlane).toBe("https://auth.corp.com");
   });
 
+  it("surfaces the org auditSink on the config", () => {
+    const cfg = baseConfig();
+    applyOrgConfig(cfg, { auditSink: "https://siem.corp/ingest" });
+    expect(cfg.auditSink).toBe("https://siem.corp/ingest");
+  });
+
   it("adopts the sole allowed provider and model when exactly one is allowed", () => {
     const cfg = baseConfig({ provider: "openai", model: "gpt-5.4" });
     applyOrgConfig(cfg, {

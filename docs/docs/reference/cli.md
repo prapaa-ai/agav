@@ -82,6 +82,7 @@ When you start a plain `agav` session, the provider and model are resolved in th
 | `LIBREOFFICE_PATH` | Office document conversion executable |
 | `AGAV_ORG_CONFIG` | Path to an organization-managed policy file (see [Configuration](./configuration#organization-managed-configuration)) |
 | `AGAV_OIDC_TOKEN` | Pre-supplied OIDC token for `agav login --oidc` in automation |
+| `AGAV_AUDIT_SINK` | HTTPS endpoint that receives secret-free `agav login`/`logout` audit events (see [Audit events](#audit-events-siem)) |
 
 ## Background job subcommands
 
@@ -138,6 +139,7 @@ agav login                              # Sign in; auto-selects the login flow
 agav login --auth-code                  # Force Authorization Code + PKCE (browser)
 agav login --device                     # Force the device flow (SSH / headless)
 agav login --oidc                       # Force OIDC token exchange (CI / automation)
+agav login --saml                       # Force SAML, brokered by the control plane
 agav logout                             # Remove the cached organization policy
 ```
 
@@ -161,4 +163,17 @@ Flow selection when none is forced:
 - A CI OIDC token source (`AGAV_OIDC_TOKEN`, or a GitHub Actions-style token endpoint) or a non-interactive shell &rarr; **OIDC token exchange**.
 - An interactive terminal &rarr; **Authorization Code + PKCE**. If a browser cannot be opened (for example over SSH), rerun with `--device`.
 
-The three flows differ only in how the identity proof is obtained; all exchange it with the control plane for a policy and a short-lived gateway credential, then cache the result (encrypted, owner-only) under `~/.agav/enterprise/`. The control plane is never on the inference path. Restart Agav after login or logout to apply the change.
+**SAML** is never auto-selected; opt in with `--saml`. It is for organizations whose identity provider speaks SAML 2.0 rather than OIDC. The control plane acts as the SAML Service Provider: Agav opens a browser to the control plane, which runs the SAML dance with the IdP server-side and mints the same identity proof the other flows produce. The CLI never parses SAML, so `--saml` needs no `--issuer`/`--client-id`; it requires only a browser on the local machine.
+
+The flows differ only in how the identity proof is obtained; all exchange it with the control plane for a policy and a short-lived gateway credential, then cache the result (encrypted, owner-only) under `~/.agav/enterprise/`. The control plane is never on the inference path. Restart Agav after login or logout to apply the change.
+
+### Audit events (SIEM)
+
+When an audit sink is configured, `agav login`/`agav logout` emit a secret-free JSON event per action (`login.attempt`, `login.success`, `login.failure`, `logout`) to the sink via `POST`. Each event carries the action, the login flow, the control-plane origin, the subject (on success), a non-sensitive reason (on failure), an ISO-8601 timestamp, and `source: "agav-cli"` — never an `id_token`, gateway token, authorization code, or PKCE verifier. Emission is best-effort: a slow, unreachable, or misconfigured sink never blocks or fails login.
+
+Configure the sink (an HTTPS endpoint) by either:
+
+- the `auditSink` field in the [organization policy](./configuration#organization-managed-configuration) (admin-shipped; preferred), or
+- the `AGAV_AUDIT_SINK` environment variable (local/dev).
+
+With no sink configured, no events are emitted.

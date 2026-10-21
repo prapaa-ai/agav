@@ -66,6 +66,8 @@ export interface OrgConfig {
   allowedTools?: string[];
   /** Control-plane address — the seed a future `agav login` discovers from. */
   controlPlane?: string;
+  /** SIEM sink URL for audit events (sign-in/out). Admin-shipped; see audit.ts. */
+  auditSink?: string;
 }
 
 /** Order of restrictiveness for permissionMode, strictest first. */
@@ -160,6 +162,7 @@ export function parseOrgConfig(input: unknown): OrgConfig {
     out.allowedTools = parseStringRestriction(raw.allowedTools, "allowedTools");
   }
   if (typeof raw.controlPlane === "string") out.controlPlane = raw.controlPlane;
+  if (typeof raw.auditSink === "string") out.auditSink = raw.auditSink;
 
   return out;
 }
@@ -405,6 +408,7 @@ export function applyOrgConfig(merged: AgavConfig, org: OrgConfig | undefined): 
   if (org.allowedModels !== undefined) merged.orgAllowedModels = org.allowedModels;
   if (org.allowedProviders !== undefined) merged.orgAllowedProviders = org.allowedProviders;
   if (org.controlPlane !== undefined) merged.controlPlane = org.controlPlane;
+  if (org.auditSink !== undefined) merged.auditSink = org.auditSink;
 
   // Convenience: when the org allows exactly one provider (or model) and has not
   // already hard-pinned it, adopt it as the effective value. With only one choice
