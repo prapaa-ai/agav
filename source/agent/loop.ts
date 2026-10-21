@@ -36,7 +36,38 @@ import { computeEditDiff, computeDiff } from "../utils/diff.js";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-export type ConfirmResult = "yes" | "no" | "always";
+export const MAX_FEEDBACK_LENGTH = 500;
+
+const loopGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** Counts visible grapheme clusters in a string. */
+export function countGraphemes(text: string): number {
+  let count = 0;
+  for (const _ of loopGraphemeSegmenter.segment(text)) {
+    count++;
+  }
+  return count;
+}
+
+/** Truncates text to at most `maxGraphemes` clusters without splitting composite characters. */
+export function truncateGraphemes(text: string, maxGraphemes: number): string {
+  if (maxGraphemes <= 0) return "";
+  let count = 0;
+  let end = 0;
+  for (const { segment, index } of loopGraphemeSegmenter.segment(text)) {
+    if (count >= maxGraphemes) break;
+    count++;
+    end = index + segment.length;
+  }
+  return text.slice(0, end);
+}
+
+export interface ConfirmDenial {
+  choice: "no";
+  feedback?: string;
+}
+
+export type ConfirmResult = "yes" | "no" | "always" | ConfirmDenial;
 
 export type ConfirmToolFn = (
   toolName: string,
@@ -554,10 +585,15 @@ export async function* runAgentLoop(
           // Clamp to the org floor: interactive "Always" must not loosen a
           // managed permission policy below deny-writes/ask.
           permissionMode = clampPermissionMode("auto-accept", params.permissionFloor);
-        }
-        if (choice === "no") {
+        } else if (choice !== "yes") {
           deniedCalls.add(denialKey);
-          const reason = "User denied this tool call. Do not retry it with the same arguments — take a different approach, or stop and explain what you need.";
+          const rawFeedback = typeof choice === "object" && choice !== null && "feedback" in choice && typeof choice.feedback === "string"
+            ? choice.feedback.trim()
+            : undefined;
+          const feedback = rawFeedback ? truncateGraphemes(rawFeedback, MAX_FEEDBACK_LENGTH) : undefined;
+          const reason = feedback
+            ? `User denied this tool call with feedback: ${feedback}\nDo not retry it with the same arguments — take a different approach, or stop and explain what you need.`
+            : "User denied this tool call. Do not retry it with the same arguments — take a different approach, or stop and explain what you need.";
           toolResults.push({ type: "tool_result", toolCallId: id, toolResult: reason, isError: true });
           yield { type: "tool_result", toolName: call.name, toolCallId: id, output: reason, isError: true };
           continue;

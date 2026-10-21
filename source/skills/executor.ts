@@ -120,7 +120,7 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
       }
       const choice = await opts.confirmTool("skill_shell_block", { command: block.command });
       checkAborted(opts.signal);
-      if (choice === "no") {
+      if (choice !== "yes" && choice !== "always") {
         result = replaceOnce(result, block.match, "[shell block skipped — denied by user]");
         continue;
       }
