@@ -114,6 +114,53 @@ describe("subagent model selection", () => {
     expect(loopParams.conversation.getContextWindow()).toBe(128_000);
   });
 
+  it("rejects a subagent model that violates the parent org allowlist", async () => {
+    const { tool } = makeTool([
+      { id: "gpt-4o", provider: "openai" },
+    ], "openai");
+    // Parent policy allows only gpt-5.4; requesting gpt-4o must be refused.
+    const providerConfig = (tool as any);
+    void providerConfig;
+    vi.mocked(fetchAvailableModels).mockResolvedValue({
+      models: [{ id: "gpt-4o", provider: "openai" }],
+      warnings: [],
+    });
+
+    // Rebuild a tool whose provider config carries the allowlist.
+    const policedTool = createSubagentTool({
+      provider: { name: "parent" } as any,
+      parentToolRegistry: new ToolRegistry(),
+      getConfig: () => ({
+        model: "gpt-5.4",
+        systemPrompt: "test prompt",
+        permissionMode: "auto-accept",
+        effort: "medium",
+        iterationsBudget: { remaining: 2, total: 2 },
+      }),
+      getProviderConfig: () => ({
+        provider: "openai",
+        model: "gpt-5.4",
+        openaiApiKey: "k",
+        effort: "medium",
+        maxTokens: 1000,
+        maxIterations: 2,
+        errorRetries: 0,
+        permissionMode: "auto-accept",
+        orgAllowedModels: ["gpt-5.4"],
+      }) as any,
+      confirmationQueue: { enqueue: vi.fn(() => Promise.resolve("yes")), rejectBySubagentId: vi.fn() } as any,
+      onProgressUpdate: vi.fn(),
+      onTokenUsage: vi.fn(),
+      getSignal: () => undefined,
+    });
+
+    const result = await policedTool.execute({ title: "test", task: "inspect", model: "gpt-4o" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(result.isError).toBe(true);
+    expect(String(result.output)).toMatch(/not permitted by your organization/);
+    expect(runAgentLoop).not.toHaveBeenCalled();
+  });
+
   it("reuses a model catalog for multiple different-model spawns with unchanged config", async () => {
     const { tool } = makeTool([
       { id: "router/model-one", provider: "openrouter" },

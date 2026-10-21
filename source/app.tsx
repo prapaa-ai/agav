@@ -20,6 +20,7 @@ import SubagentDisplay from "./components/subagent-display.js";
 import { makeAgentProgressTracker } from "./agent/subagent-progress.js";
 import type { SubagentProgress } from "./agent/subagent-types.js";
 import type { AgavConfig } from "./config/config.js";
+import { orgPolicyError } from "./config/startup.js";
 import type { LLMProvider } from "./providers/types.js";
 import { createProvider } from "./providers/registry.js";
 import type { ContentBlock, InvocationReason } from "./providers/types.js";
@@ -1061,12 +1062,23 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             provider: activeProvider ?? undefined,
             getModelSelectionVersion: () => modelSelectionVersion.current,
             setModel: (model: string) => {
+              // Enforce the org policy on interactive model changes (/model,
+              // /fast, /deep): a managed pin or allowlist applies to every
+              // selection path, not only startup. Reject out-of-policy changes and
+              // return the error so the command reports failure instead of a
+              // misleading "switched" message.
+              const policyError = orgPolicyError({ ...config, model });
+              if (policyError) return policyError;
               modelSelectionVersion.current++;
               setConfig((prev) => ({ ...prev, model }));
+              return null;
             },
             setProvider: (provider) => {
+              const policyError = orgPolicyError({ ...config, provider });
+              if (policyError) return policyError;
               modelSelectionVersion.current++;
               setConfig((prev) => ({ ...prev, provider }));
+              return null;
             },
             setEffort: (effort) => {
               setConfig((prev) => ({ ...prev, effort }));

@@ -80,6 +80,8 @@ When you start a plain `agav` session, the provider and model are resolved in th
 | `AGAV_NO_SANDBOX=1` | Disable automatic shell sandbox selection |
 | `AGAV_MARKETPLACE_URL` | Override the default agent marketplace URL |
 | `LIBREOFFICE_PATH` | Office document conversion executable |
+| `AGAV_ORG_CONFIG` | Path to an organization-managed policy file (see [Configuration](./configuration#organization-managed-configuration)) |
+| `AGAV_OIDC_TOKEN` | Pre-supplied OIDC token for `agav login --oidc` in automation |
 
 ## Background job subcommands
 
@@ -126,3 +128,37 @@ agav skills clear                     # Remove all user-installed skills
 ```
 
 Bundled skills are compiled into the binary and cannot be removed, but `disable` turns them off without deleting anything. The enabled/disabled state is stored in `~/.agav/skills/registry.json`. Changes take effect on the next start.
+
+## Enterprise login subcommands
+
+For organizations running an Agav control plane, `agav login` enrolls a developer: it authenticates through the organization's identity provider, retrieves the enforced [organization policy](./configuration#organization-managed-configuration), and caches it so subsequent sessions apply it.
+
+```bash
+agav login                              # Sign in; auto-selects the login flow
+agav login --auth-code                  # Force Authorization Code + PKCE (browser)
+agav login --device                     # Force the device flow (SSH / headless)
+agav login --oidc                       # Force OIDC token exchange (CI / automation)
+agav logout                             # Remove the cached organization policy
+```
+
+Options:
+
+| Option | Purpose |
+| --- | --- |
+| `--control-plane <url>` | Control-plane address. See resolution order below. |
+| `--issuer <url>` | Identity-provider issuer (required for `--auth-code` and `--device`). |
+| `--client-id <id>` | OAuth client id registered for the Agav CLI (required for interactive flows). |
+
+**Control-plane address resolution** (highest priority first). You do not need to set any of these for the hosted service — `agav login` works out of the box against Agav's hosted control plane:
+
+1. `--control-plane <url>`
+2. the `AGAV_CONTROL_PLANE` environment variable
+3. the `controlPlane` value in the organization policy (for a self-hosted control plane, shipped via MDM or a file)
+4. Agav's built-in hosted default
+
+Flow selection when none is forced:
+
+- A CI OIDC token source (`AGAV_OIDC_TOKEN`, or a GitHub Actions-style token endpoint) or a non-interactive shell &rarr; **OIDC token exchange**.
+- An interactive terminal &rarr; **Authorization Code + PKCE**. If a browser cannot be opened (for example over SSH), rerun with `--device`.
+
+The three flows differ only in how the identity proof is obtained; all exchange it with the control plane for a policy and a short-lived gateway credential, then cache the result (encrypted, owner-only) under `~/.agav/enterprise/`. The control plane is never on the inference path. Restart Agav after login or logout to apply the change.

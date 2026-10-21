@@ -490,5 +490,64 @@ describe("skills/executor", () => {
       expect(confirmTool).toHaveBeenCalledTimes(1);
       expect(runInSandbox).toHaveBeenCalledTimes(2);
     });
+
+    it("does not let shell 'always' widen past the org permission floor", async () => {
+      const multiShellSkill: SkillDefinition = {
+        ...shellSkill,
+        body: "A\n```sh\necho one\n```\nB\n```sh\necho two\n```\nC",
+      };
+      const confirmTool = vi.fn().mockResolvedValue("always");
+
+      await executeSkill(multiShellSkill, "test", {
+        ...baseDeps,
+        permissionMode: "ask",
+        confirmTool,
+        policy: { provider: "anthropic", orgPermissionFloor: "ask" },
+      });
+
+      // The floor forbids blanket auto-accept, so each block prompts again.
+      expect(confirmTool).toHaveBeenCalledTimes(2);
+      expect(runInSandbox).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("org policy enforcement", () => {
+    it("rejects a frontmatter model override that violates a managed pin", async () => {
+      await expect(executeSkill(
+        { ...skill, frontmatter: { ...skill.frontmatter, model: "gpt-4o" } },
+        "",
+        { ...baseDeps, policy: { provider: "openai", orgManagedModel: "gpt-5.4" } },
+      )).rejects.toThrow(/not permitted by your organization/);
+      expect(runAgentLoop).not.toHaveBeenCalled();
+    });
+
+    it("rejects a frontmatter model outside the org allowlist", async () => {
+      await expect(executeSkill(
+        { ...skill, frontmatter: { ...skill.frontmatter, model: "gpt-4o" } },
+        "",
+        { ...baseDeps, policy: { provider: "openai", orgAllowedModels: ["gpt-5.4"] } },
+      )).rejects.toThrow(/not permitted by your organization/);
+    });
+
+    it("clamps the skill loop permission mode to the org floor", async () => {
+      await executeSkill(skill, "", {
+        ...baseDeps,
+        permissionMode: "auto-accept",
+        policy: { provider: "anthropic", orgPermissionFloor: "deny-writes" },
+      });
+      expect(runAgentLoop).toHaveBeenCalledWith(expect.objectContaining({
+        permissionMode: "deny-writes",
+        permissionFloor: "deny-writes",
+      }));
+    });
+
+    it("allows an in-policy frontmatter model", async () => {
+      await executeSkill(
+        { ...skill, frontmatter: { ...skill.frontmatter, model: "gpt-5.4" } },
+        "",
+        { ...baseDeps, policy: { provider: "openai", orgAllowedModels: ["gpt-5.4"] } },
+      );
+      expect(runAgentLoop).toHaveBeenCalledWith(expect.objectContaining({ model: "gpt-5.4" }));
+    });
   });
 });

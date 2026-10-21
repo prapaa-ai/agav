@@ -37,6 +37,37 @@ describe("explicit-only confirmations", () => {
     await expect(later).resolves.toBe("no");
   });
 
+  it("downgrades Always to a one-shot yes when the org floor requires confirmation", async () => {
+    // Under an org floor of "ask", approving the first tool with "Always" must
+    // NOT flip the queue to blanket auto-accept: the next tool must still prompt.
+    const queue = new ConfirmationQueue();
+    let shown: any;
+    queue.bind((item) => { shown = item; });
+    queue.setPermissionFloor("ask");
+
+    const first = queue.enqueue({ toolName: "write_file", input: {} });
+    expect(queue.resolve("always")).toBe("yes");
+    await expect(first).resolves.toBe("yes");
+
+    // A second request is displayed (not silently auto-approved).
+    const second = queue.enqueue({ toolName: "edit_file", input: {} });
+    expect(shown).toMatchObject({ toolName: "edit_file" });
+    queue.resolve("no");
+    await expect(second).resolves.toBe("no");
+  });
+
+  it("still allows blanket Always when the floor permits auto-accept (or no floor)", async () => {
+    const queue = new ConfirmationQueue();
+    queue.bind(() => {});
+    queue.setPermissionFloor("auto-accept");
+
+    const first = queue.enqueue({ toolName: "write_file", input: {} });
+    queue.resolve("always");
+    await expect(first).resolves.toBe("always");
+    // Blanket auto-accept is in effect: a later request resolves without a prompt.
+    await expect(queue.enqueue({ toolName: "edit_file", input: {} })).resolves.toBe("always");
+  });
+
   it("does not let another confirmation's Always resolve a queued explicit approval", async () => {
     const queue = new ConfirmationQueue();
     let shown: any;

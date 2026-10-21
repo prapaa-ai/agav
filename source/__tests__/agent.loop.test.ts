@@ -502,6 +502,56 @@ describe("runAgentLoop", () => {
     });
   });
 
+  it("does not let interactive 'always' widen past the org permission floor", async () => {
+    // With a floor of "ask", choosing "always" on the first write must NOT
+    // auto-accept the next write: confirmation is requested for both tools.
+    const editExecute = vi.fn(async () => ({ output: "edited", isError: false }));
+    const shellExecute = vi.fn(async () => ({ output: "shell ok", isError: false }));
+
+    const provider = new MockProvider([
+      [
+        { type: "tool_call_start", toolCallId: "edit-1", toolName: "write_file" },
+        { type: "tool_call_delta", toolCallId: "edit-1", argsJson: '{"path":"a.txt","content":"x"}' },
+        { type: "message_end", stopReason: "tool_use" },
+      ],
+      [
+        { type: "tool_call_start", toolCallId: "shell-1", toolName: "shell" },
+        { type: "tool_call_delta", toolCallId: "shell-1", argsJson: '{"command":"pwd"}' },
+        { type: "message_end", stopReason: "tool_use" },
+      ],
+      [
+        { type: "text_delta", text: "complete" },
+        { type: "message_end", stopReason: "end_turn" },
+      ],
+    ]);
+
+    const confirmTool = vi.fn().mockResolvedValue("always");
+
+    const conversation = new ConversationState();
+    conversation.setModel("gpt-4");
+    conversation.addUserMessage("make edits");
+
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createTool("write_file", editExecute));
+    toolRegistry.register(createTool("shell", shellExecute));
+
+    await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry,
+        model: "gpt-4",
+        confirmTool,
+        permissionMode: "ask",
+        permissionFloor: "ask",
+        iterationsBudget: { remaining: 5, total: 5 },
+      }),
+    );
+
+    // Both write/shell tools re-request confirmation: the floor blocked widening.
+    expect(confirmTool).toHaveBeenCalledTimes(2);
+  });
+
   it("denies write tools in deny-writes mode without executing them", async () => {
     const execute = vi.fn(async () => ({
       output: "should not run",

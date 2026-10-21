@@ -6,6 +6,7 @@ import type {
 } from "../providers/types.js";
 import type { ConversationState } from "./conversation.js";
 import type { ToolRegistry } from "../tools/registry.js";
+import { clampPermissionMode } from "../config/org-config.js";
 import {
   MAX_STEPS_PROMPT,
   NEEDS_VERIFY_PROMPT,
@@ -60,6 +61,11 @@ interface LoopParams {
   signal?: AbortSignal;
   confirmTool?: ConfirmToolFn;
   permissionMode?: PermissionMode;
+  /**
+   * Org-managed permission floor. Interactive "Always" may not widen the mode
+   * past this; set from the resolved config's orgPermissionFloor.
+   */
+  permissionFloor?: PermissionMode;
   /** Host's background permission, independent of generic session Always. */
   backgroundPermissionMode?: PermissionMode;
   /** Host is non-interactive (print/run mode); background actions then need an explicit headless grant. */
@@ -545,7 +551,9 @@ export async function* runAgentLoop(
         const choice = await confirmTool(call.name, input, previewDiff, tool?.mcpServerName);
         if (signal?.aborted) break;
         if (choice === "always") {
-          permissionMode = "auto-accept";
+          // Clamp to the org floor: interactive "Always" must not loosen a
+          // managed permission policy below deny-writes/ask.
+          permissionMode = clampPermissionMode("auto-accept", params.permissionFloor);
         }
         if (choice === "no") {
           deniedCalls.add(denialKey);
