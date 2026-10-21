@@ -3,16 +3,18 @@ import type { OrgConfig } from "../config/org-config.js";
 /**
  * Shared enterprise auth/enrollment types.
  *
- * All three login flows (Authorization Code + PKCE, Device Authorization Grant,
- * and short-lived OIDC token exchange for CI) converge on the same shape: each
- * flow produces an *identity proof* (an OIDC id_token), hands it to the control
- * plane, and receives a *session* (policy + short-lived gateway credential).
- * The control-plane client and session handling are therefore flow-agnostic;
- * only the "obtain the id_token" step differs per flow.
+ * All login flows (Authorization Code + PKCE, Device Authorization Grant,
+ * short-lived OIDC token exchange for CI, and control-plane-brokered SAML)
+ * converge on the same shape: each flow produces an *identity proof* (an OIDC
+ * id_token), hands it to the control plane, and receives a *session* (policy +
+ * short-lived gateway credential). The control-plane client and session handling
+ * are therefore flow-agnostic; only the "obtain the id_token" step differs per
+ * flow. For SAML the control plane brokers the assertion and mints the id_token,
+ * so even an IdP that isn't OIDC produces the same proof shape.
  */
 
 /** How the identity proof was obtained. Recorded for diagnostics/audit. */
-export type AuthFlow = "auth-code" | "device" | "oidc-token";
+export type AuthFlow = "auth-code" | "device" | "oidc-token" | "saml";
 
 /** An OIDC identity proof produced by a login flow and sent to the control plane. */
 export interface IdentityProof {

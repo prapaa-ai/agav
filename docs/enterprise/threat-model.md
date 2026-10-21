@@ -108,6 +108,25 @@ Routing inference through Agav would expose code and create a billing liability.
 path**. It returns a policy and an optional gateway-scoped token; the CLI talks to
 the customer's gateway directly, and spend stays on the customer's account.
 
+### T9a — SAML broker interception (SAML flow)
+An attacker on the loopback path tries to steal or inject the control plane's
+broker code, or the SAML assertion is forged/replayed.
+
+**Mitigation (built + server-side):** the browser round-trip for `--saml` goes to
+the **control plane**, not the IdP; the CLI never parses SAML. The same loopback
+hardening as T4 applies — constant-time `state`, single `state`/`code`, loopback
+path/method, single-use. Crucially, the broker code carries **PKCE
+proof-of-possession** exactly like the auth-code flow: the CLI sends a
+`code_challenge` on `/saml/initiate` and the matching `code_verifier` (which never
+leaves the process) on `/saml/exchange`, so an attacker who intercepts the loopback
+redirect and races to redeem the code *first* still fails — short expiry and
+single-use only stop *later* replay, not first-redemption theft, so PKCE is what
+closes that gap. The broker code must also be **short-lived and single-use**
+(server-side). The control plane, as SAML Service Provider, **must verify the
+assertion** server-side: signature, `Conditions` audience, `NotOnOrAfter`,
+`InResponseTo`/replay — the CLI trusts only the final minted `id_token`, which
+`/session` re-verifies.
+
 ### T9 — Device-flow phishing (device grant)
 An attacker starts a device flow and tricks a victim into entering the attacker's
 `user_code`.
@@ -149,7 +168,9 @@ authenticated control-plane source where integrity matters most.)
 | Project-config stripping, org-tier precedence, permission floor, model/provider allowlist | CLI (built) |
 | PKCE, loopback hardening, HTTPS/no-redirect, discovery issuer match | CLI (built) |
 | Encrypted/atomic/0600 token storage | CLI (built) |
+| Client-side audit events (login/logout) → SIEM sink, secret-free, best-effort | CLI (built) |
 | id_token verification (JWKS, iss, aud, exp, nonce, alg pinning) | **Control plane** |
-| Seat check, RBAC, policy issuance, revocation, audit | **Control plane** |
+| SAML assertion verification + broker code minting (single-use, short-lived) | **Control plane** |
+| Seat check, RBAC, policy issuance, revocation, server-side audit of `/session` | **Control plane** |
 | Short-lived gateway credential minting | **Control plane / gateway** |
 | Inference authorization, rate/budget limits | **Customer gateway** |

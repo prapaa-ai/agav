@@ -193,6 +193,7 @@ A missing, unreadable, or malformed policy file never breaks startup; Agav simpl
 | `allowedModels` | **Allowlist** — selecting a model outside the list is rejected at startup. An empty or omitted list means no restriction. |
 | `allowedTools` | **Additive** — the org's required tools are merged with the user's allowlist. |
 | `controlPlane` | Address of a self-hosted control plane that `agav login` signs in to. Optional — omit it to use Agav's hosted control plane. |
+| `auditSink` | HTTPS endpoint that receives secret-free `agav login`/`logout` audit events for your SIEM. Optional. See [Audit events](./cli#audit-events-siem). |
 
 ### How enforcement behaves
 

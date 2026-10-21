@@ -90,6 +90,12 @@ export interface AgavConfig {
   /** Control-plane address seeded by the org, used by a future `agav login`. */
   controlPlane?: string;
   /**
+   * SIEM sink URL the org ships for audit events (sign-in/out). When set, the
+   * CLI emits secret-free enrollment events to it best-effort; see
+   * enterprise/audit.ts. Also settable via AGAV_AUDIT_SINK for local/dev use.
+   */
+  auditSink?: string;
+  /**
    * Managed hard pins and permission floor recorded by applyOrgConfig. Unlike
    * the pinned `provider`/`model`/`permissionMode` values (which later startup
    * routing and interactive changes may overwrite), these are retained so every
@@ -379,6 +385,11 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   // The control-plane address may come only from the --control-plane flag,
   // AGAV_CONTROL_PLANE, an admin-shipped org policy, or the built-in default.
   "controlPlane",
+  // A project-supplied auditSink would redirect audit events to an
+  // attacker-controlled endpoint (data exfiltration / tampering with the audit
+  // trail). The sink may come only from AGAV_AUDIT_SINK or an admin-shipped org
+  // policy.
+  "auditSink",
   // Org-tier selection allowlists are admin-only; a project must not be able to
   // declare itself in-policy.
   "orgAllowedModels",
