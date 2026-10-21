@@ -29,10 +29,25 @@ async function fetchAnthropicModels(apiKey: string): Promise<FetchedModel[]> {
   }
 }
 
-async function fetchOpenAIModels(apiKey: string): Promise<FetchedModel[]> {
+/**
+ * List OpenAI-compatible models. When the org pins a gateway (`baseURL`) and
+ * supplies auth via `headers` (an enrollment gateway token), query the gateway
+ * instead of the public endpoint and with no personal key, so a gateway-only
+ * enrolled developer still gets correct discovery. Falls back to the public
+ * endpoint + bearer key otherwise.
+ */
+async function fetchOpenAIModels(
+  apiKey: string | undefined,
+  baseURL?: string,
+  headers?: Record<string, string>,
+): Promise<FetchedModel[]> {
   try {
-    const res = await fetch("https://api.openai.com/v1/models", {
-      headers: { Authorization: `Bearer ${apiKey}` },
+    const base = (baseURL ?? "https://api.openai.com/v1").replace(/\/+$/, "");
+    const requestHeaders: Record<string, string> = { ...(headers ?? {}) };
+    const hasAuth = Object.keys(requestHeaders).some((k) => k.toLowerCase() === "authorization");
+    if (!hasAuth && apiKey) requestHeaders["Authorization"] = `Bearer ${apiKey}`;
+    const res = await fetch(`${base}/models`, {
+      headers: requestHeaders,
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return [];
@@ -166,7 +181,11 @@ export async function fetchAvailableModels(config: AgavConfig): Promise<FetchAll
   const fetches: Promise<FetchedModel[]>[] = [];
 
   if (config.anthropicApiKey) fetches.push(fetchAnthropicModels(config.anthropicApiKey));
-  if (config.openaiApiKey) fetches.push(fetchOpenAIModels(config.openaiApiKey));
+  // OpenAI discovery runs when a personal key exists OR the org provides gateway
+  // auth; the latter queries the configured gateway with its injected headers.
+  if (config.openaiApiKey || config.openaiGatewayAuth) {
+    fetches.push(fetchOpenAIModels(config.openaiApiKey, config.openaiBaseURL, config.openaiHeaders));
+  }
   if (config.openrouterApiKey) fetches.push(fetchOpenRouterModels(config.openrouterApiKey));
   if (config.nvidiaApiKey) fetches.push(fetchNvidiaModels(config.nvidiaApiKey));
   if (config.deepseekApiKey) fetches.push(fetchDeepSeekModels(config.deepseekApiKey));

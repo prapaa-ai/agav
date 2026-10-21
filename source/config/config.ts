@@ -390,6 +390,11 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "orgManagedProvider",
   "orgManagedModel",
   "orgPermissionFloor",
+  // Trusted gateway-auth marker: set ONLY by applyGatewayToken from an
+  // authenticated enrollment. A file-supplied value would let a repo pass
+  // credential validation with no key and no enrollment, so it is stripped here
+  // and also reset before the enrollment overlay runs (see loadConfig).
+  "openaiGatewayAuth",
 ]);
 
 /** Ignore invalid hand-edited values instead of passing unsupported effort levels to providers. */
@@ -538,6 +543,11 @@ export async function loadConfig(): Promise<AgavConfig> {
   // user can tighten (e.g. a stricter permissionMode) but never loosen it.
   const org = await loadOrgPolicy();
   applyOrgConfig(merged, org.config);
+  // openaiGatewayAuth is a trusted marker that must originate ONLY from an
+  // authenticated enrollment. Reset any file-supplied value before the overlay so
+  // neither project nor global config can forge it; applyGatewayToken re-sets it
+  // when (and only when) it actually injects an enrollment token.
+  merged.openaiGatewayAuth = undefined;
   // Inject the enrollment gateway token as the provider Authorization header so
   // live inference reaches the org gateway. Bound to the policy's own gateway URL
   // and an org-pinned Authorization header (which wins over the token).

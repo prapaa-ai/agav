@@ -115,6 +115,46 @@ describe("commands/model", () => {
     ]);
   });
 
+  it("discovers OpenAI models via the org gateway when gateway auth is present (no personal key)", async () => {
+    // Reviewer scenario: enrolled developer has gateway auth + an OpenRouter key.
+    // Discovery must query the gateway (not api.openai.com) and surface the OpenAI
+    // model so --model routing does not switch away to OpenRouter.
+    const seen: { url: string; auth?: string }[] = [];
+    globalThis.fetch = vi.fn(async (input: any, init: any) => {
+      const url = String(input);
+      const auth = init?.headers?.Authorization ?? init?.headers?.authorization;
+      seen.push({ url, auth });
+      if (url.includes("gateway.corp")) {
+        return { ok: true, json: async () => ({ data: [{ id: "gpt-4o" }] }) } as any;
+      }
+      if (url.includes("openrouter.ai/api/v1/models")) {
+        return { ok: true, json: async () => ({ data: [{ id: "openai/gpt-4o" }] }) } as any;
+      }
+      // Ollama fallback and anything else: empty.
+      return { ok: true, json: async () => ({ data: [] }) } as any;
+    }) as any;
+
+    const { models } = await fetchAvailableModels({
+      ...createContext({
+        openrouterApiKey: "openrouter-key",
+        openaiApiKey: undefined,
+        openaiGatewayAuth: true,
+        openaiBaseURL: "https://gateway.corp/v1",
+        openaiHeaders: { Authorization: "Bearer gw-secret" },
+      }).config,
+    });
+
+    // The OpenAI gateway was queried (not the public endpoint) with the gw token.
+    expect(seen.some((r) => r.url.startsWith("https://gateway.corp/v1/models"))).toBe(true);
+    expect(seen.some((r) => r.url.includes("api.openai.com"))).toBe(false);
+    expect(seen.find((r) => r.url.includes("gateway.corp"))?.auth).toBe("Bearer gw-secret");
+    // Both the gateway OpenAI model and the OpenRouter variant are discovered.
+    expect(findMatchingModels(models, "gpt-4o")).toEqual([
+      { id: "gpt-4o", provider: "openai" },
+      { id: "openai/gpt-4o", provider: "openrouter" },
+    ]);
+  });
+
   it("returns every provider for an ambiguous model so startup can prompt for a choice", async () => {
     stubFetch(["shared-model"], ["shared-model"]);
 
