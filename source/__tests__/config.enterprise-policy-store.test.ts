@@ -32,6 +32,7 @@ import type { EnrolledPolicy } from "../config/enterprise-policy-store.js";
 
 const record: EnrolledPolicy = {
   policy: { provider: "openai", openaiBaseURL: "https://gw/v1", permissionMode: "ask" },
+  gatewayToken: "gw-secret",
   controlPlane: "https://auth.corp",
   subject: "jane@corp.com",
   storedAt: "2026-01-01T00:00:00.000Z",
@@ -55,6 +56,7 @@ describe("enterprise-policy-store", () => {
     const loaded = await loadEnrolledPolicy();
     expect(loaded?.policy.provider).toBe("openai");
     expect(loaded?.policy.openaiBaseURL).toBe("https://gw/v1");
+    expect(loaded?.gatewayToken).toBe("gw-secret");
     expect(loaded?.subject).toBe("jane@corp.com");
   });
 

@@ -29,16 +29,55 @@ async function fetchAnthropicModels(apiKey: string): Promise<FetchedModel[]> {
   }
 }
 
-async function fetchOpenAIModels(apiKey: string): Promise<FetchedModel[]> {
+/**
+ * List OpenAI-compatible models. When the org pins a gateway (`baseURL`) and
+ * supplies auth via `headers` (an enrollment gateway token), query the gateway
+ * instead of the public endpoint and with no personal key, so a gateway-only
+ * enrolled developer still gets correct discovery. Falls back to the public
+ * endpoint + bearer key otherwise.
+ */
+const PUBLIC_OPENAI_BASE_URL = "https://api.openai.com/v1";
+
+/**
+ * Append `/models` to an OpenAI-compatible base URL with path/query-aware
+ * semantics, matching the OpenAI SDK: the segment joins the pathname and any
+ * query string is preserved. Naive concatenation would place `/models` inside a
+ * query (e.g. `/v1?tenant=a` → `/v1?tenant=a/models`); this yields
+ * `/v1/models?tenant=a`.
+ */
+function openAIModelsURL(baseURL: string): string {
+  const url = new URL(baseURL);
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/models`;
+  return url.toString();
+}
+
+async function fetchOpenAIModels(
+  apiKey: string | undefined,
+  baseURL?: string,
+  headers?: Record<string, string>,
+): Promise<FetchedModel[]> {
   try {
-    const res = await fetch("https://api.openai.com/v1/models", {
-      headers: { Authorization: `Bearer ${apiKey}` },
+    const base = baseURL ?? PUBLIC_OPENAI_BASE_URL;
+    const isPublicEndpoint = base === PUBLIC_OPENAI_BASE_URL;
+    const requestHeaders: Record<string, string> = { ...(headers ?? {}) };
+    const hasAuth = Object.keys(requestHeaders).some((k) => k.toLowerCase() === "authorization");
+    if (!hasAuth && apiKey) requestHeaders["Authorization"] = `Bearer ${apiKey}`;
+    const res = await fetch(openAIModelsURL(base), {
+      headers: requestHeaders,
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return [];
     const data = (await res.json()) as { data?: { id: string }[] };
     return (data.data ?? [])
-      .filter((m) => /^(gpt-|o[0-9]|chatgpt)/.test(m.id) && !/transcribe|tts|realtime|image|search|embed|whisper|moderation|davinci|babbage|curie|instruct|ft:|audio/.test(m.id))
+      // The public OpenAI /models list includes non-chat models (tts, embeddings,
+      // legacy, …); filter to chat models by name there. A gateway returns the
+      // org's own curated catalog (e.g. `corp-coder`, `anthropic/claude-sonnet-4`),
+      // so its identifiers are preserved verbatim.
+      .filter((m) =>
+        !isPublicEndpoint ||
+        (/^(gpt-|o[0-9]|chatgpt)/.test(m.id) &&
+          !/transcribe|tts|realtime|image|search|embed|whisper|moderation|davinci|babbage|curie|instruct|ft:|audio/.test(m.id)),
+      )
       .map((m) => ({ id: m.id, provider: "openai" }))
       .sort((a, b) => a.id.localeCompare(b.id));
   } catch {
@@ -166,7 +205,11 @@ export async function fetchAvailableModels(config: AgavConfig): Promise<FetchAll
   const fetches: Promise<FetchedModel[]>[] = [];
 
   if (config.anthropicApiKey) fetches.push(fetchAnthropicModels(config.anthropicApiKey));
-  if (config.openaiApiKey) fetches.push(fetchOpenAIModels(config.openaiApiKey));
+  // OpenAI discovery runs when a personal key exists OR the org provides gateway
+  // auth; the latter queries the configured gateway with its injected headers.
+  if (config.openaiApiKey || config.openaiGatewayAuth) {
+    fetches.push(fetchOpenAIModels(config.openaiApiKey, config.openaiBaseURL, config.openaiHeaders));
+  }
   if (config.openrouterApiKey) fetches.push(fetchOpenRouterModels(config.openrouterApiKey));
   if (config.nvidiaApiKey) fetches.push(fetchNvidiaModels(config.nvidiaApiKey));
   if (config.deepseekApiKey) fetches.push(fetchDeepSeekModels(config.deepseekApiKey));

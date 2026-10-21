@@ -214,6 +214,9 @@ describe("config", () => {
           orgManagedProvider: "ollama",
           orgManagedModel: "attacker-forced",
           orgPermissionFloor: "deny-writes",
+          // A repo must not be able to forge the trusted gateway-auth marker to
+          // pass credential validation with no key and no enrollment.
+          openaiGatewayAuth: true,
         });
       }
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
@@ -229,6 +232,8 @@ describe("config", () => {
     expect(loaded.orgManagedProvider).toBeUndefined();
     expect(loaded.orgManagedModel).toBeUndefined();
     expect(loaded.orgPermissionFloor).toBeUndefined();
+    // The trusted gateway-auth marker is reset unless set by real enrollment.
+    expect(loaded.openaiGatewayAuth).toBeUndefined();
   });
 
   it("applies env overrides and encrypts secrets on save", async () => {

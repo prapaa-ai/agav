@@ -129,7 +129,9 @@ export async function resolveStartupSelection(
 export function hasProviderConfiguration(config: AgavConfig, provider: ProviderName): boolean {
   switch (provider) {
     case "anthropic": return Boolean(config.anthropicApiKey);
-    case "openai": return Boolean(config.openaiApiKey);
+    // An enrollment gateway token authenticates the OpenAI-compatible endpoint,
+    // so a personal key is not required when gateway auth is present.
+    case "openai": return Boolean(config.openaiApiKey) || Boolean(config.openaiGatewayAuth);
     case "openrouter": return Boolean(config.openrouterApiKey);
     case "nvidia": return Boolean(config.nvidiaApiKey);
     case "deepseek": return Boolean(config.deepseekApiKey);
@@ -226,7 +228,9 @@ export function providerConfigurationError(config: AgavConfig): string | null {
       return config.anthropicApiKey ? null
         : `Anthropic API key not found. Run ${setEnvHint("ANTHROPIC_API_KEY", "sk-ant-...")} or add it to ${agavHomePath("config.json")}`;
     case "openai":
-      return config.openaiApiKey ? null
+      // Gateway auth (an enrollment token injected as the Authorization header)
+      // satisfies the OpenAI credential requirement without a personal key.
+      return config.openaiApiKey || config.openaiGatewayAuth ? null
         : `OpenAI API key not found. Run ${setEnvHint("OPENAI_API_KEY", "sk-...")} or add it to ${agavHomePath("config.json")}`;
     case "openrouter":
       return config.openrouterApiKey ? null
