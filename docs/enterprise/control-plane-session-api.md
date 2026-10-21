@@ -88,7 +88,8 @@ accept: application/json
 The control plane **must verify `idToken` server-side** — do not trust the CLI's
 own checks. At minimum: signature via the IdP JWKS, `iss`, `aud` (pinned to the
 control plane's audience), `exp`/`nbf`, and `nonce` when provided. See
-`docs/enterprise/identity-and-access.md` for the full verification checklist.
+`docs/enterprise/threat-model.md` (T3–T5) for the full verification checklist,
+including algorithm pinning.
 
 ---
 
