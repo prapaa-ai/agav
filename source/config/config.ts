@@ -101,6 +101,14 @@ export interface AgavConfig {
   orgManagedModel?: string;
   /** Loosest permission mode the org allows; the effective mode may only tighten. */
   orgPermissionFloor?: PermissionMode;
+  /**
+   * True when authentication to the OpenAI-compatible endpoint is provided by an
+   * enrollment gateway token (injected as the Authorization header) rather than a
+   * personal API key. Set by applyGatewayToken; lets credential validation and
+   * provider construction treat the OpenAI key requirement as satisfied, so a
+   * gateway-only enrolled developer needs no personal key.
+   */
+  openaiGatewayAuth?: boolean;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -531,9 +539,9 @@ export async function loadConfig(): Promise<AgavConfig> {
   const org = await loadOrgPolicy();
   applyOrgConfig(merged, org.config);
   // Inject the enrollment gateway token as the provider Authorization header so
-  // live inference reaches the org gateway. Runs after applyOrgConfig so it sees
-  // any Authorization header the policy pinned (which wins over the token).
-  applyGatewayToken(merged, org.gatewayToken);
+  // live inference reaches the org gateway. Bound to the policy's own gateway URL
+  // and an org-pinned Authorization header (which wins over the token).
+  applyGatewayToken(merged, org.config, org.gatewayToken);
 
   return merged;
 }

@@ -346,37 +346,77 @@ describe("org-config: loadOrgConfig", () => {
 });
 
 describe("org-config: applyGatewayToken", () => {
-  it("injects the token as an Authorization bearer header", () => {
-    const config = baseConfig();
-    applyGatewayToken(config, "gw-secret");
+  const gatewayPolicy = { openaiBaseURL: "https://gateway.corp/v1" };
+
+  it("injects the token as an Authorization bearer header when the policy pins a gateway", () => {
+    const config = baseConfig({ openaiBaseURL: "https://gateway.corp/v1" });
+    applyGatewayToken(config, gatewayPolicy, "gw-secret");
     expect(config.openaiHeaders).toEqual({ Authorization: "Bearer gw-secret" });
+    expect(config.openaiGatewayAuth).toBe(true);
   });
 
   it("merges the header alongside policy-pinned headers", () => {
-    const config = baseConfig({ openaiHeaders: { "x-tenant": "team-a" } });
-    applyGatewayToken(config, "gw-secret");
+    const config = baseConfig({ openaiBaseURL: "https://gateway.corp/v1", openaiHeaders: { "x-tenant": "team-a" } });
+    applyGatewayToken(config, { ...gatewayPolicy, openaiHeaders: { "x-tenant": "team-a" } }, "gw-secret");
     expect(config.openaiHeaders).toEqual({
       "x-tenant": "team-a",
       Authorization: "Bearer gw-secret",
     });
   });
 
-  it("does not override an Authorization header already pinned by the policy", () => {
-    const config = baseConfig({ openaiHeaders: { Authorization: "Bearer admin-pinned" } });
-    applyGatewayToken(config, "gw-secret");
+  // --- Fix #2: never send the token to an endpoint the org did not designate ---
+  it("does NOT inject when the org policy pins no gateway URL", () => {
+    // Policy is valid but has only permissionMode; the user has their own endpoint.
+    const config = baseConfig({ openaiBaseURL: "https://api.openai.com/v1" });
+    applyGatewayToken(config, { permissionMode: "ask" }, "gw-secret");
+    expect(config.openaiHeaders).toBeUndefined();
+    expect(config.openaiGatewayAuth).toBeUndefined();
+  });
+
+  // --- Fix #3: only a POLICY-pinned Authorization is exempt ---
+  it("does not override an Authorization header pinned by the org policy", () => {
+    const config = baseConfig({
+      openaiBaseURL: "https://gateway.corp/v1",
+      openaiHeaders: { Authorization: "Bearer admin-pinned" },
+    });
+    applyGatewayToken(
+      config,
+      { ...gatewayPolicy, openaiHeaders: { Authorization: "Bearer admin-pinned" } },
+      "gw-secret",
+    );
     expect(config.openaiHeaders).toEqual({ Authorization: "Bearer admin-pinned" });
   });
 
-  it("respects a case-insensitively pinned Authorization header", () => {
-    const config = baseConfig({ openaiHeaders: { authorization: "Bearer admin-pinned" } });
-    applyGatewayToken(config, "gw-secret");
+  it("respects a case-insensitively policy-pinned Authorization header", () => {
+    const config = baseConfig({
+      openaiBaseURL: "https://gateway.corp/v1",
+      openaiHeaders: { authorization: "Bearer admin-pinned" },
+    });
+    applyGatewayToken(
+      config,
+      { ...gatewayPolicy, openaiHeaders: { authorization: "Bearer admin-pinned" } },
+      "gw-secret",
+    );
     expect(config.openaiHeaders).toEqual({ authorization: "Bearer admin-pinned" });
   });
 
+  it("REPLACES a user-sourced Authorization header (not policy-pinned)", () => {
+    // Old credential inherited from global/project config must not suppress the
+    // org token, since the policy pins the gateway but no Authorization header.
+    const config = baseConfig({
+      openaiBaseURL: "https://gateway.corp/v1",
+      openaiHeaders: { authorization: "Bearer old-user-key" },
+    });
+    applyGatewayToken(config, gatewayPolicy, "gw-secret");
+    expect(config.openaiHeaders).toEqual({ Authorization: "Bearer gw-secret" });
+    expect(config.openaiGatewayAuth).toBe(true);
+  });
+
   it("is a no-op when there is no token", () => {
-    const config = baseConfig({ openaiHeaders: { "x-tenant": "team-a" } });
-    applyGatewayToken(config, undefined);
+    const config = baseConfig({ openaiBaseURL: "https://gateway.corp/v1", openaiHeaders: { "x-tenant": "team-a" } });
+    applyGatewayToken(config, gatewayPolicy, undefined);
     expect(config.openaiHeaders).toEqual({ "x-tenant": "team-a" });
+    expect(config.openaiGatewayAuth).toBeUndefined();
   });
 });
 

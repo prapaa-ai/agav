@@ -495,6 +495,19 @@ describe("startup provider and model resolution", () => {
     expect(providerConfigurationError({ ...base, provider: "openrouter", openrouterApiKey: "sk-or-test" }))
       .toBeNull();
   });
+
+  it("accepts enrollment gateway auth in place of a personal OpenAI key", () => {
+    // A gateway-only enrolled developer has no openaiApiKey but authenticates via
+    // the injected gateway token (openaiGatewayAuth); startup must not block them.
+    expect(
+      providerConfigurationError({
+        ...base,
+        provider: "openai",
+        openaiApiKey: undefined,
+        openaiGatewayAuth: true,
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("organization selection policy", () => {

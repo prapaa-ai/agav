@@ -254,26 +254,52 @@ export async function loadOrgPolicy(): Promise<ResolvedOrgPolicy> {
  * Inject the enrollment gateway token as the OpenAI-compatible provider's
  * Authorization header, so live inference authenticates to the org gateway.
  *
- * Rules (confirmed design):
+ * Rules:
  *   - Only an enrollment-sourced token is injected (file policies have none).
- *   - An Authorization header already pinned by the policy wins — explicit beats
- *     implicit — so an admin can override the scheme/value.
+ *   - **The token is bound to an explicit enrollment gateway URL.** It is injected
+ *     only when the org *policy* pins `openaiBaseURL`. Without that, the user's
+ *     own endpoint (e.g. api.openai.com) is left untouched — a gateway token must
+ *     never be sent to an endpoint the org did not designate.
+ *   - An Authorization header **pinned by the org policy** wins — explicit beats
+ *     implicit — so an admin can override the scheme/value. A stale Authorization
+ *     value merely inherited from the user's own config does NOT suppress the
+ *     token; it is replaced, since the org gateway dictates authentication.
  *   - The token is injected regardless of `expiresAt`: the gateway is the
  *     authority on validity, and a stale token simply fails there, which is
  *     clearer than silently sending no credential.
  *
- * Mutates and returns `merged`.
+ * `org` is the org policy (the enrollment source of truth); `merged` is the fully
+ * resolved config. Mutates and returns `merged`.
  */
-export function applyGatewayToken(merged: AgavConfig, gatewayToken: string | undefined): AgavConfig {
-  if (!gatewayToken) return merged;
+export function applyGatewayToken(
+  merged: AgavConfig,
+  org: OrgConfig | undefined,
+  gatewayToken: string | undefined,
+): AgavConfig {
+  // No token, or the org did not designate a gateway endpoint: do not inject.
+  // Binding to the policy's own openaiBaseURL (not merged.openaiBaseURL) prevents
+  // the token from authenticating against a user-configured endpoint.
+  if (!gatewayToken || !org?.openaiBaseURL) return merged;
+
+  // Only an Authorization header the ORG POLICY pinned is exempt. A value merely
+  // inherited from the user's global/project config must not suppress the org
+  // token — the gateway, not the user, dictates authentication here.
+  const policyPinnedAuth = Object.keys(org.openaiHeaders ?? {}).some(
+    (k) => k.toLowerCase() === "authorization",
+  );
 
   const headers = { ...(merged.openaiHeaders ?? {}) };
-  // Respect an explicit Authorization pin (case-insensitive) from the policy.
-  const hasAuth = Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
-  if (!hasAuth) {
+  if (!policyPinnedAuth) {
+    // Drop any user-sourced Authorization (any casing), then set the org token.
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === "authorization") delete headers[key];
+    }
     headers["Authorization"] = `Bearer ${gatewayToken}`;
-    merged.openaiHeaders = headers;
   }
+  merged.openaiHeaders = headers;
+  // The gateway token authenticates the OpenAI-compatible endpoint, so a personal
+  // API key is not required for a gateway-only enrolled developer.
+  merged.openaiGatewayAuth = true;
   return merged;
 }
 

@@ -35,7 +35,12 @@ export function createProvider(config: AgavConfig): LLMProvider {
       break;
     }
     case "openai": {
-      const key = required(config.openaiApiKey, "OpenAI API key");
+      // With enrollment gateway auth, the Authorization header carries the
+      // credential; the SDK still needs a non-empty apiKey string, so pass a
+      // placeholder. Otherwise a personal key is required.
+      const key = config.openaiGatewayAuth
+        ? (config.openaiApiKey ?? "gateway")
+        : required(config.openaiApiKey, "OpenAI API key");
       provider = new OpenAIProvider(key, config.openaiApi ?? "responses", {
         baseURL: config.openaiBaseURL,
         defaultHeaders: config.openaiHeaders,
