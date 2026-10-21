@@ -226,13 +226,42 @@ describe("runLoginCommand: audit → SIEM", () => {
     );
   });
 
-  it("emits a logout audit event", async () => {
+  it("emits a logout audit event with the enrollment-sourced sink", async () => {
     mockedLoadConfig.mockResolvedValue({ controlPlane: "https://auth.corp", auditSink: "https://siem.corp/ingest" } as any);
     const code = await runLoginCommand("logout", []);
     expect(code).toBe(0);
-    const calls = vi.mocked(recordAuditEvent).mock.calls.map((c) => c[0]);
-    expect(calls).toContainEqual(
-      expect.objectContaining({ action: "logout", controlPlane: "https://auth.corp" }),
-    );
+    const logoutCall = vi.mocked(recordAuditEvent).mock.calls.find((c) => c[0].action === "logout")!;
+    expect(logoutCall[0]).toMatchObject({ action: "logout", controlPlane: "https://auth.corp" });
+    // The sink captured from config (which may be enrollment-sourced) is used.
+    expect(logoutCall[1]).toEqual({ sink: "https://siem.corp/ingest" });
+  });
+
+  it("reads audit config BEFORE clearing the enrollment cache, then emits after", async () => {
+    // Capture-before-delete: loadConfig (which reads the policy store that holds an
+    // enrollment-sourced auditSink) must run before clearEnrolledPolicy, and the
+    // logout event after it — so a self-hosted sink survives sign-out.
+    const order: string[] = [];
+    mockedLoadConfig.mockImplementation(async () => {
+      order.push("loadConfig");
+      return { controlPlane: "https://auth.corp", auditSink: "https://siem.corp/ingest" } as any;
+    });
+    vi.mocked(clearEnrolledPolicy).mockImplementation(async () => { order.push("clear"); });
+    vi.mocked(recordAuditEvent).mockImplementation(async (ev: any) => {
+      if (ev.action === "logout") order.push("audit");
+      return false;
+    });
+
+    const code = await runLoginCommand("logout", []);
+    expect(code).toBe(0);
+    expect(order).toEqual(["loadConfig", "clear", "audit"]);
+  });
+
+  it("does not emit a logout event when the cache cannot be cleared", async () => {
+    mockedLoadConfig.mockResolvedValue({ auditSink: "https://siem.corp/ingest" } as any);
+    vi.mocked(clearEnrolledPolicy).mockRejectedValueOnce(new Error("EROFS"));
+    const code = await runLoginCommand("logout", []);
+    expect(code).toBe(1);
+    const logoutCalls = vi.mocked(recordAuditEvent).mock.calls.filter((c) => c[0].action === "logout");
+    expect(logoutCalls).toHaveLength(0);
   });
 });

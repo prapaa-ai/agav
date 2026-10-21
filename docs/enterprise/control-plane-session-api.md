@@ -68,10 +68,12 @@ control plane instead of the IdP.
 
 ### `GET /saml/initiate`
 
-The CLI starts a single-use loopback server, then opens the browser to:
+The CLI starts a single-use loopback server, generates a **PKCE** verifier/
+challenge (RFC 7636, S256), then opens the browser to:
 
 ```
 GET {controlPlane}/saml/initiate?redirect_uri={loopback}&state={opaque}
+                                 &code_challenge={base64url}&code_challenge_method=S256
 ```
 
 - `redirect_uri` — the CLI's loopback callback, e.g. `http://127.0.0.1:PORT/callback`.
@@ -79,26 +81,37 @@ GET {controlPlane}/saml/initiate?redirect_uri={loopback}&state={opaque}
   echo it unchanged on the final redirect so the CLI can bind the response to this
   attempt (the loopback server validates it in constant time and accepts exactly
   one `state` and one `code`).
+- `code_challenge` / `code_challenge_method` — PKCE. The control plane **must**
+  store the challenge with the broker code it issues and later require a matching
+  `code_verifier` at `/saml/exchange`. This gives the broker code
+  proof-of-possession: an attacker who intercepts the loopback redirect cannot
+  redeem the code, because the verifier never left the CLI process.
 
 The control plane redirects the browser to the SAML IdP, receives and validates
-the SAML assertion (signature, `Conditions`/audience, `NotOnOrAfter`, replay),
-then redirects the browser back to `redirect_uri` with:
+the SAML assertion (signature, `Conditions`/audience, `NotOnOrAfter`,
+`InResponseTo`/replay), then redirects the browser back to `redirect_uri` with:
 
 ```
 {redirect_uri}?code={broker_code}&state={echoed_state}
 ```
 
 - `code` — a short-lived, **single-use** broker code bound to the completed
-  assertion. On denial/failure, redirect with `?error=...&state=...` instead.
+  assertion *and* the `code_challenge`. On denial/failure, redirect with
+  `?error=...&state=...` instead.
 
 ### `POST /saml/exchange`
 
-The CLI exchanges the broker code for the identity proof:
+The CLI exchanges the broker code — with the PKCE verifier — for the identity proof:
 
 ```
 POST {controlPlane}/saml/exchange        content-type: application/json
-{ "code": "<broker_code>" }
+{ "code": "<broker_code>", "code_verifier": "<pkce_verifier>" }
 ```
+
+The control plane **must** verify `SHA-256(code_verifier)` (base64url) equals the
+`code_challenge` bound to the broker code, and reject the exchange otherwise
+(treat as `401`/`403`). This is what stops first-redemption theft of an
+intercepted code.
 
 **Response — `200 OK`:**
 ```jsonc
@@ -107,12 +120,12 @@ POST {controlPlane}/saml/exchange        content-type: application/json
 
 - The control plane mints this `id_token` from the verified SAML assertion; the
   CLI then calls `POST /session` with `flow: "saml"` as usual.
-- `401`/`403` — not authorized / no seat. Any other non-2xx, non-JSON, or a
-  response missing `id_token` is an error. HTTPS and `redirect: "error"` apply as
-  elsewhere.
+- `401`/`403` — not authorized / no seat / verifier mismatch. Any other non-2xx,
+  non-JSON, or a response missing `id_token` is an error. HTTPS and
+  `redirect: "error"` apply as elsewhere.
 
-The broker code must be single-use and short-lived so an intercepted redirect is
-useless after one exchange.
+The broker code must be single-use and short-lived, and bound to the PKCE
+challenge, so an intercepted redirect is useless without the verifier.
 
 ---
 

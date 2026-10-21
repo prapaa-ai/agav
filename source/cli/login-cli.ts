@@ -107,6 +107,11 @@ async function obtainProof(
 /** Entry point for `agav login` / `agav logout`. Returns a process exit code. */
 export async function runLoginCommand(command: string | undefined, args: string[]): Promise<number> {
   if (command === "logout") {
+    // Capture the effective audit settings BEFORE clearing the cache: an
+    // enrollment-delivered auditSink / controlPlane lives in the policy store we
+    // are about to delete, so reading them afterward would lose them and drop (or
+    // misroute) the logout event.
+    const audit = await resolveLogoutAudit(args);
     try {
       await clearEnrolledPolicy();
     } catch (error) {
@@ -116,7 +121,13 @@ export async function runLoginCommand(command: string | undefined, args: string[
       );
       return 1;
     }
-    await auditLogout(args);
+    // Emit after a successful deletion, awaited so the event is delivered before
+    // the process exits. recordAuditEvent is bounded (own timeout) and never
+    // throws, so this cannot stall or fail logout.
+    await recordAuditEvent(
+      { action: "logout", controlPlane: audit.controlPlane },
+      { sink: audit.sink },
+    );
     console.log("Signed out of your organization. Restart Agav to apply.");
     return 0;
   }
@@ -146,7 +157,8 @@ export async function runLoginCommand(command: string | undefined, args: string[
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
   try {
-    // Fire-and-forget; auditing must never block or fail the login.
+    // The attempt event may race the rest of login; fire-and-forget is fine since
+    // a terminal (success/failure) event always follows and is awaited.
     void recordAuditEvent({ action: "login.attempt", flow, controlPlane: cpOrigin }, { sink: auditSink });
     const proof = await obtainProof(flow, {
       issuer: parsed.issuer,
@@ -155,7 +167,11 @@ export async function runLoginCommand(command: string | undefined, args: string[
     }, controller.signal);
     const session = await enroll(controlPlane, proof, controller.signal);
     await persistSession(session);
-    void recordAuditEvent(
+    // Await the terminal event: the CLI calls process.exit right after this
+    // returns, which would otherwise kill an in-flight fire-and-forget request
+    // before it is delivered. recordAuditEvent is bounded (own timeout) and never
+    // throws, so awaiting it cannot stall or fail login.
+    await recordAuditEvent(
       { action: "login.success", flow, controlPlane: cpOrigin, subject: session.subject },
       { sink: auditSink },
     );
@@ -164,7 +180,8 @@ export async function runLoginCommand(command: string | undefined, args: string[
     return 0;
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    void recordAuditEvent({ action: "login.failure", flow, controlPlane: cpOrigin, reason }, { sink: auditSink });
+    // Awaited for the same reason as login.success: survive the imminent exit.
+    await recordAuditEvent({ action: "login.failure", flow, controlPlane: cpOrigin, reason }, { sink: auditSink });
     console.error(reason);
     return 1;
   } finally {
@@ -186,23 +203,21 @@ function controlPlaneOrigin(controlPlane: string): string {
 }
 
 /**
- * Emit a best-effort logout audit event. Resolves the control-plane address and
- * sink the same way the login path does, so a self-hosted org's sink receives
- * the sign-out too. Never throws.
+ * Resolve the audit settings for a logout, read from config BEFORE the enrollment
+ * cache is cleared. Resolves the sink and control-plane origin the same way the
+ * login path does, so a self-hosted org's sink receives the sign-out too. Never
+ * throws — auditing is best-effort and must not affect logout.
  */
-async function auditLogout(args: string[]): Promise<void> {
+async function resolveLogoutAudit(args: string[]): Promise<{ sink?: string; controlPlane?: string }> {
   try {
     const parsed = parseLoginArgs(args);
-    if ("error" in parsed) return;
+    const flag = "error" in parsed ? undefined : parsed.controlPlane;
     const config = await loadConfig();
     const { resolveControlPlane } = await import("../enterprise/control-plane-address.js");
-    const controlPlane = resolveControlPlane({ flag: parsed.controlPlane, orgConfig: config.controlPlane });
-    await recordAuditEvent(
-      { action: "logout", controlPlane: controlPlaneOrigin(controlPlane) },
-      { sink: config.auditSink },
-    );
+    const controlPlane = resolveControlPlane({ flag, orgConfig: config.controlPlane });
+    return { sink: config.auditSink, controlPlane: controlPlaneOrigin(controlPlane) };
   } catch {
-    // Auditing is best-effort; a failure here must not affect logout.
+    return {};
   }
 }
 

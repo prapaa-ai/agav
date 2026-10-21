@@ -1,5 +1,5 @@
 import { openExternal } from "../utils/open-external.js";
-import { randomToken } from "./pkce.js";
+import { createPkce, randomToken } from "./pkce.js";
 import { startLoopbackServer } from "./loopback-server.js";
 import { secureURL } from "./secure-url.js";
 import { EnterpriseAuthError, type IdentityProof } from "./types.js";
@@ -17,15 +17,21 @@ import { EnterpriseAuthError, type IdentityProof } from "./types.js";
  * plane, not the IdP:
  *
  *   1. Start a single-use loopback server for the browser redirect.
- *   2. Open the browser to the control plane's SAML-initiation endpoint, passing
- *      the loopback `redirect_uri` and a one-time `state`.
+ *   2. Generate a PKCE verifier/challenge, then open the browser to the control
+ *      plane's SAML-initiation endpoint, passing the loopback `redirect_uri`, a
+ *      one-time `state`, and the PKCE `code_challenge`.
  *   3. The control plane redirects the browser to the SAML IdP, receives the
- *      SAML assertion, and sends the browser back to the loopback `redirect_uri`
- *      with a short-lived, single-use **broker code** (plus the echoed `state`).
- *   4. Exchange that broker code at the control plane for an `id_token`.
+ *      SAML assertion, binds the challenge to a short-lived, single-use **broker
+ *      code**, and sends the browser back to the loopback `redirect_uri` with the
+ *      code (plus the echoed `state`).
+ *   4. Exchange that broker code — together with the PKCE `code_verifier` that
+ *      never left this process — at the control plane for an `id_token`.
  *
- * The CLI never parses SAML; all XML/assertion handling stays server-side. The
- * resulting proof flows into the normal `enroll` step unchanged.
+ * PKCE gives the broker code proof-of-possession: an attacker who intercepts the
+ * loopback redirect and races to redeem the code first cannot, because the
+ * exchange requires the verifier, which was never transmitted. This mirrors the
+ * auth-code flow's defense (T4). The CLI never parses SAML; all XML/assertion
+ * handling stays server-side. The resulting proof flows into `enroll` unchanged.
  */
 
 export interface SamlFlowOptions {
@@ -53,24 +59,37 @@ function controlPlaneEndpoint(controlPlane: string, path: string): URL {
 
 /**
  * Build the SAML-initiation URL the browser is sent to. The control plane uses
- * `redirect_uri` to send the browser back to our loopback server, and echoes
- * `state` so we can bind the returned broker code to this attempt.
+ * `redirect_uri` to send the browser back to our loopback server, echoes `state`
+ * so we can bind the returned broker code to this attempt, and binds the PKCE
+ * `code_challenge` to the broker code so only the holder of the matching verifier
+ * can redeem it.
  */
-function initiationUrl(controlPlane: string, redirectUri: string, state: string): string {
+function initiationUrl(
+  controlPlane: string,
+  redirectUri: string,
+  state: string,
+  challenge: string,
+): string {
   const url = controlPlaneEndpoint(controlPlane, "saml/initiate");
   url.searchParams.set("redirect_uri", redirectUri);
   url.searchParams.set("state", state);
+  url.searchParams.set("code_challenge", challenge);
+  url.searchParams.set("code_challenge_method", "S256");
   return url.href;
 }
 
 /**
- * Exchange a broker code for an id_token at the control plane. The control plane
- * verifies the code is single-use and unexpired, and that it was issued for a
- * completed SAML assertion, before returning the proof.
+ * Exchange a broker code for an id_token at the control plane. Sends the PKCE
+ * `code_verifier` so the control plane can prove the caller holds the key bound to
+ * the broker code's `code_challenge` — an intercepted code alone is not redeemable.
+ * The control plane verifies the code is single-use and unexpired, that the
+ * verifier matches the challenge, and that it was issued for a completed SAML
+ * assertion, before returning the proof.
  */
 async function exchangeBrokerCode(
   controlPlane: string,
   code: string,
+  verifier: string,
   signal?: AbortSignal,
 ): Promise<SamlExchangeResponse> {
   const endpoint = controlPlaneEndpoint(controlPlane, "saml/exchange");
@@ -80,7 +99,7 @@ async function exchangeBrokerCode(
     response = await fetch(endpoint.href, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, code_verifier: verifier }),
       redirect: "error",
       signal,
     });
@@ -135,9 +154,10 @@ export async function obtainIdTokenViaSaml(options: SamlFlowOptions): Promise<Id
 
   try {
     const state = randomToken();
+    const pkce = createPkce();
     const server = await startLoopbackServer(state, controller.signal);
     try {
-      const url = initiationUrl(options.controlPlane, server.redirectUri, state);
+      const url = initiationUrl(options.controlPlane, server.redirectUri, state, pkce.challenge);
 
       report("Opening your browser to sign in with SAML…");
       if (!(await openBrowser(url))) {
@@ -147,7 +167,7 @@ export async function obtainIdTokenViaSaml(options: SamlFlowOptions): Promise<Id
       }
 
       const { code } = await server.waitForCode;
-      const tokens = await exchangeBrokerCode(options.controlPlane, code, controller.signal);
+      const tokens = await exchangeBrokerCode(options.controlPlane, code, pkce.verifier, controller.signal);
       return { idToken: tokens.id_token!, flow: "saml" };
     } finally {
       server.close();

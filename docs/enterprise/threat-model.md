@@ -115,12 +115,17 @@ broker code, or the SAML assertion is forged/replayed.
 **Mitigation (built + server-side):** the browser round-trip for `--saml` goes to
 the **control plane**, not the IdP; the CLI never parses SAML. The same loopback
 hardening as T4 applies — constant-time `state`, single `state`/`code`, loopback
-path/method, single-use. The broker **code** returned to loopback must be
-**short-lived and single-use** (server-side), so an intercepted redirect is
-useless after one `POST /saml/exchange`. The control plane, as SAML Service
-Provider, **must verify the assertion** server-side: signature, `Conditions`
-audience, `NotOnOrAfter`, `InResponseTo`/replay — the CLI trusts only the final
-minted `id_token`, which `/session` re-verifies.
+path/method, single-use. Crucially, the broker code carries **PKCE
+proof-of-possession** exactly like the auth-code flow: the CLI sends a
+`code_challenge` on `/saml/initiate` and the matching `code_verifier` (which never
+leaves the process) on `/saml/exchange`, so an attacker who intercepts the loopback
+redirect and races to redeem the code *first* still fails — short expiry and
+single-use only stop *later* replay, not first-redemption theft, so PKCE is what
+closes that gap. The broker code must also be **short-lived and single-use**
+(server-side). The control plane, as SAML Service Provider, **must verify the
+assertion** server-side: signature, `Conditions` audience, `NotOnOrAfter`,
+`InResponseTo`/replay — the CLI trusts only the final minted `id_token`, which
+`/session` re-verifies.
 
 ### T9 — Device-flow phishing (device grant)
 An attacker starts a device flow and tricks a victim into entering the attacker's
