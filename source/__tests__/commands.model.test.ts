@@ -155,6 +155,73 @@ describe("commands/model", () => {
     ]);
   });
 
+  it("preserves gateway model aliases that the public OpenAI filter would discard", async () => {
+    // A gateway returns the org's own catalog; non-public IDs must survive.
+    globalThis.fetch = vi.fn(async (input: any) => {
+      const url = String(input);
+      if (url.includes("gateway.corp")) {
+        return {
+          ok: true,
+          json: async () => ({ data: [{ id: "gpt-4o" }, { id: "corp-coder" }, { id: "anthropic/claude-sonnet-4" }] }),
+        } as any;
+      }
+      return { ok: true, json: async () => ({ data: [] }) } as any;
+    }) as any;
+
+    const { models } = await fetchAvailableModels({
+      ...createContext({
+        openaiApiKey: undefined,
+        openaiGatewayAuth: true,
+        openaiBaseURL: "https://gateway.corp/v1",
+        openaiHeaders: { Authorization: "Bearer gw-secret" },
+      }).config,
+    });
+
+    const ids = models.filter((m) => m.provider === "openai").map((m) => m.id).sort();
+    expect(ids).toEqual(["anthropic/claude-sonnet-4", "corp-coder", "gpt-4o"]);
+    expect(findMatchingModels(models, "corp-coder")).toEqual([{ id: "corp-coder", provider: "openai" }]);
+  });
+
+  it("still filters the PUBLIC OpenAI endpoint to chat models by name", async () => {
+    globalThis.fetch = vi.fn(async (input: any) => {
+      const url = String(input);
+      if (url.includes("api.openai.com")) {
+        return { ok: true, json: async () => ({ data: [{ id: "gpt-4o" }, { id: "whisper-1" }, { id: "text-embedding-3-small" }] }) } as any;
+      }
+      return { ok: true, json: async () => ({ data: [] }) } as any;
+    }) as any;
+
+    const { models } = await fetchAvailableModels({
+      ...createContext({ openaiApiKey: "openai-key" }).config,
+    });
+    const ids = models.filter((m) => m.provider === "openai").map((m) => m.id);
+    expect(ids).toEqual(["gpt-4o"]); // whisper + embeddings filtered out
+  });
+
+  it("builds the gateway /models URL preserving the query string", async () => {
+    let requestedUrl = "";
+    globalThis.fetch = vi.fn(async (input: any) => {
+      const url = String(input);
+      if (url.includes("gateway.corp")) {
+        requestedUrl = url;
+        return { ok: true, json: async () => ({ data: [{ id: "corp-coder" }] }) } as any;
+      }
+      return { ok: true, json: async () => ({ data: [] }) } as any;
+    }) as any;
+
+    await fetchAvailableModels({
+      ...createContext({
+        openaiApiKey: undefined,
+        openaiGatewayAuth: true,
+        openaiBaseURL: "https://gateway.corp/v1?tenant=team-a",
+        openaiHeaders: { Authorization: "Bearer gw-secret" },
+      }).config,
+    });
+
+    // /models goes in the path, query is preserved — not `/v1?tenant=team-a/models`.
+    expect(requestedUrl).toBe("https://gateway.corp/v1/models?tenant=team-a");
+  });
+
   it("returns every provider for an ambiguous model so startup can prompt for a choice", async () => {
     stubFetch(["shared-model"], ["shared-model"]);
 

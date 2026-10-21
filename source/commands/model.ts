@@ -36,24 +36,48 @@ async function fetchAnthropicModels(apiKey: string): Promise<FetchedModel[]> {
  * enrolled developer still gets correct discovery. Falls back to the public
  * endpoint + bearer key otherwise.
  */
+const PUBLIC_OPENAI_BASE_URL = "https://api.openai.com/v1";
+
+/**
+ * Append `/models` to an OpenAI-compatible base URL with path/query-aware
+ * semantics, matching the OpenAI SDK: the segment joins the pathname and any
+ * query string is preserved. Naive concatenation would place `/models` inside a
+ * query (e.g. `/v1?tenant=a` → `/v1?tenant=a/models`); this yields
+ * `/v1/models?tenant=a`.
+ */
+function openAIModelsURL(baseURL: string): string {
+  const url = new URL(baseURL);
+  url.pathname = `${url.pathname.replace(/\/+$/, "")}/models`;
+  return url.toString();
+}
+
 async function fetchOpenAIModels(
   apiKey: string | undefined,
   baseURL?: string,
   headers?: Record<string, string>,
 ): Promise<FetchedModel[]> {
   try {
-    const base = (baseURL ?? "https://api.openai.com/v1").replace(/\/+$/, "");
+    const base = baseURL ?? PUBLIC_OPENAI_BASE_URL;
+    const isPublicEndpoint = base === PUBLIC_OPENAI_BASE_URL;
     const requestHeaders: Record<string, string> = { ...(headers ?? {}) };
     const hasAuth = Object.keys(requestHeaders).some((k) => k.toLowerCase() === "authorization");
     if (!hasAuth && apiKey) requestHeaders["Authorization"] = `Bearer ${apiKey}`;
-    const res = await fetch(`${base}/models`, {
+    const res = await fetch(openAIModelsURL(base), {
       headers: requestHeaders,
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return [];
     const data = (await res.json()) as { data?: { id: string }[] };
     return (data.data ?? [])
-      .filter((m) => /^(gpt-|o[0-9]|chatgpt)/.test(m.id) && !/transcribe|tts|realtime|image|search|embed|whisper|moderation|davinci|babbage|curie|instruct|ft:|audio/.test(m.id))
+      // The public OpenAI /models list includes non-chat models (tts, embeddings,
+      // legacy, …); filter to chat models by name there. A gateway returns the
+      // org's own curated catalog (e.g. `corp-coder`, `anthropic/claude-sonnet-4`),
+      // so its identifiers are preserved verbatim.
+      .filter((m) =>
+        !isPublicEndpoint ||
+        (/^(gpt-|o[0-9]|chatgpt)/.test(m.id) &&
+          !/transcribe|tts|realtime|image|search|embed|whisper|moderation|davinci|babbage|curie|instruct|ft:|audio/.test(m.id)),
+      )
       .map((m) => ({ id: m.id, provider: "openai" }))
       .sort((a, b) => a.id.localeCompare(b.id));
   } catch {
