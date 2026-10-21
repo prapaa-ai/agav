@@ -249,6 +249,23 @@ describe("runLoginCommand: audit → SIEM", () => {
     expect(attempt[1]).toEqual({ sink: undefined });
   });
 
+  it("never sends the success event to a REPLACED enrollment's sink when switching orgs (P2)", async () => {
+    // Enrolled in org A (whose policy supplied auditSink); now signing into org B
+    // via --control-plane, and B's policy omits auditSink. The success event must
+    // NOT fall back to A's sink — otherwise B's identity leaks to A's SIEM.
+    mockedLoadConfig.mockResolvedValue({ controlPlane: "https://auth.a", auditSink: "https://siem.a/ingest" } as any);
+    vi.mocked(obtainIdTokenViaOidc).mockResolvedValue({ idToken: "idt", flow: "oidc-token" });
+    mockedEnroll.mockResolvedValue({ policy: { provider: "openai" }, subject: "user@b", controlPlane: "https://auth.b" } as any);
+    // Post-enrollment effective policy (org B) has no sink.
+    vi.mocked(loadOrgPolicy).mockResolvedValue({ config: {} } as any);
+
+    const code = await runLoginCommand("login", ["--oidc", "--control-plane", "https://auth.b"]);
+    expect(code).toBe(0);
+    const success = vi.mocked(recordAuditEvent).mock.calls.find((c) => c[0].action === "login.success")!;
+    // No sink (env fallback applies downstream) — definitely NOT org A's sink.
+    expect(success[1]).toEqual({ sink: undefined });
+  });
+
   it("emits login.failure with an allowlisted reason code, never the raw message", async () => {
     mockedLoadConfig.mockResolvedValue({ controlPlane: "https://auth.corp", auditSink: "https://siem.corp/ingest" } as any);
     // A leaky parse-style error whose message echoes server content (a secret).

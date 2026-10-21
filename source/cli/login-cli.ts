@@ -167,12 +167,15 @@ export async function runLoginCommand(command: string | undefined, args: string[
     }, controller.signal);
     const session = await enroll(controlPlane, proof, controller.signal);
     await persistSession(session);
-    // Re-resolve the sink AFTER persisting: this login may be the first enrollment
-    // and the sink may arrive *in the returned policy*. loadOrgPolicy re-reads with
-    // the correct precedence (admin-shipped file still outranks the enrolled
-    // policy), so an org that ships auditSink only via enrollment is captured here
-    // while an admin file keeps priority. Falls back to the pre-enrollment value.
-    const successSink = (await resolveEffectiveAuditSink()) ?? auditSink;
+    // Resolve the success sink SOLELY from the post-enrollment effective config
+    // (admin-shipped file > the just-persisted policy), with the env fallback
+    // applied downstream by recordAuditEvent. We must NOT fall back to the
+    // pre-enrollment `auditSink`: this login may have *replaced* a previous
+    // enrollment (e.g. switching from org A to org B). Reusing A's sink would ship
+    // B's identity and control-plane origin to A's SIEM, and would also prevent a
+    // refreshed policy from removing an enrollment-provided sink. An undefined
+    // result here correctly means "no org/file sink → env only (or nothing)".
+    const successSink = await resolveEffectiveAuditSink();
     // Await the terminal event: the CLI calls process.exit right after this
     // returns, which would otherwise kill an in-flight fire-and-forget request
     // before it is delivered. recordAuditEvent is bounded (own timeout) and never
