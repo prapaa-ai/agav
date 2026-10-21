@@ -152,6 +152,7 @@ describe("persistSession", () => {
     expect(saveEnrolledPolicy).toHaveBeenCalledTimes(1);
     const saved = vi.mocked(saveEnrolledPolicy).mock.calls[0]![0];
     expect(saved.policy).toEqual(session.policy);
+    expect(saved.gatewayToken).toBe("gw");
     expect(saved.controlPlane).toBe("https://auth.corp");
     expect(saved.subject).toBe("jane@corp.com");
     expect(saved.expiresAt).toBe(1800000000000);

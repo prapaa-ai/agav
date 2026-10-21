@@ -25,6 +25,12 @@ const POLICY_PATH = join(ENTERPRISE_DIR, "policy.json");
 export interface EnrolledPolicy {
   /** The enforced org policy — same shape the file source produces. */
   policy: OrgConfig;
+  /**
+   * Short-lived credential scoped to the customer's gateway, opaque to Agav.
+   * Injected as the provider's Authorization header so live inference reaches the
+   * org gateway. Stored encrypted at rest with the rest of this record.
+   */
+  gatewayToken?: string;
   /** Control-plane address this policy was issued by, for refresh. */
   controlPlane?: string;
   /** Subject the policy was issued for (informational). */

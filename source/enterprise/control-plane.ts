@@ -183,6 +183,7 @@ export async function persistSession(session: EnrollmentSession): Promise<void> 
   const { saveEnrolledPolicy } = await import("../config/enterprise-policy-store.js");
   await saveEnrolledPolicy({
     policy: session.policy,
+    gatewayToken: session.gatewayToken,
     controlPlane: session.controlPlane,
     subject: session.subject,
     expiresAt: session.expiresAt,

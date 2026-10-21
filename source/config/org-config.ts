@@ -214,13 +214,67 @@ function isAtLeastAsStrict(candidate: PermissionMode, floor: PermissionMode): bo
  * never throws — a missing or unreadable policy must not break a normal startup.
  */
 export async function loadOrgConfig(): Promise<OrgConfig | undefined> {
+  return (await loadOrgPolicy()).config;
+}
+
+/**
+ * The resolved org policy plus the enrollment credential that accompanies it.
+ *
+ * `gatewayToken` is present only when the winning policy came from authenticated
+ * enrollment (never from an admin-shipped file — a file source has no gateway
+ * credential). It is injected as the provider's Authorization header so live
+ * inference reaches the org gateway.
+ */
+export interface ResolvedOrgPolicy {
+  config?: OrgConfig;
+  gatewayToken?: string;
+}
+
+/**
+ * Resolve the org policy and (for the enrollment source only) its gateway token,
+ * applying the same precedence as `loadOrgConfig`: an admin-shipped file outranks
+ * an enrolled policy. When the file source wins, no gateway token is returned,
+ * since a file-delivered policy carries no enrollment credential.
+ */
+export async function loadOrgPolicy(): Promise<ResolvedOrgPolicy> {
   const fromFile = await loadOrgConfigFromFile();
-  if (fromFile) return fromFile;
+  if (fromFile) return { config: fromFile };
 
   // Fall back to a policy delivered by authenticated enrollment.
   const { loadEnrolledPolicy } = await import("./enterprise-policy-store.js");
   const enrolled = await loadEnrolledPolicy();
-  return enrolled ? sanitizeOrgConfig(enrolled.policy) : undefined;
+  if (!enrolled) return {};
+  return {
+    config: sanitizeOrgConfig(enrolled.policy),
+    gatewayToken: enrolled.gatewayToken,
+  };
+}
+
+/**
+ * Inject the enrollment gateway token as the OpenAI-compatible provider's
+ * Authorization header, so live inference authenticates to the org gateway.
+ *
+ * Rules (confirmed design):
+ *   - Only an enrollment-sourced token is injected (file policies have none).
+ *   - An Authorization header already pinned by the policy wins — explicit beats
+ *     implicit — so an admin can override the scheme/value.
+ *   - The token is injected regardless of `expiresAt`: the gateway is the
+ *     authority on validity, and a stale token simply fails there, which is
+ *     clearer than silently sending no credential.
+ *
+ * Mutates and returns `merged`.
+ */
+export function applyGatewayToken(merged: AgavConfig, gatewayToken: string | undefined): AgavConfig {
+  if (!gatewayToken) return merged;
+
+  const headers = { ...(merged.openaiHeaders ?? {}) };
+  // Respect an explicit Authorization pin (case-insensitive) from the policy.
+  const hasAuth = Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
+  if (!hasAuth) {
+    headers["Authorization"] = `Bearer ${gatewayToken}`;
+    merged.openaiHeaders = headers;
+  }
+  return merged;
 }
 
 /**

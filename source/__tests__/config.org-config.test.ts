@@ -15,7 +15,9 @@ const mockedLoadEnrolled = vi.mocked(loadEnrolledPolicy);
 
 const {
   applyOrgConfig,
+  applyGatewayToken,
   loadOrgConfig,
+  loadOrgPolicy,
   isAtLeastAsStrict,
   sanitizeOrgConfig,
   clampPermissionMode,
@@ -340,5 +342,86 @@ describe("org-config: loadOrgConfig", () => {
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     });
     await expect(loadOrgConfig()).rejects.toThrow(/allowedModels/);
+  });
+});
+
+describe("org-config: applyGatewayToken", () => {
+  it("injects the token as an Authorization bearer header", () => {
+    const config = baseConfig();
+    applyGatewayToken(config, "gw-secret");
+    expect(config.openaiHeaders).toEqual({ Authorization: "Bearer gw-secret" });
+  });
+
+  it("merges the header alongside policy-pinned headers", () => {
+    const config = baseConfig({ openaiHeaders: { "x-tenant": "team-a" } });
+    applyGatewayToken(config, "gw-secret");
+    expect(config.openaiHeaders).toEqual({
+      "x-tenant": "team-a",
+      Authorization: "Bearer gw-secret",
+    });
+  });
+
+  it("does not override an Authorization header already pinned by the policy", () => {
+    const config = baseConfig({ openaiHeaders: { Authorization: "Bearer admin-pinned" } });
+    applyGatewayToken(config, "gw-secret");
+    expect(config.openaiHeaders).toEqual({ Authorization: "Bearer admin-pinned" });
+  });
+
+  it("respects a case-insensitively pinned Authorization header", () => {
+    const config = baseConfig({ openaiHeaders: { authorization: "Bearer admin-pinned" } });
+    applyGatewayToken(config, "gw-secret");
+    expect(config.openaiHeaders).toEqual({ authorization: "Bearer admin-pinned" });
+  });
+
+  it("is a no-op when there is no token", () => {
+    const config = baseConfig({ openaiHeaders: { "x-tenant": "team-a" } });
+    applyGatewayToken(config, undefined);
+    expect(config.openaiHeaders).toEqual({ "x-tenant": "team-a" });
+  });
+});
+
+describe("org-config: loadOrgPolicy gateway token", () => {
+  beforeEach(() => {
+    readFile.mockReset();
+    mockedLoadEnrolled.mockReset().mockResolvedValue(undefined);
+    delete process.env[ORG_CONFIG_ENV];
+  });
+
+  it("returns the enrolled policy's gateway token", async () => {
+    readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    mockedLoadEnrolled.mockResolvedValue({
+      policy: { provider: "openai", openaiBaseURL: "https://gw/v1" },
+      gatewayToken: "gw-secret",
+      storedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const resolved = await loadOrgPolicy();
+    expect(resolved.config?.openaiBaseURL).toBe("https://gw/v1");
+    expect(resolved.gatewayToken).toBe("gw-secret");
+  });
+
+  it("returns no gateway token when an admin file source wins", async () => {
+    process.env[ORG_CONFIG_ENV] = "/custom/org.json";
+    readFile.mockImplementation(async (path: unknown) => {
+      if (path === "/custom/org.json") return JSON.stringify({ provider: "openai" });
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    // Even if an enrolled policy with a token exists, the file source outranks it
+    // and a file carries no gateway credential.
+    mockedLoadEnrolled.mockResolvedValue({
+      policy: { provider: "anthropic" },
+      gatewayToken: "gw-secret",
+      storedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const resolved = await loadOrgPolicy();
+    expect(resolved.config?.provider).toBe("openai");
+    expect(resolved.gatewayToken).toBeUndefined();
+    expect(mockedLoadEnrolled).not.toHaveBeenCalled();
+  });
+
+  it("returns an empty result when nothing is enrolled", async () => {
+    readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const resolved = await loadOrgPolicy();
+    expect(resolved.config).toBeUndefined();
+    expect(resolved.gatewayToken).toBeUndefined();
   });
 });

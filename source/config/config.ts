@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
 import { decrypt, encrypt } from "../utils/encrypt.js";
-import { loadOrgConfig, applyOrgConfig } from "./org-config.js";
+import { loadOrgPolicy, applyOrgConfig, applyGatewayToken } from "./org-config.js";
 
 export type PermissionMode = "ask" | "auto-accept" | "deny-writes";
 export type EffortLevel = "minimal" | "low" | "medium" | "high" | "max";
@@ -528,8 +528,12 @@ export async function loadConfig(): Promise<AgavConfig> {
   // Organization policy applies last so it overrides global, project, and env
   // sources alike. An admin's managed config is a non-overridable floor; the
   // user can tighten (e.g. a stricter permissionMode) but never loosen it.
-  const orgConfig = await loadOrgConfig();
-  applyOrgConfig(merged, orgConfig);
+  const org = await loadOrgPolicy();
+  applyOrgConfig(merged, org.config);
+  // Inject the enrollment gateway token as the provider Authorization header so
+  // live inference reaches the org gateway. Runs after applyOrgConfig so it sees
+  // any Authorization header the policy pinned (which wins over the token).
+  applyGatewayToken(merged, org.gatewayToken);
 
   return merged;
 }
