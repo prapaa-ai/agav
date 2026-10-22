@@ -31,7 +31,7 @@ The flag overrides `maxIterations` in configuration for the current session only
 | --- | --- |
 | `--provider`, `-p` | `anthropic`, `openai`, `openrouter`, `nvidia`, `deepseek`, `gemini`, `vertex-ai`, or `ollama` |
 | `--model`, `-m` | Provider model identifier |
-| `--effort` | `low`, `medium`, `high`, or `max` |
+| `--effort` | `minimal`, `low`, `medium`, `high`, or `max` |
 | `--ollama-host` | Ollama host when no complete endpoint is set |
 | `--ollama-port` | Ollama port |
 | `--ollama-endpoint` | Complete Ollama base URL |
@@ -42,6 +42,8 @@ The flag overrides `maxIterations` in configuration for the current session only
 | `--permission <json>` | Tool policy for `agav run` |
 | `--max-turns <number>` | Limit the number of agent iterations per prompt in interactive, print, and run modes |
 | `--resume`, `-r [id]` | Open the session picker or resume by ID prefix |
+| `--name <title>` | Set the initial name for a new interactive session. Interactive mode only; rejected with `-P`/`run`. |
+| `--search` | Enable the web search tool for this session |
 | `--auto-accept`, `-y` | Skip normal tool confirmations |
 | `--openai-api` | OpenAI API mode: `responses` (default) or `chat`. Use `chat` for OpenAI-compatible endpoints that don't support the Responses API. |
 | `--deny-writes` | Block write operations |
@@ -58,6 +60,8 @@ When you start a plain `agav` session, the provider and model are resolved in th
 2. **Resumed session** — with `--resume`, the session's own provider and model are used unless overridden by a flag.
 3. **Last used** — with no flags and no resume, Agav reuses the provider and model from your most recent session, so a new session opens with the same model you last worked in.
 4. **Config defaults** — if there is no prior session, the `provider`/`model` in `~/.agav/config.json` (or the built-in default) apply.
+
+> **Windows:** `~/.agav/` paths on this page resolve to `%USERPROFILE%\.agav\`.
 
 ## Environment variables
 
@@ -129,6 +133,15 @@ agav skills clear                     # Remove all user-installed skills
 ```
 
 Bundled skills are compiled into the binary and cannot be removed, but `disable` turns them off without deleting anything. The enabled/disabled state is stored in `~/.agav/skills/registry.json`. Changes take effect on the next start.
+
+## Session subcommands
+
+```bash
+agav sessions delete <id>              # Delete a saved session by ID or unique prefix
+agav sessions rm <id>                  # Alias for delete
+```
+
+`delete` (and its `rm` alias) accept an exact session ID or a unique ID prefix. An unknown ID returns an error; an ambiguous prefix that matches more than one session is rejected rather than guessing. List session IDs with `--resume` or the `/resume` slash command.
 
 ## Enterprise login subcommands
 

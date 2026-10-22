@@ -16,6 +16,8 @@ Only the English model needs a download. If missing, `/voice` shows **Whisper ba
 
 The model is saved at `~/.agav/voice/ggml-base.en-q5_1.bin` and reused across sessions/versions. After setup, the current voice request continues into recording. There is no helper metadata request, helper download, or separately published helper asset.
 
+> **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\`.
+
 **Developer builds:** normal `pnpm dev`, tests, typecheck and `pnpm build:binary` do not compile native voice code or require CMake/C++. Use **`pnpm build:binary --voice`** or **`pnpm build:binary:voice`** to explicitly compile and embed voice. A prebuilt helper can be supplied with `AGAV_VOICE_HELPER_PATH`, but is only used with `--voice`. Release CI always builds/embeds voice and fails if it cannot do so.
 
 `pnpm build:binary:all` means **all targets and all features**, including voice. Supply prebuilt helpers for all five native targets in `AGAV_VOICE_HELPER_DIR` (`agav-voice-darwin-arm64`, `agav-voice-darwin-x64`, `agav-voice-linux-x64`, `agav-voice-linux-arm64`, `agav-voice-win32-x64.exe`). Both Windows variants reuse the Windows x64 helper. Missing helpers fail before compilation rather than silently omitting voice. CI obtains helpers on native runners.

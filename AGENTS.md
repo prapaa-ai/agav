@@ -467,7 +467,9 @@ q/ESC       Exit
 - Shows tool count and destructive flag warnings
 
 **Tab 3: Create**
-- Placeholder for agent creation wizard (coming soon)
+- Lists your user-created agents and saved templates (the "My Agents" hub)
+- Opens a 5-step wizard to create or edit an agent: Name & Description → System Prompt → Native Tools → MCP Servers → Review & Save
+- Saved agents and templates persist under `~/.agav/agents/`
 
 ## Slash Commands
 

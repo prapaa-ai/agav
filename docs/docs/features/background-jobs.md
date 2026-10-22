@@ -20,7 +20,7 @@ While the flag is unset or `false`, `run_background_job` and `/job` refuse every
 
 ## What a job is
 
-Each job is a shell command run by a small detached supervisor process, so it keeps running when Agav exits. Agav stores job state, grants, and captured output under `~/.agav/background-jobs`.
+Each job is a shell command run by a small detached supervisor process, so it keeps running when Agav exits. Agav stores job state, grants, and captured output under `~/.agav/background-jobs` (`%USERPROFILE%\.agav\background-jobs` on Windows).
 
 - **States:** a job moves through `accepted`, `starting`, and `running`, then ends as `completed`, `failed`, or `interrupted`. If Agav cannot establish the truth after a crash it reports `unknown` or `recovery-required` with a reason; it never reports success without evidence.
 - **Output:** stdout and stderr are captured separately and can be read while the job is still running.

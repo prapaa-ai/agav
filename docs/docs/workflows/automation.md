@@ -33,7 +33,7 @@ Supported interval suffixes are `s`, `m`, and `h`. If you omit a suffix, Agav as
 | `/schedule enable <id>` | Resume the scheduled task identified by `<id>`. |
 | `/schedule remove <id>` | Delete the scheduled task identified by `<id>`. |
 
-Scheduled tasks use standard five-field cron expressions and persist in `~/.agav/scheduled-tasks.json`:
+Scheduled tasks use standard five-field cron expressions and persist in `~/.agav/scheduled-tasks.json` (`%USERPROFILE%\.agav\scheduled-tasks.json` on Windows):
 
 ```text
 /schedule add "0 9 * * 1-5" review open TODOs

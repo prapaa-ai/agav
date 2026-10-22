@@ -69,6 +69,8 @@ agav agents install https://github.com/org/repo/tree/main/agents/my-agent
 
 Remote installs are restricted to trusted git hosts: **github.com**, **gitlab.com**, **bitbucket.org**, and **raw.githubusercontent.com**. Set `AGAV_ALLOWED_GIT_HOSTS` (comma-separated) to allow additional hosts. Agent names must start with a letter or digit and contain only lowercase letters, digits, dots, hyphens, or underscores (max 64 characters).
 
+> **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\`.
+
 ## Local marketplace
 
 For local development and testing, clone the marketplace repo and set:

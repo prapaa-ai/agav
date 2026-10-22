@@ -28,6 +28,8 @@ Add `mcpServers` to `~/.agav/config.json` or `./.agav/config.json`:
 
 Each server supports a command, optional argument list, and optional environment overrides. Restart Agav after changing server configuration.
 
+> **Windows:** `~/.agav/` resolves to `%USERPROFILE%\.agav\`.
+
 ## Remote servers (HTTP / SSE)
 
 Remote servers connect to an MCP endpoint over the network instead of spawning a local process. Two transport modes are supported:
