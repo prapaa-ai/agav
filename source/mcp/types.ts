@@ -11,6 +11,14 @@ export interface MCPServerConfig {
   transport?: "http" | "sse";
   // Extra headers sent with every remote request (e.g. Authorization).
   headers?: Record<string, string>;
+  // Optional allowlist of tool names to expose from this server, written as the
+  // server reports them (unprefixed, e.g. "create_issue"). When omitted, every
+  // tool the server exposes is available — the default. Useful for servers with
+  // large catalogs where only a few tools are needed: unlisted tools are left
+  // out of the schema sent to the model. A name that the server does not expose
+  // is reported (stderr) and ignored, so a typo is visible rather than silently
+  // hiding everything.
+  tools?: string[];
   // OAuth is discovered automatically on 401; false keeps static/header-only authentication.
   oauth?: false | {
     clientId?: string;
