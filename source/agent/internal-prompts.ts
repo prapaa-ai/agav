@@ -52,6 +52,21 @@ export function testsFailedPrompt(attempt: number, maxAttempts: number): string 
 export const NO_EDITS_PROMPT =
   "You analyzed the code but did not make any changes. Now write the actual fix. Use edit_file or write_file to modify the source code. Do not just explain — implement the fix.";
 
+// Injected once when the same tool call has failed repeatedly with the same
+// arguments and the same error — a sign the agent is retrying an approach that
+// is not working rather than making progress. Extracted as a constant so the
+// loop can inject it and LEGACY_PREFIXES can recognise it in resumed sessions.
+export const REPEATED_FAILURE_PREFIX = "This operation has failed";
+
+export function repeatedFailurePrompt(toolName: string, attempts: number): string {
+  return (
+    `${REPEATED_FAILURE_PREFIX} ${attempts} times in a row with the same arguments and the same error (${toolName}). ` +
+    "Repeating it will not help. Stop and inspect the root cause: read the full error, check the actual state " +
+    "(file contents, paths, environment), and change your approach before trying again. " +
+    "If you cannot make progress, stop and explain what is blocking you."
+  );
+}
+
 // Same as TESTS_FAILED_PREFIX — the full prompt is dynamic (includes error
 // details), so only the fixed opening is extracted for legacy prefix matching.
 export const SCHEMA_RETRY_PREFIX = "Your previous response was invalid.";
@@ -78,6 +93,7 @@ const LEGACY_PREFIXES = [
   NO_EDITS_PROMPT,
   TESTS_FAILED_PREFIX,
   SCHEMA_RETRY_PREFIX,
+  REPEATED_FAILURE_PREFIX,
   COMPACTION_PLACEHOLDER_PREFIX,
 ];
 

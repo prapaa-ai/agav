@@ -13,6 +13,7 @@ import {
   VERIFY_FAILED_PROMPT,
   STEER_DIRECTIVE_PREFIX,
   testsFailedPrompt,
+  repeatedFailurePrompt,
 } from "./internal-prompts.js";
 
 export type AgentEvent =
@@ -169,6 +170,23 @@ function isAllowed(
   return false;
 }
 
+/**
+ * A stable fingerprint of a failing tool call's error, used to tell a repeated
+ * identical failure apart from a new or changed one. Volatile substrings —
+ * timestamps, hex addresses, line/column numbers, PIDs, temp paths — are
+ * stripped so the same underlying error still matches across retries, while a
+ * genuinely different error (which signals progress) does not.
+ */
+function errorSignature(output: string): string {
+  return output
+    .slice(0, 2000)
+    .replace(/0x[0-9a-fA-F]+/g, "0x#")
+    .replace(/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\S*/g, "<ts>")
+    .replace(/\b\d+\b/g, "#")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Convert a simple glob rule into a regex so allowlist path checks stay lightweight. */
 function matchGlob(pattern: string, text: string): boolean {
   const regex = pattern
@@ -203,6 +221,13 @@ export async function* runAgentLoop(
   // user changes their mind, they can say so in a new message and the submit()
   // call starts a fresh loop with an empty set.
   const deniedCalls = new Set<string>();
+  // Consecutive identical failures per tool call, keyed by name + arguments.
+  // Scoped to the whole loop invocation so a stuck retry pattern is caught
+  // across turns, not just within one batch. A success, a change of arguments,
+  // or a different error for the same key all count as progress and reset it.
+  const failureStreaks = new Map<string, { errorSig: string; count: number; redirected: boolean }>();
+  // After this many consecutive identical failures, inject one redirect.
+  const REPEATED_FAILURE_THRESHOLD = 3;
   // Mid-turn /steer directives — see LoopParams.drainSteers. Undefined for
   // subagent/skill/agent loops, which never receive them.
   const drainSteers = params.drainSteers;
@@ -618,6 +643,10 @@ export async function* runAgentLoop(
     // Phase 2: execute approved tools in parallel
     let hasTestRun = false;
     let hasTestFailure = false;
+    // The tool that just crossed the repeated-failure threshold this batch, if
+    // any. Injected once after results are recorded (see below). Kept to one
+    // redirect per batch even if several tools are stuck.
+    let repeatedFailure: { name: string; attempts: number } | null = null;
     if (approved.size > 0) {
       const entries = [...approved.entries()].map(([id, { input }]) => {
         const call = toolCalls.get(id)!;
@@ -692,6 +721,29 @@ export async function* runAgentLoop(
             });
           }
         }
+        // Track consecutive identical failures to catch a stuck retry loop.
+        // Keyed by tool + arguments; the error signature decides whether this
+        // is the *same* failure as last time. A success clears the streak.
+        const streakKey = `${name}:${JSON.stringify(input)}`;
+        if (result.isError) {
+          const errorSig = errorSignature(result.output);
+          const prior = failureStreaks.get(streakKey);
+          if (prior && prior.errorSig === errorSig) {
+            prior.count++;
+            // Redirect once when the streak first crosses the threshold.
+            if (prior.count >= REPEATED_FAILURE_THRESHOLD && !prior.redirected) {
+              prior.redirected = true;
+              repeatedFailure ??= { name, attempts: prior.count };
+            }
+          } else {
+            // First failure, or a *different* error for the same call — a
+            // changed error means something moved, so start a fresh streak.
+            failureStreaks.set(streakKey, { errorSig, count: 1, redirected: false });
+          }
+        } else {
+          // Success for this exact call is progress — forget any prior streak.
+          failureStreaks.delete(streakKey);
+        }
         yield { type: "tool_result", toolName: name, toolCallId: id, output: result.output, isError: result.isError, diffLines: result.diffLines };
         toolResults.push({
           type: "tool_result",
@@ -731,6 +783,15 @@ export async function* runAgentLoop(
       }
     } else if (hasTestRun) {
       testRepairAttempts = 0;
+    }
+
+    // A tool has repeated the same failure; nudge once to break the loop. The
+    // test-repair path above already covers failing test runs, so skip it when
+    // that fired this batch to avoid stacking two redirects on the same turn.
+    if (repeatedFailure && !hasTestFailure) {
+      conversation.addInternalUserMessage(
+        repeatedFailurePrompt(repeatedFailure.name, repeatedFailure.attempts),
+      );
     }
   }
 
