@@ -84,6 +84,30 @@ If you know which transport the server speaks, pin it with `transport`:
 
 `headers` are sent with every request and can pass static authentication tokens. Explicit `Authorization` headers take precedence over OAuth. The `command`, `args`, and `env` fields are not used for remote servers.
 
+## Limiting which tools are exposed
+
+Some MCP servers expose large tool catalogs, but a project may only need a few of them. Every exposed tool's schema is sent to the model on each request, so trimming an oversized catalog reduces the per-request tool overhead.
+
+Add an optional `tools` array to any server — stdio or remote — to expose only the listed tools. Names are written exactly as the server reports them (unprefixed, without the `servername__` prefix Agav adds internally):
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "type": "remote",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "tools": ["search_issues", "get_issue", "list_pull_requests"]
+    }
+  }
+}
+```
+
+Omit `tools` (or set it to an empty array) to expose every tool the server provides — the default. Selection is applied per server and preserves the server's own tool ordering, including after a live `list_changed` refresh.
+
+A configured name the server does not expose is reported on stderr and ignored, so a typo stays visible. If none of the configured names match, Agav warns and falls back to exposing all of that server's tools rather than silently disabling it. Restart Agav after changing the selection.
+
+Narrowing the exposed set is a context-size optimization, not a security boundary: MCP tools still require user confirmation under Agav's normal permission rules.
+
 ## OAuth authentication
 
 Agav discovers OAuth requirements when a remote MCP server returns a Bearer authentication challenge. Startup and tool requests never launch browser sign-in automatically. Cached tokens are reused or refreshed silently; servers needing sign-in are summarized in one startup warning. Run `/mcp` to view connected servers and those requiring authentication, then explicitly run `/mcp auth <name>` to open your browser, complete the PKCE authorization flow, and connect that server without restarting. Other configured servers connect independently.

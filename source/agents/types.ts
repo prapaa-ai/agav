@@ -60,6 +60,7 @@ export interface AgentManifest {
     command: string; // "npx" | "uvx" | "docker" | "http"
     args?: string[]; // e.g. ["-y", "@scope/pkg"] or ["https://endpoint"]
     env?: Record<string, string>; // environment variables for this server
+    tools?: string[]; // optional allowlist of tool names to expose (unprefixed); omit for all
   }>;
 
   // A2A-specific fields

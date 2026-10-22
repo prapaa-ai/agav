@@ -16,6 +16,7 @@ import { runAgentLoop } from "../agent/loop.js";
 import { executeNativeAgent } from "../agents/executor.js";
 import { agentToTool } from "../agents/registry-factory.js";
 import { executeTargetedAgent } from "../agents/targeting.js";
+import { MCPManager } from "../mcp/manager.js";
 
 const agent: AgentDefinition = {
   manifest: { name: "demo", description: "Test agent", version: "1.0.0" },
@@ -43,6 +44,24 @@ describe("named-agent final output", () => {
     expect(vi.mocked(runAgentLoop).mock.calls[0]![0].toolRegistry.getSchemas().map((tool) => tool.name)).toEqual([
       "lsp_query", "read_notebook", "edit_notebook", "github",
     ]);
+  });
+
+  it("forwards a per-agent MCP server's tool selection to its MCP manager", async () => {
+    setEvents([{ type: "turn_complete" }]);
+    const startServer = vi.spyOn(MCPManager.prototype, "startServer").mockResolvedValue([]);
+    const getToolDefinitions = vi.spyOn(MCPManager.prototype, "getToolDefinitions").mockReturnValue([]);
+    await executeNativeAgent({ ...agent, manifest: {
+      ...agent.manifest,
+      "mcp-servers": [
+        { key: "github", command: "npx", args: ["-y", "@mcp/github"], tools: ["get_issue", "search_issues"] },
+        { key: "all", command: "npx", args: ["-y", "@mcp/all"] },
+      ],
+    } }, "task", deps);
+    // A restricted server carries its selection; an unrestricted one omits it.
+    expect(startServer).toHaveBeenCalledWith("github", expect.objectContaining({ tools: ["get_issue", "search_issues"] }));
+    expect(startServer).toHaveBeenCalledWith("all", expect.not.objectContaining({ tools: expect.anything() }));
+    startServer.mockRestore();
+    getToolDefinitions.mockRestore();
   });
 
   it("returns only the last completed answer and forwards every progress event unchanged", async () => {

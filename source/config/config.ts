@@ -283,12 +283,16 @@ export const PROJECT_CONFIG_TEMPLATE = {
     eg: { userLabel: "blue", assistantLabel: "magenta", promptColor: "green" },
   },
   mcpServers: {
-    description: "MCP server configurations keyed by the name shown inside Agav.",
+    description:
+      "MCP server configurations keyed by the name shown inside Agav. " +
+      "Add an optional `tools` array to a server to expose only those tools " +
+      "(names as the server reports them, unprefixed); omit it to expose all.",
     type: "object",
     eg: {
       everything: {
         command: "npx",
         args: ["-y", "@modelcontextprotocol/server-everything"],
+        tools: ["echo", "add"],
       },
     },
   },
