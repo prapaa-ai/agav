@@ -119,6 +119,72 @@ describe("repeated-failure redirect", () => {
     expect(redirects).toHaveLength(0);
   });
 
+  it("keeps the error field when a volatile timestamp precedes it (compact JSON)", async () => {
+    // The ISO-timestamp rule must not greedily consume the trailing error. Three
+    // responses that share a timestamp field but differ in the error are three
+    // different failures.
+    const { redirects } = await scenario([
+      [fail('{"timestamp":"2026-10-22T03:15:30.135Z","error":"ECONNREFUSED"}')],
+      [fail('{"timestamp":"2026-10-22T03:16:11.901Z","error":"EACCES"}')],
+      [fail('{"timestamp":"2026-10-22T03:17:45.502Z","error":"ENOENT"}')],
+    ]);
+    expect(redirects).toHaveLength(0);
+  });
+
+  it("treats reordered argument keys as the same call", async () => {
+    // JSON key order must not matter — otherwise alternating key order dodges
+    // detection forever. Six identical failures with the keys swapped each time
+    // must still redirect.
+    const a = { command: "a", timeout_ms: 30000 };
+    const b = { timeout_ms: 30000, command: "a" };
+    const { redirects } = await scenario([
+      [fail("boom", a)], [fail("boom", b)], [fail("boom", a)],
+      [fail("boom", b)], [fail("boom", a)], [fail("boom", b)],
+    ]);
+    expect(redirects).toHaveLength(1);
+  });
+
+  it("does not inject a stale redirect when the same call later succeeds in the batch", async () => {
+    // After two failures, a third turn batches a failure (crossing the threshold)
+    // followed by a success for the same call. The success resets the streak, so
+    // the pending redirect is stale and must not be injected.
+    const tools = new ToolRegistry();
+    const results: ToolResult[] = [
+      { output: "boom", isError: true },   // turn 1
+      { output: "boom", isError: true },   // turn 2
+      { output: "boom", isError: true },   // turn 3, call 1 (crosses threshold)
+      { output: "ok", isError: false },    // turn 3, call 2 (success resets)
+    ];
+    tools.register({
+      schema: { name: "run_command", description: "mock", inputSchema: { type: "object", properties: {} } },
+      execute: vi.fn(async () => ({ ...results.shift()! })),
+    });
+    // Turns 1-2: one failing call each. Turn 3: two calls (fail then succeed).
+    const batches = [["0-0"], ["1-0"], ["2-0", "2-1"]];
+    const streams: StreamEvent[][] = batches.map((ids) => [
+      ...ids.flatMap((id): StreamEvent[] => [
+        { type: "tool_call_start", toolCallId: id, toolName: "run_command" },
+        { type: "tool_call_delta", toolCallId: id, argsJson: "{}" },
+      ]),
+      { type: "message_end", stopReason: "tool_use" },
+    ]);
+    const stream = vi.fn(() => (async function* () {
+      for (const event of streams.shift() ?? [{ type: "message_end", stopReason: "end_turn" } as StreamEvent]) yield event;
+    })());
+    const conversation = new ConversationState();
+    conversation.addUserMessage("do the thing");
+    for await (const _ of runAgentLoop({
+      provider: { name: "mock", stream },
+      conversation,
+      toolRegistry: tools,
+      model: "mock",
+      permissionMode: "auto-accept",
+      iterationsBudget: { remaining: 50, total: 50 },
+    })) void _;
+    const prompts = conversation.getMessages().filter((m) => m.internal).flatMap((m) => m.content.map((b) => b.text ?? ""));
+    expect(prompts.filter((p) => p.startsWith(REPEATED_FAILURE_PREFIX))).toHaveLength(0);
+  });
+
   it("compares the diagnostic tail, not just leading progress output", async () => {
     // Identical build progress fills the prefix; the real error trails it. Three
     // different trailing errors must not be treated as the same failure.

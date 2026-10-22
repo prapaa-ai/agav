@@ -190,13 +190,28 @@ function errorSignature(output: string): string {
     // Only identifiable volatile fields are normalised — never bare numbers,
     // which carry meaning (HTTP 401 vs 503, exit codes, counts).
     .replace(/0x[0-9a-fA-F]+/g, "0x#")                                   // hex addresses
-    .replace(/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\S*/g, "<ts>")     // ISO timestamps
+    .replace(/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g, "<ts>") // ISO timestamps
     .replace(/\b\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b/g, "<time>")             // clock times
     .replace(/\b(pid|PID)[=: ]+\d+/g, "$1=#")                            // explicit PIDs
     .replace(/\/tmp\/\S+|\/var\/folders\/\S+|[A-Za-z]:\\[^\s"']*[Tt]emp\\\S+/g, "<tmp>") // temp paths
     .replace(/:\d+:\d+(?=[:\s)]|$)/g, ":#:#")                            // file:line:col
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * Order-independent JSON for keying a tool call. `JSON.stringify` preserves
+ * property order, so `{a,b}` and `{b,a}` would otherwise be treated as different
+ * calls — letting a model dodge failure detection by reordering its arguments.
+ * Keys are sorted recursively; arrays keep their order (it is meaningful).
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`);
+  return `{${entries.join(",")}}`;
 }
 
 /** Convert a simple glob rule into a regex so allowlist path checks stay lightweight. */
@@ -657,10 +672,11 @@ export async function* runAgentLoop(
     let hasTestFailure = false;
     // The tool that just crossed the repeated-failure threshold this batch, if
     // any. Injected once after results are recorded (see below). Kept to one
-    // redirect per batch even if several tools are stuck. Carries the streak so
-    // the injection site can mark it delivered — not detection, so a suppressed
-    // redirect is re-offered on the next identical failure.
-    let repeatedFailure: { name: string; attempts: number; streak: { redirected: boolean } } | null = null;
+    // redirect per batch even if several tools are stuck. Carries the streak and
+    // its key so the injection site can (a) revalidate it is still live — a
+    // later success in the same batch deletes it — and (b) mark it delivered on
+    // actual injection, so a suppressed redirect is re-offered next time.
+    let repeatedFailure: { name: string; attempts: number; key: string; streak: { redirected: boolean } } | null = null;
     if (approved.size > 0) {
       const entries = [...approved.entries()].map(([id, { input }]) => {
         const call = toolCalls.get(id)!;
@@ -739,7 +755,7 @@ export async function* runAgentLoop(
         // Keyed by tool + arguments; the error signature decides whether this
         // is the *same* failure as last time. Any of a success, changed
         // arguments, or a changed error counts as progress and resets.
-        const streakKey = `${name}:${JSON.stringify(input)}`;
+        const streakKey = `${name}:${canonicalJson(input)}`;
         // Changing the arguments for a tool is a change of approach — drop every
         // other streak for the same tool so a stale counter (A → A → B → A)
         // cannot resurrect and trigger a false "three in a row".
@@ -755,7 +771,7 @@ export async function* runAgentLoop(
             // `redirected` when the prompt is actually injected (see below), so
             // a batch that suppresses the redirect still delivers it later.
             if (prior.count >= REPEATED_FAILURE_THRESHOLD && !prior.redirected) {
-              repeatedFailure ??= { name, attempts: prior.count, streak: prior };
+              repeatedFailure ??= { name, attempts: prior.count, key: streakKey, streak: prior };
             }
           } else {
             // First failure, or a *different* error for the same call — a
@@ -810,9 +826,12 @@ export async function* runAgentLoop(
     // A tool has repeated the same failure; nudge once to break the loop. The
     // test-repair path above already covers failing test runs, so skip it when
     // that fired this batch to avoid stacking two redirects on the same turn.
-    // Only mark the streak delivered on actual injection — a suppressed redirect
-    // stays pending and is re-offered on the next identical failure.
-    if (repeatedFailure && !hasTestFailure) {
+    // Revalidate the streak is still live: a later result in the same batch
+    // (a success, or changed arguments for the same tool) may have deleted it,
+    // in which case the pending redirect is stale and must not be injected.
+    // Only mark delivered on actual injection, so a suppressed redirect is
+    // re-offered on the next identical failure.
+    if (repeatedFailure && !hasTestFailure && failureStreaks.get(repeatedFailure.key) === repeatedFailure.streak) {
       repeatedFailure.streak.redirected = true;
       conversation.addInternalUserMessage(
         repeatedFailurePrompt(repeatedFailure.name, repeatedFailure.attempts),
