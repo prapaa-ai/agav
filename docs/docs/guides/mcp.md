@@ -37,7 +37,7 @@ $env:GITHUB_TOOLSETS="repos,issues"
 
 The read-only switch prevents the GitHub MCP server from exposing write tools, even when its enabled toolsets include them. See GitHub's [local server prerequisites and token guidance](https://github.com/github/github-mcp-server#local-github-mcp-server) before choosing token permissions.
 
-Add the following server definition to `./.agav/config.json`. This file is project-specific; use `~/.agav/config.json` instead when you want the connection available in every project.
+Add the following server definition to `./.agav/config.json`. This file is project-specific; use `~/.agav/config.json` instead when you want the connection available in every project. On Windows, `~/.agav/` resolves to `%USERPROFILE%\.agav\`.
 
 ```json
 {

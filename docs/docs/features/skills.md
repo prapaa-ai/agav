@@ -18,6 +18,8 @@ Skills are loaded from three tiers. A skill in a later tier with the same slug r
 | Global | `~/.agav/skills/` | Middle |
 | Project | `.agav/skills/` in the working directory | Highest |
 
+> **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\`.
+
 When a project skill overrides a bundled or global skill, the override is tracked and shown as `(project, overrides bundled)` in `/skills list` and `/skills info`.
 
 If two skills in the same tier share a slug, the second is skipped with a warning. Skills whose slug collides with a built-in command name (e.g. `help`, `plan`, `model`) are also silently skipped.

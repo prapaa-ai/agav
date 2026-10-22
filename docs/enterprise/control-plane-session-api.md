@@ -240,13 +240,21 @@ A redirect (3xx) is treated as a transport error because the client sets
 
 1. Validates and narrows the body into an `EnrollmentSession`.
 2. Caches it encrypted (AES-256-GCM), owner-only (`0600`), atomically, at
-   `~/.agav/enterprise/policy.json` — storing `policy`, `controlPlane`, `subject`,
-   and `expiresAt`.
+   `~/.agav/enterprise/policy.json` (`%USERPROFILE%\.agav\enterprise\policy.json`
+   on Windows) — storing `policy`, `controlPlane`, `subject`, and `expiresAt`.
 3. Every subsequent startup reads that cache and enforces the policy as the
    highest-precedence configuration tier.
 
-The `gatewayToken` is accepted and carried in the session; wiring it into live
-model requests (injecting it at the gateway) is a separate follow-up.
+The `gatewayToken` is accepted, carried in the session, and injected into live
+model requests. When the org policy pins an `openaiBaseURL` and the session
+returns a `gatewayToken`, Agav sends `Authorization: Bearer <gatewayToken>` with
+every request to that OpenAI-compatible endpoint and marks the provider as
+gateway-authenticated (`openaiGatewayAuth`), so a gateway-only enrolled developer
+needs no personal API key. A gateway-token injection never overrides an
+`Authorization` header the org policy itself pinned; it only replaces a header
+inherited from the developer's own global or project config. The `openaiGatewayAuth`
+marker is trusted and can originate only from an enrollment session — it is
+stripped from any user-supplied config.
 
 ---
 

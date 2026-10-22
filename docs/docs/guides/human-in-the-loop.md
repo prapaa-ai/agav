@@ -16,6 +16,6 @@ Cancellation is not an undo operation. File edits or external actions that alrea
 
 ## Decide on a confirmation
 
-At an **Allow …?** prompt, **Y** or **Enter** approves the current call, **N** or **Esc** denies it, and **A** selects Always. Esc here rejects one call rather than cancelling the entire turn; the agent can take a different approach. Subagent confirmations are shown in the main terminal and identify the requesting task.
+At an **Allow …?** prompt, **Y** or **Enter** approves the current call, **N** or **Esc** denies it, and **A** selects Always. Press **D** to deny with feedback: type a short reason and press **Enter**, and the denial plus your explanation is sent to the agent so it can adjust rather than retrying blindly (Esc cancels the feedback entry). Esc on the main prompt rejects one call rather than cancelling the entire turn; the agent can take a different approach. Subagent confirmations are shown in the main terminal and identify the requesting task.
 
 To pause and provide new direction, use **Ctrl+B** or **Alt+P** rather than exiting. See [Keybindings](/reference/keybindings#pause-and-intervene-mid-turn). To leave Agav, use **Ctrl+C** with no active Agav text selection, or `/exit`. With an active selection, Ctrl+C copies instead.

@@ -116,7 +116,7 @@ Across **all** sandbox backends (including unsandboxed), environment variables w
 
 ### Requiring a sandbox
 
-Set `sandboxRequired: true` in `~/.agav/config.json` or `.agav/config.json` to make Agav refuse to start if no OS-level sandbox backend is available. This is recommended for CI, automation, and shared environments.
+Set `sandboxRequired: true` in `~/.agav/config.json` or `.agav/config.json` to make Agav refuse to start if no OS-level sandbox backend is available. This is recommended for CI, automation, and shared environments. On Windows, `~/.agav/` resolves to `%USERPROFILE%\.agav\`.
 
 ```json
 { "sandboxRequired": true }

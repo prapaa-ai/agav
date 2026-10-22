@@ -24,6 +24,11 @@ network). Run it against a staging control plane before every release that touch
 - (Optional) An audit sink (e.g. `https://siem.staging/ingest`) to confirm SIEM
   events; set `AGAV_AUDIT_SINK` or ship `auditSink` in the policy.
 
+The shell commands below assume a POSIX shell (macOS/Linux). On Windows,
+`~/.agav/enterprise` is `%USERPROFILE%\.agav\enterprise`; use the PowerShell
+equivalents (e.g. `Remove-Item -Recurse -Force`, `Get-ChildItem`, `Get-Content`)
+in their place.
+
 Start from a clean slate so a stale cache can't mask a problem:
 
 ```bash

@@ -102,6 +102,8 @@ We’re building the alternative, an AI that works for you, runs on your terms, 
 * **Sessions that survive** — resume, branch, name, search and export. `/compact` reclaims context without losing plans.
 * **Skills & Agents** — reusable instruction bundles and installable service agents from a marketplace. Delegate scoped work to fresh-context subagents.
 * **Memory** — cross-session memories per project: user preferences, feedback, project decisions, references.
+* **Voice input** — `/voice` dictates an editable prompt with offline, English-only transcription. No FFmpeg, Python, or extra setup.
+* **Background jobs** — opt-in `run_background_job` and `/job` keep long-running commands and cron schedules alive beyond a single turn.
 * **Repository-aware editing** — LSP queries, notebook support, test running, `/undo`, and planning UI.
 
 ## Quick links

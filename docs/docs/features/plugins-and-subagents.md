@@ -37,10 +37,15 @@ The `subagent` tool delegates a clear, self-contained task with a short UI title
 
 - have independent conversation context
 - inherit the active model, effort, system prompt, steers, permission mode, and available tools
+- can optionally run on a different model (see below)
 - cannot create nested subagents
 - share confirmations through the main terminal UI
 - report streaming progress and token usage
 - allow up to five concurrent tasks
+
+### Running a subagent on a different model
+
+A subagent accepts an optional `model` parameter. Omit it to use the active session model — the default. Set it only when you explicitly want a specific model for the delegated task; the requested model must exist and is subject to explicit per-call user approval. The requested model must also satisfy any organization policy that applies to the parent session (a managed model pin or allowlist), so a subagent cannot route inference around the policy through a different model or provider.
 
 While subagents run, the terminal shows a live overview. Use `↑`/`↓` to select a subagent and `Enter` to inspect it. Press the cancel key (`Esc` by default) to cancel just the focused subagent while inspecting it, or to cancel all running subagents from the overview. See [Keybindings](/reference/keybindings) for the subagent navigation shortcuts.
 
