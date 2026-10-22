@@ -52,6 +52,13 @@ export interface CommandContext {
   renameSession: (name: string) => void
   currentSessionId?: string
   exit: () => void
+  /**
+   * The permission mode actually in force for the session, after a generic
+   * "Always" approval widens it and the org floor clamps it. Reflects the live
+   * session decision, which `config.permissionMode` does not. Absent in headless
+   * mode, where `config.permissionMode` is authoritative.
+   */
+  getEffectivePermissionMode?: () => AgavConfig["permissionMode"]
   /** Whether an agent turn is currently in flight. */
   isLoading?: boolean
   getMCPAuthenticationRequired?: () => string[]

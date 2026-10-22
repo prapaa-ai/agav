@@ -153,6 +153,12 @@ interface UseAgentReturn {
   cancelSubagent: (id: string) => void;
   clearMessages: () => void;
   confirmTool: (choice: ConfirmResult) => void;
+  /**
+   * The permission mode in force for the session: the session "Always" override
+   * when set, otherwise the config default, clamped to the org floor. Reflects
+   * the live decision that `config.permissionMode` does not.
+   */
+  getEffectivePermissionMode: () => AgavConfig["permissionMode"];
   /** Queue a confirmation outside an agent turn (e.g. from a slash command). */
   requestConfirmation: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
   conversation: ConversationState;
@@ -581,6 +587,20 @@ export function useAgent(
     // spent waiting for the user to approve/deny a tool call.
     updateTurnStart(Date.now());
   }, []);
+
+  /**
+   * The permission mode actually enforced this session. Mirrors the per-turn
+   * loop's own `clampPermissionMode(sessionPermissionModeRef.current ??
+   * config.permissionMode, floor)` so UI (e.g. /status) cannot report a mode the
+   * loop is not using after an "Always" approval.
+   */
+  const getEffectivePermissionMode = useCallback(
+    () => clampPermissionMode(
+      sessionPermissionModeRef.current ?? configRef.current.permissionMode,
+      configRef.current.orgPermissionFloor,
+    ),
+    [],
+  );
 
   const requestConfirmation = useCallback(
     (toolName: string, input: Record<string, unknown>) => confirmationQueueRef.current.enqueue({ toolName, input }),
@@ -1569,6 +1589,7 @@ export function useAgent(
     cancelSubagent,
     clearMessages,
     confirmTool,
+    getEffectivePermissionMode,
     conversation: conversationRef.current,
     toolRegistry: toolRegistryRef.current,
     saveNow,

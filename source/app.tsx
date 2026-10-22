@@ -240,6 +240,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     cancelSubagent,
     clearMessages,
     confirmTool,
+    getEffectivePermissionMode,
     conversation,
     toolRegistry,
     saveNow,
@@ -1061,6 +1062,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             config,
             provider: activeProvider ?? undefined,
             getModelSelectionVersion: () => modelSelectionVersion.current,
+            getEffectivePermissionMode,
             setModel: (model: string) => {
               // Enforce the org policy on interactive model changes (/model,
               // /fast, /deep): a managed pin or allowlist applies to every

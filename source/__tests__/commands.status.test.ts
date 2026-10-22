@@ -89,6 +89,34 @@ describe("commands/status", () => {
     expect(result.text).toContain("MCP servers:  0 connected");
   });
 
+  it("reports the effective session permission mode, not the config default", async () => {
+    // After an "Always" approval, the session widens to auto-accept while
+    // config.permissionMode stays "ask". /status must show the live mode.
+    const context = createContext({
+      config: { model: "gpt-5.4-mini", provider: "openai", effort: "medium", permissionMode: "ask" } as any,
+      getEffectivePermissionMode: vi.fn(() => "auto-accept" as const),
+    });
+
+    const result = await statusCommand.execute("", context);
+    expect(result.type).toBe("message");
+    if (result.type !== "message") throw new Error("Expected message result");
+
+    expect(result.text).toContain(`Permissions:  auto-accept · ${getSandboxName()}`);
+  });
+
+  it("falls back to config.permissionMode when no effective mode is available", async () => {
+    const context = createContext({
+      config: { model: "gpt-5.4-mini", provider: "openai", effort: "medium", permissionMode: "deny-writes" } as any,
+      getEffectivePermissionMode: undefined,
+    });
+
+    const result = await statusCommand.execute("", context);
+    expect(result.type).toBe("message");
+    if (result.type !== "message") throw new Error("Expected message result");
+
+    expect(result.text).toContain(`Permissions:  deny-writes · ${getSandboxName()}`);
+  });
+
   it("respects explicit context window overrides and provider reporting", async () => {
     const context = createContext({
       conversation: {
