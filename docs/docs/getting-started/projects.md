@@ -33,6 +33,10 @@ Create `AGAV.md` or `.agavrc` at the project root. Agav uses the first non-empty
 
 Write short, actionable rules that apply across tasks. Put the details of a one-time task in its prompt instead.
 
+### User-level instructions
+
+Create `~/.agav/AGAV.md` (`%USERPROFILE%\.agav\AGAV.md` on Windows) for instructions that apply to every project. When both a user-level `~/.agav/AGAV.md` and a project `AGAV.md`/`.agavrc` exist, Agav loads both, with the user-level instructions first followed by the project instructions. Use the user-level file for personal conventions (preferred tools, response style) and the project file for repository-specific rules.
+
 ## Save project defaults
 
 Project settings live in `./.agav/config.json` and override global defaults from `~/.agav/config.json` (`%USERPROFILE%\.agav\config.json` on Windows). Agav creates or enriches the project file without overwriting values already there.
@@ -69,6 +73,7 @@ API keys, endpoint overrides, and `permissionMode` cannot be set from project co
 | Item | Scope |
 | --- | --- |
 | `AGAV.md` or `.agavrc` | Repository instructions |
+| `~/.agav/AGAV.md` | User-level instructions, applied to every project (loaded before project instructions) |
 | `./.agav/config.json` | Project defaults (provider, model, `mcpServers`, …) |
 | `~/.agav/config.json` | Defaults for your user account |
 | `./.agav/skills` | Reusable skill overrides for this project |

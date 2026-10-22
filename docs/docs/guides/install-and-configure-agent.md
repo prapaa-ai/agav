@@ -42,7 +42,7 @@ Install jira:
 [2] Project (.agav/agents/) — this project only
 ```
 
-Press `1` to install globally. Agav copies the agent files and registers it. You'll see `✓ installed (global)` once complete.
+Press `1` to install globally. Agav copies the agent files and registers it. You'll see `✓ installed (global)` once complete. On Windows, the global location `~/.agav/agents/` resolves to `%USERPROFILE%\.agav\agents\`.
 
 ## Step 4: Switch to the List tab
 

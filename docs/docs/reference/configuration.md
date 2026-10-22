@@ -80,18 +80,20 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | `ollamaApiKey` | Optional bearer token for a secured or hosted Ollama endpoint. Global config only — encrypted at rest. Prefer `OLLAMA_API_KEY`. |
 | `hideAbsolutePath` | When `true`, hide absolute paths in terminal output, showing relative paths instead |
 | `showThinking` | When `true`, stream the model's reasoning text (toggle at runtime with Ctrl+T) |
-| `effort` | `low`, `medium`, `high`, or `max`; invalid values fall back to `medium` |
+| `effort` | `minimal`, `low`, `medium`, `high`, or `max`; invalid values fall back to `medium` |
 | `maxTokens` | Maximum output tokens per model response |
 | `maxIterations` | Maximum agent/tool iterations per prompt; must be a positive integer; can be overridden at startup with `--max-turns` for the current session |
 | `errorRetries` | Transient provider retries; must be zero or greater |
 | `permissionMode` | `ask`, `auto-accept`, or `deny-writes` |
 | `sandboxRequired` | When `true`, refuse to start if no OS-level sandbox (Seatbelt, Bubblewrap, or Docker) is available |
 | `allowedTools` | Tool names or scoped patterns that can run without confirmation |
+| `search` | When `true`, enable the `web_search` tool (off by default). Also settable per session with `--search`. See [Built-in tools](/features/built-in-tools). |
 | `systemPrompt` | Additional project instructions |
 | `backgroundJobsEnabled` | Opt in (default `false`) to the `run_background_job` tool and `/job`. Jobs run outside the shell sandbox. See [Background jobs](/features/background-jobs). |
 | `backgroundAutomation` | `on` (default) or `paused`. `paused` makes `agav job tick` and `agav job daemon` do nothing. Global config only. |
 | `hooks` | Optional commands for `afterEdit`, `afterShell`, and `preCommit` |
 | `theme` | Partial terminal color overrides |
+| `statusBar` | Footer (status bar) layout: which segments appear and in what order. Managed interactively with [`/customize`](/reference/slash-commands); a saved layout is reconciled against the current segment catalog on each start, so newer or older builds never corrupt the footer. |
 | `mcpServers` | Named MCP server definitions (stdio and remote) |
 | `agentMarketplace` | URL of the agent marketplace (supports `https://` and `file://`). Defaults to the official marketplace. Set `AGAV_MARKETPLACE_URL` to override without editing the config file. |
 

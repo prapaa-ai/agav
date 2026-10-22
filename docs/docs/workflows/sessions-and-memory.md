@@ -12,6 +12,8 @@ order: 3
 | --- | --- |
 | `agav --resume` | Open an interactive picker for a saved session at startup. |
 | `agav --resume <id>` | Resume the saved session whose ID starts with `<id>`. |
+| `agav --name <title>` | Start a new interactive session with an initial name. |
+| `agav sessions delete <id>` | Delete a saved session by ID or unique prefix (alias: `rm`). |
 | `/resume [id]` | List saved sessions, or resume one by ID or prefix match. |
 | `/search <query>` | Find saved sessions that match `<query>`. |
 | `/name <name>` | Give the active session a recognizable name. |
@@ -20,6 +22,8 @@ order: 3
 | `/exit` | Save the current session and exit. |
 
 Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`.
+
+> **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\`.
 
 `agav --resume` opens a picker listing all saved sessions, with the total count shown in the header. You can move the selection with `↑/↓`, `j/k`, or the mouse wheel, or click a row to select it. Press `Enter` to resume the selected session, `D` to delete, `M` or `R` to rename, and `Esc` or `q` to cancel. In the rename view, type the new name and press `Enter` to save, or press `Esc` to cancel and return to the list without renaming.
 

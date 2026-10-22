@@ -24,6 +24,8 @@ Agav discovers agents from three locations. Later tiers override earlier ones by
 | Global | `~/.agav/agents/` | Middle |
 | Project | `.agav/agents/` in the working directory | Highest |
 
+> **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\`.
+
 ## Installing agents from the marketplace
 
 Browse and install agents from the community marketplace:

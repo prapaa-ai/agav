@@ -21,7 +21,7 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | `/help [command]` | List available commands or show detailed usage for one command, including `/ps`. |
 | `/clear`, `/new` | Start a clean chat without deleting saved sessions. |
 | `/model [name]` | Open the model picker or switch to a specific model; Agav switches provider when needed. |
-| `/effort [low\|medium\|high\|max]` | Show or set reasoning effort. |
+| `/effort [minimal\|low\|medium\|high\|max]` | Show or set reasoning effort. |
 | `/fast`, `/deep` | Switch to the current provider's fast or most capable model shortcut. |
 | `/compact` | Summarize older conversation content to free context-window space. |
 | `/context` | Show a token-use breakdown for the system prompt, tools, MCP tools, skills, and messages. |
@@ -75,6 +75,12 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | --- | --- |
 | `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor, including native-tool selection for editable native agents. `[2]` Marketplace tab browses, searches, and installs community agents. `[3]` Create tab lists user-created agents and templates, and opens a 5-step wizard to create or edit agents. |
 
+## Appearance
+
+| Command | Purpose |
+| --- | --- |
+| `/customize` | Open the customization interface to show, hide, and reorder footer (status bar) segments. Changes apply to the footer live and persist across sessions in the `statusBar` config field. Interactive terminal sessions only. |
+
 ## Account
 
 | Command | Purpose |
@@ -87,7 +93,7 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | Command | Purpose |
 | --- | --- |
 | `/debug` | Show conversation, plan, sandbox, token, plugin, MCP, undo, and memory state. |
-| `/changelog` | Show release notes from the latest update. |
+| `/changelog` | Show release notes from the latest update. Agav also shows the changelog automatically once on the first launch after an update. |
 | `/exit` | Save the current session and exit Agav. |
 
 MCP prompts appear as additional slash commands supplied by their connected server. Project skills and user-installed skills likewise add commands after Agav restarts; use `/help` or type `/` to see what is available in the current session.

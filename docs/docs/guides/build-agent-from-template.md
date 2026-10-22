@@ -140,7 +140,7 @@ Templates preserve deleted agents so you can restore them later.
 
 **Deleting a template permanently** — navigate to a template and press `d`. This removes it from the template store with no way to recover it.
 
-**Storage** — templates are stored in `~/.agav/agents/templates.json`. This file is managed automatically; you don't need to edit it by hand.
+**Storage** — templates are stored in `~/.agav/agents/templates.json` (`%USERPROFILE%\.agav\agents\templates.json` on Windows). This file is managed automatically; you don't need to edit it by hand.
 
 ## Keyboard reference
 

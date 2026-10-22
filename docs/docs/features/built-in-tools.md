@@ -22,13 +22,15 @@ Agav exposes these tools to its agent loop.
 | `lsp_query` | Request definitions, references, or hover data from a language server; diagnostic notifications are not yet fully surfaced |
 | `read_notebook` | Read Jupyter notebook cells |
 | `edit_notebook` | Change a notebook cell or its type |
-| `web_search` | Search the web with DuckDuckGo |
+| `web_search` | Search the web with DuckDuckGo (opt-in; see note below) |
 | `fetch_url` | Send an HTTP request and return the response |
 | `github` | Create or view GitHub pull requests and issues |
 | `update_plan` | Update the active plan's current step |
 | `save_memory` | Persist durable project or user context |
 | `subagent` | Delegate an independent task |
 | `activate_skill` | Run a registered skill by name |
+
+`web_search` is off by default. Enable it per session with the [`--search`](/reference/cli) flag, or turn it on by default with the `search` field in [configuration](/reference/configuration).
 
 Connected MCP servers, installed plugins, and active skills can add more tools.
 
@@ -141,7 +143,7 @@ The stack contains up to twenty changes and does not survive process exit. A new
 
 ## File boundaries
 
-The file tools (`read_file`, `write_file`, `edit_file`) enforce path boundary checks. Writes are restricted to the working directory, temp directory, and `~/.agav/`. Reads are denied for credential stores (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube/config`). Writes to `.git/` and `.agav/` inside the project are always denied. See [security](/reference/security) for details.
+The file tools (`read_file`, `write_file`, `edit_file`) enforce path boundary checks. Writes are restricted to the working directory, temp directory, and `~/.agav/`. Reads are denied for credential stores (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube/config`). Writes to `.git/` and `.agav/` inside the project are always denied. On Windows, these `~/` paths resolve under `%USERPROFILE%\`. See [security](/reference/security) for details.
 
 ## Shell execution
 

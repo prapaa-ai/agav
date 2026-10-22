@@ -67,7 +67,7 @@ System prompt content here.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `model` | string | no | inherit session | LLM model override for this agent. Shown as `<model> (agent override)` in the inspect view; clear the value in the config editor to revert to inheriting. |
-| `effort` | `low` \| `medium` \| `high` \| `max` | no | inherit session | Reasoning effort override for this agent. |
+| `effort` | `minimal` \| `low` \| `medium` \| `high` \| `max` | no | inherit session | Reasoning effort override for this agent. |
 
 ### Discovery
 
