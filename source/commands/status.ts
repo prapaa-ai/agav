@@ -1,7 +1,23 @@
+import { isAbsolute, resolve } from "node:path";
+import { realpathSync } from "node:fs";
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import { getContextLimits } from "../utils/tokens.js";
 import { getSandboxName } from "../utils/sandbox.js";
 import { computeContextOccupancy, resolveContextWindow } from "./context-usage.js";
+
+// Bun's process.cwd() can return an unresolved value (e.g. the literal "." when
+// PWD is relative in the launch environment), which would surface verbatim in the
+// status panel. Resolve against the kernel's real working directory so the
+// displayed path is always absolute, with layered fallbacks that never throw.
+function resolvedCwd(): string {
+  const raw = process.cwd();
+  if (isAbsolute(raw)) return raw;
+  try {
+    return realpathSync(".");
+  } catch {
+    return resolve(raw);
+  }
+}
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`;
@@ -40,11 +56,13 @@ export const statusCommand: SlashCommand = {
       `  Model:        ${context.config?.model ?? "unknown"} (${context.config?.provider ?? "unknown"})`,
       `  Effort:       ${context.config?.effort ?? "medium"}`,
       `  Permissions:  ${permissionMode} · ${getSandboxName()}`,
-      `  Directory:    ${process.cwd()}`,
+      `  Directory:    ${resolvedCwd()}`,
       `  Token usage:  ${fmtTokens(usedTokens)} / ${fmtTokens(maxTokens)} (${pct(usedTokens, maxTokens)})`,
       `  MCP servers:  ${mcpCount} connected`,
     ];
 
-    return { type: "message", text: lines.join("\n") };
+    // preservePaths keeps the absolute Directory path intact: the terminal path
+    // formatter would otherwise collapse the working directory back to ".".
+    return { type: "message", text: lines.join("\n"), preservePaths: true };
   },
 };

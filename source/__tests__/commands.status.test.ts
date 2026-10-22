@@ -6,6 +6,7 @@ import { ConversationState } from "../agent/conversation.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { getSandboxName } from "../utils/sandbox.js";
 import { estimateTokens } from "../utils/tokens.js";
+import { terminalRelativePaths, _clearConfigCache } from "../utils/display-path.js";
 
 // Match /context's boundaries so occupancy is deterministic: a fixed base
 // system prompt and a single-skill catalog.
@@ -80,6 +81,28 @@ describe("commands/status", () => {
     expect(text).toContain(`Permissions:  ask · ${getSandboxName()}`);
     expect(text).toContain(`Directory:    ${process.cwd()}`);
     expect(text).toContain("MCP servers:  2 connected");
+  });
+
+  it("preserves the absolute Directory through terminal path formatting (not collapsed to '.')", async () => {
+    _clearConfigCache();
+    const context = createContext();
+    const result = await statusCommand.execute("", context);
+    if (result.type !== "message") throw new Error("Expected message result");
+
+    // The TUI collapses the working directory to "." for ordinary system
+    // messages — which is exactly wrong for /status, whose purpose is to show
+    // the absolute working directory. The command opts out via preservePaths.
+    expect(result.preservePaths).toBe(true);
+
+    // Sanity: without the opt-out, the formatter would rewrite the cwd to ".".
+    const collapsed = terminalRelativePaths(result.text);
+    expect(collapsed).toContain("Directory:    .");
+
+    // With preservePaths honored (render path skips the formatter), the
+    // absolute path survives verbatim.
+    const rendered = result.preservePaths ? result.text : terminalRelativePaths(result.text);
+    expect(rendered).toContain(`Directory:    ${process.cwd()}`);
+    expect(rendered).not.toContain("Directory:    .");
   });
 
   it("counts the system prompt and skills in token usage, not just messages (#563)", async () => {
