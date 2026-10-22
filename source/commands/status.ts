@@ -61,6 +61,8 @@ export const statusCommand: SlashCommand = {
       `  MCP servers:  ${mcpCount} connected`,
     ];
 
-    return { type: "message", text: lines.join("\n") };
+    // preservePaths keeps the absolute Directory path intact: the terminal path
+    // formatter would otherwise collapse the working directory back to ".".
+    return { type: "message", text: lines.join("\n"), preservePaths: true };
   },
 };

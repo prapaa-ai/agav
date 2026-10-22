@@ -28,6 +28,12 @@ export interface DisplayMessage {
   toolInput?: Record<string, unknown>;
   isError?: boolean;
   diffLines?: DiffLine[];
+  /**
+   * Skip terminal path collapsing when rendering this message. Used by commands
+   * like /status whose output intentionally shows the absolute working
+   * directory, which terminalRelativePaths() would otherwise rewrite to ".".
+   */
+  skipPathFormatting?: boolean;
 }
 
 interface Props {

@@ -97,7 +97,16 @@ export interface CommandContext {
 
 /** Represents the result of executing a slash command. */
 export type CommandResult =
-  | { type: "message"; text: string }
+  | {
+      type: "message";
+      text: string;
+      /**
+       * Render the text verbatim, skipping terminal path collapsing. Set by
+       * commands like /status whose output intentionally shows the absolute
+       * working directory, which would otherwise be rewritten to ".".
+       */
+      preservePaths?: boolean;
+    }
   | { type: "clear" }
   | { type: "exit" }
   | { type: "none" }
