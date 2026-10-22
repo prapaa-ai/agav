@@ -104,8 +104,22 @@ async function obtainProof(
   return obtainIdTokenViaAuthCode({ issuer, clientId, scopes, openBrowser: openExternal, signal });
 }
 
+/**
+ * Options for in-process callers (e.g. the `/login` slash command) that cannot
+ * rely on SIGINT for cancellation: the TUI holds stdin in raw mode, so Ctrl-C
+ * arrives as an input byte, not a signal. `signal` lets such a caller abort the
+ * in-flight flow; when it fires, login is cancelled exactly as a SIGINT would.
+ */
+export interface RunLoginOptions {
+  signal?: AbortSignal;
+}
+
 /** Entry point for `agav login` / `agav logout`. Returns a process exit code. */
-export async function runLoginCommand(command: string | undefined, args: string[]): Promise<number> {
+export async function runLoginCommand(
+  command: string | undefined,
+  args: string[],
+  options: RunLoginOptions = {},
+): Promise<number> {
   if (command === "logout") {
     // Capture the effective audit settings BEFORE clearing the cache: an
     // enrollment-delivered auditSink / controlPlane lives in the policy store we
@@ -156,6 +170,14 @@ export async function runLoginCommand(command: string | undefined, args: string[
   const cancel = () => controller.abort(new EnterpriseAuthError("Login cancelled."));
   process.once("SIGINT", cancel);
   process.once("SIGTERM", cancel);
+  // An in-process caller (the /login slash command) cannot deliver SIGINT while
+  // the TUI holds stdin in raw mode, so it supplies an AbortSignal instead.
+  // Mirror it onto the same controller so cancellation behaves identically.
+  const onExternalAbort = () => controller.abort(options.signal?.reason ?? new EnterpriseAuthError("Login cancelled."));
+  if (options.signal) {
+    if (options.signal.aborted) onExternalAbort();
+    else options.signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
   try {
     // The attempt event may race the rest of login; fire-and-forget is fine since
     // a terminal (success/failure) event always follows and is awaited.
@@ -201,6 +223,7 @@ export async function runLoginCommand(command: string | undefined, args: string[
   } finally {
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
+    options.signal?.removeEventListener("abort", onExternalAbort);
   }
 }
 
