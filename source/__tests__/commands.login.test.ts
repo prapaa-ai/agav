@@ -115,6 +115,23 @@ describe("commands/login", () => {
     expect((result as any).text.toLowerCase()).toContain("cancelled");
   });
 
+  it("reports success, not cancellation, when the abort races a successful enrollment", async () => {
+    // Enrollment persists before the success-audit event is awaited; a Ctrl-C in
+    // that window aborts the signal but login already succeeded (returns 0).
+    // Success must win so we never claim "cancelled" over saved credentials.
+    runLoginMock.mockImplementation(async (_cmd, _argv, opts) => {
+      process.stdin.emit("data", Buffer.from("\x03"));
+      expect(opts?.signal?.aborted).toBe(true);
+      process.stdout.write("Signed in as user@example.org. ... restart Agav to use them.\n");
+      return 0;
+    });
+
+    const result = await loginCommand.execute("--device", createContext());
+
+    expect((result as any).text.toLowerCase()).toContain("signed in");
+    expect((result as any).text.toLowerCase()).not.toContain("cancelled");
+  });
+
   it("does not abort on ordinary keystrokes", async () => {
     runLoginMock.mockImplementation(async (_cmd, _argv, opts) => {
       process.stdin.emit("data", Buffer.from("a"));

@@ -83,17 +83,23 @@ async function runEnrollment(
   // (argument errors, missing org config, browser-fallback hints, logout
   // permission errors) are not lost when Ink repaints over the suspended screen.
   const transcript = captured.join("").replace(/\s+$/, "");
-  const cancelled = abort.signal.aborted;
+  // Success takes precedence over the aborted signal. Enrollment is persisted
+  // before runLoginCommand awaits its (up to ~2s) success-audit event; a Ctrl-C
+  // during that window aborts the signal but the login already succeeded and
+  // returned 0. Reporting "cancelled" then would contradict the persisted
+  // credentials and the "Signed in" line in the transcript. Only treat an abort
+  // as a cancellation when the flow did NOT succeed.
+  const cancelled = abort.signal.aborted && exitCode !== 0;
 
   if (command === "logout") {
     const header = exitCode === 0 ? "Signed out of your organization. Restart Agav to apply." : "Sign-out failed.";
     return { type: "message", text: transcript ? `${header}\n\n${transcript}` : header, preservePaths: true };
   }
 
-  const header = cancelled
-    ? "Sign-in cancelled."
-    : exitCode === 0
-      ? "Signed in. Your organization's settings are now active — restart Agav to use them."
+  const header = exitCode === 0
+    ? "Signed in. Your organization's settings are now active — restart Agav to use them."
+    : cancelled
+      ? "Sign-in cancelled."
       : "Sign-in failed.";
   return { type: "message", text: transcript ? `${header}\n\n${transcript}` : header, preservePaths: true };
 }
