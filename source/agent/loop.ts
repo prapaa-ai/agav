@@ -193,7 +193,9 @@ function errorSignature(output: string): string {
     .replace(/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g, "<ts>") // ISO timestamps
     .replace(/\b\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b/g, "<time>")             // clock times
     .replace(/\b(pid|PID)[=: ]+\d+/g, "$1=#")                            // explicit PIDs
-    .replace(/\/tmp\/\S+|\/var\/folders\/\S+|[A-Za-z]:\\[^\s"']*[Tt]emp\\\S+/g, "<tmp>") // temp paths
+    // Stop at structured-data delimiters (quote, comma, colon, bracket, space)
+    // so a path inside JSON does not swallow the following "error" field.
+    .replace(/\/tmp\/[^\s,"':;)\]}]+|\/var\/folders\/[^\s,"':;)\]}]+|[A-Za-z]:\\[^\s"',;)\]}]*[Tt]emp\\[^\s"',;)\]}]+/g, "<tmp>") // temp paths
     .replace(/:\d+:\d+(?=[:\s)]|$)/g, ":#:#")                            // file:line:col
     .replace(/\s+/g, " ")
     .trim();
@@ -670,13 +672,14 @@ export async function* runAgentLoop(
     // Phase 2: execute approved tools in parallel
     let hasTestRun = false;
     let hasTestFailure = false;
-    // The tool that just crossed the repeated-failure threshold this batch, if
-    // any. Injected once after results are recorded (see below). Kept to one
-    // redirect per batch even if several tools are stuck. Carries the streak and
-    // its key so the injection site can (a) revalidate it is still live — a
-    // later success in the same batch deletes it — and (b) mark it delivered on
-    // actual injection, so a suppressed redirect is re-offered next time.
-    let repeatedFailure: { name: string; attempts: number; key: string; streak: { redirected: boolean } } | null = null;
+    // Every tool that crossed the repeated-failure threshold this batch, in the
+    // order it crossed. At most one redirect is injected per batch, but a
+    // candidate may go stale (a later success or changed arguments for the same
+    // call deletes its streak), so the injection site picks the first candidate
+    // whose streak is still live rather than latching the first crosser. Each
+    // carries the streak and its key for that liveness check and to mark it
+    // delivered only on actual injection (so a suppressed redirect recurs).
+    const repeatedFailureCandidates: { name: string; attempts: number; key: string; streak: { redirected: boolean } }[] = [];
     if (approved.size > 0) {
       const entries = [...approved.entries()].map(([id, { input }]) => {
         const call = toolCalls.get(id)!;
@@ -771,7 +774,7 @@ export async function* runAgentLoop(
             // `redirected` when the prompt is actually injected (see below), so
             // a batch that suppresses the redirect still delivers it later.
             if (prior.count >= REPEATED_FAILURE_THRESHOLD && !prior.redirected) {
-              repeatedFailure ??= { name, attempts: prior.count, key: streakKey, streak: prior };
+              repeatedFailureCandidates.push({ name, attempts: prior.count, key: streakKey, streak: prior });
             }
           } else {
             // First failure, or a *different* error for the same call — a
@@ -826,16 +829,21 @@ export async function* runAgentLoop(
     // A tool has repeated the same failure; nudge once to break the loop. The
     // test-repair path above already covers failing test runs, so skip it when
     // that fired this batch to avoid stacking two redirects on the same turn.
-    // Revalidate the streak is still live: a later result in the same batch
-    // (a success, or changed arguments for the same tool) may have deleted it,
-    // in which case the pending redirect is stale and must not be injected.
-    // Only mark delivered on actual injection, so a suppressed redirect is
-    // re-offered on the next identical failure.
-    if (repeatedFailure && !hasTestFailure && failureStreaks.get(repeatedFailure.key) === repeatedFailure.streak) {
-      repeatedFailure.streak.redirected = true;
-      conversation.addInternalUserMessage(
-        repeatedFailurePrompt(repeatedFailure.name, repeatedFailure.attempts),
+    // Pick the first candidate whose streak is still live: a later result in the
+    // same batch (a success, or changed arguments for the same tool) may have
+    // deleted a candidate's streak, and a stale candidate must not block a still
+    // valid one from a different tool. Mark delivered only on actual injection,
+    // so a suppressed redirect is re-offered on the next identical failure.
+    if (!hasTestFailure) {
+      const live = repeatedFailureCandidates.find(
+        (candidate) => failureStreaks.get(candidate.key) === candidate.streak,
       );
+      if (live) {
+        live.streak.redirected = true;
+        conversation.addInternalUserMessage(
+          repeatedFailurePrompt(live.name, live.attempts),
+        );
+      }
     }
   }
 

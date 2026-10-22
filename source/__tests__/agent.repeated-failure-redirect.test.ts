@@ -131,6 +131,76 @@ describe("repeated-failure redirect", () => {
     expect(redirects).toHaveLength(0);
   });
 
+  it("keeps the error field when a volatile temp path precedes it (compact JSON)", async () => {
+    // The temp-path rule must stop at structured-data delimiters, not consume the
+    // trailing error. Three responses sharing a temp path but differing in the
+    // error are three different failures.
+    const { redirects } = await scenario([
+      [fail('{"path":"/tmp/work/config.json","error":"ENOENT"}')],
+      [fail('{"path":"/tmp/work/config.json","error":"EACCES"}')],
+      [fail('{"path":"/tmp/work/config.json","error":"ENOSPC"}')],
+    ]);
+    expect(redirects).toHaveLength(0);
+  });
+
+  it("a stale candidate does not block a valid redirect from another tool", async () => {
+    // Tools A and B each fail twice. In the third batch: A fails (crosses the
+    // threshold → candidate), then A succeeds (its candidate goes stale), then B
+    // fails (crosses the threshold). B is still stuck and must get the redirect.
+    const tools = new ToolRegistry();
+    const aResults: ToolResult[] = [
+      { output: "a-boom", isError: true },  // turn 1
+      { output: "a-boom", isError: true },  // turn 2
+      { output: "a-boom", isError: true },  // turn 3, call A1 (crosses)
+      { output: "ok", isError: false },     // turn 3, call A2 (success → stale)
+    ];
+    const bResults: ToolResult[] = [
+      { output: "b-boom", isError: true },  // turn 1
+      { output: "b-boom", isError: true },  // turn 2
+      { output: "b-boom", isError: true },  // turn 3, call B (crosses)
+    ];
+    tools.register({
+      schema: { name: "tool_a", description: "mock", inputSchema: { type: "object", properties: {} } },
+      execute: vi.fn(async () => ({ ...aResults.shift()! })),
+    });
+    tools.register({
+      schema: { name: "tool_b", description: "mock", inputSchema: { type: "object", properties: {} } },
+      execute: vi.fn(async () => ({ ...bResults.shift()! })),
+    });
+    // Turns 1-2: A and B each fail once. Turn 3: A1, A2 (success), B.
+    const batches: string[][] = [
+      ["tool_a", "tool_b"],
+      ["tool_a", "tool_b"],
+      ["tool_a", "tool_a", "tool_b"],
+    ];
+    const streams: StreamEvent[][] = batches.map((names, batch) => [
+      ...names.flatMap((name, index): StreamEvent[] => [
+        { type: "tool_call_start", toolCallId: `${batch}-${index}`, toolName: name },
+        { type: "tool_call_delta", toolCallId: `${batch}-${index}`, argsJson: "{}" },
+      ]),
+      { type: "message_end", stopReason: "tool_use" },
+    ]);
+    const stream = vi.fn(() => (async function* () {
+      for (const event of streams.shift() ?? [{ type: "message_end", stopReason: "end_turn" } as StreamEvent]) yield event;
+    })());
+    const conversation = new ConversationState();
+    conversation.addUserMessage("do the thing");
+    for await (const _ of runAgentLoop({
+      provider: { name: "mock", stream },
+      conversation,
+      toolRegistry: tools,
+      model: "mock",
+      permissionMode: "auto-accept",
+      iterationsBudget: { remaining: 50, total: 50 },
+    })) void _;
+    const redirects = conversation.getMessages()
+      .filter((m) => m.internal)
+      .flatMap((m) => m.content.map((b) => b.text ?? ""))
+      .filter((p) => p.startsWith(REPEATED_FAILURE_PREFIX));
+    expect(redirects).toHaveLength(1);
+    expect(redirects[0]).toContain("tool_b");
+  });
+
   it("treats reordered argument keys as the same call", async () => {
     // JSON key order must not matter — otherwise alternating key order dodges
     // detection forever. Six identical failures with the keys swapped each time
