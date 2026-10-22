@@ -444,7 +444,19 @@ export class MCPClient {
   // a typo surfaces instead of silently hiding the whole catalog.
   private selectTools<T extends { name: string }>(discovered: T[]): T[] {
     const selection = this.config.tools;
-    if (!selection || selection.length === 0) return discovered;
+    if (selection === undefined) return discovered;
+
+    // Guard a malformed config value (e.g. `"tools": "echo"` or a non-string
+    // entry) before it reaches array methods. A bad value must not crash startup
+    // and drop the server's tools, resources and prompts — warn with an
+    // actionable message and fall back to exposing all.
+    if (!Array.isArray(selection) || !selection.every((name) => typeof name === "string")) {
+      process.stderr.write(
+        `[mcp:${this.serverName}] invalid "tools" config: expected an array of tool-name strings; exposing all tools from this server\n`,
+      );
+      return discovered;
+    }
+    if (selection.length === 0) return discovered;
 
     const available = new Set(discovered.map((t) => t.name));
     const unknown = selection.filter((name) => !available.has(name));

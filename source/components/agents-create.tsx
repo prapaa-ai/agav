@@ -234,13 +234,18 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       await mkdir(agentDir, { recursive: true });
       await mkdir(toolsDir, { recursive: true });
 
-      const mcpServerEntries: Array<{ key: string; command: string; args?: string[]; env?: Record<string, string> }> = [];
+      const mcpServerEntries: Array<{ key: string; command: string; args?: string[]; env?: Record<string, string>; tools?: string[] }> = [];
       for (const key of mcpSelectedKeys) {
         const serverConfig = config?.mcpServers?.[key];
         if (serverConfig?.command) {
           const entry: typeof mcpServerEntries[number] = { key, command: serverConfig.command, args: serverConfig.args };
           if (serverConfig.env && Object.keys(serverConfig.env).length > 0) {
             entry.env = serverConfig.env;
+          }
+          // Preserve the workspace server's tool selection so the delegated
+          // agent keeps the same narrowed catalog instead of the full one.
+          if (Array.isArray(serverConfig.tools) && serverConfig.tools.length > 0) {
+            entry.tools = serverConfig.tools;
           }
           mcpServerEntries.push(entry);
         }

@@ -114,6 +114,9 @@ export async function executeNativeAgent(
         command: srv.command,
         args: srv.args ?? [],
         env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...srv.env, ...runtimeConfig },
+        // Carry the per-server tool selection so a delegated agent honours the
+        // same narrowed catalog the workspace server was restricted to.
+        ...(srv.tools ? { tools: srv.tools } : {}),
       };
       try {
         await agentMCPManager.startServer(srv.key, serverConfig);

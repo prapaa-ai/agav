@@ -108,4 +108,20 @@ describe("MCP per-server tool selection", () => {
     await manager.startServer("b", { ...base, tools: ["add", "subtract"] } as MCPServerConfig);
     expect(names().sort()).toEqual(["a__echo", "b__add", "b__subtract"].sort());
   });
+
+  it.each([
+    { label: "a bare string", value: "echo" },
+    { label: "a number", value: 3 },
+    { label: "an object", value: { echo: true } },
+    { label: "an array with a non-string entry", value: ["echo", 7] },
+  ])("does not crash on malformed tools config ($label): warns and exposes all", async ({ value }) => {
+    mockServer();
+    // A malformed value must not throw during startup and drop the server
+    // (which would also lose its resources and prompts) — expose all instead.
+    await expect(
+      manager.startServer("srv", { ...base, tools: value } as unknown as MCPServerConfig),
+    ).resolves.toBeDefined();
+    expect(names()).toEqual(["srv__echo", "srv__add", "srv__subtract", "srv__danger"]);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('invalid "tools" config'));
+  });
 });
