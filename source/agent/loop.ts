@@ -13,6 +13,7 @@ import {
   VERIFY_FAILED_PROMPT,
   STEER_DIRECTIVE_PREFIX,
   testsFailedPrompt,
+  repeatedFailurePrompt,
 } from "./internal-prompts.js";
 
 export type AgentEvent =
@@ -169,6 +170,52 @@ function isAllowed(
   return false;
 }
 
+/**
+ * A stable fingerprint of a failing tool call's error, used to tell a repeated
+ * identical failure apart from a new or changed one. Volatile substrings —
+ * timestamps, hex addresses, line/column numbers, PIDs, temp paths — are
+ * stripped so the same underlying error still matches across retries, while a
+ * genuinely different error (which signals progress) does not.
+ */
+function errorSignature(output: string): string {
+  // Diagnostics (stack traces, error codes) usually trail long progress output,
+  // so keep both ends: a prefix for the leading message and a larger tail for
+  // the actual failure. A simple head slice would compare only build progress.
+  const HEAD = 500;
+  const TAIL = 2000;
+  const sampled = output.length > HEAD + TAIL
+    ? output.slice(0, HEAD) + "\n…\n" + output.slice(-TAIL)
+    : output;
+  return sampled
+    // Only identifiable volatile fields are normalised — never bare numbers,
+    // which carry meaning (HTTP 401 vs 503, exit codes, counts).
+    .replace(/0x[0-9a-fA-F]+/g, "0x#")                                   // hex addresses
+    .replace(/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g, "<ts>") // ISO timestamps
+    .replace(/\b\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b/g, "<time>")             // clock times
+    .replace(/\b(pid|PID)[=: ]+\d+/g, "$1=#")                            // explicit PIDs
+    // Stop at structured-data delimiters (quote, comma, colon, bracket, space)
+    // so a path inside JSON does not swallow the following "error" field.
+    .replace(/\/tmp\/[^\s,"':;)\]}]+|\/var\/folders\/[^\s,"':;)\]}]+|[A-Za-z]:\\[^\s"',;)\]}]*[Tt]emp\\[^\s"',;)\]}]+/g, "<tmp>") // temp paths
+    .replace(/:\d+:\d+(?=[:\s)]|$)/g, ":#:#")                            // file:line:col
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Order-independent JSON for keying a tool call. `JSON.stringify` preserves
+ * property order, so `{a,b}` and `{b,a}` would otherwise be treated as different
+ * calls — letting a model dodge failure detection by reordering its arguments.
+ * Keys are sorted recursively; arrays keep their order (it is meaningful).
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`);
+  return `{${entries.join(",")}}`;
+}
+
 /** Convert a simple glob rule into a regex so allowlist path checks stay lightweight. */
 function matchGlob(pattern: string, text: string): boolean {
   const regex = pattern
@@ -203,6 +250,13 @@ export async function* runAgentLoop(
   // user changes their mind, they can say so in a new message and the submit()
   // call starts a fresh loop with an empty set.
   const deniedCalls = new Set<string>();
+  // Consecutive identical failures per tool call, keyed by name + arguments.
+  // Scoped to the whole loop invocation so a stuck retry pattern is caught
+  // across turns, not just within one batch. A success, a change of arguments,
+  // or a different error for the same key all count as progress and reset it.
+  const failureStreaks = new Map<string, { errorSig: string; count: number; redirected: boolean }>();
+  // After this many consecutive identical failures, inject one redirect.
+  const REPEATED_FAILURE_THRESHOLD = 3;
   // Mid-turn /steer directives — see LoopParams.drainSteers. Undefined for
   // subagent/skill/agent loops, which never receive them.
   const drainSteers = params.drainSteers;
@@ -618,6 +672,14 @@ export async function* runAgentLoop(
     // Phase 2: execute approved tools in parallel
     let hasTestRun = false;
     let hasTestFailure = false;
+    // Every tool that crossed the repeated-failure threshold this batch, in the
+    // order it crossed. At most one redirect is injected per batch, but a
+    // candidate may go stale (a later success or changed arguments for the same
+    // call deletes its streak), so the injection site picks the first candidate
+    // whose streak is still live rather than latching the first crosser. Each
+    // carries the streak and its key for that liveness check and to mark it
+    // delivered only on actual injection (so a suppressed redirect recurs).
+    const repeatedFailureCandidates: { name: string; attempts: number; key: string; streak: { redirected: boolean } }[] = [];
     if (approved.size > 0) {
       const entries = [...approved.entries()].map(([id, { input }]) => {
         const call = toolCalls.get(id)!;
@@ -692,6 +754,37 @@ export async function* runAgentLoop(
             });
           }
         }
+        // Track consecutive identical failures to catch a stuck retry loop.
+        // Keyed by tool + arguments; the error signature decides whether this
+        // is the *same* failure as last time. Any of a success, changed
+        // arguments, or a changed error counts as progress and resets.
+        const streakKey = `${name}:${canonicalJson(input)}`;
+        // Changing the arguments for a tool is a change of approach — drop every
+        // other streak for the same tool so a stale counter (A → A → B → A)
+        // cannot resurrect and trigger a false "three in a row".
+        for (const key of failureStreaks.keys()) {
+          if (key !== streakKey && key.startsWith(`${name}:`)) failureStreaks.delete(key);
+        }
+        if (result.isError) {
+          const errorSig = errorSignature(result.output);
+          const prior = failureStreaks.get(streakKey);
+          if (prior && prior.errorSig === errorSig) {
+            prior.count++;
+            // Flag the streak once it crosses the threshold; it is only marked
+            // `redirected` when the prompt is actually injected (see below), so
+            // a batch that suppresses the redirect still delivers it later.
+            if (prior.count >= REPEATED_FAILURE_THRESHOLD && !prior.redirected) {
+              repeatedFailureCandidates.push({ name, attempts: prior.count, key: streakKey, streak: prior });
+            }
+          } else {
+            // First failure, or a *different* error for the same call — a
+            // changed error means something moved, so start a fresh streak.
+            failureStreaks.set(streakKey, { errorSig, count: 1, redirected: false });
+          }
+        } else {
+          // Success for this exact call is progress — forget any prior streak.
+          failureStreaks.delete(streakKey);
+        }
         yield { type: "tool_result", toolName: name, toolCallId: id, output: result.output, isError: result.isError, diffLines: result.diffLines };
         toolResults.push({
           type: "tool_result",
@@ -731,6 +824,26 @@ export async function* runAgentLoop(
       }
     } else if (hasTestRun) {
       testRepairAttempts = 0;
+    }
+
+    // A tool has repeated the same failure; nudge once to break the loop. The
+    // test-repair path above already covers failing test runs, so skip it when
+    // that fired this batch to avoid stacking two redirects on the same turn.
+    // Pick the first candidate whose streak is still live: a later result in the
+    // same batch (a success, or changed arguments for the same tool) may have
+    // deleted a candidate's streak, and a stale candidate must not block a still
+    // valid one from a different tool. Mark delivered only on actual injection,
+    // so a suppressed redirect is re-offered on the next identical failure.
+    if (!hasTestFailure) {
+      const live = repeatedFailureCandidates.find(
+        (candidate) => failureStreaks.get(candidate.key) === candidate.streak,
+      );
+      if (live) {
+        live.streak.redirected = true;
+        conversation.addInternalUserMessage(
+          repeatedFailurePrompt(live.name, live.attempts),
+        );
+      }
     }
   }
 
