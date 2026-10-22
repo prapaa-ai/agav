@@ -105,13 +105,21 @@ async function obtainProof(
 }
 
 /**
- * Options for in-process callers (e.g. the `/login` slash command) that cannot
- * rely on SIGINT for cancellation: the TUI holds stdin in raw mode, so Ctrl-C
- * arrives as an input byte, not a signal. `signal` lets such a caller abort the
- * in-flight flow; when it fires, login is cancelled exactly as a SIGINT would.
+ * Options for in-process callers (e.g. the `/login` slash command).
+ *
+ *   - `signal`: the TUI holds stdin in raw mode, so Ctrl-C arrives as an input
+ *     byte, not a signal. This lets such a caller abort the in-flight flow;
+ *     when it fires, login is cancelled exactly as a SIGINT would.
+ *   - `onMessage` / `onError`: where the human-readable outcome lines go.
+ *     Default to console.log / console.error (the CLI). An in-process caller
+ *     passes sinks that capture the text so it can be shown in the TUI
+ *     transcript, which survives the repaint that clears the terminal — far more
+ *     robust than intercepting process.stdout/stderr writes.
  */
 export interface RunLoginOptions {
   signal?: AbortSignal;
+  onMessage?: (text: string) => void;
+  onError?: (text: string) => void;
 }
 
 /** Entry point for `agav login` / `agav logout`. Returns a process exit code. */
@@ -120,6 +128,8 @@ export async function runLoginCommand(
   args: string[],
   options: RunLoginOptions = {},
 ): Promise<number> {
+  const report = options.onMessage ?? ((text: string) => console.log(text));
+  const reportError = options.onError ?? ((text: string) => console.error(text));
   if (command === "logout") {
     // Capture the effective audit settings BEFORE clearing the cache: an
     // enrollment-delivered auditSink / controlPlane lives in the policy store we
@@ -129,7 +139,7 @@ export async function runLoginCommand(
     try {
       await clearEnrolledPolicy();
     } catch (error) {
-      console.error(
+      reportError(
         `Could not sign out: the enrollment cache could not be removed (${error instanceof Error ? error.message : String(error)}).\n` +
         "Your organization's settings are still active. Fix the file permissions and try again.",
       );
@@ -142,13 +152,13 @@ export async function runLoginCommand(
       { action: "logout", controlPlane: audit.controlPlane },
       { sink: audit.sink },
     );
-    console.log("Signed out of your organization. Restart Agav to apply.");
+    report("Signed out of your organization. Restart Agav to apply.");
     return 0;
   }
 
   const parsed = parseLoginArgs(args);
   if ("error" in parsed) {
-    console.error(`${parsed.error}\nUsage: agav login [--device | --oidc | --auth-code | --saml] [--control-plane URL] [--issuer URL] [--client-id ID]`);
+    reportError(`${parsed.error}\nUsage: agav login [--device | --oidc | --auth-code | --saml] [--control-plane URL] [--issuer URL] [--client-id ID]`);
     return 1;
   }
 
@@ -207,7 +217,7 @@ export async function runLoginCommand(
       { sink: successSink },
     );
     const who = session.subject ? ` as ${session.subject}` : "";
-    console.log(`Signed in${who}. Your organization's settings are now active — restart Agav to use them.`);
+    report(`Signed in${who}. Your organization's settings are now active — restart Agav to use them.`);
     return 0;
   } catch (error) {
     // The audit event carries only an ALLOWLISTED reason code — never the raw
@@ -218,7 +228,7 @@ export async function runLoginCommand(
       { action: "login.failure", flow, controlPlane: cpOrigin, reason: classifyFailureReason(error) },
       { sink: auditSink },
     );
-    console.error(error instanceof Error ? error.message : String(error));
+    reportError(error instanceof Error ? error.message : String(error));
     return 1;
   } finally {
     process.removeListener("SIGINT", cancel);

@@ -48,7 +48,7 @@ describe("commands/login", () => {
     expect(process.stdin.listenerCount("data")).toBe(0);
   });
 
-  it("delegates /login with parsed args, suspends the terminal, and passes an abort signal", async () => {
+  it("delegates /login with parsed args, suspends the terminal, and passes signal + sinks", async () => {
     runLoginMock.mockResolvedValue(0);
     const resume = vi.fn();
     const context = createContext(resume);
@@ -60,10 +60,11 @@ describe("commands/login", () => {
     expect(cmd).toBe("login");
     expect(argv).toEqual(["--oidc", "--control-plane", "https://cp"]);
     expect(opts?.signal).toBeInstanceOf(AbortSignal);
+    expect(typeof opts?.onMessage).toBe("function");
+    expect(typeof opts?.onError).toBe("function");
     expect(context.suspendTerminal).toHaveBeenCalledTimes(1);
     expect(resume).toHaveBeenCalledTimes(1);
     expect(result.type).toBe("message");
-    expect((result as any).text.toLowerCase()).toContain("signed in");
   });
 
   it("passes no args to runLoginCommand when /login is bare", async () => {
@@ -75,36 +76,48 @@ describe("commands/login", () => {
     expect(runLoginMock.mock.calls[0]![1]).toEqual([]);
   });
 
-  it("folds captured console output into the result so it survives the repaint", async () => {
-    runLoginMock.mockImplementation(async () => {
-      // Simulate the flow writing its outcome to the console while suspended.
-      process.stderr.write("unknown argument: --nope\nUsage: /login ...\n");
-      return 1;
-    });
-
-    const result = await loginCommand.execute("--nope", createContext());
-
-    expect((result as any).text).toContain("unknown argument: --nope");
-    expect((result as any).text).toContain("Usage: /login");
-    expect((result as any).text.toLowerCase()).toContain("failed");
-  });
-
-  it("restores the original stdout/stderr writers after running", async () => {
-    const before = process.stdout.write;
-    runLoginMock.mockImplementation(async () => {
-      expect(process.stdout.write).not.toBe(before); // patched during the flow
-      process.stdout.write("hello\n");
+  it("shows the captured success line verbatim on success", async () => {
+    runLoginMock.mockImplementation(async (_cmd, _argv, opts) => {
+      opts?.onMessage?.("Signed in as user@example.org. Your organization's settings are now active — restart Agav to use them.");
       return 0;
     });
 
-    await loginCommand.execute("", createContext());
+    const result = await loginCommand.execute("--oidc", createContext());
 
-    expect(process.stdout.write).toBe(before);
+    expect((result as any).text).toContain("Signed in as user@example.org");
+    expect((result as any).text).toContain("restart Agav");
   });
 
-  it("reports cancellation when the abort signal fires during the flow", async () => {
+  it("folds captured error detail into the result so it survives the repaint", async () => {
     runLoginMock.mockImplementation(async (_cmd, _argv, opts) => {
-      // Simulate Ctrl-C arriving on stdin while suspended.
+      opts?.onError?.("Could not reach the control plane at https://auth.agav.dev: Unable to connect.");
+      return 1;
+    });
+
+    const result = await loginCommand.execute("", createContext());
+
+    expect((result as any).text).toContain("Sign-in failed.");
+    expect((result as any).text).toContain("Could not reach the control plane");
+  });
+
+  it("reports success, not cancellation, when the abort races a successful enrollment", async () => {
+    // Enrollment persists before the success-audit event is awaited; a Ctrl-C in
+    // that window aborts the signal but login already succeeded (returns 0).
+    runLoginMock.mockImplementation(async (_cmd, _argv, opts) => {
+      process.stdin.emit("data", Buffer.from("\x03"));
+      expect(opts?.signal?.aborted).toBe(true);
+      opts?.onMessage?.("Signed in as user@example.org. ... restart Agav to use them.");
+      return 0;
+    });
+
+    const result = await loginCommand.execute("--device", createContext());
+
+    expect((result as any).text.toLowerCase()).toContain("signed in");
+    expect((result as any).text.toLowerCase()).not.toContain("cancelled");
+  });
+
+  it("reports cancellation when Ctrl-C aborts a failing flow", async () => {
+    runLoginMock.mockImplementation(async (_cmd, _argv, opts) => {
       process.stdin.emit("data", Buffer.from("\x03"));
       expect(opts?.signal?.aborted).toBe(true);
       return 1;
@@ -113,23 +126,6 @@ describe("commands/login", () => {
     const result = await loginCommand.execute("--device", createContext());
 
     expect((result as any).text.toLowerCase()).toContain("cancelled");
-  });
-
-  it("reports success, not cancellation, when the abort races a successful enrollment", async () => {
-    // Enrollment persists before the success-audit event is awaited; a Ctrl-C in
-    // that window aborts the signal but login already succeeded (returns 0).
-    // Success must win so we never claim "cancelled" over saved credentials.
-    runLoginMock.mockImplementation(async (_cmd, _argv, opts) => {
-      process.stdin.emit("data", Buffer.from("\x03"));
-      expect(opts?.signal?.aborted).toBe(true);
-      process.stdout.write("Signed in as user@example.org. ... restart Agav to use them.\n");
-      return 0;
-    });
-
-    const result = await loginCommand.execute("--device", createContext());
-
-    expect((result as any).text.toLowerCase()).toContain("signed in");
-    expect((result as any).text.toLowerCase()).not.toContain("cancelled");
   });
 
   it("does not abort on ordinary keystrokes", async () => {
@@ -141,23 +137,24 @@ describe("commands/login", () => {
 
     const result = await loginCommand.execute("--device", createContext());
 
-    expect((result as any).text.toLowerCase()).toContain("signed in");
+    expect(result.type).toBe("message");
   });
 
-  it("resumes the terminal and restores writers even when runLoginCommand throws", async () => {
-    const beforeStdout = process.stdout.write;
+  it("resumes the terminal and removes the stdin listener even when runLoginCommand throws", async () => {
     runLoginMock.mockRejectedValue(new Error("boom"));
     const resume = vi.fn();
     const context = createContext(resume);
 
     await expect(loginCommand.execute("", context)).rejects.toThrow("boom");
     expect(resume).toHaveBeenCalledTimes(1);
-    expect(process.stdout.write).toBe(beforeStdout);
     expect(process.stdin.listenerCount("data")).toBe(0);
   });
 
-  it("delegates /logout to runLoginCommand", async () => {
-    runLoginMock.mockResolvedValue(0);
+  it("delegates /logout to runLoginCommand and shows its captured line", async () => {
+    runLoginMock.mockImplementation(async (_cmd, _argv, opts) => {
+      opts?.onMessage?.("Signed out of your organization. Restart Agav to apply.");
+      return 0;
+    });
 
     const result = await logoutCommand.execute("", createContext());
 
@@ -166,11 +163,15 @@ describe("commands/login", () => {
     expect((result as any).text.toLowerCase()).toContain("signed out");
   });
 
-  it("reports a sign-out failure when runLoginCommand returns non-zero", async () => {
-    runLoginMock.mockResolvedValue(1);
+  it("reports a sign-out failure with detail when runLoginCommand returns non-zero", async () => {
+    runLoginMock.mockImplementation(async (_cmd, _argv, opts) => {
+      opts?.onError?.("Could not sign out: the enrollment cache could not be removed (EACCES).");
+      return 1;
+    });
 
     const result = await logoutCommand.execute("", createContext());
 
     expect((result as any).text.toLowerCase()).toContain("failed");
+    expect((result as any).text).toContain("EACCES");
   });
 });
