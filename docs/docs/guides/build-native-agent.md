@@ -136,13 +136,13 @@ agav agents install ./my-agent --destination project
 agav agents install ./my-agent --alias my-api-v2
 ```
 
-After installing, open `/agents → List` and press `e` on the agent to enter credentials.
+After installing, open `/agents → List` and press `c` on the agent to enter credentials.
 
 ## Using the LLM to implement tools
 
 If you create stub tools with `TODO` in their descriptions, Agav can implement them for you. In the List tab:
 
-1. Select the agent and press `i` to inspect
+1. Select the agent and press `v` to open legacy agent diagnostics (standard `ENTER` / `i` inspection does not offer tool implementation)
 2. Press `f` — "Implement tools"
 3. Agav sends each stub to the LLM with the agent's context and writes back a full implementation
 
@@ -153,7 +153,7 @@ This works for global agents whose tools contain `TODO` in their description. Bu
 Enable the agent and ask Agav a relevant question:
 
 ```
-/agents → List → select my-api → ENTER (toggle enabled)
+/agents → List → select my-api → t (toggle enabled)
 ```
 
 Then in the main chat:

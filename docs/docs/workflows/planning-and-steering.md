@@ -48,7 +48,24 @@ Steers add session-scoped direction to the active task without rewriting the ori
 /steer clear
 ```
 
-Use steering when constraints change mid-task, a deadline narrows the scope, or a subagent also needs the updated direction. Steers are included in subsequent agent and subagent prompts until removed. They are in-memory only: they are not written to disk or resumed in a later CLI process. Running bare `/steer` behaves like `/steer list`.
+Use steering when constraints change mid-task, a deadline narrows the scope, or a subagent also needs the updated direction. Steers are included in subsequent agent and subagent prompts until removed. They are in-memory only: they are not written to disk or resumed in a later CLI process. Running bare `/steer` behaves like `/steer list`. Running subagents receive new steering independently, with named delivery acknowledgements. `/steer` and `/plan` acknowledgements remain in transcript order, and the current plan updates in place.
+
+## Queued follow-up requests
+
+Submit a new prompt with **Enter** while Agav is streaming, preparing a request, executing tools, or running a `!` shell command. Agav captures that request and its attachments, clears the submitted composer, and processes queued requests in submission order when the current work is idle. Non-mid-turn-safe slash commands queue too. A later draft and its attachments are preserved during handoff.
+
+```text
+Review the authentication flow.
+# While Agav is working, submit:
+Then add regression tests for the cases you found.
+```
+
+- Run `/queue` or press **Ctrl+Q** when entries are present to manage them. Select with **Up/Down**, cancel an entry with **Delete/Backspace**, or click its **×**.
+- **Esc** or **Ctrl+Q** returns to the composer without cancelling the active turn or queued requests. Dispatch waits while queue management, a picker, or a confirmation is open.
+- If dispatch throws or cannot start, the request returns to the front and the queue pauses. Resolve the blocker, then run `/queue retry`; the failed request retains its attachments.
+- **Esc** outside a modal cancels the active work, not all queued entries. Cancel unwanted follow-ups individually before closing queue management.
+
+Queuing is different from steering: `/steer` adds constraints to the current task, and `/ps <question>` runs an independent, tool-free side query. Allowed mid-turn commands still execute immediately when there are no pending attachments. While generation is paused, ordinary non-command input intervenes in the active turn instead of queuing, unless another submission is already being prepared.
 
 ## Independent subagents
 

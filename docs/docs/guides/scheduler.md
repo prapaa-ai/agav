@@ -39,7 +39,18 @@ Create a weekday morning prompt:
 /schedule add "0 9 * * 1-5" review counter.py and greeting.py for any TODO comments or missing error handling
 ```
 
-Use `/schedule list`, then enable, disable, or remove a task by ID.
+Open bare `/schedule` for the interactive manager: search with `s`, confirm the
+filter with `ENTER`, navigate with `↑` / `↓`, and page with `←` / `→`. Page size
+adapts to terminal height. `ENTER` or `i` inspects the selected task; `b` or `ESC`
+returns to the list. Use `t` to enable/disable, `d` to request deletion (`y` to
+confirm; `n` or `ESC` to cancel), or `n` from the list to create a task with Cron
+and Prompt fields. In the form, `Tab` or `↑` / `↓` switches fields, `ENTER` saves,
+and `ESC` cancels. `r` refreshes; `ESC` clears an active search before exiting.
+Schedules have no edit action; remove and recreate a task to change it.
+
+Use `/schedule list` for a textual listing, even in the interactive UI, then
+`/schedule enable <id>`, `/schedule disable <id>`, or `/schedule remove <id>`.
+Without the interactive UI, bare `/schedule` also falls back to a textual list.
 
 ## Choose the right mechanism
 
