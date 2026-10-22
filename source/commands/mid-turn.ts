@@ -11,6 +11,7 @@ export const MID_TURN_SAFE_COMMANDS = new Set([
   "loop",
   "steer",
   "context",
+  "status",
   "memory",
   "remember",
   "forget",

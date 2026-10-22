@@ -23,6 +23,7 @@ import { skillsCommand } from "../skills/commands.js"
 import { steerCommand } from "./steer.js"
 import { changelogCommand } from "./changelog.js"
 import { contextCommand } from "./context.js"
+import { statusCommand } from "./status.js"
 import { agentsCommand } from "./agents.js"
 import { agentLockCommand } from "./agent-lock.js"
 import { openCommand } from "./open.js"
@@ -69,6 +70,7 @@ export class CommandRegistry {
     this.register(steerCommand)
     this.register(changelogCommand)
     this.register(contextCommand)
+    this.register(statusCommand)
     this.register(agentsCommand)
     this.register(agentLockCommand)
     this.register(openCommand)
