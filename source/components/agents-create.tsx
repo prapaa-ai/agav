@@ -73,6 +73,13 @@ export function CreateTab({
   const [nativeToolNames, setNativeToolNames] = useState<Set<string>>(new Set());
   const [nativeToolsScrollIndex, setNativeToolsScrollIndex] = useState(0);
   const [mcpSelectedKeys, setMcpSelectedKeys] = useState<Set<string>>(new Set());
+  // Saved per-server settings (tool selection, env, args) from the agent or
+  // template being edited, keyed by server key. Retained servers reuse these on
+  // save so editing an unrelated field never discards a server's own `tools`;
+  // newly selected servers fall back to the workspace defaults.
+  const [sourceMcpServers, setSourceMcpServers] = useState<
+    Record<string, { command?: string; args?: string[]; env?: Record<string, string>; tools?: string[] }>
+  >({});
   const [mcpScrollIndex, setMcpScrollIndex] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState("");
@@ -177,10 +184,9 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       setSystemPrompt(agent.systemPrompt);
       setPromptGenerated(true);
       setNativeToolNames(new Set(agent.manifest["native-tools"] ?? []));
-      const agentMcpKeys = new Set(
-        (agent.manifest["mcp-servers"] ?? []).map((s) => s.key),
-      );
-      setMcpSelectedKeys(agentMcpKeys);
+      const agentServers = agent.manifest["mcp-servers"] ?? [];
+      setMcpSelectedKeys(new Set(agentServers.map((s) => s.key)));
+      setSourceMcpServers(Object.fromEntries(agentServers.map((s) => [s.key, s])));
     } else if (template) {
       setEditingAgent(null);
       setAgentName(template.name);
@@ -188,10 +194,9 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       setSystemPrompt(template.systemPrompt);
       setPromptGenerated(true);
       setNativeToolNames(new Set(template.nativeTools ?? []));
-      const templateMcpKeys = new Set(
-        (template.mcpServers ?? []).map((s) => s.key),
-      );
-      setMcpSelectedKeys(templateMcpKeys);
+      const templateServers = template.mcpServers ?? [];
+      setMcpSelectedKeys(new Set(templateServers.map((s) => s.key)));
+      setSourceMcpServers(Object.fromEntries(templateServers.map((s) => [s.key, s])));
     } else {
       setEditingAgent(null);
       setAgentName("");
@@ -200,6 +205,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       setPromptGenerated(false);
       setNativeToolNames(new Set());
       setMcpSelectedKeys(new Set());
+      setSourceMcpServers({});
     }
     setNameError(null);
     setActiveField("name");
@@ -234,22 +240,11 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       await mkdir(agentDir, { recursive: true });
       await mkdir(toolsDir, { recursive: true });
 
-      const mcpServerEntries: Array<{ key: string; command: string; args?: string[]; env?: Record<string, string>; tools?: string[] }> = [];
-      for (const key of mcpSelectedKeys) {
-        const serverConfig = config?.mcpServers?.[key];
-        if (serverConfig?.command) {
-          const entry: typeof mcpServerEntries[number] = { key, command: serverConfig.command, args: serverConfig.args };
-          if (serverConfig.env && Object.keys(serverConfig.env).length > 0) {
-            entry.env = serverConfig.env;
-          }
-          // Preserve the workspace server's tool selection so the delegated
-          // agent keeps the same narrowed catalog instead of the full one.
-          if (Array.isArray(serverConfig.tools) && serverConfig.tools.length > 0) {
-            entry.tools = serverConfig.tools;
-          }
-          mcpServerEntries.push(entry);
-        }
-      }
+      // A server already on the agent/template being edited keeps its own saved
+      // settings (notably its tool selection); a newly selected server uses the
+      // workspace config. This prevents an unrelated edit (e.g. the description)
+      // from discarding a retained server's narrowed catalog.
+      const mcpServerEntries = resolveMcpServerEntries(mcpSelectedKeys, sourceMcpServers, config?.mcpServers);
 
       const manifest: Record<string, unknown> = {
         name: agentName,
@@ -305,7 +300,7 @@ Return ONLY the system prompt text, no explanation or markdown fencing.`;
       setSaveError(err instanceof Error ? err.message : String(err));
       setSaving(false);
     }
-  }, [agentName, agentDescription, systemPrompt, nativeToolNames, mcpSelectedKeys, config, onReloadAgents, onCreateComplete, editingAgent]);
+  }, [agentName, agentDescription, systemPrompt, nativeToolNames, mcpSelectedKeys, sourceMcpServers, config, onReloadAgents, onCreateComplete, editingAgent]);
 
   // --- Delete agent ---
   const doRemove = useCallback(async () => {
@@ -892,4 +887,50 @@ function generateTags(name: string, description: string): string[] {
     .filter((w) => w.length > 1 && !TAG_STOP.has(w));
   const unique = [...new Set(words)];
   return unique.slice(0, 5);
+}
+
+export interface WizardMcpServerSettings {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  tools?: string[];
+}
+
+export interface WizardMcpServerEntry {
+  key: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  tools?: string[];
+}
+
+/**
+ * Resolves the manifest MCP-server entries to persist for the selected keys.
+ *
+ * A server already present on the agent/template being edited (`source`) keeps
+ * its own saved settings — notably its `tools` selection — so an unrelated edit
+ * never silently discards a narrowed catalog. A newly selected server is built
+ * from the live workspace config. The saved selection wins over the workspace
+ * one; a server with no resolvable command is skipped.
+ */
+export function resolveMcpServerEntries(
+  selectedKeys: Iterable<string>,
+  source: Record<string, WizardMcpServerSettings>,
+  workspace: Record<string, WizardMcpServerSettings> | undefined,
+): WizardMcpServerEntry[] {
+  const entries: WizardMcpServerEntry[] = [];
+  for (const key of selectedKeys) {
+    const saved = source[key];
+    const ws = workspace?.[key];
+    const command = saved?.command ?? ws?.command;
+    if (!command) continue;
+    const args = saved?.args ?? ws?.args;
+    const env = saved?.env ?? ws?.env;
+    const tools = saved?.tools ?? (Array.isArray(ws?.tools) ? ws.tools : undefined);
+    const entry: WizardMcpServerEntry = { key, command, args };
+    if (env && Object.keys(env).length > 0) entry.env = env;
+    if (Array.isArray(tools) && tools.length > 0) entry.tools = tools;
+    entries.push(entry);
+  }
+  return entries;
 }
