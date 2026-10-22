@@ -75,6 +75,13 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | --- | --- |
 | `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor, including native-tool selection for editable native agents. `[2]` Marketplace tab browses, searches, and installs community agents. `[3]` Create tab lists user-created agents and templates, and opens a 5-step wizard to create or edit agents. |
 
+## Account
+
+| Command | Purpose |
+| --- | --- |
+| `/login` | Sign in to your organization (enterprise enrollment). Accepts the same flags as `agav login`: `--device`, `--oidc`, `--auth-code`, `--saml`, `--control-plane URL`, `--issuer URL`, and `--client-id ID`. Restart Agav to apply the new policy. |
+| `/logout` | Sign out of your organization and clear the cached enrollment. Restart Agav to apply. |
+
 ## Diagnostics and exit
 
 | Command | Purpose |
