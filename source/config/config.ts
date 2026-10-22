@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
 import { decrypt, encrypt } from "../utils/encrypt.js";
+import { loadOrgPolicy, applyOrgConfig, applyGatewayToken } from "./org-config.js";
 
 export type PermissionMode = "ask" | "auto-accept" | "deny-writes";
 export type EffortLevel = "minimal" | "low" | "medium" | "high" | "max";
@@ -77,6 +78,43 @@ export interface AgavConfig {
   /** "paused" makes `agav job tick`/daemon do nothing. Global-only (PROJECT_CONFIG_DENY). */
   backgroundAutomation?: "on" | "paused";
   search?: boolean;
+  /**
+   * Organization policy (org tier) fields. Populated only when an admin ships an
+   * org config; see config/org-config.ts. These take precedence over global,
+   * project, and environment sources and the user cannot loosen them.
+   */
+  /** Models the org permits selecting; enforced at provider selection. */
+  orgAllowedModels?: string[];
+  /** Providers the org permits; enforced at provider selection. */
+  orgAllowedProviders?: AgavConfig["provider"][];
+  /** Control-plane address seeded by the org, used by a future `agav login`. */
+  controlPlane?: string;
+  /**
+   * SIEM sink URL the org ships for audit events (sign-in/out). When set, the
+   * CLI emits secret-free enrollment events to it best-effort; see
+   * enterprise/audit.ts. Also settable via AGAV_AUDIT_SINK for local/dev use.
+   */
+  auditSink?: string;
+  /**
+   * Managed hard pins and permission floor recorded by applyOrgConfig. Unlike
+   * the pinned `provider`/`model`/`permissionMode` values (which later startup
+   * routing and interactive changes may overwrite), these are retained so every
+   * boundary can re-enforce them. The user can never loosen them.
+   */
+  /** Provider the org hard-pinned; a chosen provider must equal it. */
+  orgManagedProvider?: AgavConfig["provider"];
+  /** Model the org hard-pinned; a chosen model must equal it. */
+  orgManagedModel?: string;
+  /** Loosest permission mode the org allows; the effective mode may only tighten. */
+  orgPermissionFloor?: PermissionMode;
+  /**
+   * True when authentication to the OpenAI-compatible endpoint is provided by an
+   * enrollment gateway token (injected as the Authorization header) rather than a
+   * personal API key. Set by applyGatewayToken; lets credential validation and
+   * provider construction treat the OpenAI key requirement as satisfied, so a
+   * gateway-only enrolled developer needs no personal key.
+   */
+  openaiGatewayAuth?: boolean;
 }
 
 const AGAV_DIR = join(homedir(), ".agav");
@@ -245,12 +283,16 @@ export const PROJECT_CONFIG_TEMPLATE = {
     eg: { userLabel: "blue", assistantLabel: "magenta", promptColor: "green" },
   },
   mcpServers: {
-    description: "MCP server configurations keyed by the name shown inside Agav.",
+    description:
+      "MCP server configurations keyed by the name shown inside Agav. " +
+      "Add an optional `tools` array to a server to expose only those tools " +
+      "(names as the server reports them, unprefixed); omit it to expose all.",
     type: "object",
     eg: {
       everything: {
         command: "npx",
         args: ["-y", "@modelcontextprotocol/server-everything"],
+        tools: ["echo", "add"],
       },
     },
   },
@@ -342,6 +384,32 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "geminiApiKey",
   "permissionMode",
   "backgroundAutomation",
+  // A project-supplied controlPlane would redirect `agav login` to post the
+  // user's identity proof (id_token + nonce) to an attacker-controlled /session.
+  // The control-plane address may come only from the --control-plane flag,
+  // AGAV_CONTROL_PLANE, an admin-shipped org policy, or the built-in default.
+  "controlPlane",
+  // A project-supplied auditSink would redirect audit events to an
+  // attacker-controlled endpoint (data exfiltration / tampering with the audit
+  // trail). The sink may come only from AGAV_AUDIT_SINK or an admin-shipped org
+  // policy.
+  "auditSink",
+  // Org-tier selection allowlists are admin-only; a project must not be able to
+  // declare itself in-policy.
+  "orgAllowedModels",
+  "orgAllowedProviders",
+  // Derived managed-constraint fields are set only by the trusted org-policy
+  // overlay (applyOrgConfig). A project must not invent admin-only hard pins or a
+  // permission floor, which would otherwise break ordinary startup/selection with
+  // a bogus "organization requires…" error.
+  "orgManagedProvider",
+  "orgManagedModel",
+  "orgPermissionFloor",
+  // Trusted gateway-auth marker: set ONLY by applyGatewayToken from an
+  // authenticated enrollment. A file-supplied value would let a repo pass
+  // credential validation with no key and no enrollment, so it is stripped here
+  // and also reset before the enrollment overlay runs (see loadConfig).
+  "openaiGatewayAuth",
 ]);
 
 /** Ignore invalid hand-edited values instead of passing unsupported effort levels to providers. */
@@ -484,6 +552,21 @@ export async function loadConfig(): Promise<AgavConfig> {
     globalConfig.ollamaApiKey ??
     DEFAULT_CONFIG.ollamaApiKey ?? "",
   ) || undefined;
+
+  // Organization policy applies last so it overrides global, project, and env
+  // sources alike. An admin's managed config is a non-overridable floor; the
+  // user can tighten (e.g. a stricter permissionMode) but never loosen it.
+  const org = await loadOrgPolicy();
+  applyOrgConfig(merged, org.config);
+  // openaiGatewayAuth is a trusted marker that must originate ONLY from an
+  // authenticated enrollment. Reset any file-supplied value before the overlay so
+  // neither project nor global config can forge it; applyGatewayToken re-sets it
+  // when (and only when) it actually injects an enrollment token.
+  merged.openaiGatewayAuth = undefined;
+  // Inject the enrollment gateway token as the provider Authorization header so
+  // live inference reaches the org gateway. Bound to the policy's own gateway URL
+  // and an org-pinned Authorization header (which wins over the token).
+  applyGatewayToken(merged, org.config, org.gatewayToken);
 
   return merged;
 }

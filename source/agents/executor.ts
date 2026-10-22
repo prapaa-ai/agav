@@ -8,6 +8,8 @@ import { ToolRegistry } from "../tools/registry.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { AgavConfig, PermissionMode } from "../config/config.js";
 import { runAgentLoop } from "../agent/loop.js";
+import { clampPermissionMode } from "../config/org-config.js";
+import { orgPolicyError } from "../config/startup.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -89,7 +91,16 @@ export async function executeNativeAgent(
   // Priority: config.json > AGENT.md manifest > session config.
   const runtimeConfig = await loadAgentCredentials(agent.path, agent.manifest.name);
 
-  const model = runtimeConfig["model"] || agent.manifest.model || deps.config.model;
+  const requestedModel = runtimeConfig["model"] || agent.manifest.model || deps.config.model;
+  // A child agent inherits the parent's org policy. A manifest/runtime model
+  // override must not escape a managed pin or allowlist, so validate it against
+  // the parent config and reject an out-of-policy model rather than silently
+  // routing inference through the disallowed model on the inherited provider.
+  const childModelError = orgPolicyError({ ...deps.config, model: requestedModel });
+  if (childModelError) {
+    throw new Error(`Agent "${agent.manifest.name}" cannot run: ${childModelError}`);
+  }
+  const model = requestedModel;
   const effort = (runtimeConfig["effort"] || agent.manifest.effort || deps.config.effort) as import("../config/config.js").EffortLevel;
 
   // Start per-agent MCP servers (credentials passed via subprocess env, not process.env)
@@ -103,6 +114,9 @@ export async function executeNativeAgent(
         command: srv.command,
         args: srv.args ?? [],
         env: { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)) as Record<string, string>, ...srv.env, ...runtimeConfig },
+        // Carry the per-server tool selection so a delegated agent honours the
+        // same narrowed catalog the workspace server was restricted to.
+        ...(srv.tools ? { tools: srv.tools } : {}),
       };
       try {
         await agentMCPManager.startServer(srv.key, serverConfig);
@@ -147,6 +161,12 @@ export async function executeNativeAgent(
     const base = deps.config.systemPrompt ?? "";
     const systemPrompt = base ? `${base}\n\n${agent.systemPrompt}` : agent.systemPrompt;
 
+    // Resolve the child's permission mode, then clamp it to the parent's
+    // org-managed floor. A child must never run looser than the org permits,
+    // even when invoked directly with an explicit auto-accept override.
+    const requestedChildMode = deps.permissionMode ?? (deps.confirmTool ? "ask" : "deny-writes");
+    const childPermissionMode = clampPermissionMode(requestedChildMode, deps.config.orgPermissionFloor);
+
     const loopGenerator = runAgentLoop({
       provider: deps.provider,
       conversation,
@@ -156,8 +176,11 @@ export async function executeNativeAgent(
       effort,
       maxTokens: deps.config.maxTokens,
       signal: deps.signal,
-      confirmTool: deps.confirmTool ?? (deps.permissionMode === "auto-accept" ? async () => "yes" : undefined),
-      permissionMode: deps.permissionMode ?? (deps.confirmTool ? "ask" : "deny-writes"),
+      confirmTool: deps.confirmTool ?? (childPermissionMode === "auto-accept" ? async () => "yes" : undefined),
+      permissionMode: childPermissionMode,
+      // Carry the parent's floor so the child's interactive "Always" cannot
+      // widen past the org-managed permission policy either.
+      permissionFloor: deps.config.orgPermissionFloor,
       iterationsBudget: deps.iterationsBudget ?? { remaining: deps.config.maxIterations, total: deps.config.maxIterations },
       allowedTools: nativeTools,
       hooks: deps.hooks,

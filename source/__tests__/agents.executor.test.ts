@@ -16,6 +16,7 @@ import { runAgentLoop } from "../agent/loop.js";
 import { executeNativeAgent } from "../agents/executor.js";
 import { agentToTool } from "../agents/registry-factory.js";
 import { executeTargetedAgent } from "../agents/targeting.js";
+import { MCPManager } from "../mcp/manager.js";
 
 const agent: AgentDefinition = {
   manifest: { name: "demo", description: "Test agent", version: "1.0.0" },
@@ -43,6 +44,24 @@ describe("named-agent final output", () => {
     expect(vi.mocked(runAgentLoop).mock.calls[0]![0].toolRegistry.getSchemas().map((tool) => tool.name)).toEqual([
       "lsp_query", "read_notebook", "edit_notebook", "github",
     ]);
+  });
+
+  it("forwards a per-agent MCP server's tool selection to its MCP manager", async () => {
+    setEvents([{ type: "turn_complete" }]);
+    const startServer = vi.spyOn(MCPManager.prototype, "startServer").mockResolvedValue([]);
+    const getToolDefinitions = vi.spyOn(MCPManager.prototype, "getToolDefinitions").mockReturnValue([]);
+    await executeNativeAgent({ ...agent, manifest: {
+      ...agent.manifest,
+      "mcp-servers": [
+        { key: "github", command: "npx", args: ["-y", "@mcp/github"], tools: ["get_issue", "search_issues"] },
+        { key: "all", command: "npx", args: ["-y", "@mcp/all"] },
+      ],
+    } }, "task", deps);
+    // A restricted server carries its selection; an unrestricted one omits it.
+    expect(startServer).toHaveBeenCalledWith("github", expect.objectContaining({ tools: ["get_issue", "search_issues"] }));
+    expect(startServer).toHaveBeenCalledWith("all", expect.not.objectContaining({ tools: expect.anything() }));
+    startServer.mockRestore();
+    getToolDefinitions.mockRestore();
   });
 
   it("returns only the last completed answer and forwards every progress event unchanged", async () => {
@@ -82,6 +101,32 @@ describe("named-agent final output", () => {
       provider, model: config.model, effort: config.effort, maxTokens: config.maxTokens,
       iterationsBudget: budget, signal, confirmTool, hooks, permissionMode: "ask",
     }));
+  });
+
+  it("clamps the child permission mode to the parent org floor", async () => {
+    setEvents([{ type: "turn_complete" }]);
+    // Parent has an org deny-writes floor; a direct auto-accept override on the
+    // child must be clamped so a native writer agent can't escape the policy.
+    await executeNativeAgent(agent, "task", {
+      ...deps,
+      config: { ...config, orgPermissionFloor: "deny-writes" } as AgavConfig,
+      permissionMode: "auto-accept",
+    });
+    expect(runAgentLoop).toHaveBeenCalledWith(expect.objectContaining({
+      permissionMode: "deny-writes",
+      permissionFloor: "deny-writes",
+    }));
+  });
+
+  it("rejects a child model that violates the parent org policy", async () => {
+    setEvents([{ type: "turn_complete" }]);
+    // Parent pins gpt-5.4; a manifest model override to another model must fail.
+    await expect(executeNativeAgent(
+      { ...agent, manifest: { ...agent.manifest, model: "gpt-4o" } },
+      "task",
+      { ...deps, config: { ...config, orgManagedModel: "gpt-5.4" } as AgavConfig },
+    )).rejects.toThrow(/not permitted by your organization/);
+    expect(runAgentLoop).not.toHaveBeenCalled();
   });
 
   it("uses completed answers even without streaming and clears stale text on empty turns", async () => {

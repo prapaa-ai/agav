@@ -427,12 +427,56 @@ export class MCPClient {
       tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
     };
 
-    return (result.tools ?? []).map((t) => ({
+    const discovered = result.tools ?? [];
+    const selected = this.selectTools(discovered);
+    return selected.map((t) => ({
       name: `${this.serverName}__${t.name}`,
       description: t.description ?? "",
       inputSchema: t.inputSchema ?? { type: "object", properties: {} },
       serverName: this.serverName,
     }));
+  }
+
+  // Applies the optional per-server `tools` allowlist to the discovered list,
+  // preserving the server's own ordering. Omitted or empty selection means
+  // expose everything (the default). Names are matched exactly against the
+  // server's unprefixed tool names; any that match nothing are reported once so
+  // a typo surfaces instead of silently hiding the whole catalog.
+  private selectTools<T extends { name: string }>(discovered: T[]): T[] {
+    const selection = this.config.tools;
+    if (selection === undefined) return discovered;
+
+    // Guard a malformed config value (e.g. `"tools": "echo"` or a non-string
+    // entry) before it reaches array methods. A bad value must not crash startup
+    // and drop the server's tools, resources and prompts — warn with an
+    // actionable message and fall back to exposing all.
+    if (!Array.isArray(selection) || !selection.every((name) => typeof name === "string")) {
+      process.stderr.write(
+        `[mcp:${this.serverName}] invalid "tools" config: expected an array of tool-name strings; exposing all tools from this server\n`,
+      );
+      return discovered;
+    }
+    if (selection.length === 0) return discovered;
+
+    const available = new Set(discovered.map((t) => t.name));
+    const unknown = selection.filter((name) => !available.has(name));
+    if (unknown.length > 0) {
+      process.stderr.write(
+        `[mcp:${this.serverName}] configured tools not exposed by this server (ignored): ${unknown.join(", ")}\n`,
+      );
+    }
+    const wanted = new Set(selection);
+    const kept = discovered.filter((t) => wanted.has(t.name));
+    if (kept.length === 0) {
+      // Every selected name was unknown — keeping none would silently disable the
+      // server. Warn and fall back to exposing all, so a misconfiguration does
+      // not quietly remove a working server's tools.
+      process.stderr.write(
+        `[mcp:${this.serverName}] none of the configured tools matched; exposing all tools from this server\n`,
+      );
+      return discovered;
+    }
+    return kept;
   }
 
   private async fetchResources(): Promise<MCPResource[]> {

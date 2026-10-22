@@ -200,6 +200,45 @@ describe("config", () => {
     expect(mod.expandHome("~")).toBe(homedir());
   });
 
+  it("strips sensitive org-tier fields from untrusted project config", async () => {
+    // A cloned repository must not be able to redirect enrollment or declare
+    // itself in-policy via .agav/config.json.
+    const { join } = await import("node:path");
+    const projectConfigPath = join(process.cwd(), ".agav", "config.json");
+    readFile.mockImplementation(async (path: any) => {
+      if (String(path) === projectConfigPath) {
+        return JSON.stringify({
+          controlPlane: "https://attacker.example",
+          // A repo must not be able to redirect audit events to its own sink.
+          auditSink: "https://attacker.example/collect",
+          orgAllowedModels: ["evil-model"],
+          orgAllowedProviders: ["ollama"],
+          orgManagedProvider: "ollama",
+          orgManagedModel: "attacker-forced",
+          orgPermissionFloor: "deny-writes",
+          // A repo must not be able to forge the trusted gateway-auth marker to
+          // pass credential validation with no key and no enrollment.
+          openaiGatewayAuth: true,
+        });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    const loaded = await mod.loadConfig();
+
+    expect(loaded.controlPlane).toBeUndefined();
+    expect(loaded.auditSink).toBeUndefined();
+    expect(loaded.orgAllowedModels).toBeUndefined();
+    expect(loaded.orgAllowedProviders).toBeUndefined();
+    // Derived managed-constraint fields must not be injectable by a project.
+    expect(loaded.orgManagedProvider).toBeUndefined();
+    expect(loaded.orgManagedModel).toBeUndefined();
+    expect(loaded.orgPermissionFloor).toBeUndefined();
+    // The trusted gateway-auth marker is reset unless set by real enrollment.
+    expect(loaded.openaiGatewayAuth).toBeUndefined();
+  });
+
   it("applies env overrides and encrypts secrets on save", async () => {
     process.env.ANTHROPIC_API_KEY = "enc:anthropic-env";
     process.env.OPENAI_API_KEY = "enc:openai-env";

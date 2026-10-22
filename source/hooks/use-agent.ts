@@ -6,6 +6,7 @@ import type { LLMProvider, ContentBlock, InvocationReason, Message } from "../pr
 import type { AgavConfig } from "../config/config.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
+import { clampPermissionMode } from "../config/org-config.js";
 import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { createToolRegistry } from "../tools/registry-factory.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -338,6 +339,7 @@ export function useAgent(
           permissionMode: configRef.current.permissionMode,
           effort: configRef.current.effort,
           iterationsBudget: currentIterationsBudgetRef.current ?? { remaining: configRef.current.maxIterations, total: configRef.current.maxIterations },
+          orgPermissionFloor: configRef.current.orgPermissionFloor,
         }),
         getProviderConfig: () => configRef.current,
         confirmationQueue: confirmationQueueRef.current,
@@ -443,6 +445,7 @@ export function useAgent(
             effort: configRef.current.effort,
             iterationsBudget: currentIterationsBudgetRef.current ?? { remaining: configRef.current.maxIterations, total: configRef.current.maxIterations },
           }),
+          getProviderConfig: () => configRef.current,
           confirmTool: skillConfirmCallback,
           onTokenUsage: (usage) => setTokenUsage((prev) => ({
             inputTokens: prev.inputTokens + usage.inputTokens,
@@ -565,9 +568,15 @@ export function useAgent(
 
   /** Resolve the oldest pending tool confirmation with the user's decision. */
   const confirmTool = useCallback((choice: ConfirmResult) => {
-    // Only the queue's effective generic Always may widen session permission.
+    // Only the queue's effective generic Always may widen session permission,
+    // and never past the org-managed permission floor.
     const resolvedChoice = confirmationQueueRef.current.resolve(choice);
-    if (resolvedChoice === "always") sessionPermissionModeRef.current = "auto-accept";
+    if (resolvedChoice === "always") {
+      sessionPermissionModeRef.current = clampPermissionMode(
+        "auto-accept",
+        configRef.current.orgPermissionFloor,
+      );
+    }
     // Reset the turn timer so it only counts active agent work, not time
     // spent waiting for the user to approve/deny a tool call.
     updateTurnStart(Date.now());
@@ -961,6 +970,10 @@ export function useAgent(
           }
 
           abortController.signal.throwIfAborted();
+          // Keep the confirmation queue aware of the org floor so an "Always" is
+          // not silently escalated to a blanket auto-accept when the floor still
+          // requires confirmation.
+          confirmationQueueRef.current.setPermissionFloor(configRef.current.orgPermissionFloor);
           // Attach volatile context to the tail of this turn's user message. It is
           // left frozen in history rather than rewritten on later turns: editing an
           // earlier message would invalidate the very prefix this split protects,
@@ -982,7 +995,11 @@ export function useAgent(
             iterationsBudget: iterationsBudget,
             signal: abortController.signal,
             confirmTool: confirmToolCallback,
-            permissionMode: sessionPermissionModeRef.current ?? config.permissionMode,
+            permissionMode: clampPermissionMode(
+              sessionPermissionModeRef.current ?? config.permissionMode,
+              config.orgPermissionFloor,
+            ),
+            permissionFloor: config.orgPermissionFloor,
             backgroundPermissionMode: config.permissionMode,
             allowedTools: config.allowedTools,
             hooks: config.hooks,

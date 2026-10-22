@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runAgentLoop } from "../agent/loop.js";
+import { runAgentLoop, MAX_FEEDBACK_LENGTH, countGraphemes } from "../agent/loop.js";
 import { ConversationState } from "../agent/conversation.js";
 import { ConfirmationQueue } from "../agent/confirmation-queue.js";
 import { ToolRegistry } from "../tools/registry.js";
@@ -502,6 +502,56 @@ describe("runAgentLoop", () => {
     });
   });
 
+  it("does not let interactive 'always' widen past the org permission floor", async () => {
+    // With a floor of "ask", choosing "always" on the first write must NOT
+    // auto-accept the next write: confirmation is requested for both tools.
+    const editExecute = vi.fn(async () => ({ output: "edited", isError: false }));
+    const shellExecute = vi.fn(async () => ({ output: "shell ok", isError: false }));
+
+    const provider = new MockProvider([
+      [
+        { type: "tool_call_start", toolCallId: "edit-1", toolName: "write_file" },
+        { type: "tool_call_delta", toolCallId: "edit-1", argsJson: '{"path":"a.txt","content":"x"}' },
+        { type: "message_end", stopReason: "tool_use" },
+      ],
+      [
+        { type: "tool_call_start", toolCallId: "shell-1", toolName: "shell" },
+        { type: "tool_call_delta", toolCallId: "shell-1", argsJson: '{"command":"pwd"}' },
+        { type: "message_end", stopReason: "tool_use" },
+      ],
+      [
+        { type: "text_delta", text: "complete" },
+        { type: "message_end", stopReason: "end_turn" },
+      ],
+    ]);
+
+    const confirmTool = vi.fn().mockResolvedValue("always");
+
+    const conversation = new ConversationState();
+    conversation.setModel("gpt-4");
+    conversation.addUserMessage("make edits");
+
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createTool("write_file", editExecute));
+    toolRegistry.register(createTool("shell", shellExecute));
+
+    await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry,
+        model: "gpt-4",
+        confirmTool,
+        permissionMode: "ask",
+        permissionFloor: "ask",
+        iterationsBudget: { remaining: 5, total: 5 },
+      }),
+    );
+
+    // Both write/shell tools re-request confirmation: the floor blocked widening.
+    expect(confirmTool).toHaveBeenCalledTimes(2);
+  });
+
   it("denies write tools in deny-writes mode without executing them", async () => {
     const execute = vi.fn(async () => ({
       output: "should not run",
@@ -983,5 +1033,334 @@ describe("runAgentLoop", () => {
     expect(denials).toHaveLength(2);
     expect(denials.every((event) => (event as { isError?: boolean }).isError)).toBe(true);
     expect((denials[1] as { output: string }).output).toContain("already denied");
+  });
+
+  it("denies tool with feedback, includes feedback in tool_result, and feeds it to the next provider turn", async () => {
+    let turn = 0;
+    const provider: LLMProvider = {
+      name: "mock",
+      stream: vi.fn((_params: StreamParams) => {
+        turn++;
+        const events: StreamEvent[] = turn === 1
+          ? [
+              { type: "tool_call_start", toolCallId: "call-1", toolName: "risky_write" },
+              { type: "tool_call_delta", toolCallId: "call-1", argsJson: '{"path":"a.txt"}' },
+              { type: "tool_call_end", toolCallId: "call-1" },
+              { type: "message_end", stopReason: "tool_calls" },
+            ]
+          : [
+              { type: "text_delta", text: "Understood, will write b.txt instead." },
+              { type: "message_end", stopReason: "end_turn" },
+            ];
+        return (async function* () {
+          for (const event of events) yield event;
+        })();
+      }),
+    };
+
+    const conversation = new ConversationState();
+    conversation.setModel("gpt-4");
+    conversation.addUserMessage("write file");
+
+    const execute = vi.fn(async () => ({ output: "written", isError: false }));
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createTool("risky_write", execute));
+
+    const confirmTool = vi.fn(async () => ({
+      choice: "no" as const,
+      feedback: "Do not write a.txt; write b.txt instead.",
+    }));
+
+    const events = await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry,
+        model: "gpt-4",
+        confirmTool,
+        iterationsBudget: { remaining: 5, total: 5 },
+      }),
+    );
+
+    expect(confirmTool).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+
+    const toolResultEvent = events.find(
+      (e) => e.type === "tool_result" && e.toolName === "risky_write",
+    );
+    expect(toolResultEvent).toBeDefined();
+    expect((toolResultEvent as any).isError).toBe(true);
+    expect((toolResultEvent as any).output).toContain("User denied this tool call with feedback: Do not write a.txt; write b.txt instead.");
+
+    expect(provider.stream).toHaveBeenCalledTimes(2);
+    const secondCallParams = (provider.stream as any).mock.calls[1][0];
+    const secondCallMessages = secondCallParams.messages;
+    const userMsgWithToolResult = secondCallMessages.find(
+      (m: any) => m.role === "user" && m.content.some((c: any) => c.type === "tool_result"),
+    );
+    expect(userMsgWithToolResult).toBeDefined();
+    const resultBlock = userMsgWithToolResult.content.find((c: any) => c.type === "tool_result");
+    expect(resultBlock.toolResult).toContain("User denied this tool call with feedback: Do not write a.txt; write b.txt instead.");
+    expect(resultBlock.isError).toBe(true);
+  });
+
+  it("treats blank or whitespace-only feedback as a standard denial", async () => {
+    const provider = new MockProvider([[
+      { type: "tool_call_start", toolCallId: "call-blank", toolName: "risky_write" },
+      { type: "tool_call_delta", toolCallId: "call-blank", argsJson: '{"path":"blank.txt"}' },
+      { type: "tool_call_end", toolCallId: "call-blank" },
+      { type: "message_end", stopReason: "tool_calls" },
+    ]]);
+
+    const conversation = new ConversationState();
+    conversation.setModel("gpt-4");
+    conversation.addUserMessage("write blank");
+
+    const execute = vi.fn(async () => ({ output: "written", isError: false }));
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createTool("risky_write", execute));
+
+    const confirmTool = vi.fn(async () => ({
+      choice: "no" as const,
+      feedback: "   ",
+    }));
+
+    const events = await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry,
+        model: "gpt-4",
+        confirmTool,
+        iterationsBudget: { remaining: 5, total: 5 },
+      }),
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    const toolResultEvent = events.find(
+      (e) => e.type === "tool_result" && e.toolName === "risky_write",
+    );
+    expect((toolResultEvent as any).output).toBe(
+      "User denied this tool call. Do not retry it with the same arguments — take a different approach, or stop and explain what you need.",
+    );
+    expect((toolResultEvent as any).output).not.toContain("with feedback");
+  });
+
+  it("truncates denial feedback exceeding MAX_FEEDBACK_LENGTH", async () => {
+    const provider = new MockProvider([[
+      { type: "tool_call_start", toolCallId: "call-long", toolName: "risky_write" },
+      { type: "tool_call_delta", toolCallId: "call-long", argsJson: '{"path":"long.txt"}' },
+      { type: "tool_call_end", toolCallId: "call-long" },
+      { type: "message_end", stopReason: "tool_calls" },
+    ]]);
+
+    const conversation = new ConversationState();
+    conversation.setModel("gpt-4");
+    conversation.addUserMessage("write long");
+
+    const execute = vi.fn(async () => ({ output: "written", isError: false }));
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createTool("risky_write", execute));
+
+    const confirmTool = vi.fn(async () => ({
+      choice: "no" as const,
+      feedback: "a".repeat(MAX_FEEDBACK_LENGTH + 100),
+    }));
+
+    const events = await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry,
+        model: "gpt-4",
+        confirmTool,
+        iterationsBudget: { remaining: 5, total: 5 },
+      }),
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    const toolResultEvent = events.find(
+      (e) => e.type === "tool_result" && e.toolName === "risky_write",
+    );
+    expect((toolResultEvent as any).output).toContain(
+      `User denied this tool call with feedback: ${"a".repeat(MAX_FEEDBACK_LENGTH)}\nDo not retry it with the same arguments`,
+    );
+    expect((toolResultEvent as any).output).not.toContain("a".repeat(MAX_FEEDBACK_LENGTH + 1));
+  });
+
+  it("defensively truncates denial feedback exceeding MAX_FEEDBACK_LENGTH without splitting composite grapheme clusters", async () => {
+    const provider = new MockProvider([[
+      { type: "tool_call_start", toolCallId: "call-emoji", toolName: "risky_write" },
+      { type: "tool_call_delta", toolCallId: "call-emoji", argsJson: '{"path":"emoji.txt"}' },
+      { type: "tool_call_end", toolCallId: "call-emoji" },
+      { type: "message_end", stopReason: "tool_calls" },
+    ]]);
+
+    const conversation = new ConversationState();
+    conversation.setModel("gpt-4");
+    conversation.addUserMessage("write emoji");
+
+    const execute = vi.fn(async () => ({ output: "written", isError: false }));
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createTool("risky_write", execute));
+
+    const compositeEmoji = "👨‍👩‍👧‍👦";
+    const confirmTool = vi.fn(async () => ({
+      choice: "no" as const,
+      feedback: compositeEmoji.repeat(MAX_FEEDBACK_LENGTH + 10),
+    }));
+
+    const events = await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry,
+        model: "gpt-4",
+        confirmTool,
+        iterationsBudget: { remaining: 5, total: 5 },
+      }),
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    const toolResultEvent = events.find(
+      (e) => e.type === "tool_result" && e.toolName === "risky_write",
+    );
+    expect((toolResultEvent as any).output).toContain(
+      `User denied this tool call with feedback: ${compositeEmoji.repeat(MAX_FEEDBACK_LENGTH)}\nDo not retry it with the same arguments`,
+    );
+    expect((toolResultEvent as any).output).not.toContain(compositeEmoji.repeat(MAX_FEEDBACK_LENGTH + 1));
+  });
+
+  it("preserves joined emoji and combining characters across the boundary and never produces partial graphemes", async () => {
+    const provider = new MockProvider([[
+      { type: "tool_call_start", toolCallId: "call-combining", toolName: "risky_write" },
+      { type: "tool_call_delta", toolCallId: "call-combining", argsJson: '{"path":"combining.txt"}' },
+      { type: "tool_call_end", toolCallId: "call-combining" },
+      { type: "message_end", stopReason: "tool_calls" },
+    ]]);
+
+    const conversation = new ConversationState();
+    conversation.setModel("gpt-4");
+    conversation.addUserMessage("write combining");
+
+    const execute = vi.fn(async () => ({ output: "written", isError: false }));
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createTool("risky_write", execute));
+
+    // Construct a sequence of 499 ASCII characters, followed by a joined emoji as the 500th grapheme,
+    // and combining character sequences + skin-tone emoji as the 501st and beyond.
+    const familyZWJ = "👨‍👩‍👧‍👦"; // 1 grapheme cluster (11 UTF-16 code units with ZWJ)
+    const acuteE = "e\u0301"; // 1 grapheme cluster (2 UTF-16 code units)
+    const technologist = "👩‍💻"; // 1 grapheme cluster (5 UTF-16 code units)
+    const wavingHand = "👋🏽"; // 1 grapheme cluster (4 UTF-16 code units)
+
+    const prefix = "a".repeat(499);
+    // Graphemes: 499 (prefix) + 1 (familyZWJ) + 1 (acuteE) + 1 (technologist) + 1 (wavingHand) = 503 graphemes
+    const oversizedFeedback = `${prefix}${familyZWJ}${acuteE}${technologist}${wavingHand}`;
+
+    const confirmTool = vi.fn(async () => ({
+      choice: "no" as const,
+      feedback: oversizedFeedback,
+    }));
+
+    const events = await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry,
+        model: "gpt-4",
+        confirmTool,
+        iterationsBudget: { remaining: 5, total: 5 },
+      }),
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    const toolResultEvent = events.find(
+      (e) => e.type === "tool_result" && e.toolName === "risky_write",
+    );
+    expect(toolResultEvent).toBeDefined();
+
+    // Extract the feedback substring from the toolResult output
+    const match = /with feedback: (.*?)\nDo not retry/s.exec((toolResultEvent as any).output);
+    expect(match).not.toBeNull();
+    const finalFeedback = match![1]!;
+
+    // Exactly 500 grapheme clusters: 499 'a's plus the unbroken family ZWJ emoji
+    expect(countGraphemes(finalFeedback)).toBe(MAX_FEEDBACK_LENGTH);
+    expect(finalFeedback).toBe(`${prefix}${familyZWJ}`);
+
+    // Must NOT contain any part of the 501st grapheme (acuteE) or subsequent graphemes
+    expect(finalFeedback).not.toContain(acuteE);
+    expect(finalFeedback).not.toContain(technologist);
+    expect(finalFeedback).not.toContain(wavingHand);
+
+    // Verify there are no lone surrogates or trailing unattached combining marks / ZWJ
+    expect(finalFeedback.endsWith("\u200D")).toBe(false);
+    expect(/\p{M}$/u.test(finalFeedback)).toBe(false);
+  });
+
+  it("handles a mixed batch of tool calls by denying one with feedback and executing the approved tool", async () => {
+    const provider = new MockProvider([
+      [
+        { type: "tool_call_start", toolCallId: "call-a", toolName: "tool_a" },
+        { type: "tool_call_delta", toolCallId: "call-a", argsJson: '{"target":"a"}' },
+        { type: "tool_call_end", toolCallId: "call-a" },
+        { type: "tool_call_start", toolCallId: "call-b", toolName: "tool_b" },
+        { type: "tool_call_delta", toolCallId: "call-b", argsJson: '{"target":"b"}' },
+        { type: "tool_call_end", toolCallId: "call-b" },
+        { type: "message_end", stopReason: "tool_calls" },
+      ],
+      [
+        { type: "text_delta", text: "completed turn" },
+        { type: "message_end", stopReason: "end_turn" },
+      ],
+    ]);
+
+    const conversation = new ConversationState();
+    conversation.setModel("gpt-4");
+    conversation.addUserMessage("run both tools");
+
+    const executeA = vi.fn(async () => ({ output: "output A", isError: false }));
+    const executeB = vi.fn(async () => ({ output: "output B", isError: false }));
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createTool("tool_a", executeA));
+    toolRegistry.register(createTool("tool_b", executeB));
+
+    const confirmTool = vi.fn(async (toolName: string) => {
+      if (toolName === "tool_a") {
+        return { choice: "no" as const, feedback: "skip tool A" };
+      }
+      return "yes" as const;
+    });
+
+    const events = await collectEvents(
+      runAgentLoop({
+        provider,
+        conversation,
+        toolRegistry,
+        model: "gpt-4",
+        confirmTool,
+        iterationsBudget: { remaining: 5, total: 5 },
+      }),
+    );
+
+    expect(executeA).not.toHaveBeenCalled();
+    expect(executeB).toHaveBeenCalledTimes(1);
+
+    const resultA = events.find((e) => e.type === "tool_result" && e.toolName === "tool_a");
+    const resultB = events.find((e) => e.type === "tool_result" && e.toolName === "tool_b");
+
+    expect((resultA as any).isError).toBe(true);
+    expect((resultA as any).output).toContain("User denied this tool call with feedback: skip tool A");
+
+    expect((resultB as any).isError).toBe(false);
+    expect((resultB as any).output).toBe("output B");
+
+    // Both results are in conversation
+    const messages = conversation.getMessages();
+    const toolResultMsg = messages.find((m) => m.role === "user" && m.content.some((c) => c.type === "tool_result"));
+    expect(toolResultMsg?.content).toHaveLength(2);
+    expect(toolResultMsg?.content[0]?.toolCallId).toBe("call-a");
+    expect(toolResultMsg?.content[1]?.toolCallId).toBe("call-b");
   });
 });

@@ -54,14 +54,23 @@ describe("VertexAIProvider", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "access-token", expires_in: 3600 }), { status: 200 }));
 
-    const nowSeconds = Math.floor(Date.now() / 1000);
+    // The provider samples Date.now() internally when it signs, which may land in
+    // a later whole second than a single pre-sample here. Bracket the signing
+    // with before/after bounds so the assertions tolerate that 1-second sampling
+    // skew without weakening what they check.
+    const beforeSeconds = Math.floor(Date.now() / 1000);
     await new VertexAIAuth(credentialsPath).getAccessToken();
+    const afterSeconds = Math.floor(Date.now() / 1000);
 
     const assertion = new URLSearchParams(String(fetchMock.mock.calls[0]?.[1]?.body)).get("assertion")!;
     const claims = JSON.parse(Buffer.from(assertion.split(".")[1]!, "base64url").toString());
     // iat must sit strictly in the past relative to "now", never in the future.
-    expect(claims.iat).toBeLessThan(nowSeconds);
-    expect(nowSeconds - claims.iat).toBeGreaterThanOrEqual(10);
+    expect(claims.iat).toBeLessThan(beforeSeconds);
+    // iat is signTime - 10; signTime is within [beforeSeconds, afterSeconds], so
+    // the backdate from the pre-sample is at least (10 - elapsed) and at most 10.
+    const elapsed = afterSeconds - beforeSeconds;
+    expect(beforeSeconds - claims.iat).toBeGreaterThanOrEqual(10 - elapsed);
+    expect(afterSeconds - claims.iat).toBeGreaterThanOrEqual(10);
   });
 
   it("retries token minting once when a skewed clock triggers invalid_grant", async () => {

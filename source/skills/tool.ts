@@ -2,7 +2,7 @@ import type { ToolDefinition, ToolResult } from "../tools/types.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { AgentEvent, ConfirmResult } from "../agent/loop.js";
-import type { PermissionMode, EffortLevel } from "../config/config.js";
+import type { PermissionMode, EffortLevel, AgavConfig } from "../config/config.js";
 import { getSkill } from "./loader.js";
 import { executeSkill } from "./executor.js";
 
@@ -16,6 +16,8 @@ interface SkillToolDeps {
     effort: EffortLevel;
     iterationsBudget: { remaining: number, total: number };
   };
+  /** Full parent config for deriving the org selection/permission policy. */
+  getProviderConfig?: () => AgavConfig;
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
   onTokenUsage?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   getSignal: () => AbortSignal | undefined;
@@ -60,6 +62,7 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
 
       try {
         const config = deps.getConfig();
+        const providerConfig = deps.getProviderConfig?.();
         const result = await executeSkill(skill, args, {
           provider: deps.provider,
           parentRegistry: deps.parentRegistry,
@@ -69,6 +72,14 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
           contextMessages: context?.conversation,
           effort: config.effort,
           iterationsBudget: config.iterationsBudget,
+          policy: providerConfig ? {
+            provider: providerConfig.provider,
+            orgPermissionFloor: providerConfig.orgPermissionFloor,
+            orgManagedModel: providerConfig.orgManagedModel,
+            orgAllowedModels: providerConfig.orgAllowedModels,
+            orgManagedProvider: providerConfig.orgManagedProvider,
+            orgAllowedProviders: providerConfig.orgAllowedProviders,
+          } : undefined,
           confirmTool: deps.confirmTool,
           onTokenUsage: deps.onTokenUsage,
           signal: context?.signal ?? deps.getSignal(),

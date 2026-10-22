@@ -6,6 +6,7 @@ import {
   MAX_STEPS_PROMPT,
   isInternalUserMessage,
   testsFailedPrompt,
+  repeatedFailurePrompt,
 } from "../agent/internal-prompts.js";
 import { ConversationState } from "../agent/conversation.js";
 import { messagesToDisplay } from "../hooks/use-agent.js";
@@ -29,6 +30,7 @@ describe("internal user messages", () => {
     expect(isInternalUserMessage(userMessage(NEEDS_VERIFY_PROMPT))).toBe(true);
     expect(isInternalUserMessage(userMessage(MAX_STEPS_PROMPT))).toBe(true);
     expect(isInternalUserMessage(userMessage(testsFailedPrompt(2, 3)))).toBe(true);
+    expect(isInternalUserMessage(userMessage(repeatedFailurePrompt("run_command", 3)))).toBe(true);
     expect(isInternalUserMessage(userMessage("[Earlier conversation (4 exchanges) was compacted"))).toBe(true);
   });
 

@@ -80,6 +80,9 @@ When you start a plain `agav` session, the provider and model are resolved in th
 | `AGAV_NO_SANDBOX=1` | Disable automatic shell sandbox selection |
 | `AGAV_MARKETPLACE_URL` | Override the default agent marketplace URL |
 | `LIBREOFFICE_PATH` | Office document conversion executable |
+| `AGAV_ORG_CONFIG` | Path to an organization-managed policy file (see [Configuration](./configuration#organization-managed-configuration)) |
+| `AGAV_OIDC_TOKEN` | Pre-supplied OIDC token for `agav login --oidc` in automation |
+| `AGAV_AUDIT_SINK` | HTTPS endpoint that receives secret-free `agav login`/`logout` audit events (see [Audit events](#audit-events-siem)) |
 
 ## Background job subcommands
 
@@ -126,3 +129,51 @@ agav skills clear                     # Remove all user-installed skills
 ```
 
 Bundled skills are compiled into the binary and cannot be removed, but `disable` turns them off without deleting anything. The enabled/disabled state is stored in `~/.agav/skills/registry.json`. Changes take effect on the next start.
+
+## Enterprise login subcommands
+
+For organizations running an Agav control plane, `agav login` enrolls a developer: it authenticates through the organization's identity provider, retrieves the enforced [organization policy](./configuration#organization-managed-configuration), and caches it so subsequent sessions apply it.
+
+```bash
+agav login                              # Sign in; auto-selects the login flow
+agav login --auth-code                  # Force Authorization Code + PKCE (browser)
+agav login --device                     # Force the device flow (SSH / headless)
+agav login --oidc                       # Force OIDC token exchange (CI / automation)
+agav login --saml                       # Force SAML, brokered by the control plane
+agav logout                             # Remove the cached organization policy
+```
+
+Options:
+
+| Option | Purpose |
+| --- | --- |
+| `--control-plane <url>` | Control-plane address. See resolution order below. |
+| `--issuer <url>` | Identity-provider issuer (required for `--auth-code` and `--device`). |
+| `--client-id <id>` | OAuth client id registered for the Agav CLI (required for interactive flows). |
+
+**Control-plane address resolution** (highest priority first). You do not need to set any of these for the hosted service — `agav login` works out of the box against Agav's hosted control plane:
+
+1. `--control-plane <url>`
+2. the `AGAV_CONTROL_PLANE` environment variable
+3. the `controlPlane` value in the organization policy (for a self-hosted control plane, shipped via MDM or a file)
+4. Agav's built-in hosted default
+
+Flow selection when none is forced:
+
+- A CI OIDC token source (`AGAV_OIDC_TOKEN`, or a GitHub Actions-style token endpoint) or a non-interactive shell &rarr; **OIDC token exchange**.
+- An interactive terminal &rarr; **Authorization Code + PKCE**. If a browser cannot be opened (for example over SSH), rerun with `--device`.
+
+**SAML** is never auto-selected; opt in with `--saml`. It is for organizations whose identity provider speaks SAML 2.0 rather than OIDC. The control plane acts as the SAML Service Provider: Agav opens a browser to the control plane, which runs the SAML dance with the IdP server-side and mints the same identity proof the other flows produce. The CLI never parses SAML, so `--saml` needs no `--issuer`/`--client-id`; it requires only a browser on the local machine.
+
+The flows differ only in how the identity proof is obtained; all exchange it with the control plane for a policy and a short-lived gateway credential, then cache the result (encrypted, owner-only) under `~/.agav/enterprise/`. The control plane is never on the inference path. Restart Agav after login or logout to apply the change.
+
+### Audit events (SIEM)
+
+When an audit sink is configured, `agav login`/`agav logout` emit a secret-free JSON event per action (`login.attempt`, `login.success`, `login.failure`, `logout`) to the sink via `POST`. Each event carries the action, the login flow, the control-plane origin, the subject (on success), a reason **code** (on failure), an ISO-8601 timestamp, and `source: "agav-cli"` — never an `id_token`, gateway token, authorization code, or PKCE verifier. The failure `reason` is a fixed, allowlisted code (e.g. `unauthorized`, `network_error`, `timed_out`, `cancelled`, `protocol_error`, `error`), never a raw error message — so a message that happens to echo server content can never leak to the SIEM. Full error details still go to local stderr. Emission is best-effort: a slow, unreachable, or misconfigured sink never blocks or fails login.
+
+Configure the sink (an HTTPS endpoint) by either:
+
+- the `auditSink` field in the [organization policy](./configuration#organization-managed-configuration) (admin-shipped; preferred), or
+- the `AGAV_AUDIT_SINK` environment variable (local/dev).
+
+With no sink configured, no events are emitted.

@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Box, Text, ScrollBox, useInput, usePaste, useStdout } from "../ink/index.js";
-import type { ScrollBoxControls } from "../ink/index.js";
+import { Box, Text, ScrollBox, useInput, usePaste, useStdout, measureElement } from "../ink/index.js";
+import type { DOMElement, ScrollBoxControls } from "../ink/index.js";
+import { subscribeClipboardCopy } from "../ink/termio/clipboard.js";
+import type { ClipboardNotice } from "../ink/termio/clipboard.js";
 import type { ResourceAdapter, ResourceItem } from "../resources/types.js";
 import { filterResources, resourcePage } from "../resources/types.js";
 import { useSearch, SearchBar } from "./agents-search.js";
@@ -46,6 +48,8 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   const busyRef = useRef(false);
   const mounted = useRef(true);
   const [status, setStatus] = useState("");
+  const [copyNotice, setCopyNotice] = useState<ClipboardNotice | null>(null);
+  const copyNoticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const { stdout } = useStdout();
   const [rows, setRows] = useState(stdout.rows || 24);
   const scroll = useRef<ScrollBoxControls | null>(null);
@@ -54,7 +58,12 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   const [promptOffset, setPromptOffset] = useState(Number.POSITIVE_INFINITY);
   const { searchQuery, searching, handleSearchKey, handleSearchPaste } = useSearch();
   const availableRows = height ?? Math.max(8, rows - 2);
-  const pageSize = Math.max(1, Math.floor((availableRows - 8) / 2));
+  // Measure the actual slot Yoga allocates for the scrollable content instead of
+  // subtracting a guessed header/footer. This keeps the viewport sensible when
+  // prompts or notices add rows below the list/detail view.
+  const scrollSlotRef = useRef<DOMElement | null>(null);
+  const [scrollHeight, setScrollHeight] = useState(Math.max(2, availableRows - 8));
+  const pageSize = Math.max(1, Math.floor(Math.max(0, scrollHeight - 1) / 2));
   const filtered = filterResources(items, searchQuery);
   const { selected, page, pages } = resourcePage(index, filtered.length, pageSize);
   const item = filtered[selected];
@@ -89,9 +98,22 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   const promptContentRows = detailLines
     ? detailLines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / Math.max(1, (stdout.columns || 80)))), 0)
     : 0;
+  // Split remaining height between detail scroll (above) and controls line (below).
   const promptRows = detailLines ? Math.min(promptContentRows, Math.max(3, Math.floor((availableRows - 7) / 2))) : 0;
   const promptOverflows = promptContentRows > promptRows;
   const promptExtraRows = promptRows + (promptOverflows ? 1 : 0);
+  const columns = Math.max(1, stdout.columns || 80);
+  const detailContentRows = view === "detail" && detail?.detail
+    ? detail.detail.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / columns)), 0)
+    : 1;
+  useEffect(() => {
+    const availableContent = Math.max(2, availableRows - 7 - promptExtraRows - (copyNotice ? 1 : 0));
+    const measuredHeight = measureElement(scrollSlotRef.current).height;
+    const nextHeight = view === "detail"
+      ? Math.max(2, Math.min(detailContentRows, availableContent))
+      : Math.max(2, measuredHeight || availableContent);
+    setScrollHeight((current) => current === nextHeight ? current : nextHeight);
+  }, [availableRows, promptExtraRows, copyNotice, view, detailContentRows, columns, busy, status, searching, items.length]);
   useEffect(() => { setPromptOffset(Number.POSITIVE_INFINITY); }, [prompt]);
 
   const reload = async () => {
@@ -112,6 +134,17 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     void run(reload);
     return () => { mounted.current = false; };
   }, [adapter]);
+  useEffect(() => {
+    const unsubscribe = subscribeClipboardCopy((notice) => {
+      setCopyNotice(notice);
+      if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current);
+      copyNoticeTimer.current = setTimeout(() => setCopyNotice(null), 2000);
+    });
+    return () => {
+      unsubscribe();
+      if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current);
+    };
+  }, []);
   useEffect(() => {
     const resize = () => setRows(stdout.rows || 24);
     stdout.on("resize", resize);
@@ -226,8 +259,8 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   })}>
     <Text bold color="cyan">{adapter.title} · {view === "list" ? "List" : view === "detail" ? "Inspect" : view}</Text>
     {view === "list" && <SearchBar query={searchQuery} searching={searching} resultCount={filtered.length} itemLabel="resource" />}
-    <Box flexGrow={1} flexShrink={1} flexDirection="column">
-      <ScrollBox key={view} height={Math.max(2, availableRows - 7 - promptExtraRows)} controls={scroll} scrollOffset={scrollOffset} onScrollChange={(offset) => {
+    <Box ref={scrollSlotRef} flexGrow={view === "detail" ? 0 : 1} flexShrink={1} flexDirection="column">
+      <ScrollBox key={view} height={Math.max(2, Math.min(scrollHeight, view === "detail" ? detailContentRows : scrollHeight))} controls={scroll} scrollOffset={scrollOffset} onScrollChange={(offset) => {
         // A fresh viewport first measures zero rows. Keep the top sentinel until
         // its content is measured instead of pinning the new detail to the bottom.
         if (Number.isFinite(scrollOffset) || offset > 0) setScrollOffset(offset);
@@ -243,7 +276,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
         </Box>)}
       </ScrollBox>
     </Box>
-    {detailLines && <ScrollBox height={promptRows} controls={promptScroll} scrollOffset={promptOffset} onScrollChange={(offset) => {
+    {detailLines && <ScrollBox height={Math.max(0, Math.min(promptRows, scrollHeight - 2))} controls={promptScroll} scrollOffset={promptOffset} onScrollChange={(offset) => {
       if (Number.isFinite(promptOffset) || offset > 0) setPromptOffset(offset);
     }}>
       {detailLines.map((line, i) => <Text key={i} color="yellow">{line}</Text>)}
@@ -252,6 +285,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     {prompt ? <Text color="yellow" wrap={detailLines ? "wrap" : "truncate-end"}>{detailLines ? promptDetails!.controls : prompt}</Text> : busy && <Text color="yellow">Working…</Text>}
     {status && <Text color="yellow">{status}</Text>}
     {view === "list" && <Text dimColor>Page {page + 1}/{pages}{adapter.notice ? ` · ${adapter.notice}` : ""}</Text>}
+    {copyNotice && <Text color={copyNotice === "Copied to clipboard" ? "green" : "cyan"}>{copyNotice === "Copied to clipboard" ? "✓ " : ""}{copyNotice}</Text>}
     <Text dimColor>{form ? "Tab/↑↓: Field | ENTER: Save | ESC: Cancel" : view === "detail" ? [
       "↑↓: Scroll", "b/ESC: Back", detailCanRemove && `d: ${removeLabel}`,
       ...detailActions.map((a) => `${a.key}: ${a.label}`),

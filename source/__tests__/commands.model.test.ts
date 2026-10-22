@@ -115,6 +115,113 @@ describe("commands/model", () => {
     ]);
   });
 
+  it("discovers OpenAI models via the org gateway when gateway auth is present (no personal key)", async () => {
+    // Reviewer scenario: enrolled developer has gateway auth + an OpenRouter key.
+    // Discovery must query the gateway (not api.openai.com) and surface the OpenAI
+    // model so --model routing does not switch away to OpenRouter.
+    const seen: { url: string; auth?: string }[] = [];
+    globalThis.fetch = vi.fn(async (input: any, init: any) => {
+      const url = String(input);
+      const auth = init?.headers?.Authorization ?? init?.headers?.authorization;
+      seen.push({ url, auth });
+      if (url.includes("gateway.corp")) {
+        return { ok: true, json: async () => ({ data: [{ id: "gpt-4o" }] }) } as any;
+      }
+      if (url.includes("openrouter.ai/api/v1/models")) {
+        return { ok: true, json: async () => ({ data: [{ id: "openai/gpt-4o" }] }) } as any;
+      }
+      // Ollama fallback and anything else: empty.
+      return { ok: true, json: async () => ({ data: [] }) } as any;
+    }) as any;
+
+    const { models } = await fetchAvailableModels({
+      ...createContext({
+        openrouterApiKey: "openrouter-key",
+        openaiApiKey: undefined,
+        openaiGatewayAuth: true,
+        openaiBaseURL: "https://gateway.corp/v1",
+        openaiHeaders: { Authorization: "Bearer gw-secret" },
+      }).config,
+    });
+
+    // The OpenAI gateway was queried (not the public endpoint) with the gw token.
+    expect(seen.some((r) => r.url.startsWith("https://gateway.corp/v1/models"))).toBe(true);
+    expect(seen.some((r) => r.url.includes("api.openai.com"))).toBe(false);
+    expect(seen.find((r) => r.url.includes("gateway.corp"))?.auth).toBe("Bearer gw-secret");
+    // Both the gateway OpenAI model and the OpenRouter variant are discovered.
+    expect(findMatchingModels(models, "gpt-4o")).toEqual([
+      { id: "gpt-4o", provider: "openai" },
+      { id: "openai/gpt-4o", provider: "openrouter" },
+    ]);
+  });
+
+  it("preserves gateway model aliases that the public OpenAI filter would discard", async () => {
+    // A gateway returns the org's own catalog; non-public IDs must survive.
+    globalThis.fetch = vi.fn(async (input: any) => {
+      const url = String(input);
+      if (url.includes("gateway.corp")) {
+        return {
+          ok: true,
+          json: async () => ({ data: [{ id: "gpt-4o" }, { id: "corp-coder" }, { id: "anthropic/claude-sonnet-4" }] }),
+        } as any;
+      }
+      return { ok: true, json: async () => ({ data: [] }) } as any;
+    }) as any;
+
+    const { models } = await fetchAvailableModels({
+      ...createContext({
+        openaiApiKey: undefined,
+        openaiGatewayAuth: true,
+        openaiBaseURL: "https://gateway.corp/v1",
+        openaiHeaders: { Authorization: "Bearer gw-secret" },
+      }).config,
+    });
+
+    const ids = models.filter((m) => m.provider === "openai").map((m) => m.id).sort();
+    expect(ids).toEqual(["anthropic/claude-sonnet-4", "corp-coder", "gpt-4o"]);
+    expect(findMatchingModels(models, "corp-coder")).toEqual([{ id: "corp-coder", provider: "openai" }]);
+  });
+
+  it("still filters the PUBLIC OpenAI endpoint to chat models by name", async () => {
+    globalThis.fetch = vi.fn(async (input: any) => {
+      const url = String(input);
+      if (url.includes("api.openai.com")) {
+        return { ok: true, json: async () => ({ data: [{ id: "gpt-4o" }, { id: "whisper-1" }, { id: "text-embedding-3-small" }] }) } as any;
+      }
+      return { ok: true, json: async () => ({ data: [] }) } as any;
+    }) as any;
+
+    const { models } = await fetchAvailableModels({
+      ...createContext({ openaiApiKey: "openai-key" }).config,
+    });
+    const ids = models.filter((m) => m.provider === "openai").map((m) => m.id);
+    expect(ids).toEqual(["gpt-4o"]); // whisper + embeddings filtered out
+  });
+
+  it("builds the gateway /models URL preserving the query string", async () => {
+    let requestedUrl = "";
+    globalThis.fetch = vi.fn(async (input: any) => {
+      const url = String(input);
+      if (url.includes("gateway.corp")) {
+        requestedUrl = url;
+        return { ok: true, json: async () => ({ data: [{ id: "corp-coder" }] }) } as any;
+      }
+      return { ok: true, json: async () => ({ data: [] }) } as any;
+    }) as any;
+
+    await fetchAvailableModels({
+      ...createContext({
+        openaiApiKey: undefined,
+        openaiGatewayAuth: true,
+        openaiBaseURL: "https://gateway.corp/v1?tenant=team-a",
+        openaiHeaders: { Authorization: "Bearer gw-secret" },
+      }).config,
+    });
+
+    // /models goes in the path, query is preserved — not `/v1?tenant=team-a/models`.
+    expect(requestedUrl).toBe("https://gateway.corp/v1/models?tenant=team-a");
+  });
+
   it("returns every provider for an ambiguous model so startup can prompt for a choice", async () => {
     stubFetch(["shared-model"], ["shared-model"]);
 
@@ -214,6 +321,24 @@ describe("commands/model", () => {
     expect(context.setModel).toHaveBeenCalledWith("deepseek/deepseek-chat-v3.1");
     expect(context.setProvider).toHaveBeenCalledWith("openrouter");
     expect(messageText(result)).toContain("Model changed to: deepseek/deepseek-chat-v3.1 (switched to openrouter)");
+  });
+
+  it("rejects an out-of-policy pair atomically — neither provider nor model is changed", async () => {
+    stubFetch([], ["anthropic/claude-sonnet-4.5"]);
+
+    const context = createContext({
+      provider: "openai",
+      model: "gpt-5.4",
+      openaiApiKey: "k",
+      openrouterApiKey: "sk-or-v1-test",
+      orgAllowedModels: ["gpt-5.4"],
+    });
+    const result = await modelCommand.execute("anthropic/claude-sonnet-4.5", context);
+
+    expect(messageText(result)).toContain("not permitted by your organization");
+    // Atomic: a rejected model must not leave a changed provider behind.
+    expect(context.setProvider).not.toHaveBeenCalled();
+    expect(context.setModel).not.toHaveBeenCalled();
   });
 
   it("keeps the direct provider for an OpenRouter slug with the same provider prefix", async () => {

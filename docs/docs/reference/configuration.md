@@ -17,6 +17,9 @@ For most settings the effective value is the last one found in this chain:
 3. project config — `./.agav/config.json`
 4. environment variables (credentials and Ollama address settings only)
 5. CLI flags (applied at startup)
+6. organization-managed config (see [Organization-managed configuration](#organization-managed-configuration)) — applied **last** and **not overridable** by the user
+
+When an administrator ships an organization policy, its enforced fields win over every source above, including environment variables and CLI flags. A user can make a setting *stricter* (for example choosing a more restrictive `permissionMode`) but cannot loosen or bypass an org-enforced value.
 
 Provider credentials and endpoint overrides are resolved separately and follow a **stricter** chain, because the sensitive fields listed under [Project config restrictions](#project-config-restrictions) are stripped from project config before merging. For each API key the effective value is the first one found in:
 
@@ -146,3 +149,56 @@ To prevent a malicious repository from redirecting API requests or escalating pe
 These fields are stripped from `./.agav/config.json` before it is merged, so a value placed there is **silently ignored** rather than applied — Agav does not warn about it. This ensures that cloning an untrusted repository cannot silently redirect your credentials to a third-party server or bypass tool confirmations. Set these fields in global config or via environment variables instead.
 
 > **This is not the same as gitignore.** Ignoring `.agav/` in a repository only stops *you* from accidentally committing *your own* project config. It does not protect you when you clone *someone else's* repo: a malicious author can commit a poisoned `./.agav/config.json` anyway (for example with `git add -f`, which overrides `.gitignore`), and it arrives on your disk as a tracked file the moment you clone. Your local `.gitignore` never applies to it. The deny-list above is the actual defense against that clone-and-run threat, because it strips the dangerous fields at load time regardless of how the file got there. Do not rely on gitignore for credential safety.
+
+## Organization-managed configuration
+
+Organizations can enforce a policy that takes precedence over every other configuration source and that users cannot loosen. This is the mechanism IT or a platform team uses to pin a gateway, restrict which providers and models developers may use, and set a minimum permission level across a fleet.
+
+### Where the policy comes from
+
+Agav reads the organization policy from the first source available, in order:
+
+1. the path named by the `AGAV_ORG_CONFIG` environment variable
+2. a known system path:
+   - **macOS:** `/Library/Application Support/Agav/org-config.json`, then `/etc/agav/org-config.json`
+   - **Linux:** `/etc/agav/org-config.json`
+   - **Windows:** `%ProgramData%\Agav\org-config.json`
+
+Deliver the file through your device-management (MDM) tooling or your fleet provisioning. If no policy file is present, Agav behaves exactly as before — this feature is inert for non-enterprise use.
+
+A missing, unreadable, or malformed policy file never breaks startup; Agav simply proceeds without an org policy.
+
+### What a policy can enforce
+
+```json
+{
+  "provider": "openai",
+  "model": "gpt-5.4",
+  "openaiBaseURL": "https://gateway.corp.example/v1",
+  "openaiHeaders": { "x-tenant": "team-a" },
+  "permissionMode": "ask",
+  "allowedProviders": ["openai", "anthropic"],
+  "allowedModels": ["gpt-5.4", "claude-sonnet-4"],
+  "allowedTools": ["read_file", "grep_search"],
+  "controlPlane": "https://auth.corp.example"
+}
+```
+
+| Field | Effect |
+| --- | --- |
+| `provider`, `model` | **Hard pin** — the org value is used regardless of user config. |
+| `openaiBaseURL`, `openaiHeaders` | **Hard pin** — route all OpenAI-compatible traffic through the organization's gateway. |
+| `permissionMode` | **Floor** — the user may choose a *stricter* mode but never a looser one (strictness order: `deny-writes` > `ask` > `auto-accept`). |
+| `allowedProviders` | **Allowlist** — selecting a provider outside the list is rejected at startup. An empty or omitted list means no restriction. |
+| `allowedModels` | **Allowlist** — selecting a model outside the list is rejected at startup. An empty or omitted list means no restriction. |
+| `allowedTools` | **Additive** — the org's required tools are merged with the user's allowlist. |
+| `controlPlane` | Address of a self-hosted control plane that `agav login` signs in to. Optional — omit it to use Agav's hosted control plane. |
+| `auditSink` | HTTPS endpoint that receives secret-free `agav login`/`logout` audit events for your SIEM. Optional. See [Audit events](./cli#audit-events-siem). |
+
+### How enforcement behaves
+
+- Enforced fields are applied **after** global config, project config, environment variables, and CLI flags, so none of those can override them.
+- Choosing a provider or model outside an allowlist produces a clear policy error at startup (reported before any missing-credential message), rather than silently falling back.
+- `permissionMode` is treated as a minimum: a developer can tighten it locally but cannot drop below the org floor.
+
+> The organization policy is a *delivery mechanism* for enforcement. The same policy shape can later be delivered by an authenticated enrollment flow instead of a file; the enforcement behavior is identical regardless of source.

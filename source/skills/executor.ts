@@ -7,8 +7,20 @@ import { ToolRegistry as ToolRegistryClass } from "../tools/registry.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
 import type { AgentEvent, ConfirmResult } from "../agent/loop.js";
-import type { PermissionMode, EffortLevel } from "../config/config.js";
+import type { PermissionMode, EffortLevel, AgavConfig } from "../config/config.js";
+import { clampPermissionMode } from "../config/org-config.js";
+import { orgPolicyError } from "../config/startup.js";
 import { recordSkillTrace } from "./improvement.js";
+
+/** Org selection/permission policy a skill must honor (subset of AgavConfig). */
+export interface SkillPolicy {
+  provider: AgavConfig["provider"];
+  orgPermissionFloor?: PermissionMode;
+  orgManagedModel?: string;
+  orgAllowedModels?: string[];
+  orgManagedProvider?: AgavConfig["provider"];
+  orgAllowedProviders?: AgavConfig["provider"][];
+}
 import { formatSteersForPrompt } from "../commands/steer.js";
 import { baseToolName } from "./skill-utils.js";
 import { createBuiltinToolRegistry, OPTIONAL_TOOL_NAMES } from "../tools/registry-factory.js";
@@ -21,6 +33,13 @@ interface SkillExecDeps {
   permissionMode: PermissionMode;
   effort: EffortLevel;
   iterationsBudget: { remaining: number, total: number };
+  /**
+   * Org policy the parent runs under. A skill's frontmatter `model` override and
+   * its interactive "Always" must stay within this policy, so the skill cannot
+   * route inference around a managed pin/allowlist or widen permissions. Omitted
+   * when there is no org policy (the common case).
+   */
+  policy?: SkillPolicy;
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
   // Reports usage deltas as they arrive. The returned tokenUsage is the total;
   // callers using this callback must not add that total again.
@@ -60,6 +79,8 @@ function checkAborted(signal?: AbortSignal): void {
 interface ShellBlockOpts {
   signal?: AbortSignal;
   permissionMode: PermissionMode;
+  /** Org floor; "Always" in shell preprocessing may not widen past it. */
+  permissionFloor?: PermissionMode;
   confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
 }
 
@@ -99,12 +120,14 @@ async function processShellBlocks(text: string, opts: ShellBlockOpts): Promise<s
       }
       const choice = await opts.confirmTool("skill_shell_block", { command: block.command });
       checkAborted(opts.signal);
-      if (choice === "no") {
+      if (choice !== "yes" && choice !== "always") {
         result = replaceOnce(result, block.match, "[shell block skipped — denied by user]");
         continue;
       }
       if (choice === "always") {
-        mode = "auto-accept";
+        // Clamp to the org floor: "Always" must not loosen a managed policy and
+        // silently auto-execute later shell blocks below the required mode.
+        mode = clampPermissionMode("auto-accept", opts.permissionFloor);
       }
     }
 
@@ -154,13 +177,28 @@ export async function executeSkill(
   let failed = false;
   const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
+  // The skill may override the model via frontmatter. Under an org policy, that
+  // override must satisfy the managed pin/allowlist before any inference OR shell
+  // preprocessing runs, so a skill cannot route around the policy.
+  const model = skill.frontmatter.model ?? deps.model;
+  if (deps.policy) {
+    const policyError = orgPolicyError({ ...(deps.policy as AgavConfig), model });
+    if (policyError) {
+      throw new Error(`Skill "${skill.name}" cannot run: ${policyError}`);
+    }
+  }
+  // Clamp the skill's effective permission mode to the org floor so neither the
+  // child loop nor shell preprocessing can run looser than the org permits.
+  const effectiveMode = clampPermissionMode(deps.permissionMode, deps.policy?.orgPermissionFloor);
+
   // Preprocessing can prompt or execute commands, so it belongs to the same
   // failure/progress lifecycle as the child loop.
   try {
     checkAborted(deps.signal);
     let prompt = processDynamicContext(skill.body, args);
     prompt = await processShellBlocks(prompt, {
-      permissionMode: deps.permissionMode,
+      permissionMode: effectiveMode,
+      permissionFloor: deps.policy?.orgPermissionFloor,
       confirmTool: deps.confirmTool,
       signal: deps.signal,
     });
@@ -168,7 +206,6 @@ export async function executeSkill(
 
     const registry = buildSkillRegistry(deps.parentRegistry, skill);
     const conversation = new ConversationState();
-    const model = skill.frontmatter.model ?? deps.model;
     conversation.setModel(model);
     // Compaction mutates blocks, so the child must own a deep context snapshot.
     if (deps.contextMessages) conversation.setMessages(structuredClone(deps.contextMessages));
@@ -197,7 +234,8 @@ export async function executeSkill(
       maxTokens: 16384,
       signal: deps.signal,
       confirmTool: deps.confirmTool,
-      permissionMode: deps.permissionMode,
+      permissionMode: effectiveMode,
+      permissionFloor: deps.policy?.orgPermissionFloor,
       iterationsBudget: deps.iterationsBudget,
     });
 
