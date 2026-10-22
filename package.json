@@ -40,9 +40,9 @@
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
     "ollama": "^0.6.4",
-    "openai": "^7.32.0",
+    "openai": "^7.41.0",
     "pdfjs-dist": "^6.4.299",
-    "react": "~19.2.8",
+    "react": "~19.2.9",
     "react-reconciler": "0.33.0",
     "scheduler": "^0.27.0",
     "slice-ansi": "^9.0.1",
@@ -57,10 +57,10 @@
     "@types/react": "~19.2.18",
     "@types/react-reconciler": "0.33.0",
     "@types/scheduler": "^0.26.0",
-    "@vitest/coverage-v8": "~4.1.11",
+    "@vitest/coverage-v8": "~4.1.12",
     "husky": "^9.1.7",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
-    "vitest": "~4.1.11"
+    "vitest": "~4.1.12"
   }
 }
