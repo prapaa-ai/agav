@@ -41,12 +41,18 @@ export const statusCommand: SlashCommand = {
     const usedTokens = context.conversation?.tokenCount ?? 0;
     const mcpCount = context.getDebugState?.()?.mcpServers?.length ?? 0;
 
+    // Prefer the live session permission mode: a generic "Always" approval widens
+    // it beyond `config.permissionMode`, so reading config alone would report
+    // "ask" while writes are actually auto-accepted.
+    const permissionMode =
+      context.getEffectivePermissionMode?.() ?? context.config?.permissionMode ?? "ask";
+
     const lines: string[] = [
       "\x1b[1mSession Status\x1b[0m",
       "",
       `  Model:        ${context.config?.model ?? "unknown"} (${context.config?.provider ?? "unknown"})`,
       `  Effort:       ${context.config?.effort ?? "medium"}`,
-      `  Permissions:  ${context.config?.permissionMode ?? "ask"} · ${getSandboxName()}`,
+      `  Permissions:  ${permissionMode} · ${getSandboxName()}`,
       `  Directory:    ${process.cwd()}`,
       `  Token usage:  ${fmtTokens(usedTokens)} / ${fmtTokens(maxTokens)} (${pct(usedTokens, maxTokens)})`,
       `  MCP servers:  ${mcpCount} connected`,
