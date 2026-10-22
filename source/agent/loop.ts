@@ -178,11 +178,23 @@ function isAllowed(
  * genuinely different error (which signals progress) does not.
  */
 function errorSignature(output: string): string {
-  return output
-    .slice(0, 2000)
-    .replace(/0x[0-9a-fA-F]+/g, "0x#")
-    .replace(/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\S*/g, "<ts>")
-    .replace(/\b\d+\b/g, "#")
+  // Diagnostics (stack traces, error codes) usually trail long progress output,
+  // so keep both ends: a prefix for the leading message and a larger tail for
+  // the actual failure. A simple head slice would compare only build progress.
+  const HEAD = 500;
+  const TAIL = 2000;
+  const sampled = output.length > HEAD + TAIL
+    ? output.slice(0, HEAD) + "\n…\n" + output.slice(-TAIL)
+    : output;
+  return sampled
+    // Only identifiable volatile fields are normalised — never bare numbers,
+    // which carry meaning (HTTP 401 vs 503, exit codes, counts).
+    .replace(/0x[0-9a-fA-F]+/g, "0x#")                                   // hex addresses
+    .replace(/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\S*/g, "<ts>")     // ISO timestamps
+    .replace(/\b\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\b/g, "<time>")             // clock times
+    .replace(/\b(pid|PID)[=: ]+\d+/g, "$1=#")                            // explicit PIDs
+    .replace(/\/tmp\/\S+|\/var\/folders\/\S+|[A-Za-z]:\\[^\s"']*[Tt]emp\\\S+/g, "<tmp>") // temp paths
+    .replace(/:\d+:\d+(?=[:\s)]|$)/g, ":#:#")                            // file:line:col
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -645,8 +657,10 @@ export async function* runAgentLoop(
     let hasTestFailure = false;
     // The tool that just crossed the repeated-failure threshold this batch, if
     // any. Injected once after results are recorded (see below). Kept to one
-    // redirect per batch even if several tools are stuck.
-    let repeatedFailure: { name: string; attempts: number } | null = null;
+    // redirect per batch even if several tools are stuck. Carries the streak so
+    // the injection site can mark it delivered — not detection, so a suppressed
+    // redirect is re-offered on the next identical failure.
+    let repeatedFailure: { name: string; attempts: number; streak: { redirected: boolean } } | null = null;
     if (approved.size > 0) {
       const entries = [...approved.entries()].map(([id, { input }]) => {
         const call = toolCalls.get(id)!;
@@ -723,17 +737,25 @@ export async function* runAgentLoop(
         }
         // Track consecutive identical failures to catch a stuck retry loop.
         // Keyed by tool + arguments; the error signature decides whether this
-        // is the *same* failure as last time. A success clears the streak.
+        // is the *same* failure as last time. Any of a success, changed
+        // arguments, or a changed error counts as progress and resets.
         const streakKey = `${name}:${JSON.stringify(input)}`;
+        // Changing the arguments for a tool is a change of approach — drop every
+        // other streak for the same tool so a stale counter (A → A → B → A)
+        // cannot resurrect and trigger a false "three in a row".
+        for (const key of failureStreaks.keys()) {
+          if (key !== streakKey && key.startsWith(`${name}:`)) failureStreaks.delete(key);
+        }
         if (result.isError) {
           const errorSig = errorSignature(result.output);
           const prior = failureStreaks.get(streakKey);
           if (prior && prior.errorSig === errorSig) {
             prior.count++;
-            // Redirect once when the streak first crosses the threshold.
+            // Flag the streak once it crosses the threshold; it is only marked
+            // `redirected` when the prompt is actually injected (see below), so
+            // a batch that suppresses the redirect still delivers it later.
             if (prior.count >= REPEATED_FAILURE_THRESHOLD && !prior.redirected) {
-              prior.redirected = true;
-              repeatedFailure ??= { name, attempts: prior.count };
+              repeatedFailure ??= { name, attempts: prior.count, streak: prior };
             }
           } else {
             // First failure, or a *different* error for the same call — a
@@ -788,7 +810,10 @@ export async function* runAgentLoop(
     // A tool has repeated the same failure; nudge once to break the loop. The
     // test-repair path above already covers failing test runs, so skip it when
     // that fired this batch to avoid stacking two redirects on the same turn.
+    // Only mark the streak delivered on actual injection — a suppressed redirect
+    // stays pending and is re-offered on the next identical failure.
     if (repeatedFailure && !hasTestFailure) {
+      repeatedFailure.streak.redirected = true;
       conversation.addInternalUserMessage(
         repeatedFailurePrompt(repeatedFailure.name, repeatedFailure.attempts),
       );

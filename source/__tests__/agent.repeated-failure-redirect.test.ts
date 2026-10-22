@@ -97,15 +97,102 @@ describe("repeated-failure redirect", () => {
     expect(redirects).toHaveLength(0);
   });
 
-  it("ignores volatile substrings so the same error still matches", async () => {
-    // Line numbers, hex addresses and timestamps differ each attempt but the
-    // underlying error is the same — it should still be caught.
+  it("ignores identifiable volatile fields so the same error still matches", async () => {
+    // Hex addresses, timestamps and file:line:col positions differ each attempt
+    // but the underlying error is the same — it should still be caught.
     const { redirects } = await scenario([
-      [fail("TypeError at 0x1a2b line 10 2026-01-01T00:00:00Z")],
-      [fail("TypeError at 0x9f3c line 42 2026-01-02T11:22:33Z")],
-      [fail("TypeError at 0xdead line 7 2026-02-03T04:05:06Z")],
+      [fail("TypeError at 0x1a2b (app.ts:10:5) 2026-01-01T00:00:00Z")],
+      [fail("TypeError at 0x9f3c (app.ts:42:9) 2026-01-02T11:22:33Z")],
+      [fail("TypeError at 0xdead (app.ts:7:1) 2026-02-03T04:05:06Z")],
     ]);
     expect(redirects).toHaveLength(1);
+  });
+
+  it("keeps meaningful numbers distinct (different HTTP codes are different errors)", async () => {
+    // Bare numbers carry meaning: 401 vs 403 vs 503 are three different
+    // failures, not one repeated three times.
+    const { redirects } = await scenario([
+      [fail("curl: request failed with status 401")],
+      [fail("curl: request failed with status 403")],
+      [fail("curl: request failed with status 503")],
+    ]);
+    expect(redirects).toHaveLength(0);
+  });
+
+  it("compares the diagnostic tail, not just leading progress output", async () => {
+    // Identical build progress fills the prefix; the real error trails it. Three
+    // different trailing errors must not be treated as the same failure.
+    const progress = "Compiling module ".repeat(400); // ~7 KB of identical prefix
+    const { redirects } = await scenario([
+      [fail(progress + "error: undefined symbol 'foo'")],
+      [fail(progress + "error: undefined symbol 'bar'")],
+      [fail(progress + "error: undefined symbol 'baz'")],
+    ]);
+    expect(redirects).toHaveLength(0);
+  });
+
+  it("changing arguments mid-streak does not resurrect a stale counter", async () => {
+    // A → A → B → A: the B call is a change of approach, so the A streak resets
+    // and the final A is only the first failure of a new streak.
+    const { redirects } = await scenario([
+      [fail("boom", { command: "a" })],
+      [fail("boom", { command: "a" })],
+      [fail("boom", { command: "b" })],
+      [fail("boom", { command: "a" })],
+    ]);
+    expect(redirects).toHaveLength(0);
+  });
+
+  it("re-offers a redirect suppressed by a batched test failure", async () => {
+    // A command's third identical failure is batched with a failing test run on
+    // the third turn, which suppresses the redirect that turn. Two more identical
+    // command failures (without a test) must still deliver it.
+    const tools = new ToolRegistry();
+    const cmdFail: ToolResult = { output: "boom", isError: true };
+    const testFail: ToolResult = {
+      output: "failed",
+      isError: true,
+      verification: { status: "failed", passed: 0, failed: 1, errors: 0, exitCode: 1 },
+    };
+    tools.register({
+      schema: { name: "run_command", description: "mock", inputSchema: { type: "object", properties: {} } },
+      execute: vi.fn(async () => ({ ...cmdFail })),
+    });
+    tools.register({
+      schema: { name: "run_tests", description: "mock", inputSchema: { type: "object", properties: {} } },
+      execute: vi.fn(async () => ({ ...testFail })),
+    });
+    // Turns 1-2: command fails. Turn 3: command + failing test (suppresses).
+    // Turns 4-5: command fails alone (should now deliver).
+    const batches: { name: string }[][] = [
+      [{ name: "run_command" }],
+      [{ name: "run_command" }],
+      [{ name: "run_command" }, { name: "run_tests" }],
+      [{ name: "run_command" }],
+      [{ name: "run_command" }],
+    ];
+    const streams: StreamEvent[][] = batches.map((calls, batch) => [
+      ...calls.flatMap((call, index): StreamEvent[] => [
+        { type: "tool_call_start", toolCallId: `${batch}-${index}`, toolName: call.name },
+        { type: "tool_call_delta", toolCallId: `${batch}-${index}`, argsJson: "{}" },
+      ]),
+      { type: "message_end", stopReason: "tool_use" },
+    ]);
+    const stream = vi.fn(() => (async function* () {
+      for (const event of streams.shift() ?? [{ type: "message_end", stopReason: "end_turn" } as StreamEvent]) yield event;
+    })());
+    const conversation = new ConversationState();
+    conversation.addUserMessage("do the thing");
+    for await (const _ of runAgentLoop({
+      provider: { name: "mock", stream },
+      conversation,
+      toolRegistry: tools,
+      model: "mock",
+      permissionMode: "auto-accept",
+      iterationsBudget: { remaining: 50, total: 50 },
+    })) void _;
+    const prompts = conversation.getMessages().filter((m) => m.internal).flatMap((m) => m.content.map((b) => b.text ?? ""));
+    expect(prompts.filter((p) => p.startsWith(REPEATED_FAILURE_PREFIX))).toHaveLength(1);
   });
 
   it("resets the streak after a success for the same call", async () => {
