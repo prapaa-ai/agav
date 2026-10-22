@@ -1,7 +1,6 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
-import { estimateTokens, getContextLimits } from "../utils/tokens.js";
-import { buildSystemPrompt } from "../utils/system-prompt.js";
-import { getCachedSkills, buildSkillCatalog } from "../skills/loader.js";
+import { getContextLimits } from "../utils/tokens.js";
+import { computeContextOccupancy, resolveContextWindow } from "./context-usage.js";
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`;
@@ -18,52 +17,15 @@ export const contextCommand: SlashCommand = {
   description: "Show context window usage",
   usage: "Usage: /context\n\nShows a breakdown of what's consuming your context window:\nsystem prompt, tools, MCP tools, skills, and conversation messages.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
-    const manualOverride = context.conversation.getManualContextWindow(context.config.model);
-    if (manualOverride !== undefined) {
-      context.conversation.setContextWindow(manualOverride);
-    } else if (context.conversation.getContextWindow() === undefined && context.provider?.getContextWindow) {
-      const selectionVersion = context.getModelSelectionVersion?.();
-      try {
-        const reported = await context.provider.getContextWindow(context.config.model);
-        if (reported !== undefined && reported > 0
-          && (selectionVersion === undefined || context.getModelSelectionVersion?.() === selectionVersion)) {
-          context.conversation.setContextWindow(reported);
-        }
-      } catch {
-        // Metadata is optional; retain the name-based estimate when lookup fails.
-      }
-    }
+    await resolveContextWindow(context);
     const limits = getContextLimits(context.config.model, context.conversation.getContextWindow());
     const maxTokens = limits.maxTokens;
 
-    const effectivePrompt = context.conversation.getSystemPrompt();
-    const systemPrompt = effectivePrompt ?? context.config.systemPrompt ?? await buildSystemPrompt();
-    const systemTokens = estimateTokens(systemPrompt);
-
-    const allTools = context.toolRegistry.list();
-    const mcpTools = allTools.filter(t => t.mcpServerName !== undefined || t.schema.name === "mcp_read_resource");
-    const mcpNames = new Set(mcpTools.map(t => t.schema.name));
-    const builtinTools = allTools.filter(t => !mcpNames.has(t.schema.name));
-
-    const schemas = context.toolRegistry.getSchemas();
-    let builtinToolTokens = 0;
-    let mcpToolTokens = 0;
-    for (const s of schemas) {
-      const tokens = estimateTokens(s.name) + estimateTokens(s.description ?? "") + estimateTokens(JSON.stringify(s.inputSchema ?? {}));
-      if (mcpNames.has(s.name)) {
-        mcpToolTokens += tokens;
-      } else {
-        builtinToolTokens += tokens;
-      }
-    }
-
-    const skills = getCachedSkills();
-    const skillCatalog = buildSkillCatalog(skills);
-    // Stable context already embeds the skill catalog in an effective prompt.
-    const skillTokens = effectivePrompt === undefined && skillCatalog ? estimateTokens(skillCatalog) : 0;
-
-    const messageTokens = context.conversation.tokenCount;
-    const usedTokens = systemTokens + builtinToolTokens + mcpToolTokens + skillTokens + messageTokens;
+    const occupancy = await computeContextOccupancy(context);
+    const {
+      systemTokens, builtinToolTokens, mcpToolTokens, skillTokens, messageTokens,
+      usedTokens, builtinTools, mcpTools, skills, effectivePrompt,
+    } = occupancy;
     const freeTokens = Math.max(0, maxTokens - usedTokens);
 
     const debugState = context.getDebugState();

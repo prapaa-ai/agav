@@ -1,6 +1,7 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import { getContextLimits } from "../utils/tokens.js";
 import { getSandboxName } from "../utils/sandbox.js";
+import { computeContextOccupancy, resolveContextWindow } from "./context-usage.js";
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m`;
@@ -17,28 +18,14 @@ export const statusCommand: SlashCommand = {
   description: "Show session status, model, and resource usage at a glance",
   usage: "Usage: /status\n\nShows active session configuration, model, reasoning effort, permissions, working directory, token usage, and MCP servers.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
-    const manualOverride = context.conversation?.getManualContextWindow?.(context.config?.model);
-    if (manualOverride !== undefined) {
-      context.conversation?.setContextWindow?.(manualOverride);
-    } else if (context.conversation?.getContextWindow?.() === undefined && context.provider?.getContextWindow) {
-      const selectionVersion = context.getModelSelectionVersion?.();
-      try {
-        const reported = await context.provider.getContextWindow(context.config.model);
-        if (
-          reported !== undefined &&
-          reported > 0 &&
-          (selectionVersion === undefined || context.getModelSelectionVersion?.() === selectionVersion)
-        ) {
-          context.conversation?.setContextWindow?.(reported);
-        }
-      } catch {
-        // Metadata is optional; retain the name-based estimate when lookup fails.
-      }
-    }
+    await resolveContextWindow(context);
 
     const limits = getContextLimits(context.config?.model ?? "", context.conversation?.getContextWindow?.());
     const maxTokens = limits.maxTokens;
-    const usedTokens = context.conversation?.tokenCount ?? 0;
+    // Share the occupancy math with /context so the two cannot drift: it counts
+    // the effective prompt, skills, tool schemas, and messages — not just
+    // conversation.tokenCount, which understated usage (#563).
+    const { usedTokens } = await computeContextOccupancy(context);
     const mcpCount = context.getDebugState?.()?.mcpServers?.length ?? 0;
 
     // Prefer the live session permission mode: a generic "Always" approval widens
