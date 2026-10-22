@@ -314,11 +314,23 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const text = liveRef.current.value;
   const cursorPos = Math.min(liveRef.current.cursor, text.length);
 
-  /** Replaces the buffer and places the caret, live and for the parent both. */
-  const applyEdit = (nextValue: string, nextCursor: number) => {
+  /**
+   * Replaces the buffer and places the caret, live and for the parent both.
+   *
+   * Any edit ends history browsing: once the user types, deletes, clears, or
+   * completes a suggestion the recalled text is no longer "the history entry
+   * under the cursor", so the browsing index and saved draft are dropped. The
+   * history-recall handlers themselves pass `keepHistory` to write the next
+   * entry without resetting the state they are mid-walking.
+   */
+  const applyEdit = (nextValue: string, nextCursor: number, keepHistory = false) => {
     preferredColumnRef.current = null;
     liveRef.current = { value: nextValue, cursor: nextCursor };
     lastEmittedRef.current = nextValue;
+    if (!keepHistory) {
+      historyIndexRef.current = -1;
+      draftRef.current = null;
+    }
     emitValue(nextValue);
     bumpCursor((n) => n + 1);
   };
@@ -796,7 +808,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         const nextIdx = Math.min(historyIndexRef.current + 1, history.length - 1);
         historyIndexRef.current = nextIdx;
         const msg = history[history.length - 1 - nextIdx]!;
-        applyEdit(msg, msg.length);
+        applyEdit(msg, msg.length, /* keepHistory */ true);
         return;
       }
 
@@ -816,7 +828,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         }
         historyIndexRef.current--;
         const msg = history[history.length - 1 - historyIndexRef.current]!;
-        applyEdit(msg, msg.length);
+        applyEdit(msg, msg.length, /* keepHistory */ true);
         return;
       }
 

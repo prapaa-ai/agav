@@ -90,6 +90,8 @@ const mount = async () => {
 
 const UP = Buffer.from("\x1b[A");
 const DOWN = Buffer.from("\x1b[B");
+const ESCAPE = Buffer.from("\x1b");
+const BACKSPACE = Buffer.from("\x7f");
 
 const press = async (
   instance: { waitUntilRenderFlush: () => Promise<void> },
@@ -99,6 +101,18 @@ const press = async (
 ) => {
   for (let i = 0; i < times; i++) {
     stdin.emit("data", key);
+    // eslint-disable-next-line no-await-in-loop
+    await settle(instance);
+  }
+};
+
+const type = async (
+  instance: { waitUntilRenderFlush: () => Promise<void> },
+  stdin: NodeJS.ReadStream,
+  text: string,
+) => {
+  for (const ch of text) {
+    stdin.emit("data", Buffer.from(ch));
     // eslint-disable-next-line no-await-in-loop
     await settle(instance);
   }
@@ -140,6 +154,42 @@ describe("InputPrompt history navigation past recalled slash commands", () => {
     // One more Down restores the empty draft.
     await press(instance, stdin, DOWN);
     expect(currentValue).toBe("");
+
+    instance.unmount();
+  });
+});
+
+describe("InputPrompt ends history browsing on cancel or edit", () => {
+  it("Escape then a fresh slash command navigates suggestions, not history", async () => {
+    const { instance, stdin } = await mount();
+
+    // Recall "/model", then Escape to clear it.
+    await press(instance, stdin, UP);
+    expect(currentValue).toBe("/model");
+    await press(instance, stdin, ESCAPE);
+    expect(currentValue).toBe("");
+
+    // Typing "/" opens command suggestions on a fresh draft. Down must move
+    // the suggestion selection, never restore the stale history draft.
+    await type(instance, stdin, "/");
+    await press(instance, stdin, DOWN);
+    expect(currentValue).toBe("/");
+
+    instance.unmount();
+  });
+
+  it("backspacing a recalled command leaves suggestion nav, not history", async () => {
+    const { instance, stdin } = await mount();
+
+    // Recall "/model", then backspace down to just "/".
+    await press(instance, stdin, UP);
+    expect(currentValue).toBe("/model");
+    await press(instance, stdin, BACKSPACE, 5);
+    expect(currentValue).toBe("/");
+
+    // Down must drive the suggestion dropdown, not resume history browsing.
+    await press(instance, stdin, DOWN);
+    expect(currentValue).toBe("/");
 
     instance.unmount();
   });
