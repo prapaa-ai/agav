@@ -30,7 +30,16 @@ export type AgentEvent =
   | { type: "turn_complete" }
   | { type: "steer_applied"; directives: string[] }
   | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
-  | { type: "error"; error: Error; reason?: "iterations_exhausted" };
+  | { type: "error"; error: Error; reason?: "iterations_exhausted" | "provider_idle_timeout" };
+
+export class ProviderIdleTimeoutError extends Error {
+  readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
+    super(`Provider response idle timeout after ${timeoutMs}ms`);
+    this.name = "ProviderIdleTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
 
 import type { DiffLine } from "../utils/diff.js";
 import { computeEditDiff, computeDiff } from "../utils/diff.js";
@@ -123,6 +132,13 @@ interface LoopParams {
    * contexts (subagents, skills, pipe mode), which just take the default.
    */
   requestManualContextWindow?: (model: string, signal?: AbortSignal) => Promise<number | undefined>;
+  /**
+   * Idle timeout in milliseconds waiting for provider stream activity.
+   * Clock starts when an attempt begins and resets on stream activity.
+   * On expiry, the attempt is aborted with ProviderIdleTimeoutError.
+   * When unset or <= 0, no timer is set and SDK defaults stay unchanged.
+   */
+  providerIdleTimeout?: number;
 }
 
 /** Assumed window for a model no catalog can report and the user declined to specify. */
@@ -399,79 +415,141 @@ export async function* runAgentLoop(
       yield { type: "tool_call_input_delta", toolCallId: id, argsJson };
     }
 
+    let idleTimer: NodeJS.Timeout | null = null;
+    let timedOut = false;
+    const timeoutMs = params.providerIdleTimeout;
+    const hasIdleTimeout = typeof timeoutMs === "number" && timeoutMs > 0;
+    const timeoutError = hasIdleTimeout ? new ProviderIdleTimeoutError(timeoutMs) : undefined;
+    const attemptController = new AbortController();
+
+    const resetIdleTimer = () => {
+      if (!hasIdleTimeout || attemptController.signal.aborted) return;
+      if (idleTimer !== null) {
+        clearTimeout(idleTimer);
+      }
+      idleTimer = setTimeout(() => {
+        idleTimer = null;
+        timedOut = true;
+        attemptController.abort(timeoutError);
+      }, timeoutMs);
+    };
+
+    const onParentAbort = () => {
+      if (idleTimer !== null) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+      attemptController.abort(signal?.reason ?? new Error("Aborted"));
+    };
+
+    if (signal?.aborted) {
+      attemptController.abort(signal.reason ?? new Error("Aborted"));
+    } else if (signal) {
+      signal.addEventListener("abort", onParentAbort, { once: true });
+    }
+
     try {
-      if (!seededCall) for await (const event of provider.stream({
-        model,
-        messages: conversation.getMessages(),
-        tools: toolRegistry.getSchemas(),
-        systemPrompt,
-        effort,
-        maxTokens,
-        signal,
-      })) {
-        if (signal?.aborted) {
-          yield { type: "error", error: new Error("Aborted") };
-          return;
-        }
+      if (!seededCall) {
+        resetIdleTimer();
+        for await (const event of provider.stream({
+          model,
+          messages: conversation.getMessages(),
+          tools: toolRegistry.getSchemas(),
+          systemPrompt,
+          effort,
+          maxTokens,
+          signal: attemptController.signal,
+        })) {
+          resetIdleTimer();
 
-        switch (event.type) {
-          case "text_delta":
-            textAccum += event.text;
-            yield { type: "streaming_text", text: event.text };
-            break;
-
-          case "thinking_delta":
-            yield { type: "thinking", text: event.text };
-            break;
-
-          case "tool_call_start":
-            toolCalls.set(event.toolCallId, {
-              name: event.toolName,
-              argsJson: "",
-            });
-            yield {
-              type: "tool_call_start",
-              toolName: event.toolName,
-              toolCallId: event.toolCallId,
-            };
-            break;
-
-          case "tool_call_delta": {
-            const call = toolCalls.get(event.toolCallId);
-            if (call) {
-              call.argsJson += event.argsJson;
-              if (event.providerMetadata) {
-                call.providerMetadata = { ...call.providerMetadata, ...event.providerMetadata };
+          if (attemptController.signal.aborted) {
+            if (timedOut || attemptController.signal.reason instanceof ProviderIdleTimeoutError) {
+              if (textAccum) {
+                conversation.addAssistantMessage([{ type: "text", text: textAccum }]);
+                yield { type: "assistant_message_complete", text: textAccum };
               }
-              if (event.argsJson) {
-                yield {
-                  type: "tool_call_input_delta",
-                  toolCallId: event.toolCallId,
-                  argsJson: event.argsJson,
-                };
-              }
+              yield { type: "error", error: timeoutError!, reason: "provider_idle_timeout" };
+              return;
             }
-            break;
+            yield { type: "error", error: new Error("Aborted") };
+            return;
           }
 
-          case "usage":
-            yield { type: "usage", inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens };
-            break;
+          switch (event.type) {
+            case "text_delta":
+              textAccum += event.text;
+              yield { type: "streaming_text", text: event.text };
+              break;
 
-          case "message_end":
-            stopReason = event.stopReason;
-            break;
+            case "thinking_delta":
+              yield { type: "thinking", text: event.text };
+              break;
 
-          case "retry":
-            yield event;
-            break;
+            case "tool_call_start":
+              toolCalls.set(event.toolCallId, {
+                name: event.toolName,
+                argsJson: "",
+              });
+              yield {
+                type: "tool_call_start",
+                toolName: event.toolName,
+                toolCallId: event.toolCallId,
+              };
+              break;
 
-          case "error":
-            yield { type: "error", error: event.error };
-            return;
+            case "tool_call_delta": {
+              const call = toolCalls.get(event.toolCallId);
+              if (call) {
+                call.argsJson += event.argsJson;
+                if (event.providerMetadata) {
+                  call.providerMetadata = { ...call.providerMetadata, ...event.providerMetadata };
+                }
+                if (event.argsJson) {
+                  yield {
+                    type: "tool_call_input_delta",
+                    toolCallId: event.toolCallId,
+                    argsJson: event.argsJson,
+                  };
+                }
+              }
+              break;
+            }
+
+            case "usage":
+              yield { type: "usage", inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens };
+              break;
+
+            case "message_end":
+              stopReason = event.stopReason;
+              break;
+
+            case "retry":
+              yield event;
+              break;
+
+            case "error":
+              yield { type: "error", error: event.error };
+              return;
+          }
         }
       }
     } catch (err) {
+      if (timedOut || attemptController.signal.reason instanceof ProviderIdleTimeoutError || err instanceof ProviderIdleTimeoutError) {
+        if (textAccum) {
+          conversation.addAssistantMessage([{ type: "text", text: textAccum }]);
+          yield { type: "assistant_message_complete", text: textAccum };
+        }
+        yield {
+          type: "error",
+          error: timeoutError!,
+          reason: "provider_idle_timeout",
+        };
+        return;
+      }
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       if (/context.*(length|window|limit|overflow)|too many tokens|maximum.*token/i.test(msg)) {
         const { compacted: recovered, droppedCount: recoveredCount } = await conversation.compactIfNeeded(true, summarize);
@@ -489,6 +567,14 @@ export async function* runAgentLoop(
         error: err instanceof Error ? err : new Error(String(err)),
       };
       return;
+    } finally {
+      if (idleTimer !== null) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+      if (signal) {
+        signal.removeEventListener("abort", onParentAbort);
+      }
     }
 
     // Build assistant message content blocks

@@ -184,6 +184,7 @@ export async function executeNativeAgent(
       iterationsBudget: deps.iterationsBudget ?? { remaining: deps.config.maxIterations, total: deps.config.maxIterations },
       allowedTools: nativeTools,
       hooks: deps.hooks,
+      providerIdleTimeout: deps.config.providerIdleTimeout,
     });
 
     for await (const event of loopGenerator) {

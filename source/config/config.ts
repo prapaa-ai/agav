@@ -79,6 +79,13 @@ export interface AgavConfig {
   backgroundAutomation?: "on" | "paused";
   search?: boolean;
   /**
+   * Idle timeout in milliseconds waiting for provider stream activity.
+   * Clock starts when an attempt begins and resets on stream activity.
+   * On expiry, the attempt is aborted. When unset or disabled, Agav adds
+   * no timer and existing SDK defaults stay unchanged.
+   */
+  providerIdleTimeout?: number;
+  /**
    * Organization policy (org tier) fields. Populated only when an admin ships an
    * org config; see config/org-config.ts. These take precedence over global,
    * project, and environment sources and the user cannot loosen them.
@@ -296,6 +303,11 @@ export const PROJECT_CONFIG_TEMPLATE = {
       },
     },
   },
+  providerIdleTimeout: {
+    description: "Idle timeout in milliseconds waiting for provider stream activity (0 or 'disabled' to unset). When unset or disabled, Agav adds no timer and existing SDK defaults stay unchanged.",
+    type: "number",
+    eg: 60000,
+  },
   search: {
     description: "Whether web search is enabled.",
     type: "boolean",
@@ -413,7 +425,38 @@ const PROJECT_CONFIG_DENY = new Set<string>([
 ]);
 
 /** Ignore invalid hand-edited values instead of passing unsupported effort levels to providers. */
+/**
+ * Validate provider-response idle timeout.
+ * Accepts a positive finite integer in milliseconds (1 to 2,147,483,647)
+ * or explicit disabled forms (null, undefined, "disabled", "off").
+ * Rejects invalid, non-finite, zero, negative, or out-of-range values with a clear error.
+ */
+export function validateProviderIdleTimeout(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "" || value === "disabled" || value === "off") {
+    return undefined;
+  }
+  let num: number;
+  if (typeof value === "number") {
+    num = value;
+  } else if (typeof value === "string" && /^[0-9]+$/.test(value.trim())) {
+    num = Number(value.trim());
+  } else {
+    throw new Error(
+      `Invalid providerIdleTimeout: "${String(value)}". providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
+    );
+  }
+  if (!Number.isSafeInteger(num) || num <= 0 || num > 2147483647) {
+    throw new Error(
+      `Invalid providerIdleTimeout: ${num}. providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
+    );
+  }
+  return num;
+}
+
 function sanitizeConfig(merged: AgavConfig): void {
+  if (merged.providerIdleTimeout !== undefined) {
+    merged.providerIdleTimeout = validateProviderIdleTimeout(merged.providerIdleTimeout);
+  }
   if (!isEffortLevel(merged.effort)) {
     merged.effort = DEFAULT_CONFIG.effort;
   }
