@@ -1,6 +1,14 @@
 import { render } from "./ink/index.js";
 import App from "./app.js";
-import { EFFORT_LEVELS, isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
+import { EFFORT_LEVELS, isEffortLevel, loadConfig, setSessionConfigOverrides, type AgavConfig } from "./config/config.js";
+import {
+  applyConfigOverrides,
+  describeConfigOverrides,
+  parseConfigOverride,
+  type ConfigOverride,
+} from "./config/cli-overrides.js";
+import { findClosest } from "./utils/suggestions.js";
+import { parseMaxTurns } from "./utils/cli-args.js";
 import { createProvider } from "./providers/registry.js";
 import type { LLMProvider } from "./providers/types.js";
 import { fetchAvailableModels, findMatchingModels, type FetchedModel } from "./commands/model.js";
@@ -35,51 +43,20 @@ import {
   selectConfiguredProvider,
   type ProviderName,
 } from "./config/startup.js";
-import { clampPermissionMode } from "./config/org-config.js";
+import { applyGatewayToken, applyOrgConfig, clampPermissionMode, loadOrgPolicy } from "./config/org-config.js";
 
 const KNOWN_FLAGS = [
   "--help", "-h", "--version", "-v", "--provider", "-p", "--model", "-m",
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
   "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--trajectory",
-  "--name", "--search",
+  "--name", "--search", "--config", "-c",
 ];
 
-function levenshtein(a: string, b: string): number {
-  const m = a.length, n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0) as number[]);
-  for (let i = 0; i <= m; i++) dp[i]![0] = i;
-  for (let j = 0; j <= n; j++) dp[0]![j] = j;
-  for (let i = 1; i <= m; i++)
-    for (let j = 1; j <= n; j++)
-      dp[i]![j] = Math.min(
-        dp[i - 1]![j]! + 1,
-        dp[i]![j - 1]! + 1,
-        dp[i - 1]![j - 1]! + (a[i - 1] !== b[j - 1] ? 1 : 0),
-      );
-  return dp[m]![n]!;
-}
-
 function findClosestFlag(input: string): string | undefined {
-  let best: string | undefined;
-  let bestDist = 4;
-  for (const flag of KNOWN_FLAGS) {
-    if (Math.abs(input.length - flag.length) > 2) continue;
-    const d = levenshtein(input, flag);
-    if (d < bestDist) { bestDist = d; best = flag; }
-  }
-  return best;
+  return findClosest(input, KNOWN_FLAGS);
 }
 
-function parseMaxTurns(raw: string): number {
-  const value = raw.trim();
-  const n = Number(value);
-  if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(n) || n <= 0) {
-    process.stderr.write("Error: --max-turns must be a positive safe integer (1–9007199254740991). Use --max-turns N or --max-turns=N.\n");
-    process.exit(1);
-  }
-  return n;
-}
 /** Choose between providers which expose the same model during interactive startup. */
 function pickProviderForModel(model: string, matches: FetchedModel[]): Promise<FetchedModel | null> {
   const stdin = process.stdin;
@@ -145,7 +122,7 @@ export function parseArgs(argv: string[]) {
       i++;
       continue;
     }
-    
+
     if ((arg === "--help" || arg === "-h") && flags.job) {
       // `agav job [tick|daemon] --help` is handled by job-cli's own usage output.
       flags._.push(arg);
@@ -240,6 +217,16 @@ export function parseArgs(argv: string[]) {
       flags.maxTurns = parseMaxTurns(arg.slice("--max-turns=".length));
     } else if (arg === "--search") {
       flags.search = true;
+    } else if (arg === "-c" || arg === "--config") {
+      const nextArg = argv[i + 1];
+      if (nextArg === undefined) {
+        process.stderr.write("Error: -c/--config expects key=value (e.g. -c effort=low).\n");
+        process.exit(1);
+      }
+      i++;
+      (flags.configOverrides ??= [] as ConfigOverride[]).push(parseConfigOverride(nextArg));
+    } else if (arg.startsWith("--config=")) {
+      (flags.configOverrides ??= [] as ConfigOverride[]).push(parseConfigOverride(arg.slice("--config=".length)));
     } else if (arg === "update" && !subcommandSeen) {
       flags.update = true;
       subcommandSeen = true;
@@ -318,9 +305,19 @@ export function parseArgs(argv: string[]) {
     pos.shift();
   }
 
+  // login/logout resolve their own config before any session overlay exists, so a
+  // -c override would be silently dropped. Reject instead; --control-plane is the
+  // supported way to point login at a specific address.
+  if ((flags.login || flags.logout) && flags.configOverrides?.length) {
+    const keys = (flags.configOverrides as ConfigOverride[]).map((o) => o.path.join(".")).join(", ");
+    const hint = flags.login ? " Use --control-plane <url> to choose the control plane." : "";
+    process.stderr.write(`Error: -c/--config is not supported with "agav ${flags.logout ? "logout" : "login"}" (got: ${keys}).${hint}\n`);
+    process.exit(1);
+  }
+
   if (!flags.update && !flags.agents && !flags.skills && !flags.sessions && !flags.mcp && !flags.run && !flags.job && !flags.print && !flags.login && !flags.logout && pos.length > 0) {
-     process.stderr.write(`error: unexpected arguments: ${pos.join(" ")}\n`);
-     process.exit(1);
+    process.stderr.write(`error: unexpected arguments: ${pos.join(" ")}\n`);
+    process.exit(1);
   }
 
   return flags;
@@ -619,7 +616,7 @@ export async function main() {
     $ cat file | agav -P "explain this"
 
   Options
-    --provider, -p       LLM provider: anthropic, openai, openrouter, gemini, vertex-ai, or ollama (default: anthropic)
+    --provider, -p       LLM provider: anthropic, openai, openrouter, nvidia, deepseek, gemini, vertex-ai, or ollama (default: anthropic)
     --model, -m          Model name (default: claude-sonnet-4-20250514 / gpt-4o / llama3.2)
     --name <title>       Set initial name for the session
     --cwd <dir>          Set the working directory for the session
@@ -644,6 +641,10 @@ export async function main() {
                          continuations and retries retain it, new prompts reset it.
                          Tool execution itself does not spend an additional turn.
     --search             Enable web search tool for this session
+    --config, -c k=v     Override one config value for this session (repeatable).
+                         Layers over config files and env; dedicated flags win.
+                         Supports dotted paths: -c theme.promptColor=blue.
+                         Values are session-only and never saved to config.json.
 
   Agent Commands
     $ agav agents list             List installed agents
@@ -663,6 +664,7 @@ export async function main() {
   Examples
     $ agav
     $ agav --provider openai --model gpt-4o
+    $ agav -c effort=low -c maxIterations=200
     $ agav --provider vertex-ai --model vertex/gemini-3.5-flash
     $ agav run "review the code in src/"
     $ agav run --permission '{"bash":"deny"}' "check for security issues"
@@ -777,6 +779,38 @@ export async function main() {
   const config = await loadConfig();
   const keybindings = await loadKeybindings();
 
+  // -c/--config: session-only overlays over config files/env. Provider/model overrides
+  // also pin against the last-session restore (but skip --model's catalog routing).
+  const configOverrides = flags.configOverrides as ConfigOverride[] | undefined;
+
+  // Original pairing, captured before -c rewrites it: the startup resolver compares
+  // against this to detect a provider change and re-pick the model.
+  const providerBeforeOverrides = config.provider;
+  const modelBeforeOverrides = config.model;
+
+  if (configOverrides?.length) {
+    // Register the session overlay so later loadConfig() consumers (tools, marketplace) see -c too.
+    setSessionConfigOverrides({
+      entries: configOverrides,
+      apply: (cfg) => applyConfigOverrides(cfg, configOverrides),
+    });
+    applyConfigOverrides(config, configOverrides);
+    // Org policy outranks every CLI layer — re-run loadConfig's org tail so -c cannot
+    // overwrite pins, the permission floor, the allowedTools merge, or gateway auth.
+    const org = await loadOrgPolicy();
+    applyOrgConfig(config, org.config);
+    applyGatewayToken(config, org.config, org.gatewayToken);
+    // Interactive only; print/run output stays machine-readable.
+    if (!flags.print && !flags.run && process.stdin.isTTY) {
+      process.stderr.write(dim(`  session overrides: ${describeConfigOverrides(configOverrides)}\n`));
+    }
+  }
+  const configOverrideProvider = configOverrides?.some((o) => o.path.length === 1 && o.path[0] === "provider")
+    ? config.provider : undefined;
+  const configOverrideModel = configOverrides?.some((o) => o.path.length === 1 && o.path[0] === "model")
+    && typeof config.model === "string" && config.model
+    ? config.model : undefined;
+
   let cliProvider: ProviderName | undefined;
   if (typeof flags.provider === "string") {
     const p = flags.provider;
@@ -785,6 +819,8 @@ export async function main() {
       process.exit(1);
     }
     cliProvider = p;
+  } else if (configOverrideProvider !== undefined && isProviderName(configOverrideProvider)) {
+    cliProvider = configOverrideProvider;
   }
 
   // When the organization policy allows exactly one provider and the user did not
@@ -893,9 +929,16 @@ export async function main() {
     }
   }
 
+  // Restore the pre-(-c) pairing so the resolver's providerChanged check sees the change;
+  // -c provider/model travel as cliProvider/cliModel inputs instead.
+  if (configOverrides?.length) {
+    config.provider = providerBeforeOverrides;
+    config.model = modelBeforeOverrides;
+  }
+
   Object.assign(config, await resolveStartupSelection(config, {
     cliProvider,
-    cliModel: typeof flags.model === "string" ? flags.model : undefined,
+    cliModel: typeof flags.model === "string" ? flags.model : configOverrideModel,
     session: resumeSelection,
   }));
 
@@ -930,7 +973,7 @@ export async function main() {
     // Keep an explicit --model: falling back to a different provider should not
     // silently discard the model the user asked for.
     const selected = selectConfiguredProvider(config, {
-      keepModel: typeof flags.model === "string",
+      keepModel: typeof flags.model === "string" || configOverrideModel !== undefined,
     });
     if (!selected) {
       process.stderr.write(`\n  Agav — ${noProviderCredentialsError()}\n\n`);

@@ -32,6 +32,7 @@ describe("config", () => {
     delete process.env.OLLAMA_API_KEY;
     delete process.env.VERTEX_AI_CREDENTIALS_PATH;
     delete process.env.VERTEX_AI_LOCATION;
+    delete process.env.AGAV_ORG_CONFIG;
   });
 
   it("accepts valid effort levels", async () => {
@@ -303,5 +304,122 @@ describe("config", () => {
     expect(body).toContain("enc:r");
     expect(body).toContain("enc:g");
     expect(body).toContain("enc:l");
+  });
+
+  it("applies -c overrides over a loaded config, schema-validates them, and never persists them", async () => {
+    const overrides = await import("../config/cli-overrides.js");
+    const exit = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit"); });
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      readFile.mockImplementation(async (path: any) => {
+        if (String(path).endsWith("config.json")) {
+          return JSON.stringify({ effort: "low", maxIterations: 100 });
+        }
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      });
+
+      const mod = await import("../config/config.js");
+      const loaded = await mod.loadConfig();
+      expect(loaded.effort).toBe("low");
+
+      overrides.applyConfigOverrides(loaded, [overrides.parseConfigOverride("effort=high")]);
+      expect(loaded.effort).toBe("high");
+
+      // Unknown key and value outside the schema's enum are rejected.
+      expect(() => overrides.parseConfigOverride("efrot=high")).toThrow("exit");
+      expect(() => overrides.parseConfigOverride("effort=nope")).toThrow("exit");
+
+      const writesBefore = writeFile.mock.calls.length;
+      overrides.applyConfigOverrides(loaded, [overrides.parseConfigOverride("maxIterations=42")]);
+      expect(loaded.maxIterations).toBe(42);
+      expect(writeFile.mock.calls.length).toBe(writesBefore);
+    } finally {
+      exit.mockRestore();
+      stderr.mockRestore();
+    }
+  });
+
+  it("registered session overrides apply to every later loadConfig() consumer", async () => {
+    readFile.mockImplementation(async (path: any) => {
+      if (String(path).endsWith("config.json")) {
+        return JSON.stringify({ backgroundJobsEnabled: true, agentMarketplace: "https://disk.example" });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    const overrides = await import("../config/cli-overrides.js");
+    const entries = [
+      overrides.parseConfigOverride("backgroundJobsEnabled=false"),
+      overrides.parseConfigOverride("agentMarketplace=https://session.example"),
+    ];
+    mod.setSessionConfigOverrides({ entries, apply: (cfg) => overrides.applyConfigOverrides(cfg, entries) });
+
+    // Fresh loadConfig() — the consumer pattern (run_background_job, marketplace).
+    const consumerView = await mod.loadConfig();
+    expect(consumerView.backgroundJobsEnabled).toBe(false);
+    expect(consumerView.agentMarketplace).toBe("https://session.example");
+    // The template write is loadConfig's only writer; no write may carry a session value.
+    const writtenBodies = writeFile.mock.calls.map((call) => String(call[1]));
+    expect(writtenBodies.every((body) => !body.includes("session.example"))).toBe(true);
+    expect(writtenBodies.every((body) => !body.includes("\"backgroundJobsEnabled\": false"))).toBe(true);
+
+    mod.setSessionConfigOverrides(undefined);
+    expect((await mod.loadConfig()).backgroundJobsEnabled).toBe(true);
+  });
+
+  it("org policy still outranks a registered session override inside loadConfig", async () => {
+    process.env.AGAV_ORG_CONFIG = "/org/org-config.json";
+    readFile.mockImplementation(async (path: any) => {
+      const p = String(path);
+      if (p === "/org/org-config.json") return JSON.stringify({ provider: "openai", model: "gpt-org" });
+      if (p.endsWith("config.json")) return JSON.stringify({});
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    const overrides = await import("../config/cli-overrides.js");
+    const entries = [
+      overrides.parseConfigOverride("provider=ollama"),
+      overrides.parseConfigOverride("model=llama3"),
+    ];
+    mod.setSessionConfigOverrides({ entries, apply: (cfg) => overrides.applyConfigOverrides(cfg, entries) });
+
+    const loaded = await mod.loadConfig();
+    expect(loaded.provider).toBe("openai");
+    expect(loaded.model).toBe("gpt-org");
+  });
+
+  it("saveConfig never persists a session override, restoring the stored value instead", async () => {
+    readFile.mockImplementation(async (path: any) => {
+      if (String(path).endsWith("config.json")) return JSON.stringify({ effort: "low" });
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    const overrides = await import("../config/cli-overrides.js");
+    const entries = [overrides.parseConfigOverride("effort=high")];
+    mod.setSessionConfigOverrides({ entries, apply: (cfg) => overrides.applyConfigOverrides(cfg, entries) });
+
+    const loaded = await mod.loadConfig();
+    expect(loaded.effort).toBe("high");
+
+    // Saving the session config must write disk's stored value, not the override.
+    await mod.saveConfig(loaded);
+    const written = JSON.parse(String(writeFile.mock.calls.at(-1)?.[1]));
+    expect(written.effort).toBe("low");
+
+    // Override absent on disk: dropped, not added.
+    readFile.mockImplementation(async (path: any) => {
+      if (String(path).endsWith("config.json")) return JSON.stringify({});
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+    const entries2 = [overrides.parseConfigOverride("agentMarketplace=https://session.example")];
+    mod.setSessionConfigOverrides({ entries: entries2, apply: (cfg) => overrides.applyConfigOverrides(cfg, entries2) });
+    const loaded2 = await mod.loadConfig();
+    expect(loaded2.agentMarketplace).toBe("https://session.example");
+    await mod.saveConfig(loaded2);
+    const written2 = JSON.parse(String(writeFile.mock.calls.at(-1)?.[1]));
+    expect(written2.agentMarketplace).toBeUndefined();
   });
 });
