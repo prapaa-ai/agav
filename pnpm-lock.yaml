@@ -54,11 +54,11 @@ importers:
         specifier: ^6.4.299
         version: 6.4.299
       react:
-        specifier: ~19.2.9
-        version: 19.2.9
+        specifier: ~19.3.1
+        version: 19.3.1
       react-reconciler:
         specifier: 0.33.0
-        version: 0.33.0(react@19.2.9)
+        version: 0.33.0(react@19.3.1)
       scheduler:
         specifier: ^0.27.0
         version: 0.27.0
@@ -85,11 +85,11 @@ importers:
         specifier: ^26.6.5
         version: 26.6.5
       '@types/react':
-        specifier: ~19.2.18
-        version: 19.2.18
+        specifier: ~19.3.0
+        version: 19.3.0
       '@types/react-reconciler':
         specifier: 0.33.0
-        version: 0.33.0(@types/react@19.2.18)
+        version: 0.33.0(@types/react@19.3.0)
       '@types/scheduler':
         specifier: ^0.26.0
         version: 0.26.0
@@ -543,8 +543,8 @@ packages:
     peerDependencies:
       '@types/react': '*'
 
-  '@types/react@19.2.18':
-    resolution: {integrity: sha512-AnzbBERsrLKtk2XSfTbYRLjQPdy116Sty4q+T+Bp3IC4l6jNBvreVPAHmpq9qhXQM7CXZPjLVmGMw9sy+hxQ3w==}
+  '@types/react@19.3.0':
+    resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
 
   '@types/scheduler@0.26.0':
     resolution: {integrity: sha512-WFHp9YUJQ6CKshqoC37iOlHnQSmxNc795UhB26CyBBttrN9svdIrUjl/NjnNmfcwtncN0h/0PPAFWv9ovP8mLA==}
@@ -1231,8 +1231,8 @@ packages:
     peerDependencies:
       react: ^19.2.0
 
-  react@19.2.9:
-    resolution: {integrity: sha512-RuLdAokXv3sRmZa2/N8QH0KmTBIgDKC+buRUikGqow31+mGSGidLCX2o4XFq8OV+xBFWfhM9DVgTq1PPHADH4w==}
+  react@19.3.1:
+    resolution: {integrity: sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==}
     engines: {node: '>=0.10.0'}
 
   require-directory@2.1.1:
@@ -1829,11 +1829,11 @@ snapshots:
     dependencies:
       undici-types: 8.9.0
 
-  '@types/react-reconciler@0.33.0(@types/react@19.2.18)':
+  '@types/react-reconciler@0.33.0(@types/react@19.3.0)':
     dependencies:
-      '@types/react': 19.2.18
+      '@types/react': 19.3.0
 
-  '@types/react@19.2.18':
+  '@types/react@19.3.0':
     dependencies:
       csstype: 3.2.3
 
@@ -2472,12 +2472,12 @@ snapshots:
       iconv-lite: 0.7.3
       unpipe: 1.0.0
 
-  react-reconciler@0.33.0(react@19.2.9):
+  react-reconciler@0.33.0(react@19.3.1):
     dependencies:
-      react: 19.2.9
+      react: 19.3.1
       scheduler: 0.27.0
 
-  react@19.2.9: {}
+  react@19.3.1: {}
 
   require-directory@2.1.1: {}
 
