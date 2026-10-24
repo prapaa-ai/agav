@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useInput } from "../ink/index.js";
 import { ResourceManager, type ResourceAction } from "./resource-manager.js";
-import { createJobsAdapter, createJobSchedulesAdapter, jobCapabilities, revokeSchedule, REVOKE_SCHEDULE_CONFIRM, stopJob } from "../resources/job-adapters.js";
+import { createJobsAdapter, createJobSchedulesAdapter, jobCapabilities, revokeSchedule, REVOKE_SCHEDULE_CONFIRM, stopJob, abandonJob, ABANDON_JOB_CONFIRM } from "../resources/job-adapters.js";
 import type { ResourceItem } from "../resources/types.js";
 import type { ConfirmSubject, GrantAction, SessionPolicySnapshot } from "../background-jobs/types.js";
 import {
@@ -48,7 +48,13 @@ export function JobsTUI({ onExit, permissionMode, height }: JobsTUIProps) {
     headlessApprovedActions: [],
     confirmBackgroundAction: (action, spec, subject) => new Promise<boolean>((resolve) => setPending({ action, spec, subject, resolve })),
   }), [permissionMode]);
-  const jobs = useMemo(() => createJobsAdapter(), []);
+  const [includeAbandoned, setIncludeAbandoned] = useState(false);
+  const jobs = useMemo(() => ({
+    ...createJobsAdapter(includeAbandoned),
+    notice: includeAbandoned
+      ? "All jobs, including retained abandoned evidence. Abandonment is not a verified stop."
+      : "Active list: abandoned evidence hidden, not deleted. h: Show abandoned. Empty does not prove nothing is running.",
+  }), [includeAbandoned]);
   const scheduleAdapter = useMemo(() => createJobSchedulesAdapter(session), [session]);
   useEffect(() => () => { pendingRef.current?.resolve(false); pendingRef.current = null; }, []);
   useInput((input, key) => {
@@ -67,8 +73,10 @@ export function JobsTUI({ onExit, permissionMode, height }: JobsTUIProps) {
     ] : [
       // Only live jobs can be stopped, so the action is hidden (and no approval is requested) otherwise.
       { key: "x", label: "Stop", inDetail: true, when: (item: ResourceItem) => item.stoppable === true, run: async (item: Parameters<ResourceAction["run"]>[0]) => item ? stopJob(item.id, session) : undefined },
+      { key: "a", label: "Abandon", inDetail: true, confirm: ABANDON_JOB_CONFIRM, when: (item: ResourceItem) => item.abandonable === true, run: async (item: Parameters<ResourceAction["run"]>[0]) => item ? abandonJob(item.id, session) : undefined },
+      { key: "h", label: includeAbandoned ? "Hide abandoned" : "Show abandoned", run: () => setIncludeAbandoned(!includeAbandoned) },
     ]),
     { key: "c", label: "Capabilities", run: async () => ({ detail: await jobCapabilities() }) },
   ];
-  return <ResourceManager key={String(schedules)} adapter={schedules ? scheduleAdapter : jobs} height={height} onExit={onExit} actions={actions} prompt={pending ? confirmationPrompt(pending) : undefined} promptDetails={pending ? confirmationDetails(pending) : undefined} />;
+  return <ResourceManager key={`${schedules}-${includeAbandoned}`} adapter={schedules ? scheduleAdapter : jobs} height={height} onExit={onExit} actions={actions} prompt={pending ? confirmationPrompt(pending) : undefined} promptDetails={pending ? confirmationDetails(pending) : undefined} />;
 }

@@ -2,7 +2,8 @@
 // Launched detached as: node entry.js <jobId> <requestId> <root> <socketPath>
 // Orchestration lives in lifecycle.ts.
 import { createFileRepositories } from "../storage/repositories.js";
-import { JobSupervisor } from "./lifecycle.js";
+import { JobSupervisor, takeInheritedEnvironment } from "./lifecycle.js";
+import { INHERITED_ENV_VAR } from "../launch-spec/environment.js";
 
 function fatal(message: string): never {
   process.stderr.write(`[background-jobs supervisor] fatal: ${message}\n`);
@@ -19,6 +20,8 @@ export async function runSupervisor(argv: string[] = process.argv.slice(2)): Pro
     );
   }
 
+  // Consume the inherited values first so they never linger in this process's own environment.
+  const inheritedEnv = takeInheritedEnvironment(process.env, INHERITED_ENV_VAR);
   const repositories = createFileRepositories(root);
 
   // The spec must be persisted before launch; a missing one is a caller bug.
@@ -37,7 +40,7 @@ export async function runSupervisor(argv: string[] = process.argv.slice(2)): Pro
     // ignored
   });
 
-  const supervisor = new JobSupervisor({ jobId, requestId, repositories, root, socketPath });
+  const supervisor = new JobSupervisor({ jobId, requestId, repositories, root, socketPath, inheritedEnv });
 
   // The open IPC socket and the workload handle keep the event loop alive; no keep-alive timer.
   await supervisor.start(spec);

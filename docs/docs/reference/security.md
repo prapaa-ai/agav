@@ -122,6 +122,12 @@ Set `sandboxRequired: true` in `~/.agav/config.json` or `.agav/config.json` to m
 { "sandboxRequired": true }
 ```
 
+Enforcement happens per `run_command` call against the *effective* backend: the requested `sandbox` override when one is given, otherwise the auto-detected backend. A call is refused, without executing, when that backend is `none`. This includes an explicit `sandbox: "none"` override, even with `AGAV_NO_SANDBOX=1`. An installed override such as `sandbox: "docker"` still runs.
+
+Agav still starts when no sandbox backend is available, but prints a startup warning that `run_command` calls will be refused.
+
+Project config (`.agav/config.json`) can't set or override `sandboxRequired`, so a repository can't turn it off. The setting covers only `run_command`. Skill shell blocks and background-job commands don't go through it, so they aren't covered.
+
 ## File tool path boundaries
 
 The file tools (`read_file`, `write_file`, `edit_file`) enforce path boundary checks at the application level, independent of the OS sandbox:
