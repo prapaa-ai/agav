@@ -482,6 +482,54 @@ describe("provider response idle timeout", () => {
     expect(errRemoveSpy).toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("recovers from context-length error while idle timer is pending without swallowing it as timeout", async () => {
+    let requests = 0;
+    const provider: LLMProvider = {
+      name: "mock",
+      stream: vi.fn((params: StreamParams) => (async function* (): AsyncGenerator<StreamEvent> {
+        requests++;
+        if (params.systemPrompt?.startsWith("Summarize this conversation")) {
+          yield { type: "text_delta", text: "Compacted summary of earlier messages." };
+          yield { type: "message_end", stopReason: "end_turn" };
+          return;
+        }
+        if (requests === 1) {
+          // Immediately throws context overflow before the 500ms idle timer expires
+          throw new Error("context window exceeded: maximum tokens reached");
+        }
+        // After compaction recovery, request 2 completes normally
+        yield { type: "text_delta", text: "Successfully answered after compaction recovery!" };
+        yield { type: "message_end", stopReason: "end_turn" };
+      })()),
+    };
+
+    const conversation = new ConversationState();
+    conversation.setModel("mock");
+    conversation.setContextWindow(1000);
+    for (let i = 0; i < 10; i++) {
+      if (i % 2 === 0) conversation.addUserMessage("context ".repeat(100));
+      else conversation.addAssistantMessage([{ type: "text", text: "response ".repeat(100) }]);
+    }
+
+    const events = await collectEvents(runAgentLoop({
+      provider,
+      conversation,
+      toolRegistry: new ToolRegistry(),
+      model: "test-model",
+      iterationsBudget: { remaining: 5, total: 5 },
+      providerIdleTimeout: 500,
+    }));
+
+    // Must NOT have timed out — should recover via compaction and complete turn
+    expect(events.some(e => e.type === "error" && (e as any).reason === "provider_idle_timeout")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({ type: "compacted" }));
+    expect(events).toContainEqual({ type: "turn_complete" });
+    expect(conversation.getMessages().at(-1)?.content).toEqual([
+      { type: "text", text: "Successfully answered after compaction recovery!" },
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe("providerIdleTimeout configuration and CLI validation", () => {
@@ -494,7 +542,6 @@ describe("providerIdleTimeout configuration and CLI validation", () => {
   it("recognizes disabled and unset states", () => {
     expect(validateProviderIdleTimeout(undefined)).toBeUndefined();
     expect(validateProviderIdleTimeout(null)).toBeUndefined();
-    expect(validateProviderIdleTimeout("")).toBeUndefined();
     expect(validateProviderIdleTimeout("disabled")).toBeUndefined();
     expect(validateProviderIdleTimeout("off")).toBeUndefined();
   });
@@ -507,6 +554,8 @@ describe("providerIdleTimeout configuration and CLI validation", () => {
     "foo",
     "0",
     "-5",
+    "",
+    "   ",
     NaN,
     Infinity,
     true,
@@ -529,6 +578,7 @@ describe("providerIdleTimeout configuration and CLI validation", () => {
     ["--provider-idle-timeout", "-5"],
     ["--provider-idle-timeout", "2147483648"],
     ["--provider-idle-timeout", "abc"],
+    ["--provider-idle-timeout", ""],
     ["--provider-idle-timeout"],
   ])("rejects invalid CLI flag arguments: %j", (...args) => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => { throw new Error("exit"); });

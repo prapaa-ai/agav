@@ -432,25 +432,35 @@ const PROJECT_CONFIG_DENY = new Set<string>([
  * Rejects invalid, non-finite, zero, negative, or out-of-range values with a clear error.
  */
 export function validateProviderIdleTimeout(value: unknown): number | undefined {
-  if (value === undefined || value === null || value === "" || value === "disabled" || value === "off") {
+  if (value === undefined || value === null) {
     return undefined;
   }
-  let num: number;
-  if (typeof value === "number") {
-    num = value;
-  } else if (typeof value === "string" && /^[0-9]+$/.test(value.trim())) {
-    num = Number(value.trim());
-  } else {
+  if (typeof value === "string") {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed === "disabled" || trimmed === "off") {
+      return undefined;
+    }
+    if (/^[0-9]+$/.test(value.trim())) {
+      const num = Number(value.trim());
+      if (Number.isSafeInteger(num) && num > 0 && num <= 2147483647) {
+        return num;
+      }
+    }
     throw new Error(
       `Invalid providerIdleTimeout: "${String(value)}". providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
     );
   }
-  if (!Number.isSafeInteger(num) || num <= 0 || num > 2147483647) {
+  if (typeof value === "number") {
+    if (Number.isSafeInteger(value) && value > 0 && value <= 2147483647) {
+      return value;
+    }
     throw new Error(
-      `Invalid providerIdleTimeout: ${num}. providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
+      `Invalid providerIdleTimeout: ${value}. providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
     );
   }
-  return num;
+  throw new Error(
+    `Invalid providerIdleTimeout: "${String(value)}". providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
+  );
 }
 
 function sanitizeConfig(merged: AgavConfig): void {

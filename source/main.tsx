@@ -1,6 +1,6 @@
 import { render } from "./ink/index.js";
 import App from "./app.js";
-import { EFFORT_LEVELS, isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
+import { EFFORT_LEVELS, isEffortLevel, loadConfig, validateProviderIdleTimeout, type AgavConfig } from "./config/config.js";
 import { createProvider } from "./providers/registry.js";
 import type { LLMProvider } from "./providers/types.js";
 import { fetchAvailableModels, findMatchingModels, type FetchedModel } from "./commands/model.js";
@@ -72,16 +72,13 @@ function findClosestFlag(input: string): string | undefined {
 }
 
 function parseProviderIdleTimeout(raw: string): number | null {
-  const value = raw.trim();
-  if (value.toLowerCase() === "disabled" || value.toLowerCase() === "off") {
-    return null;
-  }
-  const n = Number(value);
-  if (!/^[0-9]+$/.test(value) || !Number.isSafeInteger(n) || n <= 0 || n > 2147483647) {
+  try {
+    const validated = validateProviderIdleTimeout(raw);
+    return validated ?? null;
+  } catch {
     process.stderr.write("Error: --provider-idle-timeout must be a positive integer in milliseconds (1–2147483647) or \"disabled\".\n");
     process.exit(1);
   }
-  return n;
 }
 
 function parseMaxTurns(raw: string): number {

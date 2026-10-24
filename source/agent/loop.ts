@@ -448,7 +448,15 @@ export async function* runAgentLoop(
       signal.addEventListener("abort", onParentAbort, { once: true });
     }
 
+    const commitPartialText = function* (): Generator<AgentEvent, void, unknown> {
+      if (textAccum) {
+        conversation.addAssistantMessage([{ type: "text", text: textAccum }]);
+        yield { type: "assistant_message_complete", text: textAccum };
+      }
+    };
+
     try {
+      // Seeded skill dispatches are synthetic tool calls with no provider stream; the idle timer only arms when a real stream starts.
       if (!seededCall) {
         resetIdleTimer();
         for await (const event of provider.stream({
@@ -464,10 +472,7 @@ export async function* runAgentLoop(
 
           if (attemptController.signal.aborted) {
             if (timedOut || attemptController.signal.reason instanceof ProviderIdleTimeoutError) {
-              if (textAccum) {
-                conversation.addAssistantMessage([{ type: "text", text: textAccum }]);
-                yield { type: "assistant_message_complete", text: textAccum };
-              }
+              yield* commitPartialText();
               yield { type: "error", error: timeoutError!, reason: "provider_idle_timeout" };
               return;
             }
@@ -535,10 +540,7 @@ export async function* runAgentLoop(
       }
     } catch (err) {
       if (timedOut || attemptController.signal.reason instanceof ProviderIdleTimeoutError || err instanceof ProviderIdleTimeoutError) {
-        if (textAccum) {
-          conversation.addAssistantMessage([{ type: "text", text: textAccum }]);
-          yield { type: "assistant_message_complete", text: textAccum };
-        }
+        yield* commitPartialText();
         yield {
           type: "error",
           error: timeoutError!,
