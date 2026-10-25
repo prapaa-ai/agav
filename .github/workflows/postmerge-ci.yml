@@ -46,7 +46,7 @@ jobs:
           token: ${{ secrets.TOKEN }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.14"
+          bun-version: "1.4.4"
       - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
@@ -54,6 +54,13 @@ jobs:
         with:
           version: 9
       - run: pnpm install --frozen-lockfile
+      # Validate the pinned Bun AND its vendored C libraries (Brotli, c-ares,
+      # zlib, libarchive) against their advisory floors before compiling: the
+      # binary statically embeds them, so building with a known-vulnerable
+      # runtime would produce a vulnerable artifact. Runs after install so it can
+      # parse workflow YAML with the real `yaml` parser. Fail-closed.
+      - name: Validate embedded runtime against advisory floors
+        run: node scripts/check-bun-advisories.mjs
       - run: bun install react-devtools-core
       - name: Build binary
         run: bun build source/cli.tsx --compile --outfile /tmp/agav-test
@@ -62,6 +69,14 @@ jobs:
           /tmp/agav-test --version
           /tmp/agav-test --help | grep -q "Agav"
           echo "Binary smoke test passed."
+      # Prove the compiled artifact embeds exactly the pinned Bun (the version the
+      # advisory gate above vetted). Trivy is deliberately NOT used on the binary:
+      # it cannot advisory-match Bun's statically linked C libraries from an SBOM
+      # (its CycloneDX decoder keys on PURL ecosystem, has no CPE path, and skips
+      # pkg:generic), so such a scan would pass while scanning nothing. The
+      # component advisories are enforced by check-bun-advisories.mjs instead.
+      - name: Verify the binary embeds the pinned Bun runtime
+        run: node scripts/verify-embedded-runtime.mjs /tmp/agav-test
 
   license-check:
     name: License Compliance
@@ -107,22 +122,35 @@ jobs:
           path: sbom.json
           retention-days: 90
 
-  container-scan:
-    name: Container Image Scan
+  # Agav ships standalone compiled binaries, not a container image, so scanning
+  # an unrelated base image (node:22-slim) told us nothing about the product and
+  # was report-only besides. Scan the resolved dependency filesystem instead —
+  # the real surface that reaches users — and fail-closed on HIGH/CRITICAL. The
+  # compiled binary itself is scanned in binary-smoke.
+  dependency-fs-scan:
+    name: Dependency Filesystem Scan
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
-      - name: Scan container image
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - name: Scan resolved dependencies for known vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: node:22-slim
-          scan-type: image
+          scan-type: fs
+          scan-ref: .
           format: table
           severity: HIGH,CRITICAL
-          exit-code: '0'
+          ignore-unfixed: false
+          exit-code: '1'
 
   file-size:
     name: File Size Check

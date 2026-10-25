@@ -4,6 +4,9 @@ on:
   push:
     branches: [main, beta]
 
+permissions:
+  contents: read
+
 jobs:
   check-version:
     name: Check Version Change
@@ -42,6 +45,20 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No version change"
           fi
+      # Fail the prerequisite job before any binary is built: the compiled
+      # release embeds the Bun runtime, so a Bun below the advisory floor would
+      # ship a vulnerable artifact to every user. Unconditional and fail-closed.
+      # The gate parses workflow YAML with the real `yaml` parser (a prod dep),
+      # so install dependencies from the lockfile first.
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - name: Validate pinned Bun against advisory floor
+        run: node scripts/check-bun-advisories.mjs
       # Fail the prerequisite job before spending time building stable binaries.
       - name: Validate reviewed release notes
         if: steps.version.outputs.changed == 'true'
@@ -49,9 +66,92 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: node scripts/release-notes.mjs validate "$VERSION"
 
+  # Audit the release commit's production dependencies, fail-closed on HIGH/
+  # CRITICAL. The PR-time audit cannot cover advisories disclosed between PR
+  # validation and release, so publication must re-check the exact commit being
+  # shipped. build-binaries and release both depend on this.
+  dependency-audit:
+    name: Dependency Vulnerability Audit
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level high
+      - name: Check fresh runtime policy and live upstream advisories
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-runtime-security.mjs --live
+
+  # Validate the release SHA here, not a separate workflow or a PR's merge SHA.
+  validation:
+    name: Release Validation
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+      - run: pnpm exec vitest run
+      - name: Shell installer regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh scripts/tests/install-sh.test.sh
+          sh scripts/tests/install-sh-path.test.sh
+
+  installer-windows:
+    name: Release Windows Installer Tests
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Suites under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $Fail = 0
+          foreach ($Suite in @("install-ps1.test.ps1", "install-ps1-path.test.ps1")) {
+            & powershell -NoProfile -File "scripts\tests\$Suite"
+            if ($LASTEXITCODE -ne 0) { $Fail = 1 }
+          }
+          exit $Fail
+      - name: Suites under pwsh 7
+        shell: pwsh
+        run: |
+          $Fail = 0
+          foreach ($Suite in @("install-ps1.test.ps1", "install-ps1-path.test.ps1", "install-ps1-lint.test.ps1")) {
+            & pwsh -NoProfile -File "scripts\tests\$Suite"
+            if ($LASTEXITCODE -ne 0) { $Fail = 1 }
+          }
+          exit $Fail
+
   build-binaries:
     name: Build ${{ matrix.target }}
-    needs: check-version
+    needs: [check-version, dependency-audit]
     if: needs.check-version.outputs.changed == 'true'
     strategy:
       matrix:
@@ -93,7 +193,7 @@ jobs:
           token: ${{ secrets.TOKEN }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.14"
+          bun-version: "1.4.4"
       - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
@@ -142,6 +242,16 @@ jobs:
           else
             bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
           fi
+      # Prove — per published artifact, including cross-compiled targets — that it
+      # embeds exactly the pinned Bun (the version whose runtime and vendored C
+      # libraries check-bun-advisories.mjs vetted in check-version). Trivy is not
+      # run on the binary: it cannot advisory-match statically linked C libraries
+      # from an SBOM (CycloneDX decoder keys on PURL ecosystem, no CPE path,
+      # pkg:generic skipped), so that scan would pass while scanning nothing.
+      # This runs BEFORE upload, and publication depends on build-binaries, so a
+      # mismatched runtime blocks the release.
+      - name: Verify the binary embeds the pinned Bun runtime
+        run: node scripts/verify-embedded-runtime.mjs "dist/agav-${{ matrix.target }}${{ matrix.ext }}"
       - name: Sign binary (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
@@ -158,6 +268,22 @@ jobs:
           else
             echo "cosign not available, skipping signing."
           fi
+
+      # Run the exact signed artifact on its native runner before publishing it.
+      - name: Smoke test release binary
+        timeout-minutes: 2
+        env:
+          BINARY: ./dist/agav-${{ matrix.target }}${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          EXPECTED=$(node -p "require('./package.json').version")
+          ACTUAL=$("$BINARY" --version | tr -d '\r')
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::Binary version '$ACTUAL' does not match package.json '$EXPECTED'."
+            exit 1
+          fi
+          # Do not use grep -q: drain stdout to avoid a producer SIGPIPE.
+          "$BINARY" --help | grep -F "Agav"
 
       - name: Compress binary
         run: |
@@ -192,7 +318,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [check-version, build-binaries]
+    needs: [check-version, dependency-audit, validation, installer-windows, build-binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: write

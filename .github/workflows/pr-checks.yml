@@ -142,7 +142,7 @@ jobs:
           token: ${{ secrets.TOKEN || github.token }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.14"
+          bun-version: "1.4.4"
       - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
@@ -170,10 +170,13 @@ jobs:
 
           RAW=$(wc -c < dist/agav-linux-x64)
           GZ=$(wc -c < dist/agav-linux-x64.gz)
-          # ~99 MiB of this is the embedded Bun runtime and is not ours to
-          # shrink. The budget leaves room for a few MB of growth and trips on
-          # the kind of regression that added 30 MB of native image codecs.
-          BUDGET=$((110 * 1024 * 1024))
+          # ~114 MiB of this is the embedded Bun runtime (1.4.4) and is not ours
+          # to shrink; the runtime grew when the Brotli-CVE fix moved the pin up
+          # from 1.3.14. The budget leaves room for a few MB of growth and trips
+          # on the kind of regression that added 30 MB of native image codecs.
+          # Raise it in lockstep with a Bun pin bump that legitimately grows the
+          # runtime, never to accommodate our own bloat.
+          BUDGET=$((125 * 1024 * 1024))
 
           {
             echo "| Asset | Bytes | MiB |"
@@ -377,6 +380,33 @@ jobs:
           if [ "$FAIL" -eq 1 ]; then exit 1; fi
           echo "No dangerous patterns detected."
 
+  # Always runs: a new advisory can raise the Bun floor with no file change in
+  # the PR, and the embedded runtime ships to users regardless of what this PR
+  # touches. The embedded Bun runtime (and its vendored C libraries such as
+  # Brotli) is invisible to pnpm audit / SBOM / Semgrep, so this is the only
+  # gate that maps the pinned Bun version to known advisories. Fail-closed.
+  runtime-audit:
+    name: Embedded Runtime Advisory Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          token: ${{ secrets.TOKEN || github.token }}
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      # The gate parses workflow YAML with the real `yaml` parser (a prod dep);
+      # install it from the lockfile first so validation is correct, not a
+      # fragile hand-rolled scanner.
+      - run: pnpm install --frozen-lockfile
+      - name: Validate pinned Bun against advisory floor
+        run: node scripts/check-bun-advisories.mjs
+      - name: Enforce runtime policy review deadline
+        run: node scripts/check-runtime-security.mjs
+
   dependency-audit:
     name: Dependency Vulnerability Audit
     needs: changed
@@ -393,7 +423,11 @@ jobs:
         with:
           version: 9
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit --prod || echo "::warning::Dependency vulnerabilities found"
+      # Fail-closed on known production vulnerabilities. Enterprise posture: a
+      # shipped dependency CVE blocks the merge rather than emitting a warning
+      # that every green run quietly ignores. `--audit-level high` keeps low and
+      # moderate advisories out of the gate while blocking high and critical.
+      - run: pnpm audit --prod --audit-level high
 
   lockfile-integrity:
     name: Lockfile Integrity
@@ -500,6 +534,7 @@ jobs:
       - secret-scan
       - blob-size
       - security-patterns
+      - runtime-audit
       - dependency-audit
       - lockfile-integrity
       - semgrep
@@ -522,6 +557,7 @@ jobs:
             "${{ needs.secret-scan.result }}" \
             "${{ needs.blob-size.result }}" \
             "${{ needs.security-patterns.result }}" \
+            "${{ needs.runtime-audit.result }}" \
             "${{ needs.dependency-audit.result }}" \
             "${{ needs.lockfile-integrity.result }}" \
             "${{ needs.semgrep.result }}" \

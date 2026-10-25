@@ -26,6 +26,13 @@
   "engines": {
     "node": ">=22.13.0"
   },
+  "pnpm": {
+    "overrides": {
+      "zod": "4.6.7",
+      "body-parser": "2.4.0"
+    },
+    "overridesComment": "Force patched versions of transitive deps with HIGH advisories (zod GHSA-mrhx-c7xc-m3w5, body-parser GHSA-27r3-jxmh-p828). These remediate rather than suppress: pnpm audit reports no known vulnerabilities. Remove an entry once every dependent requires a patched version on its own."
+  },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.1",
     "@anthropic-ai/sdk": "^0.133.0",
