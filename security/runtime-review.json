@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-25T00:00:00Z",
+  "owner": "prapaa-ai/security",
+  "maxAgeDays": 30,
+  "scope": "Bun and recorded native component inventory; not an assertion that no advisories apply",
+  "sources": {
+    "bun": "oven-sh/bun",
+    "brotli": "google/brotli",
+    "c-ares": "c-ares/c-ares",
+    "zlib-ng": "zlib-ng/zlib-ng",
+    "libarchive": "libarchive/libarchive"
+  }
+}

@@ -1,0 +1,42 @@
+name: Scheduled Security Review
+
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    name: Security review (${{ matrix.branch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [main, beta]
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          ref: ${{ matrix.branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check runtime policy freshness and upstream advisories
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-runtime-security.mjs --live
+      - name: Audit production dependencies
+        if: ${{ !cancelled() }}
+        run: pnpm audit --prod --audit-level high
+      - name: Record triage instructions
+        if: failure()
+        run: |
+          echo 'Security checks failed. Owner: prapaa-ai/security. Review the failed feed/audit or expired policy; do not renew the review date without reviewing upstream advisories. HIGH/CRITICAL findings require triage within one business day.' >> "$GITHUB_STEP_SUMMARY"

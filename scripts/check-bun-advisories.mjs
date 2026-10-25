@@ -281,6 +281,11 @@ async function main() {
     }
   }
 
+  if (process.argv.includes("--inventory-json")) {
+    console.log(JSON.stringify({ bun: pinned.value, ...Object.fromEntries(components.map(c => [c.name, c.current])) }));
+    return;
+  }
+
   console.log(
     `Pinned Bun ${pinned.value} meets the advisory floor ${floor.value}; all workflow pins match; ` +
       `vendored components OK (${components.map((c) => `${c.name}@${c.current}`).join(", ")}). ` +
