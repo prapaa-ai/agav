@@ -56,6 +56,16 @@ describe("explicit-only confirmations", () => {
     await expect(second).resolves.toBe("no");
   });
 
+  it("rejects Always for an explicit-only approval even when an org floor downgrades blanket approvals", async () => {
+    const queue = new ConfirmationQueue();
+    queue.bind(() => {});
+    queue.setPermissionFloor("ask");
+
+    const explicit = queue.enqueue({ toolName: "subagent_model", input: {}, explicitApprovalOnly: true });
+    expect(queue.resolve("always")).toBe("no");
+    await expect(explicit).resolves.toBe("no");
+  });
+
   it("still allows blanket Always when the floor permits auto-accept (or no floor)", async () => {
     const queue = new ConfirmationQueue();
     queue.bind(() => {});

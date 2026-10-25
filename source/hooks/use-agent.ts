@@ -152,7 +152,8 @@ interface UseAgentReturn {
   cancel: () => void;
   cancelSubagent: (id: string) => void;
   clearMessages: () => void;
-  confirmTool: (choice: ConfirmResult) => void;
+  /** `expected` is the prompt the caller rendered; the answer is dropped if a different prompt is displayed by now. */
+  confirmTool: (choice: ConfirmResult, expected?: PendingConfirmation) => void;
   /**
    * The permission mode in force for the session: the session "Always" override
    * when set, otherwise the config default, clamped to the org floor. Reflects
@@ -160,7 +161,7 @@ interface UseAgentReturn {
    */
   getEffectivePermissionMode: () => AgavConfig["permissionMode"];
   /** Queue a confirmation outside an agent turn (e.g. from a slash command). */
-  requestConfirmation: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
+  requestConfirmation: (toolName: string, input: Record<string, unknown>, signal?: AbortSignal) => Promise<ConfirmResult>;
   conversation: ConversationState;
   toolRegistry: ToolRegistry;
   saveNow: (extraUsage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
@@ -573,10 +574,12 @@ export function useAgent(
   }, []);
 
   /** Resolve the oldest pending tool confirmation with the user's decision. */
-  const confirmTool = useCallback((choice: ConfirmResult) => {
+  const confirmTool = useCallback((choice: ConfirmResult, expected?: PendingConfirmation) => {
     // Only the queue's effective generic Always may widen session permission,
     // and never past the org-managed permission floor.
-    const resolvedChoice = confirmationQueueRef.current.resolve(choice);
+    const resolvedChoice = confirmationQueueRef.current.resolve(choice, expected);
+    // A stale answer for a prompt that is no longer displayed changes nothing (not even the turn timer).
+    if (expected && resolvedChoice === undefined) return;
     if (resolvedChoice === "always") {
       sessionPermissionModeRef.current = clampPermissionMode(
         "auto-accept",
@@ -603,7 +606,7 @@ export function useAgent(
   );
 
   const requestConfirmation = useCallback(
-    (toolName: string, input: Record<string, unknown>) => confirmationQueueRef.current.enqueue({ toolName, input }),
+    (toolName: string, input: Record<string, unknown>, signal?: AbortSignal) => confirmationQueueRef.current.enqueue({ toolName, input }, signal),
     [],
   );
 

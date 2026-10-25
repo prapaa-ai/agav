@@ -87,7 +87,13 @@ export interface CommandContext {
     action: import("../background-jobs/types.js").GrantAction,
     spec: Omit<import("../background-jobs/types.js").LaunchSpec, "requestId" | "createdAt">,
     subject?: import("../background-jobs/types.js").ConfirmSubject,
+    signal?: AbortSignal,
   ) => Promise<boolean>
+  /**
+   * Per-invocation consent for a background workflow run (capabilities plus an env-var checklist).
+   * Resolves the selected env NAMES, or undefined when denied; absent when no interactive UI can show it.
+   */
+  requestWorkflowConsent?: (request: import("../workflows/consent-prompt.js").ConsentRequest) => Promise<string[] | undefined>
   showResourceTUI?: (kind: import("../resources/types.js").ResourceKind, onDone: () => void, marketplace?: boolean) => void
   showAgentsTUI: (onDone: () => void) => void
   showSkillsTUI: (onDone: () => void) => void

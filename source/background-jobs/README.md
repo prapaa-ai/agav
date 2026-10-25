@@ -42,8 +42,9 @@ source/background-jobs/
 - linux: x64, arm64 (glibc); Bubblewrap optional, detected at runtime.
 - darwin: x64, arm64; Seatbelt (`sandbox-exec`) optional, detected at runtime.
 - win32: x64; Job Object ownership needs a native helper, which is not available yet
-  (`nativeHelperAvailable: false`). Without it ownership is refused rather than falling back to
-  raw PID tracking.
+  (`nativeHelperAvailable: false`). The fallback reports ownership scope `unverified`; requests
+  requiring isolation or stronger ownership are refused. Windows workflows may use this unsandboxed
+  fallback with a warning, but process-tree ownership and descendant cleanup are not guaranteed.
 
 ## Packaging
 
@@ -54,3 +55,7 @@ The supervisor ships as plain `.js` from the normal `tsc` build
 ## Not covered
 
 Hardening and staged release are not done.
+
+## Operator recovery
+
+For uncertain jobs that block capacity, see the [recovery guide](../../docs/docs/reference/job-recovery.md). Explicit abandonment retains evidence and does not prove stopped or authorize retry.

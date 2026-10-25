@@ -83,6 +83,8 @@ export async function executeNativeAgent(
     /** Explicit mode for direct executions such as a full-access agent lock. */
     permissionMode?: PermissionMode;
     iterationsBudget?: { remaining: number, total: number }
+    /** Strict gate (workflow nodes): `native-tools` only restricts, never pre-approves; see LoopParams.toolGate. */
+    toolGate?: { safeTools: ReadonlySet<string> };
   }
 ): Promise<string> {
   const callId = `${agent.manifest.name}-${randomUUID().slice(0, 8)}`;
@@ -183,6 +185,7 @@ export async function executeNativeAgent(
       permissionFloor: deps.config.orgPermissionFloor,
       iterationsBudget: deps.iterationsBudget ?? { remaining: deps.config.maxIterations, total: deps.config.maxIterations },
       allowedTools: nativeTools,
+      ...(deps.toolGate ? { toolGate: deps.toolGate } : {}),
       hooks: deps.hooks,
     });
 

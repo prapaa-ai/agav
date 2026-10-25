@@ -20,7 +20,7 @@ import {
 } from "../types.js";
 import { checkStorageVersion, ensureStorageVersionFile, resolveStorageRoot } from "../storage/paths.js";
 import { createFileRepositories } from "../storage/repositories.js";
-import { withCoordinatorLock } from "../storage/single-writer-lock.js";
+import { withJobLock, withCoordinatorLock } from "../storage/single-writer-lock.js";
 import { createAuthorizationService, type AuthorizationService } from "../authorization/service.js";
 import { hashLaunchSpecForConsent, type ConsentRelevantSpec } from "../authorization/spec-hash.js";
 import { normalizeLaunchSpec } from "../launch-spec/normalize.js";
@@ -37,6 +37,8 @@ import { rm } from "node:fs/promises";
 
 /** Extras beyond `CoordinatorClient`, not visible to callers holding only that type. */
 export interface CoordinatorExtensions {
+  /** Operator-only abandonment; does not stop or replay work. */
+  abandonJob(jobId: string, acknowledgeUnverified: boolean, session: SessionPolicySnapshot): Promise<JobSummary>;
   mailbox: MailboxService;
   repositories: Repositories;
   authorization: AuthorizationService;
@@ -88,6 +90,8 @@ function socketPathFor(root: string, jobId: string): string {
 
 function toJobSummary(record: JobRecord): JobSummary {
   return {
+    abandonment: record.abandonment,
+    uncertaintyReason: record.uncertaintyReason,
     jobId: record.jobId,
     requestId: record.requestId,
     state: record.state,
@@ -398,10 +402,17 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       if ("existing" in admission) return toJobSummary(admission.existing);
       const jobId = admission.jobId;
 
+      // Inherited values travel only in the supervisor's process environment, never in the stored spec.
+      const inheritedEnv: Record<string, string> = {};
+      for (const name of spec.envInherit ?? []) {
+        const value = process.env[name];
+        if (value !== undefined) inheritedEnv[name] = value;
+      }
+
       // Launch OUTSIDE the coordinator lock; never hold it while spawning.
       let launchResult;
       try {
-        launchResult = await launchSupervisorForJob({ jobId, requestId: request.requestId, root, repositories });
+        launchResult = await launchSupervisorForJob({ jobId, requestId: request.requestId, root, repositories, inheritedEnv });
       } catch (error) {
         // A definite pre-spawn failure means nothing ever ran: terminalize the job so its capacity
         // reservation is released. Ambiguous failures keep the reservation for reconciliation.
@@ -625,6 +636,34 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       }
 
       // Known limitation: no log/record files are deleted yet (retention/export policy undecided).
+    },
+
+    async abandonJob(jobId: string, acknowledgeUnverified: boolean, session: SessionPolicySnapshot): Promise<JobSummary> {
+      if (acknowledgeUnverified !== true || session.permissionMode === "deny-writes") {
+        throw new BackgroundJobError("authorization-denied", "Explicitly acknowledge that outcome and descendants remain unverified; deny-writes forbids abandonment.");
+      }
+      if (await resolveJobId(jobId) !== jobId) throw new BackgroundJobError("invalid-state", "Abandonment requires the exact full job ID.");
+      const reconciliation = await reconcileJob({
+        jobId, repositories, root, socketPathFor: (id) => socketPathFor(root, id),
+      });
+      if (reconciliation.action === "reconnected") throw new BackgroundJobError("invalid-state", "Supervisor reconnected; use poll/stop instead of abandonment.");
+      const observed = reconciliation.record;
+      return withCoordinatorLockRetrying(root, () => withJobLock(root, jobId, async () => {
+        const fresh = await repositories.jobs.get(jobId);
+        if (!fresh) throw new BackgroundJobError("not-found", "Job disappeared.");
+        if (fresh.abandonment) return toJobSummary(fresh);
+        if ((fresh.state !== "recovery-required" && fresh.state !== "unknown")
+          || JSON.stringify(fresh) !== JSON.stringify(observed)) {
+          throw new BackgroundJobError("invalid-state", "Job reconnected, changed or is not uncertain; inspect it again before abandoning.");
+        }
+        // Atomic audit, spawn fence and capacity release; no terminal claim.
+        await repositories.jobs.update(jobId, { abandonment: {
+          abandonedAt: new Date().toISOString(),
+          acknowledgement: "outcome-and-descendants-unverified",
+          previousState: fresh.state, previousNonce: fresh.nonce,
+        } });
+        return toJobSummary((await repositories.jobs.get(jobId))!);
+      }), opts?.admissionRetry);
     },
 
     async deleteJob(jobIdOrPrefix: string): Promise<void> {

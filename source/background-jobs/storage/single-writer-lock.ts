@@ -237,6 +237,8 @@ async function withNamedLock<T>(root: string, name: string, fn: () => Promise<T>
   try {
     return await lockContext.run(next, fn);
   } finally {
+    // Detached callbacks inherit context, not ownership after release.
+    next.held.delete(name);
     await release();
   }
 }

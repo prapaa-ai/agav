@@ -106,6 +106,12 @@ describe("review lifecycle regressions", () => {
       spec.invocation = { mode: "direct", executable: process.execPath, args: ["-e", 'console.log("final-output")'] };
       await supervisor.start(spec);
       await writing;
+      // Shutdown drains observed exit, not a still-running child.
+      // Log write entry alone does not establish exit under load.
+      await vi.waitFor(() => {
+        const child = (supervisor as unknown as { child: import('node:child_process').ChildProcess }).child;
+        expect(child.exitCode).toBe(0);
+      }, { timeout: 5000 });
       let drained = false;
       const shutdown = supervisor.shutdown().then(() => { drained = true; });
       await new Promise(resolve => setTimeout(resolve, 20));

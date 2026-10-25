@@ -9,6 +9,8 @@ export interface ResourceItem {
   removable?: boolean;
   /** Offered the job "Stop" action (live jobs only). */
   stoppable?: boolean;
+  /** Offered explicit unverified abandonment (uncertain, not already abandoned jobs only). */
+  abandonable?: boolean;
   values?: Record<string, string>;
 }
 
@@ -36,7 +38,7 @@ export interface ResourceAdapter {
   inspectLabel?: string;
 }
 
-export type ResourceKind = "agents" | "skills" | "memory" | "schedule" | "history" | "search-history" | "jobs";
+export type ResourceKind = "agents" | "skills" | "memory" | "schedule" | "history" | "search-history" | "jobs" | "workflows";
 
 export function filterResources(items: ResourceItem[], query: string): ResourceItem[] {
   const q = query.toLowerCase();
