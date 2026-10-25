@@ -7,7 +7,7 @@ const HINTS = [
   "/fast switches to a lightweight model",
   "/deep switches to a powerful model",
   "/branch forks a new session from the current session",
-  "/export saves chat as markdown",
+  "/export json saves structured chat; add sanitize for best-effort redaction",
   "/watch auto-runs commands on file changes",
   "/compact frees up context space",
   "/remember saves notes across sessions",
