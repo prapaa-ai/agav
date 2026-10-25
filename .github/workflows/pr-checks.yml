@@ -142,7 +142,7 @@ jobs:
           token: ${{ secrets.TOKEN || github.token }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.14"
+          bun-version: "1.4.4"
       - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
@@ -377,6 +377,24 @@ jobs:
           if [ "$FAIL" -eq 1 ]; then exit 1; fi
           echo "No dangerous patterns detected."
 
+  # Always runs: a new advisory can raise the Bun floor with no file change in
+  # the PR, and the embedded runtime ships to users regardless of what this PR
+  # touches. The embedded Bun runtime (and its vendored C libraries such as
+  # Brotli) is invisible to pnpm audit / SBOM / Semgrep, so this is the only
+  # gate that maps the pinned Bun version to known advisories. Fail-closed.
+  runtime-audit:
+    name: Embedded Runtime Advisory Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          token: ${{ secrets.TOKEN || github.token }}
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+      - name: Validate pinned Bun against advisory floor
+        run: node scripts/check-bun-advisories.mjs
+
   dependency-audit:
     name: Dependency Vulnerability Audit
     needs: changed
@@ -393,7 +411,11 @@ jobs:
         with:
           version: 9
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit --prod || echo "::warning::Dependency vulnerabilities found"
+      # Fail-closed on known production vulnerabilities. Enterprise posture: a
+      # shipped dependency CVE blocks the merge rather than emitting a warning
+      # that every green run quietly ignores. `--audit-level high` keeps low and
+      # moderate advisories out of the gate while blocking high and critical.
+      - run: pnpm audit --prod --audit-level high
 
   lockfile-integrity:
     name: Lockfile Integrity
@@ -500,6 +522,7 @@ jobs:
       - secret-scan
       - blob-size
       - security-patterns
+      - runtime-audit
       - dependency-audit
       - lockfile-integrity
       - semgrep
@@ -522,6 +545,7 @@ jobs:
             "${{ needs.secret-scan.result }}" \
             "${{ needs.blob-size.result }}" \
             "${{ needs.security-patterns.result }}" \
+            "${{ needs.runtime-audit.result }}" \
             "${{ needs.dependency-audit.result }}" \
             "${{ needs.lockfile-integrity.result }}" \
             "${{ needs.semgrep.result }}" \

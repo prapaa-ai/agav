@@ -42,6 +42,11 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "No version change"
           fi
+      # Fail the prerequisite job before any binary is built: the compiled
+      # release embeds the Bun runtime, so a Bun below the advisory floor would
+      # ship a vulnerable artifact to every user. Unconditional and fail-closed.
+      - name: Validate pinned Bun against advisory floor
+        run: node scripts/check-bun-advisories.mjs
       # Fail the prerequisite job before spending time building stable binaries.
       - name: Validate reviewed release notes
         if: steps.version.outputs.changed == 'true'
@@ -93,7 +98,7 @@ jobs:
           token: ${{ secrets.TOKEN }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.14"
+          bun-version: "1.4.4"
       - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
