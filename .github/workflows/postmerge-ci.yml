@@ -44,12 +44,6 @@ jobs:
       - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
-      # Validate the pinned Bun AND its vendored C libraries (Brotli, c-ares,
-      # zlib, libarchive) against their advisory floors before compiling: the
-      # binary statically embeds them, so building with a known-vulnerable
-      # runtime would produce a vulnerable artifact. Dependency-free, fail-closed.
-      - name: Validate embedded runtime against advisory floors
-        run: node scripts/check-bun-advisories.mjs
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.4"
@@ -60,6 +54,13 @@ jobs:
         with:
           version: 9
       - run: pnpm install --frozen-lockfile
+      # Validate the pinned Bun AND its vendored C libraries (Brotli, c-ares,
+      # zlib, libarchive) against their advisory floors before compiling: the
+      # binary statically embeds them, so building with a known-vulnerable
+      # runtime would produce a vulnerable artifact. Runs after install so it can
+      # parse workflow YAML with the real `yaml` parser. Fail-closed.
+      - name: Validate embedded runtime against advisory floors
+        run: node scripts/check-bun-advisories.mjs
       - run: bun install react-devtools-core
       - name: Build binary
         run: bun build source/cli.tsx --compile --outfile /tmp/agav-test

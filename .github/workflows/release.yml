@@ -45,6 +45,15 @@ jobs:
       # Fail the prerequisite job before any binary is built: the compiled
       # release embeds the Bun runtime, so a Bun below the advisory floor would
       # ship a vulnerable artifact to every user. Unconditional and fail-closed.
+      # The gate parses workflow YAML with the real `yaml` parser (a prod dep),
+      # so install dependencies from the lockfile first.
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
       - name: Validate pinned Bun against advisory floor
         run: node scripts/check-bun-advisories.mjs
       # Fail the prerequisite job before spending time building stable binaries.

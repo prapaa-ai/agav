@@ -21,6 +21,13 @@
 // a Bun version with no recorded component map is a hard error (exit 1). There is
 // no warn-only path: a runtime CVE is a shipped-product vulnerability, not advice.
 //
+// Workflow pins are validated with a REAL YAML parser (the `yaml` package, a
+// production dependency). A handwritten scanner repeatedly mis-handled valid YAML
+// — flow mappings, block scalars, comments after `with:` — so each workflow
+// gate installs `yaml` before invoking this script (see the "Validate ... against
+// advisory floor" steps). If `yaml` is unavailable the gate fails closed rather
+// than silently skipping validation.
+//
 // Maintenance: on a Bun bump, update `.bun-version`, the workflow pins,
 // `minimumSafeVersion`/`advisories`, and the `vendoredComponents` map (bundled
 // versions + floors). The pinned `.bun-version` must be >= the floor.
@@ -28,16 +35,23 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-// Dependency-free by design: this gate runs on clean runners BEFORE
-// `pnpm install` (PR runtime-audit, release check-version, postmerge pre-build),
-// so it must not import any npm package. Workflow parsing below uses only Node
-// built-ins and a small purpose-built scanner for setup-bun steps.
-
 // Resolve against the working directory, not this file's location: CI always
 // invokes `node scripts/check-bun-advisories.mjs` from the repository root, and
 // that is the checkout whose `.bun-version` and workflows actually ship. Reading
 // from cwd also lets the gate be exercised against an isolated copy in tests.
 const root = resolve(process.cwd());
+
+/** Load the real YAML parser, failing closed if it is not installed. */
+async function loadYamlParser() {
+  try {
+    return (await import("yaml")).parse;
+  } catch {
+    fail(
+      "The `yaml` package is required to validate workflow Bun pins but is not installed. " +
+        "Install dependencies (or at least `yaml`) before running this gate; refusing to validate workflows with a fragile fallback.",
+    );
+  }
+}
 
 /**
  * The minimum Bun version considered free of known, Agav-relevant advisories.
@@ -152,117 +166,33 @@ function readPinnedVersion() {
   }
 }
 
-/** Leading-space count; a line that is only whitespace has no meaningful indent. */
-function indentOf(line) {
-  return line.length - line.replace(/^ +/, "").length;
-}
-
-/** A comment line (first non-space char is `#`) carries no YAML key/value. */
-function isComment(line) {
-  return /^\s*#/.test(line);
-}
-
-/**
- * Parse one `key: value` line into `{ indent, key, value }`, or `null` when the
- * line is not a mapping entry. Handles quoted keys (`"uses":`) and strips an
- * unquoted trailing `# comment` from the value. Quoted values keep their quotes
- * for the caller to unwrap, so a `#` inside quotes is preserved.
- */
-function parseKeyValue(line) {
-  const indent = indentOf(line);
-  const body = line.slice(indent);
-  // key: optionally quoted, then a colon.
-  const m = /^(?:"([^"]+)"|'([^']+)'|([^\s:#][^:]*?))\s*:(?:\s+(.*))?$/.exec(body);
-  if (!m) return null;
-  const key = (m[1] ?? m[2] ?? m[3]).trim();
-  let value = (m[4] ?? "").trim();
-  // Strip an inline comment only when it is OUTSIDE quotes. A quoted scalar
-  // keeps everything between the quotes; otherwise a ` #...` tail is a comment.
-  if (value.startsWith('"') || value.startsWith("'")) {
-    const quote = value[0];
-    const end = value.indexOf(quote, 1);
-    value = end >= 0 ? value.slice(1, end) : value.slice(1);
-  } else {
-    value = value.replace(/\s+#.*$/, "").trim();
-  }
-  return { indent, key, value };
-}
-
-/**
- * Find every `oven-sh/setup-bun` step in a workflow and return the `bun-version`
- * value its `with:` block pins, or `null` when the step pins none there.
- *
- * Dependency-free (this gate runs before `pnpm install`), but strict about YAML
- * structure: it unwraps quoted keys/values, ignores comment lines and inline
- * comments, and — critically — only accepts `bun-version` nested under this
- * step's `with:` mapping. A `bun-version` placed under `env:` (or anywhere else)
- * is NOT a pin, because setup-bun only reads `with.bun-version`.
- */
-function findSetupBunPins(content) {
-  const lines = content.split(/\r?\n/);
-  const pins = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.trim() === "" || isComment(line)) continue;
-    // A list item line, e.g. `      - uses: oven-sh/setup-bun@v2`.
-    const marker = /^(\s*)-\s+(.*)$/.exec(line);
-    if (!marker) continue;
-    const markerIndent = marker[1].length;
-    // The content after `- ` sits at column markerIndent + 2. Every block entry
-    // is normalized to { indent, text } where `text` is a reconstructed, evenly
-    // indented `key: value` line, so parseKeyValue sees a consistent shape.
-    const firstContentIndent = markerIndent + 2;
-    const block = [{ indent: firstContentIndent, text: `${" ".repeat(firstContentIndent)}${marker[2]}` }];
-    let j = i + 1;
-    for (; j < lines.length; j++) {
-      const next = lines[j];
-      if (next.trim() === "") continue;
-      const nextIndent = indentOf(next);
-      if (nextIndent <= markerIndent) break; // sibling item or dedent ends the step
-      block.push({ indent: nextIndent, text: next });
+/** Every step across all jobs of a parsed workflow document. */
+function* workflowSteps(doc) {
+  const jobs = doc && typeof doc === "object" && !Array.isArray(doc) ? doc.jobs : undefined;
+  if (!jobs || typeof jobs !== "object") return;
+  for (const job of Object.values(jobs)) {
+    const steps = job && typeof job === "object" ? job.steps : undefined;
+    if (!Array.isArray(steps)) continue;
+    for (const step of steps) {
+      if (step && typeof step === "object" && !Array.isArray(step)) yield step;
     }
-
-    // Is this a setup-bun step? Check the `uses:` key value (quoted or not).
-    const isSetupBun = block.some((b) => {
-      if (isComment(b.text)) return false;
-      const kv = parseKeyValue(b.text);
-      return kv && kv.key === "uses" && /^oven-sh\/setup-bun(@|$)/.test(kv.value);
-    });
-
-    if (isSetupBun) {
-      // Find the `with:` mapping and read `bun-version` nested directly under it.
-      let pin = null;
-      let withIndent = -1;
-      for (const b of block) {
-        if (isComment(b.text)) continue;
-        const kv = parseKeyValue(b.text);
-        if (!kv) continue;
-        if (withIndent === -1) {
-          if (kv.key === "with" && kv.value === "") withIndent = kv.indent;
-          continue;
-        }
-        // Inside `with:`: a dedent to/under `with:` ends the mapping; a new
-        // `with:` there reopens it.
-        if (kv.indent <= withIndent) {
-          withIndent = kv.key === "with" && kv.value === "" ? kv.indent : -1;
-          continue;
-        }
-        if (kv.key === "bun-version") { pin = kv.value; break; }
-      }
-      pins.push(pin);
-    }
-    i = j - 1; // resume after this step's block
   }
-  return pins;
+}
+
+/** `uses:` value that names the setup-bun action (any ref). */
+function isSetupBunUses(uses) {
+  return typeof uses === "string" && /^oven-sh\/setup-bun(@|$)/.test(uses.trim());
 }
 
 /**
- * Every `oven-sh/setup-bun` step must pin `bun-version` to the exact
- * `.bun-version` value. A commented pin reads as absent, and each setup step is
- * checked on its own — both drift vectors a naive text match missed. Fails
- * closed on any mismatch, missing pin, or non-version pin.
+ * Every `oven-sh/setup-bun` step must pin `with.bun-version` to the exact
+ * `.bun-version` value. Uses a real YAML parser, so flow mappings, block
+ * scalars, quoted keys, and comments are all handled correctly. `bun-version`
+ * is read ONLY from the step's `with` mapping — setup-bun ignores it anywhere
+ * else (e.g. under `env:`), so a pin elsewhere is no pin. Fails closed on any
+ * mismatch, missing pin, non-version pin, or unparseable workflow.
  */
-function verifyWorkflowsMatch(pinned) {
+function verifyWorkflowsMatch(pinned, parseYaml) {
   for (const relative of pinnedWorkflows) {
     let content;
     try {
@@ -271,12 +201,25 @@ function verifyWorkflowsMatch(pinned) {
       fail(`Cannot read ${relative}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    for (const pin of findSetupBunPins(content)) {
-      if (pin === null || pin === "") {
+    let doc;
+    try {
+      doc = parseYaml(content);
+    } catch (error) {
+      fail(`Cannot parse ${relative} as YAML: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    for (const step of workflowSteps(doc)) {
+      if (!isSetupBunUses(step.uses)) continue;
+      const withBlock = step.with && typeof step.with === "object" && !Array.isArray(step.with) ? step.with : {};
+      const pin = withBlock["bun-version"];
+      if (pin === undefined || pin === null || pin === "") {
         fail(
-          `${relative} has an oven-sh/setup-bun step that pins no bun-version. ` +
+          `${relative} has an oven-sh/setup-bun step that pins no with.bun-version. ` +
             `Pin bun-version to ${pinned.value} (single source of truth: .bun-version).`,
         );
+      }
+      if (typeof pin !== "string" && typeof pin !== "number") {
+        fail(`${relative} has an oven-sh/setup-bun step whose bun-version is not a plain version: ${JSON.stringify(pin)}.`);
       }
       let workflowVersion;
       try {
@@ -294,7 +237,8 @@ function verifyWorkflowsMatch(pinned) {
   }
 }
 
-function main() {
+async function main() {
+  const parseYaml = await loadYamlParser();
   const pinned = readPinnedVersion();
   const floor = parseVersion("minimumSafeVersion", minimumSafeVersion);
 
@@ -311,7 +255,7 @@ function main() {
     );
   }
 
-  verifyWorkflowsMatch(pinned);
+  verifyWorkflowsMatch(pinned, parseYaml);
 
   // Validate the vendored native components statically linked by this Bun. A
   // Bun that meets the top-level floor can still bundle a vulnerable C library,

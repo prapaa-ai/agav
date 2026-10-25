@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
@@ -27,19 +27,19 @@ describe("check-bun-advisories", () => {
     expect(result.stdout).toContain("vendored components OK");
   });
 
-  it("runs dependency-free on a clean runner (no node_modules)", () => {
-    // The gate executes before `pnpm install` in PR/release/postmerge, so the
-    // script must import no npm package. Copy it (plus the files it reads) to a
-    // temp dir OUTSIDE the repo so Node cannot resolve the repo's node_modules,
-    // then run that copy. An accidental npm import would throw ERR_MODULE_NOT_FOUND.
-    const clean = mkdtempSync(join(tmpdir(), "agav-cleanroom-"));
+  it("fails closed (not a silent skip) when the yaml parser is unavailable", () => {
+    // The gate parses workflow YAML with the real `yaml` parser; the workflows
+    // install it before invoking the gate. If `yaml` is somehow missing, the gate
+    // must refuse rather than fall back to a fragile scanner or skip validation.
+    // Run a copy from a dir with NO node_modules so `yaml` cannot resolve.
+    const clean = mkdtempSync(join(tmpdir(), "agav-noyaml-"));
     try {
       cpSync(join(root, "scripts/check-bun-advisories.mjs"), join(clean, "check-bun-advisories.mjs"));
       cpSync(join(root, ".bun-version"), join(clean, ".bun-version"));
       for (const path of workflowPaths) cpSync(join(root, path), join(clean, path), { recursive: true });
       const result = spawnSync(process.execPath, [join(clean, "check-bun-advisories.mjs")], { cwd: clean, encoding: "utf8" });
-      expect(result.stderr).not.toContain("ERR_MODULE_NOT_FOUND");
-      expect(result.status).toBe(0);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("`yaml` package is required");
     } finally {
       rmSync(clean, { recursive: true, force: true });
     }
@@ -134,6 +134,8 @@ describe("check-bun-advisories", () => {
       cpSync(join(root, ".bun-version"), join(clean, ".bun-version"));
       for (const path of workflowPaths) cpSync(join(root, path), join(clean, path), { recursive: true });
       writeFileSync(join(clean, "check-bun-advisories.mjs"), patched);
+      // The gate needs the real yaml parser; make the repo's install resolvable.
+      symlinkSync(join(root, "node_modules"), join(clean, "node_modules"));
       const result = spawnSync(process.execPath, [join(clean, "check-bun-advisories.mjs")], { cwd: clean, encoding: "utf8" });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("below its advisory floor");
@@ -148,6 +150,7 @@ describe("check-bun-advisories", () => {
     try {
       cpSync(join(root, "scripts/check-bun-advisories.mjs"), join(clean, "check-bun-advisories.mjs"));
       for (const path of workflowPaths) cpSync(join(root, path), join(clean, path), { recursive: true });
+      symlinkSync(join(root, "node_modules"), join(clean, "node_modules"));
       // A pin with no component map; also drop the workflow pins so the floor
       // check is reached only after a version the map does not cover.
       writeFileSync(join(clean, ".bun-version"), "99.0.0\n");
@@ -196,7 +199,7 @@ describe("check-bun-advisories", () => {
       writeFileSync(path, readFileSync(path, "utf8").replace(/\n\s*bun-version: "1\.4\.4"/, ""));
       const result = run();
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("pins no bun-version");
+      expect(result.stderr).toContain("pins no with.bun-version");
     });
 
     it("rejects a commented-out pin (parses YAML, not raw text)", () => {
@@ -204,7 +207,7 @@ describe("check-bun-advisories", () => {
       writeFileSync(path, readFileSync(path, "utf8").replace('bun-version: "1.4.4"', '# bun-version: "1.4.4"'));
       const result = run();
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("pins no bun-version");
+      expect(result.stderr).toContain("pins no with.bun-version");
     });
 
     it("rejects a second setup-bun step left unpinned", () => {
@@ -213,7 +216,7 @@ describe("check-bun-advisories", () => {
         "\n  extra-unpinned:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: oven-sh/setup-bun@v2\n");
       const result = run();
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("pins no bun-version");
+      expect(result.stderr).toContain("pins no with.bun-version");
     });
 
     it("rejects bun-version placed under env: instead of with:", () => {
@@ -224,7 +227,7 @@ describe("check-bun-advisories", () => {
         '      - uses: oven-sh/setup-bun@v2\n        env:\n          bun-version: "1.4.4"'));
       const result = run();
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("pins no bun-version");
+      expect(result.stderr).toContain("pins no with.bun-version");
     });
 
     it("rejects a quoted uses: key that hides a vulnerable pin", () => {
@@ -237,12 +240,39 @@ describe("check-bun-advisories", () => {
       expect(result.stderr).toContain("pins bun-version 1.3.14");
     });
 
+    it("rejects a vulnerable pin written as a flow mapping", () => {
+      const path = join(repo, ".github/workflows/release.yml");
+      writeFileSync(path, readFileSync(path, "utf8").replace(
+        '      - uses: oven-sh/setup-bun@v2\n        with:\n          bun-version: "1.4.4"',
+        '      - { uses: oven-sh/setup-bun@v2, with: { bun-version: "1.3.14" } }'));
+      const result = run();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("pins bun-version 1.3.14");
+    });
+
+    it("does not treat a bun-version inside a block scalar as a pin", () => {
+      // YAML text that merely contains `with:\n  bun-version:` inside an env
+      // block scalar is not an action input; the step then pins nothing.
+      const path = join(repo, ".github/workflows/release.yml");
+      writeFileSync(path, readFileSync(path, "utf8").replace(
+        '      - uses: oven-sh/setup-bun@v2\n        with:\n          bun-version: "1.4.4"',
+        '      - uses: oven-sh/setup-bun@v2\n        env:\n          NOTES: |\n            with:\n              bun-version: "1.4.4"'));
+      const result = run();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("pins no with.bun-version");
+    });
+
     it.each([
       ["inline comment", 'bun-version: "1.4.4" # security pin'],
       ["single quotes", "bun-version: '1.4.4'"],
+      ["comment after with:", "with: # runtime pin\n          bun-version: \"1.4.4\""],
     ])("accepts a valid pin with %s", (_label, replacement) => {
       const path = join(repo, ".github/workflows/release.yml");
-      writeFileSync(path, readFileSync(path, "utf8").replace('bun-version: "1.4.4"', replacement));
+      const source = readFileSync(path, "utf8");
+      const updated = _label === "comment after with:"
+        ? source.replace('with:\n          bun-version: "1.4.4"', replacement)
+        : source.replace('bun-version: "1.4.4"', replacement);
+      writeFileSync(path, updated);
       expect(run().status).toBe(0);
     });
 

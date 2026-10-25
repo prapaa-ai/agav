@@ -395,6 +395,13 @@ jobs:
       - uses: actions/setup-node@v4.4.0
         with:
           node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      # The gate parses workflow YAML with the real `yaml` parser (a prod dep);
+      # install it from the lockfile first so validation is correct, not a
+      # fragile hand-rolled scanner.
+      - run: pnpm install --frozen-lockfile
       - name: Validate pinned Bun against advisory floor
         run: node scripts/check-bun-advisories.mjs
 
