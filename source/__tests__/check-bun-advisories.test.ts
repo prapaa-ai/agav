@@ -24,6 +24,25 @@ describe("check-bun-advisories", () => {
     const result = spawnSync(process.execPath, [script], { cwd: root, encoding: "utf8" });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("meets the advisory floor");
+    expect(result.stdout).toContain("vendored components OK");
+  });
+
+  it("runs dependency-free on a clean runner (no node_modules)", () => {
+    // The gate executes before `pnpm install` in PR/release/postmerge, so the
+    // script must import no npm package. Copy it (plus the files it reads) to a
+    // temp dir OUTSIDE the repo so Node cannot resolve the repo's node_modules,
+    // then run that copy. An accidental npm import would throw ERR_MODULE_NOT_FOUND.
+    const clean = mkdtempSync(join(tmpdir(), "agav-cleanroom-"));
+    try {
+      cpSync(join(root, "scripts/check-bun-advisories.mjs"), join(clean, "check-bun-advisories.mjs"));
+      cpSync(join(root, ".bun-version"), join(clean, ".bun-version"));
+      for (const path of workflowPaths) cpSync(join(root, path), join(clean, path), { recursive: true });
+      const result = spawnSync(process.execPath, [join(clean, "check-bun-advisories.mjs")], { cwd: clean, encoding: "utf8" });
+      expect(result.stderr).not.toContain("ERR_MODULE_NOT_FOUND");
+      expect(result.status).toBe(0);
+    } finally {
+      rmSync(clean, { recursive: true, force: true });
+    }
   });
 
   it("keeps the runtime-audit gate always-on and in the required set", () => {
@@ -38,24 +57,27 @@ describe("check-bun-advisories", () => {
     expect(workflow.jobs["required"].needs).toContain("runtime-audit");
   });
 
-  it("scans a verified embedded-runtime SBOM, not just the raw binary, and keeps the dep scan fail-closed", () => {
+  it("verifies the embedded runtime (no unscannable Trivy SBOM) and keeps the dep scan fail-closed", () => {
     const workflow = parse(readFileSync(join(root, ".github/workflows/postmerge-ci.yml"), "utf8"));
     const steps = (job: string) => workflow.jobs[job].steps as any[];
-    const findTrivy = (job: string) =>
-      steps(job).find((step: any) => String(step.uses ?? "").startsWith("aquasecurity/trivy-action"));
 
-    // Trivy cannot reconstruct Bun's statically linked libraries from the binary,
-    // so the binary scan must run against a verified SBOM, preceded by the
-    // SBOM-generation step that proves the embedded Bun version.
-    const sbomStep = steps("binary-smoke").find((step: any) =>
-      String(step.run ?? "").includes("embedded-runtime-sbom.mjs"));
-    expect(sbomStep).toBeDefined();
-    const binaryScan = findTrivy("binary-smoke");
-    expect(binaryScan.with["exit-code"]).toBe("1");
-    expect(binaryScan.with["scan-type"]).toBe("sbom");
-    expect(binaryScan.with.severity).toBe("HIGH,CRITICAL");
+    // The pre-build advisory gate covers the runtime AND its vendored C libs.
+    const advisoryGate = steps("binary-smoke").find((step: any) =>
+      String(step.run ?? "").includes("check-bun-advisories.mjs"));
+    expect(advisoryGate).toBeDefined();
+    // The artifact is verified to embed the pinned Bun; no SBOM, no binary Trivy.
+    const verifyStep = steps("binary-smoke").find((step: any) =>
+      String(step.run ?? "").includes("verify-embedded-runtime.mjs"));
+    expect(verifyStep).toBeDefined();
+    const binaryTrivy = steps("binary-smoke").find((step: any) =>
+      String(step.uses ?? "").startsWith("aquasecurity/trivy-action"));
+    expect(binaryTrivy).toBeUndefined();
+    // The obsolete SBOM generator must be gone from the workflow entirely.
+    expect(JSON.stringify(workflow)).not.toContain("embedded-runtime-sbom.mjs");
 
-    const fsScan = findTrivy("dependency-fs-scan");
+    // The npm dependency filesystem scan (which Trivy CAN scan) stays fail-closed.
+    const fsScan = steps("dependency-fs-scan").find((step: any) =>
+      String(step.uses ?? "").startsWith("aquasecurity/trivy-action"));
     expect(fsScan.with["exit-code"]).toBe("1");
     expect(fsScan.with.severity).toBe("HIGH,CRITICAL");
 
@@ -64,18 +86,22 @@ describe("check-bun-advisories", () => {
     expect(JSON.stringify(workflow)).not.toContain("node:22-slim");
   });
 
-  it("gates release publication on a per-artifact verified-SBOM scan", () => {
+  it("gates release publication on a runtime verify step and a dependency audit", () => {
     const workflow = parse(readFileSync(join(root, ".github/workflows/release.yml"), "utf8"));
     const buildSteps = workflow.jobs["build-binaries"].steps as any[];
-    const sbomStep = buildSteps.find((step: any) => String(step.run ?? "").includes("embedded-runtime-sbom.mjs"));
-    const scanStep = buildSteps.find((step: any) => String(step.uses ?? "").startsWith("aquasecurity/trivy-action"));
-    expect(sbomStep).toBeDefined();
-    expect(scanStep).toBeDefined();
-    expect(scanStep.with["scan-type"]).toBe("sbom");
-    expect(scanStep.with["exit-code"]).toBe("1");
-    expect(scanStep.with.severity).toBe("HIGH,CRITICAL");
-    // Publication depends on build-binaries, so a failed per-artifact scan blocks
-    // the release rather than only being reported in a separate workflow.
+
+    // Per-artifact runtime verification before upload; no unscannable SBOM/Trivy.
+    const verifyStep = buildSteps.find((step: any) => String(step.run ?? "").includes("verify-embedded-runtime.mjs"));
+    expect(verifyStep).toBeDefined();
+    expect(buildSteps.some((step: any) => String(step.uses ?? "").startsWith("aquasecurity/trivy-action"))).toBe(false);
+    expect(JSON.stringify(workflow)).not.toContain("embedded-runtime-sbom.mjs");
+
+    // A dependency audit of the release commit gates both build and publication.
+    const audit = workflow.jobs["dependency-audit"];
+    expect(audit).toBeDefined();
+    expect(audit.steps.map((s: any) => s.run ?? "").join("\n")).toContain("pnpm audit --prod --audit-level high");
+    expect(workflow.jobs["build-binaries"].needs).toContain("dependency-audit");
+    expect(workflow.jobs["release"].needs).toContain("dependency-audit");
     expect(workflow.jobs["release"].needs).toContain("build-binaries");
   });
 
@@ -87,7 +113,7 @@ describe("check-bun-advisories", () => {
     // Unconditional: no `if` that could skip it on a release push.
     expect(gate.if).toBeUndefined();
     // The build matrix depends on check-version, so a failed gate blocks builds.
-    expect(workflow.jobs["build-binaries"].needs).toBe("check-version");
+    expect(workflow.jobs["build-binaries"].needs).toContain("check-version");
   });
 
   it("keeps dependency-audit blocking, not warn-only", () => {
@@ -95,6 +121,42 @@ describe("check-bun-advisories", () => {
     const run = workflow.jobs["dependency-audit"].steps.map((step: any) => step.run ?? "").join("\n");
     expect(run).toContain("pnpm audit --prod --audit-level high");
     expect(run).not.toContain("::warning::Dependency vulnerabilities found");
+  });
+
+  it("fails closed when a vendored C library is below its advisory floor", () => {
+    // Patch the script's component map to a below-floor version and confirm the
+    // gate rejects it: a Bun that meets the top-level floor can still bundle a
+    // vulnerable statically linked library.
+    const clean = mkdtempSync(join(tmpdir(), "agav-component-"));
+    try {
+      const patched = readFileSync(join(root, "scripts/check-bun-advisories.mjs"), "utf8")
+        .replace('{ name: "c-ares", current: "1.34.8", floor: "1.34.8" }', '{ name: "c-ares", current: "1.0.0", floor: "1.34.8" }');
+      cpSync(join(root, ".bun-version"), join(clean, ".bun-version"));
+      for (const path of workflowPaths) cpSync(join(root, path), join(clean, path), { recursive: true });
+      writeFileSync(join(clean, "check-bun-advisories.mjs"), patched);
+      const result = spawnSync(process.execPath, [join(clean, "check-bun-advisories.mjs")], { cwd: clean, encoding: "utf8" });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("below its advisory floor");
+      expect(result.stderr).toContain("c-ares");
+    } finally {
+      rmSync(clean, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when a Bun version has no vendored-component map", () => {
+    const clean = mkdtempSync(join(tmpdir(), "agav-nomap-"));
+    try {
+      cpSync(join(root, "scripts/check-bun-advisories.mjs"), join(clean, "check-bun-advisories.mjs"));
+      for (const path of workflowPaths) cpSync(join(root, path), join(clean, path), { recursive: true });
+      // A pin with no component map; also drop the workflow pins so the floor
+      // check is reached only after a version the map does not cover.
+      writeFileSync(join(clean, ".bun-version"), "99.0.0\n");
+      const result = spawnSync(process.execPath, [join(clean, "check-bun-advisories.mjs")], { cwd: clean, encoding: "utf8" });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/No vendored-component map|pins bun-version/);
+    } finally {
+      rmSync(clean, { recursive: true, force: true });
+    }
   });
 
   describe("fail-closed inputs", () => {

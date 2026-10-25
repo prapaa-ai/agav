@@ -54,9 +54,31 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: node scripts/release-notes.mjs validate "$VERSION"
 
+  # Audit the release commit's production dependencies, fail-closed on HIGH/
+  # CRITICAL. The PR-time audit cannot cover advisories disclosed between PR
+  # validation and release, so publication must re-check the exact commit being
+  # shipped. build-binaries and release both depend on this.
+  dependency-audit:
+    name: Dependency Vulnerability Audit
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level high
+
   build-binaries:
     name: Build ${{ matrix.target }}
-    needs: check-version
+    needs: [check-version, dependency-audit]
     if: needs.check-version.outputs.changed == 'true'
     strategy:
       matrix:
@@ -147,25 +169,16 @@ jobs:
           else
             bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
           fi
-      # Prove — per published artifact — that it embeds the pinned Bun runtime
-      # (via the bun-v<version> marker in the binary bytes, which works for every
-      # target including cross-compiled ones), then emit an explicit SBOM of the
-      # runtime's vendored native components (Brotli, c-ares, zlib, ...). Trivy
-      # cannot reconstruct those statically linked libraries from the binary, so
-      # an empty binary scan is not evidence of safety; scanning this verified
-      # SBOM is. This runs BEFORE upload, and release publication depends on
-      # build-binaries, so a vulnerable runtime blocks the release.
-      - name: Generate verified embedded-runtime SBOM
-        run: node scripts/embedded-runtime-sbom.mjs "dist/agav-${{ matrix.target }}${{ matrix.ext }}" "dist/sbom-${{ matrix.target }}.cdx.json"
-      - name: Scan embedded-runtime SBOM for known vulnerabilities
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: sbom
-          scan-ref: dist/sbom-${{ matrix.target }}.cdx.json
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: false
-          exit-code: '1'
+      # Prove — per published artifact, including cross-compiled targets — that it
+      # embeds exactly the pinned Bun (the version whose runtime and vendored C
+      # libraries check-bun-advisories.mjs vetted in check-version). Trivy is not
+      # run on the binary: it cannot advisory-match statically linked C libraries
+      # from an SBOM (CycloneDX decoder keys on PURL ecosystem, no CPE path,
+      # pkg:generic skipped), so that scan would pass while scanning nothing.
+      # This runs BEFORE upload, and publication depends on build-binaries, so a
+      # mismatched runtime blocks the release.
+      - name: Verify the binary embeds the pinned Bun runtime
+        run: node scripts/verify-embedded-runtime.mjs "dist/agav-${{ matrix.target }}${{ matrix.ext }}"
       - name: Sign binary (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
@@ -216,7 +229,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [check-version, build-binaries]
+    needs: [check-version, dependency-audit, build-binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: write

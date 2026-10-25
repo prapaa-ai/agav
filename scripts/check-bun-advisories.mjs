@@ -10,16 +10,28 @@
 // every green CI run unless something explicitly maps the pinned Bun version to
 // known advisories. This script is that gate.
 //
-// Posture: strict and fail-closed. Any parse failure, malformed pin, workflow
-// drift, or pin below the advisory floor is a hard error (exit 1). There is no
-// warn-only path: a runtime CVE is a shipped-product vulnerability, not advice.
+// It also validates the native C libraries Bun statically links (Brotli,
+// c-ares, zlib, libarchive) against per-component advisory floors. Trivy cannot
+// advisory-match those from an SBOM — its CycloneDX decoder keys on PURL
+// ecosystem, has no CPE path, and classifies `pkg:generic` as Unknown and skips
+// it — so this maintained floor, not a scanner, is their enforceable gate.
 //
-// Maintenance: when a new Bun advisory lands, raise `minimumSafeVersion` and add
-// an entry to `advisories`. The pinned `.bun-version` must be >= the floor.
+// Posture: strict and fail-closed. Any parse failure, malformed pin, workflow
+// drift, a pin below the advisory floor, a vendored component below its floor, or
+// a Bun version with no recorded component map is a hard error (exit 1). There is
+// no warn-only path: a runtime CVE is a shipped-product vulnerability, not advice.
+//
+// Maintenance: on a Bun bump, update `.bun-version`, the workflow pins,
+// `minimumSafeVersion`/`advisories`, and the `vendoredComponents` map (bundled
+// versions + floors). The pinned `.bun-version` must be >= the floor.
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { parse as parseYaml } from "yaml";
+
+// Dependency-free by design: this gate runs on clean runners BEFORE
+// `pnpm install` (PR runtime-audit, release check-version, postmerge pre-build),
+// so it must not import any npm package. Workflow parsing below uses only Node
+// built-ins and a small purpose-built scanner for setup-bun steps.
 
 // Resolve against the working directory, not this file's location: CI always
 // invokes `node scripts/check-bun-advisories.mjs` from the repository root, and
@@ -56,6 +68,39 @@ const advisories = [
       "unpatched Node.js build sharing the same decoder source.",
   },
 ];
+
+/**
+ * Vendored native components statically linked into the compiled binary by the
+ * pinned Bun, with the exact upstream versions that Bun source bundles, and a
+ * per-component advisory floor. Trivy cannot advisory-match these statically
+ * linked C libraries from an SBOM (its CycloneDX decoder keys on PURL ecosystem
+ * and has no CPE path; `pkg:generic` is classified Unknown and skipped), so this
+ * maintained floor — not a scanner — is the enforceable gate for them.
+ *
+ * Versions are traced from Bun's `scripts/build/deps/*.ts` at the pinned tag and
+ * their upstream version headers. Update together with `.bun-version`:
+ *   - c-ares: include/ares_version.h at Bun's pinned commit
+ *   - zlib: Bun bundles zlib-ng in zlib-compat mode (its own release tag)
+ *   - libarchive: build/version at Bun's pinned commit
+ *   - brotli: the google/brotli tag at Bun's pinned commit
+ *
+ * `floor` is the lowest version free of known Agav-relevant advisories for that
+ * component. `current` below the `floor` fails closed.
+ */
+const vendoredComponents = {
+  "1.4.4": [
+    {
+      name: "brotli",
+      current: "1.2.1",
+      floor: "1.2.1",
+      note: "1.2.1 carries the CVE-2026-111497 fix (google/brotli@0ed4268).",
+    },
+    { name: "c-ares", current: "1.34.8", floor: "1.34.8" },
+    // Bun bundles zlib-ng (zlib-compatible ABI), pinned to its 2.3.3 tag.
+    { name: "zlib-ng", current: "2.3.3", floor: "2.3.3" },
+    { name: "libarchive", current: "3.8.9", floor: "3.8.9" },
+  ],
+};
 
 /** Every workflow that pins a Bun version, so drift cannot reintroduce a hole. */
 const pinnedWorkflows = [
@@ -107,34 +152,72 @@ function readPinnedVersion() {
   }
 }
 
-/** `uses:` reference (e.g. `oven-sh/setup-bun@v2`) names the setup-bun action. */
-function isSetupBunUses(uses) {
-  return typeof uses === "string" && /^oven-sh\/setup-bun(@|$)/.test(uses.trim());
+/** Leading-space count; a line that is only whitespace has no meaningful indent. */
+function indentOf(line) {
+  return line.length - line.replace(/^ +/, "").length;
+}
+
+/** A comment line (first non-space char is `#`) carries no YAML key/value. */
+function isComment(line) {
+  return /^\s*#/.test(line);
 }
 
 /**
- * Yields every step object across all jobs of a parsed workflow, so each
- * `oven-sh/setup-bun` invocation is validated individually. A composite that
- * pins Bun in one step cannot mask a second step that does not.
+ * Find every `oven-sh/setup-bun` step in a workflow and return the raw
+ * `bun-version` value each one pins, or `null` when a step pins none. This is a
+ * small purpose-built scanner (no YAML dependency, because this gate runs before
+ * `pnpm install`). It tracks indentation to stay inside one step's block, and it
+ * ignores comment lines so a commented-out pin correctly reads as absent.
+ *
+ * A step begins at a `- ` list item containing `uses: oven-sh/setup-bun...`. Its
+ * block is every following line indented deeper than the `- ` marker, up to the
+ * next sibling list item or a dedent. Within that block, `bun-version:` at the
+ * `with:` level is the pin.
  */
-function* workflowSteps(workflow) {
-  const jobs = workflow && typeof workflow === "object" ? workflow.jobs : undefined;
-  if (!jobs || typeof jobs !== "object") return;
-  for (const job of Object.values(jobs)) {
-    const steps = job && typeof job === "object" ? job.steps : undefined;
-    if (!Array.isArray(steps)) continue;
-    for (const step of steps) {
-      if (step && typeof step === "object") yield step;
+function findSetupBunPins(content) {
+  const lines = content.split(/\r?\n/);
+  const pins = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (isComment(line)) continue;
+    // A list item line, e.g. "      - uses: oven-sh/setup-bun@v2".
+    const marker = /^(\s*)-\s+(.*)$/.exec(line);
+    if (!marker) continue;
+    const markerIndent = marker[1].length;
+    // Collect this step's block: the marker line's content plus deeper lines.
+    const block = [marker[2]];
+    let j = i + 1;
+    for (; j < lines.length; j++) {
+      const next = lines[j];
+      if (next.trim() === "") { block.push(""); continue; }
+      const nextIndent = indentOf(next);
+      // A sibling "- " at the same indent, or any dedent to/past the marker,
+      // ends this step.
+      if (nextIndent <= markerIndent) break;
+      block.push(next);
     }
+    const isSetupBun = block.some((b) => /(^|\b)uses:\s*["']?oven-sh\/setup-bun(@|["'\s]|$)/.test(b));
+    if (isSetupBun) {
+      // Within the block, a non-comment `bun-version:` key is the pin.
+      let pin = null;
+      for (const b of block) {
+        if (isComment(b)) continue;
+        const m = /(^|\s)bun-version:\s*(.+?)\s*$/.exec(b);
+        if (m) { pin = m[2].replace(/^["']|["']$/g, ""); break; }
+      }
+      pins.push(pin);
+    }
+    // Resume scanning after this step's block (do not re-enter its lines).
+    i = j - 1;
   }
+  return pins;
 }
 
 /**
- * Every `oven-sh/setup-bun` step must pin `with.bun-version` to the exact
- * `.bun-version` value. Parsing YAML (not scanning raw text) means a commented
- * pin reads as absent, and each setup step is checked on its own — both drift
- * vectors the previous text match missed. Fails closed on any mismatch, missing
- * pin, non-string pin, or unparseable workflow.
+ * Every `oven-sh/setup-bun` step must pin `bun-version` to the exact
+ * `.bun-version` value. A commented pin reads as absent, and each setup step is
+ * checked on its own — both drift vectors a naive text match missed. Fails
+ * closed on any mismatch, missing pin, or non-version pin.
  */
 function verifyWorkflowsMatch(pinned) {
   for (const relative of pinnedWorkflows) {
@@ -145,31 +228,18 @@ function verifyWorkflowsMatch(pinned) {
       fail(`Cannot read ${relative}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    let workflow;
-    try {
-      workflow = parseYaml(content);
-    } catch (error) {
-      fail(`Cannot parse ${relative} as YAML: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    for (const step of workflowSteps(workflow)) {
-      if (!isSetupBunUses(step.uses)) continue;
-      const withBlock = step.with && typeof step.with === "object" ? step.with : {};
-      const pin = withBlock["bun-version"];
-      if (pin === undefined || pin === null) {
+    for (const pin of findSetupBunPins(content)) {
+      if (pin === null || pin === "") {
         fail(
           `${relative} has an oven-sh/setup-bun step that pins no bun-version. ` +
-            `Pin with.bun-version to ${pinned.value} (single source of truth: .bun-version).`,
+            `Pin bun-version to ${pinned.value} (single source of truth: .bun-version).`,
         );
-      }
-      if (typeof pin !== "string" && typeof pin !== "number") {
-        fail(`${relative} has an oven-sh/setup-bun step whose bun-version is not a plain version: ${JSON.stringify(pin)}.`);
       }
       let workflowVersion;
       try {
         workflowVersion = parseVersion(`${relative} bun-version`, pin);
-      } catch (error) {
-        fail(error instanceof Error ? error.message : String(error));
+      } catch {
+        fail(`${relative} has an oven-sh/setup-bun step whose bun-version is not a plain version: ${JSON.stringify(pin)}.`);
       }
       if (compareVersions(workflowVersion, pinned) !== 0) {
         fail(
@@ -200,9 +270,34 @@ function main() {
 
   verifyWorkflowsMatch(pinned);
 
+  // Validate the vendored native components statically linked by this Bun. A
+  // Bun that meets the top-level floor can still bundle a vulnerable C library,
+  // so each component is checked against its own floor. Missing map => fail
+  // closed: a Bun bump must record what it ships.
+  const components = vendoredComponents[pinned.value];
+  if (!components) {
+    fail(
+      `No vendored-component map for Bun ${pinned.value}. Add its bundled component versions and advisory ` +
+        `floors to vendoredComponents in scripts/check-bun-advisories.mjs when bumping the Bun pin, so the ` +
+        `statically linked C libraries (Brotli, c-ares, zlib, libarchive, ...) remain gated. Refusing to pass blind.`,
+    );
+  }
+  for (const component of components) {
+    const current = parseVersion(`${component.name} current`, component.current);
+    const componentFloor = parseVersion(`${component.name} floor`, component.floor);
+    if (compareVersions(current, componentFloor) < 0) {
+      fail(
+        `Bun ${pinned.value} vendors ${component.name} ${current.value}, below its advisory floor ${componentFloor.value}. ` +
+          `This C library is statically linked into every release binary. Bump Bun to a build that vendors a patched ` +
+          `${component.name}, or correct the recorded version.`,
+      );
+    }
+  }
+
   console.log(
-    `Pinned Bun ${pinned.value} meets the advisory floor ${floor.value}; ` +
-      `all workflow pins match. Advisories tracked: ${advisories.map((item) => item.id).join(", ") || "none"}.`,
+    `Pinned Bun ${pinned.value} meets the advisory floor ${floor.value}; all workflow pins match; ` +
+      `vendored components OK (${components.map((c) => `${c.name}@${c.current}`).join(", ")}). ` +
+      `Advisories tracked: ${advisories.map((item) => item.id).join(", ") || "none"}.`,
   );
 }
 

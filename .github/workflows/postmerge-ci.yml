@@ -44,10 +44,11 @@ jobs:
       - uses: actions/checkout@v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
-      # Validate the pinned Bun against the advisory floor before compiling: the
-      # binary embeds this runtime, so building with a known-vulnerable Bun would
-      # produce a vulnerable artifact. Fail-closed before the compile step.
-      - name: Validate pinned Bun against advisory floor
+      # Validate the pinned Bun AND its vendored C libraries (Brotli, c-ares,
+      # zlib, libarchive) against their advisory floors before compiling: the
+      # binary statically embeds them, so building with a known-vulnerable
+      # runtime would produce a vulnerable artifact. Dependency-free, fail-closed.
+      - name: Validate embedded runtime against advisory floors
         run: node scripts/check-bun-advisories.mjs
       - uses: oven-sh/setup-bun@v2
         with:
@@ -67,24 +68,14 @@ jobs:
           /tmp/agav-test --version
           /tmp/agav-test --help | grep -q "Agav"
           echo "Binary smoke test passed."
-      # The compiled binary statically embeds the Bun runtime and its vendored C
-      # libraries (Brotli, c-ares, zlib, ...), which pnpm audit / the SBOM / and
-      # Semgrep never see. Trivy cannot reconstruct those statically linked
-      # components from the binary, so a generic binary scan returning "0 vulns"
-      # is NOT evidence of safety. Instead: verify the binary embeds the pinned
-      # Bun version, emit an explicit SBOM of its vendored components, and scan
-      # that. exit-code 1 on HIGH,CRITICAL so a vulnerable runtime fails the run.
-      - name: Generate verified embedded-runtime SBOM
-        run: node scripts/embedded-runtime-sbom.mjs /tmp/agav-test /tmp/agav-runtime-sbom.cdx.json
-      - name: Scan embedded-runtime SBOM for known vulnerabilities
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: sbom
-          scan-ref: /tmp/agav-runtime-sbom.cdx.json
-          format: table
-          severity: HIGH,CRITICAL
-          ignore-unfixed: false
-          exit-code: '1'
+      # Prove the compiled artifact embeds exactly the pinned Bun (the version the
+      # advisory gate above vetted). Trivy is deliberately NOT used on the binary:
+      # it cannot advisory-match Bun's statically linked C libraries from an SBOM
+      # (its CycloneDX decoder keys on PURL ecosystem, has no CPE path, and skips
+      # pkg:generic), so such a scan would pass while scanning nothing. The
+      # component advisories are enforced by check-bun-advisories.mjs instead.
+      - name: Verify the binary embeds the pinned Bun runtime
+        run: node scripts/verify-embedded-runtime.mjs /tmp/agav-test
 
   license-check:
     name: License Compliance
