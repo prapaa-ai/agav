@@ -114,7 +114,14 @@ describe("review lifecycle regressions", () => {
       }, { timeout: 5000 });
       let drained = false;
       const shutdown = supervisor.shutdown().then(() => { drained = true; });
-      await new Promise(resolve => setTimeout(resolve, 20));
+      // Shutdown must stay pending while the final log write is held at the
+      // barrier. Check after a macrotask turn rather than a fixed wall-clock
+      // sleep: the barrier-held write is also raced against logOperationTimeoutMs
+      // (100ms in this fixture), so a ~20ms sleep that slips past that window
+      // under CI load flakes. A single event-loop turn is effectively instant and
+      // far from the timeout, yet a too-early resolution (the real regression)
+      // still flips `drained` before this check.
+      await new Promise(resolve => setImmediate(resolve));
       expect(drained).toBe(false);
       release();
       await shutdown;
