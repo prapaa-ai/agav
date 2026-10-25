@@ -27,13 +27,11 @@
     "node": ">=22.13.0"
   },
   "pnpm": {
-    "auditConfig": {
-      "//": "Reviewed, time-boxed allowlist of PRE-EXISTING transitive advisories surfaced when the dependency audit became blocking. Each entry needs a tracked remediation (forced override or upstream bump); remove it once the dependency tree no longer resolves the vulnerable version. New advisories are NOT covered and must fail the gate.",
-      "ignoreGhsas": [
-        "GHSA-mrhx-c7xc-m3w5",
-        "GHSA-27r3-jxmh-p828"
-      ]
-    }
+    "overrides": {
+      "zod": "4.6.7",
+      "body-parser": "2.4.0"
+    },
+    "overridesComment": "Force patched versions of transitive deps with HIGH advisories (zod GHSA-mrhx-c7xc-m3w5, body-parser GHSA-27r3-jxmh-p828). These remediate rather than suppress: pnpm audit reports no known vulnerabilities. Remove an entry once every dependent requires a patched version on its own."
   },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.1",

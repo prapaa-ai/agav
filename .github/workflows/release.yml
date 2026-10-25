@@ -147,6 +147,25 @@ jobs:
           else
             bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
           fi
+      # Prove — per published artifact — that it embeds the pinned Bun runtime
+      # (via the bun-v<version> marker in the binary bytes, which works for every
+      # target including cross-compiled ones), then emit an explicit SBOM of the
+      # runtime's vendored native components (Brotli, c-ares, zlib, ...). Trivy
+      # cannot reconstruct those statically linked libraries from the binary, so
+      # an empty binary scan is not evidence of safety; scanning this verified
+      # SBOM is. This runs BEFORE upload, and release publication depends on
+      # build-binaries, so a vulnerable runtime blocks the release.
+      - name: Generate verified embedded-runtime SBOM
+        run: node scripts/embedded-runtime-sbom.mjs "dist/agav-${{ matrix.target }}${{ matrix.ext }}" "dist/sbom-${{ matrix.target }}.cdx.json"
+      - name: Scan embedded-runtime SBOM for known vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: sbom
+          scan-ref: dist/sbom-${{ matrix.target }}.cdx.json
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: '1'
       - name: Sign binary (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |

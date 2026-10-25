@@ -38,14 +38,21 @@ describe("check-bun-advisories", () => {
     expect(workflow.jobs["required"].needs).toContain("runtime-audit");
   });
 
-  it("keeps the embedded-runtime and dependency scans fail-closed", () => {
+  it("scans a verified embedded-runtime SBOM, not just the raw binary, and keeps the dep scan fail-closed", () => {
     const workflow = parse(readFileSync(join(root, ".github/workflows/postmerge-ci.yml"), "utf8"));
+    const steps = (job: string) => workflow.jobs[job].steps as any[];
     const findTrivy = (job: string) =>
-      workflow.jobs[job].steps.find((step: any) => String(step.uses ?? "").startsWith("aquasecurity/trivy-action"));
+      steps(job).find((step: any) => String(step.uses ?? "").startsWith("aquasecurity/trivy-action"));
 
+    // Trivy cannot reconstruct Bun's statically linked libraries from the binary,
+    // so the binary scan must run against a verified SBOM, preceded by the
+    // SBOM-generation step that proves the embedded Bun version.
+    const sbomStep = steps("binary-smoke").find((step: any) =>
+      String(step.run ?? "").includes("embedded-runtime-sbom.mjs"));
+    expect(sbomStep).toBeDefined();
     const binaryScan = findTrivy("binary-smoke");
     expect(binaryScan.with["exit-code"]).toBe("1");
-    expect(binaryScan.with["scan-type"]).toBe("rootfs");
+    expect(binaryScan.with["scan-type"]).toBe("sbom");
     expect(binaryScan.with.severity).toBe("HIGH,CRITICAL");
 
     const fsScan = findTrivy("dependency-fs-scan");
@@ -55,6 +62,21 @@ describe("check-bun-advisories", () => {
     // The old report-only base-image scan must be gone.
     expect(workflow.jobs["container-scan"]).toBeUndefined();
     expect(JSON.stringify(workflow)).not.toContain("node:22-slim");
+  });
+
+  it("gates release publication on a per-artifact verified-SBOM scan", () => {
+    const workflow = parse(readFileSync(join(root, ".github/workflows/release.yml"), "utf8"));
+    const buildSteps = workflow.jobs["build-binaries"].steps as any[];
+    const sbomStep = buildSteps.find((step: any) => String(step.run ?? "").includes("embedded-runtime-sbom.mjs"));
+    const scanStep = buildSteps.find((step: any) => String(step.uses ?? "").startsWith("aquasecurity/trivy-action"));
+    expect(sbomStep).toBeDefined();
+    expect(scanStep).toBeDefined();
+    expect(scanStep.with["scan-type"]).toBe("sbom");
+    expect(scanStep.with["exit-code"]).toBe("1");
+    expect(scanStep.with.severity).toBe("HIGH,CRITICAL");
+    // Publication depends on build-binaries, so a failed per-artifact scan blocks
+    // the release rather than only being reported in a separate workflow.
+    expect(workflow.jobs["release"].needs).toContain("build-binaries");
   });
 
   it("gates the release build matrix on the advisory floor", () => {
@@ -104,12 +126,29 @@ describe("check-bun-advisories", () => {
       writeFileSync(path, readFileSync(path, "utf8").replace('bun-version: "1.4.4"', 'bun-version: "1.4.5"'));
       const result = run();
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("Keep every workflow pin equal to .bun-version");
+      expect(result.stderr).toContain("Keep every oven-sh/setup-bun pin equal to .bun-version");
     });
 
     it("rejects setup-bun usage without a pin", () => {
       const path = join(repo, ".github/workflows/release.yml");
       writeFileSync(path, readFileSync(path, "utf8").replace(/\n\s*bun-version: "1\.4\.4"/, ""));
+      const result = run();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("pins no bun-version");
+    });
+
+    it("rejects a commented-out pin (parses YAML, not raw text)", () => {
+      const path = join(repo, ".github/workflows/release.yml");
+      writeFileSync(path, readFileSync(path, "utf8").replace('bun-version: "1.4.4"', '# bun-version: "1.4.4"'));
+      const result = run();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("pins no bun-version");
+    });
+
+    it("rejects a second setup-bun step left unpinned", () => {
+      const path = join(repo, ".github/workflows/postmerge-ci.yml");
+      writeFileSync(path, readFileSync(path, "utf8") +
+        "\n  extra-unpinned:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: oven-sh/setup-bun@v2\n");
       const result = run();
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("pins no bun-version");

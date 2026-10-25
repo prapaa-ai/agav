@@ -5,6 +5,12 @@ import { AnthropicProvider } from "../providers/anthropic.js";
 import { OpenAIProvider } from "../providers/openai.js";
 import type { LLMProvider, StreamEvent, StreamParams } from "../providers/types.js";
 
+// The openai SDK stamps its own version into x-stainless-package-version. Keep
+// this equal to the version resolved in pnpm-lock.yaml (currently pinned to
+// 7.43.0 via the security override that forces patched transitive deps). Update
+// it in lockstep whenever the openai version changes.
+const openaiVersion = "7.43.0";
+
 // Only the transport is replaced: the installed SDK request builders, SSE
 // decoders and (for messages.stream) MessageStream accumulator all run for real.
 const fetchMock = vi.fn<typeof fetch>();
@@ -75,7 +81,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("real SDK SSE transport (Anthropic 0.133 / OpenAI 7.41)", () => {
+describe("real SDK SSE transport (installed Anthropic / OpenAI SDKs)", () => {
   it("runs Anthropic messages.stream through its accumulator and preserves exact text/tool deltas", async () => {
     const wire = anthropicStart()
       + sse({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, true)
@@ -134,7 +140,7 @@ describe("real SDK SSE transport (Anthropic 0.133 / OpenAI 7.41)", () => {
     expect(req.url.searchParams.get("tenant")).toBe("team a");
     // 7.27 preserves repeated base-URL query parameters, not just the last one.
     expect(req.url.searchParams.getAll("tag")).toEqual(["one", "two"]);
-    expect(req.headers.get("x-stainless-package-version")).toBe("7.41.0");
+    expect(req.headers.get("x-stainless-package-version")).toBe(openaiVersion);
     expect(req.body).toMatchObject({ stream: true, max_completion_tokens: 128, stream_options: { include_usage: true } });
     expect(req.body).not.toHaveProperty("max_tokens");
   });

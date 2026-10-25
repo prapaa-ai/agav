@@ -19,6 +19,7 @@
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { parse as parseYaml } from "yaml";
 
 // Resolve against the working directory, not this file's location: CI always
 // invokes `node scripts/check-bun-advisories.mjs` from the repository root, and
@@ -106,13 +107,36 @@ function readPinnedVersion() {
   }
 }
 
+/** `uses:` reference (e.g. `oven-sh/setup-bun@v2`) names the setup-bun action. */
+function isSetupBunUses(uses) {
+  return typeof uses === "string" && /^oven-sh\/setup-bun(@|$)/.test(uses.trim());
+}
+
 /**
- * Every workflow must pin the exact `.bun-version` value for `oven-sh/setup-bun`.
- * A workflow that sets a different literal, or omits the pin while still using
- * Bun, is drift that could ship an unscanned runtime — so it fails closed.
+ * Yields every step object across all jobs of a parsed workflow, so each
+ * `oven-sh/setup-bun` invocation is validated individually. A composite that
+ * pins Bun in one step cannot mask a second step that does not.
+ */
+function* workflowSteps(workflow) {
+  const jobs = workflow && typeof workflow === "object" ? workflow.jobs : undefined;
+  if (!jobs || typeof jobs !== "object") return;
+  for (const job of Object.values(jobs)) {
+    const steps = job && typeof job === "object" ? job.steps : undefined;
+    if (!Array.isArray(steps)) continue;
+    for (const step of steps) {
+      if (step && typeof step === "object") yield step;
+    }
+  }
+}
+
+/**
+ * Every `oven-sh/setup-bun` step must pin `with.bun-version` to the exact
+ * `.bun-version` value. Parsing YAML (not scanning raw text) means a commented
+ * pin reads as absent, and each setup step is checked on its own — both drift
+ * vectors the previous text match missed. Fails closed on any mismatch, missing
+ * pin, non-string pin, or unparseable workflow.
  */
 function verifyWorkflowsMatch(pinned) {
-  const bunVersionLine = /bun-version:\s*["']?([^"'\s#]+)["']?/g;
   for (const relative of pinnedWorkflows) {
     let content;
     try {
@@ -121,25 +145,36 @@ function verifyWorkflowsMatch(pinned) {
       fail(`Cannot read ${relative}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    const usesSetupBun = content.includes("oven-sh/setup-bun");
-    const matches = [...content.matchAll(bunVersionLine)];
-
-    if (!usesSetupBun && matches.length === 0) continue;
-    if (usesSetupBun && matches.length === 0) {
-      fail(`${relative} uses oven-sh/setup-bun but pins no bun-version. Pin it to ${pinned.value}.`);
+    let workflow;
+    try {
+      workflow = parseYaml(content);
+    } catch (error) {
+      fail(`Cannot parse ${relative} as YAML: ${error instanceof Error ? error.message : String(error)}`);
     }
 
-    for (const match of matches) {
+    for (const step of workflowSteps(workflow)) {
+      if (!isSetupBunUses(step.uses)) continue;
+      const withBlock = step.with && typeof step.with === "object" ? step.with : {};
+      const pin = withBlock["bun-version"];
+      if (pin === undefined || pin === null) {
+        fail(
+          `${relative} has an oven-sh/setup-bun step that pins no bun-version. ` +
+            `Pin with.bun-version to ${pinned.value} (single source of truth: .bun-version).`,
+        );
+      }
+      if (typeof pin !== "string" && typeof pin !== "number") {
+        fail(`${relative} has an oven-sh/setup-bun step whose bun-version is not a plain version: ${JSON.stringify(pin)}.`);
+      }
       let workflowVersion;
       try {
-        workflowVersion = parseVersion(`${relative} bun-version`, match[1]);
+        workflowVersion = parseVersion(`${relative} bun-version`, pin);
       } catch (error) {
         fail(error instanceof Error ? error.message : String(error));
       }
       if (compareVersions(workflowVersion, pinned) !== 0) {
         fail(
           `${relative} pins bun-version ${workflowVersion.value}, but .bun-version is ${pinned.value}. ` +
-            `Keep every workflow pin equal to .bun-version (single source of truth).`,
+            `Keep every oven-sh/setup-bun pin equal to .bun-version (single source of truth).`,
         );
       }
     }

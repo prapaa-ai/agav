@@ -67,17 +67,20 @@ jobs:
           /tmp/agav-test --version
           /tmp/agav-test --help | grep -q "Agav"
           echo "Binary smoke test passed."
-      # Scan the ACTUAL shipped deliverable, not a stand-in base image. The
-      # compiled binary embeds the Bun runtime and its vendored C libraries
-      # (Brotli, c-ares, zlib, ...), which pnpm audit / SBOM / Semgrep never see.
-      # Trivy's rootfs/filesystem scanner inspects the binary's embedded content.
-      # exit-code 1 on HIGH,CRITICAL so a vulnerable runtime blocks the pipeline
-      # instead of being reported and ignored.
-      - name: Scan compiled binary for known vulnerabilities
+      # The compiled binary statically embeds the Bun runtime and its vendored C
+      # libraries (Brotli, c-ares, zlib, ...), which pnpm audit / the SBOM / and
+      # Semgrep never see. Trivy cannot reconstruct those statically linked
+      # components from the binary, so a generic binary scan returning "0 vulns"
+      # is NOT evidence of safety. Instead: verify the binary embeds the pinned
+      # Bun version, emit an explicit SBOM of its vendored components, and scan
+      # that. exit-code 1 on HIGH,CRITICAL so a vulnerable runtime fails the run.
+      - name: Generate verified embedded-runtime SBOM
+        run: node scripts/embedded-runtime-sbom.mjs /tmp/agav-test /tmp/agav-runtime-sbom.cdx.json
+      - name: Scan embedded-runtime SBOM for known vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          scan-type: rootfs
-          scan-ref: /tmp/agav-test
+          scan-type: sbom
+          scan-ref: /tmp/agav-runtime-sbom.cdx.json
           format: table
           severity: HIGH,CRITICAL
           ignore-unfixed: false
