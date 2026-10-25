@@ -21,32 +21,45 @@ describe("verify-embedded-runtime", () => {
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "agav-verify-")); });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it("accepts a binary embedding the pinned Bun marker", () => {
-    writeFileSync(bin(), `app bytes ... bun-v${PINNED} ... more bytes`);
+  it("accepts a binary embedding the pinned Bun runtime banner", () => {
+    writeFileSync(bin(), `app bytes ... Bun v${PINNED} (38afee6c8) ... more bytes`);
     const result = run();
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(`embeds the pinned Bun ${PINNED}`);
   });
 
-  it("fails closed when the binary lacks the pinned Bun marker", () => {
-    writeFileSync(bin(), "a binary with no bun marker at all");
+  it("accepts a correct runtime even when application strings mention other bun versions", () => {
+    // Real compiled binaries bundle app text such as a bun compare URL
+    // (bun-v1.4.3...bun-v1.4.4). Those are not runtime identity and must not
+    // trigger a conflict — only the "Bun v<x.y.z> (<commit>)" banner counts.
+    writeFileSync(bin(), [
+      `Runtime banner: Bun v${PINNED} (38afee6c8)`,
+      "Upgrade notes: https://github.com/oven-sh/bun/compare/bun-v1.4.3...bun-v1.4.4",
+    ].join("\n"));
+    const result = run();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`embeds the pinned Bun ${PINNED}`);
+  });
+
+  it("fails closed when the binary has no Bun runtime banner", () => {
+    writeFileSync(bin(), "a binary with no bun runtime banner, only bun-v1.4.4 in a URL");
     const result = run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("does not embed the pinned Bun runtime marker");
+    expect(result.stderr).toContain("no Bun runtime banner");
   });
 
   it("fails closed when the binary embeds a different Bun version", () => {
-    writeFileSync(bin(), "bun-v0.0.1 wrong runtime");
+    writeFileSync(bin(), "Bun v0.0.1 (deadbeef) wrong runtime");
     const result = run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("does not embed the pinned Bun runtime marker");
+    expect(result.stderr).toContain("not the pinned");
   });
 
-  it("fails closed on conflicting embedded Bun markers", () => {
-    writeFileSync(bin(), `bun-v${PINNED} ... and also bun-v9.9.9`);
+  it("fails closed on conflicting embedded Bun runtime banners", () => {
+    writeFileSync(bin(), `Bun v${PINNED} (38afee6c8) ... and also Bun v9.9.9 (abcdef123)`);
     const result = run();
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain("conflicting Bun runtime markers");
+    expect(result.stderr).toContain("conflicting Bun runtime banners");
   });
 
   it("refuses a missing argument", () => {

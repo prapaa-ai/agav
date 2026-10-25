@@ -216,6 +216,36 @@ describe("check-bun-advisories", () => {
       expect(result.stderr).toContain("pins no bun-version");
     });
 
+    it("rejects bun-version placed under env: instead of with:", () => {
+      const path = join(repo, ".github/workflows/release.yml");
+      // setup-bun only reads with.bun-version; a pin under env: is no pin.
+      writeFileSync(path, readFileSync(path, "utf8").replace(
+        '      - uses: oven-sh/setup-bun@v2\n        with:\n          bun-version: "1.4.4"',
+        '      - uses: oven-sh/setup-bun@v2\n        env:\n          bun-version: "1.4.4"'));
+      const result = run();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("pins no bun-version");
+    });
+
+    it("rejects a quoted uses: key that hides a vulnerable pin", () => {
+      const path = join(repo, ".github/workflows/release.yml");
+      writeFileSync(path, readFileSync(path, "utf8").replace(
+        '      - uses: oven-sh/setup-bun@v2\n        with:\n          bun-version: "1.4.4"',
+        '      - "uses": oven-sh/setup-bun@v2\n        with:\n          bun-version: "1.3.14"'));
+      const result = run();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("pins bun-version 1.3.14");
+    });
+
+    it.each([
+      ["inline comment", 'bun-version: "1.4.4" # security pin'],
+      ["single quotes", "bun-version: '1.4.4'"],
+    ])("accepts a valid pin with %s", (_label, replacement) => {
+      const path = join(repo, ".github/workflows/release.yml");
+      writeFileSync(path, readFileSync(path, "utf8").replace('bun-version: "1.4.4"', replacement));
+      expect(run().status).toBe(0);
+    });
+
     it.each([
       ["two versions", "1.4.4\n1.4.5\n"],
       ["non-numeric", "latest\n"],

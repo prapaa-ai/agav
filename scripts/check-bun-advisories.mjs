@@ -163,52 +163,95 @@ function isComment(line) {
 }
 
 /**
- * Find every `oven-sh/setup-bun` step in a workflow and return the raw
- * `bun-version` value each one pins, or `null` when a step pins none. This is a
- * small purpose-built scanner (no YAML dependency, because this gate runs before
- * `pnpm install`). It tracks indentation to stay inside one step's block, and it
- * ignores comment lines so a commented-out pin correctly reads as absent.
+ * Parse one `key: value` line into `{ indent, key, value }`, or `null` when the
+ * line is not a mapping entry. Handles quoted keys (`"uses":`) and strips an
+ * unquoted trailing `# comment` from the value. Quoted values keep their quotes
+ * for the caller to unwrap, so a `#` inside quotes is preserved.
+ */
+function parseKeyValue(line) {
+  const indent = indentOf(line);
+  const body = line.slice(indent);
+  // key: optionally quoted, then a colon.
+  const m = /^(?:"([^"]+)"|'([^']+)'|([^\s:#][^:]*?))\s*:(?:\s+(.*))?$/.exec(body);
+  if (!m) return null;
+  const key = (m[1] ?? m[2] ?? m[3]).trim();
+  let value = (m[4] ?? "").trim();
+  // Strip an inline comment only when it is OUTSIDE quotes. A quoted scalar
+  // keeps everything between the quotes; otherwise a ` #...` tail is a comment.
+  if (value.startsWith('"') || value.startsWith("'")) {
+    const quote = value[0];
+    const end = value.indexOf(quote, 1);
+    value = end >= 0 ? value.slice(1, end) : value.slice(1);
+  } else {
+    value = value.replace(/\s+#.*$/, "").trim();
+  }
+  return { indent, key, value };
+}
+
+/**
+ * Find every `oven-sh/setup-bun` step in a workflow and return the `bun-version`
+ * value its `with:` block pins, or `null` when the step pins none there.
  *
- * A step begins at a `- ` list item containing `uses: oven-sh/setup-bun...`. Its
- * block is every following line indented deeper than the `- ` marker, up to the
- * next sibling list item or a dedent. Within that block, `bun-version:` at the
- * `with:` level is the pin.
+ * Dependency-free (this gate runs before `pnpm install`), but strict about YAML
+ * structure: it unwraps quoted keys/values, ignores comment lines and inline
+ * comments, and — critically — only accepts `bun-version` nested under this
+ * step's `with:` mapping. A `bun-version` placed under `env:` (or anywhere else)
+ * is NOT a pin, because setup-bun only reads `with.bun-version`.
  */
 function findSetupBunPins(content) {
   const lines = content.split(/\r?\n/);
   const pins = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (isComment(line)) continue;
-    // A list item line, e.g. "      - uses: oven-sh/setup-bun@v2".
+    if (line.trim() === "" || isComment(line)) continue;
+    // A list item line, e.g. `      - uses: oven-sh/setup-bun@v2`.
     const marker = /^(\s*)-\s+(.*)$/.exec(line);
     if (!marker) continue;
     const markerIndent = marker[1].length;
-    // Collect this step's block: the marker line's content plus deeper lines.
-    const block = [marker[2]];
+    // The content after `- ` sits at column markerIndent + 2. Every block entry
+    // is normalized to { indent, text } where `text` is a reconstructed, evenly
+    // indented `key: value` line, so parseKeyValue sees a consistent shape.
+    const firstContentIndent = markerIndent + 2;
+    const block = [{ indent: firstContentIndent, text: `${" ".repeat(firstContentIndent)}${marker[2]}` }];
     let j = i + 1;
     for (; j < lines.length; j++) {
       const next = lines[j];
-      if (next.trim() === "") { block.push(""); continue; }
+      if (next.trim() === "") continue;
       const nextIndent = indentOf(next);
-      // A sibling "- " at the same indent, or any dedent to/past the marker,
-      // ends this step.
-      if (nextIndent <= markerIndent) break;
-      block.push(next);
+      if (nextIndent <= markerIndent) break; // sibling item or dedent ends the step
+      block.push({ indent: nextIndent, text: next });
     }
-    const isSetupBun = block.some((b) => /(^|\b)uses:\s*["']?oven-sh\/setup-bun(@|["'\s]|$)/.test(b));
+
+    // Is this a setup-bun step? Check the `uses:` key value (quoted or not).
+    const isSetupBun = block.some((b) => {
+      if (isComment(b.text)) return false;
+      const kv = parseKeyValue(b.text);
+      return kv && kv.key === "uses" && /^oven-sh\/setup-bun(@|$)/.test(kv.value);
+    });
+
     if (isSetupBun) {
-      // Within the block, a non-comment `bun-version:` key is the pin.
+      // Find the `with:` mapping and read `bun-version` nested directly under it.
       let pin = null;
+      let withIndent = -1;
       for (const b of block) {
-        if (isComment(b)) continue;
-        const m = /(^|\s)bun-version:\s*(.+?)\s*$/.exec(b);
-        if (m) { pin = m[2].replace(/^["']|["']$/g, ""); break; }
+        if (isComment(b.text)) continue;
+        const kv = parseKeyValue(b.text);
+        if (!kv) continue;
+        if (withIndent === -1) {
+          if (kv.key === "with" && kv.value === "") withIndent = kv.indent;
+          continue;
+        }
+        // Inside `with:`: a dedent to/under `with:` ends the mapping; a new
+        // `with:` there reopens it.
+        if (kv.indent <= withIndent) {
+          withIndent = kv.key === "with" && kv.value === "" ? kv.indent : -1;
+          continue;
+        }
+        if (kv.key === "bun-version") { pin = kv.value; break; }
       }
       pins.push(pin);
     }
-    // Resume scanning after this step's block (do not re-enter its lines).
-    i = j - 1;
+    i = j - 1; // resume after this step's block
   }
   return pins;
 }

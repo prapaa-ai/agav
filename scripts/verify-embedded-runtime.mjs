@@ -50,36 +50,45 @@ function readPinnedBunVersion() {
  * A `bun build --compile` single-file executable runs the APPLICATION, not the
  * Bun CLI, so it does not answer `bun --revision`; running it proves nothing
  * about the embedded runtime. But the embedded runtime stamps its own version
- * into the binary as `bun-v<x.y.z>`. Requiring the distinctive `bun-v<expected>`
- * marker — not a bare version substring that could coincide with an app string —
- * proves the artifact embeds exactly the pinned runtime. Works identically for
- * native and cross-compiled targets.
+ * BANNER — `Bun v<x.y.z> (<commit>)` — into the binary. That banner is the
+ * runtime's own identity string; it is distinct from bare `bun-v<x.y.z>`
+ * substrings that legitimately appear in application strings (e.g. a
+ * `github.com/oven-sh/bun/compare/bun-v1.4.3...bun-v1.4.4` URL in bundled text).
+ * Anchoring on the banner proves the embedded runtime without false positives
+ * from app content. Verified present exactly once in real 1.4.4 artifacts across
+ * every target (native and cross-compiled).
  */
 function verifyEmbeddedBunVersion(binaryPath, expected) {
-  let bytes;
+  let text;
   try {
-    bytes = readFileSync(binaryPath);
+    text = readFileSync(binaryPath).toString("latin1");
   } catch (error) {
     fail(`Cannot read ${binaryPath}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const marker = Buffer.from(`bun-v${expected}`, "utf8");
-  if (!bytes.includes(marker)) {
+  // Collect every runtime banner version. Only the runtime stamps this exact
+  // `Bun v<x.y.z> (<commit>)` form; application strings do not.
+  const banner = /Bun v(\d+\.\d+\.\d+) \([0-9a-f]+\)/g;
+  const versions = new Set();
+  let match;
+  while ((match = banner.exec(text)) !== null) versions.add(match[1]);
+
+  if (versions.size === 0) {
     fail(
-      `Compiled binary ${binaryPath} does not embed the pinned Bun runtime marker "bun-v${expected}". ` +
-        `It was likely built with a different Bun; refusing to accept an unverified runtime.`,
+      `Compiled binary ${binaryPath} contains no Bun runtime banner ("Bun v<x.y.z> (<commit>)"). ` +
+        `It was likely not produced by \`bun build --compile\`; refusing to accept an unverified runtime.`,
     );
   }
-  // Defense in depth: reject a binary that ALSO carries a different bun-v marker,
-  // which would mean the artifact is ambiguous about its runtime.
-  const strayMarker = /bun-v(\d+\.\d+\.\d+)/g;
-  const text = bytes.toString("latin1");
-  const seen = new Set();
-  let match;
-  while ((match = strayMarker.exec(text)) !== null) seen.add(match[1]);
-  const others = [...seen].filter((version) => version !== expected);
+  if (!versions.has(expected)) {
+    fail(
+      `Compiled binary ${binaryPath} embeds Bun runtime ${[...versions].join(", ")}, not the pinned ${expected}. ` +
+        `It was built with a different Bun; refusing to accept an unvetted runtime.`,
+    );
+  }
+  // A second, different runtime banner would mean two runtimes are embedded.
+  const others = [...versions].filter((version) => version !== expected);
   if (others.length > 0) {
     fail(
-      `Compiled binary ${binaryPath} embeds conflicting Bun runtime markers (${[expected, ...others].join(", ")}). ` +
+      `Compiled binary ${binaryPath} embeds conflicting Bun runtime banners (${[expected, ...others].join(", ")}). ` +
         `Refusing to accept an ambiguous runtime.`,
     );
   }
