@@ -26,6 +26,15 @@
   "engines": {
     "node": ">=22.13.0"
   },
+  "pnpm": {
+    "auditConfig": {
+      "//": "Reviewed, time-boxed allowlist of PRE-EXISTING transitive advisories surfaced when the dependency audit became blocking. Each entry needs a tracked remediation (forced override or upstream bump); remove it once the dependency tree no longer resolves the vulnerable version. New advisories are NOT covered and must fail the gate.",
+      "ignoreGhsas": [
+        "GHSA-mrhx-c7xc-m3w5",
+        "GHSA-27r3-jxmh-p828"
+      ]
+    }
+  },
   "dependencies": {
     "@alcalzone/ansi-tokenize": "^0.3.1",
     "@anthropic-ai/sdk": "^0.133.0",

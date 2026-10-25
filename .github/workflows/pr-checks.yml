@@ -170,10 +170,13 @@ jobs:
 
           RAW=$(wc -c < dist/agav-linux-x64)
           GZ=$(wc -c < dist/agav-linux-x64.gz)
-          # ~99 MiB of this is the embedded Bun runtime and is not ours to
-          # shrink. The budget leaves room for a few MB of growth and trips on
-          # the kind of regression that added 30 MB of native image codecs.
-          BUDGET=$((110 * 1024 * 1024))
+          # ~114 MiB of this is the embedded Bun runtime (1.4.4) and is not ours
+          # to shrink; the runtime grew when the Brotli-CVE fix moved the pin up
+          # from 1.3.14. The budget leaves room for a few MB of growth and trips
+          # on the kind of regression that added 30 MB of native image codecs.
+          # Raise it in lockstep with a Bun pin bump that legitimately grows the
+          # runtime, never to accommodate our own bloat.
+          BUDGET=$((125 * 1024 * 1024))
 
           {
             echo "| Asset | Bytes | MiB |"
