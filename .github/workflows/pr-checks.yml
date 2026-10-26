@@ -107,7 +107,10 @@ jobs:
   test:
     name: Tests
     needs: changed
-    if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true'
+    # Also run on workflow-only changes: the CI-hardening suite (SHA pins +
+    # permissions) lives here, so a PR touching only .github/workflows must still
+    # execute it or a mutable action ref could slip in unguarded.
+    if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
