@@ -184,6 +184,13 @@ jobs:
             os: windows-latest
             ext: .exe
     runs-on: ${{ matrix.os }}
+    # Build provenance attestations: id-token mints the Sigstore OIDC identity,
+    # attestations writes the signed attestation to this repo. contents:read is
+    # the default; keep it explicit now that the job holds extra scopes.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     defaults:
       run:
         shell: bash
@@ -306,6 +313,21 @@ jobs:
             cat "$asset.sha256"
           done
 
+      # Build provenance for the EXACT bytes that ship. Generated on the native
+      # runner right after checksums, so the attested digests are the published
+      # artifacts. Both the raw binary and the gzipped variant are subjects (the
+      # installers fetch either). GitHub stores a Sigstore-backed attestation
+      # that proves this artifact was built by this workflow from this commit;
+      # users verify with `gh attestation verify <file> --repo prapaa-ai/agav`.
+      # The detached .sha256/.sig files are not attested — they are not the
+      # artifact, and the checksum is redundant with the attested digest.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            dist/agav-${{ matrix.target }}${{ matrix.ext }}
+            dist/agav-${{ matrix.target }}${{ matrix.ext }}.gz
+
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: agav-${{ matrix.target }}
@@ -410,6 +432,26 @@ jobs:
 
             The `www.` is deliberate: the apex answers with a 308 and Windows
             PowerShell 5.1 cannot follow that status.
+
+            ### Verify build provenance (optional)
+
+            Every binary carries a GitHub-signed build-provenance attestation
+            proving it was built by this repository's release workflow from this
+            release's commit. Constrain the check to the signer workflow and the
+            source commit, not just the repository, with the
+            [GitHub CLI](https://cli.github.com):
+
+            ```bash
+            gh attestation verify agav-darwin-arm64 \
+              --repo ${{ github.repository }} \
+              --signer-workflow ${{ github.repository }}/.github/workflows/release.yml \
+              --source-digest ${{ github.sha }}
+            ```
+
+            Works on the raw binary or the `.gz` before decompressing. If
+            verification fails, do not run the file until the failure is
+            resolved — treat an unverified artifact as untrusted (a failure can
+            also be a network or authentication problem, not only tampering).
 
             <details>
             <summary>Manual install</summary>
