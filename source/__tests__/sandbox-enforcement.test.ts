@@ -25,7 +25,7 @@
  *    seatbelt/bubblewrap here do not sandbox the network, so the network test is
  *    Docker-only (which configures --network=none).
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
@@ -374,6 +374,50 @@ describe("real sandbox enforcement (per-OS)", () => {
       active = await backendApplies("docker", root);
     }, 180_000);
     afterAll(() => { try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } });
+
+    for (const streaming of [false, true]) {
+      it(`does not retry a workload exiting 7 on the host (streaming: ${streaming})`, async (ctx) => {
+        // POSIX-only (the enclosing suite excludes Windows). This tests workload
+        // failure, not failure to establish isolation. CI requires this entire
+        // Docker suite on Linux; unavailable Docker must never count as a pass.
+        const hostDir = realpathSync(mkdtempSync(join(tmpdir(), "agav-fallback-control-")));
+        const marker = join(hostDir, "retried");
+        const quote = (text: string) => `'${text.replace(/'/g, "'\\''")}'`;
+        // hostDir is a separate fixture, NOT inside root (the /workspace bind).
+        // The same command creates a marker on the host but cannot see hostDir in
+        // the container. Keep its nonzero exit identical in both environments.
+        const command = `if [ -d ${quote(hostDir)} ]; then printf retried > ${quote(marker)}; fi; printf 'WORKLOAD_STARTED\\n'; exit 7`;
+        try {
+          const control = spawnSync("/bin/sh", ["-c", command], {
+            cwd: root, encoding: "utf8", timeout: 5000,
+          });
+          expect(control.error).toBeUndefined();
+          expect(control.status).toBe(7);
+          expect(control.stdout).toBe("WORKLOAD_STARTED\n");
+          expect(readFileSync(marker, "utf8")).toBe("retried");
+          rmSync(marker);
+          expect(existsSync(marker)).toBe(false);
+
+          guard(ctx);
+          const output: Buffer[] = [];
+          const result = await runInSandbox({
+            command, cwd: root, forceBackend: "docker", ...RUN,
+            ...(streaming ? { onOutput: (chunk: Buffer, stream: "stdout" | "stderr") => {
+              if (stream === "stdout") output.push(chunk);
+            } } : {}),
+          });
+          // Daemon/launch/mount errors and timeouts cannot satisfy these checks.
+          expect(streaming ? Buffer.concat(output).toString() : result.stdout).toBe("WORKLOAD_STARTED\n");
+          if (streaming) expect(result.error?.message).toBe("Command exited with code 7");
+          else expect(result.error).toMatchObject({ code: 7 });
+          // The positive control proves a retry would create this file, regardless
+          // of what backend label runInSandbox attaches to the result.
+          expect(existsSync(marker)).toBe(false);
+        } finally {
+          rmSync(hostDir, { recursive: true, force: true });
+        }
+      }, 40_000);
+    }
 
     it("denies all outbound network (--network=none)", async (ctx) => {
       guard(ctx);

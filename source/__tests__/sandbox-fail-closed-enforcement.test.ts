@@ -155,39 +155,4 @@ describe("a backend that fails to launch/apply does NOT fall back to unsandboxed
     }
   });
 
-  it("a backend whose launcher RUNS but exits non-zero also does not fall back", async () => {
-    // Distinct from the ENOENT (missing launcher) cases above: here the backend
-    // actually RUNS the workload and it exits non-zero. Force docker and run a
-    // command that (a) writes a marker to an ABSOLUTE HOST path that is NOT the
-    // mounted workspace, then (b) exits 7.
-    //
-    // The decisive, label-independent signal is the HOST marker: inside the
-    // container that absolute path resolves to the container's ephemeral fs, so
-    // the host file never appears. If a regression retried the command through
-    // runUnsandboxed() after the nonzero exit, the SAME command would run directly
-    // on the host and create the marker — caught here. On a runner without a
-    // daemon the docker CLI fails at launch; the invariants (error surfaced, no
-    // host marker) still hold.
-    const hostMarker = join(tmpdir(), `agav-dockerfail-HOST-${process.pid}-${Date.now()}.txt`);
-    if (existsSync(hostMarker)) rmSync(hostMarker, { force: true });
-    try {
-      const result = await runInSandbox({
-        // Write to the host-absolute marker path, then fail. Inside the container
-        // this writes the container fs, not the host; an unsandboxed fallback would
-        // write the real host file.
-        command: `printf fallback-ran > ${JSON.stringify(hostMarker)}; exit 7`,
-        cwd: tmpdir(),
-        timeout: 8000,
-        maxBuffer: 1 << 16,
-        forceBackend: "docker",
-      });
-      expect(result.error).not.toBeNull();        // non-zero exit surfaced, not swallowed
-      expect(result.backend).toBe("docker");       // selected backend retained
-      // The clinching proof: the command never executed on the host. A silent
-      // unsandboxed retry after the nonzero exit would have created this file.
-      expect(existsSync(hostMarker)).toBe(false);
-    } finally {
-      if (existsSync(hostMarker)) rmSync(hostMarker, { force: true });
-    }
-  }, 20_000);
 });
