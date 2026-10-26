@@ -97,6 +97,8 @@ interface RunOptions {
  */
 let writeBreaker = false;
 let readBreaker = false;
+let readRetryAfter = 0;
+const READ_RETRY_DELAY_MS = 30_000;
 
 /**
  * True once a WRITE-affecting timeout occurred this process; the migration uses
@@ -111,6 +113,7 @@ export function isStoreUnresponsive(): boolean {
 export function __resetKeychainBreakerForTests(): void {
   writeBreaker = false;
   readBreaker = false;
+  readRetryAfter = 0;
 }
 
 /** How long after SIGTERM we wait before escalating to SIGKILL. */
@@ -191,7 +194,10 @@ function run(file: string, args: string[], options: RunOptions = {}): Promise<{ 
         // timeout additionally blocks further reads (no fallback — but we never
         // let a non-read timeout disable reads, so a working key is not dropped).
         writeBreaker = true;
-        if (options.isRead) readBreaker = true;
+        if (options.isRead) {
+          readBreaker = true;
+          readRetryAfter = Date.now() + READ_RETRY_DELAY_MS;
+        }
         terminate();
         done(1);
       }, CALL_TIMEOUT_MS);
@@ -475,7 +481,10 @@ export async function getSecret(account: string): Promise<string | undefined> {
   if (!isSafeToken(account)) return undefined;
   // Only a prior READ timeout fast-fails a read — a write/detection timeout must
   // not disable reads, or a working key would be silently dropped this session.
-  if (readBreaker) return undefined;
+  if (readBreaker) {
+    if (Date.now() < readRetryAfter) return undefined;
+    readBreaker = false; // explicit later discovery can retry after unlock/recovery
+  }
   const backend = await detectBackend();
   switch (backend) {
     case "macos": {

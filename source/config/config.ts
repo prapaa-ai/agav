@@ -672,6 +672,16 @@ export async function loadConfig(): Promise<AgavConfig> {
   // and an org-pinned Authorization header (which wins over the token).
   applyGatewayToken(merged, org.config, org.gatewayToken);
 
+  // Remember only failed file-backed keychain lookups, never environment keys.
+  // The symbol survives the shallow config copies used by the TUI, but is omitted
+  // by JSON serialization (config saves, transcripts and exports).
+  const pending: Partial<Record<ApiKeyField, string>> = {};
+  for (const field of Object.keys(KEYCHAIN_ACCOUNTS) as ApiKeyField[]) {
+    const stored = globalConfig[field];
+    if (process.env[API_KEY_ENV[field]] === undefined && !merged[field]
+      && typeof stored === "string" && isKeychainRef(stored)) pending[field] = stored;
+  }
+  (merged as RecoverableConfig)[PENDING_KEYCHAIN_REFS] = pending;
   return merged;
 }
 
@@ -685,6 +695,55 @@ const KEYCHAIN_ACCOUNTS = {
   geminiApiKey: "gemini-api-key",
   ollamaApiKey: "ollama-api-key",
 } as const;
+
+type ApiKeyField = keyof typeof KEYCHAIN_ACCOUNTS;
+const API_KEY_ENV: Record<ApiKeyField, string> = {
+  anthropicApiKey: "ANTHROPIC_API_KEY", openaiApiKey: "OPENAI_API_KEY",
+  openrouterApiKey: "OPENROUTER_API_KEY", nvidiaApiKey: "NVIDIA_API_KEY",
+  deepseekApiKey: "DEEPSEEK_API_KEY", geminiApiKey: "GEMINI_API_KEY", ollamaApiKey: "OLLAMA_API_KEY",
+};
+const PENDING_KEYCHAIN_REFS = Symbol("pendingKeychainRefs");
+type RecoverableConfig = AgavConfig & { [PENDING_KEYCHAIN_REFS]?: Partial<Record<ApiKeyField, string>> };
+
+/**
+ * Retry only unresolved keychain references from this session's config load.
+ * Called by model discovery, not a full config reload: session/org settings and
+ * explicit credentials stay untouched. Store cooldown/deadlines remain in force.
+ * Revalidate the persisted reference before and after lookup so a cleared or
+ * replaced reference is not resurrected. Returns unresolved field names only,
+ * never helper errors, accounts or secret values.
+ */
+export async function refreshStoredApiKeys(config: AgavConfig): Promise<string[]> {
+  const pending = (config as RecoverableConfig)[PENDING_KEYCHAIN_REFS];
+  if (!pending) return [];
+  try {
+    // Serialize lookup with account rotation/clear as well: replacing a secret
+    // under the same account leaves its reference unchanged.
+    return await withConfigLock(async () => {
+      const unresolved: string[] = [];
+      for (const field of Object.keys(pending) as ApiKeyField[]) {
+        const ref = pending[field];
+        if (!ref || config[field] !== undefined || process.env[API_KEY_ENV[field]] !== undefined
+          || (field === "openaiApiKey" && config.openaiGatewayAuth)) continue;
+        try {
+          if ((await readStoredConfig())[field] !== ref) continue;
+          const value = await getSecret(keychainAccount(ref));
+          if ((await readStoredConfig())[field] !== ref) continue;
+          // A caller may have supplied a credential while the lookup was pending.
+          if (value && config[field] === undefined && process.env[API_KEY_ENV[field]] === undefined) {
+            config[field] = value;
+          } else if (!config[field]) unresolved.push(field);
+        } catch {
+          unresolved.push(field);
+        }
+      }
+      return unresolved;
+    });
+  } catch {
+    return (Object.keys(pending) as ApiKeyField[]).filter(field =>
+      config[field] === undefined && process.env[API_KEY_ENV[field]] === undefined);
+  }
+}
 
 /** Atomically write serialized config to the global config file (temp + rename, 0600). */
 async function writeConfigAtomic(data: Record<string, unknown>): Promise<void> {
@@ -809,11 +868,9 @@ export async function clearStoredApiKey(field: keyof typeof KEYCHAIN_ACCOUNTS): 
 // read-modify-write cycles can interleave and clobber each other (a credential
 // rotation vs. a migration, a status-bar edit vs. a key save, etc.).
 const CONFIG_LOCK_PATH = join(AGAV_DIR, ".config.lock");
-/** A lock older than this is considered stale (a crashed holder) and reclaimed. */
-const CONFIG_LOCK_STALE_MS = 60_000;
 /** Overall wall-clock budget for the whole migration (bounds first-run startup). */
 const MIGRATION_BUDGET_MS = 15_000;
-/** How long a blocking writer waits for the lock before proceeding best-effort. */
+/** How long a blocking writer waits before rejecting without changing config. */
 const CONFIG_LOCK_WAIT_MS = 5_000;
 /** Poll interval while waiting for a contended lock. */
 const CONFIG_LOCK_POLL_MS = 50;
@@ -821,7 +878,7 @@ const CONFIG_LOCK_POLL_MS = 50;
 /** Raised when the shared config lock cannot be acquired within the budget. */
 class ConfigLockTimeoutError extends Error {
   constructor() {
-    super("Could not acquire the Agav config lock — another process is writing config.json. Try again.");
+    super(`Could not acquire the Agav config lock. Retry after other saves finish. If a process crashed, stop all Agav processes before manually removing ${CONFIG_LOCK_PATH}.`);
     this.name = "ConfigLockTimeoutError";
   }
 }
@@ -842,100 +899,43 @@ function withInProcessLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Cross-process lock using a CAS-on-rename protocol that is correct on a local
- * POSIX/NTFS filesystem (atomic rename; exclusive O_EXCL create).
- *
- * Acquire:  create `${LOCK}.req.<token>` (our unique claim file), then try to
- *           atomically `rename` it onto the canonical `${LOCK}` path via an
- *           exclusive step: we first create `${LOCK}` with O_EXCL. If that
- *           succeeds we own it. If it exists, we only steal when it is provably
- *           stale, and the steal itself is a CAS: rename the stale `${LOCK}` to a
- *           token-private name; ONLY the single process whose rename succeeds
- *           proceeds to recreate `${LOCK}` with O_EXCL. A process that renamed a
- *           file it did not expect (it moved a *fresh* successor lock) detects
- *           this because the moved file's token differs from the stale token it
- *           observed, and it restores the file instead of proceeding.
- *
- * Release:  CAS delete — rename `${LOCK}` to a token-private name; unlink it only
- *           if its content is our token; otherwise rename it back. This guarantees
- *           we never delete a successor's lock.
- *
- * Returns an owned release fn, or null when a live peer holds it. Never throws.
+ * Exclusive-create lock. Never steal, rename, or remove another holder's lock,
+ * regardless of age: a suspended process can still own its transaction. With no
+ * automatic takeover, only the successful creator removes this path, after its
+ * complete transaction. A crashed holder requires manual recovery with all Agav
+ * processes stopped. External/manual lock removal during a live transaction is
+ * not supported. This deliberately favors safety over automatic crash recovery.
  */
 async function tryAcquireConfigLock(): Promise<(() => Promise<void>) | null> {
-  const { open, stat, unlink, readFile: read, rename } = await import("node:fs/promises");
-  const { randomBytes } = await import("node:crypto");
+  const { open, unlink } = await import("node:fs/promises");
+  await ensureDir(AGAV_DIR);
+  let handle;
   try {
-    await ensureDir(AGAV_DIR);
-  } catch {
-    return null;
+    handle = await open(CONFIG_LOCK_PATH, "wx", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
+    throw error;
   }
-  const token = `${process.pid}:${randomBytes(12).toString("hex")}`;
-  const privatePath = `${CONFIG_LOCK_PATH}.hold.${token.replace(/[^a-z0-9]/gi, "")}`;
-
-  /** CAS release: move the lock aside, confirm it is ours, then delete; else restore. */
-  const releaseIfOwned = async () => {
-    try {
-      await rename(CONFIG_LOCK_PATH, privatePath); // only the current occupant moves
-    } catch {
-      return; // not present / someone else already moved it — nothing of ours to drop
-    }
-    try {
-      const current = await read(privatePath, "utf-8");
-      if (current === token) {
-        await unlink(privatePath).catch(() => {});
-      } else {
-        // We moved a successor's lock, not ours — put it back exactly as found.
-        await rename(privatePath, CONFIG_LOCK_PATH).catch(() => unlink(privatePath).catch(() => {}));
-      }
-    } catch {
-      await unlink(privatePath).catch(() => {});
-    }
+  // We own the pathname until release; nobody in this protocol can replace it.
+  // Set released before the await so even concurrent duplicate releases cannot
+  // remove a subsequent owner's lock.
+  let released = false;
+  const release = async () => {
+    if (released) return;
+    released = true;
+    await unlink(CONFIG_LOCK_PATH);
   };
-
-  const createOwned = async (): Promise<(() => Promise<void>) | null> => {
-    const handle = await open(CONFIG_LOCK_PATH, "wx", 0o600);
-    await handle.writeFile(token);
-    await handle.close();
-    return releaseIfOwned;
-  };
-
-  for (let attempt = 0; attempt < 3; attempt++) {
+  try {
     try {
-      return await createOwned();
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") return null;
+      await handle.writeFile(String(process.pid));
+    } finally {
+      await handle.close();
     }
-    // Lock exists. Reclaim ONLY if clearly stale (holder likely crashed).
-    let info;
-    try {
-      info = await stat(CONFIG_LOCK_PATH);
-    } catch {
-      continue; // vanished between create and stat — retry create
-    }
-    if (Date.now() - info.mtimeMs < CONFIG_LOCK_STALE_MS) return null; // live peer
-    // CAS steal: capture the stale token, move the file to our private name, and
-    // verify we moved exactly the stale file we observed. If the content differs,
-    // a fresh holder replaced it after our stat — restore it and retry rather than
-    // destroying a live lock.
-    let staleToken: string | undefined;
-    try { staleToken = await read(CONFIG_LOCK_PATH, "utf-8"); } catch { continue; }
-    try {
-      await rename(CONFIG_LOCK_PATH, privatePath);
-    } catch {
-      continue; // someone else moved it first — retry
-    }
-    let moved: string | undefined;
-    try { moved = await read(privatePath, "utf-8"); } catch { /* unreadable */ }
-    if (moved !== staleToken) {
-      // We moved a fresh successor, not the stale file — restore and back off.
-      await rename(privatePath, CONFIG_LOCK_PATH).catch(() => {});
-      return null;
-    }
-    await unlink(privatePath).catch(() => {});
-    // loop to retry the exclusive create
+  } catch (error) {
+    await release();
+    throw error;
   }
-  return null;
+  return release;
 }
 
 /**
@@ -968,24 +968,6 @@ async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Acquire the shared config lock for the migration under the in-process mutex:
- * non-blocking across processes (returns null if a peer holds the file lock so
- * this launch skips), but still serialized against same-process writers. Returns
- * a release fn or null. Never throws.
- */
-async function acquireMigrationLock(): Promise<(() => Promise<void>) | null> {
-  try {
-    // Serialize against same-process writers, then take the cross-process file
-    // lock once (non-blocking). We hold the in-process slot only for the acquire;
-    // the returned release also frees nothing in-process (migration is a single
-    // startup step), so just return the file-lock release.
-    return await withInProcessLock(() => tryAcquireConfigLock());
-  } catch {
-    return null;
-  }
-}
-
-/**
  * One-time, best-effort migration of existing in-file secrets into the OS
  * credential store. Run once at startup so users upgrading to the keychain-aware
  * build transition automatically on their next launch.
@@ -1010,111 +992,113 @@ async function acquireMigrationLock(): Promise<(() => Promise<void>) | null> {
  * @returns the number of secrets moved into the store (0 when nothing changed).
  */
 export async function migrateSecretsToKeychain(): Promise<number> {
-  try {
-    // Read the config FIRST (cheap) and only probe/lock if there is actually an
-    // in-file secret to move. Detecting the store spawns a child process
-    // (notably a cold PowerShell on Windows), so gating on a cheap file read
-    // keeps steady-state startup — the vast majority of launches, where keys are
-    // already migrated, set via env, or absent — free of any subprocess or lock.
-    let preview: Record<string, unknown>;
+  return withInProcessLock(async () => {
     try {
-      const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
-      if (typeof parsed !== "object" || parsed === null) return 0;
-      preview = parsed as Record<string, unknown>;
-    } catch {
-      return 0; // missing or corrupt config: nothing to migrate
-    }
-    const anyMigratable = Object.keys(KEYCHAIN_ACCOUNTS).some((field) => {
-      const v = preview[field];
-      return typeof v === "string" && v.length > 0 && !isKeychainRef(v);
-    });
-    if (!anyMigratable) return 0;
-
-    // Serialize the whole read→store→rewrite transaction against concurrent
-    // startups/writers so a slow migration cannot clobber another process's
-    // credential rotation or config edit. A live peer's lock means another
-    // process is already migrating — skip this launch.
-    const release = await acquireMigrationLock();
-    if (!release) return 0;
-
-    const deadline = Date.now() + MIGRATION_BUDGET_MS;
-    const budgetLeft = () => Date.now() < deadline;
-    try {
-      // Re-read UNDER THE LOCK so we act on the authoritative current state.
-      let snapshot: Record<string, unknown>;
+      // Read the config FIRST (cheap) and only probe/lock if there is actually an
+      // in-file secret to move. Detecting the store spawns a child process
+      // (notably a cold PowerShell on Windows), so gating on a cheap file read
+      // keeps steady-state startup — the vast majority of launches, where keys are
+      // already migrated, set via env, or absent — free of any subprocess or lock.
+      let preview: Record<string, unknown>;
       try {
         const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
         if (typeof parsed !== "object" || parsed === null) return 0;
-        snapshot = parsed as Record<string, unknown>;
+        preview = parsed as Record<string, unknown>;
       } catch {
-        return 0;
+        return 0; // missing or corrupt config: nothing to migrate
       }
+      const anyMigratable = Object.keys(KEYCHAIN_ACCOUNTS).some((field) => {
+        const v = preview[field];
+        return typeof v === "string" && v.length > 0 && !isKeychainRef(v);
+      });
+      if (!anyMigratable) return 0;
 
-      // Decrypt up front so an undecryptable `enc:` value (config restored under
-      // a different user/home, or corrupt) is skipped rather than stored as a
-      // bogus "secret".
-      const pending: Array<{ field: string; account: string; plaintext: string }> = [];
-      for (const [field, account] of Object.entries(KEYCHAIN_ACCOUNTS)) {
-        const value = snapshot[field];
-        if (typeof value !== "string" || value.length === 0) continue;
-        if (isKeychainRef(value)) continue;
-        const plaintext = safeDecrypt(value);
-        if (!plaintext) continue;
-        pending.push({ field, account, plaintext });
-      }
-      if (pending.length === 0) return 0;
+      // Serialize the whole read→store→rewrite transaction against concurrent
+      // startups/writers so a slow migration cannot clobber another process's
+      // credential rotation or config edit. A live peer's lock means another
+      // process is already migrating — skip this launch.
+      const release = await tryAcquireConfigLock();
+      if (!release) return 0;
 
-      if (!(await isKeychainAvailable())) return 0;
-
-      // Store each secret, honoring the overall budget. A placeholder is recorded
-      // ONLY when the secret is both stored AND still resolvable this process: if
-      // a store call trips the breaker (timeout), getSecret() would fast-fail for
-      // the rest of this launch, so committing the placeholder would orphan the
-      // key until restart. In that case we stop and leave the file value intact.
-      const placeholders = new Map<string, string>();
-      for (const { field, account, plaintext } of pending) {
-        if (!budgetLeft() || isStoreUnresponsive()) break;
-        const stored = await setSecret(account, plaintext);
-        if (isStoreUnresponsive()) break; // this call just timed out — do not commit
-        if (stored) placeholders.set(field, keychainRef(account));
-        // A non-timeout failure leaves the file value untouched; continue.
-      }
-      if (placeholders.size === 0) return 0;
-
-      // Re-read immediately before writing and merge ONLY migrated fields onto
-      // the current file, and only when the field still holds the exact value we
-      // migrated (so a key rotated concurrently is never overwritten). A read
-      // failure here means the secrets are already stored; skip the rewrite and
-      // let the next launch retry (idempotent).
-      let current: Record<string, unknown>;
+      const deadline = Date.now() + MIGRATION_BUDGET_MS;
+      const budgetLeft = () => Date.now() < deadline;
       try {
-        current = await readStoredConfig();
-      } catch {
-        return placeholders.size;
-      }
-
-      let applied = 0;
-      for (const [field, ref] of placeholders) {
-        if (current[field] === snapshot[field]) {
-          current[field] = ref;
-          applied++;
+        // Re-read UNDER THE LOCK so we act on the authoritative current state.
+        let snapshot: Record<string, unknown>;
+        try {
+          const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+          if (typeof parsed !== "object" || parsed === null) return 0;
+          snapshot = parsed as Record<string, unknown>;
+        } catch {
+          return 0;
         }
-      }
-      if (applied === 0) return placeholders.size;
 
-      try {
-        await writeConfigAtomic(current);
-      } catch {
-        // Secrets are already in the store; next launch retries (idempotent).
-        return placeholders.size;
+        // Decrypt up front so an undecryptable `enc:` value (config restored under
+        // a different user/home, or corrupt) is skipped rather than stored as a
+        // bogus "secret".
+        const pending: Array<{ field: string; account: string; plaintext: string }> = [];
+        for (const [field, account] of Object.entries(KEYCHAIN_ACCOUNTS)) {
+          const value = snapshot[field];
+          if (typeof value !== "string" || value.length === 0) continue;
+          if (isKeychainRef(value)) continue;
+          const plaintext = safeDecrypt(value);
+          if (!plaintext) continue;
+          pending.push({ field, account, plaintext });
+        }
+        if (pending.length === 0) return 0;
+
+        if (!(await isKeychainAvailable())) return 0;
+
+        // Store each secret, honoring the overall budget. A placeholder is recorded
+        // ONLY when the secret is both stored AND still resolvable this process: if
+        // a store call trips the breaker (timeout), getSecret() would fast-fail for
+        // the rest of this launch, so committing the placeholder would orphan the
+        // key until restart. In that case we stop and leave the file value intact.
+        const placeholders = new Map<string, string>();
+        for (const { field, account, plaintext } of pending) {
+          if (!budgetLeft() || isStoreUnresponsive()) break;
+          const stored = await setSecret(account, plaintext);
+          if (isStoreUnresponsive()) break; // this call just timed out — do not commit
+          if (stored) placeholders.set(field, keychainRef(account));
+          // A non-timeout failure leaves the file value untouched; continue.
+        }
+        if (placeholders.size === 0) return 0;
+
+        // Re-read immediately before writing and merge ONLY migrated fields onto
+        // the current file, and only when the field still holds the exact value we
+        // migrated (so a key rotated concurrently is never overwritten). A read
+        // failure here means the secrets are already stored; skip the rewrite and
+        // let the next launch retry (idempotent).
+        let current: Record<string, unknown>;
+        try {
+          current = await readStoredConfig();
+        } catch {
+          return placeholders.size;
+        }
+
+        let applied = 0;
+        for (const [field, ref] of placeholders) {
+          if (current[field] === snapshot[field]) {
+            current[field] = ref;
+            applied++;
+          }
+        }
+        if (applied === 0) return placeholders.size;
+
+        try {
+          await writeConfigAtomic(current);
+        } catch {
+          // Secrets are already in the store; next launch retries (idempotent).
+          return placeholders.size;
+        }
+        return applied;
+      } finally {
+        await release();
       }
-      return applied;
-    } finally {
-      await release();
+    } catch {
+      return 0;
     }
-  } catch {
-    return 0;
-  }
+  });
 }
 
 /**

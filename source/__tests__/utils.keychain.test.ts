@@ -375,6 +375,23 @@ describe("utils/keychain", () => {
       expect(getCalls().length).toBe(before); // no further read spawned
     });
 
+    it("allows a bounded read retry after an actual read timeout", async () => {
+      vi.useFakeTimers();
+      const b64 = Buffer.from("synthetic-recovered", "utf-8").toString("base64");
+      const calls = scriptSpawn([{ code: 0 }, { hang: true }, { code: 0, stdout: b64 + "\n" }]);
+      const mod = await freshModule();
+      const first = mod.getSecret("a");
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(await first).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(await mod.getSecret("a")).toBeUndefined();
+      expect(calls()).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await mod.getSecret("a")).toBe("synthetic-recovered");
+      expect(calls()).toHaveLength(3);
+      expect(await mod.setSecret("a", "replacement")).toBe(false);
+    });
+
     it("detection timeout: cools down (no re-probe per key), then recovers after cooldown", async () => {
       vi.useFakeTimers();
       const b64 = Buffer.from("sk-live", "utf-8").toString("base64");

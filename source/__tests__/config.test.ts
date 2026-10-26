@@ -435,28 +435,76 @@ describe("config", () => {
     expect(body).toContain("\"provider\": \"anthropic\"");
   });
 
-  it("serializes writers through the shared config lock (acquire + release)", async () => {
-    // Release is a CAS: rename the lock to a token-private "hold" path, confirm it
-    // holds OUR token, then unlink the private path. The private path's read must
-    // return the captured token for the ownership check to pass.
-    readFile.mockImplementation(async (p: any) => {
-      if (String(p).includes(".config.lock.hold.")) return lockState.token;
-      throw Object.assign(new Error("missing"), { code: "ENOENT" });
-    });
+  it("exclusively creates and releases its lock without renaming it", async () => {
+    readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
     const mod = await import("../config/config.js");
     await mod.saveConfig({
       provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
       errorRetries: 3, permissionMode: "ask",
     });
-    // The lock is taken with an exclusive create ("wx").
-    const openCall = vi.mocked(fs.open).mock.calls.find((c) => String(c[0]).endsWith(".config.lock"));
-    expect(openCall).toBeDefined();
-    expect(openCall![1]).toBe("wx");
-    // Release moves the lock aside (CAS) and unlinks the owned private copy.
-    expect(vi.mocked(fs.rename).mock.calls.some(
-      (c) => String(c[0]).endsWith(".config.lock") && String(c[1]).includes(".config.lock.hold."),
+    expect(fs.open).toHaveBeenCalledWith(expect.stringContaining(".config.lock"), "wx", 0o600);
+    expect(fs.unlink).toHaveBeenCalledWith(expect.stringContaining(".config.lock"));
+    expect(vi.mocked(fs.rename).mock.calls.every(([from, to]) =>
+      !String(from).includes(".config.lock") && !String(to).includes(".config.lock"),
     )).toBe(true);
-    expect(vi.mocked(fs.unlink).mock.calls.some((c) => String(c[0]).includes(".config.lock.hold."))).toBe(true);
+  });
+
+  it("never reclaims an old lock, including simultaneous migration attempts", async () => {
+    readFile.mockResolvedValue(JSON.stringify({ openaiApiKey: "enc:synthetic" }));
+    vi.mocked(fs.open).mockRejectedValue(Object.assign(new Error("exists"), { code: "EEXIST" }));
+    vi.mocked(fs.stat).mockResolvedValue({ mtimeMs: 0 } as any);
+    const mod = await import("../config/config.js");
+    expect(await Promise.all([mod.migrateSecretsToKeychain(), mod.migrateSecretsToKeychain()])).toEqual([0, 0]);
+    expect(fs.stat).not.toHaveBeenCalled();
+    expect(fs.rename).not.toHaveBeenCalled();
+    expect(fs.unlink).not.toHaveBeenCalled();
+    expect(writeFile).not.toHaveBeenCalled();
+    expect(keychainMock.setSecret).not.toHaveBeenCalled();
+  });
+
+  it("holds the in-process mutex throughout a slow migration and its release", async () => {
+    vi.useFakeTimers();
+    try {
+      let disk = JSON.stringify({ openaiApiKey: "enc:synthetic" });
+      readFile.mockImplementation(async () => disk);
+      writeFile.mockImplementation(async (_path, data) => { disk = String(data); });
+      keychainMock.isKeychainAvailable.mockResolvedValue(true);
+      let finish!: (result: boolean) => void;
+      let entered!: () => void;
+      const storing = new Promise<void>(resolve => { entered = resolve; });
+      keychainMock.setSecret.mockImplementation(() => {
+        entered();
+        return new Promise<boolean>(resolve => { finish = resolve; });
+      });
+      const mod = await import("../config/config.js");
+      const migration = mod.migrateSecretsToKeychain();
+      await storing;
+      const layout = [{ id: "model" as const, enabled: true }];
+      const saving = mod.saveStatusBarLayout(layout);
+      // Longer than the cross-process lock wait, but still a normal migration.
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(fs.open).toHaveBeenCalledTimes(1);
+      expect(writeFile).not.toHaveBeenCalled();
+      finish(true);
+      await expect(migration).resolves.toBe(1);
+      await expect(saving).resolves.toBeUndefined();
+      expect(JSON.parse(disk)).toEqual({ openaiApiKey: "keychain:openai-api-key", statusBar: layout });
+      expect(fs.open).toHaveBeenCalledTimes(2);
+      const opens = vi.mocked(fs.open).mock.invocationCallOrder;
+      const releases = vi.mocked(fs.unlink).mock.invocationCallOrder;
+      expect(opens[1]).toBeGreaterThan(releases[0]!);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes and releases an acquired lock when writing its PID fails", async () => {
+    lockHandle.writeFile.mockRejectedValueOnce(new Error("disk full"));
+    const mod = await import("../config/config.js");
+    await expect(mod.saveStatusBarLayout(undefined)).rejects.toThrow("disk full");
+    expect(lockHandle.close).toHaveBeenCalledTimes(1);
+    expect(fs.unlink).toHaveBeenCalledWith(expect.stringContaining(".config.lock"));
+    expect(writeFile).not.toHaveBeenCalled();
   });
 
   it("fails closed (throws) when the config lock cannot be acquired", async () => {
@@ -553,6 +601,114 @@ describe("config", () => {
     const loaded = await mod.loadConfig();
     // Must NOT surface the raw "enc:broken" ciphertext as the API key.
     expect(loaded.anthropicApiKey).toBeUndefined();
+  });
+
+  describe("model discovery credential recovery", () => {
+    async function loadUnresolved() {
+      const mod = await import("../config/config.js");
+      const globalPath = `${mod.getAgavDir()}/config.json`;
+      const disk = { openaiApiKey: "keychain:openai-api-key" };
+      readFile.mockImplementation(async (path: any) => {
+        if (String(path) === globalPath) return JSON.stringify(disk);
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      });
+      keychainMock.getSecret.mockResolvedValue(undefined);
+      const loaded = await mod.loadConfig();
+      expect(loaded.openaiApiKey).toBeUndefined();
+      return { mod, loaded, disk };
+    }
+
+    it("retries discovery after startup failure without a restart or settings reload", async () => {
+      const { loaded } = await loadUnresolved();
+      // Model/provider changes in App use object spread. Recovery provenance must
+      // survive that copy while remaining absent from JSON exports/config writes.
+      const session = { ...loaded, model: "session-only", effort: "low" as const };
+      expect(JSON.stringify(session)).not.toContain("keychain:");
+      const { fetchAvailableModels } = await import("../commands/model.js");
+      const fetchMock = vi.fn(async (url: any, options?: any) => {
+        if (String(url).startsWith("https://api.openai.com/")) {
+          expect(options.headers.Authorization).toBe("Bearer synthetic-recovered-key");
+          return { ok: true, json: async () => ({ data: [{ id: "gpt-4o" }] }) } as Response;
+        }
+        throw new Error("unreachable fixture endpoint");
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      try {
+        // Still in cooldown: discovery returns a safe, actionable warning.
+        const unavailable = await fetchAvailableModels(session);
+        expect(unavailable.warnings.join(" ")).toContain("retry /model");
+        expect(fetchMock.mock.calls.some(([url]) => String(url).includes("api.openai.com"))).toBe(false);
+        keychainMock.getSecret.mockResolvedValue("synthetic-recovered-key");
+        const recovered = await fetchAvailableModels(session);
+        expect(recovered.models).toContainEqual(expect.objectContaining({ id: "gpt-4o", provider: "openai" }));
+        expect(recovered.warnings).toEqual([]);
+        expect(session.openaiApiKey).toBe("synthetic-recovered-key");
+        expect(session.model).toBe("session-only");
+        expect(session.effort).toBe("low");
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("does not resurrect a cleared or replaced stored reference", async () => {
+      const { mod, loaded, disk } = await loadUnresolved();
+      disk.openaiApiKey = "keychain:replacement";
+      keychainMock.getSecret.mockClear().mockResolvedValue("synthetic-old-key");
+      await mod.refreshStoredApiKeys(loaded);
+      expect(keychainMock.getSecret).not.toHaveBeenCalled();
+      expect(loaded.openaiApiKey).toBeUndefined();
+      disk.openaiApiKey = "keychain:openai-api-key";
+      keychainMock.getSecret.mockImplementation(async () => {
+        delete (disk as Partial<typeof disk>).openaiApiKey;
+        return "synthetic-old-key";
+      });
+      await mod.refreshStoredApiKeys(loaded);
+      expect(loaded.openaiApiKey).toBeUndefined();
+    });
+
+    it("queues recovery behind a same-account credential rotation", async () => {
+      const { mod, loaded, disk } = await loadUnresolved();
+      let finish!: (ok: boolean) => void;
+      let entered!: () => void;
+      const storing = new Promise<void>(resolve => { entered = resolve; });
+      keychainMock.isKeychainAvailable.mockResolvedValue(true);
+      keychainMock.setSecret.mockImplementation(() => {
+        entered();
+        return new Promise<boolean>(resolve => { finish = resolve; });
+      });
+      keychainMock.getSecret.mockClear().mockResolvedValue("synthetic-rotated-key");
+      const save = mod.saveConfig({ ...loaded, openaiApiKey: "synthetic-rotated-key" });
+      await storing;
+      const retry = mod.refreshStoredApiKeys(loaded);
+      await Promise.resolve();
+      expect(keychainMock.getSecret).not.toHaveBeenCalled();
+      finish(true);
+      await save;
+      await retry;
+      expect(disk.openaiApiKey).toBe("keychain:openai-api-key");
+      expect(loaded.openaiApiKey).toBe("synthetic-rotated-key");
+    });
+
+    it("preserves explicit credentials and empty environment overrides", async () => {
+      const { mod, loaded } = await loadUnresolved();
+      keychainMock.getSecret.mockClear().mockResolvedValue("synthetic-stored-key");
+      loaded.openaiApiKey = "session-key";
+      await mod.refreshStoredApiKeys(loaded);
+      expect(loaded.openaiApiKey).toBe("session-key");
+      loaded.openaiApiKey = undefined;
+      vi.stubEnv("OPENAI_API_KEY", "");
+      try {
+        await mod.refreshStoredApiKeys(loaded);
+        expect(loaded.openaiApiKey).toBeUndefined();
+        expect(keychainMock.getSecret).not.toHaveBeenCalled();
+        const envOverride = await mod.loadConfig();
+        vi.unstubAllEnvs();
+        await mod.refreshStoredApiKeys(envOverride);
+        expect(envOverride.openaiApiKey).toBeUndefined();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
   });
 
   describe("migrateSecretsToKeychain", () => {
