@@ -88,6 +88,71 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/check-runtime-security.mjs --live
 
+  # Produce the authoritative, attested, published SBOM for the EXACT release
+  # commit. The postmerge SBOM job is for merge-time visibility only (artifact,
+  # 90-day retention, mutable tag); this one is the record of record for the
+  # shipped version. It is a CycloneDX software bill of materials over the
+  # resolved production dependency graph, published as a release asset next to
+  # the binaries and backed by a Sigstore SBOM attestation bound to this commit.
+  # Consumers verify with `gh attestation verify agav-sbom-<version>.cdx.json
+  # --repo prapaa-ai/agav --predicate-type https://cyclonedx.org/bom` (the
+  # predicate type is required — the CLI defaults to SLSA provenance, which
+  # would reject an SBOM attestation). Does not cover the embedded Bun runtime
+  # and its vendored C libraries — those are invisible to the npm dependency
+  # graph and are tracked separately by scripts/check-bun-advisories.mjs.
+  sbom:
+    name: SBOM Generation and Attestation
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    # id-token mints the Sigstore OIDC identity; attestations writes the signed
+    # SBOM attestation to this repo. contents:read is the default but kept
+    # explicit now that the job holds extra scopes.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - run: pnpm install --frozen-lockfile
+      - name: Generate CycloneDX SBOM
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: node scripts/gen-sbom.mjs "agav-sbom-${VERSION}.cdx.json"
+      - name: Attest SBOM provenance
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          # The subject is the SBOM document itself: the attestation proves this
+          # repository's release workflow produced this SBOM from this commit.
+          subject-path: agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json
+          sbom-path: agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json
+      - name: Checksum the SBOM
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then hash() { sha256sum "$1"; }; else hash() { shasum -a 256 "$1"; }; fi
+          hash "agav-sbom-${VERSION}.cdx.json" > "agav-sbom-${VERSION}.cdx.json.sha256"
+          cat "agav-sbom-${VERSION}.cdx.json.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agav-sbom
+          # 90 days is the maximum workflow-artifact retention for a public
+          # repository; requesting more is silently clamped. This copy is a
+          # convenience for inspecting a run. The durable, long-lived copy is
+          # the SBOM published as a GitHub Release asset below (and mirrored to
+          # R2), which lives with the release, not the workflow run.
+          retention-days: 90
+          path: |
+            agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json
+            agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json.sha256
+
   # Validate the release SHA here, not a separate workflow or a PR's merge SHA.
   validation:
     name: Release Validation
@@ -189,6 +254,26 @@ jobs:
       run:
         shell: bash
     steps:
+      # Build-egress monitoring: install the runner network monitor before any
+      # other step so every network call the build makes — dependency
+      # resolution, toolchain setup, the compile itself — is recorded and
+      # correlated to the process that made it. This is monitoring, not an
+      # isolation boundary: `egress-policy: audit` does NOT restrict traffic to
+      # an allow-list on any platform (only StepSecurity's global block list of
+      # known-malicious endpoints is enforced in audit mode). It runs across the
+      # whole matrix (full support on Linux, audit-only on macOS/Windows per the
+      # action's compatibility matrix) so it never breaks a cross-platform
+      # build, and an unexpected destination in the run's network report is the
+      # signal a compromised dependency exfiltrating or fetching a second stage
+      # would trip. Enforced isolation (`egress-policy: block` with a pinned
+      # allow-list) is the follow-up once a few clean runs establish the
+      # legitimate egress baseline; it is deliberately not enabled here because
+      # a premature allow-list would break the macOS/Windows legs, where the
+      # action cannot enforce anyway.
+      - uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
+        with:
+          egress-policy: audit
+          disable-sudo: false
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           token: ${{ secrets.TOKEN }}
@@ -332,7 +417,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [check-version, dependency-audit, validation, installer-windows, build-binaries]
+    needs: [check-version, dependency-audit, sbom, validation, installer-windows, build-binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -351,10 +436,15 @@ jobs:
         with:
           path: artifacts
       - name: Prepare release assets
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
         run: |
+          set -euo pipefail
           mkdir -p release
           for dir in artifacts/agav-*; do
             target=$(basename "$dir")
+            # The SBOM artifact is handled separately below, not as a binary.
+            [ "$target" = "agav-sbom" ] && continue
             # The artifact dir is named after the target, but the Windows
             # binary inside it carries a .exe suffix, so try both.
             for asset in "$target" "$target.exe"; do
@@ -370,8 +460,21 @@ jobs:
               done
             done
           done
-          # Generate combined SHA256SUMS file. Both the raw and the compressed
-          # binary get a line; the detached .sha256 and .sig files do not.
+          # Publish the attested SBOM and its checksum alongside the binaries.
+          # Fail closed: the SBOM job is a prerequisite of this job, so both the
+          # SBOM and its checksum MUST exist. A missing file here means the
+          # attested SBOM would be silently dropped from the release, so stop
+          # rather than publish binaries without it.
+          SBOM="agav-sbom-${VERSION}.cdx.json"
+          for required in "$SBOM" "$SBOM.sha256"; do
+            if [ ! -f "artifacts/agav-sbom/$required" ]; then
+              echo "::error::Expected SBOM asset artifacts/agav-sbom/$required is missing."
+              exit 1
+            fi
+            cp "artifacts/agav-sbom/$required" "release/$required"
+          done
+          # Generate combined SHA256SUMS file. Each binary and the SBOM get a
+          # line; the detached .sha256 and .sig files do not.
           cd release
           sha256sum agav-* 2>/dev/null | grep -v -e '\.sha256$' -e '\.sig$' -e '\.sigstore$' > SHA256SUMS || true
           cat SHA256SUMS
@@ -444,6 +547,28 @@ jobs:
             verification fails, do not run the file until the failure is
             resolved — treat an unverified artifact as untrusted (a failure can
             also be a network or authentication problem, not only tampering).
+
+            ### Software Bill of Materials (SBOM)
+
+            This release publishes a CycloneDX SBOM of its production dependency
+            graph as `agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json`,
+            backed by a GitHub-signed SBOM attestation bound to this commit:
+
+            ```bash
+            gh attestation verify agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json \
+              --repo ${{ github.repository }} \
+              --predicate-type https://cyclonedx.org/bom \
+              --signer-workflow ${{ github.repository }}/.github/workflows/release.yml \
+              --source-digest ${{ github.sha }}
+            ```
+
+            The `--predicate-type` is required: `gh attestation verify`
+            defaults to SLSA provenance, but an SBOM attestation carries a
+            CycloneDX predicate, so the default would reject a valid SBOM.
+
+            The SBOM covers the npm dependency graph only. The embedded Bun
+            runtime and its vendored C libraries are not in that graph and are
+            tracked separately by the release's runtime advisory gate.
 
             <details>
             <summary>Manual install</summary>
