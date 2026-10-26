@@ -713,6 +713,84 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
 }
 
 /**
+ * One-time, best-effort migration of existing in-file secrets into the OS
+ * credential store. Run once at startup so users upgrading to the keychain-aware
+ * build transition automatically on their next launch.
+ *
+ * It is a surgical read-rewrite of the global config.json — NOT a saveConfig():
+ * saveConfig persists the live merged config, which carries env-derived keys and
+ * CLI/session overrides that must never be baked into the file. Here we touch
+ * only the API-key fields actually stored as `enc:` (or legacy plaintext) in the
+ * file, replacing each with a `keychain:` placeholder after the secret lands in
+ * the store. Every other key — and any already-migrated `keychain:` ref — is
+ * written back verbatim.
+ *
+ * Safety properties:
+ *   - No store available  → returns immediately; nothing is touched.
+ *   - A per-key store write that fails leaves that key's `enc:` value in place,
+ *     so a key is never lost and the user can still authenticate.
+ *   - Nothing to migrate  → no write occurs (no needless config churn).
+ *   - Atomic write (temp + rename, mode 0600) mirrors saveStatusBarLayout so a
+ *     crash mid-write cannot truncate the config.
+ *   - Never throws: a migration failure must not block startup.
+ *
+ * @returns the number of secrets moved into the store (0 when nothing changed).
+ */
+export async function migrateSecretsToKeychain(): Promise<number> {
+  try {
+    if (!(await isKeychainAvailable())) return 0;
+
+    let stored: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+      if (typeof parsed !== "object" || parsed === null) return 0;
+      stored = parsed as Record<string, unknown>;
+    } catch {
+      // Missing or corrupt config: nothing to migrate. Do not rewrite it.
+      return 0;
+    }
+
+    let migrated = 0;
+    for (const [field, account] of Object.entries(KEYCHAIN_ACCOUNTS)) {
+      const value = stored[field];
+      // Only migrate real in-file secrets; skip empty, non-string, and values
+      // already pointing at the store.
+      if (typeof value !== "string" || value.length === 0) continue;
+      if (isKeychainRef(value)) continue;
+
+      const plaintext = decrypt(value);
+      if (!plaintext) continue;
+
+      if (await setSecret(account, plaintext)) {
+        stored[field] = keychainRef(account);
+        migrated++;
+      }
+      // On a failed store write, leave the existing value untouched.
+    }
+
+    if (migrated === 0) return 0;
+
+    await ensureDir(AGAV_DIR);
+    const { randomBytes } = await import("node:crypto");
+    const tmpPath = `${CONFIG_PATH}.tmp.${randomBytes(8).toString("hex")}`;
+    const serialized = JSON.stringify(stored, null, 2) + "\n";
+    const { rename, unlink } = await import("node:fs/promises");
+    try {
+      await writeFile(tmpPath, serialized, { mode: 0o600, flag: "wx" });
+      await rename(tmpPath, CONFIG_PATH);
+    } catch {
+      await unlink(tmpPath).catch(() => {});
+      // The secrets are already safely in the store; failing to rewrite the file
+      // only means the next launch retries the migration (idempotent).
+      return migrated;
+    }
+    return migrated;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Persist only the status bar layout to the global config file, preserving every
  * other key exactly as written on disk.
  *

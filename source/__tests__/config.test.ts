@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
+  rename: vi.fn().mockResolvedValue(undefined),
+  unlink: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../utils/fs.js", () => ({
   ensureDir: vi.fn().mockResolvedValue(undefined),
@@ -418,5 +420,91 @@ describe("config", () => {
     const mod = await import("../config/config.js");
     const loaded = await mod.loadConfig();
     expect(loaded.anthropicApiKey).toBeUndefined();
+  });
+
+  describe("migrateSecretsToKeychain", () => {
+    it("does nothing when no credential store is available", async () => {
+      keychainMock.isKeychainAvailable.mockResolvedValue(false);
+      readFile.mockResolvedValue(JSON.stringify({ anthropicApiKey: "enc:a-secret" }));
+      const mod = await import("../config/config.js");
+      expect(await mod.migrateSecretsToKeychain()).toBe(0);
+      expect(keychainMock.setSecret).not.toHaveBeenCalled();
+      expect(writeFile).not.toHaveBeenCalled();
+    });
+
+    it("moves in-file enc: secrets into the store and rewrites only placeholders", async () => {
+      keychainMock.isKeychainAvailable.mockResolvedValue(true);
+      keychainMock.setSecret.mockResolvedValue(true);
+      readFile.mockResolvedValue(JSON.stringify({
+        provider: "anthropic",
+        anthropicApiKey: "enc:a-secret",
+        openaiApiKey: "enc:o-secret",
+        statusBar: { segments: ["model"] },
+      }));
+
+      const mod = await import("../config/config.js");
+      expect(await mod.migrateSecretsToKeychain()).toBe(2);
+      expect(keychainMock.setSecret).toHaveBeenCalledWith("anthropic-api-key", "a-secret");
+      expect(keychainMock.setSecret).toHaveBeenCalledWith("openai-api-key", "o-secret");
+
+      // The rewrite stages to a temp path; assert on that content.
+      const body = String(writeFile.mock.calls.at(-1)?.[1]);
+      expect(body).not.toContain("a-secret");
+      expect(body).not.toContain("enc:");
+      expect(body).toContain("keychain:anthropic-api-key");
+      expect(body).toContain("keychain:openai-api-key");
+      // Unrelated keys are preserved verbatim.
+      expect(body).toContain("\"provider\": \"anthropic\"");
+      expect(body).toContain("statusBar");
+    });
+
+    it("is idempotent: already-migrated keychain: refs are left untouched", async () => {
+      keychainMock.isKeychainAvailable.mockResolvedValue(true);
+      readFile.mockResolvedValue(JSON.stringify({
+        anthropicApiKey: "keychain:anthropic-api-key",
+      }));
+      const mod = await import("../config/config.js");
+      expect(await mod.migrateSecretsToKeychain()).toBe(0);
+      expect(keychainMock.setSecret).not.toHaveBeenCalled();
+      expect(writeFile).not.toHaveBeenCalled();
+    });
+
+    it("leaves a key in the file as enc: when its store write fails", async () => {
+      keychainMock.isKeychainAvailable.mockResolvedValue(true);
+      keychainMock.setSecret.mockImplementation(async (account: string) =>
+        account === "anthropic-api-key" ? true : false,
+      );
+      readFile.mockResolvedValue(JSON.stringify({
+        anthropicApiKey: "enc:a-secret",
+        openaiApiKey: "enc:o-secret",
+      }));
+
+      const mod = await import("../config/config.js");
+      expect(await mod.migrateSecretsToKeychain()).toBe(1);
+      const body = String(writeFile.mock.calls.at(-1)?.[1]);
+      expect(body).toContain("keychain:anthropic-api-key");
+      // The failed key keeps its encrypted in-file value — never lost.
+      expect(body).toContain("enc:o-secret");
+    });
+
+    it("does not rewrite the file when there is nothing to migrate", async () => {
+      keychainMock.isKeychainAvailable.mockResolvedValue(true);
+      readFile.mockResolvedValue(JSON.stringify({ provider: "anthropic", model: "m" }));
+      const mod = await import("../config/config.js");
+      expect(await mod.migrateSecretsToKeychain()).toBe(0);
+      expect(writeFile).not.toHaveBeenCalled();
+    });
+
+    it("never throws and returns 0 on a corrupt or missing config file", async () => {
+      keychainMock.isKeychainAvailable.mockResolvedValue(true);
+      readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+      const mod = await import("../config/config.js");
+      expect(await mod.migrateSecretsToKeychain()).toBe(0);
+      expect(writeFile).not.toHaveBeenCalled();
+
+      readFile.mockResolvedValue("{ not json");
+      expect(await mod.migrateSecretsToKeychain()).toBe(0);
+      expect(writeFile).not.toHaveBeenCalled();
+    });
   });
 });
