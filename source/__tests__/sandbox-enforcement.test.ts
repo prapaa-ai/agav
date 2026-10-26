@@ -26,7 +26,7 @@
  *    Docker-only (which configures --network=none).
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, type TestContext } from "vitest";
@@ -67,8 +67,18 @@ async function backendApplies(backend: SandboxBackend, cwd: string): Promise<boo
   if (!backendInstalled(backend)) return false;
   try {
     const r = await sandboxed(backend, "echo __agav_apply__", cwd);
-    return r.error === null && r.stdout.includes("__agav_apply__");
-  } catch {
+    const ok = r.error === null && r.stdout.includes("__agav_apply__");
+    if (!ok) {
+      // Surface WHY a backend did not apply so a CI skip is diagnosable rather
+      // than silent (the dedicated workflow turns an owning-runner skip into a
+      // hard failure; this log explains it).
+      // eslint-disable-next-line no-console
+      console.warn(`[sandbox-enforcement] ${backend} did not apply: error=${r.error?.message ?? "none"} stdout=${JSON.stringify(r.stdout)} stderr=${JSON.stringify(r.stderr)}`);
+    }
+    return ok;
+  } catch (cause) {
+    // eslint-disable-next-line no-console
+    console.warn(`[sandbox-enforcement] ${backend} probe threw: ${cause instanceof Error ? cause.message : String(cause)}`);
     return false;
   }
 }
@@ -80,13 +90,26 @@ async function backendApplies(backend: SandboxBackend, cwd: string): Promise<boo
  * secret path, and a restore fn. The workdir is a sibling of HOME, never nested,
  * so neither the HOME-subdir tmpfs masks (bubblewrap) nor the HOME write-deny
  * (seatbelt) accidentally cover the CWD carve-out.
+ *
+ * CRITICAL: the path MUST be canonical (realpath). The seatbelt profile denies
+ * `(subpath (param "HOME"))`, but seatbelt matches on the kernel's canonical
+ * path. On macOS `os.tmpdir()` is `/var/folders/...`, a symlink to
+ * `/private/var/folders/...`; a non-canonical HOME param would never match the
+ * path the sandboxed process actually resolves, silently re-allowing writes and
+ * reads (exactly the native-CI failure this fixes). We realpath the root so the
+ * param and the in-sandbox resolution are the same string.
  */
-function seedHome(root: string): { home: string; workdir: string; secret: string; writableOutside: string; restore: () => void } {
+function seedHome(rawRoot: string): { home: string; workdir: string; secret: string; writableOutside: string; restore: () => void } {
+  const root = realpathSync(rawRoot);
   const home = join(root, "home");
   const workdir = join(root, "work");
   const ssh = join(home, ".ssh");
   mkdirSync(ssh, { recursive: true });
   mkdirSync(join(home, ".aws"), { recursive: true });
+  mkdirSync(join(home, ".gnupg"), { recursive: true });
+  // Create the cache/config carve-out dirs the profile grants writes to, so the
+  // profile's `-D HOME_*` params point at real directories (matches a real home).
+  for (const dir of [".cache", ".config", ".local", ".npm", ".cargo"]) mkdirSync(join(home, dir), { recursive: true });
   mkdirSync(workdir, { recursive: true });
   const secret = join(ssh, "id_test");
   writeFileSync(secret, SEED);
@@ -186,13 +209,29 @@ describe("real sandbox enforcement (per-OS)", () => {
     it("blocks exec of binaries under /System/Library/CoreServices (process restriction)", async (ctx) => {
       guard(ctx);
       // The profile has `(deny process-exec (subpath "/System/Library/CoreServices"))`.
-      // Control: the binary exists and is executable off-sandbox.
-      const bin = "/System/Library/CoreServices/mdflagwriter";
-      if (!existsSync(bin)) ctx.skip("CoreServices probe binary not present on this macOS image");
-      const r = await sandboxed("seatbelt", `${bin} 2>/dev/null; echo "exit:$?"`, env.workdir);
-      // A denied exec cannot run; the shell reports a non-zero / permission status,
-      // never the binary's own success.
-      expect(r.stdout).not.toContain("exit:0");
+      // Pick a real executable file in that tree at runtime (image-independent).
+      let bin: string;
+      try {
+        bin = execFileSync("/bin/sh", ["-c", "find /System/Library/CoreServices -maxdepth 1 -type f -perm -u+x 2>/dev/null | head -1"],
+          { encoding: "utf8", timeout: 5000 }).trim();
+      } catch {
+        bin = "";
+      }
+      if (!bin || !existsSync(bin)) ctx.skip("no executable found under /System/Library/CoreServices on this image");
+      // Running the exact binary through the shell: when process-exec is denied,
+      // the shell cannot launch it and reports 126 (permission) or 127 (ENOENT
+      // surfaced by the sandbox). We print a distinct marker only if exec was
+      // actually reached (the kernel let the image load), which must NOT happen.
+      const r = await sandboxed(
+        "seatbelt",
+        `${JSON.stringify(bin)} --agav-nonexistent-flag >/dev/null 2>&1; code=$?; echo "code:$code"`,
+        env.workdir,
+      );
+      const code = /code:(\d+)/.exec(r.stdout)?.[1];
+      // 126/127 == exec refused by the sandbox. Any "normal" nonzero (e.g. a
+      // usage error from the running binary) would be a different, small number
+      // and would mean exec was NOT blocked — fail in that case.
+      expect(["126", "127"]).toContain(code);
     });
   });
 

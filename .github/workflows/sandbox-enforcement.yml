@@ -54,16 +54,29 @@ jobs:
       # — otherwise they would merely report a skip and prove nothing on Linux.
       # macOS ships sandbox-exec; Windows has no OS sandbox and the
       # Windows-specific assertions cover the no-sandbox path.
-      - name: Install bubblewrap and allow unprivileged user namespaces (Linux)
+      - name: Install bubblewrap and enable it to sandbox (Linux)
         if: runner.os == 'Linux'
         run: |
+          set -x
           sudo apt-get update
           sudo apt-get install -y bubblewrap
+          # ubuntu-latest is 24.04 (noble), where AppArmor gates unprivileged user
+          # namespaces, so plain bwrap fails with "Creating new namespace failed:
+          # Permission denied". The documented reliable fix on 24.04 is to make the
+          # bwrap binary setuid (it then uses the privileged setup path; the sandbox
+          # restrictions it enforces are identical). We also relax the sysctls as a
+          # belt-and-braces measure for other kernels.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          sudo chmod u+s "$(command -v bwrap)"
           bwrap --version
-          # Fail the job if bwrap still cannot apply: a silent skip would hide a
-          # real Linux enforcement regression behind a green check.
-          bwrap --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc --die-with-parent /bin/true
+          # Fail the job if bwrap cannot apply the FULL production-style profile:
+          # a silent skip would hide a real Linux enforcement regression behind a
+          # green check. Mirror the shape runBubblewrap uses (ro-bind root, dev,
+          # proc, tmpfs, chdir).
+          probe="$(mktemp -d)"
+          bwrap --ro-bind / / --bind "$probe" "$probe" --tmpfs /tmp --dev /dev --proc /proc \
+            --tmpfs "$HOME/.ssh" --die-with-parent --chdir "$probe" /bin/sh -c 'echo bwrap_ok'
           echo "bwrap applies on this runner."
       - run: pnpm install --frozen-lockfile
       - name: Run per-OS sandbox enforcement tests
