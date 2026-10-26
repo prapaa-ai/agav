@@ -433,11 +433,18 @@ jobs:
     needs: changed
     if: needs.changed.outputs.deps == 'true'
     runs-on: ubuntu-latest
+    # pull-requests:write is required for `comment-summary-in-pr: on-failure`;
+    # without it the action catches the 403 and only warns, silently dropping
+    # the summary. contents:read is the default, kept explicit alongside it.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           token: ${{ secrets.TOKEN || github.token }}
       - name: Review dependency changes
+        id: review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           base-ref: ${{ github.event.pull_request.base.sha }}
@@ -448,6 +455,31 @@ jobs:
             MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC0-1.0,
             CC-BY-4.0, Unlicense, Python-2.0, BlueOak-1.0.0
           comment-summary-in-pr: on-failure
+      # Fail closed on licenses the action cannot resolve. With an allow-list
+      # set, the action hard-fails `forbidden` and `unresolved` license changes,
+      # but it only *logs* dependencies whose license is unknown/NOASSERTION —
+      # so a new runtime dependency with no identifiable license would pass
+      # despite not being on the allow-list. Enforce that gap here by reading
+      # the action's `invalid-license-changes` output (which includes the
+      # `unlicensed` bucket) and failing if it is non-empty. Runs even when the
+      # action step above failed, so one finding does not mask the other.
+      - name: Fail on unresolved or unlicensed dependencies
+        if: always() && steps.review.outputs.invalid-license-changes != ''
+        env:
+          INVALID: ${{ steps.review.outputs.invalid-license-changes }}
+        run: |
+          UNLICENSED=$(node -e '
+            const data = JSON.parse(process.env.INVALID || "{}");
+            const bad = [...(data.unlicensed || []), ...(data.unresolved || [])];
+            for (const d of bad) console.log(`  ${d.package_url || d.name || "unknown"}`);
+            process.exit(bad.length > 0 ? 1 : 0);
+          ') && {
+            echo "No unlicensed or unresolved dependency changes."
+            exit 0
+          }
+          echo "::error::Dependency change(s) with an unknown/unresolved license (not on the allow-list):"
+          printf '%s\n' "$UNLICENSED"
+          exit 1
 
   lockfile-integrity:
     name: Lockfile Integrity

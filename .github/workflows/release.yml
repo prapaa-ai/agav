@@ -141,9 +141,12 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: agav-sbom
-          # Keep the published SBOM on the workflow run itself for a year,
-          # independent of the GitHub Release lifecycle.
-          retention-days: 365
+          # 90 days is the maximum workflow-artifact retention for a public
+          # repository; requesting more is silently clamped. This copy is a
+          # convenience for inspecting a run. The durable, long-lived copy is
+          # the SBOM published as a GitHub Release asset below (and mirrored to
+          # R2), which lives with the release, not the workflow run.
+          retention-days: 90
           path: |
             agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json
             agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json.sha256
@@ -249,15 +252,22 @@ jobs:
       run:
         shell: bash
     steps:
-      # Build isolation: install the runner egress monitor before any other
-      # step so every network call the build makes — dependency resolution,
-      # toolchain setup, the compile itself — is recorded and correlated to the
-      # process that made it. Audit mode across the matrix (Linux enforces,
-      # macOS/Windows record): it never breaks a cross-platform build, and an
-      # unexpected destination in the run's network report is the signal a
-      # compromised dependency exfiltrating or fetching a second stage would
-      # trip. Enforcement with a pinned allow-list is the follow-up once a few
-      # clean runs establish the legitimate egress baseline.
+      # Build-egress monitoring: install the runner network monitor before any
+      # other step so every network call the build makes — dependency
+      # resolution, toolchain setup, the compile itself — is recorded and
+      # correlated to the process that made it. This is monitoring, not an
+      # isolation boundary: `egress-policy: audit` does NOT restrict traffic to
+      # an allow-list on any platform (only StepSecurity's global block list of
+      # known-malicious endpoints is enforced in audit mode). It runs across the
+      # whole matrix (full support on Linux, audit-only on macOS/Windows per the
+      # action's compatibility matrix) so it never breaks a cross-platform
+      # build, and an unexpected destination in the run's network report is the
+      # signal a compromised dependency exfiltrating or fetching a second stage
+      # would trip. Enforced isolation (`egress-policy: block` with a pinned
+      # allow-list) is the follow-up once a few clean runs establish the
+      # legitimate egress baseline; it is deliberately not enabled here because
+      # a premature allow-list would break the macOS/Windows legs, where the
+      # action cannot enforce anyway.
       - uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: audit
@@ -424,7 +434,10 @@ jobs:
         with:
           path: artifacts
       - name: Prepare release assets
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
         run: |
+          set -euo pipefail
           mkdir -p release
           for dir in artifacts/agav-*; do
             target=$(basename "$dir")
@@ -446,10 +459,18 @@ jobs:
             done
           done
           # Publish the attested SBOM and its checksum alongside the binaries.
-          if [ -d artifacts/agav-sbom ]; then
-            cp artifacts/agav-sbom/agav-sbom-*.cdx.json release/ 2>/dev/null || true
-            cp artifacts/agav-sbom/agav-sbom-*.cdx.json.sha256 release/ 2>/dev/null || true
-          fi
+          # Fail closed: the SBOM job is a prerequisite of this job, so both the
+          # SBOM and its checksum MUST exist. A missing file here means the
+          # attested SBOM would be silently dropped from the release, so stop
+          # rather than publish binaries without it.
+          SBOM="agav-sbom-${VERSION}.cdx.json"
+          for required in "$SBOM" "$SBOM.sha256"; do
+            if [ ! -f "artifacts/agav-sbom/$required" ]; then
+              echo "::error::Expected SBOM asset artifacts/agav-sbom/$required is missing."
+              exit 1
+            fi
+            cp "artifacts/agav-sbom/$required" "release/$required"
+          done
           # Generate combined SHA256SUMS file. Each binary and the SBOM get a
           # line; the detached .sha256 and .sig files do not.
           cd release
@@ -534,9 +555,14 @@ jobs:
             ```bash
             gh attestation verify agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json \
               --repo ${{ github.repository }} \
+              --predicate-type https://cyclonedx.org/bom \
               --signer-workflow ${{ github.repository }}/.github/workflows/release.yml \
               --source-digest ${{ github.sha }}
             ```
+
+            The `--predicate-type` is required: `gh attestation verify`
+            defaults to SLSA provenance, but an SBOM attestation carries a
+            CycloneDX predicate, so the default would reject a valid SBOM.
 
             The SBOM covers the npm dependency graph only. The embedded Bun
             runtime and its vendored C libraries are not in that graph and are

@@ -16,11 +16,25 @@
 //
 // Usage: node scripts/gen-sbom.mjs <output-file.cdx.json>
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 
 const require = createRequire(import.meta.url);
+
+// Deterministic RFC 4122 v5 (SHA-1, name-based) UUID. A BOM's serialNumber is
+// mandatory for the attestation action's CycloneDX detector, but a random one
+// would break reproducibility, so derive it from the BOM's own content. Uses
+// the URL namespace (6ba7b811-9dad-11d1-80b4-00c04fd430c8).
+function uuidV5(name) {
+  const namespace = Buffer.from("6ba7b8119dad11d180b400c04fd430c8", "hex");
+  const hash = createHash("sha1").update(namespace).update(name, "utf8").digest();
+  hash[6] = (hash[6] & 0x0f) | 0x50; // version 5
+  hash[8] = (hash[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = hash.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
 
 function fail(message) {
   console.error(message);
@@ -121,9 +135,19 @@ const cyclonedxVersion = (() => {
   }
 })();
 
+// Serial number derived from the root package identity and the exact resolved
+// component set, so the same dependency tree always yields the same urn:uuid
+// and the BOM stays byte-for-byte reproducible.
+const serialSeed = JSON.stringify({
+  root: `${rootPkg.name}@${rootPkg.version}`,
+  components: sortedComponents.map((c) => c.purl),
+});
+const serialNumber = `urn:uuid:${uuidV5(serialSeed)}`;
+
 const bom = {
   bomFormat: "CycloneDX",
   specVersion: "1.5",
+  serialNumber,
   version: 1,
   metadata: {
     // A reproducible BOM must not embed a wall-clock timestamp; omitting it
