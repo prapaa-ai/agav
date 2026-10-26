@@ -219,12 +219,22 @@ describe("check-bun-advisories", () => {
       expect(result.stderr).toContain("pins no with.bun-version");
     });
 
+    // The setup-bun step's `uses:` ref is SHA-pinned in the real workflow, so
+    // match the whole step block by regex rather than a fixed `@v2` literal:
+    // `- uses: oven-sh/setup-bun@<anything>` + its `with:`/`bun-version:` lines.
+    const setupBunBlock = /^ {6}- uses: oven-sh\/setup-bun@\S+( # [^\n]*)?\n {8}with:\n {10}bun-version: "1\.4\.4"/m;
+    const replaceSetupBun = (p: string, replacement: string) => {
+      const src = readFileSync(p, "utf8");
+      const updated = src.replace(setupBunBlock, replacement);
+      expect(updated, "fixture must mutate the real setup-bun step").not.toBe(src);
+      writeFileSync(p, updated);
+    };
+
     it("rejects bun-version placed under env: instead of with:", () => {
       const path = join(repo, ".github/workflows/release.yml");
       // setup-bun only reads with.bun-version; a pin under env: is no pin.
-      writeFileSync(path, readFileSync(path, "utf8").replace(
-        '      - uses: oven-sh/setup-bun@v2\n        with:\n          bun-version: "1.4.4"',
-        '      - uses: oven-sh/setup-bun@v2\n        env:\n          bun-version: "1.4.4"'));
+      replaceSetupBun(path,
+        '      - uses: oven-sh/setup-bun@v2\n        env:\n          bun-version: "1.4.4"');
       const result = run();
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("pins no with.bun-version");
@@ -232,9 +242,8 @@ describe("check-bun-advisories", () => {
 
     it("rejects a quoted uses: key that hides a vulnerable pin", () => {
       const path = join(repo, ".github/workflows/release.yml");
-      writeFileSync(path, readFileSync(path, "utf8").replace(
-        '      - uses: oven-sh/setup-bun@v2\n        with:\n          bun-version: "1.4.4"',
-        '      - "uses": oven-sh/setup-bun@v2\n        with:\n          bun-version: "1.3.14"'));
+      replaceSetupBun(path,
+        '      - "uses": oven-sh/setup-bun@v2\n        with:\n          bun-version: "1.3.14"');
       const result = run();
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("pins bun-version 1.3.14");
@@ -242,9 +251,8 @@ describe("check-bun-advisories", () => {
 
     it("rejects a vulnerable pin written as a flow mapping", () => {
       const path = join(repo, ".github/workflows/release.yml");
-      writeFileSync(path, readFileSync(path, "utf8").replace(
-        '      - uses: oven-sh/setup-bun@v2\n        with:\n          bun-version: "1.4.4"',
-        '      - { uses: oven-sh/setup-bun@v2, with: { bun-version: "1.3.14" } }'));
+      replaceSetupBun(path,
+        '      - { uses: oven-sh/setup-bun@v2, with: { bun-version: "1.3.14" } }');
       const result = run();
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("pins bun-version 1.3.14");
@@ -254,9 +262,8 @@ describe("check-bun-advisories", () => {
       // YAML text that merely contains `with:\n  bun-version:` inside an env
       // block scalar is not an action input; the step then pins nothing.
       const path = join(repo, ".github/workflows/release.yml");
-      writeFileSync(path, readFileSync(path, "utf8").replace(
-        '      - uses: oven-sh/setup-bun@v2\n        with:\n          bun-version: "1.4.4"',
-        '      - uses: oven-sh/setup-bun@v2\n        env:\n          NOTES: |\n            with:\n              bun-version: "1.4.4"'));
+      replaceSetupBun(path,
+        '      - uses: oven-sh/setup-bun@v2\n        env:\n          NOTES: |\n            with:\n              bun-version: "1.4.4"');
       const result = run();
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("pins no with.bun-version");
