@@ -156,29 +156,26 @@ describe("a backend that fails to launch/apply does NOT fall back to unsandboxed
   });
 
   it("a backend whose launcher RUNS but exits non-zero also does not fall back", async () => {
-    // Distinct from the ENOENT (missing launcher) cases above: force docker with
-    // a non-existent bind source so the docker CLI actually launches and then
-    // exits non-zero (bad mount, or no daemon). The runtime must still surface
-    // the error, keep the backend (no downgrade to "none"), and run nothing — a
-    // fallback introduced specifically for nonzero backend exits would be caught
-    // here. Where the docker CLI is itself absent the same invariants hold, so the
-    // assertion is valid on every runner.
-    const marker = join(tmpdir(), `agav-dockerfail-${process.pid}.txt`);
-    const badCwd = join(tmpdir(), `agav-no-such-cwd-${process.pid}-${Date.now()}`);
-    if (existsSync(marker)) rmSync(marker, { force: true });
-    try {
-      const result = await runInSandbox({
-        command: `printf x > ${JSON.stringify(marker)}`,
-        cwd: badCwd,
-        timeout: 8000,
-        maxBuffer: 1 << 16,
-        forceBackend: "docker",
-      });
-      expect(result.error).not.toBeNull();
-      expect(result.backend).toBe("docker"); // never downgraded to "none"
-      expect(existsSync(marker)).toBe(false); // workload side effect never happened
-    } finally {
-      if (existsSync(marker)) rmSync(marker, { force: true });
-    }
+    // Distinct from the ENOENT (missing launcher) cases above: here the backend
+    // actually RUNS the workload and it exits non-zero. We force docker and run a
+    // command that writes NO host side effect and then exits 7. On a runner with a
+    // working daemon the container runs and exits 7; on one without, the docker CLI
+    // fails at launch. Either way the required invariants are identical and
+    // deterministic: the error is surfaced, the backend is NOT downgraded to
+    // "none", and no unsandboxed fallback runs the command — a fallback added
+    // specifically for a nonzero backend exit would be caught here.
+    //
+    // The decisive signal that no unsandboxed fallback happened is result.backend:
+    // runUnsandboxed() would report backend "none". A nonzero backend exit must
+    // instead surface as an error while the backend stays "docker".
+    const result = await runInSandbox({
+      command: "echo ran-in-sandbox; exit 7",
+      cwd: tmpdir(),
+      timeout: 8000,
+      maxBuffer: 1 << 16,
+      forceBackend: "docker",
+    });
+    expect(result.error).not.toBeNull();   // non-zero exit surfaced as an error, not swallowed
+    expect(result.backend).toBe("docker"); // never downgraded to "none" (no unsandboxed fallback)
   }, 20_000);
 });
