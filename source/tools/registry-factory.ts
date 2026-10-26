@@ -81,7 +81,7 @@ export function createBuiltinToolRegistry(toolNames: Iterable<string>): ToolRegi
   const requested = new Set(toolNames);
   const registry = new ToolRegistry();
   for (const tool of BUILTIN_TOOLS) {
-    if (requested.has(tool.schema.name)) registry.register(tool === shellTool ? createShellTool() : tool);
+    if (requested.has(tool.schema.name)) registry.registerBuiltin(tool === shellTool ? createShellTool() : tool);
   }
   return registry;
 }
