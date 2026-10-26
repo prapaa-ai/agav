@@ -145,23 +145,34 @@ function run(file: string, args: string[], options: RunOptions = {}): Promise<{ 
     let deadline: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
     let child: ReturnType<typeof spawn> | undefined;
-    // An stdin delivery failure (EPIPE: the child closed its input before
-    // consuming all of it) must make the whole call fail, independent of the exit
-    // code — a store command that didn't receive its full secret may still exit 0.
-    let stdinFailed = false;
+    // An stdin delivery failure (EPIPE) or stdout overflow must make the whole
+    // call fail, independent of the exit code — a command that didn't receive its
+    // full input, or whose output we truncated, may still exit 0.
+    let hardFail = false;
 
-    // Resolving the promise does NOT cancel the SIGKILL escalation: once the
-    // deadline fires we must still force-kill a child that ignores SIGTERM, even
-    // though the caller has already moved on. `done` therefore only clears the
-    // deadline; the killTimer is cleared separately on a clean close.
+    // Force-terminate the child: SIGTERM, then SIGKILL after a grace period. Used
+    // by BOTH the deadline and the stdin-error path, so a child that keeps running
+    // after we give up on it is always reaped rather than leaked.
+    const terminate = () => {
+      if (killTimer) return; // escalation already scheduled
+      try { child?.kill("SIGTERM"); } catch { /* ignore */ }
+      killTimer = setTimeout(() => {
+        try { child?.kill("SIGKILL"); } catch { /* ignore */ }
+      }, KILL_GRACE_MS);
+    };
+
+    // Resolving the promise does NOT cancel the SIGKILL escalation: once we give
+    // up we must still reap a child that ignores SIGTERM, even though the caller
+    // has moved on. `done` only clears the deadline; killTimer is cleared on a
+    // clean close.
     const done = (code: number) => {
       if (settled) return;
       settled = true;
       if (deadline) clearTimeout(deadline);
       // Decode the whole stdout ONCE, after all chunks are in: decoding each
-      // chunk independently would mangle a multi-byte UTF-8 character split
-      // across a chunk boundary (Linux/Windows return raw text, not base64).
-      resolve({ code, stdout: Buffer.concat(chunks).toString("utf-8"), timedOut });
+      // chunk independently would mangle a multi-byte UTF-8 character split across
+      // a chunk boundary (Linux/Windows return raw text, not base64).
+      resolve({ code: hardFail ? 1 : code, stdout: Buffer.concat(chunks).toString("utf-8"), timedOut });
     };
 
     try {
@@ -181,15 +192,20 @@ function run(file: string, args: string[], options: RunOptions = {}): Promise<{ 
         // let a non-read timeout disable reads, so a working key is not dropped).
         writeBreaker = true;
         if (options.isRead) readBreaker = true;
-        try { child?.kill("SIGTERM"); } catch { /* ignore */ }
-        killTimer = setTimeout(() => {
-          try { child?.kill("SIGKILL"); } catch { /* ignore */ }
-        }, KILL_GRACE_MS);
+        terminate();
         done(1);
       }, CALL_TIMEOUT_MS);
 
       child.stdout?.on("data", (chunk: Buffer) => {
-        if (total >= MAX_STDOUT) return;
+        if (total + chunk.length > MAX_STDOUT) {
+          // Overflow: a credential-store reply is tiny, so exceeding the cap means
+          // something is wrong. Fail closed and stop the child rather than return
+          // a silently truncated (and possibly mid-UTF-8) secret as success.
+          hardFail = true;
+          terminate();
+          done(1);
+          return;
+        }
         total += chunk.length;
         chunks.push(chunk);
       });
@@ -201,22 +217,21 @@ function run(file: string, args: string[], options: RunOptions = {}): Promise<{ 
         // The child is gone; no need to escalate a kill.
         if (killTimer) clearTimeout(killTimer);
         // A signal-terminated child (our kill, or external) is a failure even if
-        // the exit code slot is null; never report success for it. An stdin
-        // delivery failure is also authoritative: a command that did not receive
-        // its full input must not be reported successful on a 0 exit.
-        if (signal || stdinFailed) { done(1); return; }
+        // the exit code slot is null; never report success for it. A hard failure
+        // (stdin delivery / overflow) is likewise authoritative over a 0 exit.
+        if (signal || hardFail) { done(1); return; }
         done(code === 0 ? 0 : (code ?? 1));
       });
 
       if (options.input !== undefined) {
         const stdin = child.stdin;
         if (stdin) {
-          // The error listener must be on the stdin STREAM, not the child: a
-          // child that closes its input early surfaces EPIPE on child.stdin, and
-          // an unhandled 'error' there would crash the process (it fires
-          // asynchronously, outside the try/catch). Record it so the close
-          // handler reports failure, then settle defensively.
-          stdin.on("error", () => { stdinFailed = true; done(1); });
+          // The error listener must be on the stdin STREAM, not the child: a child
+          // that closes its input early surfaces EPIPE on child.stdin, and an
+          // unhandled 'error' there would crash the process (it fires
+          // asynchronously, outside the try/catch). Record the failure AND reap
+          // the child (it may keep running), then settle.
+          stdin.on("error", () => { hardFail = true; terminate(); done(1); });
           stdin.end(options.input);
         }
       } else {
@@ -231,6 +246,21 @@ function run(file: string, args: string[], options: RunOptions = {}): Promise<{ 
 type Backend = "macos" | "secret-tool" | "windows" | "none";
 
 let cachedBackend: Backend | undefined;
+/**
+ * After a detection TIMEOUT we must not permanently cache "none" (that would drop
+ * a readable key for the whole session), but we also must not let every one of N
+ * configured keys re-pay a full detection timeout. So we remember the timeout for
+ * a short cooldown: calls within it fast-fail ("none") without spawning, and the
+ * FIRST call after the cooldown re-probes. This bounds a hung store to one probe
+ * timeout per cooldown window instead of one per key, while still recovering.
+ */
+let detectionCooldownUntil = 0;
+const DETECTION_COOLDOWN_MS = 30_000;
+
+/** Reset detection cooldown (tests only). */
+export function __resetKeychainDetectionCooldownForTests(): void {
+  detectionCooldownUntil = 0;
+}
 
 /**
  * Absolute path to the system Windows PowerShell. Resolving it from SystemRoot
@@ -257,6 +287,9 @@ function windowsPowerShellPath(): string {
  */
 async function detectBackend(): Promise<Backend> {
   if (cachedBackend !== undefined) return cachedBackend;
+  // Within the post-timeout cooldown, fast-fail without re-probing so N keys do
+  // not each pay a full detection timeout.
+  if (Date.now() < detectionCooldownUntil) return "none";
   const os = platform();
 
   let probe: { code: number; timedOut: boolean };
@@ -283,16 +316,21 @@ async function detectBackend(): Promise<Backend> {
     return (cachedBackend = "none");
   }
 
-  // Probe failed. A timeout is transient — do NOT cache it, so a later call can
-  // retry once the store recovers. A definitive failure (missing tool /
-  // unreachable service) is cached as "none".
-  if (probe.timedOut) return "none";
+  // Probe failed. A timeout is transient — do NOT cache it as permanent, so a
+  // later call can retry once the store recovers; but start a cooldown so the
+  // other keys this load don't each re-pay the timeout. A definitive failure
+  // (missing tool / unreachable service) is cached permanently as "none".
+  if (probe.timedOut) {
+    detectionCooldownUntil = Date.now() + DETECTION_COOLDOWN_MS;
+    return "none";
+  }
   return (cachedBackend = "none");
 }
 
 /** Reset the cached backend detection (tests only). */
 export function __resetKeychainBackendForTests(): void {
   cachedBackend = undefined;
+  detectionCooldownUntil = 0;
 }
 
 /** True when an OS credential store is available to prefer over the config file. */
@@ -336,6 +374,19 @@ function securityQuote(value: string): string {
 const SECURITY_LINE_LIMIT = 4095;
 
 /**
+ * Join `security -i` command tokens into a single line, returning null when the
+ * line would reach the interactive parser's buffer bound (which would split it
+ * and let a trailing empty command falsely report success). Applied to EVERY
+ * interactive command — store, read, and delete — so an over-long account can
+ * never produce a split line on any path.
+ */
+function securityLine(tokens: string[]): string | null {
+  const line = tokens.join(" ");
+  if (Buffer.byteLength(line, "utf-8") >= SECURITY_LINE_LIMIT) return null;
+  return line + "\n";
+}
+
+/**
  * Store `secret` under `account` in the OS credential store. Returns true on
  * success. Overwrites any existing entry for the same account so re-saving a
  * rotated key does not accumulate duplicates. Never throws.
@@ -355,7 +406,7 @@ export async function setSecret(account: string, secret: string): Promise<boolea
       // `-w` hex-encodes any value containing a non-printable byte, which would
       // otherwise corrupt the round-trip.
       const encoded = Buffer.from(secret, "utf-8").toString("base64");
-      const line = [
+      const line = securityLine([
         "add-generic-password",
         "-U",
         "-s", securityQuote(SERVICE),
@@ -372,11 +423,11 @@ export async function setSecret(account: string, secret: string): Promise<boolea
         // minimal (NOT `-A`, which Apple flags as insecure: it would let any app
         // read the secret).
         "-T", "/usr/bin/security",
-      ].join(" ");
+      ]);
       // Refuse an over-long interactive line (the parser would split it and
       // falsely report success); fall back to in-file encryption instead.
-      if (Buffer.byteLength(line, "utf-8") >= SECURITY_LINE_LIMIT) return false;
-      const { code } = await run("security", ["-i"], { input: line + "\n" });
+      if (line === null) return false;
+      const { code } = await run("security", ["-i"], { input: line });
       return code === 0;
     }
     case "secret-tool": {
@@ -430,12 +481,13 @@ export async function getSecret(account: string): Promise<string | undefined> {
     case "macos": {
       // Read the base64 blob written by setSecret and decode it. Run via `-i`
       // so the account name is not on argv either, matching the write path.
-      const line = [
+      const line = securityLine([
         "find-generic-password",
         "-s", securityQuote(SERVICE),
         "-a", securityQuote(account),
         "-w",
-      ].join(" ") + "\n";
+      ]);
+      if (line === null) return undefined; // over-long account → never resolvable here
       const { code, stdout } = await run("security", ["-i"], { input: line, isRead: true });
       if (code !== 0) return undefined;
       const encoded = stdout.replace(/\r?\n$/, "");
@@ -492,11 +544,12 @@ export async function deleteSecret(account: string): Promise<void> {
   const backend = await detectBackend();
   switch (backend) {
     case "macos": {
-      const line = [
+      const line = securityLine([
         "delete-generic-password",
         "-s", securityQuote(SERVICE),
         "-a", securityQuote(account),
-      ].join(" ") + "\n";
+      ]);
+      if (line === null) return; // over-long account → nothing we could have stored
       await run("security", ["-i"], { input: line });
       return;
     }

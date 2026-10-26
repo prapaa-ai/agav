@@ -204,6 +204,27 @@ describe("utils/keychain", () => {
       expect(await mod.setSecret("k", "v")).toBe(false);
     });
 
+    it("force-terminates a child that errors on stdin but keeps running", async () => {
+      // stdin errors, child never closes on its own → we must still reap it.
+      const getCalls = scriptSpawn([{ code: 0 }, { stdinError: "EPIPE", hang: true }]);
+      const mod = await freshModule();
+      expect(await mod.setSecret("k", "v")).toBe(false);
+      const storeCall = getCalls().find((c) => c.args[0] === "store");
+      expect(storeCall!.killed).toContain("SIGTERM");
+    });
+
+    it("fails closed when stdout overflows instead of returning a truncated secret", async () => {
+      // A reply larger than the 1 MiB cap is abnormal; the read must fail (not
+      // return a silently truncated, possibly mid-UTF-8 value) and reap the child.
+      // On the Linux backend getSecret runs `secret-tool lookup ...`.
+      const huge = Buffer.alloc(1024 * 1024 + 10, 0x41); // > MAX_STDOUT, exits 0
+      const getCalls = scriptSpawn([{ code: 0 }, { code: 0, stdoutChunks: [huge], hang: true }]);
+      const mod = await freshModule();
+      expect(await mod.getSecret("k")).toBeUndefined();
+      const readCall = getCalls().find((c) => c.args[0] === "lookup");
+      expect(readCall!.killed).toContain("SIGTERM");
+    });
+
     it("treats a signal-terminated child as failure, not success", async () => {
       scriptSpawn([{ code: 0 }, { signal: "SIGKILL" }]);
       const mod = await freshModule();
@@ -228,6 +249,16 @@ describe("utils/keychain", () => {
       // No store subcommand was ever spawned for the unsafe account.
       expect(getCalls().some((c) => c.stdin.includes("add-generic-password"))).toBe(false);
       expect(getCalls().some((c) => c.stdin.includes("find-generic-password"))).toBe(false);
+    });
+
+    it("refuses an over-long account on read and delete (interactive line bound)", async () => {
+      const getCalls = scriptSpawn([{ code: 0 }]); // detection only; no command should run
+      const mod = await freshModule();
+      const huge = "a".repeat(5000); // > 4095-byte interactive line
+      expect(await mod.getSecret(huge)).toBeUndefined();
+      await mod.deleteSecret(huge); // must not throw / not emit a split command
+      expect(getCalls().some((c) => c.stdin.includes("find-generic-password"))).toBe(false);
+      expect(getCalls().some((c) => c.stdin.includes("delete-generic-password"))).toBe(false);
     });
   });
 
@@ -338,14 +369,14 @@ describe("utils/keychain", () => {
       expect(getCalls().length).toBe(before); // no further read spawned
     });
 
-    it("does not cache 'none' on a detection timeout — a later read can recover", async () => {
+    it("detection timeout: cools down (no re-probe per key), then recovers after cooldown", async () => {
       vi.useFakeTimers();
       const b64 = Buffer.from("sk-live", "utf-8").toString("base64");
-      // 1st call = detection, hangs → times out (must NOT cache "none").
+      // 1st call = detection, hangs → times out (NOT cached as permanent "none").
       // 2nd call = detection retry succeeds; 3rd = the actual read.
       const getCalls = scriptSpawn([
         { hang: true },                   // detection #1 times out
-        { code: 0 },                      // detection #2 succeeds
+        { code: 0 },                      // detection #2 succeeds (after cooldown)
         { code: 0, stdout: `${b64}\n` },  // read
       ]);
       const mod = await freshModule();
@@ -354,7 +385,14 @@ describe("utils/keychain", () => {
       await vi.advanceTimersByTimeAsync(5000); // detection #1 deadline
       expect(await p1).toBeUndefined();        // this call fails (store was slow)
       vi.useRealTimers();
-      // A later read re-detects (not cached as "none") and resolves the key.
+
+      // Within the cooldown, further reads fast-fail WITHOUT re-probing (so N keys
+      // don't each pay a detection timeout).
+      expect(await mod.getSecret("b")).toBeUndefined();
+      expect(getCalls().length).toBe(1); // only the timed-out probe ran
+
+      // After the cooldown elapses, detection is retried and the key resolves.
+      mod.__resetKeychainDetectionCooldownForTests();
       expect(await mod.getSecret("a")).toBe("sk-live");
       expect(getCalls().length).toBe(3);
     });

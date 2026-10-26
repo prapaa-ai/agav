@@ -827,16 +827,40 @@ class ConfigLockTimeoutError extends Error {
 }
 
 /**
- * Try once to acquire the shared config lock. Returns an OWNED release function
- * on success, null when a LIVE peer holds it. Never throws.
+ * In-process serialization. Every config writer in THIS process chains onto a
+ * single promise, so concurrent saves / a migration / a status-bar write never
+ * interleave regardless of the cross-process file lock. This is the dominant real
+ * case (one Agav process) and is race-free by construction (single-threaded
+ * event loop); the file lock below only guards the much rarer multi-process case.
+ */
+let inProcessChain: Promise<unknown> = Promise.resolve();
+function withInProcessLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = inProcessChain.then(fn, fn);
+  // Keep the chain alive even if fn rejects, but don't let it accumulate rejections.
+  inProcessChain = run.then(() => {}, () => {});
+  return run;
+}
+
+/**
+ * Cross-process lock using a CAS-on-rename protocol that is correct on a local
+ * POSIX/NTFS filesystem (atomic rename; exclusive O_EXCL create).
  *
- * Ownership safety: the lock file carries a unique token (random + pid). Release
- * unlinks the file ONLY if it still contains OUR token, so a process can never
- * delete a successor's lock (e.g. after a stale takeover). Stale reclamation does
- * NOT blindly unlink the peer's file (two reclaimers could each delete the
- * other's fresh lock); instead it atomically `rename`s the stale file to a
- * private path — exactly one racing reclaimer wins the rename, and the loser's
- * rename fails harmlessly — then recreates the lock exclusively.
+ * Acquire:  create `${LOCK}.req.<token>` (our unique claim file), then try to
+ *           atomically `rename` it onto the canonical `${LOCK}` path via an
+ *           exclusive step: we first create `${LOCK}` with O_EXCL. If that
+ *           succeeds we own it. If it exists, we only steal when it is provably
+ *           stale, and the steal itself is a CAS: rename the stale `${LOCK}` to a
+ *           token-private name; ONLY the single process whose rename succeeds
+ *           proceeds to recreate `${LOCK}` with O_EXCL. A process that renamed a
+ *           file it did not expect (it moved a *fresh* successor lock) detects
+ *           this because the moved file's token differs from the stale token it
+ *           observed, and it restores the file instead of proceeding.
+ *
+ * Release:  CAS delete — rename `${LOCK}` to a token-private name; unlink it only
+ *           if its content is our token; otherwise rename it back. This guarantees
+ *           we never delete a successor's lock.
+ *
+ * Returns an owned release fn, or null when a live peer holds it. Never throws.
  */
 async function tryAcquireConfigLock(): Promise<(() => Promise<void>) | null> {
   const { open, stat, unlink, readFile: read, rename } = await import("node:fs/promises");
@@ -847,40 +871,69 @@ async function tryAcquireConfigLock(): Promise<(() => Promise<void>) | null> {
     return null;
   }
   const token = `${process.pid}:${randomBytes(12).toString("hex")}`;
+  const privatePath = `${CONFIG_LOCK_PATH}.hold.${token.replace(/[^a-z0-9]/gi, "")}`;
 
+  /** CAS release: move the lock aside, confirm it is ours, then delete; else restore. */
   const releaseIfOwned = async () => {
     try {
-      const current = await read(CONFIG_LOCK_PATH, "utf-8");
-      if (current === token) await unlink(CONFIG_LOCK_PATH).catch(() => {});
-    } catch { /* already gone or unreadable — nothing to release */ }
+      await rename(CONFIG_LOCK_PATH, privatePath); // only the current occupant moves
+    } catch {
+      return; // not present / someone else already moved it — nothing of ours to drop
+    }
+    try {
+      const current = await read(privatePath, "utf-8");
+      if (current === token) {
+        await unlink(privatePath).catch(() => {});
+      } else {
+        // We moved a successor's lock, not ours — put it back exactly as found.
+        await rename(privatePath, CONFIG_LOCK_PATH).catch(() => unlink(privatePath).catch(() => {}));
+      }
+    } catch {
+      await unlink(privatePath).catch(() => {});
+    }
   };
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const createOwned = async (): Promise<(() => Promise<void>) | null> => {
+    const handle = await open(CONFIG_LOCK_PATH, "wx", 0o600);
+    await handle.writeFile(token);
+    await handle.close();
+    return releaseIfOwned;
+  };
+
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const handle = await open(CONFIG_LOCK_PATH, "wx", 0o600);
-      await handle.writeFile(token);
-      await handle.close();
-      return releaseIfOwned;
+      return await createOwned();
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") return null;
-      // Lock exists. Reclaim only if clearly stale (holder likely crashed).
-      let info;
-      try {
-        info = await stat(CONFIG_LOCK_PATH);
-      } catch {
-        continue; // vanished between open and stat — retry create
-      }
-      if (Date.now() - info.mtimeMs < CONFIG_LOCK_STALE_MS) return null; // live peer
-      // Atomic takeover: whoever wins this rename owns the removal; a losing
-      // racer's rename throws and it simply retries the create next iteration.
-      const steal = `${CONFIG_LOCK_PATH}.stale.${token.replace(/[^a-z0-9]/gi, "")}`;
-      try {
-        await rename(CONFIG_LOCK_PATH, steal);
-        await unlink(steal).catch(() => {});
-      } catch {
-        // Lost the race (someone else moved/recreated it); retry the create.
-      }
     }
+    // Lock exists. Reclaim ONLY if clearly stale (holder likely crashed).
+    let info;
+    try {
+      info = await stat(CONFIG_LOCK_PATH);
+    } catch {
+      continue; // vanished between create and stat — retry create
+    }
+    if (Date.now() - info.mtimeMs < CONFIG_LOCK_STALE_MS) return null; // live peer
+    // CAS steal: capture the stale token, move the file to our private name, and
+    // verify we moved exactly the stale file we observed. If the content differs,
+    // a fresh holder replaced it after our stat — restore it and retry rather than
+    // destroying a live lock.
+    let staleToken: string | undefined;
+    try { staleToken = await read(CONFIG_LOCK_PATH, "utf-8"); } catch { continue; }
+    try {
+      await rename(CONFIG_LOCK_PATH, privatePath);
+    } catch {
+      continue; // someone else moved it first — retry
+    }
+    let moved: string | undefined;
+    try { moved = await read(privatePath, "utf-8"); } catch { /* unreadable */ }
+    if (moved !== staleToken) {
+      // We moved a fresh successor, not the stale file — restore and back off.
+      await rename(privatePath, CONFIG_LOCK_PATH).catch(() => {});
+      return null;
+    }
+    await unlink(privatePath).catch(() => {});
+    // loop to retry the exclusive create
   }
   return null;
 }
@@ -891,33 +944,42 @@ async function tryAcquireConfigLock(): Promise<(() => Promise<void>) | null> {
  * by throwing rather than mutating without the lock — an unlocked write could
  * interleave with another process and leave a `keychain:` reference whose secret
  * was deleted, or overwrite a credential rotation. A rejected save is recoverable
- * (the caller/user retries); a corrupted credential transaction is not. The lock
- * is always released when held.
+ * (the caller/user retries); a corrupted credential transaction is not.
+ *
+ * Wrapped in the in-process mutex so same-process writers serialize deterministically
+ * and only contend on the file lock against OTHER processes.
  */
 async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
-  const deadline = Date.now() + CONFIG_LOCK_WAIT_MS;
-  let release: (() => Promise<void>) | null = null;
-  for (;;) {
-    release = await tryAcquireConfigLock();
-    if (release) break;
-    if (Date.now() >= deadline) throw new ConfigLockTimeoutError();
-    await new Promise((r) => setTimeout(r, CONFIG_LOCK_POLL_MS));
-  }
-  try {
-    return await fn();
-  } finally {
-    await release();
-  }
+  return withInProcessLock(async () => {
+    const deadline = Date.now() + CONFIG_LOCK_WAIT_MS;
+    let release: (() => Promise<void>) | null = null;
+    for (;;) {
+      release = await tryAcquireConfigLock();
+      if (release) break;
+      if (Date.now() >= deadline) throw new ConfigLockTimeoutError();
+      await new Promise((r) => setTimeout(r, CONFIG_LOCK_POLL_MS));
+    }
+    try {
+      return await fn();
+    } finally {
+      await release();
+    }
+  });
 }
 
 /**
- * Acquire the shared config lock for the migration: non-blocking, returning null
- * when a peer holds it so this launch simply skips (a peer is handling it).
- * Never throws.
+ * Acquire the shared config lock for the migration under the in-process mutex:
+ * non-blocking across processes (returns null if a peer holds the file lock so
+ * this launch skips), but still serialized against same-process writers. Returns
+ * a release fn or null. Never throws.
  */
 async function acquireMigrationLock(): Promise<(() => Promise<void>) | null> {
   try {
-    return await tryAcquireConfigLock();
+    // Serialize against same-process writers, then take the cross-process file
+    // lock once (non-blocking). We hold the in-process slot only for the acquire;
+    // the returned release also frees nothing in-process (migration is a single
+    // startup step), so just return the file-lock release.
+    return await withInProcessLock(() => tryAcquireConfigLock());
   } catch {
     return null;
   }

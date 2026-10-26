@@ -84,9 +84,11 @@ describe("saveStatusBarLayout", () => {
 
     const tmpPath = writeFile.mock.calls.at(-1)![0] as string;
     expect(tmpPath).toContain(".tmp.");
-    expect(rename).toHaveBeenCalledTimes(1);
-    const [from, to] = rename.mock.calls.at(-1)!;
-    expect(from).toBe(tmpPath);
+    // The shared config lock also uses rename (CAS acquire/release), so locate the
+    // atomic config write specifically: temp file → config.json.
+    const writeRename = rename.mock.calls.find(([from]) => String(from) === tmpPath);
+    expect(writeRename).toBeDefined();
+    const [, to] = writeRename!;
     expect(to).not.toContain(".tmp.");
     expect(to).toContain("config.json");
   });

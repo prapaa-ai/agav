@@ -436,10 +436,11 @@ describe("config", () => {
   });
 
   it("serializes writers through the shared config lock (acquire + release)", async () => {
-    // Release reads the lock file to verify OUR token before unlinking it, so the
-    // lock-path read must return the token the handle captured; other reads miss.
+    // Release is a CAS: rename the lock to a token-private "hold" path, confirm it
+    // holds OUR token, then unlink the private path. The private path's read must
+    // return the captured token for the ownership check to pass.
     readFile.mockImplementation(async (p: any) => {
-      if (String(p).endsWith(".config.lock")) return lockState.token;
+      if (String(p).includes(".config.lock.hold.")) return lockState.token;
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     });
     const mod = await import("../config/config.js");
@@ -447,11 +448,15 @@ describe("config", () => {
       provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
       errorRetries: 3, permissionMode: "ask",
     });
-    // The lock is taken with an exclusive create ("wx") and released by unlinking it.
+    // The lock is taken with an exclusive create ("wx").
     const openCall = vi.mocked(fs.open).mock.calls.find((c) => String(c[0]).endsWith(".config.lock"));
     expect(openCall).toBeDefined();
     expect(openCall![1]).toBe("wx");
-    expect(vi.mocked(fs.unlink).mock.calls.some((c) => String(c[0]).endsWith(".config.lock"))).toBe(true);
+    // Release moves the lock aside (CAS) and unlinks the owned private copy.
+    expect(vi.mocked(fs.rename).mock.calls.some(
+      (c) => String(c[0]).endsWith(".config.lock") && String(c[1]).includes(".config.lock.hold."),
+    )).toBe(true);
+    expect(vi.mocked(fs.unlink).mock.calls.some((c) => String(c[0]).includes(".config.lock.hold."))).toBe(true);
   });
 
   it("fails closed (throws) when the config lock cannot be acquired", async () => {
