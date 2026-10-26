@@ -71,6 +71,7 @@ export async function pickSession(
   enableMouse();
 
   let totalLinesRendered = 0;
+  let operationError: string | undefined;
   let closed = false;
   const deleting = new Set<string>();
 
@@ -140,7 +141,7 @@ export async function pickSession(
     const runtime = items[selected]?.runtime;
     const active = runtime && ["starting", "running", "needs-approval"].includes(runtime.status);
     const editHint = active ? "M/R rename · running (delete unavailable)" : "D delete · M/R rename";
-    lines.push(`\x1b[2m  ↑↓/scroll/click select · Enter resume · ${editHint} · Esc cancel\x1b[0m`);
+    lines.push(operationError ? `  ${operationError}` : `\x1b[2m  ↑↓/scroll/click select · Enter resume · ${editHint} · Esc cancel\x1b[0m`);
     lines.push("");
 
     // Center the selection in the viewport, clamped so we never scroll past the
@@ -836,7 +837,9 @@ export async function pickSession(
         if (toDelete.runtime && ["starting", "running", "needs-approval"].includes(toDelete.runtime.status)) return false;
         if (deleting.has(toDelete.id)) return false;
         deleting.add(toDelete.id);
+        operationError = undefined;
         deleteSession(toDelete.id).then((ok) => {
+          if (!ok && !closed) { operationError = "Cannot delete: session is active or no longer exists."; if (listActive) render(); }
           if (ok && !closed) {
             const index = items.findIndex(item => item.id === toDelete.id);
             if (index === -1) return;
@@ -849,7 +852,12 @@ export async function pickSession(
             if (selected >= items.length) selected = items.length - 1;
             if (listActive) render();
           }
-        }).catch(() => {}).finally(() => { deleting.delete(toDelete.id); });
+        }).catch(error => {
+          if (!closed) {
+            operationError = `Delete failed: ${error instanceof Error ? error.message : String(error)}`;
+            if (listActive) render();
+          }
+        }).finally(() => { deleting.delete(toDelete.id); });
         return false;
       }
 

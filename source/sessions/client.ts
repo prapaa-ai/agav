@@ -88,3 +88,18 @@ export async function stopSessionExecution(id: string, policy: SessionPolicySnap
   if (!record.jobId) throw new Error(`Session ${id} has no supervisor worker job to stop.`);
   await (await coordinator()).stop(record.jobId, policy);
 }
+
+/** Cancel only the explicitly selected generation; no PID fallback or foreign-job grant. */
+export async function requestSessionCancellation(id: string, generation: string, store = new SessionRuntimeStore()): Promise<void> {
+  await store.update(id, generation, record => {
+    if (["starting", "running", "needs-approval"].includes(record.status)) record.cancelRequested = true;
+  });
+}
+
+export async function requestSessionSubagentCancellation(id: string, generation: string, subagentId: string, store = new SessionRuntimeStore()): Promise<void> {
+  await store.update(id, generation, record => {
+    if (["starting", "running", "needs-approval"].includes(record.status)) {
+      record.cancelledSubagents = [...new Set([...(record.cancelledSubagents ?? []), subagentId])];
+    }
+  });
+}

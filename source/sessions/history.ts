@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { warnSessionDiscovery } from "./approvals.js";
 import { listSessions, loadSession, type SessionRecord } from "../config/history.js";
 import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { SessionRuntimeStore, assertSessionRuntimeId, type SessionRuntimeRecord } from "./store.js";
@@ -7,6 +9,10 @@ import { readSessionSnapshot } from "./client.js";
 async function runtimeSession(store: SessionRuntimeStore, record: SessionRuntimeRecord, saved?: SessionRecord | null): Promise<SessionRecord> {
   const snapshot = await readSessionSnapshot(record.id, store);
   record = snapshot.record;
+  if (record.messages.some(message => !message || typeof message.role !== "string" || !Array.isArray(message.content) ||
+      message.content.some(block => !block || typeof block.type !== "string" || (block.type === "text" && typeof block.text !== "string")))) {
+    throw new Error(`Corrupt resumable session transcript: ${record.id}`);
+  }
   const firstUser = record.messages.find(message => message.role === "user" && !isInternalUserMessage(message))
     ?? record.messages.find(message => message.role === "user");
   const text = firstUser?.sourceText ?? firstUser?.displayText ?? firstUser?.content
@@ -21,6 +27,7 @@ async function runtimeSession(store: SessionRuntimeStore, record: SessionRuntime
     ...(record.title ? { name: record.title } : {}),
     title: record.title ?? saved?.title ?? (text?.slice(0, 80) || "Empty session"),
     messages: record.messages,
+    tokenUsage: record.tokenUsage ?? saved?.tokenUsage,
     compacted: record.compacted,
     runtime: {
       generation: record.generation,
@@ -40,9 +47,9 @@ export async function listResumableSessions(): Promise<SessionRecord[]> {
   for (const record of runtimes) {
     try { sessions.set(record.id, await runtimeSession(store, record, sessions.get(record.id))); }
     catch (error) {
-      // Deletion may race the discovery/read pair. Only disappearance is benign.
-      if (await store.read(record.id) !== undefined) throw error;
+      // A failed snapshot must not hide healthy siblings or offer this runtime's stale saved transcript.
       sessions.delete(record.id);
+      await warnSessionDiscovery(join(store.directory(record.id), "runtime.json"), error);
     }
   }
   return [...sessions.values()].sort((a, b) =>

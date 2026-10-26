@@ -422,12 +422,19 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     voice.cancel();
     updateQueue([]);
     shellAbortRef.current?.abort();
-    cancel();
+    // Explicit detach leaves the worker alone. Ordinary exit/interrupt requests a
+    // generation-bound cancellation and waits for its durable publication before exit.
+    const cancellation = detachedSessionRef?.current ? undefined : cancel();
     stopActiveLoop();
-    exitInk();
-    // Keep Ink alive until the foreground executor has checkpointed settlement.
-    void settleWorkflow().then(() => exitInk());
+    void Promise.resolve(cancellation).then(settleWorkflow).then(() => exitInk());
   }, [cancel, exitInk, updateQueue, voice.cancel, settleWorkflow]);
+
+  React.useLayoutEffect(() => {
+    if (shutdownRef) shutdownRef.current = async () => {
+      if (!detachedSessionRef?.current) await cancel();
+      await settleWorkflow();
+    };
+  }, [shutdownRef, detachedSessionRef, cancel, settleWorkflow]);
 
   const detachCurrentSession = useCallback(async () => {
     const id = await detachSession();

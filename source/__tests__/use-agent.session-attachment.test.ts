@@ -133,6 +133,49 @@ describe("useAgent durable session attachment", () => {
     });
   }
 
+  it("renders live tool and delegated progress after approving a resumed worker", async () => {
+    const worker = await runtime();
+    const ui = await mount(worker.session);
+    await ui.until(() => !!ui.agent().pendingConfirmation);
+    ui.agent().confirmTool("yes", ui.agent().pendingConfirmation!);
+    await ui.until(worker.first.settled);
+    const call = { toolName: "shell", toolCallId: "live-shell", input: { command: "sleep 1" }, status: "running" as const };
+    const child = { id: "sa-1", title: "Inspect", task: "Inspect files", status: "running" as const,
+      toolCalls: [call], thinkingText: "Inspecting", streamingText: "Working", startedAt: Date.now(), totalToolCalls: 1,
+      tokenUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 } };
+    await store.update(worker.record.id, worker.record.generation, record => {
+      record.toolCalls = [call]; record.subagentStates = [child];
+    });
+    await ui.until(() => ui.agent().toolCalls[0]?.toolCallId === call.toolCallId);
+    expect(ui.agent().toolCalls).toEqual([call]);
+    expect(ui.agent().subagentStates).toEqual([child]);
+    expect(ui.agent().isLoading).toBe(true);
+    expect(ui.stream).not.toHaveBeenCalled();
+    await store.update(worker.record.id, worker.record.generation, record => {
+      record.toolCalls![0]!.status = "done";
+      record.toolCalls![0]!.result = "finished";
+      record.subagentStates = [];
+    });
+    await ui.until(() => ui.agent().toolCalls[0]?.status === "done");
+    expect(ui.agent().toolCalls[0]!.result).toBe("finished");
+    expect(ui.agent().subagentStates).toEqual([]);
+    await store.update(worker.record.id, worker.record.generation, record => {
+      record.status = "completed"; record.toolCalls = []; record.subagentStates = [];
+    });
+    await ui.until(() => !ui.agent().isLoading);
+    expect(ui.agent().toolCalls).toEqual([]);
+  });
+
+  it("routes cancellation of an attached subagent to its worker generation", async () => {
+    const worker = await runtime();
+    const ui = await mount(worker.session);
+    await ui.until(() => !!ui.agent().pendingConfirmation);
+    ui.agent().cancelSubagent("sa-1");
+    await ui.until(async () => (await store.read(worker.record.id))?.cancelledSubagents?.includes("sa-1") === true);
+    expect(worker.first.settled()).toBe(false);
+    expect((await store.read(worker.record.id))?.cancelRequested).toBeUndefined();
+  });
+
   it("persists an attached runtime rename without overwriting its live transcript or approvals", async () => {
     const worker = await runtime();
     const ui = await mount(worker.session);

@@ -4,6 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import { getAgavDir, type PermissionMode, type EffortLevel, type AgavConfig } from "../config/config.js";
+import type { SessionTokenUsage } from "../config/history.js";
 import type { Message } from "../providers/types.js";
 import { createExclusive, readJsonIfExists, writeAtomic } from "../background-jobs/storage/atomic-file.js";
 import { BackgroundJobError } from "../background-jobs/types.js";
@@ -32,14 +33,20 @@ export interface SessionRuntimeRecord {
   iterationsBudget?: { remaining: number; total: number };
   compacted?: boolean;
   messages: Message[];
+  toolCalls?: import("../components/tool-call-display.js").ToolCallInfo[];
+  subagentStates?: import("../agent/subagent-types.js").SubagentProgress[];
   streamingText?: string;
   thinkingText?: string;
   title?: string;
+  name?: string;
+  tokenUsage?: SessionTokenUsage;
   status: SessionRuntimeStatus;
   createdAt: string;
   updatedAt: string;
   jobId?: string;
   ownerPid?: number;
+  cancelRequested?: boolean;
+  cancelledSubagents?: string[];
   error?: string;
 }
 export type CreateSessionRuntime = Omit<SessionRuntimeRecord, "version" | "id" | "generation" | "status" | "createdAt" | "updatedAt" | "messages" | "backgroundPermissionMode"> &
@@ -121,6 +128,8 @@ export class SessionRuntimeStore {
         if (record.generation === previousGeneration) throw new Error("A new execution requires a fresh generation.");
         record.createdAt = previous.createdAt;
         record.title ??= previous.title;
+        record.name ??= previous.name;
+        record.tokenUsage ??= previous.tokenUsage;
         await writeAtomic(this.path(record.id), JSON.stringify(record, null, 2) + "\n");
       } else if (!await createExclusive(this.path(record.id), JSON.stringify(record, null, 2) + "\n")) {
         throw new Error(`Session runtime already exists: ${record.id}`);

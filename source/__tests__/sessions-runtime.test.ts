@@ -1,3 +1,4 @@
+import * as configModule from "../config/config.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,11 +21,13 @@ const request: SessionApprovalRequest = { toolName: "write_file", input: { path:
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "agav-session-runtime-"));
+  vi.spyOn(configModule, "getAgavDir").mockReturnValue(root);
   store = new SessionRuntimeStore(root);
 });
 afterEach(async () => {
   for (const broker of brokers.splice(0)) broker.clear();
   await Promise.all(handles.splice(0).map(handle => handle.shutdown()));
+  vi.restoreAllMocks();
   await rm(root, { recursive: true, force: true });
 });
 async function runtime(overrides: Partial<AgavConfig> = {}) {

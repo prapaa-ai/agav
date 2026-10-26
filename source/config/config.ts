@@ -75,6 +75,8 @@ export interface AgavConfig {
   statusBar?: import("./status-bar-layout.js").StatusBarLayout;
   /** Opt-in; when unset or false, `run_background_job` and `/job` refuse to do anything. */
   backgroundJobsEnabled?: boolean;
+  /** Global-only opt-in to worker-owned interactive turns; requires backgroundJobsEnabled. */
+  detachedSessionsEnabled?: boolean;
   /** Global-only opt-in to foreground JSON workflows; also requires backgroundJobsEnabled. */
   workflowsEnabled?: boolean;
   /** Pool size for background workflow runner processes (separate from maxConcurrentJobs). Defaults to 2. */
@@ -207,6 +209,11 @@ export const PROJECT_CONFIG_TEMPLATE = {
   },
   backgroundJobsEnabled: {
     description: "Opt in to the background-jobs subsystem, enabling the run_background_job tool and /job command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
+    type: "boolean",
+    eg: false,
+  },
+  detachedSessionsEnabled: {
+    description: "Opt in to worker-owned interactive sessions and /detach. Requires backgroundJobsEnabled; global-only.",
     type: "boolean",
     eg: false,
   },
@@ -420,6 +427,7 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "backgroundAutomation",
   // Workflows are an opt-in automation surface; a repository must not enable them.
   "workflowsEnabled",
+  "detachedSessionsEnabled",
   // A project-supplied controlPlane would redirect `agav login` to post the
   // user's identity proof (id_token + nonce) to an attacker-controlled /session.
   // The control-plane address may come only from the --control-plane flag,

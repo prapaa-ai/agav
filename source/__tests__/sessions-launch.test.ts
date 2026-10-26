@@ -106,7 +106,7 @@ describe("launchSessionWorker", () => {
     await expect(launchSessionWorker(record, withoutSession as SessionWorkerLaunchDeps)).rejects.toThrow(/requires a caller policy snapshot/);
     expect(coordinator.start).not.toHaveBeenCalled();
     expect(coordinator.findByRequestId).not.toHaveBeenCalled();
-    expect(await store.read(record.id)).toEqual(record);
+    expect(await store.read(record.id)).toMatchObject({ status: "failed", generation: record.generation });
   });
 
   it("refuses missing selected environment names without exposing values or starting a worker", async () => {
@@ -116,7 +116,7 @@ describe("launchSessionWorker", () => {
     await expect(launchSessionWorker(record, { ...deps(coordinator), envNames: ["AGAV_SESSION_LAUNCH_SECRET", "AGAV_SESSION_LAUNCH_MISSING"] }))
       .rejects.toThrow("Session worker was not launched: missing selected environment variable(s): AGAV_SESSION_LAUNCH_MISSING");
     expect(coordinator.start).not.toHaveBeenCalled();
-    expect(await store.read(record.id)).toEqual(record);
+    expect(await store.read(record.id)).toMatchObject({ status: "failed", generation: record.generation });
     expect(await readFile(join(store.directory(record.id), "runtime.json"), "utf8")).not.toContain("credential-not-metadata");
   });
 

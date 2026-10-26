@@ -12,7 +12,7 @@ Most slash commands run when Agav is idle. These commands can also run while Aga
 
 Other commands, such as `/model` and `/clear`, are not dispatched while a turn is busy. Their text stays in the prompt; submit it again once Agav is idle, or press **Esc** to cancel the turn first. They are not queued for automatic execution. While generation is paused, input that is not an allowed mid-turn command is treated as new direction for the turn, so wait until idle to run other slash commands. Mid-turn command dispatch also requires no pending attachments.
 
-`/exit` works mid-turn: it cancels a foreground in-process turn and stops the repeating `/loop` before closing the terminal UI. A worker-owned turn survives presentation exit; use `/detach` for an explicit handoff and its exact resume hint. See [Detached sessions](/features/detached-sessions). For a foreground in-process turn, use **Esc** to cancel without leaving Agav instead. **Ctrl+C** exits unless an Agav text selection is active, in which case it copies the selection.
+`/exit` works mid-turn: it cancels a foreground in-process turn, requests durable, generation-bound cancellation of a worker-owned turn, and stops the repeating `/loop` before closing the terminal UI. Worker cancellation is asynchronous and does not undo side effects. Only `/detach` or the configured detach chord intentionally exits while leaving the worker running. See [Detached sessions](/features/detached-sessions). For a foreground in-process turn, use **Esc** to cancel without leaving Agav instead. **Ctrl+C** exits unless an Agav text selection is active, in which case it copies the selection.
 
 ## Chat and models
 
@@ -35,7 +35,7 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | Command | Purpose |
 | --- | --- |
 | `/resume [id]` | Open the saved/live session picker or resume one by ID or prefix match, including worker progress and pending approvals. |
-| `/detach` | Close the UI while the current worker-owned turn continues locally. Requires `backgroundJobsEnabled` before starting the task; Ctrl+X also works at approval prompts. See [Detached sessions](/features/detached-sessions). |
+| `/detach` | Close the UI while the current worker-owned turn continues locally. Requires both global `detachedSessionsEnabled: true` and `backgroundJobsEnabled: true` before starting the task; the configurable `detachSession` chord (default Ctrl+K Ctrl+D) also works at approval prompts. See [Detached sessions](/features/detached-sessions). |
 | `/search <query>` | Search saved session messages by keyword. |
 | `/name <title>` | Give the current session a descriptive name. |
 | `/branch [name]` | List branches in the current session lineage, or fork the current conversation into a named branch. |

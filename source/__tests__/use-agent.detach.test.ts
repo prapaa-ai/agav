@@ -43,7 +43,7 @@ import { SessionRuntimeStore } from "../sessions/store.js";
 import { SessionApprovalBroker, decideSessionApproval, listPendingApprovals } from "../sessions/approvals.js";
 
 const config: AgavConfig = { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000,
-  maxIterations: 4, errorRetries: 1, permissionMode: "ask", backgroundJobsEnabled: true };
+  maxIterations: 4, errorRetries: 1, permissionMode: "ask", backgroundJobsEnabled: true, detachedSessionsEnabled: true };
 const request = { toolName: "write_file", input: { path: "example.txt", content: "hello" } };
 let store: SessionRuntimeStore;
 const brokers: SessionApprovalBroker[] = [];
@@ -80,7 +80,7 @@ afterEach(async () => {
   for (const broker of brokers.splice(0)) broker.clear();
   await Promise.all(waiting.splice(0));
   vi.restoreAllMocks();
-  await rm(root, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 });
 
 async function mount(overrides: Partial<AgavConfig> = {}) {
@@ -223,13 +223,49 @@ describe("useAgent worker-first detach", () => {
     }
   });
 
+  it("background jobs alone do not opt ordinary prompts into worker execution", async () => {
+    const ui = await mount({ detachedSessionsEnabled: false });
+    expect(await ui.agent().submit("Say hello")).toBe(true);
+    await ui.until(() => ui.stream.mock.calls.length === 1 && !ui.agent().isLoading);
+    expect(startInteractiveSessionWorker).not.toHaveBeenCalled();
+  });
+
+  it("releases failed pre-admission ownership and permits a follow-up task", async () => {
+    vi.mocked(startInteractiveSessionWorker).mockImplementationOnce(async (workerConfig, conversation, options) => {
+      const record = await createSessionExecution(store, workerConfig, { conversation, ...options });
+      options.onCreated?.(record);
+      const failed = await store.update(record.id, record.generation, current => { current.status = "failed"; });
+      throw Object.assign(new Error("coordinator unavailable before admission"), { admission: "not-admitted", record: failed });
+    });
+    const ui = await mount();
+    expect(await ui.agent().submit("First attempt")).toBe(true);
+    await ui.until(() => !ui.agent().isLoading && ui.agent().messages.some(message => message.content.includes("coordinator unavailable")));
+    expect(ui.agent().canDetach).toBe(false);
+    const id = ui.agent().sessionId;
+    expect(await ui.agent().submit("Retry after launch failure")).toBe(true);
+    await ui.until(() => ui.agent().canDetach);
+    expect(ui.agent().sessionId).toBe(id);
+    expect(startInteractiveSessionWorker).toHaveBeenCalledTimes(2);
+    expect(ui.stream).not.toHaveBeenCalled();
+  });
+
+  it("cancel publishes durable cancellation for the selected worker generation", async () => {
+    const ui = await mount();
+    expect(await ui.agent().submit("Run task")).toBe(true);
+    await ui.until(() => ui.agent().canDetach);
+    const id = ui.agent().sessionId!;
+    await ui.agent().cancel();
+    expect((await store.read(id))!.cancelRequested).toBe(true);
+    expect(ui.agent().isLoading).toBe(true); // Ownership remains until the worker acknowledges.
+  });
+
   it("rejects detach when background jobs are disabled and executes the normal prompt locally", async () => {
     const ui = await mount({ backgroundJobsEnabled: false });
     expect(await ui.agent().submit("Say hello")).toBe(true);
     await ui.until(() => ui.stream.mock.calls.length === 1 && !ui.agent().isLoading);
     expect(ui.agent().messages.some(message => message.content === "local response")).toBe(true);
     expect(ui.agent().canDetach).toBe(false);
-    await expect(ui.agent().detachSession()).rejects.toThrow("Enable backgroundJobsEnabled");
+    await expect(ui.agent().detachSession()).rejects.toThrow("Enable detachedSessionsEnabled");
     expect(startInteractiveSessionWorker).not.toHaveBeenCalled();
   });
 

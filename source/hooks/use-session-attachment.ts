@@ -60,5 +60,5 @@ export function useSessionAttachment(options: {
   }, []);
   const approval = snapshot?.approvals[0] ? displayedRef.current : undefined;
   const live = !!target && (!snapshot || ["starting", "running", "needs-approval"].includes(snapshot.record.status));
-  return { attached: !!target, live, snapshot, approval, attach, detach, answer };
+  return { attached: !!target, target: targetRef.current, live, snapshot, approval, attach, detach, answer };
 }

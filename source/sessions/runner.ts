@@ -7,6 +7,7 @@ import { clampPermissionMode } from "../config/org-config.js";
 import { isProviderName, orgPolicyError } from "../config/startup.js";
 import type { LLMProvider } from "../providers/types.js";
 import { createProvider } from "../providers/registry.js";
+import { saveSessionRuntime } from "../config/history.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop, type AgentEvent, type ConfirmToolFn } from "../agent/loop.js";
 import { createToolRegistry } from "../tools/registry-factory.js";
@@ -50,6 +51,8 @@ export interface SessionToolContext {
   iterationsBudget: { remaining: number; total: number };
   confirmTool: ConfirmToolFn;
   backgroundPermissionMode: AgavConfig["permissionMode"];
+  registerSubagentCancellation?: (cancel: (id: string) => void) => void;
+  onSubagentProgress?: (states: import("../agent/subagent-types.js").SubagentProgress[]) => void;
 }
 
 /** Capture policy/settings at the execution boundary; never persist provider credentials. */
@@ -58,7 +61,7 @@ export async function createSessionExecution(store: SessionRuntimeStore, config:
   return store.create({
     id: input.id, generation: randomUUID(), cwd: input.cwd ?? process.cwd(),
     model: config.model, provider: config.provider, effort: config.effort, maxTokens: config.maxTokens,
-    connection: { openaiApi: config.openaiApi, openaiBaseURL: config.openaiBaseURL,
+    connection: { openaiApi: config.openaiApi, openaiBaseURL: config.openaiBaseURL ?? (config.provider === "openai" ? process.env["OPENAI_BASE_URL"] : undefined),
       ollamaEndpoint: config.ollamaEndpoint, ollamaHost: config.ollamaHost, ollamaPort: config.ollamaPort,
       vertexAILocation: config.vertexAILocation },
     systemPrompt: input.conversation.getSystemPrompt() ?? config.systemPrompt,
@@ -77,7 +80,7 @@ export function sessionExecutionConfig(record: SessionRuntimeRecord, local: Agav
   // Credentials and org gateway headers come from the current trusted configuration.
   // Never redirect them to a previously selected endpoint after routing policy changes.
   if (record.provider === "openai" && record.connection &&
-      record.connection.openaiBaseURL !== local.openaiBaseURL) {
+      record.connection.openaiBaseURL !== (local.openaiBaseURL ?? process.env["OPENAI_BASE_URL"])) {
     throw new Error("Session endpoint routing changed; refusing to send current credentials to the stored endpoint.");
   }
   const permissionFloor = clampPermissionMode(record.permissionFloor ?? "auto-accept", local.orgPermissionFloor);
@@ -104,15 +107,17 @@ export async function prepareSessionTools(ctx: SessionToolContext): Promise<() =
   try {
     for (const tool of await loadPlugins()) registry.register(tool);
     await loadSkills();
-    registry.register(createSubagentTool({
+    const subagent = createSubagentTool({
       provider, parentToolRegistry: registry,
       getConfig: () => ({ model: config.model, systemPrompt: config.systemPrompt ?? "", permissionMode: config.permissionMode, backgroundPermissionMode,
         effort: config.effort, orgPermissionFloor: config.orgPermissionFloor, iterationsBudget }),
       getProviderConfig: () => config,
       confirmationQueue: { enqueue: (request, childSignal) => broker.confirm(request, childSignal ?? signal),
         rejectBySubagentId: id => broker.rejectBySubagentId(id) },
-      onProgressUpdate: () => {}, onTokenUsage: () => {}, getSignal: () => signal,
-    }));
+      onProgressUpdate: states => ctx.onSubagentProgress?.(states), onTokenUsage: () => {}, getSignal: () => signal,
+    });
+    registry.register(subagent);
+    ctx.registerSubagentCancellation?.(id => subagent.cancelSubagent(id));
     registry.register(createSkillTool({
       provider, parentRegistry: registry,
       getConfig: () => ({ model: config.model, systemPrompt: config.systemPrompt ?? "", permissionMode: config.permissionMode, backgroundPermissionMode,
@@ -161,6 +166,45 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
     const conversation = new ConversationState(true);
     let failure: string | undefined;
     let completed = false;
+    let progressWrites: Promise<void> = Promise.resolve();
+    let progressError: unknown;
+    let acceptingProgress = true;
+    let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
+    let cancelChild: ((id: string) => void) | undefined;
+    const cancelledChildren = new Set<string>();
+    let cancellationTimer: ReturnType<typeof setTimeout> | undefined;
+    let eventLines = "";
+    let pendingSnapshot: Partial<SessionRuntimeRecord> = {};
+    const live: Partial<SessionRuntimeRecord> = { toolCalls: [], subagentStates: [], streamingText: "", thinkingText: "",
+      tokenUsage: initial.tokenUsage ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } };
+    const flushProgress = (mirrorHistory = false): Promise<void> => {
+      clearTimeout(snapshotTimer);
+      snapshotTimer = undefined;
+      const patch = structuredClone(pendingSnapshot);
+      const lines = eventLines;
+      pendingSnapshot = {};
+      eventLines = "";
+      progressWrites = progressWrites.then(async () => {
+        if (lines) await appendFile(join(deps.store.directory(id), "events.jsonl"), lines, { mode: 0o600 });
+        if (!Object.keys(patch).length && !mirrorHistory) return;
+        const saved = await deps.store.update(id, initial.generation, record => { Object.assign(record, patch); });
+        if (mirrorHistory) await saveSessionRuntime(saved, deps.store);
+      }).catch(error => { progressError ??= error; controller.abort(); });
+      return progressWrites;
+    };
+    const scheduleProgress = () => {
+      if (!snapshotTimer) snapshotTimer = setTimeout(() => { void flushProgress(); }, 100);
+    };
+    const pollCancellation = async (): Promise<void> => {
+      try {
+        const current = await deps.store.read(id);
+        if (!current || current.generation !== initial.generation || current.cancelRequested) controller.abort();
+        for (const child of current?.cancelledSubagents ?? []) {
+          if (cancelChild && !cancelledChildren.has(child)) { cancelChild(child); cancelledChildren.add(child); }
+        }
+      } catch (error) { progressError ??= error; controller.abort(); }
+      if (acceptingProgress && !controller.signal.aborted) cancellationTimer = setTimeout(() => { void pollCancellation(); }, 100);
+    };
     try {
       const config = sessionExecutionConfig(initial, deps.config);
       if (config.sandboxRequired) setSandboxRequired(true);
@@ -175,6 +219,8 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
         record.permissionFloor = config.orgPermissionFloor;
         record.sandboxRequired = config.sandboxRequired === true;
       });
+      await saveSessionRuntime((await deps.store.read(id))!, deps.store);
+      void pollCancellation();
       broker = new SessionApprovalBroker(deps.store, id, initial.generation, { permissionFloor: config.orgPermissionFloor });
       const confirmTool: ConfirmToolFn = (toolName, input, diffLines, mcpServerName, warning) =>
         broker!.confirm({ toolName, input, diffLines, mcpServerName, warning }, controller.signal);
@@ -182,6 +228,14 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
       cleanup = await (deps.prepareTools ?? (deps.registry ? async () => async () => {} : prepareSessionTools))({
         registry, config, provider: deps.provider, broker, signal: controller.signal, iterationsBudget, confirmTool,
         backgroundPermissionMode: clampPermissionMode(initial.backgroundPermissionMode, config.orgPermissionFloor),
+        registerSubagentCancellation: cancel => { cancelChild = cancel; },
+        onSubagentProgress: states => {
+          if (!acceptingProgress) return;
+          // Coalesce child deltas too; capture mutable callback state immediately.
+          live.subagentStates = structuredClone(states);
+          pendingSnapshot.subagentStates = live.subagentStates;
+          scheduleProgress();
+        },
       });
       controller.signal.throwIfAborted();
       setPlanScope(id);
@@ -195,21 +249,64 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
         headless: false, confirmTool, allowedTools: config.allowedTools, hooks: config.hooks,
         iterationsBudget, signal: controller.signal,
       })) {
-        await appendFile(join(deps.store.directory(id), "events.jsonl"), JSON.stringify({
+        eventLines += JSON.stringify({
           sequence: ++sequence, generation: initial.generation, at: new Date().toISOString(),
           ...event, ...(event.type === "error" ? { error: event.error.message } : {}),
-        }) + "\n", { mode: 0o600 });
-        await deps.store.update(id, initial.generation, record => {
-          if (event.type === "streaming_text") record.streamingText = (record.streamingText ?? "") + event.text;
-          if (event.type === "thinking") record.thinkingText = (record.thinkingText ?? "") + event.text;
-          if (event.type === "assistant_message_complete" || event.type === "turn_complete") {
-            record.streamingText = "";
-            record.thinkingText = "";
+        }) + "\n";
+        {
+          if (event.type === "tool_call_start") {
+            live.toolCalls = [...(live.toolCalls ?? []), { toolName: event.toolName,
+              toolCallId: event.toolCallId, input: {}, argsJson: "", status: "running" }];
           }
-          record.messages = conversation.getMessages();
-          record.compacted = conversation.wasCompacted;
-          record.iterationsBudget = { ...iterationsBudget };
-        });
+          if (event.type === "tool_call_input_delta") {
+            const call = live.toolCalls?.find(call => call.toolCallId === event.toolCallId);
+            if (call) {
+              call.argsJson = (call.argsJson ?? "") + event.argsJson;
+              try { call.input = JSON.parse(call.argsJson); } catch { /* Partial arguments are not JSON yet. */ }
+            }
+          }
+          if (event.type === "tool_confirmation_request") {
+            const call = live.toolCalls?.find(call => call.toolCallId === event.toolCallId);
+            if (call) { call.input = event.input; call.diffLines = event.diffLines; }
+          }
+          if (event.type === "tool_result") {
+            const call = live.toolCalls?.find(call => event.toolCallId
+              ? call.toolCallId === event.toolCallId : call.toolName === event.toolName && call.status === "running");
+            if (call) {
+              call.status = event.isError ? "error" : "done";
+              call.result = event.output;
+              call.diffLines = event.diffLines;
+            }
+          }
+          if (event.type === "streaming_text") live.streamingText = (live.streamingText ?? "") + event.text;
+          if (event.type === "thinking") live.thinkingText = (live.thinkingText ?? "") + event.text;
+          if (event.type === "assistant_message_complete" || event.type === "turn_complete") {
+            live.streamingText = "";
+            live.thinkingText = "";
+            // Assistant text completes before tools execute. Keep those calls visible
+            // across consent and execution; drop only results from previous rounds.
+            live.toolCalls = event.type === "turn_complete" ? []
+              : live.toolCalls?.filter(call => call.status === "running");
+          }
+          if (event.type === "usage") {
+            const usage = live.tokenUsage!;
+            live.tokenUsage = { inputTokens: usage.inputTokens + event.inputTokens,
+              outputTokens: usage.outputTokens + event.outputTokens,
+              cacheReadTokens: usage.cacheReadTokens + (event.cacheReadTokens ?? 0),
+              cacheWriteTokens: usage.cacheWriteTokens + (event.cacheWriteTokens ?? 0) };
+          }
+          pendingSnapshot = { ...pendingSnapshot, ...live };
+        }
+        const boundary = ["assistant_message_complete", "tool_result", "compacted", "turn_complete", "error"].includes(event.type);
+        if (boundary) {
+          pendingSnapshot.messages = structuredClone(conversation.getMessages());
+          pendingSnapshot.compacted = conversation.wasCompacted;
+          pendingSnapshot.iterationsBudget = { ...iterationsBudget };
+        }
+        // Consent and actual tool execution are ordering boundaries. Token/input deltas are
+        // coalesced to at most ten snapshots per second, even if the provider pauses midstream.
+        if (boundary || event.type === "tool_confirmation_request") await flushProgress(boundary);
+        else scheduleProgress();
         if (event.type === "error") failure = event.error.message;
         if (event.type === "turn_complete") completed = true;
         deps.onEvent?.(event);
@@ -217,18 +314,26 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
     } finally {
+      acceptingProgress = false;
+      clearTimeout(cancellationTimer);
+      await flushProgress();
+      if (progressError) failure ??= progressError instanceof Error ? progressError.message : String(progressError);
       broker?.clear();
       try { await cleanup?.(); }
       catch (error) { failure ??= error instanceof Error ? error.message : String(error); }
     }
-    return deps.store.update(id, initial.generation, record => {
+    const settled = await deps.store.update(id, initial.generation, record => {
       record.messages = conversation.getMessages().length ? conversation.getMessages() : record.messages;
       record.compacted = conversation.wasCompacted;
       record.status = controller.signal.aborted ? "interrupted" : failure || !completed ? "failed" : "completed";
       record.streamingText = "";
       record.thinkingText = "";
+      record.toolCalls = [];
+      record.subagentStates = [];
       if (failure) record.error = failure;
     });
+    await saveSessionRuntime(settled, deps.store);
+    return settled;
   })();
   let stopping: Promise<SessionRuntimeRecord | undefined> | undefined;
   return { done, shutdown() {
@@ -254,7 +359,7 @@ export async function runSessionRunner(id: string | undefined, expectedGeneratio
   let handle: SessionExecutionHandle;
   try {
     const local = await loadConfig();
-    if (local.backgroundJobsEnabled !== true) throw new Error("Detached sessions require backgroundJobsEnabled=true.");
+    if (local.backgroundJobsEnabled !== true || local.detachedSessionsEnabled !== true) throw new Error("Detached sessions require backgroundJobsEnabled=true.");
     const config = sessionExecutionConfig(record, local);
     applySandboxRequiredPolicy({ flagSet: record.sandboxRequired, configValue: config.sandboxRequired,
       detectBackend: detectSandboxBackend, setRequired: setSandboxRequired, warn: message => process.stderr.write(message) });

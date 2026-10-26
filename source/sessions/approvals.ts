@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { ConfirmResult } from "../agent/loop.js";
 import type { QueuedConfirmation } from "../agent/confirmation-queue.js";
 import type { PermissionMode } from "../config/config.js";
-import { createExclusive, readJsonIfExists } from "../background-jobs/storage/atomic-file.js";
+import { createExclusive } from "../background-jobs/storage/atomic-file.js";
 import { inputHash } from "../workflows/decisions.js";
 import { assertSessionRuntimeId, type SessionRuntimeStore } from "./store.js";
 
@@ -37,15 +37,39 @@ function validResult(result: unknown): result is ConfirmResult {
     (!!result && typeof result === "object" && (result as { choice?: unknown }).choice === "no" &&
       ((result as { feedback?: unknown }).feedback === undefined || typeof (result as { feedback?: unknown }).feedback === "string"));
 }
+// Consent records must remain in place on parse failure: moving a corrupt decision
+// aside would make a later reader treat it as unanswered and publish new consent.
+async function readApprovalJson<T>(file: string): Promise<T | undefined> {
+  let raw: string;
+  try { raw = await fs.readFile(file, "utf8"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  try { return JSON.parse(raw) as T; }
+  catch { throw new Error(`Corrupt session approval JSON: ${file}`); }
+}
+
+const discoveryWarnings = new Map<string, string>();
+/** Warn once per observed file version, with bounded memory across presentation polls. */
+export async function warnSessionDiscovery(file: string, error: unknown): Promise<void> {
+  const stat = await fs.stat(file).catch(() => undefined);
+  const message = error instanceof Error ? error.message : String(error);
+  const version = `${stat?.mtimeMs}:${stat?.ctimeMs}:${stat?.size}:${message}`;
+  if (discoveryWarnings.get(file) === version) return;
+  discoveryWarnings.delete(file);
+  discoveryWarnings.set(file, version);
+  if (discoveryWarnings.size > 512) discoveryWarnings.delete(discoveryWarnings.keys().next().value!);
+  console.warn(`Skipping session discovery entry ${file}: ${message}`);
+}
+
 async function readPending(store: SessionRuntimeStore, sessionId: string, approvalId: string): Promise<PendingSessionApproval | undefined> {
-  const record = await readJsonIfExists<PendingSessionApproval>(path(store, sessionId, approvalId));
+  const record = await readApprovalJson<PendingSessionApproval>(path(store, sessionId, approvalId));
   if (record !== undefined && (!record || record.version !== 1 || record.sessionId !== sessionId || record.approvalId !== approvalId ||
+      typeof record.createdAt !== "string" || !Number.isFinite(Date.parse(record.createdAt)) ||
       typeof record.generation !== "string" || typeof record.toolName !== "string" || !record.input || typeof record.input !== "object" ||
       record.inputHash !== inputHash(record.input))) throw new Error(`Corrupt session approval: ${approvalId}`);
   return record;
 }
 async function readDecision(store: SessionRuntimeStore, pending: PendingSessionApproval): Promise<SessionApprovalDecision | undefined> {
-  const record = await readJsonIfExists<SessionApprovalDecision>(path(store, pending.sessionId, pending.approvalId, true));
+  const record = await readApprovalJson<SessionApprovalDecision>(path(store, pending.sessionId, pending.approvalId, true));
   if (record !== undefined && (!record || record.version !== 1 || record.approvalId !== pending.approvalId || record.sessionId !== pending.sessionId ||
       record.generation !== pending.generation || record.inputHash !== pending.inputHash || !validResult(record.result))) throw new Error(`Corrupt session approval result: ${pending.approvalId}`);
   return record;
@@ -63,13 +87,26 @@ export async function listPendingApprovals(store: SessionRuntimeStore, sessionId
   const pending: PendingSessionApproval[] = [];
   for (const record of records) {
     if (!record || !["starting", "running", "needs-approval"].includes(record.status)) continue;
+    const directory = join(store.directory(record.id), "approvals");
     let names: string[];
-    try { names = await fs.readdir(join(store.directory(record.id), "approvals")); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+    try { names = await fs.readdir(directory); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") await warnSessionDiscovery(directory, error);
+      continue;
+    }
     for (const name of names) {
       if (!name.endsWith(".json") || name.endsWith(".decided.json") || name.startsWith(".")) continue;
-      const item = await readPending(store, record.id, name.slice(0, -5));
-      if (item && item.generation === record.generation && !await readDecision(store, item)) pending.push(item);
+      const approvalId = name.slice(0, -5);
+      let file = join(store.directory(record.id), "approvals", name);
+      try {
+        const item = await readPending(store, record.id, approvalId);
+        if (!item || item.generation !== record.generation) continue;
+        file = path(store, record.id, approvalId, true);
+        if (!await readDecision(store, item)) pending.push(item);
+      } catch (error) {
+        // Discovery is presentation-only; never answer or remove a corrupt request.
+        await warnSessionDiscovery(file, error);
+      }
     }
   }
   return pending.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.approvalId.localeCompare(b.approvalId));

@@ -153,7 +153,7 @@ interface UseAgentReturn {
   submitToAgent: (agentName: string, query: string, displayText: string, fullAccess?: boolean) => Promise<boolean>;
   refreshAgentCommands: () => Promise<void>;
   addDisplayMessage: (msg: DisplayMessage) => void;
-  cancel: () => void;
+  cancel: () => void | Promise<void>;
   detachSession: () => Promise<string>;
   canDetach: boolean;
   cancelSubagent: (id: string) => void;
@@ -287,6 +287,8 @@ export function useAgent(
     initialId: resumeSessionId, initialRuntime: resumeRuntime,
     onSnapshot: ({ record }) => {
       sessionPermissionModeRef.current = record.permissionMode;
+      setToolCalls(record.toolCalls ?? []);
+      setSubagentStates(record.subagentStates ?? []);
       setStreamingText(record.streamingText ?? "");
       setThinkingText(record.thinkingText ?? "");
       currentIterationsBudgetRef.current = record.iterationsBudget ?? null;
@@ -297,6 +299,7 @@ export function useAgent(
         setMessages(messagesToDisplay(record.messages));
         setTranscriptRevision(revision => revision + 1);
       }
+      if (record.tokenUsage) setTokenUsage(record.tokenUsage);
       if (record.error) setError(record.error);
     },
     onError: error => setError(error.message),
@@ -544,10 +547,15 @@ export function useAgent(
   }, []);
 
   /** Abort the active loop and clear any queued confirmations waiting on user input. */
-  const cancel = useCallback(() => {
-    // The worker still owns this conversation. A local interrupt cannot safely start a
-    // second loop or reject its durable approvals; switching sessions disconnects below.
-    if (attachmentRef.current.live) return;
+  const cancel = useCallback((stopWorker = true): Promise<void> | void => {
+    if (attachmentRef.current.live) {
+      const record = attachmentRef.current.target;
+      if (!stopWorker || !record) return;
+      abortRef.current?.abort();
+      return import("../sessions/client.js").then(({ requestSessionCancellation }) =>
+        requestSessionCancellation(record.id, record.generation),
+      ).catch(error => { setError(error instanceof Error ? error.message : String(error)); });
+    }
     mcpManagerRef.current.cancelAuthentication();
     invalidateContinuation();
     abortRef.current?.abort();
@@ -573,6 +581,13 @@ export function useAgent(
 
   /** Cancel a single subagent by its ID while leaving others running. */
   const cancelSubagent = useCallback((id: string) => {
+    const target = attachmentRef.current.target;
+    if (attachmentRef.current.live && target) {
+      void import("../sessions/client.js").then(({ requestSessionSubagentCancellation }) =>
+        requestSessionSubagentCancellation(target.id, target.generation, id),
+      ).catch(error => setError(error instanceof Error ? error.message : String(error)));
+      return;
+    }
     subagentToolRef.current?.cancelSubagent(id);
   }, []);
 
@@ -582,7 +597,7 @@ export function useAgent(
 
   /** Reset visible chat state and the underlying conversation history for a fresh session. */
   const clearMessages = useCallback(() => {
-    cancel();
+    cancel(false);
     attachment.detach();
     invalidateContinuation();
     sessionRevisionRef.current++;
@@ -732,7 +747,7 @@ export function useAgent(
   }, [config.model, config.provider, attachment.attached]);
 
   const loadSession = useCallback((session: SessionRecord) => {
-    cancel();
+    cancel(false);
     attachment.detach();
     invalidateContinuation();
     sessionRevisionRef.current++;
@@ -767,7 +782,7 @@ export function useAgent(
   }, [refreshDisplay, cancel, attachment.attach]);
 
   const activateSession = useCallback((id: string, name?: string) => {
-    cancel();
+    cancel(false);
     attachment.detach();
     invalidateContinuation();
     sessionRevisionRef.current++;
@@ -791,8 +806,8 @@ export function useAgent(
         setError("Session is still attaching; retry the rename once it is loaded.");
         return;
       }
-      void import("../sessions/store.js").then(({ SessionRuntimeStore }) =>
-        new SessionRuntimeStore().update(record.id, record.generation, current => { current.title = name; }),
+      void import("../config/history.js").then(({ renameSession }) =>
+        renameSession(record.id, name),
       ).then(() => {
         if (sessionIdRef.current !== record.id) return;
         sessionNameRef.current = name;
@@ -1097,7 +1112,7 @@ export function useAgent(
             );
           }
 
-          if (config.backgroundJobsEnabled === true && !skillInvocation) {
+          if (config.detachedSessionsEnabled === true && config.backgroundJobsEnabled === true && !skillInvocation) {
             const { startInteractiveSessionWorker } = await import("../sessions/interactive.js");
             const record = await startInteractiveSessionWorker({ ...config, systemPrompt: effectiveSystemPrompt }, turnConversation, {
               id: sessionIdRef.current ?? undefined,
@@ -1110,7 +1125,8 @@ export function useAgent(
                 sessionIdRef.current = created.id;
                 setSessionId(created.id);
                 attachment.attach(created.id, created.generation);
-                attachmentRef.current = { ...attachmentRef.current, attached: true, live: true };
+                attachmentRef.current = { ...attachmentRef.current, attached: true, live: true,
+                  target: { id: created.id, generation: created.generation }, snapshot: null };
               },
             });
             if (requestEpoch !== requestEpochRef.current || sessionRevision !== sessionRevisionRef.current || abortController.signal.aborted) return;
@@ -1415,6 +1431,13 @@ export function useAgent(
           // Tool-only turns (no text response) are normal during plan execution
           // and agentic loops — no safeguard message needed.
         } catch (err) {
+          const launchError = err as { admission?: string; record?: import("../sessions/store.js").SessionRuntimeRecord };
+          if (launchError.admission === "not-admitted" && launchError.record &&
+              sessionIdRef.current === launchError.record.id && requestEpoch === requestEpochRef.current) {
+            previousExecutionRef.current = launchError.record.generation;
+            attachment.detach();
+            attachmentRef.current = { ...attachmentRef.current, attached: false, live: false };
+          }
           if (abortController.signal.aborted) {
             const partialText = currentText;
             if (partialText && sessionRevision === sessionRevisionRef.current) {
@@ -1715,8 +1738,8 @@ export function useAgent(
     detachSession: async () => {
       const current = attachmentRef.current;
       if (!current.live || !current.snapshot?.record.jobId) {
-        throw new Error(configRef.current.backgroundJobsEnabled !== true
-          ? "Enable backgroundJobsEnabled before starting a task to use /detach."
+        throw new Error(configRef.current.backgroundJobsEnabled !== true || configRef.current.detachedSessionsEnabled !== true
+          ? "Enable detachedSessionsEnabled and backgroundJobsEnabled before starting a task to use /detach."
           : "The current task is not owned by a background worker yet. Wait for preparation to finish.");
       }
       const { readSessionSnapshot } = await import("../sessions/client.js");

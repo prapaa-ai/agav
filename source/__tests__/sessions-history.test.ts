@@ -54,6 +54,31 @@ describe("resumable history", () => {
     expect(await loadResumableSession(runtime.id)).toMatchObject({ runtime: { pendingCount: 0 } });
   });
 
+  it("isolates a corrupt runtime transcript from healthy siblings without offering stale history", async () => {
+    const bad = await create(saved.id);
+    const good = await create("healthy");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await writeFile(join(store.directory(bad.id), "runtime.json"), JSON.stringify({ ...bad, messages: [null] }));
+    expect((await listResumableSessions()).map(record => record.id)).toEqual([good.id]);
+    expect((await listResumableSessions()).map(record => record.id)).toEqual([good.id]);
+    expect(warning).toHaveBeenCalledTimes(1);
+    await expect(loadResumableSession(bad.id)).rejects.toThrow(/Corrupt resumable session.*shared/);
+    expect(await loadResumableSession(good.id)).toMatchObject({ id: good.id, messages: good.messages });
+  });
+
+  it("isolates a session snapshot identity failure from healthy siblings", async () => {
+    const bad = await create(saved.id);
+    const good = await create("healthy");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(SessionRuntimeStore.prototype, "lock").mockImplementation(async (id, fn) => {
+      if (id === bad.id) throw new Error("Session worker identity mismatch.");
+      return fn();
+    });
+    expect((await listResumableSessions()).map(record => record.id)).toEqual([good.id]);
+    expect(warning).toHaveBeenCalledTimes(1);
+    await expect(loadResumableSession(bad.id)).rejects.toThrow(/identity mismatch/);
+  });
+
   it("skips corrupt discovery entries but never substitutes stale history on a corrupt direct runtime read", async () => {
     const runtime = await create(saved.id);
     await writeFile(join(store.directory(runtime.id), "runtime.json"), JSON.stringify({ ...runtime, version: 2 }));

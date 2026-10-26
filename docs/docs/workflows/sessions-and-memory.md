@@ -21,7 +21,9 @@ order: 3
 | `/export [json] [sanitize\|--sanitize]` | Export the retained conversation as Markdown or JSON, optionally with best-effort redaction. |
 | `/exit` | Save the current session and exit. |
 
-Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`. To keep a task executing after closing the UI, enable worker execution before submitting it and use `/detach` or Ctrl+X; see [Detached sessions](/features/detached-sessions). The resume picker also includes live runtimes and their pending approval counts.
+Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`. To keep a task executing after closing the UI, set both `detachedSessionsEnabled: true` and `backgroundJobsEnabled: true` in global config before submitting it and use `/detach` or the configurable `detachSession` chord (default Ctrl+K Ctrl+D); see [Detached sessions](/features/detached-sessions). The resume picker also includes live runtimes and their pending approval counts. Workers checkpoint visible conversation history and token usage; resuming observes that progress without replaying the task. `backgroundJobsEnabled` alone leaves ordinary prompts local.
+
+Ordinary `/exit` or Ctrl+C requests durable, generation-bound cancellation of a selected worker; Esc requests cancellation without leaving Agav when no focused UI consumes it. Cancellation is asynchronous, not proof that all effects stopped. Switching sessions or unmounting the presentation does not cancel execution or answer approvals. There is no separate public session stop command; resume and interrupt instead.
 
 > **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\`.
 

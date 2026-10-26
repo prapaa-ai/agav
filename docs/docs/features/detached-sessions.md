@@ -12,24 +12,23 @@ This is different from simply saving a conversation: a saved transcript preserve
 
 ## Enable before starting a task
 
-Merge this setting into `~/.agav/config.json`, then start Agav:
+Merge these settings into `~/.agav/config.json`, then start Agav:
 
 ```json
-{ "backgroundJobsEnabled": true }
+{ "backgroundJobsEnabled": true, "detachedSessionsEnabled": true }
 ```
 
-The default is `false`. Enable it **before submitting the task**; `/detach` does not migrate an already-running in-process turn into a worker. See [Configuration](/reference/configuration) for config precedence and Windows paths.
+Both flags must be `true`; `detachedSessionsEnabled` defaults to `false` and is **global-only** (ignored in project config). `backgroundJobsEnabled` alone leaves ordinary prompts executing locally. Enable both **before submitting the task**; `/detach` does not migrate an already-running in-process turn into a worker. See [Configuration](/reference/configuration) for config precedence and Windows paths.
 
-With the flag enabled, ordinary interactive prompts start execution in a supervised worker after initial preparation, even while you are still watching the terminal. Detaching disconnects that presentation; it does not restart the task or run a second copy. Initial context and plan preparation happen before worker ownership is established, so wait for the detach hint to appear.
+With both flags enabled, ordinary interactive prompts start execution in a supervised worker after initial preparation, even while you are still watching the terminal. Detaching disconnects that presentation; it does not restart the task or run a second copy. Initial context and plan preparation happen before worker ownership is established, so wait for the detach hint to appear.
 
 ## Detach and return
 
 1. Start `agav` in your project and submit an ordinary task, for example: “Investigate the failing build and propose a fix.”
-2. Once the worker is ready, type `/detach`, or press **Ctrl+X**. Agav exits the UI and prints:
+2. Once the worker is ready, type `/detach`, or press **Ctrl+K Ctrl+D**. Agav exits the UI and prints:
 
    ```text
-   Session <session-id> continues in the background.
-   To resume: agav --resume <session-id>
+   Session <session-id> is running in the background. Resume with: agav --resume <session-id>
    ```
 
 3. Keep that ID. From your shell, return with the printed command, replacing `<session-id>` with the actual ID:
@@ -40,7 +39,7 @@ With the flag enabled, ordinary interactive prompts start execution in a supervi
 
 You can also run `agav --resume` to open the picker at startup, or `/resume` inside Agav. `/resume <id>` selects a session directly; ID prefixes are supported, but the full printed ID avoids choosing the wrong session.
 
-**Ctrl+X works at a worker's approval prompt too.** It leaves the request pending; it is not Yes, No, or Always. Use it when the confirmation owns input and you cannot type `/detach`. **Ctrl+Q is not detach**: it opens the request queue when requests are queued, or exits while idle with an empty prompt.
+**The detach chord works at a worker's approval prompt too.** It leaves the request pending; it is not Yes, No, or Always. Use it when the confirmation owns input and you cannot type `/detach`. The configurable `detachSession` action defaults to **Ctrl+K Ctrl+D** (press the strokes in sequence). **Ctrl+X cuts prompt text; it is not detach.** **Ctrl+Q is not detach**: it opens the request queue when requests are queued, or exits while idle with an empty prompt.
 
 Detaching continues the **current worker-owned turn**, not an unattended stream of future chat requests. Do not rely on unsent drafts or requests waiting in the terminal's queue being executed after the UI closes.
 
@@ -59,6 +58,8 @@ The resume picker includes live runtimes as well as saved conversations, even be
 | `cancelled` | A terminal cancellation state, if present. |
 
 Select with **↑/↓**, **j/k**, the mouse wheel, or a click; press **Enter** to resume. **M** or **R** renames both active and terminal sessions. Enter saves the new name; Esc cancels renaming. **D** deletes saved conversations and terminal runtimes only; deletion is unavailable for `starting`, `running`, and `needs-approval` sessions. Deleting history is not a way to stop a worker.
+
+The worker checkpoints conversation progress and token usage, making recorded messages and usage visible when you resume, including through saved history. The UI observes those checkpoints rather than writing over the worker’s transcript.
 
 Successive ordinary turns keep the same session ID. A new turn has a new internal execution generation; you do not need to track that value or change the resume command. While the current worker is active, wait for completion or answer its approval rather than trying to start a competing turn in the same conversation.
 
@@ -79,16 +80,26 @@ Detaching does **not** change the permission mode, widen tool access, or bypass 
 
 ## Supported paths and limitations
 
-Detaching is for **worker-owned ordinary interactive turns**. It is unavailable while disabled, before worker preparation finishes, or after the turn is terminal. Direct slash-command skill invocations and direct named/service-agent submissions use different execution paths and are not made detachable by this flag. This differs from a normal prompt whose model delegates to a skill, subagent, or service agent inside its worker.
+Detaching is for **worker-owned ordinary interactive turns**. It is unavailable while disabled, before worker preparation finishes, or after the turn is terminal. Direct slash-command skill invocations and direct named/service-agent submissions use different execution paths and are not made detachable by these flags. This differs from a normal prompt whose model delegates to a skill, subagent, or service agent inside its worker.
 
-Use the documented `--resume` and `/resume` entry points to observe and answer a session. There is no public session `attach`, `approve`, `list`, or `stop` command to substitute for this flow. Do not assume the usual foreground Esc cancellation semantics stop a worker-owned session; detaching and switching presentations do not cancel its execution.
+Use the documented `--resume` and `/resume` entry points to observe and answer a session. There is no separate public session `attach`, `approve`, `list`, or `stop` command to substitute for this flow. To interrupt a worker, resume it and use the ordinary interrupt controls described below.
+
+## Detach versus cancellation
+
+Only `/detach` or the configured `detachSession` chord intentionally exits the UI while leaving the worker running. Ordinary `/exit` and Ctrl+C exit **request cancellation** of the selected worker-owned turn; the cancel action (Esc by default) requests cancellation while keeping Agav open. Ctrl+C still copies an active Agav text selection instead of exiting. Esc can instead dismiss an overlay, deny a tool confirmation, or target a focused subagent; return to the overview to cancel the parent turn.
+
+The cancellation request is durable and bound to the current execution generation, so it cannot cancel a later turn in the same session. It is **not synchronous termination**: the worker must observe the request and settle its tools. Do not treat an exit, acknowledgement, or terminal status as proof that every process or external effect stopped. Already-applied edits are not rolled back; inspect the workspace and remote services before retrying.
+
+Switching sessions or unmounting the presentation only disconnects observation; neither requests cancellation nor answers pending approvals. These presentation changes are not substitutes for an explicit interrupt.
+
+If launch admission is uncertain (for example, a response was lost), Agav retains worker ownership fail-safe rather than starting a competing local loop. Resume to inspect the same execution; do not delete ownership records to force a retry. A definite launch failure is recorded as terminal and leaves the terminal UI usable for another prompt rather than permanently busy.
 
 ## Do and don't
 
 **Do:**
 
-- Enable the flag and set reloadable credentials before the task starts.
-- Wait for the Ctrl+X hint, save the exact resume command, and check the picker for pending approvals.
+- Enable both flags and set reloadable credentials before the task starts.
+- Wait for the detach hint, save the exact resume command, and check the picker for pending approvals.
 - Review each approval and inspect the workspace before asking for follow-up work after an interruption.
 - Keep the machine awake, connected, and running if you need uninterrupted local execution.
 
@@ -103,7 +114,7 @@ Use the documented `--resume` and `/resume` entry points to observe and answer a
 
 | Symptom | What to check |
 | --- | --- |
-| “Enable backgroundJobsEnabled before starting a task” | Merge the flag into config, restart Agav, and start a new ordinary task. It cannot retrofit the current in-process execution. |
+| Detach is disabled | Set both `detachedSessionsEnabled: true` and `backgroundJobsEnabled: true` in global config, restart Agav, and start a new ordinary task. It cannot retrofit the current in-process execution. |
 | “The current task is not owned by a background worker yet” | Wait for preparation and the detach hint. If it never appears, check whether you invoked a skill or service agent directly. |
 | “This session is no longer running” | The turn may have finished while you were detaching. Use `/resume` or `agav --resume` to inspect its terminal state. |
 | Session appears stuck | Look for `needs-approval` and its pending count. Resume and explicitly approve or deny the displayed request. |
