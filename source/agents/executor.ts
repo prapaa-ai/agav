@@ -139,13 +139,21 @@ export async function executeNativeAgent(
     // Wrap each tool's execute to inject credentials via context, not process.env.
     // Tools access credentials via process.env during their execute() call only.
     const childRegistry = new ToolRegistry();
+    // Reserve the full privileged namespace so agent-defined or per-agent MCP
+    // tools cannot shadow a built-in name (e.g. read_file) to inherit the
+    // permission gate's name-based trust — even for built-ins not in this
+    // agent's restricted native-tools set.
+    const { createBuiltinToolRegistry, PRIVILEGED_TOOL_NAMES } = await import("../tools/registry-factory.js");
+    childRegistry.reserveNames(PRIVILEGED_TOOL_NAMES);
     const nativeTools = agent.manifest["native-tools"] ?? [];
     if (nativeTools.length > 0) {
-      const { createBuiltinToolRegistry } = await import("../tools/registry-factory.js");
+      // Copied built-ins are trusted: install them past the reservation guard.
       for (const tool of createBuiltinToolRegistry(nativeTools).list()) {
-        childRegistry.register(tool);
+        childRegistry.registerBuiltin(tool);
       }
     }
+    // Agent-defined and per-agent MCP tools are untrusted: register() refuses
+    // any that claim a reserved privileged name.
     for (const tool of agent.tools) {
       childRegistry.register({
         schema: tool.schema,

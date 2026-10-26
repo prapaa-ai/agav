@@ -53,6 +53,9 @@ interface SkillExecDeps {
 
 function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolRegistry {
   const child = new ToolRegistryClass();
+  // Carry the parent's privileged-name reservations so a skill cannot shadow a
+  // built-in name to gain the permission gate's name-based trust.
+  child.reserveNames(parent.reservedNames());
   const allowedList = skill.frontmatter["allowed-tools"];
   const allowed = allowedList ? new Set(allowedList.map(baseToolName)) : undefined;
   const disallowed = new Set((skill.frontmatter["disallowed-tools"] ?? []).map(baseToolName));
@@ -61,14 +64,15 @@ function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolR
     if (tool.schema.name === "subagent" || tool.schema.name === "activate_skill") continue;
     if (disallowed.has(tool.schema.name)) continue;
     if (allowed && !allowed.has(tool.schema.name)) continue;
-    child.register(tool);
+    // Copied parent tools are trusted; install them past the reservation guard.
+    child.registerBuiltin(tool);
   }
   // Only explicitly listed optional built-ins can be added beyond the parent set.
   // Preserve parent overrides and let disallowed-tools take precedence.
   if (allowed) {
     const optional = [...allowed].filter((name) => OPTIONAL_TOOL_NAMES.has(name) && !disallowed.has(name));
     for (const tool of createBuiltinToolRegistry(optional).list()) {
-      if (!parent.list().some((entry) => entry.schema.name === tool.schema.name)) child.register(tool);
+      if (!parent.list().some((entry) => entry.schema.name === tool.schema.name)) child.registerBuiltin(tool);
     }
   }
   return child;

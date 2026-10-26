@@ -409,7 +409,8 @@ export function useAgent(
         getSignal: () => abortRef.current?.signal,
       });
       subagentToolRef.current = subagentTool;
-      toolRegistryRef.current.register(subagentTool);
+      // Trusted first-party tool occupying the reserved `subagent` name.
+      toolRegistryRef.current.registerBuiltin(subagentTool);
     }
   }, [provider]);
 
@@ -506,7 +507,8 @@ export function useAgent(
             nextId(), title, task, setSubagentStates,
           ),
         });
-        toolRegistryRef.current.register(skillTool);
+        // Trusted first-party tool occupying the reserved `activate_skill` name.
+        toolRegistryRef.current.registerBuiltin(skillTool);
       }
       const userSkillCmds = skills
         .filter((s) => s.frontmatter.invocation !== "agav")
