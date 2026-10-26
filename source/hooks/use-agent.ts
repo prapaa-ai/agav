@@ -43,6 +43,8 @@ import { makeAgentProgressTracker } from "../agent/subagent-progress.js";
 import { createSkillSlashCommand } from "../skills/commands.js";
 import { maybeRunBackgroundImprovement } from "../skills/improvement.js";
 import { drainSteers } from "../commands/steer.js";
+import { useSessionAttachment } from "./use-session-attachment.js";
+import type { PendingSessionApproval } from "../sessions/approvals.js";
 
 let messageId = 0;
 /** Generate incremental display ids so transient UI rows have stable React keys. */
@@ -107,6 +109,8 @@ export interface PendingConfirmation {
   subagentId?: string;
   subagentTask?: string;
   explicitApprovalOnly?: boolean;
+  warning?: string;
+  sessionApproval?: PendingSessionApproval;
 }
 
 export interface PendingContextWindowRequest {
@@ -150,6 +154,8 @@ interface UseAgentReturn {
   refreshAgentCommands: () => Promise<void>;
   addDisplayMessage: (msg: DisplayMessage) => void;
   cancel: () => void;
+  detachSession: () => Promise<string>;
+  canDetach: boolean;
   cancelSubagent: (id: string) => void;
   clearMessages: () => void;
   /** `expected` is the prompt the caller rendered; the answer is dropped if a different prompt is displayed by now. */
@@ -190,6 +196,7 @@ export function useAgent(
   resumeTokenUsage?: import("../config/history.js").SessionTokenUsage,
   resumeCompacted?: boolean,
   resumeSessionName?: string,
+  resumeRuntime?: SessionRecord["runtime"],
 ): UseAgentReturn {
   const { resetDisplay } = useApp();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -274,6 +281,37 @@ export function useAgent(
   const confirmationQueueRef = useRef(new ConfirmationQueue());
   const conversationRef = useRef(new ConversationState());
   conversationRef.current.setModel(config.model);
+  const previousExecutionRef = useRef<string | undefined>(resumeRuntime?.generation);
+  const attachedTranscriptRef = useRef("");
+  const attachment = useSessionAttachment({
+    initialId: resumeSessionId, initialRuntime: resumeRuntime,
+    onSnapshot: ({ record }) => {
+      sessionPermissionModeRef.current = record.permissionMode;
+      setStreamingText(record.streamingText ?? "");
+      setThinkingText(record.thinkingText ?? "");
+      currentIterationsBudgetRef.current = record.iterationsBudget ?? null;
+      const transcript = JSON.stringify(record.messages);
+      if (attachedTranscriptRef.current !== transcript) {
+        attachedTranscriptRef.current = transcript;
+        conversationRef.current.setMessages(record.messages, record.compacted);
+        setMessages(messagesToDisplay(record.messages));
+        setTranscriptRevision(revision => revision + 1);
+      }
+      if (record.error) setError(record.error);
+    },
+    onError: error => setError(error.message),
+  });
+  const attachmentRef = useRef(attachment);
+  attachmentRef.current = attachment;
+  const attachedConfirmationRef = useRef<PendingConfirmation | null>(null);
+  if (attachment.approval) {
+    if (attachedConfirmationRef.current?.sessionApproval !== attachment.approval) {
+      const approval = attachment.approval;
+      attachedConfirmationRef.current = { ...approval, sessionApproval: approval,
+        resolve: choice => attachment.answer(choice, approval) };
+    }
+  } else attachedConfirmationRef.current = null;
+
 
   const refreshDisplay = useCallback(() => {
     // Erase the screen through Ink rather than writing RIS ourselves.
@@ -507,6 +545,9 @@ export function useAgent(
 
   /** Abort the active loop and clear any queued confirmations waiting on user input. */
   const cancel = useCallback(() => {
+    // The worker still owns this conversation. A local interrupt cannot safely start a
+    // second loop or reject its durable approvals; switching sessions disconnects below.
+    if (attachmentRef.current.live) return;
     mcpManagerRef.current.cancelAuthentication();
     invalidateContinuation();
     abortRef.current?.abort();
@@ -542,12 +583,15 @@ export function useAgent(
   /** Reset visible chat state and the underlying conversation history for a fresh session. */
   const clearMessages = useCallback(() => {
     cancel();
+    attachment.detach();
+    invalidateContinuation();
     sessionRevisionRef.current++;
     setMessages([]);
     conversationRef.current = new ConversationState();
     conversationRef.current.setModel(configRef.current.model);
     setError(null);
     sessionIdRef.current = null;
+    previousExecutionRef.current = undefined;
     setSessionId(undefined);
     sessionNameRef.current = undefined;
     setSessionName(undefined);
@@ -575,6 +619,12 @@ export function useAgent(
 
   /** Resolve the oldest pending tool confirmation with the user's decision. */
   const confirmTool = useCallback((choice: ConfirmResult, expected?: PendingConfirmation) => {
+    if (attachedConfirmationRef.current) {
+      if (expected && expected !== attachedConfirmationRef.current) return;
+      attachedConfirmationRef.current.resolve(choice);
+      return;
+    }
+    if (expected?.sessionApproval) return;
     // Only the queue's effective generic Always may widen session permission,
     // and never past the org-managed permission floor.
     const resolvedChoice = confirmationQueueRef.current.resolve(choice, expected);
@@ -653,6 +703,8 @@ export function useAgent(
   }, []);
 
   const saveNow = useCallback((extraUsage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => {
+    // The worker is the sole transcript writer; a presentation exit must not overwrite it.
+    if (attachmentRef.current.attached) return;
     setTokenUsage((currentUsage) => {
       const merged = extraUsage
         ? {
@@ -677,10 +729,12 @@ export function useAgent(
       }).catch(() => { });
       return merged;
     });
-  }, [config.model, config.provider]);
+  }, [config.model, config.provider, attachment.attached]);
 
   const loadSession = useCallback((session: SessionRecord) => {
     cancel();
+    attachment.detach();
+    invalidateContinuation();
     sessionRevisionRef.current++;
     conversationRef.current = new ConversationState();
     conversationRef.current.setModel(configRef.current.model);
@@ -691,6 +745,7 @@ export function useAgent(
     reserveAttachmentIds(session.messages.flatMap((message) => [message.displayText, message.sourceText]).filter((text): text is string => typeof text === "string"));
     conversationRef.current.setMessages(session.messages, session.compacted);
     sessionIdRef.current = session.id;
+    previousExecutionRef.current = session.runtime?.generation;
     setSessionId(session.id);
     sessionNameRef.current = session.name;
     setSessionName(session.name);
@@ -706,12 +761,18 @@ export function useAgent(
       .then((plan) => { if (epoch === requestEpochRef.current) setActivePlan(isPlanActive(plan) ? plan : null); })
       .catch(() => { });
     refreshDisplay();
-  }, [refreshDisplay, cancel]);
+    attachedTranscriptRef.current = "";
+    sessionPermissionModeRef.current = undefined;
+    if (session.runtime) attachment.attach(session.id, session.runtime.generation);
+  }, [refreshDisplay, cancel, attachment.attach]);
 
   const activateSession = useCallback((id: string, name?: string) => {
     cancel();
+    attachment.detach();
+    invalidateContinuation();
     sessionRevisionRef.current++;
     sessionIdRef.current = id;
+    previousExecutionRef.current = undefined;
     setSessionId(id);
     sessionNameRef.current = name;
     setSessionName(name);
@@ -723,14 +784,43 @@ export function useAgent(
   }, [cancel]);
 
   const renameSession = useCallback((name: string) => {
+    const attached = attachmentRef.current;
+    if (attached.attached) {
+      const record = attached.snapshot?.record;
+      if (!record) {
+        setError("Session is still attaching; retry the rename once it is loaded.");
+        return;
+      }
+      void import("../sessions/store.js").then(({ SessionRuntimeStore }) =>
+        new SessionRuntimeStore().update(record.id, record.generation, current => { current.title = name; }),
+      ).then(() => {
+        if (sessionIdRef.current !== record.id) return;
+        sessionNameRef.current = name;
+        setSessionName(name);
+      }).catch(error => setError(error instanceof Error ? error.message : String(error)));
+      return;
+    }
     sessionNameRef.current = name;
     setSessionName(name);
     saveNow();
   }, [saveNow]);
 
+  /** Release a finished execution, not the conversation identity. */
+  const leaveFinishedAttachment = useCallback(() => {
+    if (!attachmentRef.current.attached) return;
+    attachment.detach();
+    attachmentRef.current = { ...attachmentRef.current, attached: false, live: false };
+    previousExecutionRef.current = attachmentRef.current.snapshot?.record.generation ?? previousExecutionRef.current;
+  }, [attachment.detach]);
+
   /** Start a new agent turn, wiring UI events to loop events and persisting results on completion. */
   const submit = useCallback(
     async (input: string, extraBlocks?: ContentBlock[], displayText?: string, followUpMessages?: DisplayMessage[], invocationReason?: InvocationReason, skillInvocation?: { name: string; arguments: string }, isAutoContinuation = false, isIntervention = false): Promise<boolean> => {
+      if (attachmentRef.current.live) {
+        setError("This session is executing in a background worker. Answer its pending approval or wait for completion.");
+        return false;
+      }
+      leaveFinishedAttachment();
       if (!provider) {
         setError("No LLM provider configured. Check your API key.");
         return false;
@@ -1005,6 +1095,33 @@ export function useAgent(
             turnConversation.appendToLastUserMessage(
               formatTurnContext(turnContextParts.join("\n\n")),
             );
+          }
+
+          if (config.backgroundJobsEnabled === true && !skillInvocation) {
+            const { startInteractiveSessionWorker } = await import("../sessions/interactive.js");
+            const record = await startInteractiveSessionWorker({ ...config, systemPrompt: effectiveSystemPrompt }, turnConversation, {
+              id: sessionIdRef.current ?? undefined,
+              previousGeneration: previousExecutionRef.current,
+              permissionMode: getEffectivePermissionMode(), iterationsBudget,
+              signal: abortController.signal,
+              onCreated: created => {
+                if (requestEpoch !== requestEpochRef.current || sessionRevision !== sessionRevisionRef.current) return;
+                previousExecutionRef.current = created.generation;
+                sessionIdRef.current = created.id;
+                setSessionId(created.id);
+                attachment.attach(created.id, created.generation);
+                attachmentRef.current = { ...attachmentRef.current, attached: true, live: true };
+              },
+            });
+            if (requestEpoch !== requestEpochRef.current || sessionRevision !== sessionRevisionRef.current || abortController.signal.aborted) return;
+            sessionIdRef.current = record.id;
+            setSessionId(record.id);
+            setPlanScope(record.id);
+            attachment.attach(record.id, record.generation);
+            setIsLoading(false);
+            submitPendingRef.current = false;
+            abortRef.current = null;
+            return;
           }
 
           const loop = runAgentLoop({
@@ -1342,12 +1459,17 @@ export function useAgent(
       })();
       return true;
     },
-    [provider, config, isLoading, activePlan, saveNow, invalidateContinuation],
+    [provider, config, isLoading, activePlan, saveNow, invalidateContinuation, leaveFinishedAttachment],
   );
 
   /** Submit a query directly to a named agent, bypassing the main LLM. */
   const submitToAgent = useCallback(
     async (agentName: string, query: string, displayText: string, fullAccess?: boolean): Promise<boolean> => {
+      if (attachmentRef.current.live) {
+        setError("This session is executing in a background worker. Answer its pending approval or wait for completion.");
+        return false;
+      }
+      leaveFinishedAttachment();
       if (!provider) {
         setError("No LLM provider configured. Check your API key.");
         return false;
@@ -1489,7 +1611,7 @@ export function useAgent(
 
       return true;
     },
-    [provider, config, saveNow, invalidateContinuation],
+    [provider, config, saveNow, invalidateContinuation, leaveFinishedAttachment],
   );
 
   /** Reload agents from disk and rebuild the targeting slash commands. */
@@ -1550,10 +1672,10 @@ export function useAgent(
     messages,
     streamingText,
     thinkingText,
-    isLoading,
+    isLoading: isLoading || attachment.live,
     toolCalls,
     error,
-    pendingConfirmation,
+    pendingConfirmation: attachedConfirmationRef.current ?? pendingConfirmation,
     pendingContextWindowRequest,
     resolveContextWindowRequest,
     requestConfirmation,
@@ -1589,6 +1711,24 @@ export function useAgent(
     refreshAgentCommands,
     addDisplayMessage,
     cancel,
+    canDetach: attachment.live && !!attachment.snapshot?.record.jobId,
+    detachSession: async () => {
+      const current = attachmentRef.current;
+      if (!current.live || !current.snapshot?.record.jobId) {
+        throw new Error(configRef.current.backgroundJobsEnabled !== true
+          ? "Enable backgroundJobsEnabled before starting a task to use /detach."
+          : "The current task is not owned by a background worker yet. Wait for preparation to finish.");
+      }
+      const { readSessionSnapshot } = await import("../sessions/client.js");
+      const snapshot = await readSessionSnapshot(current.snapshot.record.id);
+      if (attachmentRef.current.snapshot?.record.id !== current.snapshot.record.id ||
+          attachmentRef.current.snapshot?.record.generation !== current.snapshot.record.generation) {
+        throw new Error("Selected session changed during detach; retry for the current session.");
+      }
+      if (!["running", "starting", "needs-approval"].includes(snapshot.record.status)) throw new Error("This session is no longer running.");
+      // Do not clear attachment before exit: save/cancel must continue treating the worker as owner.
+      return snapshot.record.id;
+    },
     cancelSubagent,
     clearMessages,
     confirmTool,

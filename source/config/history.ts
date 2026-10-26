@@ -1,10 +1,12 @@
-import { readFile, writeFile, readdir } from "node:fs/promises";
+import { readFile, writeFile, readdir, unlink, rm } from "node:fs/promises";
 import { join } from "node:path";
 import crypto from "node:crypto";
 import type { Message } from "../providers/types.js";
+import type { SessionRuntimeStatus } from "../sessions/store.js";
 import { getAgavDir } from "./config.js";
 import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { ensureDir } from "../utils/fs.js";
+import { writeAtomic } from "../background-jobs/storage/atomic-file.js";
 
 export interface SessionTokenUsage {
   inputTokens: number;
@@ -24,6 +26,7 @@ export interface SessionRecord {
   messages: Message[];
   tokenUsage?: SessionTokenUsage;
   compacted?: boolean;
+  runtime?: { generation: string; status: SessionRuntimeStatus; pendingCount: number; cwd: string };
 }
 
 /** Resolve the directory where serialized chat sessions are stored on disk. */
@@ -85,6 +88,25 @@ export async function saveSession(
 
   const filePath = join(dir, `${id}.json`);
   await writeFile(filePath, JSON.stringify(record, null, 2));
+  // A local continuation of a finished worker is still the same conversation.
+  // Keep its authoritative resume snapshot current without touching an active owner.
+  if (existingId) {
+    const { SessionRuntimeStore } = await import("../sessions/store.js");
+    const store = new SessionRuntimeStore();
+    const runtime = await store.read(id);
+    if (runtime && ["completed", "failed", "interrupted", "cancelled"].includes(runtime.status)) {
+      await store.update(id, runtime.generation, current => {
+        if (!["completed", "failed", "interrupted", "cancelled"].includes(current.status)) return;
+        current.messages = messages;
+        current.compacted = compacted;
+        current.model = model;
+        if (["anthropic", "openai", "openrouter", "nvidia", "deepseek", "ollama", "gemini", "vertex-ai"].includes(provider)) {
+          current.provider = provider as typeof current.provider;
+        }
+        current.title = record.title;
+      });
+    }
+  }
   return id;
 }
 
@@ -118,30 +140,47 @@ export async function listSessions(): Promise<SessionRecord[]> {
 }
 
 export async function deleteSession(id: string): Promise<boolean> {
-  const dir = getHistoryDir();
   try {
-    const { unlink } = await import("node:fs/promises");
-    await unlink(join(dir, `${id}.json`));
-    return true;
+    const { SessionRuntimeStore } = await import("../sessions/store.js");
+    const store = new SessionRuntimeStore();
+    return await store.lock(id, async () => {
+      const runtime = await store.read(id);
+      if (runtime && !["completed", "failed", "interrupted", "cancelled"].includes(runtime.status)) return false;
+      let removedHistory = false;
+      try { await unlink(join(getHistoryDir(), `${id}.json`)); removedHistory = true; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      if (runtime) await rm(store.directory(id), { recursive: true, force: true });
+      return removedHistory || runtime !== undefined;
+    });
   } catch {
     return false;
   }
 }
 
-/** Persist a human-readable name for an existing session. */
+/** Rename metadata without overwriting a worker-owned transcript. */
 export async function renameSession(id: string, name: string): Promise<SessionRecord | null> {
-  const record = await loadSession(id);
   const trimmedName = name.trim();
-  if (!record || !trimmedName) return null;
-
-  const renamed: SessionRecord = {
-    ...record,
-    name: trimmedName,
-    title: trimmedName,
-    createdAt: new Date().toISOString(),
-  };
-  await writeFile(join(getHistoryDir(), `${id}.json`), JSON.stringify(renamed, null, 2));
-  return renamed;
+  if (!trimmedName) return null;
+  const { SessionRuntimeStore } = await import("../sessions/store.js");
+  const store = new SessionRuntimeStore();
+  return store.lock(id, async () => {
+    const runtime = await store.read(id);
+    const saved = await loadSession(id);
+    if (!runtime && !saved) return null;
+    if (runtime) {
+      await store.update(id, runtime.generation, current => { current.title = trimmedName; });
+      // The runtime remains authoritative. Only mirror metadata when history already exists.
+      if (saved) await writeAtomic(join(getHistoryDir(), `${id}.json`), JSON.stringify({ ...saved, title: trimmedName, name: trimmedName }, null, 2));
+      const { listPendingApprovals } = await import("../sessions/approvals.js");
+      const pendingCount = (await listPendingApprovals(store, id)).length;
+      return { ...saved, id, createdAt: runtime.createdAt, model: runtime.model, provider: runtime.provider,
+        title: trimmedName, name: trimmedName, messages: runtime.messages, compacted: runtime.compacted,
+        runtime: { generation: runtime.generation, status: runtime.status, pendingCount, cwd: runtime.cwd } };
+    }
+    const renamed: SessionRecord = { ...saved!, name: trimmedName, title: trimmedName, createdAt: new Date().toISOString() };
+    await writeAtomic(join(getHistoryDir(), `${id}.json`), JSON.stringify(renamed, null, 2));
+    return renamed;
+  });
 }
 
 export async function loadSession(id: string): Promise<SessionRecord | null> {

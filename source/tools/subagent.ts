@@ -24,13 +24,15 @@ export interface SubagentToolDeps {
     model: string;
     systemPrompt: string;
     permissionMode: PermissionMode;
+    /** Original background consent mode, independent of generic Always. */
+    backgroundPermissionMode?: PermissionMode;
     effort: EffortLevel;
     iterationsBudget: { remaining: number, total: number };
     /** Org-managed permission floor; child "Always" cannot widen past it. */
     orgPermissionFloor?: PermissionMode;
   };
   getProviderConfig?: () => AgavConfig;
-  confirmationQueue: ConfirmationQueue;
+  confirmationQueue: Pick<ConfirmationQueue, "enqueue" | "rejectBySubagentId">;
   onProgressUpdate: (subagents: SubagentProgress[]) => void;
   onSteerApplied?: (id: string, title: string, directives: string[]) => void;
   onTokenUsage: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
@@ -313,6 +315,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           signal: childController.signal,
           confirmTool,
           permissionMode: config.permissionMode,
+          backgroundPermissionMode: config.backgroundPermissionMode,
           permissionFloor: config.orgPermissionFloor,
           effort: config.effort,
           iterationsBudget: config.iterationsBudget,

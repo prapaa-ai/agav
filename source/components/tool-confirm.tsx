@@ -30,6 +30,7 @@ interface Props {
   keybindings: Keybindings;
   /** Informational one-line warning, e.g. a write target outside the project. */
   warning?: string;
+  detachAvailable?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +78,7 @@ function wordBoundsAt(text: string, offset: number): [number, number] {
 }
 
 /** Prompts the user to approve or reject a pending tool action. */
-export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, explicitApprovalOnly, keybindings, warning }: Props) {
+export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, explicitApprovalOnly, keybindings, warning, detachAvailable }: Props) {
   const keyResolver = React.useRef(new KeybindingResolver(keybindings, ["cancel", "submit", "clearInput", "deleteWordBackward"]));
   const { stdout } = useStdout();
   const [rows, setRows] = React.useState(stdout.rows || 24);
@@ -173,6 +174,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
   const background = toolName === "run_background_job" ? parseBackgroundConfirmInput(input) : undefined;
 
   useInput((rawChar, rawKey) => {
+    if (detachAvailable && rawKey.ctrl && rawChar === "q") return;
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
 
     if (feedbackModeRef.current) {

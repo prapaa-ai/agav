@@ -51,6 +51,8 @@ export interface CommandContext {
   activateSession: (id: string, name?: string) => void
   renameSession: (name: string) => void
   currentSessionId?: string
+  /** Hand the current session to a background worker and return its session ID. */
+  detachSession?: () => Promise<string>
   exit: () => void
   /**
    * The permission mode actually in force for the session, after a generic
