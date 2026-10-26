@@ -54,8 +54,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
       - name: Validate pinned Bun against advisory floor
         run: node scripts/check-bun-advisories.mjs
@@ -83,8 +81,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --prod --audit-level high
       - name: Check fresh runtime policy and live upstream advisories
@@ -107,8 +103,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9.15.9
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm build
@@ -205,8 +199,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       # react-devtools-core is a devDependency and a peer of ink, so
       # `pnpm install` already puts it where Bun's resolver finds it. The
       # separate `bun install` this used to run wrote an extra entry into

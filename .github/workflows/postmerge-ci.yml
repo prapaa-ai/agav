@@ -19,8 +19,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: npx vitest run --passWithNoTests
@@ -51,8 +49,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
       # Validate the pinned Bun AND its vendored C libraries (Brotli, c-ares,
       # zlib, libarchive) against their advisory floors before compiling: the
@@ -89,8 +85,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
       - run: |
           npx license-checker --production --onlyAllow 'MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;CC0-1.0;CC-BY-4.0;Unlicense;Python-2.0;BlueOak-1.0.0' \
@@ -107,8 +101,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
       - name: Generate SBOM
         run: |
@@ -139,8 +131,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
       - name: Scan resolved dependencies for known vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
