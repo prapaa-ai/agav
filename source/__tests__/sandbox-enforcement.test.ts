@@ -240,17 +240,33 @@ describe("real sandbox enforcement (per-OS)", () => {
   // -------------------------------------------------------------------------
   describe.runIf(platform() === "linux")("Linux Bubblewrap", () => {
     let active = false;
-    let root: string;
-    let env: ReturnType<typeof seedHome>;
-    const guard = (ctx: TestContext) => {
-      if (!active) ctx.skip("bwrap unavailable or cannot apply (no user namespaces / nested sandbox); runs on native CI");
+    let root: string | undefined;
+    let seeded: ReturnType<typeof seedHome> | undefined;
+    // Returns the seeded fixture, or skips (and never returns) when inactive.
+    const guard = (ctx: TestContext): ReturnType<typeof seedHome> => {
+      if (!active || !seeded) ctx.skip("bwrap unavailable or cannot apply (no user namespaces / nested sandbox); runs on native CI");
+      return seeded!;
     };
+    const base = join(process.cwd(), ".agav-sbx-bw-tmp");
     beforeAll(async () => {
-      root = mkdtempSync(join(tmpdir(), "agav-sbx-bw-"));
-      env = seedHome(root);
-      active = await backendApplies("bubblewrap", env.workdir);
+      // Only materialize the fixture when bwrap is actually present, so the common
+      // (no-bwrap) Tests job never creates a stray dir under the checkout that a
+      // clean-worktree check could trip.
+      if (!backendInstalled("bubblewrap")) return;
+      // IMPORTANT: NOT under /tmp. production runBubblewrap applies `--tmpfs /tmp`
+      // AFTER `--bind {cwd} {cwd}`, so a workdir under /tmp would be masked by the
+      // empty tmpfs and host writes would vanish. Real users' CWDs are project
+      // dirs, never /tmp; mirror that by rooting the fixture under the checkout.
+      mkdirSync(base, { recursive: true });
+      root = mkdtempSync(join(base, "run-"));
+      seeded = seedHome(root);
+      active = await backendApplies("bubblewrap", seeded.workdir);
     });
-    afterAll(() => { env?.restore(); try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } });
+    afterAll(() => {
+      seeded?.restore();
+      try { if (root) rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
+      try { rmSync(base, { recursive: true, force: true }); } catch { /* best effort */ }
+    });
 
     it("detects bubblewrap as the default backend when bwrap is present", (ctx) => {
       guard(ctx);
@@ -258,7 +274,7 @@ describe("real sandbox enforcement (per-OS)", () => {
     });
 
     it("allows writes inside the bound working directory", async (ctx) => {
-      guard(ctx);
+      const env = guard(ctx);
       const marker = join(env.workdir, "bw-cwd-write.txt");
       const r = await sandboxed("bubblewrap", `printf wrote > ${JSON.stringify(marker)} && echo WROTE`, env.workdir);
       expect(r.error).toBeNull();
@@ -268,7 +284,7 @@ describe("real sandbox enforcement (per-OS)", () => {
     });
 
     it("masks a seeded credential file with tmpfs (control: host CAN read it)", async (ctx) => {
-      guard(ctx);
+      const env = guard(ctx);
       expect(readFileSync(env.secret, "utf8")).toBe(SEED);
 
       const r = await sandboxed(
@@ -284,7 +300,7 @@ describe("real sandbox enforcement (per-OS)", () => {
     });
 
     it("does not persist writes to the masked credential directory on the host", async (ctx) => {
-      guard(ctx);
+      const env = guard(ctx);
       const target = join(env.home, ".ssh", "injected.key");
       const r = await sandboxed("bubblewrap", `printf x > ${JSON.stringify(target)} 2>/dev/null; echo DONE`, env.workdir);
       expect(r.stdout).toContain("DONE");
@@ -293,7 +309,7 @@ describe("real sandbox enforcement (per-OS)", () => {
     });
 
     it("mounts $HOME read-only outside the writable carve-outs (control: host CAN write there)", async (ctx) => {
-      guard(ctx);
+      const env = guard(ctx);
       // Positive control: the target is genuinely host-writable.
       const control = join(env.writableOutside, "host-control.txt");
       writeFileSync(control, "host");
@@ -306,7 +322,7 @@ describe("real sandbox enforcement (per-OS)", () => {
     });
 
     it("mounts the rest of the filesystem read-only (system write restriction)", async (ctx) => {
-      guard(ctx);
+      const env = guard(ctx);
       // Control: /etc exists and is a normal, non-tmpfs host path the ro-bind covers.
       const r = await sandboxed("bubblewrap", `printf x > /etc/agav-sbx-${process.pid} 2>/dev/null && echo WROTE_ETC || echo RO_ETC`, env.workdir);
       expect(r.stdout).not.toContain("WROTE_ETC");

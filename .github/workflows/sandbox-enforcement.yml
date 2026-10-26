@@ -73,10 +73,19 @@ jobs:
           # Fail the job if bwrap cannot apply the FULL production-style profile:
           # a silent skip would hide a real Linux enforcement regression behind a
           # green check. Mirror the shape runBubblewrap uses (ro-bind root, dev,
-          # proc, tmpfs, chdir).
-          probe="$(mktemp -d)"
-          bwrap --ro-bind / / --bind "$probe" "$probe" --tmpfs /tmp --dev /dev --proc /proc \
-            --tmpfs "$HOME/.ssh" --die-with-parent --chdir "$probe" /bin/sh -c 'echo bwrap_ok'
+          # proc, tmpfs over an EXISTING credential dir, chdir) against a seeded
+          # home — exactly what the test does. Two requirements learned the hard
+          # way: (1) the tmpfs target must already exist, because bwrap cannot
+          # mkdir it under the read-only root bind; (2) the probe must NOT live
+          # under /tmp, because `--tmpfs /tmp` is applied AFTER the workspace bind
+          # and would mask it (the test roots its fixture under the checkout for
+          # the same reason).
+          probe="$(mktemp -d -p "$GITHUB_WORKSPACE" agav-bwrap-probe.XXXXXX)"
+          mkdir -p "$probe/home/.ssh" "$probe/work"
+          bwrap --ro-bind / / --bind "$probe/work" "$probe/work" --tmpfs /tmp --dev /dev --proc /proc \
+            --tmpfs "$probe/home/.ssh" --die-with-parent --chdir "$probe/work" /bin/sh -c 'echo bwrap_ok > out.txt; cat out.txt'
+          test -f "$probe/work/out.txt" || { echo "::error::bwrap workspace bind did not persist to host"; exit 1; }
+          rm -rf "$probe"
           echo "bwrap applies on this runner."
       - run: pnpm install --frozen-lockfile
       - name: Run per-OS sandbox enforcement tests
