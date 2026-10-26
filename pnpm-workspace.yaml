@@ -5,8 +5,9 @@ packages: []
 # These remediate rather than suppress: pnpm audit reports no known
 # vulnerabilities. Remove an entry once every dependent requires a
 # patched version on its own.
-# Moved here from package.json "pnpm.overrides" because pnpm 10.18+ no
-# longer reads the "pnpm" field in package.json.
+# Moved here from package.json "pnpm.overrides" because pnpm 11 no
+# longer reads the "pnpm" field in package.json (pnpm 10 still reads it
+# but warns); pnpm-workspace.yaml is the supported home on pnpm 10+.
 overrides:
   zod: 4.6.7
   body-parser: 2.4.0
