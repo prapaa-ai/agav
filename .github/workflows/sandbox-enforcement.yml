@@ -73,3 +73,41 @@ jobs:
           source/__tests__/sandbox-fail-closed-enforcement.test.ts
           source/__tests__/background-job-consent-boundary.test.ts
           --reporter=verbose
+          --reporter=json --outputFile=enforcement-report.json
+      # A green test run is NOT enough: the per-OS assertions self-skip when the
+      # backend cannot apply, so a runner where the sandbox silently failed would
+      # still pass. Assert that THIS runner's owning backend suite actually
+      # EXECUTED its restriction tests (none skipped) — turning a silent skip on
+      # the owning runner into a hard failure.
+      - name: Assert this runner's backend enforcement actually executed
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS)   SUITE="macOS Seatbelt" ;;
+            Linux)   SUITE="Linux Bubblewrap" ;;
+            Windows) SUITE="Windows (no OS sandbox)" ;;
+            *) echo "::error::unexpected runner OS"; exit 1 ;;
+          esac
+          node -e '
+            const fs = require("fs");
+            const suite = process.argv[1];
+            const report = JSON.parse(fs.readFileSync("enforcement-report.json", "utf8"));
+            // Flatten assertion results; vitest JSON uses testResults[].assertionResults[].
+            const all = (report.testResults || []).flatMap(f => f.assertionResults || []);
+            const owning = all.filter(a => (a.ancestorTitles || []).some(t => t === suite) || (a.fullName || "").includes(suite));
+            const ran = owning.filter(a => a.status === "passed");
+            const skipped = owning.filter(a => a.status === "skipped" || a.status === "pending");
+            console.log(`${suite}: ${ran.length} executed, ${skipped.length} skipped`);
+            if (owning.length === 0) {
+              console.error(`::error::No tests found for owning suite "${suite}"`);
+              process.exit(1);
+            }
+            if (ran.length === 0) {
+              console.error(`::error::Owning suite "${suite}" executed 0 restriction tests (all skipped) — the sandbox did not apply on this runner.`);
+              process.exit(1);
+            }
+            if (skipped.length > 0) {
+              console.error(`::error::Owning suite "${suite}" had ${skipped.length} skipped test(s); every restriction test must run on its native runner.`);
+              process.exit(1);
+            }
+          ' "$SUITE"

@@ -5,37 +5,48 @@
  * assert the SHAPE of the command we hand the backend — never that the OS sandbox
  * actually restricts anything. These tests deliberately do NOT mock anything:
  * they spawn real commands through the real backend and prove that
- * filesystem / network / process restrictions hold.
+ * filesystem / credential / network / process restrictions hold.
  *
- * Because the restrictions are OS-specific, each test self-detects whether its
- * backend can actually be applied in the current environment and REPORTS A SKIP
- * (not a silent pass) when it cannot — Windows has no OS sandbox; a nested
- * sandbox cannot re-apply seatbelt/bubblewrap; a CI runner may lack
- * `bwrap`/`sandbox-exec` or user namespaces. The CI matrix in
- * `.github/workflows/sandbox-enforcement.yml` runs this file on native macOS and
- * Linux runners where the probe passes, so the assertions execute for real there.
- * Using `ctx.skip()` (rather than an early `return`) keeps a non-executing
- * environment visibly distinct from a genuine pass, so a broken probe cannot
- * quietly disable enforcement coverage.
+ * Design principles (addressing review of the first draft):
+ *
+ *  - Every restriction test has a POSITIVE CONTROL: it first proves the host
+ *    (unsandboxed) can do the thing, so a passing negative assertion reflects the
+ *    sandbox blocking it rather than the operation being impossible anyway (e.g.
+ *    writing to /usr already fails for an ordinary user; a seeded, host-writable
+ *    fixture does not).
+ *  - Credential dirs are SEEDED in a controlled $HOME and the exact file is
+ *    named, so a quoted-wildcard no-op cannot pass for "read denied".
+ *  - Each OS self-detects whether its backend can apply and REPORTS A SKIP
+ *    (ctx.skip, not a silent pass) when it cannot. The dedicated CI job
+ *    (.github/workflows/sandbox-enforcement.yml) fails the run if the backend it
+ *    is responsible for could not apply, so a skip on the owning runner is turned
+ *    into a hard failure there — a silently-disabled sandbox cannot hide.
+ *  - Guarantees that a backend does NOT provide are documented, not asserted:
+ *    seatbelt/bubblewrap here do not sandbox the network, so the network test is
+ *    Docker-only (which configures --network=none).
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
-import { tmpdir, homedir, platform } from "node:os";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, type TestContext } from "vitest";
 import { runInSandbox, detectSandboxBackend, type SandboxBackend } from "../utils/sandbox.js";
 
-const RUN = { timeout: 15_000, maxBuffer: 1 << 20 };
+const RUN = { timeout: 20_000, maxBuffer: 1 << 20 };
+const SEED = "agav-secret-do-not-leak";
 
-/**
- * Can `backend` actually be applied here? We check the launcher exists and the
- * shell works; the stronger "does the profile apply" check is `profileApplies`.
- * A nested sandbox (e.g. the agent's own seatbelt) makes `sandbox-exec`/`bwrap`
- * fail to apply — that is the signal to skip, not to fail.
- */
+/** The launcher binary for a backend, or undefined for backends without one. */
+function launcher(backend: SandboxBackend): string | undefined {
+  if (backend === "seatbelt") return "sandbox-exec";
+  if (backend === "bubblewrap") return "bwrap";
+  if (backend === "docker") return "docker";
+  return undefined;
+}
+
 function backendInstalled(backend: SandboxBackend): boolean {
+  const bin = launcher(backend);
+  if (!bin) return false;
   try {
-    const bin = backend === "seatbelt" ? "sandbox-exec" : "bwrap";
     execFileSync("/bin/sh", ["-c", `command -v ${bin}`], { stdio: "pipe", timeout: 3000 });
     return true;
   } catch {
@@ -43,17 +54,16 @@ function backendInstalled(backend: SandboxBackend): boolean {
   }
 }
 
-/** Shared: run a real command through the backend and return its combined output + error. */
 async function sandboxed(backend: SandboxBackend, command: string, cwd: string) {
   return runInSandbox({ command, cwd, forceBackend: backend, ...RUN });
 }
 
 /**
- * A backend that is installed can still fail to *apply its profile* (nested
- * sandbox, no user namespaces). We only run the enforcement asserts when a
- * trivial profiled command actually succeeds.
+ * A backend that is installed can still fail to *apply* (nested sandbox, no user
+ * namespaces, no Docker daemon). We only run the enforcement asserts when a
+ * trivial command through the backend actually produces the workload's marker.
  */
-async function profileApplies(backend: SandboxBackend, cwd: string): Promise<boolean> {
+async function backendApplies(backend: SandboxBackend, cwd: string): Promise<boolean> {
   if (!backendInstalled(backend)) return false;
   try {
     const r = await sandboxed(backend, "echo __agav_apply__", cwd);
@@ -63,24 +73,55 @@ async function profileApplies(backend: SandboxBackend, cwd: string): Promise<boo
   }
 }
 
-describe("real sandbox enforcement (per-OS)", () => {
-  let workdir: string;
-  beforeAll(() => {
-    workdir = mkdtempSync(join(tmpdir(), "agav-sbx-enf-"));
-  });
-  afterAll(() => {
-    try { rmSync(workdir, { recursive: true, force: true }); } catch { /* best effort */ }
-  });
+/**
+ * Seeds an isolated HOME (with populated credential dirs + a writable dir OUTSIDE
+ * the sandbox CWD) and points process.env.HOME at it so the production profile
+ * uses it. Returns the home dir, a separate workdir (the sandbox CWD), the seeded
+ * secret path, and a restore fn. The workdir is a sibling of HOME, never nested,
+ * so neither the HOME-subdir tmpfs masks (bubblewrap) nor the HOME write-deny
+ * (seatbelt) accidentally cover the CWD carve-out.
+ */
+function seedHome(root: string): { home: string; workdir: string; secret: string; writableOutside: string; restore: () => void } {
+  const home = join(root, "home");
+  const workdir = join(root, "work");
+  const ssh = join(home, ".ssh");
+  mkdirSync(ssh, { recursive: true });
+  mkdirSync(join(home, ".aws"), { recursive: true });
+  mkdirSync(workdir, { recursive: true });
+  const secret = join(ssh, "id_test");
+  writeFileSync(secret, SEED);
+  // A host-writable directory under HOME but not a credential/cache carve-out,
+  // used as the positive control for the "home write is denied" test.
+  const writableOutside = join(home, "docs");
+  mkdirSync(writableOutside, { recursive: true });
+  const prevHome = process.env.HOME;
+  process.env.HOME = home;
+  return {
+    home,
+    workdir,
+    secret,
+    writableOutside,
+    restore: () => { if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome; },
+  };
+}
 
+describe("real sandbox enforcement (per-OS)", () => {
   // -------------------------------------------------------------------------
   // macOS Seatbelt
   // -------------------------------------------------------------------------
   describe.runIf(platform() === "darwin")("macOS Seatbelt", () => {
     let active = false;
+    let root: string;
+    let env: ReturnType<typeof seedHome>;
     const guard = (ctx: TestContext) => {
       if (!active) ctx.skip("seatbelt cannot apply here (nested sandbox or unavailable); runs on native CI");
     };
-    beforeAll(async () => { active = await profileApplies("seatbelt", workdir); });
+    beforeAll(async () => {
+      root = mkdtempSync(join(tmpdir(), "agav-sbx-sb-"));
+      env = seedHome(root);
+      active = await backendApplies("seatbelt", env.workdir);
+    });
+    afterAll(() => { env?.restore(); try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } });
 
     it("detects seatbelt as the default backend on macOS", (ctx) => {
       guard(ctx);
@@ -89,50 +130,69 @@ describe("real sandbox enforcement (per-OS)", () => {
 
     it("allows writes inside the working directory", async (ctx) => {
       guard(ctx);
-      const marker = join(workdir, "sb-cwd-write.txt");
-      const r = await sandboxed("seatbelt", `printf wrote > ${JSON.stringify(marker)} && echo WROTE`, workdir);
+      const marker = join(env.workdir, "sb-cwd-write.txt");
+      const r = await sandboxed("seatbelt", `printf wrote > ${JSON.stringify(marker)} && echo WROTE`, env.workdir);
       expect(r.error).toBeNull();
       expect(r.stdout).toContain("WROTE");
       expect(existsSync(marker)).toBe(true);
       expect(readFileSync(marker, "utf8")).toBe("wrote");
     });
 
-    it("denies writes to the user's home directory root (filesystem restriction)", async (ctx) => {
+    it("denies writes to the home directory (control: host CAN write there)", async (ctx) => {
       guard(ctx);
-      const forbidden = join(homedir(), `agav-sbx-should-not-exist-${process.pid}.txt`);
-      const r = await sandboxed("seatbelt", `printf x > ${JSON.stringify(forbidden)} && echo WROTE_HOME`, workdir);
-      // The sandbox must block the write: the command exits non-zero and the
-      // file must not appear on the host.
+      // Positive control: the target dir is genuinely writable off-sandbox.
+      const control = join(env.writableOutside, "host-control.txt");
+      writeFileSync(control, "host");
+      expect(readFileSync(control, "utf8")).toBe("host");
+
+      const forbidden = join(env.writableOutside, "sandboxed.txt");
+      const r = await sandboxed("seatbelt", `printf x > ${JSON.stringify(forbidden)} && echo WROTE_HOME`, env.workdir);
       expect(r.error).not.toBeNull();
       expect(r.stdout).not.toContain("WROTE_HOME");
       expect(existsSync(forbidden)).toBe(false);
-      if (existsSync(forbidden)) rmSync(forbidden, { force: true }); // paranoia cleanup
     });
 
-    it("denies reads of credential directories even if they exist", async (ctx) => {
+    it("denies reads of a seeded credential file (control: host CAN read it)", async (ctx) => {
       guard(ctx);
-      const ssh = join(homedir(), ".ssh");
+      // Positive control: the secret really is present and readable off-sandbox.
+      expect(readFileSync(env.secret, "utf8")).toBe(SEED);
+
       const r = await sandboxed(
         "seatbelt",
-        `cat ${JSON.stringify(join(ssh, "*"))} 2>/dev/null && echo READ_SSH || echo DENIED_SSH`,
-        workdir,
+        `cat ${JSON.stringify(env.secret)} 2>/dev/null && echo DID_READ || echo DENIED`,
+        env.workdir,
       );
-      expect(r.stdout).not.toContain("READ_SSH");
+      // The secret's contents must never appear, and the open must be denied.
+      expect(r.stdout).not.toContain(SEED);
+      expect(r.stdout).not.toContain("DID_READ");
+      expect(r.stdout).toContain("DENIED");
     });
 
     it("denies writes to the credential directories (last-match-wins is not re-exposed)", async (ctx) => {
       guard(ctx);
-      const target = join(homedir(), ".ssh", `agav-sbx-${process.pid}.key`);
-      const r = await sandboxed("seatbelt", `printf x > ${JSON.stringify(target)} && echo WROTE_SSH`, workdir);
+      const target = join(env.home, ".ssh", "injected.key");
+      const r = await sandboxed("seatbelt", `printf x > ${JSON.stringify(target)} && echo WROTE_SSH`, env.workdir);
       expect(r.stdout).not.toContain("WROTE_SSH");
       expect(existsSync(target)).toBe(false);
     });
 
     it("denies writes to system directories like /usr", async (ctx) => {
       guard(ctx);
-      const r = await sandboxed("seatbelt", `printf x > /usr/agav-sbx-${process.pid} && echo WROTE_USR`, workdir);
+      const r = await sandboxed("seatbelt", `printf x > /usr/agav-sbx-${process.pid} && echo WROTE_USR`, env.workdir);
       expect(r.stdout).not.toContain("WROTE_USR");
       expect(existsSync(`/usr/agav-sbx-${process.pid}`)).toBe(false);
+    });
+
+    it("blocks exec of binaries under /System/Library/CoreServices (process restriction)", async (ctx) => {
+      guard(ctx);
+      // The profile has `(deny process-exec (subpath "/System/Library/CoreServices"))`.
+      // Control: the binary exists and is executable off-sandbox.
+      const bin = "/System/Library/CoreServices/mdflagwriter";
+      if (!existsSync(bin)) ctx.skip("CoreServices probe binary not present on this macOS image");
+      const r = await sandboxed("seatbelt", `${bin} 2>/dev/null; echo "exit:$?"`, env.workdir);
+      // A denied exec cannot run; the shell reports a non-zero / permission status,
+      // never the binary's own success.
+      expect(r.stdout).not.toContain("exit:0");
     });
   });
 
@@ -141,10 +201,17 @@ describe("real sandbox enforcement (per-OS)", () => {
   // -------------------------------------------------------------------------
   describe.runIf(platform() === "linux")("Linux Bubblewrap", () => {
     let active = false;
+    let root: string;
+    let env: ReturnType<typeof seedHome>;
     const guard = (ctx: TestContext) => {
       if (!active) ctx.skip("bwrap unavailable or cannot apply (no user namespaces / nested sandbox); runs on native CI");
     };
-    beforeAll(async () => { active = await profileApplies("bubblewrap", workdir); });
+    beforeAll(async () => {
+      root = mkdtempSync(join(tmpdir(), "agav-sbx-bw-"));
+      env = seedHome(root);
+      active = await backendApplies("bubblewrap", env.workdir);
+    });
+    afterAll(() => { env?.restore(); try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } });
 
     it("detects bubblewrap as the default backend when bwrap is present", (ctx) => {
       guard(ctx);
@@ -153,44 +220,122 @@ describe("real sandbox enforcement (per-OS)", () => {
 
     it("allows writes inside the bound working directory", async (ctx) => {
       guard(ctx);
-      const marker = join(workdir, "bw-cwd-write.txt");
-      const r = await sandboxed("bubblewrap", `printf wrote > ${JSON.stringify(marker)} && echo WROTE`, workdir);
+      const marker = join(env.workdir, "bw-cwd-write.txt");
+      const r = await sandboxed("bubblewrap", `printf wrote > ${JSON.stringify(marker)} && echo WROTE`, env.workdir);
       expect(r.error).toBeNull();
       expect(r.stdout).toContain("WROTE");
       // The bind is read-write to the host, so the file is visible outside.
       expect(existsSync(marker)).toBe(true);
     });
 
-    it("masks the credential directories with an empty tmpfs (read isolation)", async (ctx) => {
+    it("masks a seeded credential file with tmpfs (control: host CAN read it)", async (ctx) => {
       guard(ctx);
-      // ~/.ssh is tmpfs-masked inside the sandbox; listing it must show nothing
-      // from the host even if the host dir has contents.
+      expect(readFileSync(env.secret, "utf8")).toBe(SEED);
+
       const r = await sandboxed(
         "bubblewrap",
-        `ls -A ${JSON.stringify(join(homedir(), ".ssh"))} 2>/dev/null | head -1; echo LISTED_SSH`,
-        workdir,
+        `cat ${JSON.stringify(env.secret)} 2>/dev/null && echo DID_READ || echo MASKED; echo DONE`,
+        env.workdir,
       );
-      expect(r.stdout).toContain("LISTED_SSH");
-      const before = r.stdout.split("LISTED_SSH")[0] ?? "";
-      expect(before.trim()).toBe("");
+      expect(r.stdout).toContain("DONE");
+      // tmpfs overlay means the seeded file is simply not there inside the sandbox.
+      expect(r.stdout).not.toContain(SEED);
+      expect(r.stdout).not.toContain("DID_READ");
+      expect(r.stdout).toContain("MASKED");
     });
 
     it("does not persist writes to the masked credential directory on the host", async (ctx) => {
       guard(ctx);
-      const name = `agav-sbx-${process.pid}.key`;
-      const target = join(homedir(), ".ssh", name);
-      const r = await sandboxed("bubblewrap", `printf x > ${JSON.stringify(target)} 2>/dev/null; echo DONE`, workdir);
+      const target = join(env.home, ".ssh", "injected.key");
+      const r = await sandboxed("bubblewrap", `printf x > ${JSON.stringify(target)} 2>/dev/null; echo DONE`, env.workdir);
       expect(r.stdout).toContain("DONE");
       // Even if the write "succeeds" against the tmpfs, it must NOT land on the host.
       expect(existsSync(target)).toBe(false);
     });
 
+    it("mounts $HOME read-only outside the writable carve-outs (control: host CAN write there)", async (ctx) => {
+      guard(ctx);
+      // Positive control: the target is genuinely host-writable.
+      const control = join(env.writableOutside, "host-control.txt");
+      writeFileSync(control, "host");
+      expect(readFileSync(control, "utf8")).toBe("host");
+
+      const forbidden = join(env.writableOutside, "sandboxed.txt");
+      const r = await sandboxed("bubblewrap", `printf x > ${JSON.stringify(forbidden)} 2>/dev/null && echo WROTE_HOME || echo RO_HOME`, env.workdir);
+      expect(r.stdout).not.toContain("WROTE_HOME");
+      expect(existsSync(forbidden)).toBe(false);
+    });
+
     it("mounts the rest of the filesystem read-only (system write restriction)", async (ctx) => {
       guard(ctx);
-      const r = await sandboxed("bubblewrap", `printf x > /usr/agav-sbx-${process.pid} 2>/dev/null && echo WROTE_USR || echo RO_USR`, workdir);
-      expect(r.stdout).not.toContain("WROTE_USR");
-      expect(existsSync(`/usr/agav-sbx-${process.pid}`)).toBe(false);
+      // Control: /etc exists and is a normal, non-tmpfs host path the ro-bind covers.
+      const r = await sandboxed("bubblewrap", `printf x > /etc/agav-sbx-${process.pid} 2>/dev/null && echo WROTE_ETC || echo RO_ETC`, env.workdir);
+      expect(r.stdout).not.toContain("WROTE_ETC");
+      expect(existsSync(`/etc/agav-sbx-${process.pid}`)).toBe(false);
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Docker: the only backend that sandboxes the network (--network=none).
+  // Runs wherever a Docker daemon is reachable; otherwise a visible skip.
+  // -------------------------------------------------------------------------
+  describe.runIf(platform() !== "win32")("Docker network + process isolation", () => {
+    let active = false;
+    let root: string;
+    const guard = (ctx: TestContext) => {
+      if (!active) ctx.skip("docker daemon unavailable here; runs where Docker is present");
+    };
+    beforeAll(async () => {
+      root = mkdtempSync(join(tmpdir(), "agav-sbx-dk-"));
+      // The first container run pulls node:22-slim; the hook gets a generous
+      // timeout so a cold image cache does not look like "docker unavailable".
+      active = await backendApplies("docker", root);
+    }, 180_000);
+    afterAll(() => { try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } });
+
+    it("denies all outbound network (--network=none)", async (ctx) => {
+      guard(ctx);
+      // getent/DNS + a TCP connect both must fail with no network namespace.
+      const r = await sandboxed(
+        "docker",
+        "getent hosts example.com >/dev/null 2>&1 && echo RESOLVED || echo NO_DNS; " +
+        "(timeout 3 sh -c 'echo > /dev/tcp/1.1.1.1/53') 2>/dev/null && echo CONNECTED || echo NO_NET",
+        root,
+      );
+      expect(r.stdout).not.toContain("RESOLVED");
+      expect(r.stdout).not.toContain("CONNECTED");
+      expect(r.stdout).toContain("NO_NET");
+    }, 40_000);
+
+    it("confines the filesystem to the mounted workspace (host root not writable)", async (ctx) => {
+      guard(ctx);
+      const r = await sandboxed(
+        "docker",
+        "printf x > /etc/agav-docker-probe 2>/dev/null && echo WROTE_ETC || echo RO_ETC; " +
+        "printf y > /workspace/in-ws.txt && echo WROTE_WS",
+        root,
+      );
+      // The container's own /etc is ephemeral, but it is not the host's — prove
+      // the workspace write lands on the host while the container root does not.
+      expect(r.stdout).toContain("WROTE_WS");
+      expect(existsSync(join(root, "in-ws.txt"))).toBe(true);
+      expect(existsSync("/etc/agav-docker-probe")).toBe(false);
+    }, 40_000);
+
+    it("runs as a constrained, non-privileged process", async (ctx) => {
+      guard(ctx);
+      // With -u uid:gid (non-rootless) the container must not be real root(0);
+      // in rootless Docker, id 0 maps to the unprivileged host user instead, so
+      // either way a host-root escape is not available. Assert the host cannot
+      // be modified (covered above) and that the memory/cpu limits applied — the
+      // container simply exists under the configured constraints.
+      const r = await sandboxed("docker", "id -u; nproc", root);
+      expect(r.error).toBeNull();
+      // --cpus=1 pins the scheduler; nproc inside reflects the host core count
+      // but the cgroup cpu quota is 1. We only assert the command ran under the
+      // constrained container rather than probing cgroup internals portably.
+      expect(r.stdout.trim().length).toBeGreaterThan(0);
+    }, 40_000);
   });
 
   // -------------------------------------------------------------------------

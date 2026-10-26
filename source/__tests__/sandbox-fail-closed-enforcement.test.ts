@@ -14,7 +14,7 @@
  * than a mock that intra-module calls would bypass anyway.
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { tmpdir } from "node:os";
+import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
 import { existsSync, rmSync } from "node:fs";
 
@@ -94,6 +94,61 @@ describe("sandbox bypass cannot be unlocked by the model", () => {
           forceBackend: "none",
         }),
       ).rejects.toThrow(/Sandbox bypass denied/i);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      if (existsSync(marker)) rmSync(marker, { force: true });
+    }
+  });
+});
+
+describe("a backend that fails to launch/apply does NOT fall back to unsandboxed", () => {
+  // The distinct failure path the "effective none" tests above do not cover: a
+  // real backend is selected, but its launcher is absent / cannot apply. The
+  // runtime must surface the error and run nothing — never silently retry
+  // unsandboxed. We force a backend whose launcher is guaranteed missing on at
+  // least one supported OS; where it IS installed (e.g. seatbelt on macOS,
+  // bwrap on Linux CI) the "cannot apply" variant is exercised instead, and the
+  // invariant (error returned, side effect absent, backend not downgraded to
+  // "none") holds identically.
+  function missingBackend(): "bubblewrap" | "seatbelt" {
+    // bwrap is not present on macOS/Windows; sandbox-exec is not present on Linux.
+    return platform() === "linux" ? "seatbelt" : "bubblewrap";
+  }
+
+  it("surfaces the launch error and writes nothing (no unsandboxed fallback)", async () => {
+    const backend = missingBackend();
+    const marker = join(tmpdir(), `agav-failapply-${process.pid}.txt`);
+    if (existsSync(marker)) rmSync(marker, { force: true });
+    try {
+      const result = await runInSandbox({
+        command: `printf x > ${JSON.stringify(marker)}`,
+        cwd: tmpdir(),
+        timeout: 5000,
+        maxBuffer: 1 << 16,
+        forceBackend: backend,
+      });
+      expect(result.error).not.toBeNull();
+      // Must not be downgraded to the unsandboxed backend.
+      expect(result.backend).toBe(backend);
+      // The side-effecting command must not have run via any fallback path.
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      if (existsSync(marker)) rmSync(marker, { force: true });
+    }
+  });
+
+  it("run_command with sandboxRequired reports the failure instead of running unsandboxed", async () => {
+    setSandboxRequired(true);
+    const backend = missingBackend();
+    const marker = join(tmpdir(), `agav-failapply-tool-${process.pid}.txt`);
+    if (existsSync(marker)) rmSync(marker, { force: true });
+    try {
+      const result = await shellTool.execute({ command: `printf x > ${JSON.stringify(marker)}`, sandbox: backend });
+      // requireSandbox permits the selected (installed-by-name) backend, so
+      // execution proceeds and FAILS at apply/launch — it is reported as an
+      // error, and nothing is written. The forbidden outcome is a silent
+      // success via an unsandboxed fallback.
+      expect(result.isError).toBe(true);
       expect(existsSync(marker)).toBe(false);
     } finally {
       if (existsSync(marker)) rmSync(marker, { force: true });

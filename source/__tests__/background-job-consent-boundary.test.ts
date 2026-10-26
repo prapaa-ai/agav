@@ -4,28 +4,44 @@
  * Unlike `run_command`, a background job runs OUTSIDE the OS sandbox and OUTSIDE
  * the turn timeout, as the full OS user. That is a strictly higher trust tier, so
  * it must not inherit `run_command`'s consent: it needs its own explicit gate.
- * These tests prove the invariants of that boundary at the tool layer, using a
- * fake coordinator/schedule engine so no real supervisor process is spawned:
+ *
+ * This suite proves the boundary against the REAL authorization service rather
+ * than an unconditional fake. The fake coordinator runs the production
+ * `createAuthorizationService(...).authorize("start", spec, session, {headless})`
+ * decision (file-backed grant store in a temp dir) exactly as the real
+ * coordinator does, so:
  *
  *   1. The tool is inert unless the user explicitly enabled it in config.
- *   2. Every launch it submits is isolation:none (unsandboxed) — the tool never
- *      launders a request through the run_command sandbox.
- *   3. In headless mode (no interactive confirmation possible) every WRITE action
- *      fails closed unless an explicit grant for that exact action is present;
- *      read-only actions stay available.
- *   4. The headless flag and session policy are host-supplied, never model input.
+ *   2. Every launch it submits is isolation:none (unsandboxed) — a distinct,
+ *      higher trust tier than a sandboxed run_command.
+ *   3. Headless start/stop/schedule WRITE actions fail closed through the real
+ *      authorization gate unless an explicit exact-spec grant exists.
+ *   4. Background consent is exact-spec: an approval for one spec does not carry
+ *      to a different command, and generic tool-approval cannot widen it.
+ *   5. The headless flag and session policy are host-supplied, never model input.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-  CoordinatorClient,
-  JobSummary,
-  ScheduleRecord,
-  SessionPolicySnapshot,
-  StartJobRequest,
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAuthorizationService } from "../background-jobs/authorization/service.js";
+import type { ConsentRelevantSpec } from "../background-jobs/authorization/spec-hash.js";
+import {
+  BackgroundJobError,
+  DEFAULT_RESOURCE_LIMITS,
+  type CoordinatorClient,
+  type JobSummary,
+  type ScheduleRecord,
+  type SessionPolicySnapshot,
+  type StartJobRequest,
 } from "../background-jobs/types.js";
 
 let mockConfig: Record<string, unknown> = { backgroundJobsEnabled: true, permissionMode: "auto-accept" };
 vi.mock("../config/config.js", () => ({ loadConfig: async () => mockConfig }));
+
+// Real, file-backed authorization service shared by the fake coordinator.
+const authRoot = mkdtempSync(join(tmpdir(), "agav-consent-auth-"));
+const authorization = createAuthorizationService(authRoot);
 
 const starts: StartJobRequest[] = [];
 const createdSchedules: Array<{ cron: string; timezone: string; template: unknown }> = [];
@@ -36,8 +52,31 @@ function summary(jobId: string): JobSummary {
   return { jobId, requestId: "req-" + jobId, state: "running", stopState: "none" };
 }
 
+/** Mirror the coordinator's consent spec for a tool start request (isolation:none). */
+function consentSpecFor(request: StartJobRequest): ConsentRelevantSpec {
+  return {
+    invocation: request.invocation,
+    cwd: request.cwd,
+    env: {},
+    credentialRefs: [],
+    isolation: request.isolation,
+    ownershipScope: "unverified",
+    limits: DEFAULT_RESOURCE_LIMITS,
+    headless: request.headless ?? false,
+  };
+}
+
 const fakeCoordinator: Partial<CoordinatorClient> = {
-  async start(request: StartJobRequest) {
+  // Delegate the start decision to the REAL authorization service, exactly as the
+  // production coordinator does, so the headless gate / exact-spec grants are
+  // genuinely exercised rather than rubber-stamped.
+  async start(request: StartJobRequest, session: SessionPolicySnapshot): Promise<JobSummary> {
+    const decision = await authorization.authorize("start", consentSpecFor(request), session, {
+      headless: request.headless === true,
+    });
+    if (!decision.allowed) {
+      throw new BackgroundJobError("authorization-denied", decision.reason ?? "not approved");
+    }
     starts.push(request);
     return summary("job-1");
   },
@@ -70,6 +109,7 @@ beforeEach(() => {
   existingSchedules = [];
 });
 afterEach(() => vi.clearAllMocks());
+afterAll(() => { try { rmSync(authRoot, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 describe("background jobs require explicit opt-in (consent gate #1)", () => {
   it("refuses every action when backgroundJobsEnabled is not true", async () => {
@@ -108,12 +148,26 @@ describe("background launches are unsandboxed — a distinct trust tier (boundar
   });
 });
 
-describe("headless mode fails closed on write actions (consent gate #3)", () => {
+describe("headless mode fails closed through the REAL authorization gate (consent gate #3)", () => {
   // No interactive confirmation is possible in headless mode, so each WRITE
   // action must be refused unless an explicit grant for that exact action exists.
   const headlessCtx = (approved: string[] = []) => ({
     headless: true,
     backgroundPolicy: { permissionMode: "auto-accept", headlessApprovedActions: approved } as SessionPolicySnapshot,
+  });
+
+  it("denies 'start' even under auto-accept — the action that launches unsandboxed", async () => {
+    // This is the key boundary: auto-accept must NOT let a headless start through.
+    const result = await backgroundJobTool.execute({ action: "start", command: "echo hi" }, headlessCtx() as never);
+    expect(result.isError).toBe(true);
+    expect(result.output).toMatch(/requires confirmation|not approved|applicable grant/i);
+    expect(starts).toHaveLength(0);
+  });
+
+  it("allows a headless 'start' ONLY when its exact grant is present", async () => {
+    const result = await backgroundJobTool.execute({ action: "start", command: "echo hi" }, headlessCtx(["start"]) as never);
+    expect(result.isError).toBe(false);
+    expect(starts).toHaveLength(1);
   });
 
   it("denies 'stop' without an explicit grant", async () => {
@@ -158,7 +212,55 @@ describe("headless mode fails closed on write actions (consent gate #3)", () => 
   });
 });
 
-describe("the consent boundary is host-governed, not model-governed", () => {
+describe("background consent is exact-spec, not generic tool approval (boundary #4)", () => {
+  it("an interactive-mode grant for one command does not authorize a different command", async () => {
+    // Approve exactly one command via the real interactive confirm path (ask mode).
+    const confirm = vi.fn(async () => true);
+    const askCtx = {
+      backgroundPolicy: {
+        permissionMode: "ask",
+        headlessApprovedActions: [],
+        confirmBackgroundAction: confirm,
+      } as SessionPolicySnapshot,
+    };
+    const approved = await backgroundJobTool.execute({ action: "start", command: "echo approved" }, askCtx as never);
+    expect(approved.isError).toBe(false);
+    expect(starts).toHaveLength(1);
+
+    // A DIFFERENT command must ask again; if the user declines, it is refused and
+    // never launched — a prior approval cannot be reused for a new spec.
+    const decline = vi.fn(async () => false);
+    const result = await backgroundJobTool.execute(
+      { action: "start", command: "echo different" },
+      { backgroundPolicy: { permissionMode: "ask", headlessApprovedActions: [], confirmBackgroundAction: decline } as SessionPolicySnapshot } as never,
+    );
+    expect(result.isError).toBe(true);
+    expect(decline).toHaveBeenCalled();
+    expect(starts).toHaveLength(1); // still just the first, approved command
+  });
+
+  it("reuses a grant for the SAME spec without asking again", async () => {
+    const confirm = vi.fn(async () => true);
+    const askCtx = {
+      backgroundPolicy: { permissionMode: "ask", headlessApprovedActions: [], confirmBackgroundAction: confirm } as SessionPolicySnapshot,
+    };
+    const first = await backgroundJobTool.execute({ action: "start", command: "echo reuse" }, askCtx as never);
+    expect(first.isError).toBe(false);
+    expect(confirm).toHaveBeenCalledTimes(1);
+
+    // Identical spec: the existing grant covers it, so confirm is NOT called again.
+    const confirmAgain = vi.fn(async () => true);
+    const second = await backgroundJobTool.execute(
+      { action: "start", command: "echo reuse" },
+      { backgroundPolicy: { permissionMode: "ask", headlessApprovedActions: [], confirmBackgroundAction: confirmAgain } as SessionPolicySnapshot } as never,
+    );
+    expect(second.isError).toBe(false);
+    expect(confirmAgain).not.toHaveBeenCalled();
+    expect(starts).toHaveLength(2);
+  });
+});
+
+describe("the consent boundary is host-governed, not model-governed (boundary #5)", () => {
   it("ignores a model attempt to self-declare headless=false in the input", async () => {
     // `headless` is only read from the host-supplied context; a field in the
     // model's tool input must have no effect on the gate.
@@ -168,6 +270,15 @@ describe("the consent boundary is host-governed, not model-governed", () => {
     );
     expect(result.isError).toBe(true);
     expect(result.output).toMatch(/requires confirmation|not approved/i);
+  });
+
+  it("ignores a model attempt to self-declare headless=false on start", async () => {
+    const result = await backgroundJobTool.execute(
+      { action: "start", command: "echo hi", headless: false } as never,
+      { headless: true, backgroundPolicy: { permissionMode: "auto-accept", headlessApprovedActions: [] } } as never,
+    );
+    expect(result.isError).toBe(true);
+    expect(starts).toHaveLength(0);
   });
 
   it("marks the job's isolation as unrestricted so the confirmation UI can warn", async () => {
