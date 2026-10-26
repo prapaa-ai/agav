@@ -73,29 +73,44 @@ interface RunOptions {
   input?: string;
   /** Extra environment entries merged onto process.env for this call. */
   env?: Record<string, string>;
+  /** True for a getSecret read: a timeout then also trips the read breaker. */
+  isRead?: boolean;
 }
 
 /**
- * Circuit breaker: once any call hits its timeout we treat the store as
- * unresponsive for the rest of the process and fast-fail subsequent calls.
- * Without this, resolving N configured keys against a locked/hung store would
- * serialize N full timeouts (e.g. 7 × 5s ≈ 35s) onto startup. One timeout is
- * enough evidence to stop; the file fallback / missing-key path takes over.
+ * Circuit breakers that fast-fail further calls once the store proves
+ * unresponsive, so a locked/hung store never serializes N full timeouts onto
+ * startup. They are intentionally SPLIT:
+ *
+ *   - `writeBreaker` trips on ANY timeout (detection, write, or read) and blocks
+ *     further WRITES. Writes have a safe fallback (encrypt into the config file),
+ *     so giving up early is correct.
+ *
+ *   - `readBreaker` trips ONLY on a READ (getSecret) timeout and blocks further
+ *     reads. A read has NO fallback — the plaintext lives only in the store — so a
+ *     detection or write timeout must NOT disable reads: that was the regression
+ *     where one slow write during startup migration made every migrated key
+ *     (e.g. the OpenAI key) silently unresolvable, so `/model` showed no OpenAI
+ *     models. Each read still has its own per-call deadline, so the worst case is
+ *     bounded by the (small) number of migrated keys, and a genuinely hung store
+ *     still trips the read breaker after the first read timeout.
  */
-let storeUnresponsive = false;
+let writeBreaker = false;
+let readBreaker = false;
 
 /**
- * True once a credential-store call has timed out this process; callers use it
- * to avoid committing a `keychain:` placeholder they can no longer resolve
- * (getSecret now fast-fails), which would otherwise orphan a key for the session.
+ * True once a WRITE-affecting timeout occurred this process; the migration uses
+ * it to avoid committing a `keychain:` placeholder it could no longer write
+ * reliably. (Reads are governed separately so a working key is never dropped.)
  */
 export function isStoreUnresponsive(): boolean {
-  return storeUnresponsive;
+  return writeBreaker;
 }
 
-/** Reset the circuit breaker (tests only). */
+/** Reset the circuit breakers (tests only). */
 export function __resetKeychainBreakerForTests(): void {
-  storeUnresponsive = false;
+  writeBreaker = false;
+  readBreaker = false;
 }
 
 /** How long after SIGTERM we wait before escalating to SIGKILL. */
@@ -151,7 +166,11 @@ function run(file: string, args: string[], options: RunOptions = {}): Promise<{ 
       // regardless of how it responds to signals. Tripping the breaker here
       // (not in an exit callback) guarantees it fires even for a hung child.
       deadline = setTimeout(() => {
-        storeUnresponsive = true;
+        // Any timeout blocks further writes (they have a file fallback); a read
+        // timeout additionally blocks further reads (no fallback — but we never
+        // let a non-read timeout disable reads, so a working key is not dropped).
+        writeBreaker = true;
+        if (options.isRead) readBreaker = true;
         try { child?.kill("SIGTERM"); } catch { /* ignore */ }
         killTimer = setTimeout(() => {
           try { child?.kill("SIGKILL"); } catch { /* ignore */ }
@@ -276,7 +295,7 @@ const SECURITY_LINE_LIMIT = 4095;
  */
 export async function setSecret(account: string, secret: string): Promise<boolean> {
   if (!account || !secret) return false;
-  if (storeUnresponsive) return false;
+  if (writeBreaker) return false;
   const backend = await detectBackend();
   switch (backend) {
     case "macos": {
@@ -292,6 +311,17 @@ export async function setSecret(account: string, secret: string): Promise<boolea
         "-s", securityQuote(SERVICE),
         "-a", securityQuote(account),
         "-w", securityQuote(encoded),
+        // Trust /usr/bin/security to read this item back without a GUI prompt.
+        // Without an explicit -T, `-U` resets the item's ACL to trust ONLY the
+        // creating process instance, so a LATER `security` read (e.g. loadConfig
+        // in the TUI) can trigger an "allow access?" dialog that a raw-mode
+        // terminal cannot answer — the read then hangs, hits our timeout, trips
+        // the breaker, and the key silently disappears (e.g. /model shows no
+        // OpenAI models). Since every read/write here goes through
+        // /usr/bin/security, trusting exactly that binary is both prompt-free and
+        // minimal (NOT `-A`, which Apple flags as insecure: it would let any app
+        // read the secret).
+        "-T", "/usr/bin/security",
       ].join(" ");
       // Refuse an over-long interactive line (the parser would split it and
       // falsely report success); fall back to in-file encryption instead.
@@ -339,7 +369,9 @@ export async function setSecret(account: string, secret: string): Promise<boolea
  */
 export async function getSecret(account: string): Promise<string | undefined> {
   if (!account) return undefined;
-  if (storeUnresponsive) return undefined;
+  // Only a prior READ timeout fast-fails a read — a write/detection timeout must
+  // not disable reads, or a working key would be silently dropped this session.
+  if (readBreaker) return undefined;
   const backend = await detectBackend();
   switch (backend) {
     case "macos": {
@@ -351,7 +383,7 @@ export async function getSecret(account: string): Promise<string | undefined> {
         "-a", securityQuote(account),
         "-w",
       ].join(" ") + "\n";
-      const { code, stdout } = await run("security", ["-i"], { input: line });
+      const { code, stdout } = await run("security", ["-i"], { input: line, isRead: true });
       if (code !== 0) return undefined;
       const encoded = stdout.replace(/\r?\n$/, "");
       if (!encoded.length) return undefined;
@@ -365,7 +397,7 @@ export async function getSecret(account: string): Promise<string | undefined> {
     case "secret-tool": {
       const { code, stdout } = await run("secret-tool", [
         "lookup", "service", SERVICE, "account", account,
-      ]);
+      ], { isRead: true });
       // secret-tool emits the secret with no trailing newline on success.
       if (code !== 0) return undefined;
       return stdout.length ? stdout : undefined;
@@ -390,7 +422,7 @@ export async function getSecret(account: string): Promise<string | undefined> {
         "$p=[Convert]::FromBase64String($enc);" +
         "$u=[Security.Cryptography.ProtectedData]::Unprotect($p,$null,'CurrentUser');" +
         "[Console]::Out.Write([Text.Encoding]::UTF8.GetString($u));";
-      const { code, stdout } = await runWindows(script);
+      const { code, stdout } = await runWindows(script, undefined, true);
       if (code !== 0) return undefined;
       return stdout.length ? stdout : undefined;
     }
@@ -402,7 +434,7 @@ export async function getSecret(account: string): Promise<string | undefined> {
 /** Delete the credential stored under `account`. Idempotent; never throws. */
 export async function deleteSecret(account: string): Promise<void> {
   if (!account) return;
-  if (storeUnresponsive) return;
+  if (writeBreaker) return;
   const backend = await detectBackend();
   switch (backend) {
     case "macos": {
@@ -433,10 +465,13 @@ function psQuote(value: string): string {
 }
 
 /** Run a PowerShell script, passing any secret through an env var, not argv. */
-function runWindows(script: string, secret?: string): Promise<{ code: number; stdout: string }> {
+function runWindows(script: string, secret?: string, isRead = false): Promise<{ code: number; stdout: string }> {
   return run(
     windowsPowerShellPath(),
     ["-NoProfile", "-NonInteractive", "-Command", script],
-    secret === undefined ? {} : { env: { AGAV_KC_SECRET: secret } },
+    {
+      ...(secret === undefined ? {} : { env: { AGAV_KC_SECRET: secret } }),
+      isRead,
+    },
   );
 }

@@ -268,6 +268,44 @@ describe("utils/keychain", () => {
       expect(getCalls().length).toBe(spawnsAfter);
       expect(mod.isStoreUnresponsive()).toBe(true);
     });
+
+    it("a WRITE timeout blocks further writes but NOT reads (regression: dropped key)", async () => {
+      vi.useFakeTimers();
+      // detection ok, setSecret hangs (write timeout), then getSecret succeeds.
+      const b64 = Buffer.from("sk-live", "utf-8").toString("base64");
+      const getCalls = scriptSpawn([
+        { code: 0 },          // detection
+        { hang: true },       // setSecret → write timeout
+        { code: 0, stdout: `${b64}\n` }, // getSecret → must still be attempted
+      ]);
+      const mod = await freshModule();
+      const setP = mod.setSecret("a", "v");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(await setP).toBe(false);
+      expect(mod.isStoreUnresponsive()).toBe(true); // write breaker tripped
+      vi.useRealTimers();
+      // The read is NOT suppressed by the write timeout — the key resolves.
+      expect(await mod.getSecret("a")).toBe("sk-live");
+      // A further write is still blocked.
+      const before = getCalls().length;
+      expect(await mod.setSecret("b", "v")).toBe(false);
+      expect(getCalls().length).toBe(before);
+    });
+
+    it("a READ timeout blocks further reads", async () => {
+      vi.useFakeTimers();
+      const getCalls = scriptSpawn([{ code: 0 }, { hang: true }]);
+      const mod = await freshModule();
+      const p = mod.getSecret("a");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5000);
+      await p;
+      vi.useRealTimers();
+      const before = getCalls().length;
+      expect(await mod.getSecret("b")).toBeUndefined();
+      expect(getCalls().length).toBe(before); // no further read spawned
+    });
   });
 
   describe("unsupported platform", () => {
