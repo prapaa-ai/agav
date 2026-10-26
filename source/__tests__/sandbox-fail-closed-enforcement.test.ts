@@ -154,4 +154,31 @@ describe("a backend that fails to launch/apply does NOT fall back to unsandboxed
       if (existsSync(marker)) rmSync(marker, { force: true });
     }
   });
+
+  it("a backend whose launcher RUNS but exits non-zero also does not fall back", async () => {
+    // Distinct from the ENOENT (missing launcher) cases above: force docker with
+    // a non-existent bind source so the docker CLI actually launches and then
+    // exits non-zero (bad mount, or no daemon). The runtime must still surface
+    // the error, keep the backend (no downgrade to "none"), and run nothing — a
+    // fallback introduced specifically for nonzero backend exits would be caught
+    // here. Where the docker CLI is itself absent the same invariants hold, so the
+    // assertion is valid on every runner.
+    const marker = join(tmpdir(), `agav-dockerfail-${process.pid}.txt`);
+    const badCwd = join(tmpdir(), `agav-no-such-cwd-${process.pid}-${Date.now()}`);
+    if (existsSync(marker)) rmSync(marker, { force: true });
+    try {
+      const result = await runInSandbox({
+        command: `printf x > ${JSON.stringify(marker)}`,
+        cwd: badCwd,
+        timeout: 8000,
+        maxBuffer: 1 << 16,
+        forceBackend: "docker",
+      });
+      expect(result.error).not.toBeNull();
+      expect(result.backend).toBe("docker"); // never downgraded to "none"
+      expect(existsSync(marker)).toBe(false); // workload side effect never happened
+    } finally {
+      if (existsSync(marker)) rmSync(marker, { force: true });
+    }
+  }, 20_000);
 });

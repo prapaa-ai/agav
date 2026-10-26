@@ -87,6 +87,18 @@ jobs:
           test -f "$probe/work/out.txt" || { echo "::error::bwrap workspace bind did not persist to host"; exit 1; }
           rm -rf "$probe"
           echo "bwrap applies on this runner."
+      # Docker is the only backend that sandboxes the network; it must actually run
+      # on Linux (where the runner ships a working daemon), not silently skip. Pull
+      # the image up front so a cold cache / pull failure surfaces here as a hard
+      # error instead of becoming a test skip, and confirm the daemon is reachable.
+      - name: Ensure Docker is usable for the network-isolation suite (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -x
+          docker version
+          docker pull node:22-slim
+          docker run --rm --network=none node:22-slim node -e 'console.log("docker_ok")'
+          echo "docker applies on this runner."
       - run: pnpm install --frozen-lockfile
       - name: Run per-OS sandbox enforcement tests
         run: >-
@@ -104,32 +116,30 @@ jobs:
       - name: Assert this runner's backend enforcement actually executed
         shell: bash
         run: |
+          # Each runner OWNS one or more suites that MUST fully execute on it (no
+          # skips). Docker is additionally required on Linux, where the runner has a
+          # working daemon — so the only network-isolation coverage cannot silently
+          # skip behind a green check.
           case "${{ runner.os }}" in
-            macOS)   SUITE="macOS Seatbelt" ;;
-            Linux)   SUITE="Linux Bubblewrap" ;;
-            Windows) SUITE="Windows (no OS sandbox)" ;;
+            macOS)   SUITES="macOS Seatbelt" ;;
+            Linux)   SUITES="Linux Bubblewrap|Docker network + process isolation" ;;
+            Windows) SUITES="Windows (no OS sandbox)" ;;
             *) echo "::error::unexpected runner OS"; exit 1 ;;
           esac
-          node -e '
+          REQUIRED="$SUITES" node -e '
             const fs = require("fs");
-            const suite = process.argv[1];
+            const required = process.env.REQUIRED.split("|");
             const report = JSON.parse(fs.readFileSync("enforcement-report.json", "utf8"));
-            // Flatten assertion results; vitest JSON uses testResults[].assertionResults[].
             const all = (report.testResults || []).flatMap(f => f.assertionResults || []);
-            const owning = all.filter(a => (a.ancestorTitles || []).some(t => t === suite) || (a.fullName || "").includes(suite));
-            const ran = owning.filter(a => a.status === "passed");
-            const skipped = owning.filter(a => a.status === "skipped" || a.status === "pending");
-            console.log(`${suite}: ${ran.length} executed, ${skipped.length} skipped`);
-            if (owning.length === 0) {
-              console.error(`::error::No tests found for owning suite "${suite}"`);
-              process.exit(1);
+            let failed = false;
+            for (const suite of required) {
+              const owning = all.filter(a => (a.ancestorTitles || []).some(t => t === suite) || (a.fullName || "").includes(suite));
+              const ran = owning.filter(a => a.status === "passed");
+              const skipped = owning.filter(a => a.status === "skipped" || a.status === "pending");
+              console.log(`${suite}: ${ran.length} executed, ${skipped.length} skipped`);
+              if (owning.length === 0) { console.error(`::error::No tests found for required suite "${suite}"`); failed = true; }
+              else if (ran.length === 0) { console.error(`::error::Required suite "${suite}" executed 0 tests (all skipped) — enforcement did not run on this runner.`); failed = true; }
+              else if (skipped.length > 0) { console.error(`::error::Required suite "${suite}" had ${skipped.length} skipped test(s); every test must run on this runner.`); failed = true; }
             }
-            if (ran.length === 0) {
-              console.error(`::error::Owning suite "${suite}" executed 0 restriction tests (all skipped) — the sandbox did not apply on this runner.`);
-              process.exit(1);
-            }
-            if (skipped.length > 0) {
-              console.error(`::error::Owning suite "${suite}" had ${skipped.length} skipped test(s); every restriction test must run on its native runner.`);
-              process.exit(1);
-            }
-          ' "$SUITE"
+            if (failed) process.exit(1);
+          '

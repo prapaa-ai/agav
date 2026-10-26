@@ -164,7 +164,13 @@ describe("headless mode fails closed through the REAL authorization gate (consen
     expect(starts).toHaveLength(0);
   });
 
-  it("allows a headless 'start' ONLY when its exact grant is present", async () => {
+  it("allows a headless 'start' only once the action is explicitly approved for headless", async () => {
+    // This asserts the ACTION-level headless gate (approving "start" lets the
+    // action through). The stricter EXACT-SPEC guarantee — that a grant for one
+    // command/cwd does not authorize a different one — is proven against the real
+    // coordinator in background-job-consent-real-coordinator.test.ts, since under
+    // auto-accept the authorization service mints a grant for whatever spec is
+    // supplied and cannot demonstrate changed-spec rejection here.
     const result = await backgroundJobTool.execute({ action: "start", command: "echo hi" }, headlessCtx(["start"]) as never);
     expect(result.isError).toBe(false);
     expect(starts).toHaveLength(1);
