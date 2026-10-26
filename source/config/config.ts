@@ -6,6 +6,7 @@ import { decrypt, encrypt, isEncrypted } from "../utils/encrypt.js";
 import {
   isKeychainAvailable,
   isKeychainRef,
+  isStoreUnresponsive,
   keychainAccount,
   keychainRef,
   getSecret,
@@ -701,13 +702,26 @@ async function writeConfigAtomic(data: Record<string, unknown>): Promise<void> {
   }
 }
 
-/** Read the raw on-disk global config object, or {} when missing/corrupt. */
+/**
+ * Read the raw on-disk global config object. A missing file (ENOENT) or
+ * unparseable JSON yields {} (there is nothing to preserve). Any OTHER read
+ * failure (EACCES, EIO, …) is rethrown: callers that merge onto the existing
+ * file to preserve credential references must not mistake "could not read" for
+ * "no existing config" and then drop those references.
+ */
 async function readStoredConfig(): Promise<Record<string, unknown>> {
+  let raw: string;
   try {
-    const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+    raw = await readFile(CONFIG_PATH, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw err;
+  }
+  try {
+    const parsed = JSON.parse(raw);
     return typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : {};
   } catch {
-    return {};
+    return {}; // corrupt JSON: treat as empty (the file is effectively replaced)
   }
 }
 
@@ -770,14 +784,61 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
  */
 export async function clearStoredApiKey(field: keyof typeof KEYCHAIN_ACCOUNTS): Promise<void> {
   const account = KEYCHAIN_ACCOUNTS[field];
-  if (await isKeychainAvailable()) {
-    await deleteSecret(account);
-  }
+  // Remove the config FIELD first, then the store secret. If we crash between the
+  // two, the config no longer references the secret (no dangling placeholder that
+  // resolves to nothing), and the orphaned store entry is harmlessly overwritten
+  // or re-cleared later. Doing the delete first would risk the opposite: a failed
+  // config write leaving a placeholder pointing at an already-deleted secret.
   const stored = await readStoredConfig();
   if (field in stored) {
     delete stored[field];
     await writeConfigAtomic(stored);
   }
+  if (await isKeychainAvailable()) {
+    await deleteSecret(account);
+  }
+}
+
+const MIGRATION_LOCK_PATH = join(AGAV_DIR, ".migrate.lock");
+/** A lock older than this is considered stale (a crashed holder) and reclaimed. */
+const MIGRATION_LOCK_STALE_MS = 60_000;
+/** Overall wall-clock budget for the whole migration (bounds first-run startup). */
+const MIGRATION_BUDGET_MS = 15_000;
+
+/**
+ * Acquire a cross-process lock serializing the migration's read→store→rewrite
+ * transaction so two concurrent startups (or a concurrent config writer) cannot
+ * interleave and clobber each other's credential rotation or edits. Returns a
+ * release function, or null when the lock is held by a live peer (caller then
+ * skips migration this launch — a peer is handling it). Never throws.
+ */
+async function acquireMigrationLock(): Promise<(() => Promise<void>) | null> {
+  const { open, stat, unlink } = await import("node:fs/promises");
+  try {
+    await ensureDir(AGAV_DIR);
+  } catch {
+    return null;
+  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await open(MIGRATION_LOCK_PATH, "wx", 0o600);
+      await handle.writeFile(String(process.pid));
+      await handle.close();
+      return async () => { await unlink(MIGRATION_LOCK_PATH).catch(() => {}); };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") return null;
+      // Lock exists: reclaim it only if it is stale (holder likely crashed).
+      try {
+        const info = await stat(MIGRATION_LOCK_PATH);
+        if (Date.now() - info.mtimeMs < MIGRATION_LOCK_STALE_MS) return null; // live peer
+        await unlink(MIGRATION_LOCK_PATH).catch(() => {});
+        // loop once more to re-create it
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -806,96 +867,107 @@ export async function clearStoredApiKey(field: keyof typeof KEYCHAIN_ACCOUNTS): 
  */
 export async function migrateSecretsToKeychain(): Promise<number> {
   try {
-    // Read the config FIRST and only probe the OS store if there is actually an
+    // Read the config FIRST (cheap) and only probe/lock if there is actually an
     // in-file secret to move. Detecting the store spawns a child process
-    // (notably a cold PowerShell on Windows, ~hundreds of ms), so gating on a
-    // cheap file read keeps steady-state startup — the vast majority of launches,
-    // where keys are already migrated, set via env, or absent — free of any
-    // subprocess. The probe (and migration) runs only on the one launch that has
-    // real work to do.
-    let snapshot: Record<string, unknown>;
+    // (notably a cold PowerShell on Windows), so gating on a cheap file read
+    // keeps steady-state startup — the vast majority of launches, where keys are
+    // already migrated, set via env, or absent — free of any subprocess or lock.
+    let preview: Record<string, unknown>;
     try {
       const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
       if (typeof parsed !== "object" || parsed === null) return 0;
-      snapshot = parsed as Record<string, unknown>;
+      preview = parsed as Record<string, unknown>;
     } catch {
-      // Missing or corrupt config: nothing to migrate. Do not rewrite it.
-      return 0;
+      return 0; // missing or corrupt config: nothing to migrate
     }
+    const anyMigratable = Object.keys(KEYCHAIN_ACCOUNTS).some((field) => {
+      const v = preview[field];
+      return typeof v === "string" && v.length > 0 && !isKeychainRef(v);
+    });
+    if (!anyMigratable) return 0;
 
-    // Decide what is migratable from the snapshot, decrypting up front so an
-    // undecryptable `enc:` value (restored under a different user/home, or
-    // corrupt) is skipped rather than stored verbatim as a bogus "secret".
-    const pending: Array<{ field: string; account: string; plaintext: string }> = [];
-    for (const [field, account] of Object.entries(KEYCHAIN_ACCOUNTS)) {
-      const value = snapshot[field];
-      if (typeof value !== "string" || value.length === 0) continue;
-      if (isKeychainRef(value)) continue;
-      const plaintext = safeDecrypt(value);
-      if (!plaintext) continue; // empty or undecryptable — leave the file value as-is
-      pending.push({ field, account, plaintext });
-    }
-    if (pending.length === 0) return 0;
+    // Serialize the whole read→store→rewrite transaction against concurrent
+    // startups/writers so a slow migration cannot clobber another process's
+    // credential rotation or config edit. A live peer's lock means another
+    // process is already migrating — skip this launch.
+    const release = await acquireMigrationLock();
+    if (!release) return 0;
 
-    if (!(await isKeychainAvailable())) return 0;
-
-    // Write each secret to the store first (the slow part). Only successfully
-    // stored fields become placeholders.
-    const placeholders = new Map<string, string>();
-    for (const { field, account, plaintext } of pending) {
-      if (await setSecret(account, plaintext)) {
-        placeholders.set(field, keychainRef(account));
-      }
-      // On a failed store write, leave the existing file value untouched.
-    }
-    if (placeholders.size === 0) return 0;
-
-    // Re-read the file immediately before writing and merge ONLY the migrated
-    // key fields onto the fresh on-disk object. The store writes above can take
-    // seconds; a concurrent writer (e.g. a session persisting statusBar) may
-    // have changed unrelated keys in the meantime, and a blind rewrite of the
-    // stale snapshot would clobber those edits. Merging onto the current file
-    // preserves them; we only replace fields whose secret we actually moved, and
-    // only when that field still holds the same pre-migration value (so we never
-    // overwrite a key the user rotated during the window).
-    let current: Record<string, unknown>;
+    const deadline = Date.now() + MIGRATION_BUDGET_MS;
+    const budgetLeft = () => Date.now() < deadline;
     try {
-      const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
-      current = typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : {};
-    } catch {
-      // The file vanished or became unreadable during migration; the secrets are
-      // already safely stored. Skip the rewrite and let the next launch retry
-      // (idempotent) rather than recreating a file from a stale snapshot.
-      return placeholders.size;
-    }
-
-    let applied = 0;
-    for (const [field, ref] of placeholders) {
-      // Only replace the field if it still holds the exact value we migrated;
-      // a different value means the user rotated the key concurrently, which a
-      // later save/migration will handle.
-      if (current[field] === snapshot[field]) {
-        current[field] = ref;
-        applied++;
+      // Re-read UNDER THE LOCK so we act on the authoritative current state.
+      let snapshot: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+        if (typeof parsed !== "object" || parsed === null) return 0;
+        snapshot = parsed as Record<string, unknown>;
+      } catch {
+        return 0;
       }
-    }
-    if (applied === 0) return placeholders.size;
 
-    await ensureDir(AGAV_DIR);
-    const { randomBytes } = await import("node:crypto");
-    const tmpPath = `${CONFIG_PATH}.tmp.${randomBytes(8).toString("hex")}`;
-    const serialized = JSON.stringify(current, null, 2) + "\n";
-    const { rename, unlink } = await import("node:fs/promises");
-    try {
-      await writeFile(tmpPath, serialized, { mode: 0o600, flag: "wx" });
-      await rename(tmpPath, CONFIG_PATH);
-    } catch {
-      await unlink(tmpPath).catch(() => {});
-      // The secrets are already safely in the store; failing to rewrite the file
-      // only means the next launch retries the migration (idempotent).
-      return placeholders.size;
+      // Decrypt up front so an undecryptable `enc:` value (config restored under
+      // a different user/home, or corrupt) is skipped rather than stored as a
+      // bogus "secret".
+      const pending: Array<{ field: string; account: string; plaintext: string }> = [];
+      for (const [field, account] of Object.entries(KEYCHAIN_ACCOUNTS)) {
+        const value = snapshot[field];
+        if (typeof value !== "string" || value.length === 0) continue;
+        if (isKeychainRef(value)) continue;
+        const plaintext = safeDecrypt(value);
+        if (!plaintext) continue;
+        pending.push({ field, account, plaintext });
+      }
+      if (pending.length === 0) return 0;
+
+      if (!(await isKeychainAvailable())) return 0;
+
+      // Store each secret, honoring the overall budget. A placeholder is recorded
+      // ONLY when the secret is both stored AND still resolvable this process: if
+      // a store call trips the breaker (timeout), getSecret() would fast-fail for
+      // the rest of this launch, so committing the placeholder would orphan the
+      // key until restart. In that case we stop and leave the file value intact.
+      const placeholders = new Map<string, string>();
+      for (const { field, account, plaintext } of pending) {
+        if (!budgetLeft() || isStoreUnresponsive()) break;
+        const stored = await setSecret(account, plaintext);
+        if (isStoreUnresponsive()) break; // this call just timed out — do not commit
+        if (stored) placeholders.set(field, keychainRef(account));
+        // A non-timeout failure leaves the file value untouched; continue.
+      }
+      if (placeholders.size === 0) return 0;
+
+      // Re-read immediately before writing and merge ONLY migrated fields onto
+      // the current file, and only when the field still holds the exact value we
+      // migrated (so a key rotated concurrently is never overwritten). A read
+      // failure here means the secrets are already stored; skip the rewrite and
+      // let the next launch retry (idempotent).
+      let current: Record<string, unknown>;
+      try {
+        current = await readStoredConfig();
+      } catch {
+        return placeholders.size;
+      }
+
+      let applied = 0;
+      for (const [field, ref] of placeholders) {
+        if (current[field] === snapshot[field]) {
+          current[field] = ref;
+          applied++;
+        }
+      }
+      if (applied === 0) return placeholders.size;
+
+      try {
+        await writeConfigAtomic(current);
+      } catch {
+        // Secrets are already in the store; next launch retries (idempotent).
+        return placeholders.size;
+      }
+      return applied;
+    } finally {
+      await release();
     }
-    return applied;
   } catch {
     return 0;
   }

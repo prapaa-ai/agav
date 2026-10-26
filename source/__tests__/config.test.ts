@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// A lock file handle that always succeeds; the migration lock uses open(...,"wx").
+const lockHandle = { writeFile: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) };
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
   rename: vi.fn().mockResolvedValue(undefined),
   unlink: vi.fn().mockResolvedValue(undefined),
+  open: vi.fn().mockResolvedValue(lockHandle),
+  stat: vi.fn().mockResolvedValue({ mtimeMs: Date.now() }),
 }));
 vi.mock("../utils/fs.js", () => ({
   ensureDir: vi.fn().mockResolvedValue(undefined),
@@ -25,6 +29,7 @@ vi.mock("../utils/encrypt.js", () => ({
 const keychainMock = vi.hoisted(() => ({
   isKeychainAvailable: vi.fn(),
   isKeychainRef: vi.fn((value: string) => value.startsWith("keychain:")),
+  isStoreUnresponsive: vi.fn(() => false),
   keychainAccount: vi.fn((value: string) => (value.startsWith("keychain:") ? value.slice("keychain:".length) : "")),
   keychainRef: vi.fn((account: string) => `keychain:${account}`),
   getSecret: vi.fn(),
@@ -42,6 +47,14 @@ describe("config", () => {
     vi.resetModules();
     readFile.mockReset();
     writeFile.mockReset();
+    // Migration-lock primitives: default to a successfully acquired, non-stale lock.
+    vi.mocked(fs.open).mockReset().mockResolvedValue(lockHandle as any);
+    vi.mocked(fs.stat).mockReset().mockResolvedValue({ mtimeMs: Date.now() } as any);
+    vi.mocked(fs.rename).mockReset().mockResolvedValue(undefined);
+    vi.mocked(fs.unlink).mockReset().mockResolvedValue(undefined);
+    lockHandle.writeFile.mockClear().mockResolvedValue(undefined);
+    lockHandle.close.mockClear().mockResolvedValue(undefined);
+    keychainMock.isStoreUnresponsive.mockReset().mockReturnValue(false);
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENROUTER_API_KEY;
@@ -566,10 +579,12 @@ describe("config", () => {
     it("merges onto a concurrent edit instead of clobbering it", async () => {
       keychainMock.isKeychainAvailable.mockResolvedValue(true);
       keychainMock.setSecret.mockResolvedValue(true);
-      // First read = snapshot (before slow store writes); second read = the file
-      // as it stands just before the rewrite, now carrying a concurrent edit.
+      // Reads: (1) cheap preview, (2) snapshot under lock, (3) current state just
+      // before the rewrite — now carrying a concurrent statusBar edit.
+      const original = JSON.stringify({ anthropicApiKey: "enc:a-secret", statusBar: { segments: ["model"] } });
       readFile
-        .mockResolvedValueOnce(JSON.stringify({ anthropicApiKey: "enc:a-secret", statusBar: { segments: ["model"] } }))
+        .mockResolvedValueOnce(original)
+        .mockResolvedValueOnce(original)
         .mockResolvedValueOnce(JSON.stringify({ anthropicApiKey: "enc:a-secret", statusBar: { segments: ["model", "usage"] } }));
 
       const mod = await import("../config/config.js");
@@ -584,15 +599,45 @@ describe("config", () => {
     it("does not overwrite a key the user rotated during the migration window", async () => {
       keychainMock.isKeychainAvailable.mockResolvedValue(true);
       keychainMock.setSecret.mockResolvedValue(true);
-      // Snapshot has the old secret; by the time we re-read, the user rotated it.
+      // Reads: preview + snapshot have the old secret; the final read sees the
+      // user's concurrently-rotated secret, so the placeholder is NOT applied.
+      const old = JSON.stringify({ anthropicApiKey: "enc:old-secret" });
       readFile
-        .mockResolvedValueOnce(JSON.stringify({ anthropicApiKey: "enc:old-secret" }))
+        .mockResolvedValueOnce(old)
+        .mockResolvedValueOnce(old)
         .mockResolvedValueOnce(JSON.stringify({ anthropicApiKey: "enc:new-secret" }));
 
       const mod = await import("../config/config.js");
       // Stored the old secret, but the field changed, so no file field is applied.
       expect(await mod.migrateSecretsToKeychain()).toBe(1);
       // No write occurs because applied === 0 (field value differs from snapshot).
+      expect(writeFile).not.toHaveBeenCalled();
+    });
+
+    it("skips migration when a live peer holds the lock", async () => {
+      keychainMock.isKeychainAvailable.mockResolvedValue(true);
+      keychainMock.setSecret.mockResolvedValue(true);
+      readFile.mockResolvedValue(JSON.stringify({ anthropicApiKey: "enc:a-secret" }));
+      // open() fails EEXIST and the existing lock is fresh (live peer).
+      vi.mocked(fs.open).mockRejectedValue(Object.assign(new Error("exists"), { code: "EEXIST" }));
+      vi.mocked(fs.stat).mockResolvedValue({ mtimeMs: Date.now() } as any);
+
+      const mod = await import("../config/config.js");
+      expect(await mod.migrateSecretsToKeychain()).toBe(0);
+      expect(keychainMock.setSecret).not.toHaveBeenCalled();
+      expect(writeFile).not.toHaveBeenCalled();
+    });
+
+    it("does not commit a placeholder when the store write trips the breaker (timeout)", async () => {
+      keychainMock.isKeychainAvailable.mockResolvedValue(true);
+      // setSecret appears to succeed, but the store became unresponsive during
+      // the call — committing the placeholder would orphan the key this session.
+      keychainMock.setSecret.mockResolvedValue(true);
+      keychainMock.isStoreUnresponsive.mockReturnValue(true);
+      readFile.mockResolvedValue(JSON.stringify({ anthropicApiKey: "enc:a-secret" }));
+
+      const mod = await import("../config/config.js");
+      expect(await mod.migrateSecretsToKeychain()).toBe(0);
       expect(writeFile).not.toHaveBeenCalled();
     });
 

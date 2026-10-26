@@ -1,51 +1,61 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 
-vi.mock("node:child_process", () => ({ execFile: vi.fn() }));
+vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 vi.mock("node:os", () => ({ platform: vi.fn() }));
 
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { platform } from "node:os";
 
-const execFileMock = vi.mocked(execFile);
+const spawnMock = vi.mocked(spawn);
 const platformMock = vi.mocked(platform);
 
 interface Response {
-  code: number;
+  /** Exit code delivered via the 'close' event. */
+  code?: number;
   stdout?: string;
-  /** When true, simulate a timeout-killed child (sets error.killed). */
-  timeout?: boolean;
+  /** When true, the child never closes on its own (simulates a hang/timeout). */
+  hang?: boolean;
   /** When set, the child's stdin emits this error asynchronously (e.g. EPIPE). */
   stdinError?: string;
+  /** When true, emit a spawn 'error' (missing tool). */
+  spawnError?: boolean;
+  /** Close with a signal instead of an exit code. */
+  signal?: string;
 }
 
-/**
- * Queue a scripted response per execFile invocation, matched in call order.
- * Captures each call's file, args, env and stdin so transport can be asserted.
- */
-function scriptExecFile(responses: Response[]) {
-  const calls: Array<{ file: string; args: string[]; env?: Record<string, string | undefined>; stdin: string }> = [];
+interface SpawnCall {
+  file: string;
+  args: string[];
+  env?: Record<string, string | undefined>;
+  stdin: string;
+  child: any;
+  killed: string[];
+}
+
+/** Scripted spawn mock; records calls and the kill signals each child received. */
+function scriptSpawn(responses: Response[]) {
+  const calls: SpawnCall[] = [];
   let index = 0;
-  execFileMock.mockImplementation(((file: any, args: any, options: any, callback: any) => {
-    const cb = typeof options === "function" ? options : callback;
-    const opts = typeof options === "function" ? {} : options;
-    const record = { file, args: args ?? [], env: opts?.env, stdin: "" };
-    calls.push(record);
+  spawnMock.mockImplementation(((file: any, args: any, options: any) => {
     const response = responses[index++] ?? { code: 0, stdout: "" };
     const child = new EventEmitter() as any;
+    const stdout = new EventEmitter() as any;
     const stdin = new EventEmitter() as any;
     stdin.end = (data?: string) => { if (data) record.stdin += data; };
+    child.stdout = stdout;
     child.stdin = stdin;
+    const killed: string[] = [];
+    child.kill = (sig?: string) => { killed.push(sig ?? "SIGTERM"); return true; };
+    const record: SpawnCall = { file, args: args ?? [], env: options?.env, stdin: "", child, killed };
+    calls.push(record);
     queueMicrotask(() => {
+      if (response.spawnError) { child.emit("error", new Error("ENOENT")); return; }
       if (response.stdinError) stdin.emit("error", Object.assign(new Error(response.stdinError), { code: response.stdinError }));
-      if (response.code === 0) {
-        cb(null, response.stdout ?? "", "");
-      } else {
-        const err: any = new Error("command failed");
-        err.code = response.code;
-        if (response.timeout) err.killed = true;
-        cb(err, response.stdout ?? "", "");
-      }
+      if (response.stdout) stdout.emit("data", Buffer.from(response.stdout, "utf-8"));
+      if (response.hang) return; // never closes — exercises our deadline timer
+      if (response.signal) { child.emit("close", null, response.signal); return; }
+      child.emit("close", response.code ?? 0, null);
     });
     return child;
   }) as any);
@@ -63,11 +73,12 @@ async function freshModule() {
 describe("utils/keychain", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // A stable SystemRoot so the Windows PowerShell path is deterministic.
+    vi.useRealTimers();
     process.env.SystemRoot = "C:\\Windows";
   });
   afterEach(() => {
     platformMock.mockReset();
+    vi.useRealTimers();
     delete process.env.SystemRoot;
   });
 
@@ -86,17 +97,12 @@ describe("utils/keychain", () => {
     beforeEach(() => platformMock.mockReturnValue("darwin"));
 
     it("stores a secret via interactive `security -i`, never placing it on argv", async () => {
-      const getCalls = scriptExecFile([
-        { code: 0 }, // security help (detection)
-        { code: 0 }, // security -i (add)
-      ]);
+      const getCalls = scriptSpawn([{ code: 0 }, { code: 0 }]);
       const mod = await freshModule();
       expect(await mod.setSecret("openai-api-key", "sk-secret")).toBe(true);
       const call = getCalls().find((c) => c.file === "security" && c.args[0] === "-i");
       expect(call).toBeDefined();
-      // The secret must not appear in argv at all; it is fed over stdin.
       expect(call!.args.join(" ")).not.toContain("sk-secret");
-      // Base64 of the secret is what gets written on stdin (lossless round-trip).
       const b64 = Buffer.from("sk-secret", "utf-8").toString("base64");
       expect(call!.stdin).toContain("add-generic-password");
       expect(call!.stdin).toContain(b64);
@@ -105,22 +111,15 @@ describe("utils/keychain", () => {
 
     it("round-trips a secret through base64 on read", async () => {
       const b64 = Buffer.from("sk-secret", "utf-8").toString("base64");
-      scriptExecFile([
-        { code: 0 }, // detection
-        { code: 0, stdout: `${b64}\n` }, // security -i (find)
-      ]);
+      scriptSpawn([{ code: 0 }, { code: 0, stdout: `${b64}\n` }]);
       const mod = await freshModule();
       expect(await mod.getSecret("openai-api-key")).toBe("sk-secret");
     });
 
-    it("round-trips a secret containing newlines/non-printable bytes losslessly", async () => {
+    it("round-trips a secret with newlines/non-printable bytes losslessly", async () => {
       const raw = "a\nb\tc";
       const b64 = Buffer.from(raw, "utf-8").toString("base64");
-      const getCalls = scriptExecFile([
-        { code: 0 }, // detection
-        { code: 0 }, // set
-        { code: 0, stdout: `${b64}\n` }, // get
-      ]);
+      const getCalls = scriptSpawn([{ code: 0 }, { code: 0 }, { code: 0, stdout: `${b64}\n` }]);
       const mod = await freshModule();
       expect(await mod.setSecret("k", raw)).toBe(true);
       expect(await mod.getSecret("k")).toBe(raw);
@@ -128,17 +127,24 @@ describe("utils/keychain", () => {
       expect(setCall!.stdin).toContain(b64);
     });
 
+    it("refuses an over-long interactive line (would split and falsely succeed)", async () => {
+      const getCalls = scriptSpawn([{ code: 0 } /* detection only */]);
+      const mod = await freshModule();
+      // A ~4100-byte secret exceeds the 4095-byte interactive parser line.
+      const huge = "x".repeat(4100);
+      expect(await mod.setSecret("openai-api-key", huge)).toBe(false);
+      // Only the detection spawn ran; no add-generic-password was attempted.
+      expect(getCalls().some((c) => c.stdin.includes("add-generic-password"))).toBe(false);
+    });
+
     it("returns undefined when the item is absent (non-zero exit)", async () => {
-      scriptExecFile([
-        { code: 0 }, // detection
-        { code: 44 }, // find: not found
-      ]);
+      scriptSpawn([{ code: 0 }, { code: 44 }]);
       const mod = await freshModule();
       expect(await mod.getSecret("missing")).toBeUndefined();
     });
 
     it("reports availability when `security help` succeeds", async () => {
-      scriptExecFile([{ code: 0 }]);
+      scriptSpawn([{ code: 0 }]);
       const mod = await freshModule();
       expect(await mod.isKeychainAvailable()).toBe(true);
     });
@@ -148,7 +154,7 @@ describe("utils/keychain", () => {
     beforeEach(() => platformMock.mockReturnValue("linux"));
 
     it("detects availability via a read-only `search` probe (not --version)", async () => {
-      const getCalls = scriptExecFile([{ code: 0 }]); // search succeeds on a reachable service
+      const getCalls = scriptSpawn([{ code: 0 }]);
       const mod = await freshModule();
       expect(await mod.isKeychainAvailable()).toBe(true);
       const probe = getCalls()[0]!;
@@ -158,10 +164,7 @@ describe("utils/keychain", () => {
     });
 
     it("feeds the secret through stdin, never argv", async () => {
-      const getCalls = scriptExecFile([
-        { code: 0 }, // search (detection)
-        { code: 0 }, // store
-      ]);
+      const getCalls = scriptSpawn([{ code: 0 }, { code: 0 }]);
       const mod = await freshModule();
       expect(await mod.setSecret("openai-api-key", "sk-secret")).toBe(true);
       const call = getCalls().find((c) => c.args[0] === "store");
@@ -171,16 +174,13 @@ describe("utils/keychain", () => {
     });
 
     it("looks a secret up by its attributes", async () => {
-      scriptExecFile([
-        { code: 0 }, // detection
-        { code: 0, stdout: "sk-secret" }, // lookup
-      ]);
+      scriptSpawn([{ code: 0 }, { code: 0, stdout: "sk-secret" }]);
       const mod = await freshModule();
       expect(await mod.getSecret("openai-api-key")).toBe("sk-secret");
     });
 
     it("treats an unreachable service / missing CLI as no credential store", async () => {
-      scriptExecFile([{ code: 1 }]); // search probe fails
+      scriptSpawn([{ spawnError: true }]);
       const mod = await freshModule();
       expect(await mod.isKeychainAvailable()).toBe(false);
       expect(await mod.setSecret("k", "v")).toBe(false);
@@ -188,10 +188,13 @@ describe("utils/keychain", () => {
     });
 
     it("does not crash when the child closes stdin early (EPIPE) and reports failure", async () => {
-      scriptExecFile([
-        { code: 0 }, // detection
-        { code: 1, stdinError: "EPIPE" }, // store child dies, stdin errors
-      ]);
+      scriptSpawn([{ code: 0 }, { code: 1, stdinError: "EPIPE" }]);
+      const mod = await freshModule();
+      expect(await mod.setSecret("k", "v")).toBe(false);
+    });
+
+    it("treats a signal-terminated child as failure, not success", async () => {
+      scriptSpawn([{ code: 0 }, { signal: "SIGKILL" }]);
       const mod = await freshModule();
       expect(await mod.setSecret("k", "v")).toBe(false);
     });
@@ -201,13 +204,10 @@ describe("utils/keychain", () => {
     beforeEach(() => platformMock.mockReturnValue("win32"));
 
     it("invokes the absolute system PowerShell, never the bare name", async () => {
-      const getCalls = scriptExecFile([{ code: 0 }]); // detection
+      const getCalls = scriptSpawn([{ code: 0 }]);
       const mod = await freshModule();
       expect(await mod.isKeychainAvailable()).toBe(true);
       const call = getCalls()[0]!;
-      // Must be the absolute system path rooted at SystemRoot — never the bare
-      // "powershell" name, which libuv would resolve from the CWD first.
-      // (path.join uses the host separator, so normalize before matching.)
       const normalized = call.file.replace(/\\/g, "/");
       expect(normalized).toBe("C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe");
       expect(call.file).not.toBe("powershell");
@@ -216,52 +216,64 @@ describe("utils/keychain", () => {
     });
 
     it("passes the secret via env (AGAV_KC_SECRET), never on the command line", async () => {
-      const getCalls = scriptExecFile([
-        { code: 0 }, // detection
-        { code: 0 }, // store script
-      ]);
+      const getCalls = scriptSpawn([{ code: 0 }, { code: 0 }]);
       const mod = await freshModule();
       expect(await mod.setSecret("openai-api-key", "sk-secret")).toBe(true);
       const call = getCalls().find((c) => c.args.join(" ").includes("ProtectedData"));
       expect(call).toBeDefined();
       expect(call!.args.join(" ")).not.toContain("sk-secret");
       expect(call!.env?.AGAV_KC_SECRET).toBe("sk-secret");
-      // The store script makes the native cmdkey exit status authoritative.
       expect(call!.args.join(" ")).toContain("$LASTEXITCODE");
     });
 
     it("reports failure when the PowerShell store script exits non-zero", async () => {
-      scriptExecFile([
-        { code: 0 }, // detection
-        { code: 1 }, // store script fails (e.g. cmdkey error → exit 1)
-      ]);
+      scriptSpawn([{ code: 0 }, { code: 1 }]);
       const mod = await freshModule();
       expect(await mod.setSecret("k", "v")).toBe(false);
     });
   });
 
-  describe("circuit breaker", () => {
+  describe("timeout handling and circuit breaker", () => {
     beforeEach(() => platformMock.mockReturnValue("darwin"));
 
-    it("fast-fails subsequent calls after one timeout, avoiding serial timeouts", async () => {
-      const getCalls = scriptExecFile([
-        { code: 0 }, // detection
-        { code: 1, timeout: true }, // first getSecret times out → trips breaker
-      ]);
+    it("fails and force-kills a hung child at the deadline (SIGTERM then SIGKILL)", async () => {
+      vi.useFakeTimers();
+      const getCalls = scriptSpawn([{ code: 0 }, { hang: true }]);
       const mod = await freshModule();
-      expect(await mod.getSecret("a")).toBeUndefined();
-      // Further calls must not spawn any more processes.
+      const p = mod.getSecret("a");
+      // Let detection resolve, then advance to the per-call deadline.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5000); // CALL_TIMEOUT_MS
+      // After the deadline the call settles as failure without waiting for close.
+      expect(await p).toBeUndefined();
+      const hung = getCalls().find((c) => c.args[0] === "-i");
+      expect(hung!.killed).toContain("SIGTERM");
+      // Escalation to SIGKILL after the grace period.
+      await vi.advanceTimersByTimeAsync(600);
+      expect(hung!.killed).toContain("SIGKILL");
+    });
+
+    it("trips the breaker on timeout so later calls fast-fail without spawning", async () => {
+      vi.useFakeTimers();
+      const getCalls = scriptSpawn([{ code: 0 }, { hang: true }]);
+      const mod = await freshModule();
+      const p = mod.getSecret("a");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5000);
+      await p;
       const spawnsAfter = getCalls().length;
+      vi.useRealTimers();
       expect(await mod.getSecret("b")).toBeUndefined();
       expect(await mod.setSecret("c", "v")).toBe(false);
       expect(getCalls().length).toBe(spawnsAfter);
+      expect(mod.isStoreUnresponsive()).toBe(true);
     });
   });
 
   describe("unsupported platform", () => {
     it("reports no store and never shells out for secrets", async () => {
       platformMock.mockReturnValue("aix" as NodeJS.Platform);
-      const getCalls = scriptExecFile([]);
+      const getCalls = scriptSpawn([]);
       const mod = await freshModule();
       expect(await mod.isKeychainAvailable()).toBe(false);
       expect(await mod.setSecret("k", "v")).toBe(false);
@@ -273,7 +285,7 @@ describe("utils/keychain", () => {
   describe("input guards", () => {
     it("rejects empty account or secret without touching the store", async () => {
       platformMock.mockReturnValue("darwin");
-      const getCalls = scriptExecFile([{ code: 0 }]);
+      const getCalls = scriptSpawn([{ code: 0 }]);
       const mod = await freshModule();
       expect(await mod.setSecret("", "v")).toBe(false);
       expect(await mod.setSecret("k", "")).toBe(false);

@@ -31,7 +31,7 @@
  * with a non-printable byte).
  */
 
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { platform } from "node:os";
 import { join } from "node:path";
 
@@ -84,61 +84,109 @@ interface RunOptions {
  */
 let storeUnresponsive = false;
 
+/**
+ * True once a credential-store call has timed out this process; callers use it
+ * to avoid committing a `keychain:` placeholder they can no longer resolve
+ * (getSecret now fast-fails), which would otherwise orphan a key for the session.
+ */
+export function isStoreUnresponsive(): boolean {
+  return storeUnresponsive;
+}
+
 /** Reset the circuit breaker (tests only). */
 export function __resetKeychainBreakerForTests(): void {
   storeUnresponsive = false;
 }
+
+/** How long after SIGTERM we wait before escalating to SIGKILL. */
+const KILL_GRACE_MS = 500;
+
+/** Max bytes of stdout we keep; credential blobs are tiny, so this is generous. */
+const MAX_STDOUT = 1024 * 1024;
 
 /**
  * Run a command with no shell, resolving { code, stdout } and never rejecting.
  * A spawn failure (missing tool), a non-zero exit, a timeout, and an stdin pipe
  * error (EPIPE when the child closes its input early) all resolve to a non-zero
  * code rather than throwing — the whole module's "never throw" contract depends
- * on this. A timeout additionally trips the circuit breaker.
+ * on this.
+ *
+ * The deadline is enforced by OUR OWN timer, independent of the child: at the
+ * deadline we resolve as failure (code 1) AND trip the circuit breaker
+ * immediately — we never trust the child's exit status for a timed-out call. A
+ * child that catches SIGTERM and exits 0, or ignores SIGTERM entirely, can
+ * neither masquerade as success nor hang the caller: after the timeout we send
+ * SIGTERM, then SIGKILL after a short grace period, and the promise is already
+ * settled either way. This is why we use spawn (full signal control) rather than
+ * execFile (whose own `timeout` only sends one signal and reports via the exit
+ * callback, which a well-behaved-on-SIGTERM child can defeat).
  */
 function run(file: string, args: string[], options: RunOptions = {}): Promise<{ code: number; stdout: string }> {
   return new Promise((resolve) => {
     let settled = false;
-    const done = (code: number, stdout: string) => {
+    let stdout = "";
+    let deadline: NodeJS.Timeout | undefined;
+    let killTimer: NodeJS.Timeout | undefined;
+    let child: ReturnType<typeof spawn> | undefined;
+
+    // Resolving the promise does NOT cancel the SIGKILL escalation: once the
+    // deadline fires we must still force-kill a child that ignores SIGTERM, even
+    // though the caller has already moved on. `done` therefore only clears the
+    // deadline; the killTimer is cleared separately on a clean close.
+    const done = (code: number, out: string) => {
       if (settled) return;
       settled = true;
-      resolve({ code, stdout });
+      if (deadline) clearTimeout(deadline);
+      resolve({ code, stdout: out });
     };
+
     try {
-      const child = execFile(
-        file,
-        args,
-        {
-          timeout: CALL_TIMEOUT_MS,
-          maxBuffer: 1024 * 1024,
-          windowsHide: true,
-          env: options.env ? { ...process.env, ...options.env } : process.env,
-        },
-        (error, stdout) => {
-          if (error) {
-            // execFile marks a timeout-killed child with `killed: true`; trip the
-            // breaker so we never pay another full timeout this process.
-            if ((error as { killed?: boolean }).killed) storeUnresponsive = true;
-            const code = typeof (error as NodeJS.ErrnoException & { code?: number }).code === "number"
-              ? (error as unknown as { code: number }).code
-              : 1;
-            done(code, stdout ?? "");
-            return;
-          }
-          done(0, stdout ?? "");
-        },
-      );
-      child.on("error", () => done(1, ""));
+      child = spawn(file, args, {
+        windowsHide: true,
+        env: options.env ? { ...process.env, ...options.env } : process.env,
+        stdio: ["pipe", "pipe", "ignore"],
+      });
+
+      // Independent deadline: settle as failure and force-terminate the child
+      // regardless of how it responds to signals. Tripping the breaker here
+      // (not in an exit callback) guarantees it fires even for a hung child.
+      deadline = setTimeout(() => {
+        storeUnresponsive = true;
+        try { child?.kill("SIGTERM"); } catch { /* ignore */ }
+        killTimer = setTimeout(() => {
+          try { child?.kill("SIGKILL"); } catch { /* ignore */ }
+        }, KILL_GRACE_MS);
+        done(1, "");
+      }, CALL_TIMEOUT_MS);
+
+      child.stdout?.on("data", (chunk: Buffer) => {
+        if (stdout.length < MAX_STDOUT) stdout += chunk.toString("utf-8");
+      });
+      // Swallow stdout stream errors (e.g. after a kill) rather than crashing.
+      child.stdout?.on("error", () => {});
+
+      child.on("error", () => { if (killTimer) clearTimeout(killTimer); done(1, ""); }); // spawn failure
+      child.on("close", (code, signal) => {
+        // The child is gone; no need to escalate a kill.
+        if (killTimer) clearTimeout(killTimer);
+        // A signal-terminated child (our kill, or external) is a failure even if
+        // the exit code slot is null; never report success for it.
+        if (signal) { done(1, stdout); return; }
+        done(code === 0 ? 0 : (code ?? 1), stdout);
+      });
+
       if (options.input !== undefined) {
-        // The error listener must be on the stdin STREAM, not the child: a child
-        // that closes its input early surfaces EPIPE on child.stdin, and an
-        // unhandled 'error' there would crash the process despite the try/catch
-        // (it fires asynchronously). Swallow it — the exit code reports failure.
         const stdin = child.stdin;
         if (stdin) {
-          stdin.on("error", () => done(1, ""));
+          // The error listener must be on the stdin STREAM, not the child: a
+          // child that closes its input early surfaces EPIPE on child.stdin, and
+          // an unhandled 'error' there would crash the process (it fires
+          // asynchronously, outside the try/catch). Swallow it.
+          stdin.on("error", () => {});
           stdin.end(options.input);
         }
+      } else {
+        child.stdin?.end();
       }
     } catch {
       done(1, "");
@@ -212,6 +260,16 @@ function securityQuote(value: string): string {
 }
 
 /**
+ * Apple's interactive `security` reads its command line into a fixed 4096-byte
+ * buffer (≤4095 usable bytes per line). A longer line is silently split, and the
+ * trailing fragment becomes a second, empty, SUCCESSFUL command that would mask
+ * the real command's failure. We refuse to emit any line at/above this bound so a
+ * store can never be falsely reported successful; the caller then falls back to
+ * in-file encryption. Normal API keys are far below this limit even after base64.
+ */
+const SECURITY_LINE_LIMIT = 4095;
+
+/**
  * Store `secret` under `account` in the OS credential store. Returns true on
  * success. Overwrites any existing entry for the same account so re-saving a
  * rotated key does not accumulate duplicates. Never throws.
@@ -234,8 +292,11 @@ export async function setSecret(account: string, secret: string): Promise<boolea
         "-s", securityQuote(SERVICE),
         "-a", securityQuote(account),
         "-w", securityQuote(encoded),
-      ].join(" ") + "\n";
-      const { code } = await run("security", ["-i"], { input: line });
+      ].join(" ");
+      // Refuse an over-long interactive line (the parser would split it and
+      // falsely report success); fall back to in-file encryption instead.
+      if (Buffer.byteLength(line, "utf-8") >= SECURITY_LINE_LIMIT) return false;
+      const { code } = await run("security", ["-i"], { input: line + "\n" });
       return code === 0;
     }
     case "secret-tool": {
