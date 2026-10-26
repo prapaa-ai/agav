@@ -19,8 +19,11 @@ const indexOfUses = (prefix: string) => steps.findIndex((step: any) => String(st
 describe("release build provenance attestations", () => {
   it("attests artifacts on the native build job with the required OIDC/attestation scopes", () => {
     expect(attest).toBeDefined();
-    // Pinned action version, not a floating major, so the signing step is fixed.
-    expect(attest.uses).toMatch(/^actions\/attest-build-provenance@v\d+\.\d+\.\d+$/);
+    // Pin the action to a full commit SHA (not a floating tag), matching the
+    // repo convention for third-party actions, with the human version in a
+    // trailing comment. A bare `@vX.Y.Z` tag is rejected so a non-existent or
+    // mutable ref cannot slip in.
+    expect(attest.uses).toMatch(/^actions\/attest-build-provenance@[0-9a-f]{40}$/);
     expect(attest.if).toBeUndefined();
     expect(attest["continue-on-error"]).toBeUndefined();
     // Attestation requires minting an OIDC token and writing the attestation,
@@ -52,11 +55,21 @@ describe("release build provenance attestations", () => {
     }
   });
 
-  it("documents attestation verification in the release notes", () => {
+  it("records the human-readable version alongside the SHA pin", () => {
+    // YAML drops comments, so assert the `# vX.Y.Z` annotation in the raw file.
+    const raw = readFileSync(join(root, ".github/workflows/release.yml"), "utf8");
+    expect(raw).toMatch(/actions\/attest-build-provenance@[0-9a-f]{40} # v\d+\.\d+\.\d+/);
+  });
+
+  it("documents verification constrained to the signer workflow and source commit", () => {
     const releaseSteps = workflow.jobs["release"].steps as any[];
     const createRelease = releaseSteps.find((step: any) => step.name === "Create GitHub Release");
     const body = String(createRelease.with.body);
     expect(body).toContain("gh attestation verify");
     expect(body).toContain("--repo ${{ github.repository }}");
+    // Repo-only verification would accept provenance from any workflow or commit
+    // in the repo; pin both the signer workflow and the source commit.
+    expect(body).toContain("--signer-workflow ${{ github.repository }}/.github/workflows/release.yml");
+    expect(body).toContain("--source-digest ${{ github.sha }}");
   });
 });

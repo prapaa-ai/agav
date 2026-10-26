@@ -322,7 +322,7 @@ jobs:
       # The detached .sha256/.sig files are not attested — they are not the
       # artifact, and the checksum is redundant with the attested digest.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2.6.0
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
             dist/agav-${{ matrix.target }}${{ matrix.ext }}
@@ -437,14 +437,21 @@ jobs:
 
             Every binary carries a GitHub-signed build-provenance attestation
             proving it was built by this repository's release workflow from this
-            commit. With the [GitHub CLI](https://cli.github.com):
+            release's commit. Constrain the check to the signer workflow and the
+            source commit, not just the repository, with the
+            [GitHub CLI](https://cli.github.com):
 
             ```bash
-            gh attestation verify agav-darwin-arm64 --repo ${{ github.repository }}
+            gh attestation verify agav-darwin-arm64 \
+              --repo ${{ github.repository }} \
+              --signer-workflow ${{ github.repository }}/.github/workflows/release.yml \
+              --source-digest ${{ github.sha }}
             ```
 
-            Works on the raw binary or the `.gz` before decompressing. A failure
-            means the file was not produced by this workflow — do not run it.
+            Works on the raw binary or the `.gz` before decompressing. If
+            verification fails, do not run the file until the failure is
+            resolved — treat an unverified artifact as untrusted (a failure can
+            also be a network or authentication problem, not only tampering).
 
             <details>
             <summary>Manual install</summary>
