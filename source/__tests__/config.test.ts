@@ -429,6 +429,43 @@ describe("config", () => {
     expect(body).toContain("\"provider\": \"anthropic\"");
   });
 
+  it("serializes writers through the shared config lock (acquire + release)", async () => {
+    readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const mod = await import("../config/config.js");
+    await mod.saveConfig({
+      provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
+      errorRetries: 3, permissionMode: "ask",
+    });
+    // The lock is taken with an exclusive create ("wx") and released by unlinking it.
+    const openCall = vi.mocked(fs.open).mock.calls.find((c) => String(c[0]).endsWith(".config.lock"));
+    expect(openCall).toBeDefined();
+    expect(openCall![1]).toBe("wx");
+    expect(vi.mocked(fs.unlink).mock.calls.some((c) => String(c[0]).endsWith(".config.lock"))).toBe(true);
+  });
+
+  it("a blocking writer waits for a live lock, then proceeds once it frees", async () => {
+    readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    // First open() attempt: lock held by a live peer (EEXIST + fresh mtime).
+    // Second attempt (after a poll): lock is free and acquired.
+    let held = true;
+    vi.mocked(fs.open).mockImplementation(async (p: any, flags: any) => {
+      if (String(p).endsWith(".config.lock") && flags === "wx" && held) {
+        held = false; // peer releases before the next poll
+        throw Object.assign(new Error("exists"), { code: "EEXIST" });
+      }
+      return lockHandle as any;
+    });
+    vi.mocked(fs.stat).mockResolvedValue({ mtimeMs: Date.now() } as any); // fresh → live peer
+
+    const mod = await import("../config/config.js");
+    await mod.saveConfig({
+      provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
+      errorRetries: 3, permissionMode: "ask",
+    });
+    // Despite initial contention, the save eventually wrote the config.
+    expect(writeFile).toHaveBeenCalled();
+  });
+
   it("resolves keychain placeholders from the OS store on load", async () => {
     keychainMock.getSecret.mockImplementation(async (account: string) =>
       account === "anthropic-api-key" ? "resolved-anthropic" : undefined,

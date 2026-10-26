@@ -740,41 +740,43 @@ async function readStoredConfig(): Promise<Record<string, unknown>> {
  * clearStoredApiKey() for an explicit removal.
  */
 export async function saveConfig(config: AgavConfig): Promise<void> {
-  const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
-  const out: Record<string, unknown> = { ...safe };
+  await withConfigLock(async () => {
+    const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
+    const out: Record<string, unknown> = { ...safe };
 
-  const existing = await readStoredConfig();
-  const keychain = await isKeychainAvailable();
-  const keys: Array<[keyof typeof KEYCHAIN_ACCOUNTS, string | undefined]> = [
-    ["anthropicApiKey", anthropicApiKey],
-    ["openaiApiKey", openaiApiKey],
-    ["openrouterApiKey", openrouterApiKey],
-    ["nvidiaApiKey", nvidiaApiKey],
-    ["deepseekApiKey", deepseekApiKey],
-    ["geminiApiKey", geminiApiKey],
-    ["ollamaApiKey", ollamaApiKey],
-  ];
+    const existing = await readStoredConfig();
+    const keychain = await isKeychainAvailable();
+    const keys: Array<[keyof typeof KEYCHAIN_ACCOUNTS, string | undefined]> = [
+      ["anthropicApiKey", anthropicApiKey],
+      ["openaiApiKey", openaiApiKey],
+      ["openrouterApiKey", openrouterApiKey],
+      ["nvidiaApiKey", nvidiaApiKey],
+      ["deepseekApiKey", deepseekApiKey],
+      ["geminiApiKey", geminiApiKey],
+      ["ollamaApiKey", ollamaApiKey],
+    ];
 
-  for (const [field, value] of keys) {
-    const account = KEYCHAIN_ACCOUNTS[field];
-    if (!value) {
-      // Absent/empty: preserve whatever is already persisted (never delete the
-      // store entry here — see the docblock). If nothing was stored, leave the
-      // field unset.
-      const prior = existing[field];
-      if (typeof prior === "string" && prior.length > 0) out[field] = prior;
-      continue;
+    for (const [field, value] of keys) {
+      const account = KEYCHAIN_ACCOUNTS[field];
+      if (!value) {
+        // Absent/empty: preserve whatever is already persisted (never delete the
+        // store entry here — see the docblock). If nothing was stored, leave the
+        // field unset.
+        const prior = existing[field];
+        if (typeof prior === "string" && prior.length > 0) out[field] = prior;
+        continue;
+      }
+      if (keychain && (await setSecret(account, value))) {
+        out[field] = keychainRef(account);
+      } else {
+        // No store, or the store write failed: fall back to in-file encryption so
+        // a save never silently loses the user's key.
+        out[field] = encrypt(value);
+      }
     }
-    if (keychain && (await setSecret(account, value))) {
-      out[field] = keychainRef(account);
-    } else {
-      // No store, or the store write failed: fall back to in-file encryption so
-      // a save never silently loses the user's key.
-      out[field] = encrypt(value);
-    }
-  }
 
-  await writeConfigAtomic(out);
+    await writeConfigAtomic(out);
+  });
 }
 
 /**
@@ -784,35 +786,44 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
  */
 export async function clearStoredApiKey(field: keyof typeof KEYCHAIN_ACCOUNTS): Promise<void> {
   const account = KEYCHAIN_ACCOUNTS[field];
-  // Remove the config FIELD first, then the store secret. If we crash between the
-  // two, the config no longer references the secret (no dangling placeholder that
-  // resolves to nothing), and the orphaned store entry is harmlessly overwritten
-  // or re-cleared later. Doing the delete first would risk the opposite: a failed
-  // config write leaving a placeholder pointing at an already-deleted secret.
-  const stored = await readStoredConfig();
-  if (field in stored) {
-    delete stored[field];
-    await writeConfigAtomic(stored);
-  }
-  if (await isKeychainAvailable()) {
-    await deleteSecret(account);
-  }
+  await withConfigLock(async () => {
+    // Remove the config FIELD first, then the store secret. If we crash between
+    // the two, the config no longer references the secret (no dangling
+    // placeholder that resolves to nothing), and the orphaned store entry is
+    // harmlessly overwritten or re-cleared later. Doing the delete first would
+    // risk the opposite: a failed config write leaving a placeholder pointing at
+    // an already-deleted secret.
+    const stored = await readStoredConfig();
+    if (field in stored) {
+      delete stored[field];
+      await writeConfigAtomic(stored);
+    }
+    if (await isKeychainAvailable()) {
+      await deleteSecret(account);
+    }
+  });
 }
 
-const MIGRATION_LOCK_PATH = join(AGAV_DIR, ".migrate.lock");
+// A single lock serializes EVERY writer of the global config file — the
+// migration, saveConfig, saveStatusBarLayout, and clearStoredApiKey — so no two
+// read-modify-write cycles can interleave and clobber each other (a credential
+// rotation vs. a migration, a status-bar edit vs. a key save, etc.).
+const CONFIG_LOCK_PATH = join(AGAV_DIR, ".config.lock");
 /** A lock older than this is considered stale (a crashed holder) and reclaimed. */
-const MIGRATION_LOCK_STALE_MS = 60_000;
+const CONFIG_LOCK_STALE_MS = 60_000;
 /** Overall wall-clock budget for the whole migration (bounds first-run startup). */
 const MIGRATION_BUDGET_MS = 15_000;
+/** How long a blocking writer waits for the lock before proceeding best-effort. */
+const CONFIG_LOCK_WAIT_MS = 5_000;
+/** Poll interval while waiting for a contended lock. */
+const CONFIG_LOCK_POLL_MS = 50;
 
 /**
- * Acquire a cross-process lock serializing the migration's read→store→rewrite
- * transaction so two concurrent startups (or a concurrent config writer) cannot
- * interleave and clobber each other's credential rotation or edits. Returns a
- * release function, or null when the lock is held by a live peer (caller then
- * skips migration this launch — a peer is handling it). Never throws.
+ * Try once to acquire the shared config lock. Returns a release function on
+ * success, null when a LIVE peer holds it (a stale lock is reclaimed and retried
+ * within the single call). Never throws.
  */
-async function acquireMigrationLock(): Promise<(() => Promise<void>) | null> {
+async function tryAcquireConfigLock(): Promise<(() => Promise<void>) | null> {
   const { open, stat, unlink } = await import("node:fs/promises");
   try {
     await ensureDir(AGAV_DIR);
@@ -821,17 +832,16 @@ async function acquireMigrationLock(): Promise<(() => Promise<void>) | null> {
   }
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const handle = await open(MIGRATION_LOCK_PATH, "wx", 0o600);
+      const handle = await open(CONFIG_LOCK_PATH, "wx", 0o600);
       await handle.writeFile(String(process.pid));
       await handle.close();
-      return async () => { await unlink(MIGRATION_LOCK_PATH).catch(() => {}); };
+      return async () => { await unlink(CONFIG_LOCK_PATH).catch(() => {}); };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") return null;
-      // Lock exists: reclaim it only if it is stale (holder likely crashed).
       try {
-        const info = await stat(MIGRATION_LOCK_PATH);
-        if (Date.now() - info.mtimeMs < MIGRATION_LOCK_STALE_MS) return null; // live peer
-        await unlink(MIGRATION_LOCK_PATH).catch(() => {});
+        const info = await stat(CONFIG_LOCK_PATH);
+        if (Date.now() - info.mtimeMs < CONFIG_LOCK_STALE_MS) return null; // live peer
+        await unlink(CONFIG_LOCK_PATH).catch(() => {});
         // loop once more to re-create it
       } catch {
         return null;
@@ -839,6 +849,42 @@ async function acquireMigrationLock(): Promise<(() => Promise<void>) | null> {
     }
   }
   return null;
+}
+
+/**
+ * Run `fn` while holding the shared config lock, WAITING (with a bounded poll)
+ * for a contended lock rather than giving up — a user-initiated save must not be
+ * silently dropped. If the lock cannot be acquired within the budget (a wedged
+ * holder), proceed anyway: a slightly-racy write is better than losing the
+ * user's change entirely, and the atomic temp+rename still prevents a torn file.
+ * The lock is always released.
+ */
+async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + CONFIG_LOCK_WAIT_MS;
+  let release: (() => Promise<void>) | null = null;
+  while (Date.now() < deadline) {
+    release = await tryAcquireConfigLock();
+    if (release) break;
+    await new Promise((r) => setTimeout(r, CONFIG_LOCK_POLL_MS));
+  }
+  try {
+    return await fn();
+  } finally {
+    if (release) await release();
+  }
+}
+
+/**
+ * Acquire the shared config lock for the migration: non-blocking, returning null
+ * when a peer holds it so this launch simply skips (a peer is handling it).
+ * Never throws.
+ */
+async function acquireMigrationLock(): Promise<(() => Promise<void>) | null> {
+  try {
+    return await tryAcquireConfigLock();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -989,38 +1035,21 @@ export async function migrateSecretsToKeychain(): Promise<number> {
 export async function saveStatusBarLayout(
   layout: import("./status-bar-layout.js").StatusBarLayout | undefined,
 ): Promise<void> {
-  await ensureDir(AGAV_DIR);
-  let stored: Record<string, unknown> = {};
-  try {
-    stored = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
-    if (typeof stored !== "object" || stored === null) stored = {};
-  } catch {
-    // Missing or corrupt file: start from an empty object so we still persist
-    // the layout rather than failing. A corrupt file is effectively replaced.
-    stored = {};
-  }
-  if (layout === undefined) {
-    delete stored.statusBar;
-  } else {
-    stored.statusBar = layout;
-  }
-  // Unpredictable temp name (random suffix, not the guessable pid) in the same
-  // directory as the target so the final rename stays atomic on one filesystem.
-  const { randomBytes } = await import("node:crypto");
-  const tmpPath = `${CONFIG_PATH}.tmp.${randomBytes(8).toString("hex")}`;
-  const serialized = JSON.stringify(stored, null, 2) + "\n";
-  const { rename, unlink } = await import("node:fs/promises");
-  // "wx" (O_CREAT | O_EXCL) refuses to open an existing path, so a pre-planted
-  // symlink at tmpPath can never be followed; mode 0o600 keeps the config —
-  // which may hold encrypted API keys — owner-only even before the rename.
-  try {
-    await writeFile(tmpPath, serialized, { mode: 0o600, flag: "wx" });
-    await rename(tmpPath, CONFIG_PATH);
-  } catch (err) {
-    // Never leave an orphaned temp file behind on any failure.
-    await unlink(tmpPath).catch(() => {});
-    throw err;
-  }
+  // Held under the shared config lock so a concurrent saveConfig / key migration
+  // cannot read a stale copy and clobber this layout change (or vice versa).
+  await withConfigLock(async () => {
+    // A missing/corrupt file resolves to {} (effectively replaced); a real read
+    // error (EACCES/EIO) propagates rather than silently discarding existing keys.
+    const stored = await readStoredConfig();
+    if (layout === undefined) {
+      delete stored.statusBar;
+    } else {
+      stored.statusBar = layout;
+    }
+    // writeConfigAtomic reuses the stored object so already-encrypted API keys and
+    // keychain: placeholders stay untouched, and the temp+rename write stays atomic.
+    await writeConfigAtomic(stored);
+  });
 }
 
 /** Return the root directory used for Agav's global state files. */
