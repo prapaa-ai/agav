@@ -11,6 +11,24 @@ vi.mock("../utils/encrypt.js", () => ({
   encrypt: vi.fn((value: string) => `enc:${value}`),
   decrypt: vi.fn((value: string) => (value.startsWith("enc:") ? value.slice(4) : value)),
 }));
+// Default to "no OS credential store" so config save/load exercises the
+// in-file encryption fallback deterministically; keychain behaviour has its own
+// unit tests. Individual tests can override isKeychainAvailable per case.
+//
+// The mock fns are hoisted so their identities stay stable across the
+// vi.resetModules() done in beforeEach: both this test file and config.js must
+// observe the same spies after a reset, otherwise per-test mockImplementation
+// calls would land on a stale instance.
+const keychainMock = vi.hoisted(() => ({
+  isKeychainAvailable: vi.fn(),
+  isKeychainRef: vi.fn((value: string) => value.startsWith("keychain:")),
+  keychainAccount: vi.fn((value: string) => (value.startsWith("keychain:") ? value.slice("keychain:".length) : "")),
+  keychainRef: vi.fn((account: string) => `keychain:${account}`),
+  getSecret: vi.fn(),
+  setSecret: vi.fn(),
+  deleteSecret: vi.fn(),
+}));
+vi.mock("../utils/keychain.js", () => keychainMock);
 
 const fs = await import("node:fs/promises");
 const readFile = vi.mocked(fs.readFile);
@@ -32,6 +50,15 @@ describe("config", () => {
     delete process.env.OLLAMA_API_KEY;
     delete process.env.VERTEX_AI_CREDENTIALS_PATH;
     delete process.env.VERTEX_AI_LOCATION;
+    // Restore default keychain behaviour (unavailable; stable passthrough
+    // helpers) after resetAllMocks clears implementations between tests.
+    keychainMock.isKeychainAvailable.mockReset().mockResolvedValue(false);
+    keychainMock.getSecret.mockReset().mockResolvedValue(undefined);
+    keychainMock.setSecret.mockReset().mockResolvedValue(true);
+    keychainMock.deleteSecret.mockReset().mockResolvedValue(undefined);
+    keychainMock.isKeychainRef.mockImplementation((value: string) => value.startsWith("keychain:"));
+    keychainMock.keychainAccount.mockImplementation((value: string) => (value.startsWith("keychain:") ? value.slice("keychain:".length) : ""));
+    keychainMock.keychainRef.mockImplementation((account: string) => `keychain:${account}`);
   });
 
   it("accepts valid effort levels", async () => {
@@ -303,5 +330,93 @@ describe("config", () => {
     expect(body).toContain("enc:r");
     expect(body).toContain("enc:g");
     expect(body).toContain("enc:l");
+  });
+
+  it("stores secrets in the OS credential store and writes only placeholders when available", async () => {
+    keychainMock.isKeychainAvailable.mockResolvedValue(true);
+    keychainMock.setSecret.mockResolvedValue(true);
+
+    const mod = await import("../config/config.js");
+    await mod.saveConfig({
+      provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
+      errorRetries: 3, permissionMode: "ask",
+      anthropicApiKey: "a-secret", openaiApiKey: "o-secret",
+    });
+
+    const body = String(writeFile.mock.calls.at(-1)?.[1]);
+    // The plaintext and the enc: fallback must never touch the file when the
+    // credential store accepted the secret.
+    expect(body).not.toContain("a-secret");
+    expect(body).not.toContain("enc:");
+    expect(body).toContain("keychain:anthropic-api-key");
+    expect(body).toContain("keychain:openai-api-key");
+    expect(keychainMock.setSecret).toHaveBeenCalledWith("anthropic-api-key", "a-secret");
+    expect(keychainMock.setSecret).toHaveBeenCalledWith("openai-api-key", "o-secret");
+  });
+
+  it("falls back to in-file encryption when a credential-store write fails", async () => {
+    keychainMock.isKeychainAvailable.mockResolvedValue(true);
+    keychainMock.setSecret.mockResolvedValue(false);
+
+    const mod = await import("../config/config.js");
+    await mod.saveConfig({
+      provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
+      errorRetries: 3, permissionMode: "ask", anthropicApiKey: "a-secret",
+    });
+
+    const body = String(writeFile.mock.calls.at(-1)?.[1]);
+    expect(body).toContain("enc:a-secret");
+    expect(body).not.toContain("keychain:");
+  });
+
+  it("deletes the stored secret when a key is cleared on save", async () => {
+    keychainMock.isKeychainAvailable.mockResolvedValue(true);
+    keychainMock.deleteSecret.mockResolvedValue(undefined);
+
+    const mod = await import("../config/config.js");
+    await mod.saveConfig({
+      provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
+      errorRetries: 3, permissionMode: "ask", anthropicApiKey: undefined,
+    });
+
+    expect(keychainMock.deleteSecret).toHaveBeenCalledWith("anthropic-api-key");
+    const body = String(writeFile.mock.calls.at(-1)?.[1]);
+    expect(body).not.toContain("anthropicApiKey");
+  });
+
+  it("resolves keychain placeholders from the OS store on load", async () => {
+    keychainMock.getSecret.mockImplementation(async (account: string) =>
+      account === "anthropic-api-key" ? "resolved-anthropic" : undefined,
+    );
+
+    const { homedir } = await import("node:os");
+    const globalPath = `${homedir()}/.agav/config.json`;
+    readFile.mockImplementation(async (path: any) => {
+      if (String(path) === globalPath) {
+        return JSON.stringify({ anthropicApiKey: "keychain:anthropic-api-key" });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    const loaded = await mod.loadConfig();
+    expect(loaded.anthropicApiKey).toBe("resolved-anthropic");
+  });
+
+  it("reports a missing key (never the placeholder) when the store cannot resolve it", async () => {
+    keychainMock.getSecret.mockResolvedValue(undefined);
+
+    const { homedir } = await import("node:os");
+    const globalPath = `${homedir()}/.agav/config.json`;
+    readFile.mockImplementation(async (path: any) => {
+      if (String(path) === globalPath) {
+        return JSON.stringify({ anthropicApiKey: "keychain:anthropic-api-key" });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    const loaded = await mod.loadConfig();
+    expect(loaded.anthropicApiKey).toBeUndefined();
   });
 });

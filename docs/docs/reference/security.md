@@ -176,7 +176,8 @@ High-risk patterns are blocked by the shell tool before they reach the sandbox, 
 ## Secrets and extensions
 
 - Prefer API-key environment variables.
-- Saved provider credentials are encrypted with AES-256-GCM before being written to global configuration.
+- Saved provider credentials are stored in the operating system's credential store when one is available — macOS Keychain (`security`), the Linux Secret Service / login keyring (`secret-tool`/libsecret), or the Windows Credential Manager (DPAPI). In that case `~/.agav/config.json` holds only a `keychain:` placeholder, never the secret, and the key stays under the OS's access control. When no credential store is available (for example a headless Linux host without libsecret), Agav falls back to encrypting the key with AES-256-GCM in the global configuration file.
+- Vertex AI’s service-account JSON is not an API key and is never encrypted into `config.json` — it is read from the path in `VERTEX_AI_CREDENTIALS_PATH` or `vertexAICredentialsPath`. Keep the file outside the repository, restrict its permissions, and grant the service account only the `roles/aiplatform.user` role it needs.
 - Vertex AI’s service-account JSON is not an API key and is never encrypted into `config.json` — it is read from the path in `VERTEX_AI_CREDENTIALS_PATH` or `vertexAICredentialsPath`. Keep the file outside the repository, restrict its permissions, and grant the service account only the `roles/aiplatform.user` role it needs.
 - Do not commit secrets to `./.agav/config.json`.
 - MCP servers and plugins are executable local integrations. Review their source and configuration before enabling them.

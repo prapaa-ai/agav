@@ -3,6 +3,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
 import { decrypt, encrypt } from "../utils/encrypt.js";
+import {
+  isKeychainAvailable,
+  isKeychainRef,
+  keychainAccount,
+  keychainRef,
+  getSecret,
+  setSecret,
+  deleteSecret,
+} from "../utils/keychain.js";
 import { loadOrgPolicy, applyOrgConfig, applyGatewayToken } from "./org-config.js";
 
 export type PermissionMode = "ask" | "auto-accept" | "deny-writes";
@@ -502,6 +511,39 @@ export async function loadGlobalConfig(): Promise<AgavConfig> {
   return merged;
 }
 
+/**
+ * Resolve a secret value read from a config file into its plaintext. A stored
+ * value is one of:
+ *   - a `keychain:` placeholder — the real secret lives in the OS credential
+ *     store; look it up by account. On any store failure, return undefined so
+ *     the provider reports a missing key rather than leaking the placeholder.
+ *   - an `enc:` ciphertext or plaintext — decrypt() handles both (file fallback).
+ */
+async function resolveStoredSecret(value: string | undefined): Promise<string | undefined> {
+  if (!value) return undefined;
+  if (isKeychainRef(value)) {
+    const secret = await getSecret(keychainAccount(value));
+    return secret || undefined;
+  }
+  return decrypt(value) || undefined;
+}
+
+/**
+ * Pick the highest-precedence API-key source and resolve it to plaintext. An
+ * env var wins (and may itself be an enc: value a user exported); otherwise the
+ * project file, then the global file, then the built-in default — each of which
+ * may be a keychain: or enc: stored value.
+ */
+async function resolveApiKey(
+  envValue: string | undefined,
+  projectValue: string | undefined,
+  globalValue: string | undefined,
+  defaultValue: string | undefined,
+): Promise<string | undefined> {
+  if (envValue !== undefined) return decrypt(envValue) || undefined;
+  return (await resolveStoredSecret(projectValue ?? globalValue ?? defaultValue)) || undefined;
+}
+
 /** Load config from global and project files, then apply environment-derived overrides. */
 export async function loadConfig(): Promise<AgavConfig> {
   await ensureProjectConfigTemplate();
@@ -539,42 +581,34 @@ export async function loadConfig(): Promise<AgavConfig> {
     ];
   }
 
-  merged.anthropicApiKey = decrypt(
-    process.env["ANTHROPIC_API_KEY"] ??
-    projectConfig.anthropicApiKey ??
-    globalConfig.anthropicApiKey ??
-    DEFAULT_CONFIG.anthropicApiKey ?? "",
-  ) || undefined;
-  merged.openaiApiKey = decrypt(
-    process.env["OPENAI_API_KEY"] ??
-    projectConfig.openaiApiKey ??
-    globalConfig.openaiApiKey ??
-    DEFAULT_CONFIG.openaiApiKey ?? "",
-  ) || undefined;
-  merged.openrouterApiKey = decrypt(
-    process.env["OPENROUTER_API_KEY"] ??
-    projectConfig.openrouterApiKey ??
-    globalConfig.openrouterApiKey ??
-    DEFAULT_CONFIG.openrouterApiKey ?? "",
-  ) || undefined;
-  merged.nvidiaApiKey = decrypt(
-    process.env["NVIDIA_API_KEY"] ??
-    projectConfig.nvidiaApiKey ??
-    globalConfig.nvidiaApiKey ??
-    DEFAULT_CONFIG.nvidiaApiKey ?? "",
-  ) || undefined;
-  merged.deepseekApiKey = decrypt(
-    process.env["DEEPSEEK_API_KEY"] ??
-    projectConfig.deepseekApiKey ??
-    globalConfig.deepseekApiKey ??
-    DEFAULT_CONFIG.deepseekApiKey ?? "",
-  ) || undefined;
-  merged.geminiApiKey = decrypt(
-    process.env["GEMINI_API_KEY"] ??
-    projectConfig.geminiApiKey ??
-    globalConfig.geminiApiKey ??
-    DEFAULT_CONFIG.geminiApiKey ?? "",
-  ) || undefined;
+  // Resolve each API key once, preferring an env var, then the project file,
+  // then the global file, then the built-in default. A stored value may be a
+  // keychain: placeholder (secret lives in the OS credential store) or an enc:
+  // ciphertext (file fallback); resolveStoredSecret handles both.
+  merged.anthropicApiKey = await resolveApiKey(
+    process.env["ANTHROPIC_API_KEY"],
+    projectConfig.anthropicApiKey, globalConfig.anthropicApiKey, DEFAULT_CONFIG.anthropicApiKey,
+  );
+  merged.openaiApiKey = await resolveApiKey(
+    process.env["OPENAI_API_KEY"],
+    projectConfig.openaiApiKey, globalConfig.openaiApiKey, DEFAULT_CONFIG.openaiApiKey,
+  );
+  merged.openrouterApiKey = await resolveApiKey(
+    process.env["OPENROUTER_API_KEY"],
+    projectConfig.openrouterApiKey, globalConfig.openrouterApiKey, DEFAULT_CONFIG.openrouterApiKey,
+  );
+  merged.nvidiaApiKey = await resolveApiKey(
+    process.env["NVIDIA_API_KEY"],
+    projectConfig.nvidiaApiKey, globalConfig.nvidiaApiKey, DEFAULT_CONFIG.nvidiaApiKey,
+  );
+  merged.deepseekApiKey = await resolveApiKey(
+    process.env["DEEPSEEK_API_KEY"],
+    projectConfig.deepseekApiKey, globalConfig.deepseekApiKey, DEFAULT_CONFIG.deepseekApiKey,
+  );
+  merged.geminiApiKey = await resolveApiKey(
+    process.env["GEMINI_API_KEY"],
+    projectConfig.geminiApiKey, globalConfig.geminiApiKey, DEFAULT_CONFIG.geminiApiKey,
+  );
 
   // Vertex AI — the credentials path alone enables the provider; there is no
   // separate on/off flag to keep in sync with it.
@@ -601,12 +635,10 @@ export async function loadConfig(): Promise<AgavConfig> {
     const p = parseInt(process.env["OLLAMA_PORT"]!, 10);
     if (!isNaN(p)) merged.ollamaPort = p;
   }
-  merged.ollamaApiKey = decrypt(
-    process.env["OLLAMA_API_KEY"] ??
-    projectConfig.ollamaApiKey ??
-    globalConfig.ollamaApiKey ??
-    DEFAULT_CONFIG.ollamaApiKey ?? "",
-  ) || undefined;
+  merged.ollamaApiKey = await resolveApiKey(
+    process.env["OLLAMA_API_KEY"],
+    projectConfig.ollamaApiKey, globalConfig.ollamaApiKey, DEFAULT_CONFIG.ollamaApiKey,
+  );
 
   // Organization policy applies last so it overrides global, project, and env
   // sources alike. An admin's managed config is a non-overridable floor; the
@@ -626,19 +658,58 @@ export async function loadConfig(): Promise<AgavConfig> {
   return merged;
 }
 
-/** Persist config to the global config file, encrypting any API keys present. */
+/** config.json account names for each API key stored in the OS credential store. */
+const KEYCHAIN_ACCOUNTS = {
+  anthropicApiKey: "anthropic-api-key",
+  openaiApiKey: "openai-api-key",
+  openrouterApiKey: "openrouter-api-key",
+  nvidiaApiKey: "nvidia-api-key",
+  deepseekApiKey: "deepseek-api-key",
+  geminiApiKey: "gemini-api-key",
+  ollamaApiKey: "ollama-api-key",
+} as const;
+
+/**
+ * Persist config to the global config file. API keys are stored in the OS
+ * credential store when one is available (preferred), leaving only a
+ * `keychain:` placeholder in config.json so the plaintext never touches the
+ * file. When no store is available (e.g. a headless box without libsecret) we
+ * fall back to the existing AES-encrypted-in-file representation.
+ */
 export async function saveConfig(config: AgavConfig): Promise<void> {
   await ensureDir(AGAV_DIR);
   const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
   const out: Record<string, unknown> = { ...safe };
-  if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
-  if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
-  if (openrouterApiKey) out.openrouterApiKey = encrypt(openrouterApiKey);
-  if (nvidiaApiKey) out.nvidiaApiKey = encrypt(nvidiaApiKey);
-  if (deepseekApiKey) out.deepseekApiKey = encrypt(deepseekApiKey);
-  if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
-  if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
-  await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
+
+  const keychain = await isKeychainAvailable();
+  const keys: Array<[keyof typeof KEYCHAIN_ACCOUNTS, string | undefined]> = [
+    ["anthropicApiKey", anthropicApiKey],
+    ["openaiApiKey", openaiApiKey],
+    ["openrouterApiKey", openrouterApiKey],
+    ["nvidiaApiKey", nvidiaApiKey],
+    ["deepseekApiKey", deepseekApiKey],
+    ["geminiApiKey", geminiApiKey],
+    ["ollamaApiKey", ollamaApiKey],
+  ];
+
+  for (const [field, value] of keys) {
+    const account = KEYCHAIN_ACCOUNTS[field];
+    if (!value) {
+      // Clearing a key: drop any stored secret too so a removed key cannot be
+      // silently resurrected from the OS store on the next load.
+      if (keychain) await deleteSecret(account);
+      continue;
+    }
+    if (keychain && (await setSecret(account, value))) {
+      out[field] = keychainRef(account);
+    } else {
+      // No store, or the store write failed: fall back to in-file encryption so
+      // a save never silently loses the user's key.
+      out[field] = encrypt(value);
+    }
+  }
+
+  await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n", { mode: 0o600 });
 }
 
 /**
