@@ -913,7 +913,12 @@ export async function main() {
     } else {
       // ID prefix given — find matching session
       const prefix = String(flags.resume);
-      const match = sessions.find((s) => s.id.startsWith(prefix));
+      const matches = sessions.filter((s) => s.id.startsWith(prefix));
+      const match = sessions.find((s) => s.id === prefix) ?? (matches.length === 1 ? matches[0] : undefined);
+      if (!match && matches.length > 1) {
+        console.error(`\n  Ambiguous session ID prefix "${prefix}". Use a longer ID.\n`);
+        process.exit(1);
+      }
       if (!match) {
         console.error(`\n  No session matching "${prefix}". Use --resume to list all.\n`);
         process.exit(1);

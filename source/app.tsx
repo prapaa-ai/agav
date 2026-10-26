@@ -255,7 +255,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const customizeTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
-  const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
+  const detachResolverRef = useRef(new KeybindingResolver(keybindings, ["detachSession"]));
+  const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS.filter(action => action !== "detachSession")));
   /** Lets handleSubmit re-sync InputPrompt's caret after rewriting its buffer. */
 
   const {
@@ -887,6 +888,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
   useInput((rawChar, rawKey) => {
     if (workflowsTUI) return; // The full-screen workflow view owns the keyboard.
+    // Resolve before confirmation/queue guards: detaching must never answer consent.
+    const normalized = normalizeKeyEvent(rawChar, rawKey);
+    const detachMatch = detachResolverRef.current.feed(normalized.input, normalized.key);
+    if (detachMatch.pending || detachMatch.action) {
+      if (detachMatch.action && canDetach) {
+        void detachCurrentSession().then(() => exit()).catch(error => showStatusLine(error instanceof Error ? error.message : String(error)));
+      }
+      return;
+    }
     if (voice.isActive()) {
       const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
       if (key.eventType === "release" || key.eventType === "repeat") return;
@@ -906,11 +916,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
         voice.stop();
       }
-      return;
-    }
-    // Reachable even when ToolConfirm owns the composer. Ctrl+X never answers consent.
-    if (rawKey.ctrl && rawChar === "x" && canDetach) {
-      void detachCurrentSession().then(() => exit()).catch(error => showStatusLine(error instanceof Error ? error.message : String(error)));
       return;
     }
     // Capture this key's prompt before handlers advance the queue; ToolConfirm runs later.
@@ -1864,7 +1869,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           />
         )}
 
-        {canDetach && <Text dimColor>Ctrl+X: detach · worker continues · resume with /resume</Text>}
+        {canDetach && <Text dimColor>{formatKeybinding(keybindings, "detachSession")}: detach · worker continues · resume with /resume</Text>}
 
         {!voice.phase && !pendingConfirmation && pendingContextWindowRequest && (
           <ContextWindowPrompt

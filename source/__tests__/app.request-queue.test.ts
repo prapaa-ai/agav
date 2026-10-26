@@ -7,7 +7,7 @@ import { DEFAULT_KEYBINDINGS } from "../config/keybindings.js";
 import type { DisplayMessage } from "../components/message-list.js";
 import type { AgavConfig } from "../config/config.js";
 
-const boundary = vi.hoisted(() => ({ submit: vi.fn(), intervene: vi.fn(), cancel: vi.fn(), promptProps: undefined as any, handleSubmit: undefined as undefined | ((value: string) => Promise<void>), busy: false, paused: false }));
+const boundary = vi.hoisted(() => ({ submit: vi.fn(), intervene: vi.fn(), cancel: vi.fn(), promptProps: undefined as any, handleSubmit: undefined as undefined | ((value: string) => Promise<void>), busy: false, paused: false, detach: vi.fn(), canDetach: false, confirmation: undefined as any }));
 vi.mock("../providers/registry.js", () => ({ createProvider: () => null }));
 vi.mock("../hooks/use-paste-handler.js", () => ({ useClipboardImageDetector: () => {} }));
 vi.mock("../components/input-prompt.js", () => ({ default: (props: any) => { boundary.promptProps = props; boundary.handleSubmit = props.onSubmit; return null; } }));
@@ -18,29 +18,49 @@ vi.mock("../hooks/use-agent.js", () => ({ useAgent: () => {
     mcpPromptCommands: [], skillCommands: [], agentCommands: [], tokenUsage: { inputTokens: 0, outputTokens: 0 },
     conversation: { getMessages: () => [] }, submit: boundary.submit,
     addDisplayMessage: (message: DisplayMessage) => setMessages(prev => [...prev, message]),
+    detachSession: boundary.detach, canDetach: boundary.canDetach, pendingConfirmation: boundary.confirmation,
     cancel: boundary.cancel, interveneWhilePaused: boundary.intervene,
   };
 } }));
 
-async function mount() {
+async function mount(keybindings = DEFAULT_KEYBINDINGS) {
   const chunks: string[] = [];
   const stdout = new EventEmitter() as NodeJS.WriteStream;
   Object.assign(stdout, { isTTY: true, columns: 100, rows: 24, write: (text: string) => { chunks.push(text); return true; } });
   const stdin = new EventEmitter() as NodeJS.ReadStream;
   Object.assign(stdin, { isTTY: true, setRawMode: () => stdin, resume: () => stdin, pause: () => stdin, read: () => null });
   const config: AgavConfig = { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000, maxIterations: 2, errorRetries: 1, permissionMode: "ask" };
-  const instance = render(h(App, { config, keybindings: DEFAULT_KEYBINDINGS }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
+  const instance = render(h(App, { config, keybindings }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
   await new Promise(resolve => setTimeout(resolve, 100));
   await instance.waitUntilRenderFlush();
   return {
     instance, stdin,
-    rerender: () => instance.rerender(h(App, { config, keybindings: DEFAULT_KEYBINDINGS })),
+    rerender: () => instance.rerender(h(App, { config, keybindings })),
     output: () => chunks.join("").replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, ""),
     frame: () => chunks.map(text => text.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")).filter(text => /[a-z]/i.test(text)).at(-1) ?? "",
   };
 }
 
 describe("request queuing", () => {
+  it("resolves configured detach before consent guards and formats the footer", async () => {
+    boundary.canDetach = true;
+    boundary.confirmation = { toolName: "write_file", input: {}, resolve: vi.fn() };
+    boundary.detach.mockReset().mockRejectedValue(new Error("fixture detach failure"));
+    const ui = await mount({ ...DEFAULT_KEYBINDINGS, detachSession: ["ctrl+k ctrl+e"] });
+    try {
+      expect(ui.output()).toContain("Ctrl+K Ctrl+E: detach");
+      ui.stdin.emit("data", "\x18");
+      await new Promise(r => setTimeout(r, 30));
+      expect(boundary.detach).not.toHaveBeenCalled();
+      ui.stdin.emit("data", "\x0b");
+      await new Promise(r => setTimeout(r, 30));
+      expect(boundary.detach).not.toHaveBeenCalled();
+      ui.stdin.emit("data", "\x05");
+      await vi.waitFor(() => expect(boundary.detach).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(ui.output()).toContain("fixture detach failure"));
+    } finally { boundary.canDetach = false; boundary.confirmation = undefined; ui.instance.unmount(); }
+  });
+
   it("retains a rejected paused intervention and serializes later prompts", async () => {
     boundary.busy = true; boundary.paused = true;
     let resolve!: (accepted: boolean) => void;

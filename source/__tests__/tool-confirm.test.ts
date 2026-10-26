@@ -78,13 +78,26 @@ describe("ToolConfirm UI", () => {
     writeClipboardMock.mockClear();
   });
 
-  it("never treats the detach gesture as approval with a custom submit binding", async () => {
+  it.each([false, true])("consumes configured detach prefixes and submit collisions (feedback=%s)", async feedback => {
     const { instance, stdin, onConfirm } = await mount({ detachAvailable: true,
-      keybindings: { ...DEFAULT_KEYBINDINGS, submit: ["ctrl+x"] } });
+      keybindings: { ...DEFAULT_KEYBINDINGS, detachSession: ["ctrl+u enter"], submit: ["enter"] } });
     try {
-      stdin.emit("data", "\x18");
-      await new Promise(resolve => setTimeout(resolve, 50));
+      if (feedback) {
+        stdin.emit("data", "d");
+        await new Promise(resolve => setTimeout(resolve, 30));
+        stdin.emit("data", "keep feedback");
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      stdin.emit("data", "\x15");
+      await new Promise(resolve => setTimeout(resolve, 30));
+      stdin.emit("data", "\r");
+      await new Promise(resolve => setTimeout(resolve, 30));
       expect(onConfirm).not.toHaveBeenCalled();
+      if (feedback) {
+        stdin.emit("data", "\r");
+        await new Promise(resolve => setTimeout(resolve, 30));
+        expect(onConfirm).toHaveBeenCalledWith({ choice: "no", feedback: "keep feedback" });
+      }
     } finally { instance.unmount(); }
   });
 
