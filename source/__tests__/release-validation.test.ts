@@ -44,8 +44,13 @@ describe("release validation gates", () => {
   it("installs frozen dependencies before typecheck, build, and the unfiltered test suite", () => {
     const job = jobs.validation;
     expect(job["runs-on"]).toBe("ubuntu-latest");
+    // pnpm/action-setup carries no explicit `version`: the pnpm version is
+    // pinned centrally in package.json "packageManager" so local and CI agree
+    // (required for pnpm-workspace.yaml `overrides`, a pnpm 10+ feature).
     const pnpm = job.steps.find((step: any) => step.uses?.startsWith("pnpm/action-setup@"));
-    expect(String(pnpm.with.version)).toMatch(/^9\.\d+\.\d+$/);
+    expect(pnpm.with?.version).toBeUndefined();
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    expect(pkg.packageManager).toMatch(/^pnpm@(1[0-9]|[2-9][0-9])\.\d+\.\d+$/);
     const commands = job.steps.filter((step: any) => step.run).map((step: any) => step.run);
     expect(commands.slice(0, 4)).toEqual([
       "pnpm install --frozen-lockfile", "pnpm typecheck", "pnpm build", "pnpm exec vitest run",
