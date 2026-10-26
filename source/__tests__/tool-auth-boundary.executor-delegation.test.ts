@@ -141,6 +141,7 @@ describe("tool-auth boundary via executeNativeAgent (real delegation path)", () 
       iterationsBudget: { remaining: 5, total: 5 },
     });
 
+    expect(confirmTool).not.toHaveBeenCalled();     // blocked outright, not via a prompt
     expect(shellSpy).not.toHaveBeenCalled();
   });
 

@@ -33,9 +33,11 @@ export class ToolRegistry {
     return true;
   }
 
-  /** The reserved privileged names, so a trusted caller can clone them into a child registry. */
+  /** A snapshot of the reserved privileged names, so a trusted caller can clone
+   *  them into a child registry without being able to mutate this registry's
+   *  reservations through the returned set. */
   reservedNames(): ReadonlySet<string> {
-    return this.reserved;
+    return new Set(this.reserved);
   }
 
   /**
