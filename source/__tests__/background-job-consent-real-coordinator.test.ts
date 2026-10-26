@@ -28,15 +28,28 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { killWindowsFixtureSupervisor } from "./background-job-fixtures.js";
 import type { Coordinator } from "../background-jobs/coordinator/service.js";
 import type { SessionPolicySnapshot, StartJobRequest } from "../background-jobs/types.js";
 
 const execFileAsync = promisify(execFile);
 
-/** Reap any supervisor this test started (matched by its unique jobId argv token). */
+/**
+ * Reap every supervisor this test started (matched by its unique jobId argv
+ * token). T11 supervisors deliberately outlive their job until an idle timeout,
+ * so each started job leaks one lightweight `node .../supervisor/entry.js`
+ * process unless explicitly reaped — on BOTH platforms. Windows uses the
+ * UUID-scoped fixture helper; POSIX matches the jobId in `ps` argv.
+ */
 async function killSupervisorsByJobIds(jobIds: string[]): Promise<void> {
-  if (jobIds.length === 0 || process.platform === "win32") return;
+  if (jobIds.length === 0) return;
+  if (process.platform === "win32") {
+    for (const jobId of jobIds) {
+      try { await killWindowsFixtureSupervisor(jobId); } catch { /* already gone */ }
+    }
+    return;
+  }
   try {
     const { stdout } = await execFileAsync("ps", ["-eo", "pid,args"]);
     for (const line of stdout.split("\n")) {
@@ -67,14 +80,26 @@ let jobsToCleanUp: string[] = [];
 const headlessAutoAccept: SessionPolicySnapshot = { permissionMode: "auto-accept", headlessApprovedActions: [] };
 const headlessWithStartGrant: SessionPolicySnapshot = { permissionMode: "auto-accept", headlessApprovedActions: ["start"] };
 
+const INTERP = process.platform === "win32" ? "cmd" : "posix-sh";
+
 function req(overrides: Partial<StartJobRequest> = {}): StartJobRequest {
   return {
     requestId: randomUUID(),
-    invocation: { mode: "shell", interpreter: process.platform === "win32" ? "cmd" : "posix-sh", commandText: "echo hi" },
+    invocation: { mode: "shell", interpreter: INTERP, commandText: "echo hi" },
     cwd: tmpdir(),
     isolation: { backend: "none", required: false },
     ...overrides,
   };
+}
+
+/** A start request for a specific command (fresh requestId each call). */
+function cmdReq(commandText: string, cwd: string = tmpdir()): StartJobRequest {
+  return req({ invocation: { mode: "shell", interpreter: INTERP, commandText }, cwd });
+}
+
+/** An `ask`-mode session whose host confirm callback returns `decision`. */
+function askSession(confirm: SessionPolicySnapshot["confirmBackgroundAction"]): SessionPolicySnapshot {
+  return { permissionMode: "ask", headlessApprovedActions: [], confirmBackgroundAction: confirm };
 }
 
 beforeEach(async () => {
@@ -120,28 +145,59 @@ describe("real coordinator forwards headless to authorization (production bounda
   });
 });
 
-describe("real coordinator consent is exact-spec (changed spec is re-gated)", () => {
-  it("a deny-writes session with no grant cannot start even a previously-seen command", async () => {
-    // deny-writes blocks new launches and cannot mint a grant; there is no prior
-    // grant for this spec, so the start must be refused — proving consent is not
-    // ambiently granted and must be explicit per spec.
-    const denyWrites: SessionPolicySnapshot = { permissionMode: "deny-writes", headlessApprovedActions: [] };
-    await expect(coordinator.start(req({ invocation: { mode: "shell", interpreter: process.platform === "win32" ? "cmd" : "posix-sh", commandText: "echo exact-spec" } }), denyWrites))
-      .rejects.toBeInstanceOf(BackgroundJobError);
-    expect(await coordinator.list()).toHaveLength(0);
+describe("real coordinator consent is exact-spec (grant matching is reached)", () => {
+  // These drive the `ask` path, which reaches grant lookup/matching
+  // (findActiveBySpecHash) — unlike deny-writes, which short-circuits before the
+  // spec hash. An interactive approval mints a grant for that EXACT spec; a later
+  // identical spec reuses it WITHOUT asking, while any changed field must ask again.
+
+  it("reuses an interactive grant for the identical spec WITHOUT asking again", async () => {
+    const approve = vi.fn(async () => true);
+    // First start: approved interactively → grant minted for this exact spec.
+    const first = await coordinator.start(cmdReq("echo exact-reuse"), askSession(approve));
+    jobsToCleanUp.push(first.jobId);
+    expect(approve).toHaveBeenCalledTimes(1);
+
+    // Identical command + cwd (fresh requestId): the grant covers it, so the
+    // confirm callback must NOT be consulted again. A callback that would REJECT
+    // proves the launch came from the stored grant, not a fresh approval.
+    const reject = vi.fn(async () => false);
+    const second = await coordinator.start(cmdReq("echo exact-reuse"), askSession(reject));
+    jobsToCleanUp.push(second.jobId);
+    expect(reject).not.toHaveBeenCalled();
+    expect(await coordinator.list()).toHaveLength(2);
   });
 
-  it("an auto-accept grant minted for one command does not cover a different command under deny-writes", async () => {
-    // Mint a grant for command A under auto-accept (a real launch).
-    const a = await coordinator.start(req({ invocation: { mode: "shell", interpreter: process.platform === "win32" ? "cmd" : "posix-sh", commandText: "echo command-A" } }), headlessAutoAccept);
+  it("re-gates a CHANGED command (no grant, no callback → denied)", async () => {
+    // Seed an approved grant for command A.
+    const a = await coordinator.start(cmdReq("echo command-A"), askSession(vi.fn(async () => true)));
     jobsToCleanUp.push(a.jobId);
 
-    // Command B under deny-writes: the A-grant does not apply (different spec
-    // hash) and deny-writes cannot mint a new one, so B is refused.
-    const denyWrites: SessionPolicySnapshot = { permissionMode: "deny-writes", headlessApprovedActions: [] };
-    await expect(coordinator.start(req({ invocation: { mode: "shell", interpreter: process.platform === "win32" ? "cmd" : "posix-sh", commandText: "echo command-B" } }), denyWrites))
+    // Command B: different spec hash, so the A-grant does not match. With no
+    // confirm callback available, ask-mode has nothing to fall back on → denied.
+    // This only passes if grant matching is spec-exact (a broken match that
+    // reused A's grant for B would wrongly launch).
+    await expect(coordinator.start(cmdReq("echo command-B"), askSession(undefined)))
       .rejects.toBeInstanceOf(BackgroundJobError);
-    // Only command A launched.
-    expect(await coordinator.list()).toHaveLength(1);
+    expect(await coordinator.list()).toHaveLength(1); // only A launched
+  });
+
+  it("re-gates a CHANGED working directory (cwd is part of the consent spec)", async () => {
+    const dirA = await mkdtemp(join(tmpdir(), "agav-consent-cwdA-"));
+    const dirB = await mkdtemp(join(tmpdir(), "agav-consent-cwdB-"));
+    try {
+      // Approve the command in dirA.
+      const a = await coordinator.start(cmdReq("echo same-command", dirA), askSession(vi.fn(async () => true)));
+      jobsToCleanUp.push(a.jobId);
+
+      // Same command, DIFFERENT cwd: the grant must not carry over. No callback →
+      // denied, proving cwd participates in the exact-spec hash.
+      await expect(coordinator.start(cmdReq("echo same-command", dirB), askSession(undefined)))
+        .rejects.toBeInstanceOf(BackgroundJobError);
+      expect(await coordinator.list()).toHaveLength(1);
+    } finally {
+      await rm(dirA, { recursive: true, force: true });
+      await rm(dirB, { recursive: true, force: true });
+    }
   });
 });

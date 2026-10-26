@@ -59,6 +59,33 @@ async function sandboxed(backend: SandboxBackend, command: string, cwd: string) 
 }
 
 /**
+ * CONTROL for the Docker tests: run the same image with DEFAULT networking (no
+ * --network=none) and no resource/uid flags, bypassing runInSandbox. Used to
+ * prove a restriction the production sandbox adds is genuinely absent without it,
+ * so the sandboxed assertion reflects the sandbox and not an ambient condition.
+ */
+function dockerRunDefault(command: string): { stdout: string; code: number } {
+  try {
+    const stdout = execFileSync("docker", ["run", "--rm", "node:22-slim", "/bin/sh", "-c", command],
+      { encoding: "utf8", timeout: 60_000 });
+    return { stdout, code: 0 };
+  } catch (e) {
+    const err = e as { stdout?: Buffer | string; status?: number };
+    return { stdout: err.stdout ? String(err.stdout) : "", code: err.status ?? 1 };
+  }
+}
+
+/** Is the Docker daemon rootless? Mirrors production's detection in sandbox.ts. */
+function dockerIsRootless(): boolean {
+  try {
+    const out = execFileSync("docker", ["info", "--format", "{{.SecurityOptions}}"], { encoding: "utf8", timeout: 5000 });
+    return out.includes("name=rootless");
+  } catch {
+    return false;
+  }
+}
+
+/**
  * A backend that is installed can still fail to *apply* (nested sandbox, no user
  * namespaces, no Docker daemon). We only run the enforcement asserts when a
  * trivial command through the backend actually produces the workload's marker.
@@ -350,27 +377,28 @@ describe("real sandbox enforcement (per-OS)", () => {
 
     it("denies all outbound network (--network=none)", async (ctx) => {
       guard(ctx);
-      // Use Node's real TCP stack inside the container (the image is node:22-slim),
-      // not the shell's /dev/tcp — dash, the image's /bin/sh, does not implement
-      // /dev/tcp, so that would "pass" without attempting any connection.
-      // A direct-IP connect to a public resolver removes DNS from the picture: with
-      // --network=none there is no usable interface/route, so connect() fails with
-      // ENETUNREACH/EHOSTUNREACH/EADDRNOTAVAIL (never "connected").
+      // Prove the network namespace is actually absent by enumerating the
+      // container's own interfaces with Node (no external host, no DNS, no remote
+      // service that could flake). --network=none leaves ONLY loopback; a normally
+      // networked container also has an ethernet interface (eth0).
       const probe =
-        "const net=require('net');" +
-        "const s=net.connect({host:'1.1.1.1',port:53});" +
-        "s.setTimeout(4000);" +
-        "s.on('connect',()=>{console.log('NET_CONNECTED');process.exit(0)});" +
-        "s.on('timeout',()=>{console.log('NET_TIMEOUT');process.exit(0)});" +
-        "s.on('error',e=>{console.log('NET_BLOCKED:'+e.code);process.exit(0)});";
+        "const n=require('os').networkInterfaces();" +
+        "console.log('IFACES:'+Object.keys(n).sort().join(','));";
+
+      // Positive control: the SAME probe with default networking must show a
+      // non-loopback interface — otherwise "only lo" below would prove nothing.
+      const control = dockerRunDefault(`node -e ${JSON.stringify(probe)}`);
+      const controlIfaces = (/IFACES:(.*)/.exec(control.stdout)?.[1] ?? "").split(",").filter(Boolean);
+      expect(control.code).toBe(0);
+      expect(controlIfaces.some((i) => i !== "lo")).toBe(true); // control really has a network
+
+      // Through the production sandbox (--network=none): only loopback remains.
       const r = await sandboxed("docker", `node -e ${JSON.stringify(probe)}`, root);
       expect(r.error).toBeNull();
-      expect(r.stdout).not.toContain("NET_CONNECTED");
-      // The connection must be refused by the absent network namespace, not merely
-      // time out (a timeout could hide a misconfigured allow-list). --network=none
-      // yields an immediate unreachable/addr error.
-      expect(r.stdout).toMatch(/NET_BLOCKED:(ENETUNREACH|EHOSTUNREACH|EADDRNOTAVAIL|ECONNREFUSED)/);
-    }, 40_000);
+      const ifaces = (/IFACES:(.*)/.exec(r.stdout)?.[1] ?? "").split(",").filter(Boolean);
+      expect(ifaces.length).toBeGreaterThan(0);          // probe ran
+      expect(ifaces.every((i) => i === "lo")).toBe(true); // no non-loopback interface exists
+    }, 90_000);
 
     it("confines the filesystem to the mounted workspace (host root not writable)", async (ctx) => {
       guard(ctx);
@@ -403,29 +431,33 @@ describe("real sandbox enforcement (per-OS)", () => {
       expect(limit).toBe(512 * 1024 * 1024);
     }, 40_000);
 
-    it("runs under an explicit non-default UID mapping (not ambient host root)", async (ctx) => {
+    it("runs under an explicit non-default UID mapping (not ambient container root)", async (ctx) => {
       guard(ctx);
-      // runDocker passes `-u uid:gid` for the real host user unless TRUE rootless
-      // Docker is handling the namespace. On the CI runners (rootful Docker) the
-      // in-container uid must equal the host process uid — proving the -u mapping
-      // applied rather than defaulting to container root(0). Under rootless Docker,
-      // uid 0 inside maps to the unprivileged host user, so we accept uid 0 ONLY
-      // when the host itself is unprivileged (uid !== 0); a container running as 0
-      // while the host is a normal user would mean the mapping was dropped.
+      // Control: WITHOUT production's `-u uid:gid`, this image defaults to running
+      // as root (uid 0). This both proves the default and makes the sandboxed
+      // assertion meaningful (removing -u would regress to this).
+      const control = dockerRunDefault("id -u");
+      expect(control.code).toBe(0);
+      expect(Number(control.stdout.trim())).toBe(0); // default container user IS root
+
       const r = await sandboxed("docker", "id -u", root);
       expect(r.error).toBeNull();
       const inContainerUid = Number(r.stdout.trim().split(/\s+/)[0]);
-      const hostUid = process.getuid?.() ?? 0;
-      if (hostUid !== 0) {
-        // Either we run as the mapped host uid (rootful -u mapping) or, under
-        // rootless, as 0 which maps back to this unprivileged host user. In both
-        // cases the container is NOT ambient host root.
-        expect(inContainerUid === hostUid || inContainerUid === 0).toBe(true);
+
+      if (dockerIsRootless()) {
+        // True rootless Docker: production omits `-u`, so the container runs as its
+        // own root (0) which the daemon maps to the unprivileged host user — not a
+        // host-root escape. Accept 0 only under verified rootless.
+        expect(inContainerUid).toBe(0);
+      } else {
+        // Rootful daemon: production passes `-u <hostuid>:<hostgid>`, so the
+        // container must NOT be root and must equal the host uid. Dropping `-u`
+        // from runDocker would make this 0 (matching the control) and fail here.
+        const hostUid = process.getuid?.() ?? -1;
+        expect(inContainerUid).not.toBe(0);
+        expect(inContainerUid).toBe(hostUid);
       }
-      // Regardless of uid, the earlier test proves the host filesystem is not
-      // writable from inside, so no host-root escape is available.
-      expect(Number.isFinite(inContainerUid)).toBe(true);
-    }, 40_000);
+    }, 90_000);
   });
 
   // -------------------------------------------------------------------------
