@@ -136,23 +136,32 @@ const MAX_STDOUT = 1024 * 1024;
  * execFile (whose own `timeout` only sends one signal and reports via the exit
  * callback, which a well-behaved-on-SIGTERM child can defeat).
  */
-function run(file: string, args: string[], options: RunOptions = {}): Promise<{ code: number; stdout: string }> {
+function run(file: string, args: string[], options: RunOptions = {}): Promise<{ code: number; stdout: string; timedOut: boolean }> {
   return new Promise((resolve) => {
     let settled = false;
-    let stdout = "";
+    let timedOut = false;
+    const chunks: Buffer[] = [];
+    let total = 0;
     let deadline: NodeJS.Timeout | undefined;
     let killTimer: NodeJS.Timeout | undefined;
     let child: ReturnType<typeof spawn> | undefined;
+    // An stdin delivery failure (EPIPE: the child closed its input before
+    // consuming all of it) must make the whole call fail, independent of the exit
+    // code — a store command that didn't receive its full secret may still exit 0.
+    let stdinFailed = false;
 
     // Resolving the promise does NOT cancel the SIGKILL escalation: once the
     // deadline fires we must still force-kill a child that ignores SIGTERM, even
     // though the caller has already moved on. `done` therefore only clears the
     // deadline; the killTimer is cleared separately on a clean close.
-    const done = (code: number, out: string) => {
+    const done = (code: number) => {
       if (settled) return;
       settled = true;
       if (deadline) clearTimeout(deadline);
-      resolve({ code, stdout: out });
+      // Decode the whole stdout ONCE, after all chunks are in: decoding each
+      // chunk independently would mangle a multi-byte UTF-8 character split
+      // across a chunk boundary (Linux/Windows return raw text, not base64).
+      resolve({ code, stdout: Buffer.concat(chunks).toString("utf-8"), timedOut });
     };
 
     try {
@@ -166,6 +175,7 @@ function run(file: string, args: string[], options: RunOptions = {}): Promise<{ 
       // regardless of how it responds to signals. Tripping the breaker here
       // (not in an exit callback) guarantees it fires even for a hung child.
       deadline = setTimeout(() => {
+        timedOut = true;
         // Any timeout blocks further writes (they have a file fallback); a read
         // timeout additionally blocks further reads (no fallback — but we never
         // let a non-read timeout disable reads, so a working key is not dropped).
@@ -175,23 +185,27 @@ function run(file: string, args: string[], options: RunOptions = {}): Promise<{ 
         killTimer = setTimeout(() => {
           try { child?.kill("SIGKILL"); } catch { /* ignore */ }
         }, KILL_GRACE_MS);
-        done(1, "");
+        done(1);
       }, CALL_TIMEOUT_MS);
 
       child.stdout?.on("data", (chunk: Buffer) => {
-        if (stdout.length < MAX_STDOUT) stdout += chunk.toString("utf-8");
+        if (total >= MAX_STDOUT) return;
+        total += chunk.length;
+        chunks.push(chunk);
       });
       // Swallow stdout stream errors (e.g. after a kill) rather than crashing.
       child.stdout?.on("error", () => {});
 
-      child.on("error", () => { if (killTimer) clearTimeout(killTimer); done(1, ""); }); // spawn failure
+      child.on("error", () => { if (killTimer) clearTimeout(killTimer); done(1); }); // spawn failure
       child.on("close", (code, signal) => {
         // The child is gone; no need to escalate a kill.
         if (killTimer) clearTimeout(killTimer);
         // A signal-terminated child (our kill, or external) is a failure even if
-        // the exit code slot is null; never report success for it.
-        if (signal) { done(1, stdout); return; }
-        done(code === 0 ? 0 : (code ?? 1), stdout);
+        // the exit code slot is null; never report success for it. An stdin
+        // delivery failure is also authoritative: a command that did not receive
+        // its full input must not be reported successful on a 0 exit.
+        if (signal || stdinFailed) { done(1); return; }
+        done(code === 0 ? 0 : (code ?? 1));
       });
 
       if (options.input !== undefined) {
@@ -200,15 +214,16 @@ function run(file: string, args: string[], options: RunOptions = {}): Promise<{ 
           // The error listener must be on the stdin STREAM, not the child: a
           // child that closes its input early surfaces EPIPE on child.stdin, and
           // an unhandled 'error' there would crash the process (it fires
-          // asynchronously, outside the try/catch). Swallow it.
-          stdin.on("error", () => {});
+          // asynchronously, outside the try/catch). Record it so the close
+          // handler reports failure, then settle defensively.
+          stdin.on("error", () => { stdinFailed = true; done(1); });
           stdin.end(options.input);
         }
       } else {
         child.stdin?.end();
       }
     } catch {
-      done(1, "");
+      done(1);
     }
   });
 }
@@ -230,14 +245,25 @@ function windowsPowerShellPath(): string {
   return join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
-/** Detect the usable credential-store backend for this platform, once. */
+/**
+ * Detect the usable credential-store backend for this platform, caching the
+ * result. A detection result is cached ONLY when it is definitive: a success
+ * (the real backend) or a genuine non-zero/absent result (→ "none"). A detection
+ * that TIMED OUT is NOT cached — it is transient (the store was momentarily
+ * locked/slow), and caching "none" would disable reads for the whole session,
+ * silently dropping an already-migrated key. An uncached timeout returns "none"
+ * for this call but lets a later call retry (bounded by its own deadline and the
+ * read breaker, which only trips on a read timeout).
+ */
 async function detectBackend(): Promise<Backend> {
   if (cachedBackend !== undefined) return cachedBackend;
   const os = platform();
+
+  let probe: { code: number; timedOut: boolean };
   if (os === "darwin") {
     // `security help` confirms the tool is callable; it ships with macOS.
-    const { code } = await run("security", ["help"]);
-    cachedBackend = code === 0 ? "macos" : "none";
+    probe = await run("security", ["help"]);
+    if (probe.code === 0) return (cachedBackend = "macos");
   } else if (os === "linux") {
     // `secret-tool` has NO --version/--help subcommand: an unknown first word
     // prints usage and exits non-zero, so the old `--version` probe always
@@ -248,17 +274,20 @@ async function detectBackend(): Promise<Backend> {
     // is up. A missing binary (spawn failure) or an unreachable service exits
     // non-zero, which we treat as "no store" so the caller uses the file
     // fallback. The probe neither creates nor reads any real item.
-    const probe = await run("secret-tool", ["search", "service", `${SERVICE}:__agav_probe__`]);
-    cachedBackend = probe.code === 0 ? "secret-tool" : "none";
+    probe = await run("secret-tool", ["search", "service", `${SERVICE}:__agav_probe__`]);
+    if (probe.code === 0) return (cachedBackend = "secret-tool");
   } else if (os === "win32") {
-    const { code } = await run(windowsPowerShellPath(), [
-      "-NoProfile", "-NonInteractive", "-Command", "exit 0",
-    ]);
-    cachedBackend = code === 0 ? "windows" : "none";
+    probe = await run(windowsPowerShellPath(), ["-NoProfile", "-NonInteractive", "-Command", "exit 0"]);
+    if (probe.code === 0) return (cachedBackend = "windows");
   } else {
-    cachedBackend = "none";
+    return (cachedBackend = "none");
   }
-  return cachedBackend;
+
+  // Probe failed. A timeout is transient — do NOT cache it, so a later call can
+  // retry once the store recovers. A definitive failure (missing tool /
+  // unreachable service) is cached as "none".
+  if (probe.timedOut) return "none";
+  return (cachedBackend = "none");
 }
 
 /** Reset the cached backend detection (tests only). */
@@ -271,10 +300,28 @@ export async function isKeychainAvailable(): Promise<boolean> {
   return (await detectBackend()) !== "none";
 }
 
+/**
+ * Reject a token that cannot be safely carried to a credential-store helper.
+ * The macOS interactive parser (`security -i`) splits its input into separate
+ * commands at a newline BEFORE it applies quoting, so a newline embedded in an
+ * account or service would inject an extra `security` command and could flip the
+ * final exit status. A NUL likewise terminates C-string arguments. We refuse any
+ * control character in the account/service used to build a command, returning a
+ * failure to the caller (which falls back to file encryption) rather than
+ * emitting a dangerous line. Agav's own account names are fixed, printable
+ * constants, so this only ever rejects a maliciously crafted keychain: reference.
+ */
+function isSafeToken(value: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  return !/[\u0000-\u001f\u007f]/.test(value);
+}
+
 /** Quote a token for `security`'s interactive (`-i`) line parser. */
 function securityQuote(value: string): string {
   // The interactive tokenizer understands double-quoted strings with backslash
-  // escaping; escaping backslash and double-quote covers every byte safely.
+  // escaping; escaping backslash and double-quote covers printable bytes safely.
+  // Control characters (esp. newline) are rejected upstream by isSafeToken — the
+  // parser would act on them BEFORE quoting, so quoting alone cannot contain them.
   return '"' + value.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
 }
 
@@ -295,6 +342,9 @@ const SECURITY_LINE_LIMIT = 4095;
  */
 export async function setSecret(account: string, secret: string): Promise<boolean> {
   if (!account || !secret) return false;
+  // A control character in the account would be a command-injection vector for
+  // the macOS interactive parser; refuse and let the caller use the file fallback.
+  if (!isSafeToken(account)) return false;
   if (writeBreaker) return false;
   const backend = await detectBackend();
   switch (backend) {
@@ -369,6 +419,9 @@ export async function setSecret(account: string, secret: string): Promise<boolea
  */
 export async function getSecret(account: string): Promise<string | undefined> {
   if (!account) return undefined;
+  // A malicious keychain: reference could carry a control character in the
+  // account; refuse rather than risk interactive-parser command injection.
+  if (!isSafeToken(account)) return undefined;
   // Only a prior READ timeout fast-fails a read — a write/detection timeout must
   // not disable reads, or a working key would be silently dropped this session.
   if (readBreaker) return undefined;
@@ -434,6 +487,7 @@ export async function getSecret(account: string): Promise<string | undefined> {
 /** Delete the credential stored under `account`. Idempotent; never throws. */
 export async function deleteSecret(account: string): Promise<void> {
   if (!account) return;
+  if (!isSafeToken(account)) return;
   if (writeBreaker) return;
   const backend = await detectBackend();
   switch (backend) {

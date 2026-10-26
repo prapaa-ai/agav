@@ -14,6 +14,8 @@ interface Response {
   /** Exit code delivered via the 'close' event. */
   code?: number;
   stdout?: string;
+  /** Emit stdout as these raw byte chunks (to exercise UTF-8 boundary decoding). */
+  stdoutChunks?: Buffer[];
   /** When true, the child never closes on its own (simulates a hang/timeout). */
   hang?: boolean;
   /** When set, the child's stdin emits this error asynchronously (e.g. EPIPE). */
@@ -52,7 +54,8 @@ function scriptSpawn(responses: Response[]) {
     queueMicrotask(() => {
       if (response.spawnError) { child.emit("error", new Error("ENOENT")); return; }
       if (response.stdinError) stdin.emit("error", Object.assign(new Error(response.stdinError), { code: response.stdinError }));
-      if (response.stdout) stdout.emit("data", Buffer.from(response.stdout, "utf-8"));
+      if (response.stdoutChunks) { for (const c of response.stdoutChunks) stdout.emit("data", c); }
+      else if (response.stdout) stdout.emit("data", Buffer.from(response.stdout, "utf-8"));
       if (response.hang) return; // never closes — exercises our deadline timer
       if (response.signal) { child.emit("close", null, response.signal); return; }
       child.emit("close", response.code ?? 0, null);
@@ -193,10 +196,38 @@ describe("utils/keychain", () => {
       expect(await mod.setSecret("k", "v")).toBe(false);
     });
 
+    it("reports failure when stdin delivery fails even if the child exits 0", async () => {
+      // A command that closed its input early but still exited 0 did NOT receive
+      // the full secret; setSecret must treat that as a failure (→ file fallback).
+      scriptSpawn([{ code: 0 }, { code: 0, stdinError: "EPIPE" }]);
+      const mod = await freshModule();
+      expect(await mod.setSecret("k", "v")).toBe(false);
+    });
+
     it("treats a signal-terminated child as failure, not success", async () => {
       scriptSpawn([{ code: 0 }, { signal: "SIGKILL" }]);
       const mod = await freshModule();
       expect(await mod.setSecret("k", "v")).toBe(false);
+    });
+
+    it("decodes a multi-byte secret split across stdout chunks losslessly", async () => {
+      // "é" is 0xC3 0xA9; split the UTF-8 sequence across two chunks. Per-chunk
+      // decoding would yield replacement chars; decode-once preserves it.
+      const raw = Buffer.from("synthetic-é-secret", "utf-8");
+      const mid = raw.indexOf(0xa9); // split between the two bytes of é
+      scriptSpawn([{ code: 0 }, { code: 0, stdoutChunks: [raw.subarray(0, mid), raw.subarray(mid)] }]);
+      const mod = await freshModule();
+      expect(await mod.getSecret("k")).toBe("synthetic-é-secret");
+    });
+
+    it("refuses an account containing control characters (injection guard)", async () => {
+      const getCalls = scriptSpawn([{ code: 0 }]); // detection only
+      const mod = await freshModule();
+      expect(await mod.setSecret("evil\nhelp", "v")).toBe(false);
+      expect(await mod.getSecret("evil\nhelp")).toBeUndefined();
+      // No store subcommand was ever spawned for the unsafe account.
+      expect(getCalls().some((c) => c.stdin.includes("add-generic-password"))).toBe(false);
+      expect(getCalls().some((c) => c.stdin.includes("find-generic-password"))).toBe(false);
     });
   });
 
@@ -305,6 +336,27 @@ describe("utils/keychain", () => {
       const before = getCalls().length;
       expect(await mod.getSecret("b")).toBeUndefined();
       expect(getCalls().length).toBe(before); // no further read spawned
+    });
+
+    it("does not cache 'none' on a detection timeout — a later read can recover", async () => {
+      vi.useFakeTimers();
+      const b64 = Buffer.from("sk-live", "utf-8").toString("base64");
+      // 1st call = detection, hangs → times out (must NOT cache "none").
+      // 2nd call = detection retry succeeds; 3rd = the actual read.
+      const getCalls = scriptSpawn([
+        { hang: true },                   // detection #1 times out
+        { code: 0 },                      // detection #2 succeeds
+        { code: 0, stdout: `${b64}\n` },  // read
+      ]);
+      const mod = await freshModule();
+      const p1 = mod.getSecret("a");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5000); // detection #1 deadline
+      expect(await p1).toBeUndefined();        // this call fails (store was slow)
+      vi.useRealTimers();
+      // A later read re-detects (not cached as "none") and resolves the key.
+      expect(await mod.getSecret("a")).toBe("sk-live");
+      expect(getCalls().length).toBe(3);
     });
   });
 

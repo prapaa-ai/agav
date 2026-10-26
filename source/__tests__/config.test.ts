@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// A lock file handle that always succeeds; the migration lock uses open(...,"wx").
-const lockHandle = { writeFile: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) };
+// Lock-file handle; captures the ownership token written during acquisition so
+// the lock-path read during release can return it (and the release can unlink).
+const lockState = { token: "" };
+const lockHandle = {
+  writeFile: vi.fn(async (data: string) => { lockState.token = data; }),
+  close: vi.fn().mockResolvedValue(undefined),
+};
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
@@ -52,7 +57,8 @@ describe("config", () => {
     vi.mocked(fs.stat).mockReset().mockResolvedValue({ mtimeMs: Date.now() } as any);
     vi.mocked(fs.rename).mockReset().mockResolvedValue(undefined);
     vi.mocked(fs.unlink).mockReset().mockResolvedValue(undefined);
-    lockHandle.writeFile.mockClear().mockResolvedValue(undefined);
+    lockState.token = "";
+    lockHandle.writeFile.mockClear().mockImplementation(async (data: string) => { lockState.token = data; });
     lockHandle.close.mockClear().mockResolvedValue(undefined);
     keychainMock.isStoreUnresponsive.mockReset().mockReturnValue(false);
     delete process.env.ANTHROPIC_API_KEY;
@@ -430,7 +436,12 @@ describe("config", () => {
   });
 
   it("serializes writers through the shared config lock (acquire + release)", async () => {
-    readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    // Release reads the lock file to verify OUR token before unlinking it, so the
+    // lock-path read must return the token the handle captured; other reads miss.
+    readFile.mockImplementation(async (p: any) => {
+      if (String(p).endsWith(".config.lock")) return lockState.token;
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
     const mod = await import("../config/config.js");
     await mod.saveConfig({
       provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
@@ -441,6 +452,25 @@ describe("config", () => {
     expect(openCall).toBeDefined();
     expect(openCall![1]).toBe("wx");
     expect(vi.mocked(fs.unlink).mock.calls.some((c) => String(c[0]).endsWith(".config.lock"))).toBe(true);
+  });
+
+  it("fails closed (throws) when the config lock cannot be acquired", async () => {
+    vi.useFakeTimers();
+    // Lock perpetually held by a live peer: open → EEXIST, stat → fresh mtime.
+    vi.mocked(fs.open).mockRejectedValue(Object.assign(new Error("exists"), { code: "EEXIST" }));
+    vi.mocked(fs.stat).mockResolvedValue({ mtimeMs: Date.now() } as any);
+    readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const mod = await import("../config/config.js");
+    const p = mod.saveConfig({
+      provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
+      errorRetries: 3, permissionMode: "ask",
+    });
+    const assertion = expect(p).rejects.toThrow(/config lock/i);
+    await vi.advanceTimersByTimeAsync(6000); // exceed CONFIG_LOCK_WAIT_MS
+    await assertion;
+    // Must NOT have written the config without the lock.
+    expect(writeFile).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 
   it("a blocking writer waits for a live lock, then proceeds once it frees", async () => {

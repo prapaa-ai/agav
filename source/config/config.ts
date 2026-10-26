@@ -818,33 +818,67 @@ const CONFIG_LOCK_WAIT_MS = 5_000;
 /** Poll interval while waiting for a contended lock. */
 const CONFIG_LOCK_POLL_MS = 50;
 
+/** Raised when the shared config lock cannot be acquired within the budget. */
+class ConfigLockTimeoutError extends Error {
+  constructor() {
+    super("Could not acquire the Agav config lock — another process is writing config.json. Try again.");
+    this.name = "ConfigLockTimeoutError";
+  }
+}
+
 /**
- * Try once to acquire the shared config lock. Returns a release function on
- * success, null when a LIVE peer holds it (a stale lock is reclaimed and retried
- * within the single call). Never throws.
+ * Try once to acquire the shared config lock. Returns an OWNED release function
+ * on success, null when a LIVE peer holds it. Never throws.
+ *
+ * Ownership safety: the lock file carries a unique token (random + pid). Release
+ * unlinks the file ONLY if it still contains OUR token, so a process can never
+ * delete a successor's lock (e.g. after a stale takeover). Stale reclamation does
+ * NOT blindly unlink the peer's file (two reclaimers could each delete the
+ * other's fresh lock); instead it atomically `rename`s the stale file to a
+ * private path — exactly one racing reclaimer wins the rename, and the loser's
+ * rename fails harmlessly — then recreates the lock exclusively.
  */
 async function tryAcquireConfigLock(): Promise<(() => Promise<void>) | null> {
-  const { open, stat, unlink } = await import("node:fs/promises");
+  const { open, stat, unlink, readFile: read, rename } = await import("node:fs/promises");
+  const { randomBytes } = await import("node:crypto");
   try {
     await ensureDir(AGAV_DIR);
   } catch {
     return null;
   }
+  const token = `${process.pid}:${randomBytes(12).toString("hex")}`;
+
+  const releaseIfOwned = async () => {
+    try {
+      const current = await read(CONFIG_LOCK_PATH, "utf-8");
+      if (current === token) await unlink(CONFIG_LOCK_PATH).catch(() => {});
+    } catch { /* already gone or unreadable — nothing to release */ }
+  };
+
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const handle = await open(CONFIG_LOCK_PATH, "wx", 0o600);
-      await handle.writeFile(String(process.pid));
+      await handle.writeFile(token);
       await handle.close();
-      return async () => { await unlink(CONFIG_LOCK_PATH).catch(() => {}); };
+      return releaseIfOwned;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") return null;
+      // Lock exists. Reclaim only if clearly stale (holder likely crashed).
+      let info;
       try {
-        const info = await stat(CONFIG_LOCK_PATH);
-        if (Date.now() - info.mtimeMs < CONFIG_LOCK_STALE_MS) return null; // live peer
-        await unlink(CONFIG_LOCK_PATH).catch(() => {});
-        // loop once more to re-create it
+        info = await stat(CONFIG_LOCK_PATH);
       } catch {
-        return null;
+        continue; // vanished between open and stat — retry create
+      }
+      if (Date.now() - info.mtimeMs < CONFIG_LOCK_STALE_MS) return null; // live peer
+      // Atomic takeover: whoever wins this rename owns the removal; a losing
+      // racer's rename throws and it simply retries the create next iteration.
+      const steal = `${CONFIG_LOCK_PATH}.stale.${token.replace(/[^a-z0-9]/gi, "")}`;
+      try {
+        await rename(CONFIG_LOCK_PATH, steal);
+        await unlink(steal).catch(() => {});
+      } catch {
+        // Lost the race (someone else moved/recreated it); retry the create.
       }
     }
   }
@@ -852,25 +886,27 @@ async function tryAcquireConfigLock(): Promise<(() => Promise<void>) | null> {
 }
 
 /**
- * Run `fn` while holding the shared config lock, WAITING (with a bounded poll)
- * for a contended lock rather than giving up — a user-initiated save must not be
- * silently dropped. If the lock cannot be acquired within the budget (a wedged
- * holder), proceed anyway: a slightly-racy write is better than losing the
- * user's change entirely, and the atomic temp+rename still prevents a torn file.
- * The lock is always released.
+ * Run `fn` while holding the shared config lock, WAITING (bounded poll) for a
+ * contended lock. If the lock cannot be acquired within the budget, FAIL CLOSED
+ * by throwing rather than mutating without the lock — an unlocked write could
+ * interleave with another process and leave a `keychain:` reference whose secret
+ * was deleted, or overwrite a credential rotation. A rejected save is recoverable
+ * (the caller/user retries); a corrupted credential transaction is not. The lock
+ * is always released when held.
  */
 async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
   const deadline = Date.now() + CONFIG_LOCK_WAIT_MS;
   let release: (() => Promise<void>) | null = null;
-  while (Date.now() < deadline) {
+  for (;;) {
     release = await tryAcquireConfigLock();
     if (release) break;
+    if (Date.now() >= deadline) throw new ConfigLockTimeoutError();
     await new Promise((r) => setTimeout(r, CONFIG_LOCK_POLL_MS));
   }
   try {
     return await fn();
   } finally {
-    if (release) await release();
+    await release();
   }
 }
 
