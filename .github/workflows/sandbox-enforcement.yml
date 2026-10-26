@@ -1,0 +1,75 @@
+name: Sandbox Enforcement (per-OS)
+
+# Proves the OS-level sandbox actually restricts filesystem/network/process
+# access — the enforcement half of #2. The unit suite mocks child_process and
+# only checks argument shape; this job runs the REAL backend on each native
+# runner so the restriction assertions in sandbox-enforcement.test.ts execute
+# for real (they report a skip, not a pass, on any runner where the backend
+# cannot apply — so a silently-disabled sandbox cannot hide here).
+#
+# Runs on PRs that touch the sandbox path and on every push to main/beta.
+
+on:
+  pull_request:
+    branches: [main, beta]
+    paths:
+      - "source/utils/sandbox.ts"
+      - "source/utils/sandbox-startup.ts"
+      - "source/tools/shell.ts"
+      - "source/tools/background-job.ts"
+      - "source/__tests__/sandbox-enforcement.test.ts"
+      - "source/__tests__/sandbox-fail-closed-enforcement.test.ts"
+      - "source/__tests__/background-job-consent-boundary.test.ts"
+      - ".github/workflows/sandbox-enforcement.yml"
+  push:
+    branches: [main, beta]
+
+permissions:
+  contents: read
+
+jobs:
+  enforce:
+    name: Enforcement (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          token: ${{ secrets.TOKEN || github.token }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 9
+      # Install bubblewrap on Linux so the backend actually applies there.
+      # ubuntu-latest is now 24.04, where AppArmor blocks unprivileged user
+      # namespaces by default (kernel.apparmor_restrict_unprivileged_userns=1),
+      # which makes bwrap fail to create its sandbox. Relax that sysctl for the
+      # runner so bwrap applies and the enforcement assertions actually execute
+      # — otherwise they would merely report a skip and prove nothing on Linux.
+      # macOS ships sandbox-exec; Windows has no OS sandbox and the
+      # Windows-specific assertions cover the no-sandbox path.
+      - name: Install bubblewrap and allow unprivileged user namespaces (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          bwrap --version
+          # Fail the job if bwrap still cannot apply: a silent skip would hide a
+          # real Linux enforcement regression behind a green check.
+          bwrap --ro-bind / / --tmpfs /tmp --dev /dev --proc /proc --die-with-parent /bin/true
+          echo "bwrap applies on this runner."
+      - run: pnpm install --frozen-lockfile
+      - name: Run per-OS sandbox enforcement tests
+        run: >-
+          npx vitest run
+          source/__tests__/sandbox-enforcement.test.ts
+          source/__tests__/sandbox-fail-closed-enforcement.test.ts
+          source/__tests__/background-job-consent-boundary.test.ts
+          --reporter=verbose
