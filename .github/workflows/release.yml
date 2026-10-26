@@ -95,9 +95,11 @@ jobs:
   # resolved production dependency graph, published as a release asset next to
   # the binaries and backed by a Sigstore SBOM attestation bound to this commit.
   # Consumers verify with `gh attestation verify agav-sbom-<version>.cdx.json
-  # --repo prapaa-ai/agav`. Does not cover the embedded Bun runtime and its
-  # vendored C libraries — those are invisible to the npm dependency graph and
-  # are tracked separately by scripts/check-bun-advisories.mjs.
+  # --repo prapaa-ai/agav --predicate-type https://cyclonedx.org/bom` (the
+  # predicate type is required — the CLI defaults to SLSA provenance, which
+  # would reject an SBOM attestation). Does not cover the embedded Bun runtime
+  # and its vendored C libraries — those are invisible to the npm dependency
+  # graph and are tracked separately by scripts/check-bun-advisories.mjs.
   sbom:
     name: SBOM Generation and Attestation
     needs: check-version
