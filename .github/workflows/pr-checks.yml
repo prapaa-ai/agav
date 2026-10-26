@@ -46,7 +46,7 @@ jobs:
           if echo "$FILES" | grep -qE '(README|\.md$|docs/)'; then
             echo "docs=true" >> "$GITHUB_OUTPUT"
           fi
-          if echo "$FILES" | grep -qE '(package\.json|pnpm-lock\.yaml)'; then
+          if echo "$FILES" | grep -qE '(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)'; then
             echo "deps=true" >> "$GITHUB_OUTPUT"
           fi
           if echo "$FILES" | grep -qE '^scripts/'; then
@@ -67,8 +67,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
       - run: npx tsc --noEmit
       - name: Check clean worktree
@@ -92,8 +90,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
       - run: npx tsx source/cli.tsx --version
       - name: Check clean worktree
@@ -120,8 +116,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       # `pnpm build` regenerates the bundled-skills manifest. If that changed
@@ -151,8 +145,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       # Only pnpm, deliberately: the release workflow no longer runs a separate
       # `bun install react-devtools-core`, so this is the check that the ink
       # devtools import still resolves through pnpm's peer layout. A compiled
@@ -400,8 +392,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       # The gate parses workflow YAML with the real `yaml` parser (a prod dep);
       # install it from the lockfile first so validation is correct, not a
       # fragile hand-rolled scanner.
@@ -424,8 +414,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
       # Fail-closed on known production vulnerabilities. Enterprise posture: a
       # shipped dependency CVE blocks the merge rather than emitting a warning
@@ -452,8 +440,6 @@ jobs:
         with:
           node-version: 22
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
-        with:
-          version: 9
       - run: pnpm install --frozen-lockfile
 
   semgrep:
