@@ -11,8 +11,12 @@ export class ToolRegistry {
   private reserved = new Set<string>();
 
   /**
-   * Register a trusted built-in tool and reserve its name. A reserved name
-   * cannot be overwritten by a subsequent register() call; the built-in wins.
+   * Register a trusted built-in tool and reserve its name, bypassing the
+   * reservation guard. Use this only for tools the application controls: the
+   * shipped built-ins, the dynamically-built activate_skill / subagent tools,
+   * and built-ins copied into a child registry. A reserved name cannot be
+   * overwritten by a subsequent register() call; the trusted tool wins. Never
+   * route plugin / MCP / agent-defined tools here.
    */
   registerBuiltin(tool: ToolDefinition): void {
     this.tools.set(tool.schema.name, tool);
@@ -27,6 +31,21 @@ export class ToolRegistry {
     if (this.reserved.has(tool.schema.name)) return false;
     this.tools.set(tool.schema.name, tool);
     return true;
+  }
+
+  /** The reserved privileged names, so a trusted caller can clone them into a child registry. */
+  reservedNames(): ReadonlySet<string> {
+    return this.reserved;
+  }
+
+  /**
+   * Reserve a privileged name without installing a tool for it. A reserved name
+   * cannot be registered by an untrusted source even when no built-in currently
+   * occupies it — so an *omitted* built-in (e.g. lsp_query in a default session)
+   * cannot be impersonated to inherit the permission gate's name-based trust.
+   */
+  reserveNames(names: Iterable<string>): void {
+    for (const name of names) this.reserved.add(name);
   }
 
   /** True when the name is a reserved built-in that register() will refuse to shadow. */

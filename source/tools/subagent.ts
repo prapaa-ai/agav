@@ -209,9 +209,13 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       }
 
       const childRegistry = new ToolRegistryClass();
+      // Carry the parent's privileged-name reservations so the child registry
+      // keeps the same shadowing protection, and install the copied (trusted)
+      // parent tools past the reservation guard.
+      childRegistry.reserveNames(deps.parentToolRegistry.reservedNames());
       for (const tool of deps.parentToolRegistry.list()) {
         if (tool.schema.name !== "subagent") {
-          childRegistry.register(tool);
+          childRegistry.registerBuiltin(tool);
         }
       }
 
