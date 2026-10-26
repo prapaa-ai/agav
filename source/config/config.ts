@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
-import { decrypt, encrypt } from "../utils/encrypt.js";
+import { decrypt, encrypt, isEncrypted } from "../utils/encrypt.js";
 import {
   isKeychainAvailable,
   isKeychainRef,
@@ -512,12 +512,28 @@ export async function loadGlobalConfig(): Promise<AgavConfig> {
 }
 
 /**
+ * Decrypt a stored value to plaintext, returning undefined when it is an `enc:`
+ * ciphertext that cannot be decrypted. decrypt() returns the ciphertext
+ * unchanged on failure (e.g. a config restored under a different user/home, a
+ * truncated value, or a different machine key); passing that raw `enc:...` blob
+ * on to a provider would masquerade as an API key and fail at request time with
+ * a confusing error. Treating it as "no key" surfaces the real problem (missing
+ * credential) instead. A genuine plaintext value passes through untouched.
+ */
+function safeDecrypt(value: string): string | undefined {
+  const plain = decrypt(value);
+  if (isEncrypted(value) && isEncrypted(plain)) return undefined; // decryption failed
+  return plain || undefined;
+}
+
+/**
  * Resolve a secret value read from a config file into its plaintext. A stored
  * value is one of:
  *   - a `keychain:` placeholder — the real secret lives in the OS credential
  *     store; look it up by account. On any store failure, return undefined so
  *     the provider reports a missing key rather than leaking the placeholder.
- *   - an `enc:` ciphertext or plaintext — decrypt() handles both (file fallback).
+ *   - an `enc:` ciphertext or plaintext — safeDecrypt() handles both (file
+ *     fallback), returning undefined on an undecryptable ciphertext.
  */
 async function resolveStoredSecret(value: string | undefined): Promise<string | undefined> {
   if (!value) return undefined;
@@ -525,7 +541,7 @@ async function resolveStoredSecret(value: string | undefined): Promise<string | 
     const secret = await getSecret(keychainAccount(value));
     return secret || undefined;
   }
-  return decrypt(value) || undefined;
+  return safeDecrypt(value);
 }
 
 /**
@@ -540,7 +556,7 @@ async function resolveApiKey(
   globalValue: string | undefined,
   defaultValue: string | undefined,
 ): Promise<string | undefined> {
-  if (envValue !== undefined) return decrypt(envValue) || undefined;
+  if (envValue !== undefined) return safeDecrypt(envValue);
   return (await resolveStoredSecret(projectValue ?? globalValue ?? defaultValue)) || undefined;
 }
 
@@ -669,18 +685,51 @@ const KEYCHAIN_ACCOUNTS = {
   ollamaApiKey: "ollama-api-key",
 } as const;
 
+/** Atomically write serialized config to the global config file (temp + rename, 0600). */
+async function writeConfigAtomic(data: Record<string, unknown>): Promise<void> {
+  await ensureDir(AGAV_DIR);
+  const { randomBytes } = await import("node:crypto");
+  const tmpPath = `${CONFIG_PATH}.tmp.${randomBytes(8).toString("hex")}`;
+  const serialized = JSON.stringify(data, null, 2) + "\n";
+  const { rename, unlink } = await import("node:fs/promises");
+  try {
+    await writeFile(tmpPath, serialized, { mode: 0o600, flag: "wx" });
+    await rename(tmpPath, CONFIG_PATH);
+  } catch (err) {
+    await unlink(tmpPath).catch(() => {});
+    throw err;
+  }
+}
+
+/** Read the raw on-disk global config object, or {} when missing/corrupt. */
+async function readStoredConfig(): Promise<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+    return typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Persist config to the global config file. API keys are stored in the OS
  * credential store when one is available (preferred), leaving only a
  * `keychain:` placeholder in config.json so the plaintext never touches the
  * file. When no store is available (e.g. a headless box without libsecret) we
  * fall back to the existing AES-encrypted-in-file representation.
+ *
+ * An absent/empty key field is NOT treated as a request to delete the stored
+ * secret: a live AgavConfig can carry an undefined key purely because a
+ * transient credential-store read failed during loadConfig, and deleting on
+ * that would destroy a working credential. Instead the existing stored value
+ * (keychain ref or enc: ciphertext) is preserved from the on-disk file. Use
+ * clearStoredApiKey() for an explicit removal.
  */
 export async function saveConfig(config: AgavConfig): Promise<void> {
-  await ensureDir(AGAV_DIR);
   const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
   const out: Record<string, unknown> = { ...safe };
 
+  const existing = await readStoredConfig();
   const keychain = await isKeychainAvailable();
   const keys: Array<[keyof typeof KEYCHAIN_ACCOUNTS, string | undefined]> = [
     ["anthropicApiKey", anthropicApiKey],
@@ -695,9 +744,11 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   for (const [field, value] of keys) {
     const account = KEYCHAIN_ACCOUNTS[field];
     if (!value) {
-      // Clearing a key: drop any stored secret too so a removed key cannot be
-      // silently resurrected from the OS store on the next load.
-      if (keychain) await deleteSecret(account);
+      // Absent/empty: preserve whatever is already persisted (never delete the
+      // store entry here — see the docblock). If nothing was stored, leave the
+      // field unset.
+      const prior = existing[field];
+      if (typeof prior === "string" && prior.length > 0) out[field] = prior;
       continue;
     }
     if (keychain && (await setSecret(account, value))) {
@@ -709,7 +760,24 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
     }
   }
 
-  await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n", { mode: 0o600 });
+  await writeConfigAtomic(out);
+}
+
+/**
+ * Explicitly remove a provider API key: delete it from the OS credential store
+ * (if present) and from the global config file. This is the deliberate counterpart
+ * to saveConfig's non-destructive handling of absent fields.
+ */
+export async function clearStoredApiKey(field: keyof typeof KEYCHAIN_ACCOUNTS): Promise<void> {
+  const account = KEYCHAIN_ACCOUNTS[field];
+  if (await isKeychainAvailable()) {
+    await deleteSecret(account);
+  }
+  const stored = await readStoredConfig();
+  if (field in stored) {
+    delete stored[field];
+    await writeConfigAtomic(stored);
+  }
 }
 
 /**
@@ -745,48 +813,78 @@ export async function migrateSecretsToKeychain(): Promise<number> {
     // where keys are already migrated, set via env, or absent — free of any
     // subprocess. The probe (and migration) runs only on the one launch that has
     // real work to do.
-    let stored: Record<string, unknown>;
+    let snapshot: Record<string, unknown>;
     try {
       const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
       if (typeof parsed !== "object" || parsed === null) return 0;
-      stored = parsed as Record<string, unknown>;
+      snapshot = parsed as Record<string, unknown>;
     } catch {
       // Missing or corrupt config: nothing to migrate. Do not rewrite it.
       return 0;
     }
 
-    const hasMigratable = Object.keys(KEYCHAIN_ACCOUNTS).some((field) => {
-      const value = stored[field];
-      return typeof value === "string" && value.length > 0 && !isKeychainRef(value);
-    });
-    if (!hasMigratable) return 0;
+    // Decide what is migratable from the snapshot, decrypting up front so an
+    // undecryptable `enc:` value (restored under a different user/home, or
+    // corrupt) is skipped rather than stored verbatim as a bogus "secret".
+    const pending: Array<{ field: string; account: string; plaintext: string }> = [];
+    for (const [field, account] of Object.entries(KEYCHAIN_ACCOUNTS)) {
+      const value = snapshot[field];
+      if (typeof value !== "string" || value.length === 0) continue;
+      if (isKeychainRef(value)) continue;
+      const plaintext = safeDecrypt(value);
+      if (!plaintext) continue; // empty or undecryptable — leave the file value as-is
+      pending.push({ field, account, plaintext });
+    }
+    if (pending.length === 0) return 0;
 
     if (!(await isKeychainAvailable())) return 0;
 
-    let migrated = 0;
-    for (const [field, account] of Object.entries(KEYCHAIN_ACCOUNTS)) {
-      const value = stored[field];
-      // Only migrate real in-file secrets; skip empty, non-string, and values
-      // already pointing at the store.
-      if (typeof value !== "string" || value.length === 0) continue;
-      if (isKeychainRef(value)) continue;
-
-      const plaintext = decrypt(value);
-      if (!plaintext) continue;
-
+    // Write each secret to the store first (the slow part). Only successfully
+    // stored fields become placeholders.
+    const placeholders = new Map<string, string>();
+    for (const { field, account, plaintext } of pending) {
       if (await setSecret(account, plaintext)) {
-        stored[field] = keychainRef(account);
-        migrated++;
+        placeholders.set(field, keychainRef(account));
       }
-      // On a failed store write, leave the existing value untouched.
+      // On a failed store write, leave the existing file value untouched.
+    }
+    if (placeholders.size === 0) return 0;
+
+    // Re-read the file immediately before writing and merge ONLY the migrated
+    // key fields onto the fresh on-disk object. The store writes above can take
+    // seconds; a concurrent writer (e.g. a session persisting statusBar) may
+    // have changed unrelated keys in the meantime, and a blind rewrite of the
+    // stale snapshot would clobber those edits. Merging onto the current file
+    // preserves them; we only replace fields whose secret we actually moved, and
+    // only when that field still holds the same pre-migration value (so we never
+    // overwrite a key the user rotated during the window).
+    let current: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
+      current = typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : {};
+    } catch {
+      // The file vanished or became unreadable during migration; the secrets are
+      // already safely stored. Skip the rewrite and let the next launch retry
+      // (idempotent) rather than recreating a file from a stale snapshot.
+      return placeholders.size;
     }
 
-    if (migrated === 0) return 0;
+    let applied = 0;
+    for (const [field, ref] of placeholders) {
+      // Only replace the field if it still holds the exact value we migrated;
+      // a different value means the user rotated the key concurrently, which a
+      // later save/migration will handle.
+      if (current[field] === snapshot[field]) {
+        current[field] = ref;
+        applied++;
+      }
+    }
+    if (applied === 0) return placeholders.size;
 
     await ensureDir(AGAV_DIR);
     const { randomBytes } = await import("node:crypto");
     const tmpPath = `${CONFIG_PATH}.tmp.${randomBytes(8).toString("hex")}`;
-    const serialized = JSON.stringify(stored, null, 2) + "\n";
+    const serialized = JSON.stringify(current, null, 2) + "\n";
     const { rename, unlink } = await import("node:fs/promises");
     try {
       await writeFile(tmpPath, serialized, { mode: 0o600, flag: "wx" });
@@ -795,9 +893,9 @@ export async function migrateSecretsToKeychain(): Promise<number> {
       await unlink(tmpPath).catch(() => {});
       // The secrets are already safely in the store; failing to rewrite the file
       // only means the next launch retries the migration (idempotent).
-      return migrated;
+      return placeholders.size;
     }
-    return migrated;
+    return applied;
   } catch {
     return 0;
   }

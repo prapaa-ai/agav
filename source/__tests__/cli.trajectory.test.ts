@@ -10,7 +10,7 @@ import type { Message, LLMProvider, StreamEvent, StreamParams } from "../provide
 import type { AgavRunUsage } from "../utils/trajectory.js";
 import { NO_EDITS_PROMPT, SCHEMA_RETRY_PREFIX } from "../agent/internal-prompts.js";
 
-vi.mock("../config/config.js", async (original) => ({ ...await original<typeof import("../config/config.js")>(), loadConfig: vi.fn() }));
+vi.mock("../config/config.js", async (original) => ({ ...await original<typeof import("../config/config.js")>(), loadConfig: vi.fn(), migrateSecretsToKeychain: vi.fn(async () => 0) }));
 vi.mock("../config/keybindings.js", () => ({ loadKeybindings: async () => ({}) }));
 vi.mock("../config/history.js", () => ({ listSessions: async () => [] }));
 vi.mock("../providers/registry.js", () => ({ createProvider: vi.fn() }));

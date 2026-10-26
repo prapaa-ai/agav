@@ -36,7 +36,7 @@ vi.mock("../utils/temp-output.js", () => ({
 }));
 vi.mock("../config/config.js", async () => {
   const actual = await vi.importActual<typeof import("../config/config.js")>("../config/config.js");
-  return { ...actual, loadConfig: vi.fn() };
+  return { ...actual, loadConfig: vi.fn(), migrateSecretsToKeychain: vi.fn(async () => 0) };
 });
 
 const installedVersion = vi.hoisted(() => ({ value: "0.2.4-beta.2" }));
