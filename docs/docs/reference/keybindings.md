@@ -32,11 +32,14 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Command palette | `Ctrl+K Ctrl+P` |
 | Show keybindings | `Ctrl+K Ctrl+S` |
 | Clear screen | `Ctrl+L` |
-| Exit while idle with an empty prompt | `Ctrl+Q` |
+| Detach a worker-owned session, including at approval prompts | `Ctrl+X` |
+| Open the request queue when requests are queued; otherwise exit while idle with an empty prompt | `Ctrl+Q` |
+
+For worker-owned turns, **Ctrl+X** closes the UI without cancelling or answering pending consent. Enable `backgroundJobsEnabled` before starting the task and wait for the detach hint. Return with `agav --resume <session-id>` or `/resume`. Ctrl+Q is not detach. See [Detached sessions](/features/detached-sessions) for requirements and worker cancellation limitations.
 
 ## Cancel versus exit
 
-Press **Esc** to cancel the active turn and stay in Agav. In an actual `subagent` detail view it cancels only that worker; from the overview it cancels the whole turn. Skill and named-agent progress entries share that UI but have no individual focused-cancel handler: return to the overview with Tab before cancelling their parent turn. Manual-only slash-command skills receive no turn cancellation signal. An open picker or preview handles Esc locally. At a tool confirmation, Esc means **No** for that tool call, not cancel the whole turn.
+For foreground, in-process turns, press **Esc** to cancel the active turn and stay in Agav. A live session worker is not cancelled by that local interrupt; see [Detached sessions](/features/detached-sessions#supported-paths-and-limitations). In an actual `subagent` detail view it cancels only that worker; from the overview it cancels the whole turn. Skill and named-agent progress entries share that UI but have no individual focused-cancel handler: return to the overview with Tab before cancelling their parent turn. Manual-only slash-command skills receive no turn cancellation signal. An open picker or preview handles Esc locally. At a tool confirmation, Esc means **No** for that tool call, not cancel the whole turn.
 
 Press **Ctrl+C** with no text selected in Agav to exit, whether idle or busy. If an Agav output selection is active, Ctrl+C copies it and keeps Agav open; clear the selection before pressing Ctrl+C to exit. **Cmd+C** on macOS and **Ctrl+Shift+C** where supported are copy shortcuts, not exit shortcuts. Terminal-native copy behavior takes precedence when your terminal intercepts a shortcut.
 

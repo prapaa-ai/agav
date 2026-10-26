@@ -21,11 +21,11 @@ order: 3
 | `/export [json] [sanitize\|--sanitize]` | Export the retained conversation as Markdown or JSON, optionally with best-effort redaction. |
 | `/exit` | Save the current session and exit. |
 
-Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`.
+Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`. To keep a task executing after closing the UI, enable worker execution before submitting it and use `/detach` or Ctrl+X; see [Detached sessions](/features/detached-sessions). The resume picker also includes live runtimes and their pending approval counts.
 
 > **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\`.
 
-`agav --resume` opens a picker listing all saved sessions, with the total count shown in the header. You can move the selection with `↑/↓`, `j/k`, or the mouse wheel, or click a row to select it. Press `Enter` to resume the selected session, `D` to delete, `M` or `R` to rename, and `Esc` or `q` to cancel. In the rename view, type the new name and press `Enter` to save, or press `Esc` to cancel and return to the list without renaming.
+`agav --resume` opens a picker listing all saved sessions, with the total count shown in the header. You can move the selection with `↑/↓`, `j/k`, or the mouse wheel, or click a row to select it. Press `Enter` to resume the selected session, `D` to delete saved or terminal sessions (not active workers), `M` or `R` to rename active or terminal sessions, and `Esc` or `q` to cancel. In the rename view, type the new name and press `Enter` to save, or press `Esc` to cancel and return to the list without renaming.
 
 Note: resuming a session created with `--max-turns` keeps the session's own history but the turn cap is reapplied to each new prompt.
 
