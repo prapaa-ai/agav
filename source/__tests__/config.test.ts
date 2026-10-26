@@ -467,6 +467,9 @@ describe("config", () => {
       expect(await mod.migrateSecretsToKeychain()).toBe(0);
       expect(keychainMock.setSecret).not.toHaveBeenCalled();
       expect(writeFile).not.toHaveBeenCalled();
+      // Steady-state guarantee: with nothing to move, the OS store is never even
+      // probed, so startup spawns no credential-store subprocess.
+      expect(keychainMock.isKeychainAvailable).not.toHaveBeenCalled();
     });
 
     it("leaves a key in the file as enc: when its store write fails", async () => {
@@ -487,12 +490,14 @@ describe("config", () => {
       expect(body).toContain("enc:o-secret");
     });
 
-    it("does not rewrite the file when there is nothing to migrate", async () => {
+    it("does not rewrite the file or probe the store when there is nothing to migrate", async () => {
       keychainMock.isKeychainAvailable.mockResolvedValue(true);
       readFile.mockResolvedValue(JSON.stringify({ provider: "anthropic", model: "m" }));
       const mod = await import("../config/config.js");
       expect(await mod.migrateSecretsToKeychain()).toBe(0);
       expect(writeFile).not.toHaveBeenCalled();
+      // No in-file secret → no subprocess spawn to detect the credential store.
+      expect(keychainMock.isKeychainAvailable).not.toHaveBeenCalled();
     });
 
     it("never throws and returns 0 on a corrupt or missing config file", async () => {

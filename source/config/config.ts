@@ -738,8 +738,13 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
  */
 export async function migrateSecretsToKeychain(): Promise<number> {
   try {
-    if (!(await isKeychainAvailable())) return 0;
-
+    // Read the config FIRST and only probe the OS store if there is actually an
+    // in-file secret to move. Detecting the store spawns a child process
+    // (notably a cold PowerShell on Windows, ~hundreds of ms), so gating on a
+    // cheap file read keeps steady-state startup — the vast majority of launches,
+    // where keys are already migrated, set via env, or absent — free of any
+    // subprocess. The probe (and migration) runs only on the one launch that has
+    // real work to do.
     let stored: Record<string, unknown>;
     try {
       const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
@@ -749,6 +754,14 @@ export async function migrateSecretsToKeychain(): Promise<number> {
       // Missing or corrupt config: nothing to migrate. Do not rewrite it.
       return 0;
     }
+
+    const hasMigratable = Object.keys(KEYCHAIN_ACCOUNTS).some((field) => {
+      const value = stored[field];
+      return typeof value === "string" && value.length > 0 && !isKeychainRef(value);
+    });
+    if (!hasMigratable) return 0;
+
+    if (!(await isKeychainAvailable())) return 0;
 
     let migrated = 0;
     for (const [field, account] of Object.entries(KEYCHAIN_ACCOUNTS)) {
