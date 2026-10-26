@@ -5,7 +5,7 @@ Run from any directory: python3 source/__tests__/helpers/sessions-public-detach.
 Compiles the current checkout to a temporary directory; never uses build/ or dist/.
 Uses a deterministic loopback Ollama-protocol server, NOT a real model/download.
 The real CLI, supervisor, worker, provider adapter, permission UI and write_file run.
-Covers three task turns under one session id, fresh generations, approval-time Ctrl+Q
+Covers three task turns under one session id, fresh generations, approval-time Ctrl+X
 detach and exact-id CLI resume, not mid-tool/stream detach,
 slash /resume discovery, other platforms or standalone packaging. No production edits.
 """
@@ -293,10 +293,10 @@ def main():
                 check(approval["toolName"] == "write_file", "Wrong pending tool")
                 check(approval["input"] == {"path": "hello.txt", "content": "hello\n"}, "Wrong pending arguments")
                 current.expect("Allow Write File?")
-                current.expect("Ctrl+Q")
+                current.expect("Ctrl+X")
                 check(writes.drain() == turn - 1, "Write executed before consent")
                 check(turn > 1 or not target.exists(), "First write executed before consent")
-                current.send(b"\x11")  # Ctrl+Q must detach, not answer ToolConfirm.
+                current.send(b"\x18")  # Ctrl+X must detach, not answer ToolConfirm.
                 current.exit_code()
                 current.expect(f"To resume: agav --resume {session_id}")
                 time.sleep(0.7)
@@ -312,7 +312,7 @@ def main():
 
                 resumed = Terminal(command + ["--resume", session_id], project, env)
                 terminals.append(resumed)
-                resumed.expect("Ctrl+Q")
+                resumed.expect("Ctrl+X")
                 resumed.expect("Allow Write File?")
                 resumed.expect("hello.txt")
                 time.sleep(0.3)
@@ -359,7 +359,7 @@ def main():
             current.exit_code()
             check(len(generations) == 3 and writes.drain() == 3, "Expected three generations and three physical writes")
             single_runtime()
-            print("PASS: three task turns, one session id/runtime, three fresh generations; each Ctrl+Q exits 0 "
+            print("PASS: three task turns, one session id/runtime, three fresh generations; each Ctrl+X exits 0 "
                   "with exact resume hint, preserves pending consent/worker, then exact-id resume + Y completes "
                   "one physical write and verification without replay or model verification nudges.")
             print(json.dumps(identities, sort_keys=True))

@@ -80,9 +80,9 @@ describe("ToolConfirm UI", () => {
 
   it("never treats the detach gesture as approval with a custom submit binding", async () => {
     const { instance, stdin, onConfirm } = await mount({ detachAvailable: true,
-      keybindings: { ...DEFAULT_KEYBINDINGS, submit: ["ctrl+q"] } });
+      keybindings: { ...DEFAULT_KEYBINDINGS, submit: ["ctrl+x"] } });
     try {
-      stdin.emit("data", "\x11");
+      stdin.emit("data", "\x18");
       await new Promise(resolve => setTimeout(resolve, 50));
       expect(onConfirm).not.toHaveBeenCalled();
     } finally { instance.unmount(); }

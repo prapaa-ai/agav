@@ -174,7 +174,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
   const background = toolName === "run_background_job" ? parseBackgroundConfirmInput(input) : undefined;
 
   useInput((rawChar, rawKey) => {
-    if (detachAvailable && rawKey.ctrl && rawChar === "q") return;
+    if (detachAvailable && rawKey.ctrl && rawChar === "x") return;
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
 
     if (feedbackModeRef.current) {

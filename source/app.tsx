@@ -908,8 +908,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
       return;
     }
-    // Reachable even when ToolConfirm owns the composer. Ctrl+Q never answers consent.
-    if (rawKey.ctrl && rawChar === "q" && canDetach) {
+    // Reachable even when ToolConfirm owns the composer. Ctrl+X never answers consent.
+    if (rawKey.ctrl && rawChar === "x" && canDetach) {
       void detachCurrentSession().then(() => exit()).catch(error => showStatusLine(error instanceof Error ? error.message : String(error)));
       return;
     }
@@ -1864,7 +1864,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           />
         )}
 
-        {canDetach && <Text dimColor>Ctrl+Q: detach · worker continues · resume with /resume</Text>}
+        {canDetach && <Text dimColor>Ctrl+X: detach · worker continues · resume with /resume</Text>}
 
         {!voice.phase && !pendingConfirmation && pendingContextWindowRequest && (
           <ContextWindowPrompt
