@@ -421,6 +421,66 @@ jobs:
       # moderate advisories out of the gate while blocking high and critical.
       - run: pnpm audit --prod --audit-level high
 
+  # Supply-chain gate on dependency changes. Fail-closed on a new direct or
+  # transitive dependency carrying a HIGH/CRITICAL advisory or a disallowed
+  # license — caught at the PR that introduces it, before it reaches the
+  # lockfile that `pnpm audit` later re-checks at release. The license allow
+  # list mirrors the postmerge license-check job so the two cannot drift. Only
+  # runs when the dependency manifest/lockfile changes; the comparison is
+  # between the PR base and head so unchanged deps are never re-flagged.
+  dependency-review:
+    name: Dependency Review
+    needs: changed
+    if: needs.changed.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    # pull-requests:write is required for `comment-summary-in-pr: on-failure`;
+    # without it the action catches the 403 and only warns, silently dropping
+    # the summary. contents:read is the default, kept explicit alongside it.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          token: ${{ secrets.TOKEN || github.token }}
+      - name: Review dependency changes
+        id: review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          base-ref: ${{ github.event.pull_request.base.sha }}
+          head-ref: ${{ github.event.pull_request.head.sha }}
+          fail-on-severity: high
+          # Keep in lockstep with the postmerge license-check allow list.
+          allow-licenses: >-
+            MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC0-1.0,
+            CC-BY-4.0, Unlicense, Python-2.0, BlueOak-1.0.0
+          comment-summary-in-pr: on-failure
+      # Fail closed on licenses the action cannot resolve. With an allow-list
+      # set, the action hard-fails `forbidden` and `unresolved` license changes,
+      # but it only *logs* dependencies whose license is unknown/NOASSERTION —
+      # so a new runtime dependency with no identifiable license would pass
+      # despite not being on the allow-list. Enforce that gap here by reading
+      # the action's `invalid-license-changes` output (which includes the
+      # `unlicensed` bucket) and failing if it is non-empty. Runs even when the
+      # action step above failed, so one finding does not mask the other.
+      - name: Fail on unresolved or unlicensed dependencies
+        if: always() && steps.review.outputs.invalid-license-changes != ''
+        env:
+          INVALID: ${{ steps.review.outputs.invalid-license-changes }}
+        run: |
+          UNLICENSED=$(node -e '
+            const data = JSON.parse(process.env.INVALID || "{}");
+            const bad = [...(data.unlicensed || []), ...(data.unresolved || [])];
+            for (const d of bad) console.log(`  ${d.package_url || d.name || "unknown"}`);
+            process.exit(bad.length > 0 ? 1 : 0);
+          ') && {
+            echo "No unlicensed or unresolved dependency changes."
+            exit 0
+          }
+          echo "::error::Dependency change(s) with an unknown/unresolved license (not on the allow-list):"
+          printf '%s\n' "$UNLICENSED"
+          exit 1
+
   lockfile-integrity:
     name: Lockfile Integrity
     needs: changed
@@ -526,6 +586,7 @@ jobs:
       - security-patterns
       - runtime-audit
       - dependency-audit
+      - dependency-review
       - lockfile-integrity
       - semgrep
       - sensitive-files
@@ -549,6 +610,7 @@ jobs:
             "${{ needs.security-patterns.result }}" \
             "${{ needs.runtime-audit.result }}" \
             "${{ needs.dependency-audit.result }}" \
+            "${{ needs.dependency-review.result }}" \
             "${{ needs.lockfile-integrity.result }}" \
             "${{ needs.semgrep.result }}" \
             "${{ needs.sensitive-files.result }}" \
