@@ -140,6 +140,22 @@ describe("utils/keychain", () => {
       expect(getCalls().some((c) => c.stdin.includes("add-generic-password"))).toBe(false);
     });
 
+    it.each([
+      ["ASCII", "a".repeat(5000)],
+      ["multi-byte UTF-8", "é".repeat(2050)],
+      ["escaped quotes", '"'.repeat(2050)],
+    ])("refuses an over-long %s account on read and delete (interactive line bound)", async (_label, huge) => {
+      const getCalls = scriptSpawn([{ code: 0 }]); // detection only; no command should run
+      const mod = await freshModule();
+      expect(await mod.getSecret(huge)).toBeUndefined();
+      await mod.deleteSecret(huge); // must not throw / not emit a split command
+      // Assert the backend as well as the absence of interactive commands: this
+      // regression used to pass vacuously inside the Linux backend's describe.
+      expect(getCalls().map(({ file, args }) => ({ file, args }))).toEqual([
+        { file: "security", args: ["help"] },
+      ]);
+    });
+
     it("returns undefined when the item is absent (non-zero exit)", async () => {
       scriptSpawn([{ code: 0 }, { code: 44 }]);
       const mod = await freshModule();
@@ -249,16 +265,6 @@ describe("utils/keychain", () => {
       // No store subcommand was ever spawned for the unsafe account.
       expect(getCalls().some((c) => c.stdin.includes("add-generic-password"))).toBe(false);
       expect(getCalls().some((c) => c.stdin.includes("find-generic-password"))).toBe(false);
-    });
-
-    it("refuses an over-long account on read and delete (interactive line bound)", async () => {
-      const getCalls = scriptSpawn([{ code: 0 }]); // detection only; no command should run
-      const mod = await freshModule();
-      const huge = "a".repeat(5000); // > 4095-byte interactive line
-      expect(await mod.getSecret(huge)).toBeUndefined();
-      await mod.deleteSecret(huge); // must not throw / not emit a split command
-      expect(getCalls().some((c) => c.stdin.includes("find-generic-password"))).toBe(false);
-      expect(getCalls().some((c) => c.stdin.includes("delete-generic-password"))).toBe(false);
     });
   });
 
@@ -384,16 +390,26 @@ describe("utils/keychain", () => {
       await vi.advanceTimersByTimeAsync(0);
       await vi.advanceTimersByTimeAsync(5000); // detection #1 deadline
       expect(await p1).toBeUndefined();        // this call fails (store was slow)
-      vi.useRealTimers();
 
       // Within the cooldown, further reads fast-fail WITHOUT re-probing (so N keys
       // don't each pay a detection timeout).
       expect(await mod.getSecret("b")).toBeUndefined();
       expect(getCalls().length).toBe(1); // only the timed-out probe ran
 
-      // After the cooldown elapses, detection is retried and the key resolves.
-      mod.__resetKeychainDetectionCooldownForTests();
+      // Remain on the fake clock: the cooldown starts at the timeout, not at
+      // probe launch. Even one millisecond before expiry must not re-probe.
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(await mod.getSecret("b")).toBeUndefined();
+      expect(getCalls().length).toBe(1);
+
+      // At the actual expiry (no test-only reset), detection retries and reads
+      // recover even though the detection timeout left the write breaker set.
+      await vi.advanceTimersByTimeAsync(1);
       expect(await mod.getSecret("a")).toBe("sk-live");
+      expect(getCalls().length).toBe(3);
+      expect(getCalls().map((call) => call.args)).toEqual([["help"], ["help"], ["-i"]]);
+      expect(mod.isStoreUnresponsive()).toBe(true);
+      expect(await mod.setSecret("a", "replacement")).toBe(false);
       expect(getCalls().length).toBe(3);
     });
   });
