@@ -1,7 +1,7 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
 
 /** Default fast-model choices keyed by provider name. */
-const FAST_MODELS: Record<string, string> = {
+export const FAST_MODELS: Record<string, string> = {
   anthropic: "claude-haiku-4-5-20251001",
   openai: "gpt-4o-mini",
   openrouter: "~google/gemini-flash-latest",
@@ -12,7 +12,7 @@ const FAST_MODELS: Record<string, string> = {
 }
 
 /** Default deep-model choices keyed by provider name. */
-const DEEP_MODELS: Record<string, string> = {
+export const DEEP_MODELS: Record<string, string> = {
   anthropic: "claude-sonnet-4-20250514",
   openai: "gpt-4o",
   openrouter: "~anthropic/claude-sonnet-latest",
