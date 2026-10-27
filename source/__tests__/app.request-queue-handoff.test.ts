@@ -65,7 +65,7 @@ async function mount() {
   Object.assign(stdout, { isTTY: true, columns: 100, rows: 24, write: (text: string) => { chunks.push(text); return true; } });
   const stdin = new EventEmitter() as NodeJS.ReadStream;
   Object.assign(stdin, { isTTY: true, setRawMode: () => stdin, resume: () => stdin, pause: () => stdin, read: () => null });
-  const config: AgavConfig = { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000, maxIterations: 2, errorRetries: 1, permissionMode: "auto-accept" };
+  const config: AgavConfig = { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000, maxIterations: 2, errorRetries: 1, permissionMode: "auto-accept", modelSuggestions: false };
   const instance = render(h(App, { config, keybindings: DEFAULT_KEYBINDINGS }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
   await instance.waitUntilRenderFlush();
   await vi.waitFor(() => expect(boundary.prompt).toBeDefined());

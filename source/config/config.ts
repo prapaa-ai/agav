@@ -78,6 +78,8 @@ export interface AgavConfig {
   /** "paused" makes `agav job tick`/daemon do nothing. Global-only (PROJECT_CONFIG_DENY). */
   backgroundAutomation?: "on" | "paused";
   search?: boolean;
+  /** Ask for a model (or an AI-assigned one) and effort on the first prompt of a conversation. Defaults to on. */
+  modelSuggestions?: boolean;
   /**
    * Organization policy (org tier) fields. Populated only when an admin ships an
    * org config; see config/org-config.ts. These take precedence over global,
@@ -185,6 +187,11 @@ export const PROJECT_CONFIG_TEMPLATE = {
     description: "Whether to hide absolute paths in terminal outputs, replacing them with relative ones.",
     type: "boolean",
     eg: false,
+  },
+  modelSuggestions: {
+    description: "Whether the first prompt of each conversation asks you to pick a model (or let the AI assign one) and a reasoning effort.",
+    type: "boolean",
+    eg: true,
   },
   showThinking: {
     description: "Whether to display the model's reasoning/thinking text as it streams. Toggle with Ctrl+T at runtime.",

@@ -232,7 +232,7 @@ function warningSuffix(warnings: string[]): string {
 }
 
 /** Whether a routed model slug belongs to the provider already in use. */
-function matchesProviderPrefix(model: string, provider: string): boolean {
+export function matchesProviderPrefix(model: string, provider: string): boolean {
   const prefix = model.split("/", 1)[0]?.toLowerCase();
   if (provider === "anthropic" || provider === "openai") return prefix === provider;
   if (provider === "gemini" || provider === "vertex-ai") return prefix === "google";
@@ -240,7 +240,7 @@ function matchesProviderPrefix(model: string, provider: string): boolean {
 }
 
 /** Compact "200k" / "1m" label for a context window token count. */
-function formatContextWindow(n: number): string {
+export function formatContextWindow(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}m`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(n % 1_000 === 0 ? 0 : 1)}k`;
   return String(n);

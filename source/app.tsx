@@ -13,6 +13,9 @@ import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
 import ToolConfirm from "./components/tool-confirm.js";
 import ContextWindowPrompt from "./components/context-window-prompt.js";
+import ModelSuggestionPrompt, { type SessionSetupChoice } from "./components/model-suggestion-prompt.js";
+import { canSuggestModel, suggestModel, type ModelSuggestion } from "./utils/model-suggestion.js";
+import { fetchAvailableModels, matchesProviderPrefix } from "./commands/model.js";
 import { DEFAULT_UNKNOWN_CONTEXT_WINDOW } from "./agent/loop.js";
 import ToolDetailPanel from "./components/tool-detail-panel.js";
 import PlanDetailPanel from "./components/plan-detail-panel.js";
@@ -129,6 +132,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     try { return createProvider(config); } catch { return null; }
   }, [config.provider, config.anthropicApiKey, config.openaiApiKey, config.openrouterApiKey, config.geminiApiKey, config.vertexAICredentialsPath, config.vertexAILocation, config.ollamaEndpoint, config.ollamaHost, config.ollamaPort, config.ollamaApiKey, config.errorRetries]);
   const [showToolDetail, setShowToolDetail] = useState(false);
+  const [pendingModelSuggestion, setPendingModelSuggestion] = useState<{ suggestion: ModelSuggestion | null; resolve: (choice: SessionSetupChoice) => void } | null>(null);
+  // Resolved once a model/effort change has rendered, so useAgent's configRef sees it before submit.
+  const modelAppliedRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    modelAppliedRef.current?.();
+    modelAppliedRef.current = null;
+  }, [config.model, config.provider, config.effort]);
   const [showPlanDetail, setShowPlanDetail] = useState(false);
   const [showThinking, setShowThinking] = useState(initialConfig.showThinking ?? false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -1258,6 +1268,39 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         // cannot mutate image data retained in the submitted turn.
         const extraBlocks: ContentBlock[] = promptAttachments.map((attachment) => ({ ...attachment.contentBlock }));
         const llmText = trimmed || "See attached content";
+        // First prompt of a conversation: ask for a model (or let the AI
+        // assign one) and an effort before the turn starts.
+        if (!invocationReason && !queued && stdout.isTTY && stdin.isTTY && activeSideProvider
+            && conversation.getMessages().length === 0 && config.modelSuggestions !== false) {
+          let suggestion: ModelSuggestion | null = null;
+          if (canSuggestModel(config)) {
+            showStatusLine("Picking a model for this prompt…");
+            suggestion = await suggestModel(activeSideProvider, config, llmText);
+            setSystemMessages([]);
+          }
+          const choice = await new Promise<SessionSetupChoice>((resolve) => setPendingModelSuggestion({ suggestion, resolve }));
+          setPendingModelSuggestion(null);
+          let model = choice.model ?? config.model;
+          // A catalog pick from another provider switches provider, as /model does.
+          let provider = choice.provider && choice.provider !== config.provider && !matchesProviderPrefix(model, config.provider)
+            ? choice.provider as AgavConfig["provider"]
+            : config.provider;
+          const policyError = model !== config.model || provider !== config.provider
+            ? orgPolicyError({ ...config, provider, model })
+            : null;
+          if (policyError) {
+            showStatusLine(policyError, true);
+            model = config.model;
+            provider = config.provider;
+          }
+          if (model !== config.model || provider !== config.provider || choice.effort !== config.effort) {
+            if (model !== config.model || provider !== config.provider) modelSelectionVersion.current++;
+            await new Promise<void>((resolve) => {
+              modelAppliedRef.current = resolve;
+              setConfig((prev) => ({ ...prev, provider, model, effort: choice.effort }));
+            });
+          }
+        }
         const accepted = await submit(llmText, extraBlocks, undefined, undefined, invocationReason);
         if (!accepted) {
           if (queued) throw new Error("Queued request could not start. It remains in the queue; use /queue retry when ready.");
@@ -1284,7 +1327,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY],
+    [config, conversation, activeSideProvider, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.
@@ -1595,7 +1638,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         <RequestQueue
           requests={queuedRequests.map(request => ({ id: request.id, text: request.text, attachmentCount: request.attachments.length }))}
           onCancel={cancelQueuedRequest}
-          active={queueActive && !pickerActive && !pendingConfirmation && !pendingContextWindowRequest}
+          active={queueActive && !pickerActive && !pendingConfirmation && !pendingContextWindowRequest && !pendingModelSuggestion}
           onClose={() => setQueueActive(false)} onActivate={() => setQueueActive(true)} columns={termCols}
         />
         {queueBlocked && queuedRequests.length > 0 && <Text color="yellow">Queue paused · /queue retry to retry</Text>}
@@ -1617,6 +1660,18 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             model={pendingContextWindowRequest.model}
             defaultValue={DEFAULT_UNKNOWN_CONTEXT_WINDOW}
             onSubmit={resolveContextWindowRequest}
+          />
+        )}
+
+        {!voice.phase && !pendingConfirmation && !pendingContextWindowRequest && pendingModelSuggestion && (
+          <ModelSuggestionPrompt
+            suggestion={pendingModelSuggestion.suggestion}
+            currentModel={config.model}
+            currentProvider={config.provider}
+            currentEffort={config.effort}
+            loadModels={async () => (await fetchAvailableModels(config)).models}
+            modelLocked={config.orgManagedModel !== undefined}
+            onSubmit={pendingModelSuggestion.resolve}
           />
         )}
 
@@ -1679,7 +1734,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           {voiceFeedback === "error" && <Text dimColor>{voiceError}</Text>}
           {voiceFeedback === "error" && <Text dimColor>Check microphone access and local setup: /help voice</Text>}
         </Box>}
-        {!pendingConfirmation && !pendingContextWindowRequest && (
+        {!pendingConfirmation && !pendingContextWindowRequest && !pendingModelSuggestion && (
           <Box marginTop={1}><InputPrompt
             value={input}
             onChange={(value) => {
