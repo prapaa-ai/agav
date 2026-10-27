@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ auth: vi.fn(), disconnect: vi.fn(), config: vi.fn() }));
 vi.mock("../mcp/oauth.js", () => ({ MCPOAuth: class { auth = mocks.auth; disconnect = mocks.disconnect; } }));
-vi.mock("../config/config.js", async original => ({ ...await original<typeof import("../config/config.js")>(), loadConfig: mocks.config }));
+vi.mock("../config/config.js", async original => ({ ...await original<typeof import("../config/config.js")>(), loadConfig: mocks.config, migrateSecretsToKeychain: vi.fn(async () => 0) }));
 import { runMCPCommand } from "../cli/mcp-cli.js";
 import { parseArgs, main } from "../main.js";
 

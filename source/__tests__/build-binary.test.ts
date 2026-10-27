@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,7 +9,8 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 function fixture(platform = 'win32', failure = true, args: string[] = [], powershellFailure = false, realPowerShell = false, spacedRoot = false) {
-  const root = mkdtempSync(join(tmpdir(), spacedRoot ? 'agav build diagnostic ' : 'agav-build-diagnostic-'));
+  // Node resolves the copied ESM entry through realpath (not macOS /var aliases).
+  const root = realpathSync(mkdtempSync(join(tmpdir(), spacedRoot ? 'agav build diagnostic ' : 'agav-build-diagnostic-')));
   roots.push(root);
   for (const dir of ['scripts', 'source/voice']) mkdirSync(join(root, dir), { recursive: true });
   copyFileSync('scripts/build-binary.mjs', join(root, 'scripts/build-binary.mjs'));
