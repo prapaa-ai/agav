@@ -724,10 +724,36 @@ export async function main() {
     return;
   }
 
-  // Enterprise enrollment does not require an LLM provider or a running TUI.
+  // Sign-in does not require an LLM provider or a running TUI. `/login` routes
+  // between the consumer Agav account (explicit --key / --consumer; --account for
+  // logout) and enterprise enrollment (everything else), using one shared,
+  // option-aware parser so an enterprise option's VALUE is never mistaken for a
+  // consumer key.
   if (flags.login || flags.logout) {
+    // Pass the remaining positionals UNCHANGED (the consumed subcommand is never
+    // among them). Do NOT filter stray "login"/"logout" tokens: a malformed
+    // command like `agav logout login --key` must be rejected as an unexpected
+    // operand, not silently reinterpreted into a credential-clearing action.
+    const args = flags._ as string[];
+    const { parseConsumerArgs } = await import("./account/account-login.js");
+    const parsedConsumer = parseConsumerArgs(args);
+    const isConsumer = !("error" in parsedConsumer) && parsedConsumer.consumer;
+
+    if (isConsumer) {
+      const { runConsumerLoginCli } = await import("./cli/account-cli.js");
+      const exitCode = await runConsumerLoginCli(flags.logout ? "logout" : "login", args);
+      process.exit(exitCode);
+      return;
+    }
+    // A bare agav_sk_ operand is a parse error (unsafe on the CLI); surface it
+    // rather than silently routing to enterprise.
+    if ("error" in parsedConsumer) {
+      console.error(parsedConsumer.error);
+      process.exit(1);
+      return;
+    }
+
     const { runLoginCommand } = await import("./cli/login-cli.js");
-    const args = (flags._ as string[]).filter((a) => a !== "login" && a !== "logout");
     const exitCode = await runLoginCommand(flags.logout ? "logout" : "login", args);
     process.exit(exitCode);
     return;

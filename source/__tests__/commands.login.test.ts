@@ -3,12 +3,25 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 vi.mock("../cli/login-cli.js", () => ({
   runLoginCommand: vi.fn(),
 }));
+vi.mock("../account/secret-prompt.js", () => ({
+  readSecretFromTty: vi.fn(),
+  SecretPromptError: class SecretPromptError extends Error {},
+}));
+vi.mock("../account/account-login.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../account/account-login.js")>();
+  return { ...original, signInWithApiKey: vi.fn(), signOutAccount: vi.fn() };
+});
 
 import { runLoginCommand } from "../cli/login-cli.js";
 import { loginCommand, logoutCommand } from "../commands/login.js";
+import { readSecretFromTty } from "../account/secret-prompt.js";
+import { signInWithApiKey, signOutAccount } from "../account/account-login.js";
 import type { CommandContext } from "../commands/types.js";
 
 const runLoginMock = vi.mocked(runLoginCommand);
+const readSecretMock = vi.mocked(readSecretFromTty);
+const signInMock = vi.mocked(signInWithApiKey);
+const signOutMock = vi.mocked(signOutAccount);
 
 const createContext = (resume = vi.fn()): CommandContext => ({
   conversation: {} as any,
@@ -173,5 +186,58 @@ describe("commands/login", () => {
 
     expect((result as any).text.toLowerCase()).toContain("failed");
     expect((result as any).text).toContain("EACCES");
+  });
+
+  describe("consumer account routing", () => {
+    it("/login --key opens the masked prompt and signs in with the prompted key (not enterprise)", async () => {
+      readSecretMock.mockResolvedValue("agav_sk_prompted123456");
+      signInMock.mockResolvedValue({ accountId: "acct_1", email: "u@x.com", status: "active" });
+      const resume = vi.fn();
+
+      const result = await loginCommand.execute("--key", createContext(resume));
+
+      // It must NOT fall through to enterprise enrollment.
+      expect(runLoginMock).not.toHaveBeenCalled();
+      // It prompted (masked) and signed in with the prompted value.
+      expect(readSecretMock).toHaveBeenCalledTimes(1);
+      expect(signInMock).toHaveBeenCalledTimes(1);
+      expect(signInMock.mock.calls[0]![0]).toBe("agav_sk_prompted123456");
+      expect(resume).toHaveBeenCalled();
+      expect((result as any).text.toLowerCase()).toContain("signed in to your agav account");
+    });
+
+    it("/login --key ignores an inline value and still prompts (TUI never trusts argv keys)", async () => {
+      readSecretMock.mockResolvedValue("agav_sk_fromprompt0000");
+      signInMock.mockResolvedValue({ accountId: "acct_1", email: null, status: "active" });
+
+      await loginCommand.execute("--key agav_sk_fromargv000000", createContext());
+
+      expect(readSecretMock).toHaveBeenCalledTimes(1);
+      expect(signInMock.mock.calls[0]![0]).toBe("agav_sk_fromprompt0000"); // prompt wins, not argv
+    });
+
+    it("/login --key forwards --account-service to sign-in", async () => {
+      readSecretMock.mockResolvedValue("agav_sk_prompted123456");
+      signInMock.mockResolvedValue({ accountId: "acct_1", email: null, status: "active" });
+
+      await loginCommand.execute("--key --account-service https://staging.agav.dev", createContext());
+
+      expect(signInMock.mock.calls[0]![1]).toMatchObject({ accountService: "https://staging.agav.dev" });
+    });
+
+    it("/login --key reports cancellation when the prompt is cancelled", async () => {
+      readSecretMock.mockResolvedValue(undefined); // user hit Ctrl-C/Esc
+      const result = await loginCommand.execute("--key", createContext());
+      expect(signInMock).not.toHaveBeenCalled();
+      expect((result as any).text.toLowerCase()).toContain("cancelled");
+    });
+
+    it("/logout --account signs out the consumer account (not enterprise)", async () => {
+      signOutMock.mockResolvedValue(undefined);
+      const result = await logoutCommand.execute("--account", createContext());
+      expect(runLoginMock).not.toHaveBeenCalled();
+      expect(signOutMock).toHaveBeenCalledTimes(1);
+      expect((result as any).text.toLowerCase()).toContain("signed out of your agav account");
+    });
   });
 });

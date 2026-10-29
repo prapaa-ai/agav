@@ -1071,6 +1071,45 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       const trimmed = value.trim();
       const composerEditVersion = composerEditVersionRef.current;
 
+      // Credential guard — runs FIRST, before the busy-queue, intervention, slash
+      // dispatch, or model submission, and independently of the visible composer
+      // text. A consumer API key can arrive either as a credential-bearing /login
+      // in the text OR as the key pasted into an attachment (a long paste becomes
+      // an attachment tile, so the visible text would not start with "/login").
+      // In either case we must neither queue it, submit it to the model, nor keep
+      // it: drop the input, unregister the attachments, and point the user at the
+      // masked prompt.
+      //
+      // Gate on a cheap synchronous pre-check so the normal submit hot path (no
+      // login text, no "agav_sk_" in the text, no text attachments) never pays for
+      // the dynamic import — this preserves the exact timing the request-queue
+      // handoff relies on. The text gate uses a bare "agav_sk_" substring so a key
+      // pasted WITHOUT a /login prefix (incl. repeat-paste expansion) is caught.
+      if (/^\/(login|logout)\b/.test(trimmed) || trimmed.includes("agav_sk_")
+          || promptAttachments.some((a) => a.contentBlock.type === "text")) {
+        const { containsApiKey, submissionCarriesApiKey } = await import("./account/credential-input.js");
+        const attachmentHasKey = promptAttachments.some(
+          (a) => a.contentBlock.type === "text" && containsApiKey((a.contentBlock as { text?: string }).text ?? ""),
+        );
+        if (submissionCarriesApiKey(trimmed) || attachmentHasKey) {
+          // Clear composer + fully unregister any attachments so the key is not
+          // retained in the session attachment registry.
+          composerEditVersionRef.current++;
+          setInput("");
+          for (const a of promptAttachments) unregisterAttachment(a.id);
+          setAttachments([]);
+          lastPasteRef.current = null;
+          setSystemMessages([{
+            id: `sys-${++sysMessageId}`,
+            role: "system",
+            content:
+              "For your security, don't paste your Agav API key into the prompt — it could be saved or sent to the model.\n" +
+              "Run `/login --key` (no value) and paste your key when prompted; it won't be shown or stored.",
+          }]);
+          return;
+        }
+      }
+
       if (trimmed.split(/\s+/)[0] === "/voice") {
         if (invocationReason || queued) {
           showStatusLine("Voice input requires a direct user action; automated workflows cannot open the microphone.", true);
