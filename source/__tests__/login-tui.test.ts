@@ -5,11 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import render from "../ink/render.js";
 import { LoginTUI } from "../components/login-tui.js";
 import { signInWithApiKey } from "../account/account-login.js";
+import { signInWithBrowser } from "../account/browser-auth.js";
 
 vi.mock("../account/account-login.js", () => ({ signInWithApiKey: vi.fn() }));
+vi.mock("../account/browser-auth.js", () => ({ signInWithBrowser: vi.fn() }));
 const signIn = vi.mocked(signInWithApiKey);
+const browserSignIn = vi.mocked(signInWithBrowser);
 const cleanups: (() => void)[] = [];
-beforeEach(() => { signIn.mockReset().mockResolvedValue({ accountId: "acct", email: "you@example.test", status: "active" }); });
+beforeEach(() => {
+  signIn.mockReset().mockResolvedValue({ accountId: "acct", email: "you@example.test", status: "active" });
+  browserSignIn.mockReset().mockResolvedValue({ accountId: "acct", email: "you@example.test", status: "active" });
+});
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
 
 async function mount(openBrowser = vi.fn(async (_url: string) => true)) {
@@ -75,25 +81,55 @@ describe("login wizard", () => {
     await ui.key("\r"); expect(ui.onDone).toHaveBeenCalledWith({ cancelled: true });
   });
 
-  it("numeric 1 opens the same service URL, with manual fallback on failure", async () => {
-    const ui = await mount(vi.fn(async () => false));
-    await ui.key("2"); await ui.key("1"); await ui.key("\r");
-    expect(ui.openBrowser).toHaveBeenCalledExactlyOnceWith("https://staging.example/base/account");
-    expect(ui.output()).toContain("Could not open your browser");
-    await ui.key("\x03");
+  it("option 1 runs the browser flow: shows the code, waits, and signs in without a pasted key", async () => {
+    browserSignIn.mockImplementation(async (o) => {
+      o.onPrompt({ userCode: "ABCD-2345", verificationUrl: "https://staging.example/base/cli-auth", openedBrowser: true });
+      return { accountId: "acct", email: "you@example.test", status: "active" };
+    });
+    const ui = await mount();
+    await ui.key("\r"); // option 1 selected by default
+    expect(signIn).not.toHaveBeenCalled();
+    expect(browserSignIn).toHaveBeenCalledTimes(1);
+    // The wizard passes the resolved service + its openBrowser into the flow.
+    expect(browserSignIn.mock.calls[0]![0]).toMatchObject({ accountService: "https://staging.example/base/", openBrowser: ui.openBrowser });
+    expect(ui.output()).toContain("ABCD-2345");
+    expect(ui.onDone).toHaveBeenCalledWith({ cancelled: false, message: expect.stringContaining("you@example.test") });
   });
 
-  it("locks browser launch synchronously and ignores completion after cancel", async () => {
-    let complete!: (ok: boolean) => void;
-    const browser = vi.fn(() => new Promise<boolean>(r => { complete = r; }));
-    const ui = await mount(browser);
+  it("option 1 shows the manual URL when the browser can't open, then cancels on Esc", async () => {
+    browserSignIn.mockImplementation(async (o) => {
+      o.onPrompt({ userCode: "WXYZ-6789", verificationUrl: "https://staging.example/base/cli-auth", openedBrowser: false });
+      return await new Promise(() => {}); // stay waiting
+    });
+    const ui = await mount();
+    await ui.key("\r");
+    expect(ui.output()).toContain("Couldn't open a browser");
+    expect(ui.output()).toContain("https://staging.example/base/cli-auth");
+    await ui.key("\x1b");
+    const signal = browserSignIn.mock.calls[0]![0].signal!;
+    expect(signal.aborted).toBe(true);
+    expect(ui.onDone).toHaveBeenCalledExactlyOnceWith({ cancelled: true });
+  });
+
+  it("option 1 surfaces a denial/timeout message and offers retry", async () => {
+    const { AccountError } = await import("../account/types.js");
+    browserSignIn.mockRejectedValueOnce(new AccountError("Sign-in was declined in the browser."));
+    const ui = await mount();
+    await ui.key("\r");
+    expect(ui.output()).toContain("declined");
+    browserSignIn.mockResolvedValueOnce({ accountId: "acct", email: "you@example.test", status: "active" });
+    await ui.key("r"); // retry stays on option 1 (browser flow)
+    expect(browserSignIn).toHaveBeenCalledTimes(2);
+    expect(ui.onDone).toHaveBeenCalledWith({ cancelled: false, message: expect.stringContaining("you@example.test") });
+  });
+
+  it("locks option-1 launch synchronously (coalesced Enters start one flow)", async () => {
+    browserSignIn.mockImplementation(async () => new Promise(() => {})); // never resolves
+    const ui = await mount();
     await ui.key("\r\r");
-    expect(browser).toHaveBeenCalledTimes(1);
+    expect(browserSignIn).toHaveBeenCalledTimes(1);
     await ui.key("\x1b");
     expect(ui.onDone).toHaveBeenCalledExactlyOnceWith({ cancelled: true });
-    complete(true); await ui.settle();
-    expect(ui.output()).not.toContain("Paste your Agav API key");
-    expect(signIn).not.toHaveBeenCalled();
   });
 
   it.each(["\x1b", "\x03"])("cancels validation with %j and forwards an abort signal", async cancel => {
@@ -102,7 +138,7 @@ describe("login wizard", () => {
     }));
     const ui = await mount(); await pasteScreen(ui);
     await ui.key(START + KEY + END + "\r");
-    expect(ui.output()).toContain("Validating your key");
+    expect(ui.output()).toContain("Validating and saving your account");
     const signal = signIn.mock.calls[0]![1]!.signal!;
     await ui.key(cancel);
     expect(signal.aborted).toBe(true);
