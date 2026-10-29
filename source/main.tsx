@@ -384,6 +384,29 @@ export async function runPipeMode(
   conversation.setModel(config.model);
   conversation.addUserMessage(fullPrompt, expansion.contentBlocks, undefined, prompt);
 
+  let trajectoryWriteFailed = false;
+  const checkpoint = options.trajectoryPath ? async (status: "running" | "completed" | "failed" = "running") => {
+    try {
+      await writeAgavTrajectory(options.trajectoryPath!, {
+        model: config.model,
+        provider: config.provider,
+        startedAt,
+        finishedAt: status === "running" ? null : new Date().toISOString(),
+        status,
+        usage,
+        messages: conversation.getTranscript(),
+      });
+    } catch (error) {
+      if (!trajectoryWriteFailed) {
+        process.stderr.write(`Error: Failed to write trajectory: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
+      trajectoryWriteFailed = true;
+    }
+  } : undefined;
+  // Persist before any model discovery/request can hang. Each subsequent write
+  // atomically replaces this snapshot, so even SIGKILL leaves readable evidence.
+  await checkpoint?.();
+
   let effectiveSystemPrompt = config.systemPrompt ?? "";
   if (options.includeDynamicContext) {
     const { refreshDynamicContext } = await import("./utils/system-prompt.js");
@@ -422,6 +445,7 @@ export async function runPipeMode(
         effort: config.effort,
         maxTokens: config.maxTokens,
         iterationsBudget: iterationsBudget,
+        checkpoint: checkpoint ? () => checkpoint() : undefined,
         permissionMode,
         permissionFloor: config.orgPermissionFloor,
         // print/run mode has no human to confirm background jobs.
@@ -468,6 +492,7 @@ export async function runPipeMode(
             usage.output_tokens += event.outputTokens;
             usage.cache_read_tokens += event.cacheReadTokens ?? 0;
             usage.cache_write_tokens += event.cacheWriteTokens ?? 0;
+            await checkpoint?.();
             break;
           case "turn_complete":
             break;
@@ -548,21 +573,8 @@ export async function runPipeMode(
     process.stderr.write(`Error: ${error instanceof Error ? error.message : String(error)}\n`);
     exitCode = 1;
   }
-  if (options.trajectoryPath) {
-    try {
-      await writeAgavTrajectory(options.trajectoryPath, {
-        model: config.model,
-        provider: config.provider,
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        usage,
-        messages: conversation.getTranscript(),
-      });
-    } catch (error) {
-      process.stderr.write(`Error: Failed to write trajectory: ${error instanceof Error ? error.message : String(error)}\n`);
-      exitCode = 1;
-    }
-  }
+  await checkpoint?.(exitCode === 0 ? "completed" : "failed");
+  if (trajectoryWriteFailed) exitCode = 1;
   return exitCode;
 }
 

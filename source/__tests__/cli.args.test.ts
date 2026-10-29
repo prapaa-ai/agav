@@ -55,6 +55,28 @@ describe("CLI argument parsing", () => {
     expect(flags.logout).toBe(true);
   });
 
+  it("treats a dash-leading run prompt after -- as the positional prompt, not a flag", () => {
+    // A task spec whose first line is "- You are given ..." must not be parsed
+    // as an unknown flag (exit 2). The benchmark adapter puts flags before `--`
+    // and the instruction last; everything after `--` is positional.
+    const flags = parseArgs([
+      "run", "--provider", "openai", "--model", "gpt-5.6-luna",
+      "--trajectory", "/logs/agent/t.json",
+      "--", "- You are given a PyTorch state dictionary", "second line",
+    ]);
+    expect(flags.run).toBe(true);
+    expect(flags.provider).toBe("openai");
+    expect(flags.model).toBe("gpt-5.6-luna");
+    expect(flags.trajectoryPath).toBe("/logs/agent/t.json");
+    expect(flags.runPrompt).toBe("- You are given a PyTorch state dictionary second line");
+  });
+
+  it("treats a dash-leading -P prompt after -- as the positional prompt", () => {
+    const flags = parseArgs(["-P", "--", "--not-a-flag explain this"]);
+    expect(flags.print).toBe(true);
+    expect(flags.printPrompt).toBe("--not-a-flag explain this");
+  });
+
   it("recognizes login after a -- separator (e.g. pnpm start -- login)", () => {
     const flags = parseArgs(["--", "login", "--oidc"]);
     expect(flags.login).toBe(true);

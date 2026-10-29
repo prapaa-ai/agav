@@ -294,6 +294,48 @@ describe("real pipe-mode trajectory export", () => {
     });
   });
 
+  it("checkpoints the prompt before model discovery and usage before the stream finishes", async () => {
+    let inspected = false;
+    provider.getContextWindow = async () => {
+      const snapshot = JSON.parse(await readFile(trajectoryPath, "utf-8"));
+      expect(snapshot.status).toBe("running");
+      expect(snapshot.finished_at).toBeNull();
+      expect(snapshot.messages[0].content[0].text).toBe("Inspect the fixture");
+      return 128000;
+    };
+    provider.stream.mockImplementation(() => (async function* () {
+      yield { type: "usage", inputTokens: 17, outputTokens: 4, cacheReadTokens: 3, cacheWriteTokens: 2 } as const;
+      const snapshot = JSON.parse(await readFile(trajectoryPath, "utf-8"));
+      expect(snapshot.status).toBe("running");
+      expect(snapshot.finished_at).toBeNull();
+      expect(snapshot.usage).toEqual({ input_tokens: 17, output_tokens: 4, cache_read_tokens: 3, cache_write_tokens: 2 });
+      inspected = true;
+      yield* text("done");
+    })());
+    expect(await runPipeMode("Inspect the fixture", config, provider, options())).toBe(0);
+    expect(inspected).toBe(true);
+    expect(await exported()).toMatchObject({ status: "completed" });
+    expect(await readdir(directory)).toEqual(["run=trajectory.json"]);
+  });
+
+  it("checkpoints assistant calls before executing tools and results before the next request", async () => {
+    const { ConversationState } = await import("../agent/conversation.js");
+    const compact = ConversationState.prototype.compactIfNeeded;
+    let inspected = false;
+    vi.spyOn(ConversationState.prototype, "compactIfNeeded").mockImplementation(async function (this: InstanceType<typeof ConversationState>, ...args) {
+      if (this.getTranscript().some(m => m.content.some(b => b.type === "tool_result"))) {
+        const snapshot = JSON.parse(await readFile(trajectoryPath, "utf-8"));
+        expect(snapshot.messages.at(-1).content[0]).toMatchObject({ type: "tool_result", toolResult: "trajectory fixture contents" });
+        inspected = true;
+      }
+      return compact.apply(this, args);
+    });
+    provider = providerFor([read, new Error("request failed")]);
+    expect(await runPipeMode("Inspect the fixture", config, provider, options())).toBe(1);
+    expect(inspected).toBe(true);
+    expect(await exported()).toMatchObject({ status: "failed" });
+  });
+
   it("returns 1 and reports a real filesystem export failure on stderr", async () => {
     expect(await runPipeMode("Inspect the fixture", config, provider, options({ trajectoryPath: directory }))).toBe(1);
     expect(provider.stream).toHaveBeenCalledTimes(1);

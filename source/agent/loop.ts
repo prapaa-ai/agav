@@ -86,6 +86,8 @@ import { boundToolResult } from "../utils/tool-output.js";
 import { checkWrite, formatWorkspaceWarning } from "../utils/workspace-guard.js";
 
 interface LoopParams {
+  /** Await durable headless transcript snapshots at conversation boundaries. */
+  checkpoint?: () => Promise<void>;
   provider: LLMProvider;
   conversation: ConversationState;
   toolRegistry: ToolRegistry;
@@ -523,6 +525,7 @@ export async function* runAgentLoop(
       });
     }
     conversation.addAssistantMessage(assistantContent);
+    await params.checkpoint?.();
 
     // No tool calls — final response (unless edits are unverified or verification failed)
     if (toolCalls.size === 0) {
@@ -690,6 +693,7 @@ export async function* runAgentLoop(
         yield { type: "tool_result", toolName: call.name, toolCallId: id, output: "Tool cancelled.", isError: true };
       }
       conversation.addToolResults(toolResults);
+      await params.checkpoint?.();
       yield { type: "error", error: new Error("Aborted") };
       return;
     }
@@ -822,6 +826,7 @@ export async function* runAgentLoop(
     }
 
     conversation.addToolResults(toolResults);
+    await params.checkpoint?.();
     // Tool execution and result yields may cancel the turn, even when a child
     // has consumed the last shared iteration. Keep history paired before exiting.
     if (signal?.aborted) {

@@ -238,6 +238,19 @@ audits these trajectories, so agents that upload only free-form logs are
 rejected — this is why the conversion exists. Nothing extra to run; it happens
 automatically whenever `AGENT=agav`.
 
+Native trajectories are checkpointed atomically before model discovery, on reported
+usage, and after assistant messages and tool-result batches. If a timeout or hard
+kill prevents finalization, Harbor can still convert the last checkpoint to ATIF
+and populate token counts. An unfinished checkpoint has `status: "running"` and
+`finished_at: null`; normal finalization records `completed` or `failed`. ATIF
+preserves these fields in `extra`. These counts include only usage already
+reported by the provider, not unreported tokens from an interrupted request.
+
+Rebuild and deploy the benchmark binary after updating the CLI
+(`FORCE=1 benchmarks/agav-agent/build-binary.sh`), and deploy the updated adapter
+alongside it. Existing runs containing only `agav.txt` cannot recover exact usage
+from this change; use provider-side usage records if available.
+
 ## Upload results (Harbor Hub / leaderboard)
 
 Uploads go through [`upload.sh`](./upload.sh), which shares every job with the

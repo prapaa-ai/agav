@@ -191,11 +191,18 @@ class AgavAgent(BaseInstalledAgent):
             environment,
             command=(
                 "mkdir -p /logs/agent 2>/dev/null || true; "
-                # `run` must come first, then the prompt, then flags.
-                f"{shlex.quote(_INSTALL_PATH)} run {escaped_instruction} "
+                # `run` first, then flags, then a `--` end-of-options separator,
+                # then the prompt LAST. The separator makes agav treat the whole
+                # instruction as the positional prompt even when it begins with a
+                # dash (e.g. a task spec whose first line is "- You are given ...").
+                # Without it, such a prompt is misparsed as an unknown flag and
+                # agav exits 2 before the agent ever runs. Everything after `--`
+                # is positional, so the flags must precede it.
+                f"{shlex.quote(_INSTALL_PATH)} run "
                 f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
                 f"--trajectory /logs/agent/{_NATIVE_TRAJECTORY_FILENAME} "
                 f"{cli_flags}"
+                f"-- {escaped_instruction} "
                 f"2>&1 | stdbuf -oL tee /logs/agent/{_OUTPUT_FILENAME}"
             ),
             env=env,
@@ -299,9 +306,11 @@ class AgavAgent(BaseInstalledAgent):
             return None
 
         usage = data.get("usage") or {}
-        total_in = usage.get("input_tokens") or 0
-        total_out = usage.get("output_tokens") or 0
-        total_cache = usage.get("cache_read_tokens") or 0
+        # A checkpoint may precede any reported usage. Keep missing counts
+        # unknown, and preserve actual zero counts rather than inventing usage.
+        total_in = usage.get("input_tokens")
+        total_out = usage.get("output_tokens")
+        total_cache = usage.get("cache_read_tokens")
 
         extra = {
             k: v
@@ -313,6 +322,12 @@ class AgavAgent(BaseInstalledAgent):
             if v is not None
         }
 
+        # Preserve an explicit null finish time and the native checkpoint status;
+        # a timed-out run's last snapshot is not a completed trajectory.
+        for key in ("finished_at", "status"):
+            if key in data:
+                extra[key] = data[key]
+
         return Trajectory(
             agent=Agent(
                 name=self.name(),
@@ -321,9 +336,9 @@ class AgavAgent(BaseInstalledAgent):
             ),
             steps=steps,
             final_metrics=FinalMetrics(
-                total_prompt_tokens=total_in or None,
-                total_completion_tokens=total_out or None,
-                total_cached_tokens=total_cache or None,
+                total_prompt_tokens=total_in,
+                total_completion_tokens=total_out,
+                total_cached_tokens=total_cache,
                 total_cost_usd=None,
                 total_steps=len(steps),
             ),
@@ -363,6 +378,6 @@ class AgavAgent(BaseInstalledAgent):
         if trajectory.final_metrics:
             fm = trajectory.final_metrics
             context.cost_usd = fm.total_cost_usd
-            context.n_input_tokens = fm.total_prompt_tokens or 0
-            context.n_output_tokens = fm.total_completion_tokens or 0
-            context.n_cache_tokens = fm.total_cached_tokens or 0
+            context.n_input_tokens = fm.total_prompt_tokens
+            context.n_output_tokens = fm.total_completion_tokens
+            context.n_cache_tokens = fm.total_cached_tokens

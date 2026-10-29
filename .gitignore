@@ -47,6 +47,9 @@ bun.lockb
 jobs/
 terminal-bench-2-1/
 benchmarks/agav-agent/bin/
+benchmarks/agav-agent/src/agav_terminal_bench/__pycache__/
+benchmarks/agav-agent/test/
+__pycache__/
 .agav-worktrees/
 # Transient fixture root for the Linux bubblewrap enforcement tests (created
 # under the checkout because bwrap masks /tmp; removed in afterAll).

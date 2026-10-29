@@ -24,7 +24,8 @@ export interface AgavTrajectoryInput {
   model: string;
   provider: string;
   startedAt: string;
-  finishedAt: string;
+  finishedAt: string | null;
+  status?: "running" | "completed" | "failed";
   usage: AgavRunUsage;
   messages: Message[];
 }
@@ -49,7 +50,7 @@ function sanitizeBlock(block: ContentBlock): ContentBlock {
   return out;
 }
 
-/** Serialize a completed run to a native agav trajectory JSON file. */
+/** Serialize a run checkpoint or completed run to a native agav trajectory JSON file. */
 export async function writeAgavTrajectory(path: string, data: AgavTrajectoryInput): Promise<void> {
   const trajectory = {
     agav_trajectory_version: 1 as const,
@@ -57,6 +58,7 @@ export async function writeAgavTrajectory(path: string, data: AgavTrajectoryInpu
     provider: data.provider,
     started_at: data.startedAt,
     finished_at: data.finishedAt,
+    ...(data.status ? { status: data.status } : {}),
     usage: data.usage,
     messages: data.messages.map((m) => ({
       role: m.role,
