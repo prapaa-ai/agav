@@ -27,35 +27,31 @@ export function looksLikeAgavApiKey(value: string): boolean {
 }
 
 /**
- * Parsed consumer-login intent, shared by the CLI and the slash command so the
- * two never diverge. `consumer` is true only when the user explicitly opted into
- * the consumer flow (`--key` or `--consumer`); otherwise the caller routes to
- * enterprise enrollment. `inlineKey` is only ever populated from an explicit
- * `--key=<value>` / `--key <value>` on the CLI — the TUI must NOT pass a key
- * through argv (it would land in prompt history / attachments), so it collects it
- * via a masked prompt instead.
+ * Parsed login intent, shared by the CLI and the slash command so the two never
+ * diverge. `consumer` is the DEFAULT: a bare `/login`, `--consumer`/`--account`,
+ * or `--account-service <url>` all open the consumer flow. Only an explicit
+ * ENTERPRISE flag routes to enrollment (`consumer: false`). There is deliberately
+ * no `--key` flag — the key is entered in the masked wizard, never via argv.
  */
 export interface ConsumerArgs {
   consumer: boolean;
   accountService?: string;
-  inlineKey?: string;
 }
 
-/** Consumer flags that take a value. */
-const CONSUMER_VALUE_FLAGS = new Set(["--key", "--account-service"]);
-/** Consumer boolean flags (mode selectors). */
+/** Consumer boolean selectors (optional; bare /login already means consumer). */
 const CONSUMER_BOOL_FLAGS = new Set(["--consumer", "--account"]);
+/** The one consumer value flag: override the account-service base URL. */
+const CONSUMER_VALUE_FLAGS = new Set(["--account-service"]);
 /**
  * Enterprise flags, with arity, so we can consume their VALUES while deciding the
- * mode — this makes parsing order-independent: an enterprise option's value is
- * never mistaken for an operand, regardless of where it appears.
+ * mode — an enterprise option's value is never mistaken for an operand.
  */
 const ENTERPRISE_VALUE_FLAGS = new Set(["--control-plane", "--issuer", "--client-id"]);
 const ENTERPRISE_BOOL_FLAGS = new Set(["--device", "--oidc", "--auth-code", "--saml"]);
 
 const KEY_ON_CMDLINE_ERROR =
-  "Don't pass your API key on the command line (it would be saved in shell history). " +
-  "Run `agav login --key` and paste it when prompted, or `/login --key` in the app.";
+  "Don't pass your API key on the command line (it could be saved in shell history). " +
+  "Run `/login` (or `agav login`) and paste it in the sign-in wizard, which hides it.";
 
 interface Token {
   flag: string;        // "" for a bare operand
@@ -65,7 +61,7 @@ interface Token {
 }
 
 /** Split argv into tokens, pairing value flags with their value. Order-preserving. */
-function tokenize(argv: string[]): Token[] | { error: string } {
+function tokenize(argv: string[]): Token[] {
   const tokens: Token[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -81,14 +77,10 @@ function tokenize(argv: string[]): Token[] | { error: string } {
       let value = inlineValue;
       if (value === undefined) {
         const next = argv[i + 1];
-        // A value flag followed by another flag (or nothing) has no value. For
-        // --key that is legal (bare --key => prompt); for others it is an error,
-        // surfaced later by the mode-specific validator.
         if (next !== undefined && !next.startsWith("--")) { value = next; i++; }
       }
       tokens.push({ flag: name, value, raw: arg });
     } else {
-      // Boolean flag; record whether an =value was (illegally) attached.
       tokens.push({ flag: name, raw: arg, hasInlineEq: eq !== -1 });
     }
   }
@@ -98,36 +90,35 @@ function tokenize(argv: string[]): Token[] | { error: string } {
 /**
  * Parse login arguments in an ORDER-INDEPENDENT, mode-aware way.
  *
- * Pass 1 tokenizes (pairing value flags with their values), so an enterprise
- * option's value is never seen as an operand. Pass 2 decides the mode: consumer
- * if any consumer flag is present. Pass 3 validates the full token list against
- * that mode's grammar — rejecting MIXED modes, unknown flags, and bare operands
- * (including a key typed on the command line). `inlineKey` is only populated from
- * an explicit `--key <value>`; the TUI ignores it and always uses the masked
- * prompt.
+ * Consumer is the default. Only an explicit enterprise flag selects enrollment.
+ * Mixing enterprise + consumer flags, unknown consumer flags, boolean `=value`,
+ * and a bare `agav_sk_` key typed on the command line are all rejected.
  */
 export function parseConsumerArgs(argv: string[]): ConsumerArgs | { error: string } {
-  const tokenized = tokenize(argv);
-  if ("error" in tokenized) return tokenized;
-  const tokens = tokenized;
+  const tokens = tokenize(argv);
+  // Never echo removed credential flags or secret-bearing unknown operands,
+  // including when enterprise flags would otherwise route to another parser.
+  if (tokens.some(t => t.flag === "--key")) {
+    return { error: "--key is no longer supported. Open /login and choose Paste an Agav API key." };
+  }
+  if (tokens.some(t => !CONSUMER_VALUE_FLAGS.has(t.flag) && !ENTERPRISE_VALUE_FLAGS.has(t.flag)
+    && t.raw.includes(API_KEY_PREFIX))) return { error: KEY_ON_CMDLINE_ERROR };
 
-  const hasConsumer = tokens.some((t) => CONSUMER_VALUE_FLAGS.has(t.flag) || CONSUMER_BOOL_FLAGS.has(t.flag));
   const hasEnterprise = tokens.some((t) => ENTERPRISE_VALUE_FLAGS.has(t.flag) || ENTERPRISE_BOOL_FLAGS.has(t.flag));
+  const hasConsumer = tokens.some((t) => CONSUMER_BOOL_FLAGS.has(t.flag) || CONSUMER_VALUE_FLAGS.has(t.flag));
 
-  if (!hasConsumer) {
-    // Not a consumer invocation. Still refuse a bare key operand (unmistakably a
-    // key typed on the command line); otherwise leave it for the enterprise path.
+  if (hasEnterprise) {
+    if (hasConsumer) {
+      return { error: "Mixing Agav account flags with enterprise flags isn't supported. Use one or the other." };
+    }
+    // A bare key alongside enterprise flags is still unsafe to accept.
     for (const t of tokens) {
       if (t.flag === "" && t.raw.startsWith("agav_sk_")) return { error: KEY_ON_CMDLINE_ERROR };
     }
     return { consumer: false };
   }
 
-  // Consumer mode selected. Reject mixing with enterprise flags.
-  if (hasEnterprise) {
-    return { error: "Mixing Agav account flags (--key/--consumer) with enterprise flags isn't supported. Use one or the other." };
-  }
-
+  // Consumer mode (the default). Validate the consumer grammar.
   const out: ConsumerArgs = { consumer: true };
   for (const t of tokens) {
     if (t.flag === "") {
@@ -135,14 +126,7 @@ export function parseConsumerArgs(argv: string[]): ConsumerArgs | { error: strin
       return { error: `Unexpected argument for Agav account sign-in: ${t.raw}` };
     }
     if (CONSUMER_BOOL_FLAGS.has(t.flag)) {
-      // A boolean selector takes no value; `--account=false` / `--consumer=x` is a
-      // usage error, NOT permission to proceed (silently dropping the value could
-      // turn an explicit "=false" into a sign-out).
       if (t.hasInlineEq) return { error: `${t.flag} does not take a value.` };
-      continue;
-    }
-    if (t.flag === "--key") {
-      if (t.value !== undefined) out.inlineKey = t.value; // present only via explicit value
       continue;
     }
     if (t.flag === "--account-service") {

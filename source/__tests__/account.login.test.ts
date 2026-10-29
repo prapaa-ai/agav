@@ -113,81 +113,72 @@ describe("signOutAccount", () => {
 });
 
 describe("parseConsumerArgs", () => {
-  it("does not select consumer mode for a plain /login (enterprise default)", () => {
-    expect(parseConsumerArgs([])).toEqual({ consumer: false });
+  it("defaults a bare /login to the consumer wizard", () => {
+    expect(parseConsumerArgs([])).toEqual({ consumer: true });
   });
 
-  it("does not treat enterprise flags as consumer", () => {
+  it("routes explicit enterprise flags to enterprise (consumer: false)", () => {
     expect(parseConsumerArgs(["--device"])).toEqual({ consumer: false });
     expect(parseConsumerArgs(["--control-plane", "https://auth.corp"])).toEqual({ consumer: false });
+    expect(parseConsumerArgs(["--oidc", "--client-id", "x"])).toEqual({ consumer: false });
   });
 
-  it("selects consumer mode on --key or --consumer", () => {
-    expect(parseConsumerArgs(["--key"])).toMatchObject({ consumer: true });
-    expect(parseConsumerArgs(["--consumer"])).toMatchObject({ consumer: true });
+  it("accepts the explicit consumer selectors", () => {
+    expect(parseConsumerArgs(["--consumer"])).toEqual({ consumer: true });
+    expect(parseConsumerArgs(["--account"])).toEqual({ consumer: true });
   });
 
-  it("captures an inline --key value and --account-service", () => {
-    expect(parseConsumerArgs(["--key", "agav_sk_x", "--account-service", "https://staging.agav.dev"]))
-      .toEqual({ consumer: true, inlineKey: "agav_sk_x", accountService: "https://staging.agav.dev" });
-    expect(parseConsumerArgs(["--key=agav_sk_y", "--account-service=https://s.dev"]))
-      .toEqual({ consumer: true, inlineKey: "agav_sk_y", accountService: "https://s.dev" });
+  it("captures --account-service (flag and =form)", () => {
+    expect(parseConsumerArgs(["--account-service", "https://staging.agav.dev"]))
+      .toEqual({ consumer: true, accountService: "https://staging.agav.dev" });
+    expect(parseConsumerArgs(["--account-service=https://s.dev"]))
+      .toEqual({ consumer: true, accountService: "https://s.dev" });
   });
 
-  it("does NOT mistake an enterprise option's value for a consumer key", () => {
-    // `agav_sk_...` here is the --client-id VALUE, consumed as such → enterprise.
+  it("does NOT mistake an enterprise option's value for an operand", () => {
     expect(parseConsumerArgs(["--oidc", "--client-id", "agav_sk_lookslikeakey"]))
       .toEqual({ consumer: false });
     expect(parseConsumerArgs(["--client-id", "agav_sk_x", "--oidc"]))
       .toEqual({ consumer: false });
   });
 
+  it("there is no --key flag anymore (rejected as unknown)", () => {
+    expect(parseConsumerArgs(["--key"])).toHaveProperty("error");
+    expect(parseConsumerArgs(["--key", "agav_sk_x"])).toHaveProperty("error");
+  });
+
   it("rejects a bare agav_sk_ operand with guidance (never on the command line)", () => {
     const r = parseConsumerArgs(["agav_sk_rawkey123456"]);
     expect(r).toHaveProperty("error");
     expect((r as { error: string }).error).toMatch(/shell history/i);
+    // Also when accompanied by enterprise flags.
+    expect(parseConsumerArgs(["--oidc", "agav_sk_rawkey123456"])).toHaveProperty("error");
   });
 
   it("rejects an unknown consumer flag instead of ignoring it", () => {
-    expect(parseConsumerArgs(["--key", "--bogus"])).toHaveProperty("error");
+    expect(parseConsumerArgs(["--bogus"])).toHaveProperty("error");
     expect(parseConsumerArgs(["--consumer", "--bogus"])).toHaveProperty("error");
   });
 
-  it("is order-independent (foreign flag before or after consumer flag behaves the same)", () => {
-    // Mixing enterprise + consumer flags is rejected regardless of order.
-    expect(parseConsumerArgs(["--device", "--key"])).toHaveProperty("error");
-    expect(parseConsumerArgs(["--key", "--device"])).toHaveProperty("error");
-  });
-
-  it("rejects mixing enterprise and consumer flags", () => {
-    const r = parseConsumerArgs(["--control-plane", "https://corp", "--consumer"]);
-    expect(r).toHaveProperty("error");
-    expect((r as { error: string }).error).toMatch(/mixing/i);
+  it("rejects mixing enterprise and consumer flags (either order)", () => {
+    expect(parseConsumerArgs(["--control-plane", "https://corp", "--consumer"])).toHaveProperty("error");
+    expect(parseConsumerArgs(["--consumer", "--device"])).toHaveProperty("error");
+    expect(parseConsumerArgs(["--device", "--account"])).toHaveProperty("error");
   });
 
   it("rejects unexpected operands in consumer mode", () => {
-    expect(parseConsumerArgs(["--consumer", "unexpected"])).toHaveProperty("error");
-    expect(parseConsumerArgs(["--consumer", "-x"])).toHaveProperty("error");
+    expect(parseConsumerArgs(["unexpected"])).toHaveProperty("error");
+    expect(parseConsumerArgs(["--consumer", "extra"])).toHaveProperty("error");
   });
 
   it("requires a value for --account-service", () => {
-    expect(parseConsumerArgs(["--consumer", "--account-service"])).toHaveProperty("error");
+    expect(parseConsumerArgs(["--account-service"])).toHaveProperty("error");
   });
 
-  it("rejects an =value attached to a boolean selector (not treated as logout)", () => {
+  it("rejects an =value attached to a boolean selector", () => {
     expect(parseConsumerArgs(["--account=false"])).toHaveProperty("error");
     expect(parseConsumerArgs(["--consumer=false"])).toHaveProperty("error");
-    // Plain boolean selectors remain valid.
     expect(parseConsumerArgs(["--account"])).toEqual({ consumer: true });
-  });
-
-  it("rejects a stray subcommand operand (malformed mixed command)", () => {
-    // `agav logout login --key` leaves ["login","--key"] after the consumed
-    // subcommand; "login" is an unexpected operand and must be rejected, not
-    // silently turned into a credential-clearing consumer action.
-    const r = parseConsumerArgs(["login", "--key"]);
-    expect(r).toHaveProperty("error");
-    expect((r as { error: string }).error).toMatch(/unexpected argument/i);
   });
 });
 
@@ -197,5 +188,19 @@ describe("signInWithApiKey account-service override", () => {
     vi.stubGlobal("fetch", fetchMock);
     await signInWithApiKey("agav_sk_validkey123456", { accountService: "https://staging.agav.dev" });
     expect(fetchMock.mock.calls[0]![0]).toBe("https://staging.agav.dev/api/account/whoami");
+  });
+});
+
+describe("secret-safe removed option errors", () => {
+  it.each([
+    ["--key=agav_sk_secret123456"],
+    ["--device", "--key=agav_sk_secret123456"],
+    ["--key=agav_sk_secret123456", "--device"],
+    ["--unknown=agav_sk_secret123456"],
+    ["prefix-agav_sk_secret123456"],
+  ])("does not echo credentials in %j", (...args) => {
+    const result = parseConsumerArgs(args);
+    expect(result).toHaveProperty("error");
+    expect((result as { error: string }).error).not.toContain("agav_sk_secret123456");
   });
 });

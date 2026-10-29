@@ -737,19 +737,22 @@ export async function main() {
     const args = flags._ as string[];
     const { parseConsumerArgs } = await import("./account/account-login.js");
     const parsedConsumer = parseConsumerArgs(args);
-    const isConsumer = !("error" in parsedConsumer) && parsedConsumer.consumer;
+    // A bare agav_sk_ operand / unknown consumer flag is a parse error; surface it.
+    if ("error" in parsedConsumer) {
+      console.error(parsedConsumer.error);
+      process.exit(1);
+      return;
+    }
+    // Routing differs by verb: `agav login` defaults to the CONSUMER account
+    // (parser default); `agav logout` defaults to ENTERPRISE, with consumer
+    // sign-out requiring an explicit --account/--consumer flag.
+    const explicitConsumer = /(^|\s)--(account|consumer)(\s|$)/.test(args.join(" "));
+    const isConsumer = flags.logout ? explicitConsumer : parsedConsumer.consumer;
 
     if (isConsumer) {
       const { runConsumerLoginCli } = await import("./cli/account-cli.js");
       const exitCode = await runConsumerLoginCli(flags.logout ? "logout" : "login", args);
       process.exit(exitCode);
-      return;
-    }
-    // A bare agav_sk_ operand is a parse error (unsafe on the CLI); surface it
-    // rather than silently routing to enterprise.
-    if ("error" in parsedConsumer) {
-      console.error(parsedConsumer.error);
-      process.exit(1);
       return;
     }
 

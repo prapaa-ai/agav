@@ -35,7 +35,10 @@ import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { JobsTUI } from "./components/jobs-tui.js";
 import { CustomizeTUI } from "./components/customize-tui.js";
+import { LoginTUI } from "./components/login-tui.js";
+import { openExternal } from "./utils/open-external.js";
 import type { StatusBarSegments } from "./components/status-bar.js";
+
 import { normalizeStatusBarLayout, isDefaultStatusBarLayout, type StatusBarLayout } from "./config/status-bar-layout.js";
 import { ResourceManager } from "./components/resource-manager.js";
 import { createResourceAdapter } from "./resources/adapters.js";
@@ -251,6 +254,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const resourceTUIResolveRef = useRef<(() => void) | null>(null);
   const [customizeTUIActive, setCustomizeTUIActive] = useState(false);
   const customizeTUIResolveRef = useRef<(() => void) | null>(null);
+  const [loginTUIActive, setLoginTUIActive] = useState(false);
+  const [loginTUIService, setLoginTUIService] = useState("https://agav.dev");
+  const loginTUIResolveRef = useRef<((result: { cancelled: boolean; message?: string }) => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
@@ -1104,7 +1110,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             role: "system",
             content:
               "For your security, don't paste your Agav API key into the prompt — it could be saved or sent to the model.\n" +
-              "Run `/login --key` (no value) and paste your key when prompted; it won't be shown or stored.",
+              "Run `/login`, choose Paste an Agav API key, and enter it in the secure prompt; it won't enter chat or prompt history.",
           }]);
           return;
         }
@@ -1418,6 +1424,11 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             showCustomizeTUI: stdout.isTTY && process.stdin.isTTY ? (onDone: () => void) => {
               customizeTUIResolveRef.current = onDone;
               setCustomizeTUIActive(true);
+            } : undefined,
+            showLoginTUI: stdout.isTTY && stdin.isTTY ? (onDone: (result: { cancelled: boolean; message?: string }) => void, accountService: string) => {
+              loginTUIResolveRef.current = onDone;
+              setLoginTUIService(accountService);
+              setLoginTUIActive(true);
             } : undefined,
             startVoiceInput: stdout.isTTY && stdin.isTTY ? () => {
               // Capture the version after the slash command clears its composer.
@@ -1932,6 +1943,21 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               const resolve = customizeTUIResolveRef.current;
               customizeTUIResolveRef.current = null;
               resolve?.();
+            }}
+          />
+        )}
+
+        {loginTUIActive && (
+          <LoginTUI
+            accountService={loginTUIService}
+            openBrowser={openExternal}
+            onDone={(result) => {
+              setLoginTUIActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = loginTUIResolveRef.current;
+              loginTUIResolveRef.current = null;
+              resolve?.(result);
             }}
           />
         )}

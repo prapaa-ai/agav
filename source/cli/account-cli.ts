@@ -3,15 +3,14 @@ import { readSecretFromTty } from "../account/secret-prompt.js";
 import { AccountError } from "../account/types.js";
 
 /**
- * `agav login --key` / `agav logout --account` — consumer Agav account sign-in
- * from the CLI. Mirrors the `/login` slash command's consumer path. Returns a
- * process exit code.
+ * `agav login` / `agav logout --account` — consumer Agav account sign-in from
+ * the plain CLI (outside the TUI, which has the full interactive wizard). There
+ * is no `--key` flag: the interactive path collects the key through a masked
+ * prompt, and scripts pipe it on stdin. Returns a process exit code.
  *
- * Key input precedence (never echoed, never in shell history unless the user
- * forces it):
- *   1. `--key=<value>` / `--key <value>`  — explicit, with a shell-history warning
- *   2. a TTY                              — masked interactive prompt
- *   3. no TTY                             — read one line from stdin (for `… | agav login --key`)
+ * Key input:
+ *   - a TTY     → masked interactive prompt (hidden as you paste)
+ *   - no TTY    → read one line from stdin (e.g. `cat key.txt | agav login`)
  */
 export async function runConsumerLoginCli(
   command: "login" | "logout",
@@ -37,16 +36,12 @@ export async function runConsumerLoginCli(
     }
   }
 
-  // Resolve the key: explicit flag (warn), else masked TTY prompt, else stdin.
-  let key: string | undefined = parsed.inlineKey?.trim() || undefined;
-  if (key) {
-    console.error(
-      "Warning: passing --key on the command line can leave your key in shell history. " +
-      "Prefer `agav login --key` with no value and paste it when prompted.",
-    );
-  } else if (process.stdin.isTTY) {
+  // Resolve the key: masked TTY prompt, else one line from stdin (scripting).
+  let key: string | undefined;
+  if (process.stdin.isTTY) {
+    console.log("Sign in to your Agav account. Create or copy a key at https://agav.dev/account.");
     key = await readSecretFromTty({
-      label: "Paste your Agav API key (from https://agav.dev/account), then Enter: ",
+      label: "Paste your Agav API key, then Enter (hidden): ",
       // Standalone CLI owns the terminal: leave bracketed paste OFF on exit.
       restoreBracketedPaste: "disabled",
     });
@@ -59,7 +54,7 @@ export async function runConsumerLoginCli(
   }
 
   if (!key) {
-    console.error("No API key provided. Usage: agav login --key  (you'll be prompted to paste it)");
+    console.error("No API key provided. Run `agav login` and paste your key, or pipe it on stdin.");
     return 1;
   }
 
