@@ -321,6 +321,9 @@ jobs:
           # hits Bun's EPERM cache bug (oven-sh/bun#11198). Since Bun's x64
           # binary now auto-selects AVX2 code paths at runtime, -baseline and
           # the standard build produce the same binary anyway.
+          # shellcheck disable=SC2193 # actionlint replaces ${{ matrix.target }} with
+          # a fixed placeholder before shellcheck runs, so it wrongly concludes the
+          # glob can never match; at runtime matrix.target is the real target string.
           if [[ "${{ matrix.target }}" == windows-* ]]; then
             bun build source/cli.tsx --compile --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
           else
