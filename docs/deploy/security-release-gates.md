@@ -38,6 +38,15 @@ Two findings surfaced and were fixed when this gate was introduced: a real shell
 
 `pr-checks.yml`'s `semgrep` job is pinned to a Semgrep container **digest** (not `:latest`, which a maintainer could move to a build that changes or disables the scan). It now scans `scripts/` as well as `source/`: the build/release/SBOM/advisory scripts run in CI with repo-write privileges, so an unsafe-exec or command-injection defect there is as dangerous as one in the shipped CLI, and they were previously unscanned. The job triggers on source **or** scripts changes.
 
+## Dependency vulnerability audits
+
+`pnpm audit --audit-level high` is run in two tiers, each fail-closed on HIGH/CRITICAL:
+
+- **Production (`--prod`)** — the graph that ships inside the binary. A shipped-dependency CVE is a product vulnerability and blocks the merge and the release.
+- **Dev/build (`--dev`)** — tsx, vitest, tsc, husky, coverage, and the rest of the toolchain. These never ship, but they run in CI and on maintainer machines with repo-write access and can read source and secrets, so a HIGH/CRITICAL advisory in a build tool is a supply-chain / CI-integrity risk (a compromised transpiler or test runner could tamper with the artifact or exfiltrate). Kept a distinct job (`dev-dependency-audit`) rather than folded into the production audit so a failure says plainly which tier is affected.
+
+Both run in the PR `All Checks` gate (on dependency or source change), at release time against the exact shipped commit, and in the daily `security-monitor.yml` sweep of `main` and `beta`.
+
 ## Dependency-review gate
 
 `pr-checks.yml` runs `actions/dependency-review-action` (SHA-pinned) on any PR that touches `package.json`, `pnpm-lock.yaml` or `pnpm-workspace.yaml`. It diffs the PR base against the head and fails closed when a newly introduced direct or transitive dependency carries a HIGH/CRITICAL advisory or a license outside the allow list. The allow list mirrors the postmerge `license-check` job so the two cannot drift. A follow-up step reads the action's `invalid-license-changes` output and also fails on dependencies whose license is unknown/unresolved (`NOASSERTION`) — the action only logs those, so without this step a new dependency with no identifiable license would pass despite not being on the allow list. The job holds `pull-requests: write` so the `on-failure` summary comment can actually be posted. This catches a bad dependency at the PR that introduces it — earlier than the release `dependency-audit`, which re-checks the exact shipped commit's lockfile. The job participates in the terminal `All Checks` gate; a skipped run (no dependency change) is accepted, a failed one blocks the merge.
