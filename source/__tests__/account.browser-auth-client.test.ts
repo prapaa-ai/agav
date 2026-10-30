@@ -25,6 +25,16 @@ describe("startAuthorization", () => {
     expect(req).toMatchObject({ deviceCode: "dev_abc", userCode: "ABCD-2345", interval: 2 });
   });
 
+  it("sends the device id + label when provided, and an empty body otherwise", async () => {
+    // A Response body can only be read once, so return a FRESH Response per call.
+    const fetchMock = vi.fn().mockImplementation(() => jsonResponse(STARTED, 201));
+    vi.stubGlobal("fetch", fetchMock);
+    await startAuthorization(SERVICE, undefined, { deviceId: "device-abc_123456789012", deviceLabel: "My Laptop" });
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({ deviceId: "device-abc_123456789012", deviceLabel: "My Laptop" });
+    await startAuthorization(SERVICE);
+    expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toEqual({});
+  });
+
   it("rejects a verification URL that isn't same-origin as the account service", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ ...STARTED, verificationUrl: "https://evil.example/cli-auth", verificationUrlComplete: "https://evil.example/cli-auth" }, 201)));
     await expect(startAuthorization(SERVICE)).rejects.toThrow(/mismatched|unsafe/i);

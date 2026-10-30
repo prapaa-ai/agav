@@ -6,6 +6,9 @@ vi.mock("../account/browser-auth-client.js", () => ({
   acknowledge: vi.fn(),
 }));
 vi.mock("../account/account-client.js", () => ({ whoami: vi.fn() }));
+vi.mock("../account/device-id.js", () => ({
+  deviceIdentity: vi.fn().mockResolvedValue({ deviceId: "device-test_123456789012", deviceLabel: "Test Host" }),
+}));
 vi.mock("../account/account-store.js", () => ({
   saveStoredAccount: vi.fn().mockResolvedValue(undefined),
   SaveCancelledError: class SaveCancelledError extends Error {},
@@ -57,6 +60,8 @@ describe("signInWithBrowser", () => {
     const identity = await signInWithBrowser(o);
 
     expect(startMock).toHaveBeenCalledTimes(1);
+    // The device identity is forwarded to the service so it can rotate per device.
+    expect(startMock.mock.calls[0]![2]).toEqual({ deviceId: "device-test_123456789012", deviceLabel: "Test Host" });
     expect(o.openBrowser).toHaveBeenCalledWith(REQUEST.verificationUrlComplete);
     expect(o.onPrompt).toHaveBeenCalledWith({ userCode: "ABCD-2345", verificationUrl: REQUEST.verificationUrl, openedBrowser: true });
     expect(whoamiMock.mock.calls[0]!.slice(0, 2)).toEqual(["https://agav.dev", "agav_sk_delivered"]);

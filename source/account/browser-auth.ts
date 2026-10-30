@@ -1,5 +1,6 @@
 import { resolveAccountService } from "./account-address.js";
 import { startAuthorization, pollToken, acknowledge, type AuthorizationRequest } from "./browser-auth-client.js";
+import { deviceIdentity } from "./device-id.js";
 import { whoami } from "./account-client.js";
 import { saveStoredAccount, SaveCancelledError } from "./account-store.js";
 import { AccountError, type AccountIdentity, type StoredAccount } from "./types.js";
@@ -48,7 +49,11 @@ export async function signInWithBrowser(options: BrowserSignInOptions): Promise<
   const sleep = options.sleep ?? defaultSleep;
 
   throwIfAborted(options.signal);
-  const request: AuthorizationRequest = await startAuthorization(accountService, options.signal);
+  // Identify this install so the service rotates THIS device's key on re-login
+  // (instead of accumulating one per login) and can label it in the dashboard.
+  // Resolving the id never throws; it degrades to an ephemeral id on I/O failure.
+  const device = await deviceIdentity();
+  const request: AuthorizationRequest = await startAuthorization(accountService, options.signal, device);
 
   // Open the browser to the pre-filled verification URL, then show the code so
   // the user can compare it (and fall back to typing it if the browser failed).

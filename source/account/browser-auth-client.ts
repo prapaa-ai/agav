@@ -92,9 +92,19 @@ async function postJson(
   }
 }
 
-/** Begin a browser-authorization request. */
-export async function startAuthorization(accountService: string, signal?: AbortSignal): Promise<AuthorizationRequest> {
-  const { status, data } = await postJson(accountService, "api/cli-auth/start", {}, signal);
+/**
+ * Begin a browser-authorization request.
+ *
+ * `device` (optional) identifies this installation so the service rotates this
+ * machine's key on re-login and labels it in the dashboard. It is non-secret and
+ * safe to send; omitting it falls back to the service's account-wide behavior.
+ */
+export async function startAuthorization(
+  accountService: string,
+  signal?: AbortSignal,
+  device?: { deviceId: string; deviceLabel: string },
+): Promise<AuthorizationRequest> {
+  const { status, data } = await postJson(accountService, "api/cli-auth/start", device ? { ...device } : {}, signal);
   if (status === 429) throw new AccountError("Too many sign-in attempts right now. Please wait a minute and try again.");
   if (status !== 201 && status !== 200) throw new AccountError("Could not start browser sign-in. Please try again.");
   const obj = (data ?? {}) as Record<string, unknown>;
