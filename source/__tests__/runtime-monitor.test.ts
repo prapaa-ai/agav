@@ -5,7 +5,7 @@ import { parse } from 'yaml';
 import { validateReview, needsReview, monitorAdvisories } from '../../scripts/runtime-monitor.mjs';
 const policy = JSON.parse(readFileSync('security/runtime-review.json', 'utf8'));
 const now = Date.parse(policy.reviewedAt);
-const versions = { bun: '1.4.4', brotli: '1.2.1', 'c-ares': '1.34.8', 'zlib-ng': '2.3.3', libarchive: '3.8.9' };
+const versions = { bun: '1.4.4', brotli: '1.2.1', 'c-ares': '1.34.8', 'zlib-ng': '2.3.3', libarchive: '3.8.9', 'whisper.cpp': '1.7.6', miniaudio: '0.11.22' };
 const advisory = { ghsa_id: 'GHSA-wpr3-8q3r-4q8c', severity: 'high', vulnerabilities: [{ patched_versions: '1.34.9' }] };
 describe('runtime monitoring', () => {
   it('expires at the review deadline, rejects future and malformed dates and missing sources', () => {
@@ -27,7 +27,9 @@ describe('runtime monitoring', () => {
   it('queries every source and propagates auth, timeouts, and no redirects', async () => {
     const fetcher = vi.fn().mockResolvedValue({ ok: true, json: async () => [] });
     await expect(monitorAdvisories(versions, policy, fetcher, 'fixture')).resolves.toContain('not exhaustive');
-    expect(fetcher).toHaveBeenCalledTimes(5);
+    // One advisory-feed request per recorded source (now 7: Bun + 3 vendored C
+    // libs + the two native voice components).
+    expect(fetcher).toHaveBeenCalledTimes(7);
     expect(fetcher.mock.calls[0][1]).toMatchObject({ redirect: 'error', headers: { Authorization: 'Bearer fixture' } });
   });
   it.each([403, 429, 500])('fails closed on HTTP %i', async status => {
@@ -41,7 +43,8 @@ describe('runtime monitoring', () => {
     const withdrawn = { ...advisory, withdrawn_at: '2026-10-25' };
     const fetcher = vi.fn(async (url: string) => ({ ok: true, json: async () => url.includes('page=2') ? [] : Array(100).fill(withdrawn) }));
     await monitorAdvisories(versions, policy, fetcher);
-    expect(fetcher).toHaveBeenCalledTimes(10);
+    // Two pages fetched per source (full page 1, empty page 2) across all 7 sources.
+    expect(fetcher).toHaveBeenCalledTimes(14);
     await expect(monitorAdvisories(versions, policy, async () => ({ ok: true, json: async () => Array(100).fill(withdrawn) }))).rejects.toThrow(/pagination/);
   });
   it('gates releases on live monitoring and runs scheduled monitoring on both branches', () => {

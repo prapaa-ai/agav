@@ -3,12 +3,14 @@
   "reviewedAt": "2026-10-25T00:00:00Z",
   "owner": "prapaa-ai/security",
   "maxAgeDays": 30,
-  "scope": "Bun and recorded native component inventory; not an assertion that no advisories apply",
+  "scope": "Bun and recorded native component inventory (Bun runtime + vendored C libs, and the native voice helper's statically-linked C/C++ components); not an assertion that no advisories apply",
   "sources": {
     "bun": "oven-sh/bun",
     "brotli": "google/brotli",
     "c-ares": "c-ares/c-ares",
     "zlib-ng": "zlib-ng/zlib-ng",
-    "libarchive": "libarchive/libarchive"
+    "libarchive": "libarchive/libarchive",
+    "whisper.cpp": "ggml-org/whisper.cpp",
+    "miniaudio": "mackron/miniaudio"
   }
 }

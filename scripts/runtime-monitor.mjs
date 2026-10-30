@@ -5,6 +5,11 @@ import { readFileSync } from "node:fs";
 const EXPECTED_SOURCES = {
   bun: "oven-sh/bun", brotli: "google/brotli", "c-ares": "c-ares/c-ares",
   "zlib-ng": "zlib-ng/zlib-ng", libarchive: "libarchive/libarchive",
+  // Native voice helper's statically-linked C/C++ components (shipped only in the
+  // voice-enabled binary; invisible to pnpm audit / SBOM / Semgrep / Bun gate).
+  // ggml is bundled inside the whisper.cpp tarball at the same tag, so it is
+  // covered by the whisper.cpp version and feed rather than tracked separately.
+  "whisper.cpp": "ggml-org/whisper.cpp", miniaudio: "mackron/miniaudio",
 };
 
 export function validateReview(policy, now = Date.now()) {
