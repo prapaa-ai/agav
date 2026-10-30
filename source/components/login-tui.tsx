@@ -3,7 +3,7 @@ import { Box, Text, useApp, useInput, useStdin, useStdout } from "../ink/index.j
 import { getTheme } from "../config/theme.js";
 import { readSecretFromTty } from "../account/secret-prompt.js";
 import { signInWithApiKey } from "../account/account-login.js";
-import { signInWithBrowser } from "../account/browser-auth.js";
+import { AccountAcknowledgementError, signInWithBrowser } from "../account/browser-auth.js";
 import { accountEndpoint } from "../account/account-client.js";
 
 export type LoginWizardResult = { cancelled: boolean; message?: string };
@@ -90,7 +90,11 @@ export function LoginTUI({ accountService, openBrowser, onDone }: LoginTUIProps)
       success(identity.email);
     } catch (error) {
       if (!mounted.current || finished.current) return;
-      if (controller.signal.aborted) { done({ cancelled: true }); return; }
+      // A post-commit acknowledgement failure needs retry guidance even when
+      // cancellation arrived after saving; it is not a rolled-back sign-in.
+      if (controller.signal.aborted && !(error instanceof AccountAcknowledgementError)) {
+        done({ cancelled: true }); return;
+      }
       // Surface the account-service message (these are curated, secret-free) so a
       // denial / timeout / service outage is actionable. Fall back generically.
       const { AccountError } = await import("../account/types.js");

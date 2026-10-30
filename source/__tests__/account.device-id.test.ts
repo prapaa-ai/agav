@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, mkdirSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +24,12 @@ describe("device-id", () => {
     expect(onDisk.deviceId).toBe(id);
   });
 
+  it("returns one persisted winner for concurrent first initialization", async () => {
+    const ids = await Promise.all(Array.from({ length: 20 }, () => getOrCreateDeviceId()));
+    expect(new Set(ids).size).toBe(1);
+    expect(JSON.parse(readFileSync(DEVICE_PATH(), "utf8")).deviceId).toBe(ids[0]);
+  });
+
   it("returns the SAME id across calls (stable per install)", async () => {
     const first = await getOrCreateDeviceId();
     const second = await getOrCreateDeviceId();
@@ -38,6 +44,18 @@ describe("device-id", () => {
     const regenerated = await getOrCreateDeviceId();
     expect(regenerated).toMatch(/^[A-Za-z0-9_-]{16,128}$/);
     expect(regenerated).not.toBe(first);
+  });
+
+  it("returns an ephemeral id without throwing when the account directory cannot be created", async () => {
+    writeFileSync(join(home, ".agav"), "not a directory");
+    await expect(getOrCreateDeviceId()).resolves.toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(readFileSync(join(home, ".agav"), "utf8")).toBe("not a directory");
+  });
+
+  it("cleans up temporary files and returns an ephemeral id on publish failure", async () => {
+    mkdirSync(DEVICE_PATH(), { recursive: true }); // Cannot rename a file onto a directory.
+    await expect(getOrCreateDeviceId()).resolves.toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(readdirSync(join(home, ".agav", "account"))).toEqual(["device.json"]);
   });
 
   it("uses the hostname as the (bounded) label", () => {

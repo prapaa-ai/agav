@@ -9,6 +9,11 @@ vi.mock("node:os", () => ({
 
 vi.mock("node:fs/promises", () => ({
   mkdir: vi.fn().mockResolvedValue(undefined),
+  open: vi.fn().mockImplementation(async () => ({
+    writeFile: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+  })),
+  unlink: vi.fn().mockResolvedValue(undefined),
   readFile: vi.fn(),
   writeFile: vi.fn().mockResolvedValue(undefined),
   rename: vi.fn().mockResolvedValue(undefined),

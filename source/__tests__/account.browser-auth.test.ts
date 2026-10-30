@@ -114,7 +114,45 @@ describe("signInWithBrowser", () => {
     expect(saveMock).not.toHaveBeenCalled();
   });
 
-  it("retries a failed acknowledgement but still reports success (key already stored)", async () => {
+  it("fails with retry guidance when acknowledgement is never confirmed", async () => {
+    pollMock.mockResolvedValue({ status: "approved", key: "agav_sk_delivered" });
+    ackMock.mockResolvedValue(false);
+    await expect(signInWithBrowser(opts())).rejects.toThrow(/could not confirm.*Run \/login again/i);
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(ackMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("acknowledges a committed key despite cancellation during save", async () => {
+    const controller = new AbortController();
+    pollMock.mockResolvedValue({ status: "approved", key: "agav_sk_delivered" });
+    saveMock.mockImplementation(async () => { controller.abort(); });
+    ackMock.mockImplementation(async (_service, _code, _key, signal) => !signal?.aborted);
+    await expect(signInWithBrowser(opts({ signal: controller.signal }))).resolves.toMatchObject({ accountId: "acct_1" });
+    expect(ackMock).toHaveBeenCalledTimes(1);
+    expect(ackMock.mock.calls[0]![3]).not.toBe(controller.signal);
+  });
+
+  it("keeps acknowledgement retries independent of late cancellation", async () => {
+    const controller = new AbortController();
+    pollMock.mockResolvedValue({ status: "approved", key: "agav_sk_delivered" });
+    ackMock.mockImplementation(async (_service, _code, _key, signal) => {
+      controller.abort();
+      expect(signal?.aborted).not.toBe(true);
+      return false;
+    });
+    await expect(signInWithBrowser(opts({ signal: controller.signal }))).rejects.toThrow(/could not confirm/i);
+    expect(ackMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not acknowledge when persistence is cancelled before commit", async () => {
+    const { SaveCancelledError } = await import("../account/account-store.js");
+    pollMock.mockResolvedValue({ status: "approved", key: "agav_sk_delivered" });
+    saveMock.mockRejectedValue(new SaveCancelledError());
+    await expect(signInWithBrowser(opts())).rejects.toThrow(/cancelled/i);
+    expect(ackMock).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed acknowledgement and reports success only once confirmed", async () => {
     pollMock.mockResolvedValue({ status: "approved", key: "agav_sk_delivered" });
     ackMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
     const identity = await signInWithBrowser(opts());

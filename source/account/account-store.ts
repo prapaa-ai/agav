@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -11,6 +11,7 @@ import {
   keychainRef,
   keychainAccount,
 } from "../utils/keychain.js";
+import { withAccountLock } from "./account-lock.js";
 import type { StoredAccount } from "./types.js";
 
 /**
@@ -31,6 +32,7 @@ import type { StoredAccount } from "./types.js";
 
 const ACCOUNT_DIR = join(homedir(), ".agav", "account");
 const ACCOUNT_PATH = join(ACCOUNT_DIR, "account.json");
+const ACCOUNT_LOCK_PATH = join(ACCOUNT_DIR, ".account.lock");
 
 /**
  * Prefix for the credential-store account name holding the consumer API key.
@@ -91,66 +93,66 @@ export async function saveStoredAccount(
   record: StoredAccount,
   options: { signal?: AbortSignal } = {},
 ): Promise<void> {
-  await mkdir(ACCOUNT_DIR, { recursive: true, mode: 0o700 });
+  await withAccountLock(ACCOUNT_LOCK_PATH, async () => {
+    // Capture the PREVIOUS keychain account (if any) so we can delete it only AFTER
+    // the new metadata is committed — never before. This makes the switch atomic
+    // from the reader's view: metadata always points at a key that exists.
+    const previousKeychainAccount = await readCurrentKeychainAccount();
 
-  // Capture the PREVIOUS keychain account (if any) so we can delete it only AFTER
-  // the new metadata is committed — never before. This makes the switch atomic
-  // from the reader's view: metadata always points at a key that exists.
-  const previousKeychainAccount = await readCurrentKeychainAccount();
+    // Prefer the OS credential store for the secret; fall back to inline encryption.
+    // Write the new secret under a UNIQUE account name so it never clobbers the one
+    // the current (still-valid) metadata references.
+    let apiKeyField: string;
+    let newKeychainAccount: string | undefined;
+    const candidate = `${KEYCHAIN_PREFIX}:${randomBytes(9).toString("hex")}`;
+    const storedInKeychain = await setSecret(candidate, record.apiKey);
+    if (storedInKeychain) {
+      apiKeyField = keychainRef(candidate);
+      newKeychainAccount = candidate;
+    } else {
+      // No credential store: AES-encrypt the key inside the record (encrypt() is
+      // idempotent and only wraps a raw value).
+      apiKeyField = encrypt(record.apiKey);
+    }
 
-  // Prefer the OS credential store for the secret; fall back to inline encryption.
-  // Write the new secret under a UNIQUE account name so it never clobbers the one
-  // the current (still-valid) metadata references.
-  let apiKeyField: string;
-  let newKeychainAccount: string | undefined;
-  const candidate = `${KEYCHAIN_PREFIX}:${randomBytes(9).toString("hex")}`;
-  const storedInKeychain = await setSecret(candidate, record.apiKey);
-  if (storedInKeychain) {
-    apiKeyField = keychainRef(candidate);
-    newKeychainAccount = candidate;
-  } else {
-    // No credential store: AES-encrypt the key inside the record (encrypt() is
-    // idempotent and only wraps a raw value).
-    apiKeyField = encrypt(record.apiKey);
-  }
+    // Cancellation check BEFORE the commit (the rename). Up to here nothing the
+    // reader sees has changed: the old metadata and its credential are intact, and
+    // only a NEW unique keychain entry exists. If the user cancelled, delete just
+    // that new entry and abort — leaving the previously signed-in account fully
+    // usable. This is the only safe rollback point; past the rename the switch is
+    // committed and must stand.
+    if (options.signal?.aborted) {
+      if (newKeychainAccount) await deleteSecret(newKeychainAccount).catch(() => {});
+      throw new SaveCancelledError();
+    }
 
-  // Cancellation check BEFORE the commit (the rename). Up to here nothing the
-  // reader sees has changed: the old metadata and its credential are intact, and
-  // only a NEW unique keychain entry exists. If the user cancelled, delete just
-  // that new entry and abort — leaving the previously signed-in account fully
-  // usable. This is the only safe rollback point; past the rename the switch is
-  // committed and must stand.
-  if (options.signal?.aborted) {
-    if (newKeychainAccount) await deleteSecret(newKeychainAccount).catch(() => {});
-    throw new SaveCancelledError();
-  }
-
-  const onDisk: StoredAccount = { ...record, apiKey: apiKeyField };
-  const temporary = `${ACCOUNT_PATH}.${randomBytes(12).toString("hex")}.tmp`;
-  const serialized = encrypt(JSON.stringify(onDisk));
-  try {
-    // "wx" refuses an existing path so a planted symlink can't be followed.
-    await writeFile(temporary, serialized, { mode: 0o600, flag: "wx" });
-    // Cancellation may arrive during the write; rollback is safe until rename.
-    if (options.signal?.aborted) throw new SaveCancelledError();
-    await rename(temporary, ACCOUNT_PATH);
-  } catch (error) {
-    // The metadata commit failed: roll back the just-written new secret so we
-    // don't leak an orphaned credential, and leave the OLD entry intact so the
-    // existing metadata still resolves. Then surface the failure.
+    const onDisk: StoredAccount = { ...record, apiKey: apiKeyField };
+    const temporary = `${ACCOUNT_PATH}.${randomBytes(12).toString("hex")}.tmp`;
+    const serialized = encrypt(JSON.stringify(onDisk));
+    try {
+      // "wx" refuses an existing path so a planted symlink can't be followed.
+      await writeFile(temporary, serialized, { mode: 0o600, flag: "wx" });
+      // Cancellation may arrive during the write; rollback is safe until rename.
+      if (options.signal?.aborted) throw new SaveCancelledError();
+      await rename(temporary, ACCOUNT_PATH);
+    } catch (error) {
+      // The metadata commit failed: roll back the just-written new secret so we
+      // don't leak an orphaned credential, and leave the OLD entry intact so the
+      // existing metadata still resolves. Then surface the failure.
+      await rm(temporary, { force: true }).catch(() => {});
+      if (newKeychainAccount) await deleteSecret(newKeychainAccount).catch(() => {});
+      throw error;
+    }
     await rm(temporary, { force: true }).catch(() => {});
-    if (newKeychainAccount) await deleteSecret(newKeychainAccount).catch(() => {});
-    throw error;
-  }
-  await rm(temporary, { force: true }).catch(() => {});
 
-  // Metadata now points at the new secret (commit done). Safe to delete the
-  // previous entry. A cancellation that lands AFTER this point is ignored: the
-  // switch already succeeded, and deleting the just-committed account would be a
-  // surprise sign-out.
-  if (previousKeychainAccount && previousKeychainAccount !== newKeychainAccount) {
-    await deleteSecret(previousKeychainAccount).catch(() => {});
-  }
+    // Metadata now points at the new secret (commit done). Safe to delete the
+    // previous entry. A cancellation that lands AFTER this point is ignored: the
+    // switch already succeeded, and deleting the just-committed account would be a
+    // surprise sign-out.
+    if (previousKeychainAccount && previousKeychainAccount !== newKeychainAccount) {
+      await deleteSecret(previousKeychainAccount).catch(() => {});
+    }
+  });
 }
 
 /** Thrown by saveStoredAccount when cancelled before the commit (nothing changed). */
@@ -178,15 +180,17 @@ async function readCurrentKeychainAccount(): Promise<string | undefined> {
  * did not take effect. The keychain delete is best-effort (never throws).
  */
 export async function clearStoredAccount(): Promise<void> {
-  // Read which keychain entry the metadata references BEFORE removing anything.
-  const account = await readCurrentKeychainAccount();
-  // Remove the METADATA first. If this fails, the account is still fully usable
-  // (metadata + its referenced credential both intact), so the caller correctly
-  // reports "still connected". Deleting the credential first would instead leave
-  // dangling metadata pointing at a missing key while claiming connection.
-  await rm(ACCOUNT_PATH, { force: true });
-  // Metadata is gone; now best-effort delete the orphaned credential.
-  if (account) await deleteSecret(account).catch(() => {});
+  await withAccountLock(ACCOUNT_LOCK_PATH, async () => {
+    // Read which keychain entry the metadata references BEFORE removing anything.
+    const account = await readCurrentKeychainAccount();
+    // Remove the METADATA first. If this fails, the account is still fully usable
+    // (metadata + its referenced credential both intact), so the caller correctly
+    // reports "still connected". Deleting the credential first would instead leave
+    // dangling metadata pointing at a missing key while claiming connection.
+    await rm(ACCOUNT_PATH, { force: true });
+    // Metadata is gone; now best-effort delete the orphaned credential.
+    if (account) await deleteSecret(account).catch(() => {});
+  });
 }
 
 export { KEYCHAIN_PREFIX };

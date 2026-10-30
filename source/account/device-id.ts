@@ -1,7 +1,8 @@
-import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
+import { readFile, writeFile, rename, rm } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { withAccountLock } from "./account-lock.js";
 
 /**
  * Stable per-install DEVICE IDENTITY for browser sign-in.
@@ -56,28 +57,31 @@ interface DeviceRecord {
 export async function getOrCreateDeviceId(): Promise<string> {
   const path = devicePath();
   try {
-    const content = await readFile(path, "utf8");
-    const parsed = JSON.parse(content) as Partial<DeviceRecord>;
-    if (parsed && typeof parsed.deviceId === "string" && /^[A-Za-z0-9_-]{16,128}$/.test(parsed.deviceId)) {
-      return parsed.deviceId;
-    }
-  } catch {
-    // Missing/unreadable/corrupt → fall through to create a new one.
-  }
-
-  const deviceId = newDeviceId();
-  try {
-    await mkdir(deviceDir(), { recursive: true, mode: 0o700 });
-    const temporary = `${path}.${randomBytes(8).toString("hex")}.tmp`;
-    await writeFile(temporary, JSON.stringify({ deviceId } satisfies DeviceRecord), { mode: 0o600 });
-    await rename(temporary, path).catch(async (error) => {
-      await rm(temporary, { force: true }).catch(() => {});
-      throw error;
+    return await withAccountLock(join(deviceDir(), ".device.lock"), async () => {
+      // Read UNDER the lock: a competing initializer may already have published.
+      try {
+        const content = await readFile(path, "utf8");
+        const parsed = JSON.parse(content) as Partial<DeviceRecord>;
+        if (parsed && typeof parsed.deviceId === "string" && /^[A-Za-z0-9_-]{16,128}$/.test(parsed.deviceId)) {
+          return parsed.deviceId;
+        }
+      } catch {
+        // Missing/unreadable/corrupt → create a new one while still holding the lock.
+      }
+      const deviceId = newDeviceId();
+      const temporary = `${path}.${randomBytes(8).toString("hex")}.tmp`;
+      try {
+        await writeFile(temporary, JSON.stringify({ deviceId } satisfies DeviceRecord), { mode: 0o600, flag: "wx" });
+        await rename(temporary, path);
+      } finally {
+        await rm(temporary, { force: true }).catch(() => {});
+      }
+      return deviceId;
     });
   } catch {
-    // Persisting failed; still return the id so login works this session.
+    // Lock/persistence failure is non-fatal, but never write without the lock.
+    return newDeviceId();
   }
-  return deviceId;
 }
 
 /** The device identity to send with a browser sign-in request. Never throws. */

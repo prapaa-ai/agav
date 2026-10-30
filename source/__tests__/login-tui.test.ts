@@ -8,7 +8,9 @@ import { signInWithApiKey } from "../account/account-login.js";
 import { signInWithBrowser } from "../account/browser-auth.js";
 
 vi.mock("../account/account-login.js", () => ({ signInWithApiKey: vi.fn() }));
-vi.mock("../account/browser-auth.js", () => ({ signInWithBrowser: vi.fn() }));
+vi.mock("../account/browser-auth.js", async original => ({
+  ...await original<typeof import("../account/browser-auth.js")>(), signInWithBrowser: vi.fn(),
+}));
 const signIn = vi.mocked(signInWithApiKey);
 const browserSignIn = vi.mocked(signInWithBrowser);
 const cleanups: (() => void)[] = [];
@@ -121,6 +123,26 @@ describe("login wizard", () => {
     await ui.key("r"); // retry stays on option 1 (browser flow)
     expect(browserSignIn).toHaveBeenCalledTimes(2);
     expect(ui.onDone).toHaveBeenCalledWith({ cancelled: false, message: expect.stringContaining("you@example.test") });
+  });
+
+  it("shows acknowledgement failure and retry even after post-commit cancellation", async () => {
+    const { AccountAcknowledgementError } = await import("../account/browser-auth.js");
+    let fail!: (error: Error) => void;
+    browserSignIn.mockImplementation(async o => {
+      o.onStatus?.("saving");
+      return new Promise((_resolve, reject) => { fail = reject; });
+    });
+    const ui = await mount();
+    await ui.key("\r");
+    await ui.key("\x03");
+    expect(ui.onDone).not.toHaveBeenCalled();
+    fail(new AccountAcknowledgementError());
+    await ui.settle();
+    expect(ui.onDone).not.toHaveBeenCalled();
+    expect(ui.output()).toContain("could not confirm sign-in");
+    browserSignIn.mockResolvedValueOnce({ accountId: "acct", email: null, status: "active" });
+    await ui.key("r");
+    expect(ui.onDone).toHaveBeenCalledWith({ cancelled: false, message: expect.stringContaining("Signed in") });
   });
 
   it("locks option-1 launch synchronously (coalesced Enters start one flow)", async () => {

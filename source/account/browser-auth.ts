@@ -94,11 +94,10 @@ export async function signInWithBrowser(options: BrowserSignInOptions): Promise<
     );
   }
 
-  // Acknowledge receipt now that the key is stored. Best-effort with a couple of
-  // retries for a lost response; a failure here doesn't lose the (already saved)
-  // key — the server simply revokes it at the grant deadline if never acked, but
-  // we've validated it works, so we report success and let ack retry briefly.
-  await acknowledgeWithRetry(accountService, request.deviceCode, key, sleep, options.signal);
+  // Once committed, finish acknowledgement independently of user cancellation.
+  // Each request has its own network deadline; retries are bounded. Validation
+  // alone is not success: the server revokes grants that are never acknowledged.
+  await acknowledgeWithRetry(accountService, request.deviceCode, key, sleep);
 
   return identity;
 }
@@ -145,17 +144,26 @@ async function pollUntilApproved(
   }
 }
 
-/** Acknowledge with a few bounded retries for a lost response. Never throws. */
+/** A post-commit failure must remain visible even if the caller cancelled. */
+export class AccountAcknowledgementError extends AccountError {
+  constructor() {
+    super("Your key was saved locally, but Agav could not confirm sign-in with the account service. The key may be revoked. Run /login again to retry.");
+  }
+}
+
+/** Acknowledge with bounded retries; never report an unconfirmed grant as success. */
 async function acknowledgeWithRetry(
   accountService: string,
   deviceCode: string,
   key: string,
   sleep: (ms: number) => Promise<void>,
-  signal: AbortSignal | undefined,
 ): Promise<void> {
   for (let attempt = 0; attempt < 3; attempt++) {
-    if (signal?.aborted) return;
-    if (await acknowledge(accountService, deviceCode, key, signal)) return;
-    await sleep(1000);
+    // acknowledge supplies a fresh per-call timeout, not the pre-commit signal.
+    if (await acknowledge(accountService, deviceCode, key)) return;
+    if (attempt < 2) await sleep(1000);
   }
+  // Do not clear the store: a lost response may hide a successful ack, or a
+  // concurrent login may already have replaced this record.
+  throw new AccountAcknowledgementError();
 }
