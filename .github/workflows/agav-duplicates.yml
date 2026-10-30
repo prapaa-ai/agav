@@ -60,6 +60,8 @@ jobs:
           RESULT=$(cat /tmp/agav-result.txt)
           if echo "$RESULT" | grep -q "DUPLICATE #"; then
             DUP_NUM=$(echo "$RESULT" | grep -oP 'DUPLICATE #\K[0-9]+' | head -1)
+            # shellcheck disable=SC2001 # strips a "DUPLICATE #<digits> " prefix;
+            # the [0-9]* and trailing-space match needs a regex, not ${var//}.
             REASON=$(echo "$RESULT" | sed 's/DUPLICATE #[0-9]* *//')
             if [ -n "$DUP_NUM" ]; then
               gh issue edit ${{ github.event.issue.number }} --add-label duplicate || true

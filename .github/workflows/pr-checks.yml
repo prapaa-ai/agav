@@ -32,26 +32,14 @@ jobs:
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
           FILES=$(git diff --name-only "$BASE" "$HEAD")
-          echo "source=false" >> "$GITHUB_OUTPUT"
-          echo "workflows=false" >> "$GITHUB_OUTPUT"
-          echo "docs=false" >> "$GITHUB_OUTPUT"
-          echo "deps=false" >> "$GITHUB_OUTPUT"
-          echo "scripts=false" >> "$GITHUB_OUTPUT"
-          if echo "$FILES" | grep -qE '^source/'; then
-            echo "source=true" >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$FILES" | grep -qE '^\.github/'; then
-            echo "workflows=true" >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$FILES" | grep -qE '(README|\.md$|docs/)'; then
-            echo "docs=true" >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$FILES" | grep -qE '(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)'; then
-            echo "deps=true" >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$FILES" | grep -qE '^scripts/'; then
-            echo "scripts=true" >> "$GITHUB_OUTPUT"
-          fi
+          match() { echo "$FILES" | grep -qE "$1" && echo true || echo false; }
+          {
+            echo "source=$(match '^source/')"
+            echo "workflows=$(match '^\.github/')"
+            echo "docs=$(match '(README|\.md$|docs/)')"
+            echo "deps=$(match '(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)')"
+            echo "scripts=$(match '^scripts/')"
+          } >> "$GITHUB_OUTPUT"
 
   # --- Core checks (only when source or deps change) ---
   typecheck:
@@ -449,6 +437,8 @@ jobs:
         env:
           INVALID: ${{ steps.review.outputs.invalid-license-changes }}
         run: |
+          # shellcheck disable=SC2016 # the ${...} below is a JS template literal
+          # inside node -e, deliberately single-quoted so the shell does not expand it.
           UNLICENSED=$(node -e '
             const data = JSON.parse(process.env.INVALID || "{}");
             const bad = [...(data.unlicensed || []), ...(data.unresolved || [])];
