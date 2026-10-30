@@ -3,6 +3,17 @@ name: Release
 on:
   push:
     branches: [main, beta]
+  # Manual recovery entry point. Lets an operator re-run a release for the
+  # version currently in package.json without a new commit (e.g. after a
+  # transient infra failure), and - with force - rebuild and overwrite a
+  # release that already published but shipped a bad asset. See
+  # docs/deploy/release-recovery.md.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Re-release the current package.json version even if a non-draft GitHub Release already exists"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,30 +32,82 @@ jobs:
           persist-credentials: false
           token: ${{ secrets.TOKEN }}
           fetch-depth: 2
-      - name: Detect version bump
+      # Publish-gap detection, not a HEAD~1 diff. The release runs whenever the
+      # committed package.json version has no completed (non-draft) GitHub
+      # Release yet - so a same-version fix commit (or a manual re-run) after a
+      # failed pipeline re-triggers automatically until the release actually
+      # lands, and a version that already published cleanly never re-releases.
+      # See docs/deploy/release-recovery.md for the full rationale.
+      - name: Detect unreleased version
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.TOKEN }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
         run: |
+          set -euo pipefail
           CURRENT=$(node -p "require('./package.json').version")
-          PREV=$(git show HEAD~1:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).version" 2>/dev/null || echo "")
-          if [ "$CURRENT" != "$PREV" ] && [ -n "$PREV" ]; then
-            # Validate version format
-            if ! echo "$CURRENT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+(\.[0-9]+)?)?$'; then
-              echo "::error::Invalid version format: $CURRENT. Expected: x.y.z or x.y.z-beta.N"
-              exit 1
-            fi
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
-            # Versions with a hyphen suffix (e.g. 0.2.0-beta.1) are pre-releases.
-            if echo "$CURRENT" | grep -q '-'; then
-              echo "prerelease=true" >> "$GITHUB_OUTPUT"
-              echo "Version changed: $PREV → $CURRENT (pre-release)"
+          # Validate version format up front - a malformed version must fail the
+          # release regardless of trigger, not be silently skipped.
+          if ! echo "$CURRENT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+(\.[0-9]+)?)?$'; then
+            echo "::error::Invalid version format: $CURRENT. Expected: x.y.z or x.y.z-beta.N"
+            exit 1
+          fi
+          TAG="v$CURRENT"
+
+          # Look up an existing GitHub Release for this exact tag. A draft counts
+          # as "not released" so an interrupted run that left a draft is
+          # completed rather than treated as done. Distinguish 404 (no release)
+          # from genuine API errors so a transient API failure fails closed
+          # instead of silently publishing.
+          if gh api "repos/${{ github.repository }}/releases/tags/$TAG" \\
+               --jq '.draft' > /tmp/rel_draft 2>/tmp/rel_err; then
+            if [ "$(cat /tmp/rel_draft)" = "false" ]; then
+              RELEASED=true
             else
-              echo "prerelease=false" >> "$GITHUB_OUTPUT"
-              echo "Version changed: $PREV → $CURRENT (stable)"
+              RELEASED=false   # draft release -> finish it
             fi
+          elif grep -q "Not Found" /tmp/rel_err; then
+            RELEASED=false      # no release yet -> publish it
           else
+            echo "::error::Could not determine release state for $TAG:"
+            cat /tmp/rel_err
+            exit 1
+          fi
+
+          # Downgrade guard: never auto-release a version older than the latest
+          # published release (e.g. package.json was reverted). An explicit bump
+          # is required; force overrides this for deliberate operator recovery.
+          if [ "$RELEASED" = "false" ] && [ "$FORCE" != "true" ]; then
+            LATEST=$(gh api "repos/${{ github.repository }}/releases/latest" \\
+              --jq '.tag_name' 2>/dev/null || echo "")
+            if [ -n "$LATEST" ]; then
+              HIGHEST=$(printf '%s\n%s\n' "$CURRENT" "${LATEST#v}" | sort -V | tail -1)
+              if [ "$HIGHEST" = "${LATEST#v}" ] && [ "${LATEST#v}" != "$CURRENT" ]; then
+                echo "::error::package.json version $CURRENT is older than the latest release $LATEST. Bump the version, or re-run with force to override."
+                exit 1
+              fi
+            fi
+          fi
+
+          if [ "$FORCE" = "true" ]; then
+            RELEASED=false
+            echo "Force re-release requested for $TAG."
+          fi
+
+          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
+          # Versions with a hyphen suffix (e.g. 0.2.0-beta.1) are pre-releases.
+          if echo "$CURRENT" | grep -q '-'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$RELEASED" = "true" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No version change"
+            echo "$TAG already published (non-draft). Nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG has no completed release yet - proceeding."
           fi
       # Fail the prerequisite job before any binary is built: the compiled
       # release embeds the Bun runtime, so a Bun below the advisory floor would
@@ -512,6 +575,46 @@ jobs:
             printf '%s\n' "$NOTES"
             echo "$DELIMITER"
           } >> "$GITHUB_OUTPUT"
+      # Reconcile the tag BEFORE publishing so the release points at the commit
+      # being released now, not a stale commit from a prior failed attempt.
+      # softprops/action-gh-release creates the tag if absent but will NOT move
+      # an existing one, so a recovery run (fix on a new commit, same version)
+      # would otherwise publish assets against the broken commit's tree.
+      #   - no tag                -> leave it; the release action creates it.
+      #   - tag already at HEAD   -> leave it (idempotent).
+      #   - tag elsewhere, no non-draft release -> move it to this commit
+      #     (the earlier attempt never completed, so moving it is safe).
+      #   - tag elsewhere, non-draft release exists -> only move it when force
+      #     was requested, protecting a genuinely published release.
+      - name: Reconcile release tag
+        env:
+          GH_TOKEN: ${{ secrets.TOKEN }}
+          TAG: v${{ needs.check-version.outputs.version }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          EXISTING=$(git rev-parse -q --verify "refs/tags/$TAG" || echo "")
+          if [ -z "$EXISTING" ]; then
+            echo "No existing tag $TAG; the release step will create it at $SHA."
+            exit 0
+          fi
+          if [ "$EXISTING" = "$SHA" ]; then
+            echo "Tag $TAG already points at $SHA; nothing to reconcile."
+            exit 0
+          fi
+          PUBLISHED=false
+          if gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
+               --jq '.draft' > /tmp/reconcile_draft 2>/dev/null; then
+            [ "$(cat /tmp/reconcile_draft)" = "false" ] && PUBLISHED=true
+          fi
+          if [ "$PUBLISHED" = "true" ] && [ "$FORCE" != "true" ]; then
+            echo "::error::Tag $TAG exists at $EXISTING and backs a published release. Re-run with force to overwrite."
+            exit 1
+          fi
+          echo "Moving stale tag $TAG from $EXISTING to $SHA (prior attempt incomplete or force requested)."
+          git tag -f "$TAG" "$SHA"
+          git push -f origin "refs/tags/$TAG"
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
