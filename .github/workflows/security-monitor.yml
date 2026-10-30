@@ -43,6 +43,9 @@ jobs:
       - name: Audit production dependencies
         if: ${{ !cancelled() }}
         run: pnpm audit --prod --audit-level high
+      - name: Audit dev/build dependencies
+        if: ${{ !cancelled() }}
+        run: pnpm audit --dev --audit-level high
       - name: Record triage instructions
         if: failure()
         run: |
