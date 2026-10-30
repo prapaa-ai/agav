@@ -59,7 +59,7 @@ jobs:
           # completed rather than treated as done. Distinguish 404 (no release)
           # from genuine API errors so a transient API failure fails closed
           # instead of silently publishing.
-          if gh api "repos/${{ github.repository }}/releases/tags/$TAG" \\
+          if gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
                --jq '.draft' > /tmp/rel_draft 2>/tmp/rel_err; then
             if [ "$(cat /tmp/rel_draft)" = "false" ]; then
               RELEASED=true
@@ -78,7 +78,7 @@ jobs:
           # published release (e.g. package.json was reverted). An explicit bump
           # is required; force overrides this for deliberate operator recovery.
           if [ "$RELEASED" = "false" ] && [ "$FORCE" != "true" ]; then
-            LATEST=$(gh api "repos/${{ github.repository }}/releases/latest" \\
+            LATEST=$(gh api "repos/${{ github.repository }}/releases/latest" \
               --jq '.tag_name' 2>/dev/null || echo "")
             if [ -n "$LATEST" ]; then
               HIGHEST=$(printf '%s\n%s\n' "$CURRENT" "${LATEST#v}" | sort -V | tail -1)
