@@ -349,6 +349,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const draftRef = useRef<string | null>(null);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
+  const detachResolverRef = useRef(new KeybindingResolver(keybindings, ["detachSession"]));
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
   /** The box holding the text rows, for turning a click into a buffer offset. */
   const linesRef = useRef<DOMElement | null>(null);
@@ -613,6 +614,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       const { input, key } = normalizeKeyEvent(rawInput, rawKey);
       if (ownsVoiceControls?.() && (key.escape || (key.ctrl && input === "c") ||
           (key.return && !key.shift && !key.ctrl && !key.meta && !key.super && !key.hyper))) return;
+      const detachMatch = detachResolverRef.current.feed(input, key);
+      if (detachMatch.pending || detachMatch.action) return;
       const match = keyResolverRef.current.feed(input, key);
       if (match.pending) return;
 

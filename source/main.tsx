@@ -886,11 +886,12 @@ export async function main() {
   let resumeTokenUsage: import("./config/history.js").SessionTokenUsage | undefined;
   let resumeCompacted: boolean | undefined;
   let resumeSessionName: string | undefined;
+  let resumeRuntime: import("./config/history.js").SessionRecord["runtime"];
   let resumeSelection: Pick<import("./config/history.js").SessionRecord, "provider" | "model"> | undefined;
 
   if (flags.resume) {
-    const { listSessions, loadSession } = await import("./config/history.js");
-    const sessions = await listSessions();
+    const { listResumableSessions, loadResumableSession } = await import("./sessions/history.js");
+    const sessions = await listResumableSessions();
 
     if (sessions.length === 0) {
       console.error("\n  No saved sessions found.\n");
@@ -903,7 +904,7 @@ export async function main() {
       if (!picked) {
         process.exit(0);
       }
-      const session = await loadSession(picked.id);
+      const session = await loadResumableSession(picked.id);
       if (!session) {
         console.error("\n  Failed to load session.\n");
         process.exit(1);
@@ -913,16 +914,22 @@ export async function main() {
       resumeTokenUsage = session.tokenUsage;
       resumeCompacted = session.compacted;
       resumeSessionName = session.name;
+      resumeRuntime = session.runtime;
       resumeSelection = session;
     } else {
       // ID prefix given — find matching session
       const prefix = String(flags.resume);
-      const match = sessions.find((s) => s.id.startsWith(prefix));
+      const matches = sessions.filter((s) => s.id.startsWith(prefix));
+      const match = sessions.find((s) => s.id === prefix) ?? (matches.length === 1 ? matches[0] : undefined);
+      if (!match && matches.length > 1) {
+        console.error(`\n  Ambiguous session ID prefix "${prefix}". Use a longer ID.\n`);
+        process.exit(1);
+      }
       if (!match) {
         console.error(`\n  No session matching "${prefix}". Use --resume to list all.\n`);
         process.exit(1);
       }
-      const session = await loadSession(match.id);
+      const session = await loadResumableSession(match.id);
       if (!session) {
         console.error(`\n  Failed to load session ${match.id}.\n`);
         process.exit(1);
@@ -933,6 +940,7 @@ export async function main() {
       resumeTokenUsage = session.tokenUsage;
       resumeCompacted = session.compacted;
       resumeSessionName = session.name;
+      resumeRuntime = session.runtime;
       resumeSelection = session;
     }
   }
@@ -1108,7 +1116,10 @@ export async function main() {
         new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 2000).unref()),
       ]);
       const lines: string[] = [];
-      if (sessions.length > 0) lines.push(`To resume: agav --resume ${sessions[0]!.id}`);
+      if (detachedSessionRef.current) {
+        lines.push(`Session ${detachedSessionRef.current} continues in the background.`);
+        lines.push(`To resume: agav --resume ${detachedSessionRef.current}`);
+      } else if (sessions.length > 0) lines.push(`To resume: agav --resume ${sessions[0]!.id}`);
       if (jobIds.length > 0) lines.push(`Running background jobs: ${jobIds.join(", ")}  (inspect with /job)`);
       if (lines.length > 0) process.stderr.write(`\n${lines.map((line) => dim(line)).join("\n")}\n\n`);
     } catch { }
@@ -1120,6 +1131,7 @@ export async function main() {
     stopAllA2AAgents();
   });
   const shutdownRef: { current: (() => Promise<void>) | null } = { current: null };
+  const detachedSessionRef: { current: string | null } = { current: null };
   let unmount: (() => void) | undefined;
   let signalShutdown: Promise<void> | undefined;
   const handleSignal = () => {
@@ -1155,7 +1167,7 @@ export async function main() {
     // Never block startup on changelog/launch-state failures.
   }
 
-  const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} shutdownRef={shutdownRef} />, {
+  const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} resumeRuntime={resumeRuntime} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} shutdownRef={shutdownRef} detachedSessionRef={detachedSessionRef} />, {
     // App owns Ctrl+C so foreground workflows can abort and checkpoint before exit.
     exitOnCtrlC: false,
     // Alt-screen keeps the UI self-contained (no scrollback pollution, no

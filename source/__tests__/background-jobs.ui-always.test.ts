@@ -14,7 +14,10 @@ import type { LLMProvider } from "../providers/types.js";
 // Real UI hook, queue, loop, registry and exact-spec authorization; no user
 // storage or actual workloads. Only launch coordination and UI persistence
 // /context discovery are substituted.
-vi.mock("../config/config.js", () => ({ loadConfig: async () => ({ backgroundJobsEnabled: true, permissionMode: "ask" }) }));
+vi.mock("../config/config.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../config/config.js")>(),
+  loadConfig: async () => ({ backgroundJobsEnabled: true, permissionMode: "ask" }),
+}));
 vi.mock("../config/history.js", () => ({ saveSession: vi.fn(async () => "fixture-session") }));
 vi.mock("../config/session-state.js", () => ({ saveSessionState: vi.fn(async () => {}) }));
 vi.mock("../plugins/loader.js", () => ({ loadPlugins: async () => [] }));

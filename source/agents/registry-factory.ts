@@ -24,6 +24,12 @@ export function agentToTool(
   deps: {
     provider: LLMProvider;
     config: AgavConfig;
+    /** Read the active prompt's signal at execution time if no context signal is provided. */
+    getSignal?: () => AbortSignal | undefined;
+    /** Explicit inherited mode for a session host; omitted callers retain their existing default. */
+    permissionMode?: AgavConfig["permissionMode"];
+    /** Original background consent mode, independent of generic Always. */
+    backgroundPermissionMode?: AgavConfig["permissionMode"];
     /** Read the active prompt's budget at execution time, not registration time. */
     getIterationsBudget?: () => { remaining: number; total: number } | undefined;
     hooks?: AgavHooks;
@@ -48,7 +54,7 @@ export function agentToTool(
         required: ["task"],
       },
     },
-    async execute(input) {
+    async execute(input, context) {
       const task = String(input.task || "");
 
       try {
@@ -83,6 +89,7 @@ export function agentToTool(
         if (agentType === "native") {
           output = await executeNativeAgent(agent, task, {
             ...deps,
+            signal: context?.signal ?? deps.getSignal?.(),
             iterationsBudget: deps.getIterationsBudget?.(),
           });
         } else if (agentType === "a2a") {

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 export type KeybindingAction =
+  | "detachSession"
   | "cancel"
   | "toggleToolDetail"
   | "togglePlanDetail"
@@ -29,6 +30,7 @@ export type KeybindingAction =
 export type Keybindings = Record<KeybindingAction, string[]>;
 
 const ACTIONS: KeybindingAction[] = [
+  "detachSession",
   "cancel",
   "toggleToolDetail",
   "togglePlanDetail",
@@ -59,6 +61,7 @@ const ACTIONS: KeybindingAction[] = [
  * dead at the keyboard. Keep them exhaustive over `ACTIONS` — a test enforces it.
  */
 export const GLOBAL_ACTIONS: KeybindingAction[] = [
+  "detachSession",
   "cancel", "interrupt", "toggleToolDetail", "togglePlanDetail",
   "toggleThinking", "togglePause", "retryLastTurn", "showKeybindings", "clearScreen",
   "scrollUp", "scrollDown", "scrollTop", "scrollBottom", "exit",
@@ -70,6 +73,7 @@ export const PROMPT_ACTIONS: KeybindingAction[] = [
 ];
 
 export const DEFAULT_KEYBINDINGS: Keybindings = {
+  detachSession: ["ctrl+k ctrl+d"],
   cancel: ["escape"],
   toggleToolDetail: ["ctrl+d"],
   // Modified rather than a bare "v": the prompt keeps focus while the agent

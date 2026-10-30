@@ -7,7 +7,7 @@ if ("Bun" in globalThis) {
   process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";
 }
 
-import { BACKGROUND_TICK_INTERNAL_FLAG, SUPERVISOR_INTERNAL_FLAG, WORKFLOW_RUNNER_INTERNAL_FLAG } from "./background-jobs/packaging/manifest.js";
+import { BACKGROUND_TICK_INTERNAL_FLAG, SUPERVISOR_INTERNAL_FLAG, WORKFLOW_RUNNER_INTERNAL_FLAG, SESSION_RUNNER_INTERNAL_FLAG } from "./background-jobs/packaging/manifest.js";
 
 try {
   if (process.argv[2] === SUPERVISOR_INTERNAL_FLAG) {
@@ -30,6 +30,11 @@ try {
     const { runWorkflowRunner } = await import("./workflows/runner.js");
     const code = await runWorkflowRunner(process.argv[3]);
     if (typeof code === "number") process.exitCode = code;
+  } else if (process.argv[2] === SESSION_RUNNER_INTERNAL_FLAG) {
+    // Headless session worker: never imports main.js or renders Ink.
+    const { runSessionRunner } = await import("./sessions/runner.js");
+    const code = await runSessionRunner(process.argv[3], process.argv[4]);
+    if (typeof code === "number") process.exitCode = code;
   } else {
     const { main } = await import("./main.js");
     await main();
@@ -44,7 +49,9 @@ try {
       ? "background tick failed"
       : process.argv[2] === WORKFLOW_RUNNER_INTERNAL_FLAG
         ? "workflow runner failed"
-        : (await import("./main.js")).hasStartupFinished() ? "failed" : "startup failed";
+        : process.argv[2] === SESSION_RUNNER_INTERNAL_FLAG
+          ? "session runner failed"
+          : (await import("./main.js")).hasStartupFinished() ? "failed" : "startup failed";
   process.stderr.write(`\n  Agav — ${stage}: ${message}\n\n`);
   process.exitCode = 1;
 }

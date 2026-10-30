@@ -71,6 +71,9 @@ export async function pickSession(
   enableMouse();
 
   let totalLinesRendered = 0;
+  let operationError: string | undefined;
+  let closed = false;
+  const deleting = new Set<string>();
 
   // The three header lines (title, hint, blank) sit above the first session
   // row. Mouse clicks map a 1-based terminal row to an item index using this
@@ -135,7 +138,10 @@ export async function pickSession(
     const countLabel = `${total} session${total === 1 ? "" : "s"}`;
     const lines: string[] = [];
     lines.push(`\x1b[1;36m  Resume Session\x1b[0m \x1b[2m(${countLabel})\x1b[0m`);
-    lines.push("\x1b[2m  ↑↓/scroll/click select · Enter resume · D delete · M/R rename · Esc cancel\x1b[0m");
+    const runtime = items[selected]?.runtime;
+    const active = runtime && ["starting", "running", "needs-approval"].includes(runtime.status);
+    const editHint = active ? "M/R rename · running (delete unavailable)" : "D delete · M/R rename";
+    lines.push(operationError ? `  ${operationError}` : `\x1b[2m  ↑↓/scroll/click select · Enter resume · ${editHint} · Esc cancel\x1b[0m`);
     lines.push("");
 
     // Center the selection in the viewport, clamped so we never scroll past the
@@ -182,7 +188,10 @@ export async function pickSession(
       const msgs = `${s.messages.length} msgs`.padStart(msgsCol);
       const id = s.id.slice(0, 8);
       const rawTitle = s.title.replace(/\n/g, " ");
-      const title = sanitizeTitle(rawTitle, titleCol);
+      // Put runtime state before the title, not in the metadata suffix that
+      // narrow terminals clip. Pending consent must remain discoverable.
+      const runtimeLabel = s.runtime ? `[${s.runtime.status} · ${s.runtime.pendingCount} pending] ` : "";
+      const title = runtimeLabel + sanitizeTitle(rawTitle, Math.max(1, titleCol - runtimeLabel.length));
       const suffix = `  ${msgs} · ${date} · ${id}`;
 
       if (isSel) {
@@ -291,6 +300,7 @@ export async function pickSession(
     let disposeRenameEditor: (() => void) | null = null;
 
     function cleanup(drainLF = false) {
+      closed = true;
       disposeRenameEditor?.();
       stdin.removeListener("data", onData);
       removeResizeListener();
@@ -824,18 +834,30 @@ export async function pickSession(
       if (key === "d" || key === "D") {
         if (items.length === 0) return false;
         const toDelete = items[selected]!;
+        if (toDelete.runtime && ["starting", "running", "needs-approval"].includes(toDelete.runtime.status)) return false;
+        if (deleting.has(toDelete.id)) return false;
+        deleting.add(toDelete.id);
+        operationError = undefined;
         deleteSession(toDelete.id).then((ok) => {
-          if (ok) {
-            items.splice(selected, 1);
+          if (!ok && !closed) { operationError = "Cannot delete: session is active or no longer exists."; if (listActive) render(); }
+          if (ok && !closed) {
+            const index = items.findIndex(item => item.id === toDelete.id);
+            if (index === -1) return;
+            items.splice(index, 1);
             if (items.length === 0) {
               cleanup();
               resolve(null);
               return;
             }
             if (selected >= items.length) selected = items.length - 1;
-            render();
+            if (listActive) render();
           }
-        });
+        }).catch(error => {
+          if (!closed) {
+            operationError = `Delete failed: ${error instanceof Error ? error.message : String(error)}`;
+            if (listActive) render();
+          }
+        }).finally(() => { deleting.delete(toDelete.id); });
         return false;
       }
 

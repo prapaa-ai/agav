@@ -82,6 +82,8 @@ export async function executeNativeAgent(
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<import("../agent/loop.js").ConfirmResult>;
     /** Explicit mode for direct executions such as a full-access agent lock. */
     permissionMode?: PermissionMode;
+    /** Original background consent mode, independent of generic Always. */
+    backgroundPermissionMode?: PermissionMode;
     iterationsBudget?: { remaining: number, total: number }
     /** Strict gate (workflow nodes): `native-tools` only restricts, never pre-approves; see LoopParams.toolGate. */
     toolGate?: { safeTools: ReadonlySet<string> };
@@ -186,8 +188,11 @@ export async function executeNativeAgent(
       effort,
       maxTokens: deps.config.maxTokens,
       signal: deps.signal,
-      confirmTool: deps.confirmTool ?? (childPermissionMode === "auto-accept" ? async () => "yes" : undefined),
+      confirmTool: deps.confirmTool ?? (childPermissionMode === "auto-accept" &&
+        (deps.backgroundPermissionMode ?? childPermissionMode) === "auto-accept" ? async () => "yes" : undefined),
       permissionMode: childPermissionMode,
+      backgroundPermissionMode: deps.backgroundPermissionMode === undefined ? undefined
+        : clampPermissionMode(deps.backgroundPermissionMode, deps.config.orgPermissionFloor),
       // Carry the parent's floor so the child's interactive "Always" cannot
       // widen past the org-managed permission policy either.
       permissionFloor: deps.config.orgPermissionFloor,

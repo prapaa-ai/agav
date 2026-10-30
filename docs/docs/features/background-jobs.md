@@ -8,6 +8,8 @@ order: 7
 
 Background jobs are an opt-in subsystem for commands that must keep running after the agent's turn ends, such as dev servers, long builds, and watchers. They can also be launched on a cron schedule. The agent starts and manages them with the `run_background_job` tool; you inspect and control them with `/job`.
 
+To leave an **agent conversation** running rather than a shell command, see [Detached sessions](/features/detached-sessions). Detached sessions additionally require the separate, global-only `detachedSessionsEnabled: true` opt-in alongside `backgroundJobsEnabled: true`. Background jobs alone leave ordinary prompts local; `/detach` and `agav --resume <session-id>` manage the conversation; `/job` manages shell jobs.
+
 Enable it in `~/.agav/config.json`:
 
 ```json

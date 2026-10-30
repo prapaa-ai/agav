@@ -6,7 +6,7 @@
  * registry (which imports from skills/) and the skill loader.
  */
 export const RESERVED_COMMAND_NAMES: ReadonlySet<string> = new Set([
-  "help", "clear", "new", "name", "model", "effort", "exit",
+  "help", "clear", "new", "name", "model", "effort", "exit", "detach",
   "history", "export", "watch", "branch", "compact", "memory",
   "remember", "forget", "fast", "deep", "undo", "plan", "debug",
   "search", "loop", "job", "workflows", "schedule", "skills", "steer", "changelog",

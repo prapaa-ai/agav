@@ -45,8 +45,11 @@ export const BACKGROUND_TICK_INTERNAL_FLAG = "--internal-background-jobs-tick";
  */
 export const WORKFLOW_RUNNER_INTERNAL_FLAG = "--internal-workflow-runner";
 
+/** Private supervised session worker mode; not a user command or an authorization bypass. */
+export const SESSION_RUNNER_INTERNAL_FLAG = "--internal-session-runner";
+
 /** Every private self-reexec flag recognised as `process.argv[2]` by `cli.tsx`. */
-export const INTERNAL_FLAGS = [SUPERVISOR_INTERNAL_FLAG, BACKGROUND_TICK_INTERNAL_FLAG, WORKFLOW_RUNNER_INTERNAL_FLAG] as const;
+export const INTERNAL_FLAGS = [SUPERVISOR_INTERNAL_FLAG, BACKGROUND_TICK_INTERNAL_FLAG, WORKFLOW_RUNNER_INTERNAL_FLAG, SESSION_RUNNER_INTERNAL_FLAG] as const;
 
 /**
  * Arguments that make the current executable run one headless tick.
@@ -84,6 +87,12 @@ export function getNodeEntryLoaderArgs(entry: string, resolveLoader: () => strin
  */
 export function getWorkflowRunnerArgs(runId: string, cliEntryPath?: string, nodeArgs: readonly string[] = []): string[] {
   return cliEntryPath ? [...nodeArgs, cliEntryPath, WORKFLOW_RUNNER_INTERNAL_FLAG, runId] : [WORKFLOW_RUNNER_INTERNAL_FLAG, runId];
+}
+
+/** Session equivalent of `getWorkflowRunnerArgs`; never forwards the parent's runtime arguments. */
+export function getSessionRunnerArgs(sessionId: string, cliEntryPath?: string, nodeArgs: readonly string[] = [], generation?: string): string[] {
+  const args = cliEntryPath ? [...nodeArgs, cliEntryPath, SESSION_RUNNER_INTERNAL_FLAG, sessionId] : [SESSION_RUNNER_INTERNAL_FLAG, sessionId];
+  return generation ? [...args, generation] : args;
 }
 
 /** Bun standalone module URLs are virtual, not externally executable JS files. */

@@ -31,6 +31,8 @@ interface SkillExecDeps {
   model: string;
   systemPrompt: string;
   permissionMode: PermissionMode;
+  /** Original background consent mode, independent of generic Always. */
+  backgroundPermissionMode?: PermissionMode;
   effort: EffortLevel;
   iterationsBudget: { remaining: number, total: number };
   /**
@@ -239,6 +241,8 @@ export async function executeSkill(
       signal: deps.signal,
       confirmTool: deps.confirmTool,
       permissionMode: effectiveMode,
+      backgroundPermissionMode: deps.backgroundPermissionMode === undefined ? undefined
+        : clampPermissionMode(deps.backgroundPermissionMode, deps.policy?.orgPermissionFloor),
       permissionFloor: deps.policy?.orgPermissionFloor,
       iterationsBudget: deps.iterationsBudget,
     });

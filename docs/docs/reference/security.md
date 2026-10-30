@@ -90,7 +90,7 @@ With `backgroundJobsEnabled`, the `run_background_job` tool starts commands that
 
 ### Cancellation is not isolation
 
-**Esc** cancels an interactive turn while keeping Agav open; **Ctrl+C** exits unless it copies an active Agav selection. See [Keybindings](/reference/keybindings#cancel-versus-exit).
+**Esc** cancels an interactive turn while keeping Agav open; **Ctrl+C** exits unless it copies an active Agav selection. For worker-owned turns, ordinary cancellation and exit request durable, generation-bound cancellation, not synchronous termination. Only `/detach` or the configured detach chord intentionally exits while leaving the worker running; session switches and presentation unmounts do not cancel. See [Keybindings](/reference/keybindings#cancel-versus-exit).
 
 Native, Seatbelt, and Bubblewrap shell commands use process-group cleanup on failure, cancellation, timeout, and orderly exit; Windows uses tree termination. Successful background commands are preserved on ordinary successful completion. Cleanup is best-effort, cannot undo edits or external actions, and cannot guarantee termination of descendants that detach from the owned group.
 

@@ -38,6 +38,8 @@ Run the show-keybindings chord and inspect global and project JSON overrides. Te
 
 Use **Esc** to cancel the current turn and stay in Agav. **Ctrl+C** with no Agav text selection exits; with a selection, it copies instead. In an actual `subagent` detail view, Esc targets that worker; skill and named-agent entries have no individual focused-cancel handler, so return to the overview before cancelling the parent; in a confirmation prompt, it denies that tool call. Close a picker or preview first if it consumes Esc. See [Keybindings](/reference/keybindings#cancel-versus-exit).
 
+For worker-owned turns, interrupting requests durable, generation-bound cancellation; it does not synchronously kill execution. Use `/detach` or the configured detach chord (default Ctrl+K Ctrl+D) to exit without requesting cancellation. See [Detached sessions](/features/detached-sessions#detach-versus-cancellation).
+
 Cancellation preserves already-applied edits and external side effects. Review `git diff` before retrying. Retry backoff is cancellable, but custom tools must honor cancellation, MCP server work can continue, and Docker containers may need separate cleanup. See [cancellation limits](/reference/security#cancellation-is-not-isolation).
 
 ## Command output or file contents are truncated

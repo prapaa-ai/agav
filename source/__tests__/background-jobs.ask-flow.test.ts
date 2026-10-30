@@ -12,6 +12,16 @@ import { createFileRepositories } from "../background-jobs/storage/repositories.
 import { createScheduleEngine } from "../background-jobs/schedule/engine.js";
 import { DEFAULT_RESOURCE_LIMITS, BackgroundJobError } from "../background-jobs/types.js";
 import { createSubagentTool } from "../tools/subagent.js";
+import { createSkillTool } from "../skills/tool.js";
+import { agentToTool } from "../agents/registry-factory.js";
+import type { AgavConfig, PermissionMode } from "../config/config.js";
+
+vi.mock("../skills/loader.js", () => ({ getSkill: () => ({
+  name: "background", slug: "background", description: "Background task", body: "Launch the task",
+  frontmatter: { name: "background", description: "Background task" },
+  filePath: "/unused/SKILL.md", origin: "project",
+}) }));
+vi.mock("../skills/improvement.js", () => ({ recordSkillTrace: async () => {} }));
 
 vi.mock("../config/config.js", () => ({ loadConfig: async () => ({ backgroundJobsEnabled: true, permissionMode: "ask" }) }));
 vi.mock("../utils/worktree.js", () => ({ createWorktree: async () => null, removeWorktree: async () => {}, applyWorktreeChanges: async () => ({ applied: true }) }));
@@ -76,6 +86,55 @@ describe("background authorization through the actual tool factory and loop", ()
     await vi.waitFor(() => expect(pending).toBeTruthy());
     expect(pending.subagentId).toBe("sa-1"); expect(pending.input.spec).toBeDefined();
     tool.cancelSubagent("sa-1"); expect((await result).isError).toBe(true);
+    expect(await createGrantStore(root).list()).toHaveLength(0);
+  });
+  it.each(["subagent", "skill", "native"] as const)("%s keeps background ask consent separate from generic auto-accept", async kind => {
+    const confirm = vi.fn(async (_name: string, input: Record<string, any>) => {
+      expect(input.action).toBe("start");
+      expect(input.spec.cwd).toBe(process.cwd());
+      expect(input.spec.isolation.backend).toBe("none");
+      return "yes" as const;
+    });
+    const queue = new ConfirmationQueue();
+    queue.bind(item => { if (item?.toolName === "run_background_job") void confirm(item.toolName, item.input).then(choice => queue.resolve(choice)); });
+    // Simulate an earlier generic Always: it must not bypass exact-spec consent.
+    const generic = queue.enqueue({ toolName: "write_file", input: {} });
+    queue.resolve("always");
+    await generic;
+    confirm.mockClear();
+    const config = {
+      model: "test", systemPrompt: "test", permissionMode: "auto-accept" as PermissionMode,
+      backgroundPermissionMode: "ask" as PermissionMode, effort: "medium" as const,
+      iterationsBudget: { remaining: 2, total: 2 }, maxIterations: 2,
+    };
+    const llm = provider({ action: "start", command: "echo consent" });
+    const registry = createToolRegistry();
+    const tool = kind === "subagent" ? createSubagentTool({
+      provider: llm, parentToolRegistry: registry, getConfig: () => config,
+      confirmationQueue: queue, onProgressUpdate: () => {}, onTokenUsage: () => {}, getSignal: () => undefined,
+    }) : kind === "skill" ? createSkillTool({
+      provider: llm, parentRegistry: registry, getConfig: () => config, confirmTool: confirm, getSignal: () => undefined,
+    }) : agentToTool({
+      manifest: { name: "background", description: "Background task", version: "1.0.0", "native-tools": ["run_background_job"] },
+      systemPrompt: "test", tools: [], origin: "project", path: root,
+    }, { provider: llm, config: config as unknown as AgavConfig, ...{ permissionMode: config.permissionMode },
+      backgroundPermissionMode: config.backgroundPermissionMode, confirmTool: confirm });
+    const result = await tool.execute({ title: "background", task: "launch background task", name: "background" });
+    expect(result.isError).toBe(false);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(confirm.mock.calls[0]![0]).toBe("run_background_job");
+    expect(await createGrantStore(root).list()).toHaveLength(1);
+  });
+  it("native generic auto-accept cannot synthesize approval for background ask without a callback", async () => {
+    const tool = agentToTool({
+      manifest: { name: "background", description: "Background task", version: "1.0.0", "native-tools": ["run_background_job"] },
+      systemPrompt: "test", tools: [], origin: "project", path: root,
+    }, {
+      provider: provider({ action: "start", command: "echo consent" }),
+      config: { model: "test", effort: "medium", maxIterations: 2 } as AgavConfig,
+      ...{ permissionMode: "auto-accept" as const }, backgroundPermissionMode: "ask",
+    });
+    await tool.execute({ task: "launch background task" });
     expect(await createGrantStore(root).list()).toHaveLength(0);
   });
   it("generic Always preserves already queued background confirmations", async () => {

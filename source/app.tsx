@@ -74,6 +74,7 @@ interface Props {
   resumeTokenUsage?: import("./config/history.js").SessionTokenUsage;
   resumeCompacted?: boolean;
   resumeSessionName?: string;
+  resumeRuntime?: import("./config/history.js").SessionRecord["runtime"];
   repoBranch?: string;
   /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
   enhancedKeyboard?: boolean;
@@ -81,6 +82,7 @@ interface Props {
   showChangelogOnLaunch?: boolean;
   /** Retained after unmount so the terminal host can await foreground settlement. */
   shutdownRef?: { current: (() => Promise<void>) | null };
+  detachedSessionRef?: { current: string | null };
 }
 
 const BANNER: DisplayMessage = {
@@ -99,7 +101,7 @@ interface QueuedRequest {
 let sysMessageId = 0;
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
-export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef }: Props) {
+export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumeRuntime, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef, detachedSessionRef }: Props) {
 
   const [input, setInput] = useState("");
   const readPromptRef = useRef<(() => string) | null>(null);
@@ -253,7 +255,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const customizeTUIResolveRef = useRef<(() => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
-  const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
+  const detachResolverRef = useRef(new KeybindingResolver(keybindings, ["detachSession"]));
+  const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS.filter(action => action !== "detachSession")));
   /** Lets handleSubmit re-sync InputPrompt's caret after rewriting its buffer. */
 
   const {
@@ -286,6 +289,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     refreshAgentCommands,
     addDisplayMessage,
     cancel,
+    detachSession,
+    canDetach,
     cancelSubagent,
     clearMessages,
     confirmTool,
@@ -306,7 +311,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     togglePause,
     interveneWhilePaused,
     iterationsBudget
-  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
+  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumeRuntime);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
   const [copyNotice, setCopyNotice] = useState<ClipboardNotice | null>(null);
@@ -417,12 +422,25 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     voice.cancel();
     updateQueue([]);
     shellAbortRef.current?.abort();
-    cancel();
+    // Explicit detach leaves the worker alone. Ordinary exit/interrupt requests a
+    // generation-bound cancellation and waits for its durable publication before exit.
+    const cancellation = detachedSessionRef?.current ? undefined : cancel();
     stopActiveLoop();
-    exitInk();
-    // Keep Ink alive until the foreground executor has checkpointed settlement.
-    void settleWorkflow().then(() => exitInk());
+    void Promise.resolve(cancellation).then(settleWorkflow).then(() => exitInk());
   }, [cancel, exitInk, updateQueue, voice.cancel, settleWorkflow]);
+
+  React.useLayoutEffect(() => {
+    if (shutdownRef) shutdownRef.current = async () => {
+      if (!detachedSessionRef?.current) await cancel();
+      await settleWorkflow();
+    };
+  }, [shutdownRef, detachedSessionRef, cancel, settleWorkflow]);
+
+  const detachCurrentSession = useCallback(async () => {
+    const id = await detachSession();
+    if (detachedSessionRef) detachedSessionRef.current = id;
+    return id;
+  }, [detachSession, detachedSessionRef]);
 
   /**
    * Background-job support for workflow `job` nodes and job-aware `/workflows cancel`.
@@ -877,6 +895,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
   useInput((rawChar, rawKey) => {
     if (workflowsTUI) return; // The full-screen workflow view owns the keyboard.
+    // Resolve before confirmation/queue guards: detaching must never answer consent.
+    const normalized = normalizeKeyEvent(rawChar, rawKey);
+    const detachMatch = detachResolverRef.current.feed(normalized.input, normalized.key);
+    if (detachMatch.pending || detachMatch.action) {
+      if (detachMatch.action && canDetach) {
+        void detachCurrentSession().then(() => exit()).catch(error => showStatusLine(error instanceof Error ? error.message : String(error)));
+      }
+      return;
+    }
     if (voice.isActive()) {
       const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
       if (key.eventType === "release" || key.eventType === "repeat") return;
@@ -1255,6 +1282,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             provider: activeProvider ?? undefined,
             getModelSelectionVersion: () => modelSelectionVersion.current,
             getEffectivePermissionMode,
+            detachSession: detachCurrentSession,
             setModel: (model: string) => {
               // Enforce the org policy on interactive model changes (/model,
               // /fast, /deep): a managed pin or allowlist applies to every
@@ -1493,7 +1521,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
+    [detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.
@@ -1829,10 +1857,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         {queueBlocked && queuedRequests.length > 0 && <Text color="yellow">Queue paused · /queue retry to retry</Text>}
         {!voice.phase && pendingConfirmation && (
           <ToolConfirm
+            detachAvailable={canDetach}
             toolName={pendingConfirmation.toolName}
             input={pendingConfirmation.input}
             diffLines={pendingConfirmation.diffLines}
             mcpServerName={pendingConfirmation.mcpServerName}
+            warning={pendingConfirmation.warning}
             onConfirm={(choice) => confirmTool(choice, keyStartConfirmationRef.current ?? pendingConfirmation ?? undefined)}
             subagentTask={pendingConfirmation.subagentTask}
             explicitApprovalOnly={pendingConfirmation.explicitApprovalOnly}
@@ -1845,6 +1875,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             onDecide={workflowConsent.resolve}
           />
         )}
+
+        {canDetach && <Text dimColor>{formatKeybinding(keybindings, "detachSession")}: detach · worker continues · resume with /resume</Text>}
 
         {!voice.phase && !pendingConfirmation && pendingContextWindowRequest && (
           <ContextWindowPrompt

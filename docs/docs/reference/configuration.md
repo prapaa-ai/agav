@@ -89,7 +89,8 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | `allowedTools` | Tool names or scoped patterns that can run without confirmation |
 | `search` | When `true`, enable the `web_search` tool (off by default). Also settable per session with `--search`. See [Built-in tools](/features/built-in-tools). |
 | `systemPrompt` | Additional project instructions |
-| `backgroundJobsEnabled` | Opt in (default `false`) to the `run_background_job` tool and `/job`. Jobs run outside the shell sandbox. See [Background jobs](/features/background-jobs). |
+| `backgroundJobsEnabled` | Opt in (default `false`) to `run_background_job` and `/job`. Required for detached sessions, but alone does not move ordinary interactive prompts into workers. Shell jobs run outside the shell sandbox. See [Background jobs](/features/background-jobs). |
+| `detachedSessionsEnabled` | Separate **global-only** opt-in (default `false`) to worker-owned ordinary interactive turns and `/detach`. Requires `backgroundJobsEnabled: true` as well; set both in `~/.agav/config.json` before starting the task. Project values are ignored. Session tools retain their sandbox policy. See [Detached sessions](/features/detached-sessions). |
 | `backgroundAutomation` | `on` (default) or `paused`. `paused` makes `agav job tick` and `agav job daemon` do nothing. Global config only. |
 | `hooks` | Optional commands for `afterEdit`, `afterShell`, and `preCommit` |
 | `theme` | Partial terminal color overrides |
@@ -147,6 +148,7 @@ To prevent a malicious repository from redirecting API requests or escalating pe
 - **API keys:** `anthropicApiKey`, `openaiApiKey`, `openrouterApiKey`, `nvidiaApiKey`, `deepseekApiKey`, `geminiApiKey`, `ollamaApiKey`
 - **Permission escalation:** `permissionMode`
 - **Unattended automation:** `backgroundAutomation`
+- **Detached session execution:** `detachedSessionsEnabled` (global config only; no environment override)
 
 These fields are stripped from `./.agav/config.json` before it is merged, so a value placed there is **silently ignored** rather than applied — Agav does not warn about it. This ensures that cloning an untrusted repository cannot silently redirect your credentials to a third-party server or bypass tool confirmations. Set these fields in global config or via environment variables instead.
 

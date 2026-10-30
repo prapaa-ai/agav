@@ -21,11 +21,13 @@ order: 3
 | `/export [json] [sanitize\|--sanitize]` | Export the retained conversation as Markdown or JSON, optionally with best-effort redaction. |
 | `/exit` | Save the current session and exit. |
 
-Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`.
+Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`. To keep a task executing after closing the UI, set both `detachedSessionsEnabled: true` and `backgroundJobsEnabled: true` in global config before submitting it and use `/detach` or the configurable `detachSession` chord (default Ctrl+K Ctrl+D); see [Detached sessions](/features/detached-sessions). The resume picker also includes live runtimes and their pending approval counts. Workers checkpoint visible conversation history and token usage; resuming observes that progress without replaying the task. `backgroundJobsEnabled` alone leaves ordinary prompts local.
+
+Ordinary `/exit` or Ctrl+C requests durable, generation-bound cancellation of a selected worker; Esc requests cancellation without leaving Agav when no focused UI consumes it. Cancellation is asynchronous, not proof that all effects stopped. Switching sessions or unmounting the presentation does not cancel execution or answer approvals. There is no separate public session stop command; resume and interrupt instead.
 
 > **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\`.
 
-`agav --resume` opens a picker listing all saved sessions, with the total count shown in the header. You can move the selection with `↑/↓`, `j/k`, or the mouse wheel, or click a row to select it. Press `Enter` to resume the selected session, `D` to delete, `M` or `R` to rename, and `Esc` or `q` to cancel. In the rename view, type the new name and press `Enter` to save, or press `Esc` to cancel and return to the list without renaming.
+`agav --resume` opens a picker listing all saved sessions, with the total count shown in the header. You can move the selection with `↑/↓`, `j/k`, or the mouse wheel, or click a row to select it. Press `Enter` to resume the selected session, `D` to delete saved or terminal sessions (not active workers), `M` or `R` to rename active or terminal sessions, and `Esc` or `q` to cancel. In the rename view, type the new name and press `Enter` to save, or press `Esc` to cancel and return to the list without renaming.
 
 Note: resuming a session created with `--max-turns` keeps the session's own history but the turn cap is reapplied to each new prompt.
 
