@@ -187,7 +187,7 @@ export async function signInWithApiKey(
       throw new AccountError("Sign-in cancelled.");
     }
     throw new AccountError(
-      `Signed in, but could not save your account locally: ${(error as Error).message}`,
+      "Signed in, but could not save your account locally. Check local storage permissions and try again.",
       { cause: error },
     );
   }

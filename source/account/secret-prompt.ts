@@ -1,3 +1,5 @@
+import { getClipboardText } from "../utils/clipboard-text.js";
+
 /** Isolated no-echo input. The caller suspends Ink until this promise settles. */
 export interface SecretPromptOptions {
   label: string;
@@ -33,6 +35,8 @@ export function readSecretFromTty(options: SecretPromptOptions): Promise<string 
     let submitted = false;
     let settled = false;
     let pasteEnabled = false;
+    let clipboardPending = false;
+    let queuedInput = "";
     const hadRaw = input.isRaw ?? false;
 
     const cleanup = () => {
@@ -53,6 +57,7 @@ export function readSecretFromTty(options: SecretPromptOptions): Promise<string 
       const value = cancelled ? undefined : secret;
       secret = "";
       sequence = "";
+      queuedInput = "";
       cleanup();
       try { out.write("\n"); } catch { /* terminal closed */ }
       if (error) reject(error);
@@ -68,9 +73,14 @@ export function readSecretFromTty(options: SecretPromptOptions): Promise<string 
     const maybeFinish = () => {
       // Process the complete chunk first: END followed by START in the same read
       // still leaves an open frame that we must not hand to the next consumer.
-      if (!inPaste && !sequence && (cancelled || submitted)) finish();
+      if (!inPaste && !sequence && (cancelled || (submitted && !clipboardPending))) finish();
     };
-    const onAbort = () => { cancel(); maybeFinish(); };
+    const drainQueuedInput = () => {
+      const queued = queuedInput;
+      queuedInput = "";
+      for (const ch of queued) consume(ch);
+    };
+    const onAbort = () => { cancel(); drainQueuedInput(); maybeFinish(); };
     const onError = () => { cancel(); finish(new SecretPromptError("Terminal input failed.")); };
     const onEnd = () => { cancel(); finish(); };
 
@@ -87,6 +97,10 @@ export function readSecretFromTty(options: SecretPromptOptions): Promise<string 
         cancel();
         return;
       }
+      // Preserve input order while the OS clipboard read is asynchronous.
+      // Cancellation remains live and still drains the bracketed-paste parser.
+      if (clipboardPending && !cancelled && ch !== "\x03") { queuedInput += ch; return; }
+      if (cancelled && queuedInput) drainQueuedInput();
       if (sequence) {
         // A user pressing Esc then Enter explicitly resolves the ambiguity. Never
         // interpret Enter inside a paste as confirmation (it may be pasted data).
@@ -115,6 +129,26 @@ export function readSecretFromTty(options: SecretPromptOptions): Promise<string 
         return;
       }
       if (inPaste) { append(ch); return; }
+      if (ch === "\x16" && !cancelled && !submitted) {
+        // Native Windows consoles may deliver Ctrl-V rather than pasted bytes.
+        // Read text only: never send the key to composer/attachment handlers.
+        clipboardPending = true;
+        void (async () => {
+          try {
+            const text = await getClipboardText();
+            if (!settled && !cancelled && text) {
+              // Clipboard controls are data, not terminal commands (notably the
+              // CRLF added by PowerShell's Get-Clipboard must not submit).
+              for (const c of text) append(c);
+            }
+          } catch { /* Clipboard unavailable; keep manual entry usable. */ }
+          finally {
+            clipboardPending = false;
+            if (!settled) { drainQueuedInput(); maybeFinish(); }
+          }
+        })();
+        return;
+      }
       if (ch === "\r" || ch === "\n") { submitted = true; return; }
       if (ch === "\x7f" || ch === "\b") {
         if (!cancelled && !submitted && secret.length) {
@@ -128,6 +162,7 @@ export function readSecretFromTty(options: SecretPromptOptions): Promise<string 
     const onData = (chunk: Buffer | string) => {
       if (settled) return;
       for (const ch of chunk.toString()) consume(ch);
+      if (cancelled) drainQueuedInput();
       maybeFinish();
     };
 

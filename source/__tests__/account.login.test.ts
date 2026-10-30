@@ -76,6 +76,15 @@ describe("signInWithApiKey", () => {
     await expect(signInWithApiKey("agav_sk_validkey123456")).rejects.toThrow(/could not save/i);
   });
 
+  it("does not expose a secret-bearing persistence error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ accountId: "acct_9", status: "active" })));
+    vi.mocked(saveStoredAccount).mockRejectedValueOnce(new Error("agav_sk_validkey123456"));
+    const error = await signInWithApiKey("agav_sk_validkey123456").catch(error => error);
+    expect(error).toBeInstanceOf(AccountError);
+    expect(error.message).toContain("could not save");
+    expect(error.message).not.toContain("agav_sk_validkey123456");
+  });
+
   it("does not persist when cancelled between validation and save", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ accountId: "acct_9", status: "active" })));
     const controller = new AbortController();

@@ -6,6 +6,9 @@ import { EventEmitter } from "node:events";
 import render from "../ink/render.js";
 import useInput from "../ink/hooks/use-input.js";
 
+vi.mock("../utils/clipboard-text.js", () => ({ getClipboardText: vi.fn() }));
+import { getClipboardText } from "../utils/clipboard-text.js";
+
 const START = "\x1b[200~";
 const END = "\x1b[201~";
 
@@ -45,6 +48,83 @@ describe("secret prompt framing and handoff", () => {
     expect(await h.result).toBe("agav_sk_abc");
     expect(h.written.join("")).not.toContain("agav_sk_abc");
     expect(h.input.isRaw).toBe(false);
+    h.stream.destroy();
+  });
+
+  it("masks Windows Ctrl-V clipboard text and waits for it before submitting", async () => {
+    let complete!: (text: string) => void;
+    vi.mocked(getClipboardText).mockReturnValueOnce(new Promise(resolve => { complete = resolve; }));
+    const h = harness();
+    h.feed("\x16X\x7f\r");
+    await Promise.resolve();
+    expect(h.resolved()).toBe(false);
+    complete("agav_sk_clipboard\r\n");
+    expect(await h.result).toBe("agav_sk_clipboard");
+    expect(h.written.join("")).toContain("*".repeat("agav_sk_clipboard".length));
+    expect(h.written.join("")).not.toContain("agav_sk_clipboard");
+    expect(h.leaked).toEqual([]);
+    h.stream.destroy();
+  });
+
+  it.each([null, new Error("secret clipboard error")])("keeps typing usable when the clipboard is unavailable (%s)", async failure => {
+    if (failure instanceof Error) vi.mocked(getClipboardText).mockRejectedValueOnce(failure);
+    else vi.mocked(getClipboardText).mockResolvedValueOnce(failure);
+    const h = harness();
+    h.feed("\x16agav_sk_typed\r");
+    expect(await h.result).toBe("agav_sk_typed");
+    expect(h.written.join("")).not.toContain("secret clipboard error");
+    h.stream.destroy();
+  });
+
+  it("discards a late clipboard read after cancellation", async () => {
+    let complete!: (text: string) => void;
+    vi.mocked(getClipboardText).mockReturnValueOnce(new Promise(resolve => { complete = resolve; }));
+    const h = harness();
+    h.feed("\x16");
+    h.controller.abort();
+    expect(await h.result).toBeUndefined();
+    const output = h.written.join("");
+    complete("agav_sk_late");
+    await new Promise(resolve => setImmediate(resolve));
+    expect(h.written.join("")).toBe(output);
+    expect(h.leaked).toEqual([]);
+    h.stream.destroy();
+  });
+
+  it("keeps a queued incomplete frame isolated when Ctrl-C cancels a pending clipboard read", async () => {
+    let complete!: (text: string) => void;
+    vi.mocked(getClipboardText).mockReturnValueOnce(new Promise(resolve => { complete = resolve; }));
+    const h = harness();
+    h.feed("\x16" + START + "secret\x03");
+    await Promise.resolve();
+    expect(h.resolved()).toBe(false);
+    h.feed("tail" + END);
+    expect(await h.result).toBeUndefined();
+    complete("agav_sk_late");
+    await new Promise(resolve => setImmediate(resolve));
+    expect(h.leaked).toEqual([]);
+    expect(h.written.join("")).not.toContain("agav_sk_late");
+    h.stream.destroy();
+  });
+
+  it("treats clipboard controls as data, not submission, cancellation, or nested paste", async () => {
+    vi.mocked(getClipboardText).mockResolvedValueOnce("agav_sk_clip\r\n\x03\x16");
+    const h = harness();
+    h.feed("\x16");
+    await new Promise(resolve => setImmediate(resolve));
+    expect(h.resolved()).toBe(false);
+    h.feed("\r");
+    expect(await h.result).toBe("agav_sk_clip");
+    expect(h.written.join("")).not.toContain("agav_sk_clip");
+    h.stream.destroy();
+  });
+
+  it("does not read the clipboard for Ctrl-V inside a bracketed paste", async () => {
+    vi.mocked(getClipboardText).mockClear();
+    const h = harness();
+    h.feed(START + "agav_sk_framed\x16" + END + "\r");
+    expect(await h.result).toBe("agav_sk_framed");
+    expect(getClipboardText).not.toHaveBeenCalled();
     h.stream.destroy();
   });
 

@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Match path semantics to the mocked macOS home on Windows test hosts too.
+vi.mock("node:path", async () => {
+  const { posix } = await vi.importActual<typeof import("node:path")>("node:path");
+  return { ...posix, default: posix };
+});
+
 // Stable home + user so the encryption key and paths are deterministic.
 vi.mock("node:os", () => ({
   homedir: () => "/Users/test",

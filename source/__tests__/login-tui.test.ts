@@ -7,6 +7,9 @@ import { LoginTUI } from "../components/login-tui.js";
 import { signInWithApiKey } from "../account/account-login.js";
 import { signInWithBrowser } from "../account/browser-auth.js";
 
+vi.mock("../utils/clipboard-text.js", () => ({ getClipboardText: vi.fn() }));
+import { getClipboardText } from "../utils/clipboard-text.js";
+
 vi.mock("../account/account-login.js", () => ({ signInWithApiKey: vi.fn() }));
 vi.mock("../account/browser-auth.js", async original => ({
   ...await original<typeof import("../account/browser-auth.js")>(), signInWithBrowser: vi.fn(),
@@ -56,6 +59,18 @@ describe("login wizard", () => {
     const ui = await mount(); await pasteScreen(ui);
     expect(ui.openBrowser).not.toHaveBeenCalled();
     await ui.key(START + KEY + END); await ui.key("\r");
+    expect(signIn).toHaveBeenCalledExactlyOnceWith(KEY, { accountService: "https://staging.example/base/", signal: expect.any(AbortSignal) });
+    expect(ui.output()).not.toContain(KEY);
+    expect(ui.onDone).toHaveBeenCalledWith({ cancelled: false, message: expect.stringContaining("you@example.test") });
+  });
+
+  it("submits Windows Ctrl-V through the isolated reader, without exposing the key", async () => {
+    vi.mocked(getClipboardText).mockResolvedValueOnce(KEY + "\r\n");
+    const ui = await mount(); await pasteScreen(ui);
+    await ui.key("\x16");
+    expect(signIn).not.toHaveBeenCalled();
+    expect(ui.output()).not.toContain(KEY);
+    await ui.key("\r");
     expect(signIn).toHaveBeenCalledExactlyOnceWith(KEY, { accountService: "https://staging.example/base/", signal: expect.any(AbortSignal) });
     expect(ui.output()).not.toContain(KEY);
     expect(ui.onDone).toHaveBeenCalledWith({ cancelled: false, message: expect.stringContaining("you@example.test") });
@@ -185,6 +200,22 @@ describe("login wizard", () => {
     await ui.key("\x03"); expect(ui.onDone).not.toHaveBeenCalled();
     complete({ accountId: "committed", email: null, status: "active" }); await ui.settle();
     expect(ui.onDone).toHaveBeenCalledWith({ cancelled: false, message: expect.stringContaining("Signed in") });
+  });
+
+  it.each([
+    "That isn't a valid Agav API key (it may be wrong or revoked).",
+    "The Agav account service is temporarily unavailable. Please try again.",
+    "Could not reach the Agav account service. Check your connection and try again.",
+    "Signed in, but could not save your account locally. Check local storage permissions and try again.",
+  ])("shows the specific account failure: %s", async message => {
+    const { AccountError } = await import("../account/types.js");
+    signIn.mockRejectedValueOnce(new AccountError(message));
+    const ui = await mount(); await pasteScreen(ui); await ui.key(KEY + "\r");
+    // The terminal wraps long messages; assert their text without frame padding.
+    const text = ui.output().replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").replace(/\s*│\s*\n\s*│\s*/g, "");
+    expect(text).toContain(message);
+    expect(ui.output()).not.toContain(KEY);
+    expect(ui.onDone).not.toHaveBeenCalled();
   });
 
   it("shows safe retry guidance and collects a fresh key after failure", async () => {

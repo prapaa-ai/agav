@@ -133,10 +133,12 @@ export function LoginTUI({ accountService, openBrowser, onDone }: LoginTUIProps)
         identity = await signInWithApiKey(key, { accountService, signal: controller.signal });
       } finally { key = undefined; }
       success(identity.email);
-    } catch {
+    } catch (error) {
       if (!mounted.current || finished.current) return;
       if (controller.signal.aborted) { done({ cancelled: true }); return; }
-      setError("Could not connect your account. Check that your Agav key is valid, your connection works, and local credential storage is available.");
+      // As in browser sign-in, show curated account errors, never raw exceptions.
+      const { AccountError } = await import("../account/types.js");
+      setError(error instanceof AccountError ? error.message : "Could not connect your account. Check that your Agav key is valid, your connection works, and local credential storage is available.");
       setPhase("retry");
     } finally {
       if (active.current === controller) active.current = null;
