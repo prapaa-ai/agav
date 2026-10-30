@@ -1,6 +1,6 @@
 import { render } from "./ink/index.js";
 import App from "./app.js";
-import { EFFORT_LEVELS, isEffortLevel, loadConfig, migrateSecretsToKeychain, type AgavConfig } from "./config/config.js";
+import { EFFORT_LEVELS, isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
 import { createProvider } from "./providers/registry.js";
 import type { LLMProvider } from "./providers/types.js";
 import { fetchAvailableModels, findMatchingModels, type FetchedModel } from "./commands/model.js";
@@ -824,12 +824,6 @@ export async function main() {
       process.exit(1);
     }
   }
-
-  // One-time, best-effort move of any in-file API keys into the OS credential
-  // store so upgrading users transition automatically. It never throws and only
-  // rewrites config.json when it actually migrated something; the subsequent
-  // loadConfig then resolves the new keychain: placeholders transparently.
-  await migrateSecretsToKeychain();
 
   const config = await loadConfig();
   const keybindings = await loadKeybindings();
