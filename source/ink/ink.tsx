@@ -175,11 +175,8 @@ function applySelectionHighlight(
 		}
 
 		if (inSelection) {
-			// If the selection extends past the end of the text, highlight
-			// trailing space to make it visible.
-			if (row < selection.endY) {
-				result += " ";
-			}
+			// Keep the row's visible width unchanged. Adding a trailing space
+			// to a full-width row triggers autowrap and breaks repaint positions.
 			result += INVERSE_OFF + SEL_COLOR_OFF;
 		}
 
