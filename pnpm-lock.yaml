@@ -79,8 +79,8 @@ importers:
         version: 3.2.1
     devDependencies:
       '@sindresorhus/tsconfig':
-        specifier: ^8.1.0
-        version: 8.1.0
+        specifier: ^9.0.0
+        version: 9.0.0
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
@@ -516,9 +516,9 @@ packages:
     resolution: {integrity: sha512-t09vSN3MdfsyCHoFcTRCH/iUtG7OJ0CsjzB8cjAmKc/va/kIgeDI/TxsigdncE/4be734m0cvIYwNaV4i2XqAw==}
     engines: {node: '>=10'}
 
-  '@sindresorhus/tsconfig@8.1.0':
-    resolution: {integrity: sha512-MggpguA4jNdtyoUy2Hs54nb4lP4rbhH34CsOiFId1q6fmFPnipqeo70ZRkjp5p4Z7wdyspALtSAcKaxL2/3waQ==}
-    engines: {node: '>=20'}
+  '@sindresorhus/tsconfig@9.0.0':
+    resolution: {integrity: sha512-mtMvHnPCDoKuZvXKAsNsi7JrgfHOWKAy+a/k6VEAh7mcrNitburEdz/dOPpp4rL7KXfc0buRnEdkKEeZGXWtkg==}
+    engines: {node: '>=22'}
 
   '@stablelib/base64@1.0.1':
     resolution: {integrity: sha512-1bnPQqSxSuc3Ii6MhBysoWCg58j97aUjuCSZrGSmDxNqtytIi0k8utUenAwTZN4V5mXXYGsVUI9zeBqy+jBOSQ==}
@@ -1810,7 +1810,7 @@ snapshots:
 
   '@sindresorhus/is@4.6.0': {}
 
-  '@sindresorhus/tsconfig@8.1.0': {}
+  '@sindresorhus/tsconfig@9.0.0': {}
 
   '@stablelib/base64@1.0.1': {}
 

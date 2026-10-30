@@ -52,7 +52,7 @@
     "yoga-layout": "3.2.1"
   },
   "devDependencies": {
-    "@sindresorhus/tsconfig": "^8.1.0",
+    "@sindresorhus/tsconfig": "^9.0.0",
     "@types/node": "^26.6.5",
     "@types/react": "~19.2.18",
     "@types/react-reconciler": "0.33.0",
