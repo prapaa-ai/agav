@@ -35,7 +35,10 @@ import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { JobsTUI } from "./components/jobs-tui.js";
 import { CustomizeTUI } from "./components/customize-tui.js";
+import { LoginTUI } from "./components/login-tui.js";
+import { openExternal } from "./utils/open-external.js";
 import type { StatusBarSegments } from "./components/status-bar.js";
+
 import { normalizeStatusBarLayout, isDefaultStatusBarLayout, type StatusBarLayout } from "./config/status-bar-layout.js";
 import { ResourceManager } from "./components/resource-manager.js";
 import { createResourceAdapter } from "./resources/adapters.js";
@@ -251,6 +254,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const resourceTUIResolveRef = useRef<(() => void) | null>(null);
   const [customizeTUIActive, setCustomizeTUIActive] = useState(false);
   const customizeTUIResolveRef = useRef<(() => void) | null>(null);
+  const [loginTUIActive, setLoginTUIActive] = useState(false);
+  const [loginTUIService, setLoginTUIService] = useState("https://agav.dev");
+  const loginTUIResolveRef = useRef<((result: { cancelled: boolean; message?: string }) => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
@@ -1076,6 +1082,45 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       const trimmed = value.trim();
       const composerEditVersion = composerEditVersionRef.current;
 
+      // Credential guard — runs FIRST, before the busy-queue, intervention, slash
+      // dispatch, or model submission, and independently of the visible composer
+      // text. A consumer API key can arrive either as a credential-bearing /login
+      // in the text OR as the key pasted into an attachment (a long paste becomes
+      // an attachment tile, so the visible text would not start with "/login").
+      // In either case we must neither queue it, submit it to the model, nor keep
+      // it: drop the input, unregister the attachments, and point the user at the
+      // masked prompt.
+      //
+      // Gate on a cheap synchronous pre-check so the normal submit hot path (no
+      // login text, no "agav_sk_" in the text, no text attachments) never pays for
+      // the dynamic import — this preserves the exact timing the request-queue
+      // handoff relies on. The text gate uses a bare "agav_sk_" substring so a key
+      // pasted WITHOUT a /login prefix (incl. repeat-paste expansion) is caught.
+      if (/^\/(login|logout)\b/.test(trimmed) || trimmed.includes("agav_sk_")
+          || promptAttachments.some((a) => a.contentBlock.type === "text")) {
+        const { containsApiKey, submissionCarriesApiKey } = await import("./account/credential-input.js");
+        const attachmentHasKey = promptAttachments.some(
+          (a) => a.contentBlock.type === "text" && containsApiKey((a.contentBlock as { text?: string }).text ?? ""),
+        );
+        if (submissionCarriesApiKey(trimmed) || attachmentHasKey) {
+          // Clear composer + fully unregister any attachments so the key is not
+          // retained in the session attachment registry.
+          composerEditVersionRef.current++;
+          setInput("");
+          for (const a of promptAttachments) unregisterAttachment(a.id);
+          setAttachments([]);
+          lastPasteRef.current = null;
+          setSystemMessages([{
+            id: `sys-${++sysMessageId}`,
+            role: "system",
+            content:
+              "For your security, don't paste your Agav API key into the prompt — it could be saved or sent to the model.\n" +
+              "Run `/login`, choose Paste an Agav API key, and enter it in the secure prompt; it won't enter chat or prompt history.",
+          }]);
+          return;
+        }
+      }
+
       if (trimmed.split(/\s+/)[0] === "/voice") {
         if (invocationReason || queued) {
           showStatusLine("Voice input requires a direct user action; automated workflows cannot open the microphone.", true);
@@ -1384,6 +1429,11 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             showCustomizeTUI: stdout.isTTY && process.stdin.isTTY ? (onDone: () => void) => {
               customizeTUIResolveRef.current = onDone;
               setCustomizeTUIActive(true);
+            } : undefined,
+            showLoginTUI: stdout.isTTY && stdin.isTTY ? (onDone: (result: { cancelled: boolean; message?: string }) => void, accountService: string) => {
+              loginTUIResolveRef.current = onDone;
+              setLoginTUIService(accountService);
+              setLoginTUIActive(true);
             } : undefined,
             startVoiceInput: stdout.isTTY && stdin.isTTY ? () => {
               // Capture the version after the slash command clears its composer.
@@ -1898,6 +1948,21 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               const resolve = customizeTUIResolveRef.current;
               customizeTUIResolveRef.current = null;
               resolve?.();
+            }}
+          />
+        )}
+
+        {loginTUIActive && (
+          <LoginTUI
+            accountService={loginTUIService}
+            openBrowser={openExternal}
+            onDone={(result) => {
+              setLoginTUIActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = loginTUIResolveRef.current;
+              loginTUIResolveRef.current = null;
+              resolve?.(result);
             }}
           />
         )}
