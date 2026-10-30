@@ -614,7 +614,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         const { getChangelogSummary } = await import("./utils/auto-update.js");
         const text = await getChangelogSummary();
         if (cancelled || !text) return;
-        addDisplayMessage({ id: `changelog-launch-${++sysMessageId}`, role: "system", content: text });
+        // Inline hint (shown in the transcript, not the status bar) telling the
+        // user how to turn off this automatic display. It only reaches here when
+        // auto-display is enabled, so the hint is always relevant. Reuse the
+        // command's shared text so both surfaces read identically.
+        const { CHANGELOG_DISABLE_HINT } = await import("./commands/changelog.js");
+        addDisplayMessage({ id: `changelog-launch-${++sysMessageId}`, role: "system", content: `${text}\n\n${CHANGELOG_DISABLE_HINT}` });
       } catch {
         // Never surface changelog failures during startup.
       }
