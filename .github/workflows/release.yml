@@ -58,6 +58,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Validate pinned Bun against advisory floor
         run: node scripts/check-bun-advisories.mjs
+      # The voice-enabled binary statically links whisper.cpp (+ bundled ggml) and
+      # miniaudio; a version below their advisory floors would ship a vulnerable
+      # voice helper. Block the whole release here, before any binary is built.
+      - name: Validate native voice components against advisory floors
+        run: node scripts/check-voice-advisories.mjs
       # Fail the prerequisite job before spending time building stable binaries.
       - name: Validate reviewed release notes
         if: steps.version.outputs.changed == 'true'
