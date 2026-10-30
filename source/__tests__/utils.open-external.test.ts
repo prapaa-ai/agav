@@ -48,10 +48,11 @@ describe("isSafeOpenTarget", () => {
   });
 });
 
-// The win32 explorer.exe launcher fix cannot be exercised at runtime in this
-// (Linux) CI environment — it is verified by code review against the
-// rationale documented for this change (avoiding cmd.exe /c start "" command
-// injection). See M2 milestone documentation for details.
+// The win32 launcher (rundll32 url.dll,FileProtocolHandler) cannot be exercised
+// at runtime in this (Linux) CI environment — it is verified by code review
+// against the rationale documented for this change: routing URLs to the default
+// browser (explorer.exe opens a File Explorer window instead) while avoiding the
+// cmd.exe /c start "" command-injection path. See M2 milestone documentation.
 if (process.platform === "linux") {
   describe("openExternal no-GUI guard (linux)", () => {
     let savedDisplay: string | undefined;

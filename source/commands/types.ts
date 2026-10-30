@@ -99,6 +99,13 @@ export interface CommandContext {
   showSkillsTUI: (onDone: () => void) => void
   /** Open the /customize overlay; only the interactive app supplies this. */
   showCustomizeTUI?: (onDone: () => void) => void
+  /**
+   * Open the consumer account sign-in wizard (/login). Resolves when the wizard
+   * closes: `cancelled` when the user backed out, otherwise the final
+   * success/error message to show in the transcript. Only the interactive app
+   * supplies this; absent in headless mode.
+   */
+  showLoginTUI?: (onDone: (result: { cancelled: boolean; message?: string }) => void, accountService: string) => void
 }
 
 /** Represents the result of executing a slash command. */

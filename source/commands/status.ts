@@ -4,6 +4,17 @@ import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import { getContextLimits } from "../utils/tokens.js";
 import { getSandboxName } from "../utils/sandbox.js";
 import { computeContextOccupancy, resolveContextWindow } from "./context-usage.js";
+import type { StoredAccount } from "../account/types.js";
+
+/** Load the signed-in consumer Agav account for /status. Never throws. */
+async function loadConsumerAccount(): Promise<StoredAccount | undefined> {
+  try {
+    const { loadStoredAccount } = await import("../account/account-store.js");
+    return await loadStoredAccount();
+  } catch {
+    return undefined;
+  }
+}
 
 // Bun's process.cwd() can return an unresolved value (e.g. the literal "." when
 // PWD is relative in the launch environment), which would surface verbatim in the
@@ -50,6 +61,10 @@ export const statusCommand: SlashCommand = {
     const permissionMode =
       context.getEffectivePermissionMode?.() ?? context.config?.permissionMode ?? "ask";
 
+    // The signed-in consumer Agav account, if any. Read best-effort: a missing or
+    // unreadable store must never break /status, so loadStoredAccount never throws.
+    const account = await loadConsumerAccount();
+
     const lines: string[] = [
       "\x1b[1mSession Status\x1b[0m",
       "",
@@ -60,6 +75,12 @@ export const statusCommand: SlashCommand = {
       `  Token usage:  ${fmtTokens(usedTokens)} / ${fmtTokens(maxTokens)} (${pct(usedTokens, maxTokens)})`,
       `  MCP servers:  ${mcpCount} connected`,
     ];
+
+    if (account) {
+      const who = account.email ?? account.accountId;
+      // A cached identity snapshot from sign-in — not a live entitlement check.
+      lines.push(`  Agav account: ${who} (signed in)`);
+    }
 
     // preservePaths keeps the absolute Directory path intact: the terminal path
     // formatter would otherwise collapse the working directory back to ".".
