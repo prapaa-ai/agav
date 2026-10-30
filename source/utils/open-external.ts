@@ -44,10 +44,18 @@ export function openExternal(target: string): Promise<boolean> {
     return Promise.resolve(false);
   }
 
+  // On Windows, handing a URL to `explorer.exe` is unreliable: it frequently
+  // opens a File Explorer window instead of routing the URL to the default
+  // browser. `rundll32 url.dll,FileProtocolHandler` is the documented Windows
+  // API for opening a URL (or file) with its registered default handler, and —
+  // unlike `cmd.exe /c start ""` — it takes the target as a plain argv argument
+  // with no shell in the loop, so it keeps the command-injection safety the
+  // launcher is designed around. `isSafeOpenTarget` already rejects relative
+  // paths and anything starting with "-", preventing flag injection.
   const launcher = process.platform === "darwin"
     ? { bin: "open", args: [] as string[] }
     : process.platform === "win32"
-      ? { bin: "explorer.exe", args: [] as string[] }
+      ? { bin: "rundll32.exe", args: ["url.dll,FileProtocolHandler"] }
       : { bin: "xdg-open", args: [] as string[] };
 
   return new Promise((resolve) => {
