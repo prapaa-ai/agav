@@ -48,8 +48,8 @@ importers:
         specifier: ^0.6.4
         version: 0.6.4
       openai:
-        specifier: ^7.41.0
-        version: 7.41.0(ws@8.21.0)(zod@4.6.5)
+        specifier: ^7.45.0
+        version: 7.45.0(ws@8.21.0)(zod@4.6.5)
       pdfjs-dist:
         specifier: ^6.4.299
         version: 6.4.299
@@ -1140,8 +1140,8 @@ packages:
     resolution: {integrity: sha512-VXJjc87FScF88uafS3JllDgvAm+c/Slfz06lorj2uAY34rlUu0Nt+v8wreiImcrgAjjIHp1rXpTDlLOGw29WwQ==}
     engines: {node: '>=18'}
 
-  openai@7.41.0:
-    resolution: {integrity: sha512-k8dr5CXaK8+3f6iOrjQQz7rw7zT3QQZZtI28KOnVmU5Q10vX+Iyik4cE20ohMmZ7EnumUVC7S6nmjEBd/wdlLg==}
+  openai@7.45.0:
+    resolution: {integrity: sha512-krAWw8RRzV5OGGjD9JR3QKDEB+DU5k4YIOyHfdJaNAU9qkV2W1OvGszk9+bxQo9kZ8+//1gEDflgXVFpMH7Lrg==}
     engines: {node: '>=22.0.0'}
     peerDependencies:
       '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
@@ -2416,7 +2416,7 @@ snapshots:
     dependencies:
       mimic-function: 5.0.1
 
-  openai@7.41.0(ws@8.21.0)(zod@4.6.5):
+  openai@7.45.0(ws@8.21.0)(zod@4.6.5):
     optionalDependencies:
       ws: 8.21.0
       zod: 4.6.5
