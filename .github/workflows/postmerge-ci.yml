@@ -57,6 +57,11 @@ jobs:
       # parse workflow YAML with the real `yaml` parser. Fail-closed.
       - name: Validate embedded runtime against advisory floors
         run: node scripts/check-bun-advisories.mjs
+      # Native voice helper's statically-linked C/C++ components (whisper.cpp +
+      # bundled ggml, miniaudio) against their advisory floors. They ship in the
+      # voice-enabled binary and are invisible to pnpm audit / SBOM / the Bun gate.
+      - name: Validate native voice components against advisory floors
+        run: node scripts/check-voice-advisories.mjs
       - run: bun install react-devtools-core
       - name: Build binary
         run: bun build source/cli.tsx --compile --outfile /tmp/agav-test
