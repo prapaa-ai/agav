@@ -117,6 +117,38 @@ describe("terminal gate", () => {
   });
 });
 
+// Dependency vulnerability audits run in two fail-closed tiers: production (ships)
+// and dev/build (CI-integrity). Both must be in the gate and blocking.
+describe("dependency vulnerability audits (prod + dev tiers)", () => {
+  const runs = (job: string) =>
+    ((prChecks.jobs[job] as { steps?: { run?: string }[] })?.steps ?? []).map((s) => s.run ?? "").join("\n");
+
+  it("audits production dependencies, fail-closed at HIGH/CRITICAL", () => {
+    expect(runs("dependency-audit")).toContain("pnpm audit --prod --audit-level high");
+  });
+
+  it("audits dev/build dependencies in a distinct job, fail-closed at HIGH/CRITICAL", () => {
+    expect(prChecks.jobs["dev-dependency-audit"]).toBeDefined();
+    expect(runs("dev-dependency-audit")).toContain("pnpm audit --dev --audit-level high");
+  });
+
+  it("wires the dev audit into the terminal gate (needs + evaluate loop)", () => {
+    const raw = read(".github/workflows/pr-checks.yml");
+    const required = prChecks.jobs["required"] as { needs?: string[] };
+    expect(required.needs).toContain("dev-dependency-audit");
+    expect(raw).toContain("needs.dev-dependency-audit.result");
+  });
+
+  it("re-checks both tiers at release and in the daily monitor", () => {
+    const release = read(".github/workflows/release.yml");
+    expect(release).toContain("pnpm audit --prod --audit-level high");
+    expect(release).toContain("pnpm audit --dev --audit-level high");
+    const monitor = read(".github/workflows/security-monitor.yml");
+    expect(monitor).toContain("pnpm audit --prod --audit-level high");
+    expect(monitor).toContain("pnpm audit --dev --audit-level high");
+  });
+});
+
 // The whole point of adding actionlint: the issue-title shell injection it found
 // must stay fixed. Assert the untrusted value is read from the environment, never
 // interpolated inline into the script.

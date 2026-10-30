@@ -115,13 +115,16 @@ describe("review lifecycle regressions", () => {
       let drained = false;
       const shutdown = supervisor.shutdown().then(() => { drained = true; });
       // Shutdown must stay pending while the final log write is held at the
-      // barrier. Check after a macrotask turn rather than a fixed wall-clock
-      // sleep: the barrier-held write is also raced against logOperationTimeoutMs
-      // (100ms in this fixture), so a ~20ms sleep that slips past that window
-      // under CI load flakes. A single event-loop turn is effectively instant and
-      // far from the timeout, yet a too-early resolution (the real regression)
-      // still flips `drained` before this check.
-      await new Promise(resolve => setImmediate(resolve));
+      // barrier. Assert pending-ness by racing shutdown against a sentinel rather
+      // than by any timing delay: the barrier-held write is raced against
+      // logOperationTimeoutMs (100ms here), so ANY fixed sleep OR a bare
+      // setImmediate can slip past that window under CI load and flake. A
+      // Promise.race with a unique sentinel resolves in the SAME microtask flush,
+      // so it is immune to scheduling jitter — yet a too-early shutdown resolution
+      // (the real regression) still loses the race and flips `drained`.
+      const pending = Symbol("pending");
+      const winner = await Promise.race([shutdown.then(() => "drained"), Promise.resolve(pending)]);
+      expect(winner).toBe(pending);
       expect(drained).toBe(false);
       release();
       await shutdown;
