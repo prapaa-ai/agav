@@ -12,5 +12,13 @@
     "libarchive": "libarchive/libarchive",
     "whisper.cpp": "ggml-org/whisper.cpp",
     "miniaudio": "mackron/miniaudio"
-  }
+  },
+  "acknowledgedAdvisories": [
+    {
+      "component": "c-ares",
+      "ghsa": "GHSA-wpr3-8q3r-4q8c",
+      "reason": "Vendored by the pinned Bun runtime. Fixed upstream in c-ares 1.34.9 but Bun has not yet shipped a release that bumps its vendored c-ares; Agav cannot update it independently. Tracked until Bun publishes a build with the fix.",
+      "expires": "2027-01-23T00:00:00Z"
+    }
+  ]
 }
