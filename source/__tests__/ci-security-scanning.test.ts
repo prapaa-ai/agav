@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -147,6 +147,48 @@ describe("scoped GitHub App tokens", () => {
     const raw = read(join(".github/workflows", file));
     if (!raw.includes("create-github-app-token")) return; // not applicable
     expect(raw).toMatch(/permission-[a-z-]+:/);
+  });
+});
+
+// zizmor's artipacked audit: every actions/checkout step must disable credential
+// persistence (persist-credentials: false), unless it legitimately needs the
+// credential later and carries an inline `# zizmor: ignore[artipacked]`. This
+// keeps the swept backlog from regressing — a new checkout without the flag would
+// fail zizmor at --min-severity medium, and this test catches it before CI.
+describe("checkout credential persistence is disabled", () => {
+  const files = readdirSync(workflowsDir).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
+  it.each(files)("%s: every actions/checkout sets persist-credentials: false (or an ignore)", (file) => {
+    const lines = read(join(".github/workflows", file)).split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const m = /^(\s*)- uses: actions\/checkout@/.exec(lines[i]);
+      if (!m) continue;
+      if (lines[i].includes("zizmor: ignore[artipacked]")) continue; // documented exception
+      const stepIndent = m[1].length;
+      // Collect the step body until the next step at the same indent or a dedent.
+      const body: string[] = [];
+      for (let j = i + 1; j < lines.length; j++) {
+        const l = lines[j];
+        if (l.trim() !== "") {
+          const ind = l.length - l.trimStart().length;
+          if (ind < stepIndent || (ind === stepIndent && l.trimStart().startsWith("- "))) break;
+        }
+        body.push(l);
+      }
+      expect(
+        body.some((l) => /persist-credentials\s*:\s*false/.test(l)),
+        `${file}:${i + 1} checkout does not disable persist-credentials`,
+      ).toBe(true);
+    }
+  });
+});
+
+// zizmor runs fail-closed at --min-severity medium (artipacked is medium): the
+// threshold must not silently drift back up and re-open the swept backlog.
+describe("zizmor threshold", () => {
+  it("is pinned to --min-severity medium in workflow-lint", () => {
+    const raw = read(".github/workflows/pr-checks.yml");
+    expect(raw).toMatch(/--min-severity medium/);
+    expect(raw).not.toMatch(/--min-severity high/);
   });
 });
 

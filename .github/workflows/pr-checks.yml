@@ -24,6 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
           fetch-depth: 0
       - name: Compute changed paths
@@ -50,6 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -73,6 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -99,6 +102,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -125,6 +129,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
@@ -191,6 +196,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: ShellCheck
         run: |
@@ -222,6 +228,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: Suites under Windows PowerShell 5.1
         # This is the host install.cmd actually launches, and the only place the
@@ -283,6 +290,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
           fetch-depth: 0
       - name: Check for oversized files
@@ -309,6 +317,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: Scan for dangerous code patterns
         run: |
@@ -356,6 +365,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -378,6 +388,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -411,6 +422,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: Review dependency changes
         id: review
@@ -460,6 +472,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: Verify lockfile exists
         run: |
@@ -489,6 +502,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - run: |
           semgrep scan \
@@ -544,14 +558,14 @@ jobs:
         # online audits (impostor-commit, stale action refs) query the API;
         # contents:read is sufficient.
         #
-        # --min-severity high fails the gate on the genuinely dangerous class —
-        # template injection from untrusted ${{ }}, credential exfiltration,
-        # unscoped app-token permissions — which is this batch's target. The
-        # remaining lower-severity findings (e.g. `artipacked`: checkout without
-        # persist-credentials: false) are real hygiene items but pre-exist across
-        # the repo; sweeping all of them is a separate follow-up, not a reason to
-        # block every PR here. Raise the threshold in a later pass once they are
-        # cleared.
+        # --min-severity medium fails the gate on the dangerous class (template
+        # injection from untrusted ${{ }}, credential exfiltration, unscoped
+        # app-token permissions) AND on `artipacked` (checkout persisting its
+        # credential), now that the repo-wide artipacked backlog is cleared — the
+        # one legitimate exception (agav-docs, which pushes) carries an inline
+        # `# zizmor: ignore[artipacked]`. Two informational findings remain below
+        # this threshold (superfluous-actions, adhoc-packages in release.yml) and
+        # are a separate follow-up; lower the threshold further once addressed.
         env:
           GH_TOKEN: ${{ secrets.TOKEN || github.token }}
         # zizmorcore/zizmor:1.31.1
@@ -561,7 +575,7 @@ jobs:
             -v "${{ github.workspace }}:/src:ro" \
             ghcr.io/zizmorcore/zizmor@sha256:42d409dbb851d4c5d35a058cf042b828bea1e3f2884378c526eb0974780e18d9 \
             --persona regular \
-            --min-severity high \
+            --min-severity medium \
             /src/.github/workflows
 
   sensitive-files:
@@ -570,6 +584,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: Check sensitive files are not tracked
         run: |
@@ -600,6 +615,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: Check the version badge is derived, not hardcoded
         run: |
