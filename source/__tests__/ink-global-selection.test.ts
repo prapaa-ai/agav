@@ -153,6 +153,44 @@ describe("multi-column copy boundaries", () => {
 describe("global text selection", () => {
 	beforeEach(() => writeClipboard.mockClear());
 
+	it.each([
+		"abcdefghijkl",
+		"\x1b[33mabcdefghijkl\x1b[39m",
+		"界🎉abcdefgh",
+		"éabcdefghijk",
+	])("preserves row geometry while highlighting full-width text: %j", async (line) => {
+		const stdout = makeStdout();
+		stdout.columns = 12;
+		const stdin = makeStdin();
+		const instance = new Ink({stdout, stdin, stderr: stdout, patchConsole: false,
+			exitOnCtrlC: false, alternateScreen: false, maxFps: 30});
+		try {
+			instance.render(createElement(Text, null, `${line}\nshort\nlast`));
+			await instance.waitUntilRenderFlush();
+			const ink = instance as any;
+			const original = stripAnsi(ink.lastOutput).split("\n");
+			expect(original).toEqual([stripAnsi(line), "short", "last"]);
+			expect(visualLen(original[0]!)).toBe(stdout.columns);
+
+			stdin.emit("data", "\x1b[<0;1;1M");
+			stdin.emit("data", "\x1b[<32;5;3M");
+			stdin.emit("data", "\x1b[<0;5;3m");
+			expect(writeClipboard).toHaveBeenLastCalledWith(stdout, original.join("\n"));
+			// The lightweight drag repaint must change styling only: an extra
+			// space at the right margin triggers terminal autowrap.
+			expect(ink.displayedLines.map(stripAnsi)).toEqual(original);
+			expect(ink.displayedLines.some((row: string) => row.includes("\x1b[7m"))).toBe(true);
+
+			// Regular renders with an active selection use the same invariant.
+			ink.onRender();
+			expect(ink.displayedLines.map(stripAnsi)).toEqual(original);
+			stdin.emit("data", "x");
+			expect(ink.displayedLines.map(stripAnsi)).toEqual(original);
+		} finally {
+			instance.unmount();
+		}
+	});
+
 	it.each(["\x03", "\x1b[99;5u", "\x1b[3;5u", "a\x1b[99;5ub", "\x1b[99;5utext", "text\x1b[3;5u"])("exits on Ctrl+C (%j) without a selection", async (input) => {
 		const stdout = makeStdout();
 		const stdin = makeStdin();
