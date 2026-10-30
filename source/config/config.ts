@@ -159,7 +159,7 @@ export function expandHome(path: string): string {
 export const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
-    enum: ["openai", "openrouter", "nvidia", "ollama", "anthropic", "gemini", "vertex-ai"],
+    enum: ["openai", "openrouter", "nvidia", "deepseek", "ollama", "anthropic", "gemini", "vertex-ai"],
     type: "string",
     eg: "openai",
   },
@@ -493,6 +493,18 @@ function sanitizeConfig(merged: AgavConfig): void {
   }
 }
 
+/** Session-only `-c` overlays: applied by every loadConfig(), never persisted. */
+export interface SessionConfigOverrides {
+  readonly entries: readonly { path: string[]; value: unknown }[];
+  apply(config: AgavConfig): void;
+}
+
+let sessionConfigOverrides: SessionConfigOverrides | undefined;
+
+export function setSessionConfigOverrides(overrides: SessionConfigOverrides | undefined): void {
+  sessionConfigOverrides = overrides;
+}
+
 /**
  * Read-only global config (defaults + ~/.agav/config.json) for unattended
  * entry points. Never touches the cwd or creates files, and skips env/API-key
@@ -657,6 +669,15 @@ export async function loadConfig(): Promise<AgavConfig> {
     projectConfig.ollamaApiKey, globalConfig.ollamaApiKey, DEFAULT_CONFIG.ollamaApiKey,
   );
 
+  // `-c` session overlay: above files/env, below the org tail that re-asserts next.
+  if (sessionConfigOverrides) {
+    sessionConfigOverrides.apply(merged);
+  }
+
+  if (merged.vertexAICredentialsPath) {
+    merged.vertexAICredentialsPath = expandHome(merged.vertexAICredentialsPath);
+  }
+
   // Organization policy applies last so it overrides global, project, and env
   // sources alike. An admin's managed config is a non-overridable floor; the
   // user can tighten (e.g. a stricter permissionMode) but never loosen it.
@@ -804,6 +825,30 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
     const out: Record<string, unknown> = { ...safe };
 
     const existing = await readStoredConfig();
+
+    // Session `-c` values must never reach disk: restore each overridden path's stored value.
+    const overridden = new Set<string>();
+    if (sessionConfigOverrides) {
+      for (const { path } of sessionConfigOverrides.entries) {
+        overridden.add(path[0]!);
+        let storedValue: unknown = existing;
+        for (const segment of path) {
+          storedValue = storedValue && typeof storedValue === "object"
+            ? (storedValue as Record<string, unknown>)[segment]
+            : undefined;
+        }
+        let target: Record<string, unknown> | undefined = out;
+        for (const segment of path.slice(0, -1)) {
+          const next: unknown = target?.[segment];
+          target = next && typeof next === "object" ? next as Record<string, unknown> : undefined;
+        }
+        if (!target) continue;
+        const leaf = path[path.length - 1]!;
+        if (storedValue === undefined) delete target[leaf];
+        else target[leaf] = storedValue;
+      }
+    }
+
     const keychain = await isKeychainAvailable();
     const keys: Array<[keyof typeof KEYCHAIN_ACCOUNTS, string | undefined]> = [
       ["anthropicApiKey", anthropicApiKey],
@@ -816,6 +861,7 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
     ];
 
     for (const [field, value] of keys) {
+      if (overridden.has(field)) continue; // already restored; never store a session value
       const account = KEYCHAIN_ACCOUNTS[field];
       if (!value) {
         // Absent/empty: preserve whatever is already persisted (never delete the

@@ -25,6 +25,23 @@ agav update [version]        # Update the installed release
 
 The flag overrides `maxIterations` in configuration for the current session only. On resume, the session history is kept but the cap is reapplied to new prompts.
 
+### --config, -c
+
+`-c key=value` (long form `--config key=value`) overrides a single configuration value for the current session, layered on top of the config files and environment — tweak one setting for one run without editing `~/.agav/config.json`.
+
+```bash
+agav -c effort=low -c maxIterations=200
+agav -P -c provider=ollama "summarize this repo"
+```
+
+- Repeatable; when the same key is given twice, the later one wins.
+- Dotted paths set one nested value without touching its siblings: `-c theme.promptColor=blue`. Scalars take a whole value (`-c maxTokens.foo=1` is rejected) and arrays are edited by index (`-c statusBar.0.enabled=false`).
+- `true`/`false` and numbers are coerced; object and array values are JSON: `-c 'hooks={"afterEdit":"npm test"}'`.
+- Unknown keys, malformed entries, or invalid values fail fast with a clear error, including a "did you mean" hint for typos.
+- Dedicated flags still win on conflict (`-c effort=low --effort high` → `high`), and overrides are never written back to `config.json`.
+- `agav login`, `agav logout`, `agav job`, `agav mcp`, and `agav workflows` reject `-c` outright: they dispatch before any session exists, so an override would be silently dropped. Use `agav login --control-plane <url>` to point login at a control plane.
+- Organization-managed policy outranks `-c` on every field it enforces; enforcement keys such as `orgManagedProvider` or `orgPermissionFloor` are rejected outright.
+
 ## Options
 
 | Option | Description |
@@ -41,6 +58,7 @@ The flag overrides `maxIterations` in configuration for the current session only
 | `--output-schema <json\|@file>` | Validate print-mode output against JSON Schema |
 | `--permission <json>` | Tool policy for `agav run` |
 | `--max-turns <number>` | Limit the number of agent iterations per prompt in interactive, print, and run modes |
+| `--config`, `-c key=value` | Override one config value for the session; repeatable ([details](#--config--c)) |
 | `--resume`, `-r [id]` | Open the session picker or resume by ID prefix |
 | `--name <title>` | Set the initial name for a new interactive session. Interactive mode only; rejected with `-P`/`run`. |
 | `--search` | Enable the web search tool for this session |
@@ -50,13 +68,13 @@ The flag overrides `maxIterations` in configuration for the current session only
 | `--version`, `-v` | Print the version |
 | `--help`, `-h` | Print help |
 
-Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, and max turns.
+Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, and max turns. `--config` accepts `--config key=value` and `--config=key=value`; `-c` takes its `key=value` argument as a single token.
 
 ## Startup provider and model selection
 
 When you start a plain `agav` session, the provider and model are resolved in this order:
 
-1. **Explicit flags** — `--provider` and `--model` always win. If you pass `--provider` without `--model`, Agav reuses the saved model only when it belongs to that provider, otherwise it falls back to the provider's default model.
+1. **Explicit flags** — `--provider` and `--model` always win. If you pass `--provider` without `--model`, Agav reuses the saved model only when it belongs to that provider, otherwise it falls back to the provider's default model. `-c provider=` and `-c model=` pin the same way against the "last used" rule; when both forms are given, the dedicated flag wins.
 2. **Resumed session** — with `--resume`, the session's own provider and model are used unless overridden by a flag.
 3. **Last used** — with no flags and no resume, Agav reuses the provider and model from your most recent session, so a new session opens with the same model you last worked in.
 4. **Config defaults** — if there is no prior session, the `provider`/`model` in `~/.agav/config.json` (or the built-in default) apply.
