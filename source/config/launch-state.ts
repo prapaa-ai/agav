@@ -1,4 +1,5 @@
-import { readFile, writeFile, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { open, readFile, rename, writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { getAgavDir } from "./config.js";
 import { ensureDir } from "../utils/fs.js";
@@ -16,6 +17,36 @@ interface LaunchState {
 }
 
 const STATE_FILE = join(getAgavDir(), "launch-state.json");
+const LOCK_FILE = join(getAgavDir(), ".launch-state.lock");
+
+/** Lock the entire transaction, including its first read, across all sessions. */
+async function withLaunchStateLock<T>(fn: () => Promise<T>): Promise<T> {
+  await ensureDir(getAgavDir());
+  const deadline = Date.now() + 5_000;
+  let handle;
+  for (;;) {
+    try {
+      handle = await open(LOCK_FILE, "wx", 0o600);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Match config/account locks: never steal a suspended owner's lock.
+      // After a crash, stop all Agav processes before manually removing it.
+      if (Date.now() >= deadline) throw new Error("Launch-state lock is held");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  try {
+    try {
+      await handle.writeFile(String(process.pid));
+    } finally {
+      await handle.close();
+    }
+    return await fn();
+  } finally {
+    await unlink(LOCK_FILE);
+  }
+}
 
 /** Validate that a parsed object has the expected LaunchState shape. */
 function isValidLaunchState(value: unknown): value is LaunchState {
@@ -32,9 +63,8 @@ async function loadLaunchState(): Promise<LaunchState | null> {
     const raw = await readFile(STATE_FILE, "utf-8");
     const state = JSON.parse(raw);
     if (!isValidLaunchState(state)) {
-      // Treat a corrupt file as a fresh baseline rather than letting it wedge
-      // the update-detection logic forever. Remove it so the next launch is clean.
-      try { await unlink(STATE_FILE); } catch {}
+      // Reads must not remove a file another session may have just replaced.
+      // The next locked writer will replace the invalid state atomically.
       return null;
     }
     return state;
@@ -43,20 +73,15 @@ async function loadLaunchState(): Promise<LaunchState | null> {
   }
 }
 
-/**
- * Persist the launch state, preserving any fields not being updated. The version
- * is always recorded; `autoShowChangelog` is carried through unless overridden,
- * so recording a new version never resets the user's auto-display preference.
- */
-async function saveLaunchState(version: string, overrides: Partial<LaunchState> = {}): Promise<void> {
-  await ensureDir(getAgavDir());
-  const existing = await loadLaunchState();
-  const state: LaunchState = {
-    ...(existing ?? {}),
-    lastLaunchedVersion: version,
-    ...overrides,
-  };
-  await writeFile(STATE_FILE, JSON.stringify(state));
+/** Called only under the launch-state lock; readers see old or new complete JSON. */
+async function saveLaunchState(state: LaunchState): Promise<void> {
+  const tmpPath = `${STATE_FILE}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmpPath, JSON.stringify(state), { mode: 0o600, flag: "wx" });
+    await rename(tmpPath, STATE_FILE);
+  } finally {
+    await unlink(tmpPath).catch(() => {});
+  }
 }
 
 /**
@@ -80,11 +105,15 @@ export async function isChangelogAutoDisplayEnabled(): Promise<boolean> {
  */
 export async function setChangelogAutoDisplay(enabled: boolean): Promise<boolean> {
   try {
-    await saveLaunchState(
-      (await loadLaunchState())?.lastLaunchedVersion ?? VERSION,
-      { autoShowChangelog: enabled },
-    );
-    return true;
+    return await withLaunchStateLock(async () => {
+      const state = await loadLaunchState();
+      await saveLaunchState({
+        ...state,
+        lastLaunchedVersion: state?.lastLaunchedVersion ?? VERSION,
+        autoShowChangelog: enabled,
+      });
+      return true;
+    });
   } catch {
     return false;
   }
@@ -109,25 +138,21 @@ export async function setChangelogAutoDisplay(enabled: boolean): Promise<boolean
  */
 export async function consumeChangelogDisplay(currentVersion: string = VERSION): Promise<boolean> {
   try {
-    const state = await loadLaunchState();
+    return await withLaunchStateLock(async () => {
+      const state = await loadLaunchState();
 
-    // Fresh installation: establish the baseline without showing a changelog.
-    if (!state) {
-      await saveLaunchState(currentVersion);
-      return false;
-    }
+      // Fresh installation: establish the baseline without showing a changelog.
+      if (!state) {
+        await saveLaunchState({ lastLaunchedVersion: currentVersion });
+        return false;
+      }
 
-    // Same version as last interactive launch: nothing new to show.
-    if (state.lastLaunchedVersion === currentVersion) {
-      return false;
-    }
+      if (state.lastLaunchedVersion === currentVersion) return false;
 
-    // An existing installation moved to a different version — record the new
-    // version so later launches stay quiet regardless of the preference.
-    await saveLaunchState(currentVersion);
-    // Honor the user's opt-out: an update still advances the baseline, but the
-    // changelog is only surfaced when auto-display is enabled.
-    return state.autoShowChangelog !== false;
+      // Advance the baseline even when opted out, preserving the preference.
+      await saveLaunchState({ ...state, lastLaunchedVersion: currentVersion });
+      return state.autoShowChangelog !== false;
+    });
   } catch {
     // Never let version/display-state failures disrupt startup.
     return false;
