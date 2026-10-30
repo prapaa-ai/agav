@@ -124,6 +124,8 @@ jobs:
             Windows) SUITES="Windows (no OS sandbox)" ;;
             *) echo "::error::unexpected runner OS"; exit 1 ;;
           esac
+          # shellcheck disable=SC2016 # the ${...} inside node -e are JS template
+          # literals, deliberately single-quoted so the shell does not expand them.
           REQUIRED="$SUITES" node -e '
             const fs = require("fs");
             const required = process.env.REQUIRED.split("|");

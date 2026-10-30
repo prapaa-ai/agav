@@ -14,6 +14,24 @@ Triage HIGH/CRITICAL findings within one business day. Workflow failures and sum
 
 Initial live verification on 2026-10-25 found `GHSA-wpr3-8q3r-4q8c` for the recorded c-ares 1.34.8 inventory (upstream fixed version 1.34.9). The release live gate intentionally blocks until the runtime is remediated or upstream patch applicability is established and the policy implementation updated with evidence. There is no advisory ignore list.
 
+## Secret scanning
+
+`secret-scan.yml` runs Gitleaks, replacing the former regex `secret-scan` job that matched only a handful of fixed key formats. On a pull request it scans the commit range the PR introduces (`base..head`); on push to `main`/`beta`, on a daily schedule, and on manual dispatch it scans the **full git history**, so a secret committed earlier — or one only recognised after a rule update — is still caught. Gitleaks is not a GitHub Action: the pinned release tarball is downloaded and verified against a recorded SHA-256 before it runs, so a moved tag or a compromised action release cannot alter what executes. A finding fails the job.
+
+`.gitleaks.toml` extends the default rule set (no detector is disabled) and adds one narrowly-scoped allowlist for synthetic test fixtures. The allowlist uses `condition = "AND"`: a finding is ignored only when it is under `source/__tests__/` **and** its value matches an obviously-synthetic placeholder shape. A real key pasted into a test file, or a placeholder-shaped string outside the tests, is still reported. Tracked credential files remain covered by the `sensitive-files` job, which also flags an untracked `.env` left in the worktree.
+
+This is a required check; it runs as its own workflow rather than through the `All Checks` gate, so it must be enforced via branch protection alongside the other required contexts.
+
+## GitHub Actions security linting
+
+`pr-checks.yml`'s `workflow-lint` job runs on any `.github` change and fails closed in the `All Checks` gate. **actionlint** (pinned release binary, checksum-verified) catches workflow syntax/expression errors and shellcheck issues in `run:` blocks, including the template-injection class — untrusted `${{ github.event.* }}` interpolated directly into an inline script. **zizmor** (official container pinned by digest) adds Actions-specific security audits. It runs at `--min-severity high`, which fails on the dangerous class (template injection, credential exfiltration, unscoped GitHub App tokens) while leaving lower-severity hygiene findings — e.g. `artipacked` (checkout without `persist-credentials: false`) — as a tracked follow-up rather than an immediate repo-wide block. Raise the threshold once those are cleared.
+
+Two findings surfaced and were fixed when this gate was introduced: a real shell-injection via an issue title in `agav-translate.yml` (now passed through an environment variable), and seven `create-github-app-token` steps that inherited the app's blanket permissions (now scoped with explicit `permission-*` inputs mirroring each workflow's declared needs).
+
+## SAST (Semgrep)
+
+`pr-checks.yml`'s `semgrep` job is pinned to a Semgrep container **digest** (not `:latest`, which a maintainer could move to a build that changes or disables the scan). It now scans `scripts/` as well as `source/`: the build/release/SBOM/advisory scripts run in CI with repo-write privileges, so an unsafe-exec or command-injection defect there is as dangerous as one in the shipped CLI, and they were previously unscanned. The job triggers on source **or** scripts changes.
+
 ## Dependency-review gate
 
 `pr-checks.yml` runs `actions/dependency-review-action` (SHA-pinned) on any PR that touches `package.json`, `pnpm-lock.yaml` or `pnpm-workspace.yaml`. It diffs the PR base against the head and fails closed when a newly introduced direct or transitive dependency carries a HIGH/CRITICAL advisory or a license outside the allow list. The allow list mirrors the postmerge `license-check` job so the two cannot drift. A follow-up step reads the action's `invalid-license-changes` output and also fails on dependencies whose license is unknown/unresolved (`NOASSERTION`) — the action only logs those, so without this step a new dependency with no identifiable license would pass despite not being on the allow list. The job holds `pull-requests: write` so the `on-failure` summary comment can actually be posted. This catches a bad dependency at the PR that introduces it — earlier than the release `dependency-audit`, which re-checks the exact shipped commit's lockfile. The job participates in the terminal `All Checks` gate; a skipped run (no dependency change) is accepted, a failed one blocks the merge.
