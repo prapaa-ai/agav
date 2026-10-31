@@ -97,6 +97,7 @@ export class RetryProvider implements LLMProvider {
           yield {
             type: "retry",
             message: `Request failed (${lastError.message}). Retrying in ${Math.ceil(delay / 1000)}s... (attempt ${attempt + 1}/${this.maxRetries})`,
+            delayMs: delay,
           };
           await delayWithSignal(delay, undefined, { signal: params.signal });
           continue;

@@ -133,3 +133,45 @@ describe("OllamaProvider context window", () => {
     expect(chat.mock.calls[0]?.[0].options.num_ctx).toBe(32_768);
   });
 });
+
+describe("OllamaProvider request establishment cancellation", () => {
+  it("aborts when request establishment is stalled before headers arrive", async () => {
+    let responseAborted = false;
+    const delayedResponse = {
+      abort: () => { responseAborted = true; },
+      [Symbol.asyncIterator]: async function* () {
+        yield done;
+      },
+    };
+
+    let resolveChat!: (value: unknown) => void;
+    chat.mockImplementation(() => new Promise((resolve) => {
+      resolveChat = resolve;
+    }));
+
+    const controller = new AbortController();
+    const provider = new OllamaProvider("http://localhost:11434");
+    const stream = provider.stream({
+      model: "llama3.2:1b",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      signal: controller.signal,
+    });
+
+    const iterator = stream[Symbol.asyncIterator]();
+    const nextPromise = iterator.next();
+    // Allow microtask ticks so resolveContextSize completes and client.chat is invoked
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(chat).toHaveBeenCalled();
+
+    // Abort while waiting for headers
+    controller.abort(new Error("Request establishment timeout"));
+
+    await expect(nextPromise).rejects.toThrow("Request establishment timeout");
+
+    // Later when chat promise resolves, response abort should be called to clean up
+    resolveChat(delayedResponse);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(responseAborted).toBe(true);
+  });
+});

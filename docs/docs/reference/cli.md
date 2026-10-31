@@ -25,6 +25,15 @@ agav update [version]        # Update the installed release
 
 The flag overrides `maxIterations` in configuration for the current session only. On resume, the session history is kept but the cap is reapplied to new prompts.
 
+### --provider-idle-timeout
+
+`--provider-idle-timeout <ms>` sets an idle timeout in milliseconds waiting for provider stream activity (positive safe integer from 1 to 2147483647, or `disabled`).
+
+- The idle timer starts when an LLM provider stream attempt begins (bounding time to the first event) and resets on each stream event (text, thinking, tool deltas, usage, retry).
+- The idle clock is stopped while tools, user confirmations, and retry backoffs run.
+- On expiry, the attempt is aborted, partial text is preserved in history without dispatching incomplete tool calls, and the session remains interactive and ready for subsequent prompts.
+- Overrides `providerIdleTimeout` in configuration for the current session. Pass `disabled` or `off` to disable the idle timer and retain provider SDK defaults.
+
 ## Options
 
 | Option | Description |
@@ -41,6 +50,7 @@ The flag overrides `maxIterations` in configuration for the current session only
 | `--output-schema <json\|@file>` | Validate print-mode output against JSON Schema |
 | `--permission <json>` | JSON tool policy for `agav run` (distinct from the interactive [`/permission`](/reference/slash-commands) session mode) |
 | `--max-turns <number>` | Limit the number of agent iterations per prompt in interactive, print, and run modes |
+| `--provider-idle-timeout <ms>` | Idle timeout in milliseconds waiting for provider stream activity (1–2147483647 or `disabled`) |
 | `--resume`, `-r [id]` | Open the session picker or resume by ID prefix |
 | `--name <title>` | Set the initial name for a new interactive session. Interactive mode only; rejected with `-P`/`run`. |
 | `--search` | Enable the web search tool for this session |
@@ -50,7 +60,7 @@ The flag overrides `maxIterations` in configuration for the current session only
 | `--version`, `-v` | Print the version |
 | `--help`, `-h` | Print help |
 
-Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, and max turns.
+Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, max turns, and provider idle timeout.
 
 ## Startup provider and model selection
 
