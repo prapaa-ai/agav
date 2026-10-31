@@ -160,6 +160,11 @@ interface UseAgentReturn {
    * the live decision that `config.permissionMode` does not.
    */
   getEffectivePermissionMode: () => AgavConfig["permissionMode"];
+  /**
+   * Explicitly set the session permission mode (clamped to the org floor).
+   * Returns the mode actually applied after clamping.
+   */
+  setSessionPermissionMode: (mode: AgavConfig["permissionMode"]) => AgavConfig["permissionMode"];
   /** Queue a confirmation outside an agent turn (e.g. from a slash command). */
   requestConfirmation: (toolName: string, input: Record<string, unknown>, signal?: AbortSignal) => Promise<ConfirmResult>;
   conversation: ConversationState;
@@ -190,6 +195,7 @@ export function useAgent(
   resumeTokenUsage?: import("../config/history.js").SessionTokenUsage,
   resumeCompacted?: boolean,
   resumeSessionName?: string,
+  resumePermissionMode?: AgavConfig["permissionMode"],
 ): UseAgentReturn {
   const { resetDisplay } = useApp();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -265,7 +271,17 @@ export function useAgent(
   // permission mode is rebuilt on every turn, so remember it out here.
   // Separate concern from plans — fixes the "always approve" choice not
   // persisting across turns within the same session.
-  const sessionPermissionModeRef = useRef<AgavConfig["permissionMode"] | undefined>(undefined);
+  const sessionPermissionModeRef = useRef<AgavConfig["permissionMode"] | undefined>(
+    // Seed the session mode from a resumed session so resuming restores the
+    // mode the user was last running under, clamped to the org floor so a saved
+    // mode can never loosen a policy tightened since the session was created.
+    resumePermissionMode
+      ? clampPermissionMode(resumePermissionMode, config.orgPermissionFloor)
+      : undefined,
+  );
+  // Lets callbacks defined before saveNow (e.g. setSessionPermissionMode)
+  // persist without a declaration-order dependency on it.
+  const saveNowRef = useRef<((extraUsage?: TokenUsage) => void) | null>(null);
   const resetPlanContinue = () => { planContinueRef.current = { stepId: -1, attempts: 0 }; };
   const resumedRef = useRef(false);
   const currentIterationsBudgetRef = useRef<{ remaining: number; total: number } | null>(null);
@@ -607,6 +623,27 @@ export function useAgent(
     [],
   );
 
+  /**
+   * Explicitly set the permission mode in force for the rest of this session,
+   * clamped to the org floor so a user can tighten but never loosen a managed
+   * policy. Unlike the "Always" escalation (which only ever widens to
+   * auto-accept), this is a deliberate two-way override and is persisted so the
+   * mode survives subsequent resumes. Returns the mode actually applied after
+   * clamping, so the caller can report the effective result rather than the
+   * requested one.
+   */
+  const setSessionPermissionMode = useCallback(
+    (mode: AgavConfig["permissionMode"]): AgavConfig["permissionMode"] => {
+      const applied = clampPermissionMode(mode, configRef.current.orgPermissionFloor);
+      sessionPermissionModeRef.current = applied;
+      // Persist immediately so the updated mode is recorded even if the session
+      // ends before the next turn completes.
+      saveNowRef.current?.();
+      return applied;
+    },
+    [],
+  );
+
   const requestConfirmation = useCallback(
     (toolName: string, input: Record<string, unknown>, signal?: AbortSignal) => confirmationQueueRef.current.enqueue({ toolName, input }, signal),
     [],
@@ -672,6 +709,8 @@ export function useAgent(
         merged,
         conversationRef.current.wasCompacted,
         sessionNameRef.current,
+        undefined,
+        sessionPermissionModeRef.current,
       ).then((id) => {
         sessionIdRef.current = id;
         setSessionId(id);
@@ -680,6 +719,7 @@ export function useAgent(
       return merged;
     });
   }, [config.model, config.provider]);
+  saveNowRef.current = saveNow;
 
   const loadSession = useCallback((session: SessionRecord) => {
     cancel();
@@ -696,6 +736,11 @@ export function useAgent(
     setSessionId(session.id);
     sessionNameRef.current = session.name;
     setSessionName(session.name);
+    // Restore the session's saved permission mode (clamped to the current org
+    // floor); a session without a stored mode falls back to the config default.
+    sessionPermissionModeRef.current = session.permissionMode
+      ? clampPermissionMode(session.permissionMode, configRef.current.orgPermissionFloor)
+      : undefined;
     setTokenUsage(session.tokenUsage ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
     setError(null);
     // Show the plan belonging to the session being loaded — not whichever plan
@@ -1192,6 +1237,8 @@ export function useAgent(
                     currentUsage,
                     turnConversation.wasCompacted,
                     sessionNameRef.current,
+                    undefined,
+                    sessionPermissionModeRef.current,
                   ).then((id) => {
                     if (abortController.signal.aborted || requestEpoch !== requestEpochRef.current) return;
                     sessionIdRef.current = id;
@@ -1595,6 +1642,7 @@ export function useAgent(
     clearMessages,
     confirmTool,
     getEffectivePermissionMode,
+    setSessionPermissionMode,
     conversation: conversationRef.current,
     toolRegistry: toolRegistryRef.current,
     saveNow,

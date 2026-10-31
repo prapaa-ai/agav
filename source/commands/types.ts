@@ -59,6 +59,13 @@ export interface CommandContext {
    * mode, where `config.permissionMode` is authoritative.
    */
   getEffectivePermissionMode?: () => AgavConfig["permissionMode"]
+  /**
+   * Explicitly change the permission mode for the current session. The applied
+   * mode is clamped to the organization floor; the returned value is the mode
+   * actually in force after clamping, which may be stricter than requested.
+   * Absent in headless mode, where `config.permissionMode` is authoritative.
+   */
+  setPermissionMode?: (mode: AgavConfig["permissionMode"]) => AgavConfig["permissionMode"]
   /** Whether an agent turn is currently in flight. */
   isLoading?: boolean
   getMCPAuthenticationRequired?: () => string[]

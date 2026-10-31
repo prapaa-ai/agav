@@ -641,10 +641,14 @@ export async function main() {
     --stream             Stream text to stdout in real time with --print
     --output-schema      Require pipe-mode output to match an inline JSON Schema or @file
     --openai-api         OpenAI API mode: responses or chat (default: responses)
-    --permission         JSON tool permissions for run mode (or set AGAV_PERMISSION env var)
+    --permission         JSON tool permissions for run mode only (or set AGAV_PERMISSION
+                         env var); does NOT set the interactive session permission mode
     --resume, -r [id]    Resume a session (list if no id, prefix match if given)
-    --auto-accept, -y    Skip tool confirmations
-    --deny-writes        Block all write operations
+    --auto-accept, -y    Session permission mode: auto-accept (skip tool confirmations)
+    --deny-writes        Session permission mode: deny-writes (block write operations)
+                         The session mode persists across resumes; change it in-session
+                         with /permission. Resuming without -y/--deny-writes keeps the
+                         saved mode.
     --sandbox-required   Refuse run_command calls that would run without an OS-level sandbox
     --help, -h           Show this help
     --version, -v        Show version
@@ -915,6 +919,7 @@ export async function main() {
   let resumeTokenUsage: import("./config/history.js").SessionTokenUsage | undefined;
   let resumeCompacted: boolean | undefined;
   let resumeSessionName: string | undefined;
+  let resumePermissionMode: import("./config/config.js").PermissionMode | undefined;
   let resumeSelection: Pick<import("./config/history.js").SessionRecord, "provider" | "model"> | undefined;
 
   if (flags.resume) {
@@ -942,6 +947,7 @@ export async function main() {
       resumeTokenUsage = session.tokenUsage;
       resumeCompacted = session.compacted;
       resumeSessionName = session.name;
+      resumePermissionMode = session.permissionMode;
       resumeSelection = session;
     } else {
       // ID prefix given — find matching session
@@ -962,8 +968,17 @@ export async function main() {
       resumeTokenUsage = session.tokenUsage;
       resumeCompacted = session.compacted;
       resumeSessionName = session.name;
+      resumePermissionMode = session.permissionMode;
       resumeSelection = session;
     }
+  }
+
+  // Restore the resumed session's permission mode so the footer and config
+  // reflect it from launch — unless an explicit CLI override (`-y` /
+  // `--deny-writes`) was given, which takes precedence. Clamp to the org floor
+  // so a saved mode can never loosen a policy tightened since the session ran.
+  if (resumePermissionMode && !flags.autoAccept && !flags.denyWrites) {
+    config.permissionMode = clampPermissionMode(resumePermissionMode, config.orgPermissionFloor);
   }
 
   Object.assign(config, await resolveStartupSelection(config, {
@@ -1184,7 +1199,7 @@ export async function main() {
     // Never block startup on changelog/launch-state failures.
   }
 
-  const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} shutdownRef={shutdownRef} />, {
+  const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} resumePermissionMode={resumePermissionMode} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} shutdownRef={shutdownRef} />, {
     // App owns Ctrl+C so foreground workflows can abort and checkpoint before exit.
     exitOnCtrlC: false,
     // Alt-screen keeps the UI self-contained (no scrollback pollution, no

@@ -77,6 +77,7 @@ interface Props {
   resumeTokenUsage?: import("./config/history.js").SessionTokenUsage;
   resumeCompacted?: boolean;
   resumeSessionName?: string;
+  resumePermissionMode?: AgavConfig["permissionMode"];
   repoBranch?: string;
   /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
   enhancedKeyboard?: boolean;
@@ -102,7 +103,7 @@ interface QueuedRequest {
 let sysMessageId = 0;
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
-export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef }: Props) {
+export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef }: Props) {
 
   const [input, setInput] = useState("");
   const readPromptRef = useRef<(() => string) | null>(null);
@@ -296,6 +297,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     clearMessages,
     confirmTool,
     getEffectivePermissionMode,
+    setSessionPermissionMode,
     conversation,
     toolRegistry,
     saveNow,
@@ -312,7 +314,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     togglePause,
     interveneWhilePaused,
     iterationsBudget
-  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
+  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
   const [copyNotice, setCopyNotice] = useState<ClipboardNotice | null>(null);
@@ -1326,6 +1328,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             },
             setEffort: (effort) => {
               setConfig((prev) => ({ ...prev, effort }));
+            },
+            setPermissionMode: (mode) => {
+              // setSessionPermissionMode clamps to the org floor and persists the
+              // choice; mirror the applied (possibly clamped) mode into config so
+              // the footer and any config reader reflect the live session mode.
+              const applied = setSessionPermissionMode(mode);
+              setConfig((prev) => ({ ...prev, permissionMode: applied }));
+              return applied;
             },
             showStatus: (text: string) => {
               setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: text }]);
