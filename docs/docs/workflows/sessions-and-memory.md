@@ -29,6 +29,8 @@ Agav auto-saves interactive conversations after each completed turn under `~/.ag
 
 Note: resuming a session created with `--max-turns` keeps the session's own history but the turn cap is reapplied to each new prompt.
 
+A session also remembers its permission mode. If you changed the mode mid-session with [`/permission`](/reference/slash-commands) (for example escalating to `auto-accept` or tightening to `deny-writes`), resuming restores that saved mode rather than the configured launch default. Explicit `--auto-accept` (`-y`) or `--deny-writes` flags at startup still take precedence, and an organization minimum is always enforced. See [Security → Changing the mode during a session](/reference/security#changing-the-mode-during-a-session).
+
 `/resume` opens the same interactive picker in newest-first order. `/search` performs a case-insensitive substring search across saved message text and string tool results, returns up to 10 matching sessions, and shows up to 3 snippets per session. To reopen a result directly, use its ID prefix with `agav --resume <id-prefix>`.
 
 ## Export a conversation
