@@ -21,7 +21,7 @@ import SubagentDisplay from "./components/subagent-display.js";
 import { makeAgentProgressTracker } from "./agent/subagent-progress.js";
 import type { SubagentProgress } from "./agent/subagent-types.js";
 import type { AgavConfig } from "./config/config.js";
-import { orgPolicyError } from "./config/startup.js";
+import { orgPolicyError, resolveResumePermissionMode } from "./config/startup.js";
 import type { LLMProvider } from "./providers/types.js";
 import { createProvider } from "./providers/registry.js";
 import type { ContentBlock, InvocationReason } from "./providers/types.js";
@@ -127,7 +127,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     updateQueue(remaining);
     if (!remaining.length) setQueueBlocked(false);
   }, [updateQueue]);
-  const [config, setConfig] = useState(initialConfig);
+  // Session overrides must not become the default for /new or legacy resumes.
+  const defaultPermissionMode = useRef(initialConfig.permissionMode).current;
+  const [config, setConfig] = useState(() => ({
+    ...initialConfig,
+    permissionMode: resolveResumePermissionMode(initialConfig, { savedPermissionMode: resumePermissionMode }),
+  }));
   const modelSelectionVersion = useRef(0);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
@@ -1344,6 +1349,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               updateQueue([]);
               setQueueBlocked(false);
               clearMessages();
+              setConfig((prev) => ({
+                ...prev,
+                permissionMode: resolveResumePermissionMode({ ...prev, permissionMode: defaultPermissionMode }, {}),
+              }));
               setSystemMessages([]);
               setPreview(null);
               clearAttachmentRegistry();
@@ -1354,10 +1363,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             refreshDisplay: () => {
               refreshDisplay();
             },
-            loadSession: (...args) => {
+            loadSession: (session) => {
               updateQueue([]);
               setQueueBlocked(false);
-              return loadSession(...args);
+              const permissionMode = resolveResumePermissionMode(
+                { ...config, permissionMode: defaultPermissionMode },
+                { savedPermissionMode: session.permissionMode },
+              );
+              // Restore the same mode for the foreground hook and config-based
+              // background/workflow authorization, including legacy sessions.
+              loadSession({ ...session, permissionMode });
+              setConfig((prev) => ({ ...prev, permissionMode }));
             },
             activateSession: (...args) => {
               updateQueue([]);

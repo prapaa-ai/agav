@@ -710,7 +710,7 @@ export function useAgent(
         conversationRef.current.wasCompacted,
         sessionNameRef.current,
         undefined,
-        sessionPermissionModeRef.current,
+        getEffectivePermissionMode(),
       ).then((id) => {
         sessionIdRef.current = id;
         setSessionId(id);
@@ -1238,7 +1238,7 @@ export function useAgent(
                     turnConversation.wasCompacted,
                     sessionNameRef.current,
                     undefined,
-                    sessionPermissionModeRef.current,
+                    getEffectivePermissionMode(),
                   ).then((id) => {
                     if (abortController.signal.aborted || requestEpoch !== requestEpochRef.current) return;
                     sessionIdRef.current = id;

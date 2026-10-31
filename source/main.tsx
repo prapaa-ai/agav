@@ -31,6 +31,7 @@ import {
   noProviderCredentialsError,
   providerConfigurationError,
   resolveInitialSessionName,
+  resolveResumePermissionMode,
   resolveStartupSelection,
   selectConfiguredProvider,
   type ProviderName,
@@ -973,12 +974,13 @@ export async function main() {
     }
   }
 
-  // Restore the resumed session's permission mode so the footer and config
-  // reflect it from launch — unless an explicit CLI override (`-y` /
-  // `--deny-writes`) was given, which takes precedence. Clamp to the org floor
-  // so a saved mode can never loosen a policy tightened since the session ran.
-  if (resumePermissionMode && !flags.autoAccept && !flags.denyWrites) {
-    config.permissionMode = clampPermissionMode(resumePermissionMode, config.orgPermissionFloor);
+  // Keep config.permissionMode as the launch default for /new. Only the resumed
+  // session receives the saved mode, with CLI overrides and org policy applied.
+  if (resumeSelection) {
+    resumePermissionMode = resolveResumePermissionMode(config, {
+      cliPermissionMode: flags.autoAccept || flags.denyWrites ? config.permissionMode : undefined,
+      savedPermissionMode: resumePermissionMode,
+    });
   }
 
   Object.assign(config, await resolveStartupSelection(config, {
