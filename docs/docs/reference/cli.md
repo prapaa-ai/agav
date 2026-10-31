@@ -39,7 +39,7 @@ The flag overrides `maxIterations` in configuration for the current session only
 | `--print`, `-P` | Print mode |
 | `--stream` | Stream print-mode response text |
 | `--output-schema <json\|@file>` | Validate print-mode output against JSON Schema |
-| `--permission <json>` | Tool policy for `agav run` |
+| `--permission <json>` | JSON tool policy for `agav run` (distinct from the interactive [`/permission`](/reference/slash-commands) session mode) |
 | `--max-turns <number>` | Limit the number of agent iterations per prompt in interactive, print, and run modes |
 | `--resume`, `-r [id]` | Open the session picker or resume by ID prefix |
 | `--name <title>` | Set the initial name for a new interactive session. Interactive mode only; rejected with `-P`/`run`. |

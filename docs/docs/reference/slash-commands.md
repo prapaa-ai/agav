@@ -26,6 +26,7 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | `/compact` | Summarize older conversation content to free context-window space. |
 | `/context` | Show a token-use breakdown for the system prompt, tools, MCP tools, skills, and messages. |
 | `/status` | Show session, model, permissions, working directory, and token usage at a glance. |
+| `/permission [ask\|auto-accept\|deny-writes]` | Show the current permission mode, or change it for this session. Run bare `/permission` to open an interactive picker. The chosen mode persists for the session and is restored when you resume it. Organization policy may enforce a stricter minimum that cannot be loosened. Interactive sessions only. See [Security → Permission modes](/reference/security#permission-modes). |
 | `/export [json] [sanitize\|--sanitize]` | Write the retained conversation to a timestamped Markdown or JSON file in the working directory. Add `sanitize` for best-effort redaction; review before sharing. See [export details](/workflows/sessions-and-memory#export-a-conversation). |
 | `/voice` | Dictate an editable prompt with offline Agav-managed native transcription; offers verified setup downloads and an idle prompt without attachments. See [Voice Input](/features/voice-input). |
 | `/ps <question>` | Run a brief independent side query with read-only conversation context, without interrupting the active main task. It cannot use tools or plugins. |

@@ -5,11 +5,13 @@ import { AnthropicProvider } from "../providers/anthropic.js";
 import { OpenAIProvider } from "../providers/openai.js";
 import type { LLMProvider, StreamEvent, StreamParams } from "../providers/types.js";
 
-// The openai SDK stamps its own version into x-stainless-package-version. Keep
-// this equal to the version resolved in pnpm-lock.yaml (currently pinned to
-// 7.43.0 via the security override that forces patched transitive deps). Update
-// it in lockstep whenever the openai version changes.
-const openaiVersion = "7.43.0";
+// Each SDK stamps its own package version into x-stainless-package-version.
+// Keep these equal to the versions resolved in pnpm-lock.yaml (openai pinned
+// via the security override that forces patched transitive deps). The SDKs do
+// not export "./package.json", so these cannot be read at runtime — update them
+// in lockstep whenever the openai/@anthropic-ai/sdk versions change.
+const openaiVersion = "7.47.0";
+const anthropicVersion = "1.3.0";
 
 // Only the transport is replaced: the installed SDK request builders, SSE
 // decoders and (for messages.stream) MessageStream accumulator all run for real.
@@ -109,7 +111,7 @@ describe("real SDK SSE transport (installed Anthropic / OpenAI SDKs)", () => {
     ]);
     const req = request();
     expect(req.url.href).toBe("https://offline.invalid/v1/messages");
-    expect(req.headers.get("x-stainless-package-version")).toBe("0.133.0");
+    expect(req.headers.get("x-stainless-package-version")).toBe(anthropicVersion);
     expect(req.headers.get("x-stainless-helper-method")).toBe("stream");
     expect(req.body).toMatchObject({ stream: true, max_tokens: 128,
       tools: [{ name: "read_file", input_schema: params.tools![0]!.inputSchema, cache_control: { type: "ephemeral" } }] });

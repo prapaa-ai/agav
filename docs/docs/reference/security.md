@@ -18,6 +18,14 @@ Agav can read files, edit code, and execute commands. Choose controls appropriat
 
 Set a default in configuration or use `--auto-accept` and `--deny-writes` at startup. `allowedTools` can auto-approve named tools or scoped command patterns.
 
+### Changing the mode during a session
+
+In an interactive session you can switch the permission mode at any time with [`/permission`](/reference/slash-commands). Run bare `/permission` to open a picker, or pass a mode directly (`/permission deny-writes`). The chosen mode is saved with the session and **restored when you resume it**, so a session you escalated to `auto-accept` or tightened to `deny-writes` comes back in that mode. It does not change the launch default used for `/new` or for future sessions — set `permissionMode` in configuration for that.
+
+Explicit `--auto-accept` (`-y`) and `--deny-writes` flags at startup take precedence over a session's saved mode. An organization `permissionMode` floor is always applied last: `/permission` and the picker let you choose a *stricter* mode but clamp any attempt to loosen below the floor, and report the mode actually in force. Changing the mode is only available in an interactive session — in headless `agav run` and print mode, `permissionMode` from configuration is authoritative.
+
+> `/permission` (the interactive session mode) is distinct from the `--permission <json>` CLI flag, which supplies a JSON tool policy for `agav run`. See [CLI reference](/reference/cli).
+
 ### Project config safety
 
 Sensitive configuration fields are blocked from project-level `.agav/config.json` to prevent credential exfiltration and permission escalation when working in untrusted repositories. See [Configuration → Project config restrictions](/reference/configuration#project-config-restrictions) for the full list.
@@ -172,6 +180,8 @@ High-risk patterns are blocked by the shell tool before they reach the sandbox, 
 - Process killing: `killall`, `pkill -9`
 - Remote code execution: `curl ... | sh`, `wget ... | sh/bash`
 - File truncation: `truncate --size 0`
+
+These patterns match **POSIX/Unix command syntax**. The `git` patterns apply on every platform, but the filesystem, disk, permission, and process examples above are Unix forms. Windows-native equivalents — such as PowerShell `Remove-Item -Recurse -Force`, `rmdir /s`, `del`, `Format-Volume`, or `Stop-Process` — are **not** on this blocklist and are not pre-blocked. On Windows, rely on `ask` mode confirmations and the file-tool path boundaries above rather than this list, and review commands before approving `auto-accept`.
 
 ## Secrets and extensions
 
