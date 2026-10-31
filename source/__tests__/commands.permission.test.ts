@@ -84,3 +84,49 @@ describe("commands/permission", () => {
     expect(text).toContain("only available in an interactive session");
   });
 });
+
+
+describe("interactive /permission", () => {
+  it("opens a picker and applies the selection through the existing setter", async () => {
+    const setPickerActive = vi.fn();
+    const setPermissionMode = vi.fn((mode: PermissionMode) => mode);
+    const showPermissionPicker = vi.fn((done: (mode?: PermissionMode) => void) => done("deny-writes"));
+    const context = createContext({ setPickerActive, setPermissionMode, showPermissionPicker } as Partial<CommandContext>);
+    expect(await run(context)).toContain("Permission mode changed to: deny-writes");
+    expect(showPermissionPicker).toHaveBeenCalledOnce();
+    expect(setPermissionMode).toHaveBeenCalledWith("deny-writes");
+    expect(setPickerActive.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("cancels without changing permissions and releases the picker", async () => {
+    const setPickerActive = vi.fn();
+    const context = createContext({ setPickerActive, showPermissionPicker: (done: (mode?: PermissionMode) => void) => done() } as Partial<CommandContext>);
+    expect(await permissionCommand.execute("", context)).toEqual({ type: "none" });
+    expect(context.setPermissionMode).not.toHaveBeenCalled();
+    expect(setPickerActive.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("releases picker state if opening fails", async () => {
+    const setPickerActive = vi.fn();
+    const context = createContext({ setPickerActive, showPermissionPicker: () => { throw new Error("picker failed"); } } as Partial<CommandContext>);
+    await expect(permissionCommand.execute("", context)).rejects.toThrow("picker failed");
+    expect(setPickerActive.mock.calls).toEqual([[true], [false]]);
+    expect(context.setPermissionMode).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit arguments non-interactive", async () => {
+    const showPermissionPicker = vi.fn();
+    const context = createContext({ showPermissionPicker } as Partial<CommandContext>);
+    expect(await run(context, "ask")).toContain("Permission mode changed to: ask");
+    expect(showPermissionPicker).not.toHaveBeenCalled();
+  });
+
+  it("does not open a picker while a turn is running or without a setter", async () => {
+    const showPermissionPicker = vi.fn();
+    for (const overrides of [{ isLoading: true }, { setPermissionMode: undefined }]) {
+      const context = createContext({ showPermissionPicker, ...overrides } as Partial<CommandContext>);
+      expect(await run(context)).toContain("Current permission mode");
+    }
+    expect(showPermissionPicker).not.toHaveBeenCalled();
+  });
+});

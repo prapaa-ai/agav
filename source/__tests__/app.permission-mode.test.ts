@@ -42,6 +42,7 @@ import { saveSession, listSessions, loadSession, type SessionRecord } from "../c
 import { resolveResumePermissionMode } from "../config/startup.js";
 
 let instance: ReturnType<typeof render>;
+let keyboard: NodeJS.ReadStream;
 const base: AgavConfig = { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000, maxIterations: 2, errorRetries: 1, permissionMode: "ask" };
 const saved = (permissionMode?: AgavConfig["permissionMode"]): SessionRecord => ({ id: "other", createdAt: "2026-01-01", model: "mock", provider: "anthropic", title: "Other", messages: [], permissionMode });
 async function mount(config = base, resumePermissionMode?: AgavConfig["permissionMode"]) {
@@ -50,6 +51,7 @@ async function mount(config = base, resumePermissionMode?: AgavConfig["permissio
   Object.assign(stdout, { isTTY: true, columns: 100, rows: 24, write: () => true });
   const stdin = new EventEmitter() as NodeJS.ReadStream;
   Object.assign(stdin, { isTTY: true, setRawMode: () => stdin, resume: () => stdin, pause: () => stdin, read: () => null });
+  keyboard = stdin;
   instance = render(h(App, { config, keybindings: DEFAULT_KEYBINDINGS, resumePermissionMode }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
   await instance.waitUntilRenderFlush();
   await vi.waitFor(() => expect(boundary.prompt).toBeDefined());
@@ -122,5 +124,58 @@ describe("session permission integration", () => {
     await mount();
     await command("/permission deny-writes");
     await vi.waitFor(() => expect(vi.mocked(saveSession).mock.calls.at(-1)?.[8]).toBe("deny-writes"));
+  });
+});
+
+
+describe("interactive permission picker in App", () => {
+  async function key(text: string) {
+    keyboard.emit("data", Buffer.from(text));
+    await new Promise(resolve => setTimeout(resolve, 80));
+    await instance.waitUntilRenderFlush();
+  }
+
+  it("opens, disables the composer, applies a selection and saves it", async () => {
+    await mount();
+    const pending = boundary.prompt.onSubmit("/permission");
+    await vi.waitFor(() => expect(boundary.prompt.disabled).toBe(true));
+    await key("\x1b[B"); // auto-accept
+    expectMode("ask"); // navigation must not change the policy
+    await key("\r");
+    await pending;
+    await vi.waitFor(() => expect(boundary.prompt.disabled).toBe(false));
+    expectMode("auto-accept");
+    expect(vi.mocked(saveSession).mock.calls.at(-1)?.[8]).toBe("auto-accept");
+    await command("/new");
+    expectMode("ask");
+  });
+
+  it("cancels without writing and allows the picker to reopen", async () => {
+    await mount();
+    for (let i = 0; i < 2; i++) {
+      const pending = boundary.prompt.onSubmit("/permission");
+      await vi.waitFor(() => expect(boundary.prompt.disabled).toBe(true));
+      await key("\x1b[B");
+      await key("\x1b");
+      await pending;
+      await vi.waitFor(() => expect(boundary.prompt.disabled).toBe(false));
+      expectMode("ask");
+    }
+    expect(saveSession).not.toHaveBeenCalled();
+  });
+
+  it("does not apply policy-blocked selections", async () => {
+    await mount({ ...base, orgPermissionFloor: "ask" });
+    const pending = boundary.prompt.onSubmit("/permission");
+    await vi.waitFor(() => expect(boundary.prompt.disabled).toBe(true));
+    await key("\x1b[B");
+    await key("\r");
+    expect(boundary.prompt.disabled).toBe(true);
+    expectMode("ask");
+    expect(saveSession).not.toHaveBeenCalled();
+    await key("\x1b[B"); // deny-writes remains allowed
+    await key("\r");
+    await pending;
+    expectMode("deny-writes");
   });
 });

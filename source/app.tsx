@@ -34,6 +34,7 @@ import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { JobsTUI } from "./components/jobs-tui.js";
+import { PermissionPicker } from "./components/permission-picker.js";
 import { CustomizeTUI } from "./components/customize-tui.js";
 import { LoginTUI } from "./components/login-tui.js";
 import { openExternal } from "./utils/open-external.js";
@@ -258,6 +259,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [workflowBadge, setWorkflowBadge] = useState<string | undefined>(undefined);
   const [resourceAdapter, setResourceAdapter] = useState<ResourceAdapter | null>(null);
   const resourceTUIResolveRef = useRef<(() => void) | null>(null);
+  const [permissionPickerActive, setPermissionPickerActive] = useState(false);
+  const permissionPickerResolveRef = useRef<((mode?: AgavConfig["permissionMode"]) => void) | null>(null);
   const [customizeTUIActive, setCustomizeTUIActive] = useState(false);
   const customizeTUIResolveRef = useRef<(() => void) | null>(null);
   const [loginTUIActive, setLoginTUIActive] = useState(false);
@@ -1452,6 +1455,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               skillsTUIResolveRef.current = onDone;
               setSkillsTUIActive(true);
             },
+            showPermissionPicker: stdout.isTTY && stdin.isTTY ? (onDone) => {
+              permissionPickerResolveRef.current = onDone;
+              setPermissionPickerActive(true);
+            } : undefined,
             showCustomizeTUI: stdout.isTTY && process.stdin.isTTY ? (onDone: () => void) => {
               customizeTUIResolveRef.current = onDone;
               setCustomizeTUIActive(true);
@@ -1932,6 +1939,21 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             model={pendingContextWindowRequest.model}
             defaultValue={DEFAULT_UNKNOWN_CONTEXT_WINDOW}
             onSubmit={resolveContextWindowRequest}
+          />
+        )}
+
+        {permissionPickerActive && (
+          <PermissionPicker
+            current={getEffectivePermissionMode()}
+            floor={config.orgPermissionFloor}
+            onDone={(mode) => {
+              setPermissionPickerActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = permissionPickerResolveRef.current;
+              permissionPickerResolveRef.current = null;
+              resolve?.(mode);
+            }}
           />
         )}
 

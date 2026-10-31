@@ -1,7 +1,7 @@
-import { PERMISSION_MODES, isPermissionMode } from "../config/config.js";
+import { PERMISSION_MODES, isPermissionMode, type PermissionMode } from "../config/config.js";
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 
-const MODE_HELP: Record<string, string> = {
+export const MODE_HELP: Record<PermissionMode, string> = {
   "ask": "Ask before tools perform sensitive actions (default).",
   "auto-accept": "Auto-approve tool calls without asking.",
   "deny-writes": "Allow read-only tools; deny actions that modify state.",
@@ -18,7 +18,7 @@ export const permissionCommand: SlashCommand = {
   description: "Show or change the session permission mode (ask, auto-accept, deny-writes)",
   usage:
     "Usage: /permission [mode]\n\n" +
-    "  /permission              Show the current permission mode\n" +
+    "  /permission              Open the permission mode picker\n" +
     "  /permission ask          Ask before sensitive tool actions\n" +
     "  /permission auto-accept  Auto-approve tool calls\n" +
     "  /permission deny-writes  Allow reads, deny state-changing actions\n\n" +
@@ -27,7 +27,19 @@ export const permissionCommand: SlashCommand = {
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const current =
       context.getEffectivePermissionMode?.() ?? context.config?.permissionMode ?? "ask";
-    const requested = args.trim().toLowerCase();
+    let requested = args.trim().toLowerCase();
+
+    if (!requested && context.showPermissionPicker && context.setPermissionMode && !context.isLoading) {
+      context.setPickerActive(true);
+      let selected: PermissionMode | undefined;
+      try {
+        selected = await new Promise<PermissionMode | undefined>((resolve) => context.showPermissionPicker!(resolve));
+      } finally {
+        context.setPickerActive(false);
+      }
+      if (selected === undefined) return { type: "none" };
+      requested = selected;
+    }
 
     if (!requested) {
       const lines = [

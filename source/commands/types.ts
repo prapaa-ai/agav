@@ -104,6 +104,8 @@ export interface CommandContext {
   showResourceTUI?: (kind: import("../resources/types.js").ResourceKind, onDone: () => void, marketplace?: boolean) => void
   showAgentsTUI: (onDone: () => void) => void
   showSkillsTUI: (onDone: () => void) => void
+  /** Pick a session permission mode; undefined means cancelled. Interactive only. */
+  showPermissionPicker?: (onDone: (mode?: AgavConfig["permissionMode"]) => void) => void
   /** Open the /customize overlay; only the interactive app supplies this. */
   showCustomizeTUI?: (onDone: () => void) => void
   /**
