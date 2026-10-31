@@ -1,8 +1,8 @@
-import { type AgavConfig } from "./config.js";
+import { type AgavConfig, type PermissionMode } from "./config.js";
 import type { SessionRecord } from "./history.js";
 import { agavHomePath, examplePath, setEnvHint } from "../utils/shell-hints.js";
 import { listSessions } from "./history.js";
-import { managedPinError } from "./org-config.js";
+import { clampPermissionMode, managedPinError } from "./org-config.js";
 import {
   PROVIDERS,
   defaultModelForProvider,
@@ -14,6 +14,17 @@ import {
 // standalone module shared with the org-policy layer).
 export { PROVIDERS, defaultModelForProvider, isProviderName };
 export type { ProviderName };
+
+/** Resolve resumed permissions without replacing the launch default used by /new. */
+export function resolveResumePermissionMode(
+  config: AgavConfig,
+  options: { cliPermissionMode?: PermissionMode; savedPermissionMode?: PermissionMode },
+): PermissionMode {
+  return clampPermissionMode(
+    options.cliPermissionMode ?? options.savedPermissionMode ?? config.permissionMode,
+    config.orgPermissionFloor,
+  );
+}
 
 interface StartupSelectionOptions {
   cliProvider?: ProviderName;

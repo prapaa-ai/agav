@@ -10,6 +10,12 @@ export type EffortLevel = "minimal" | "low" | "medium" | "high" | "max";
 
 export const EFFORT_LEVELS: readonly EffortLevel[] = ["minimal", "low", "medium", "high", "max"];
 
+export const PERMISSION_MODES: readonly PermissionMode[] = ["ask", "auto-accept", "deny-writes"];
+
+export function isPermissionMode(value: unknown): value is PermissionMode {
+  return typeof value === "string" && PERMISSION_MODES.includes(value as PermissionMode);
+}
+
 const DEFAULT_MARKETPLACE_FALLBACK = "https://raw.githubusercontent.com/prapaa-ai/agav-marketplace/main";
 
 /** Default marketplace URL — override via AGAV_MARKETPLACE_URL env var or agentMarketplace in config.json */

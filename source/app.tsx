@@ -21,7 +21,7 @@ import SubagentDisplay from "./components/subagent-display.js";
 import { makeAgentProgressTracker } from "./agent/subagent-progress.js";
 import type { SubagentProgress } from "./agent/subagent-types.js";
 import type { AgavConfig } from "./config/config.js";
-import { orgPolicyError } from "./config/startup.js";
+import { orgPolicyError, resolveResumePermissionMode } from "./config/startup.js";
 import type { LLMProvider } from "./providers/types.js";
 import { createProvider } from "./providers/registry.js";
 import type { ContentBlock, InvocationReason } from "./providers/types.js";
@@ -34,6 +34,7 @@ import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { JobsTUI } from "./components/jobs-tui.js";
+import { PermissionPicker } from "./components/permission-picker.js";
 import { CustomizeTUI } from "./components/customize-tui.js";
 import { LoginTUI } from "./components/login-tui.js";
 import { openExternal } from "./utils/open-external.js";
@@ -77,6 +78,7 @@ interface Props {
   resumeTokenUsage?: import("./config/history.js").SessionTokenUsage;
   resumeCompacted?: boolean;
   resumeSessionName?: string;
+  resumePermissionMode?: AgavConfig["permissionMode"];
   repoBranch?: string;
   /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
   enhancedKeyboard?: boolean;
@@ -102,7 +104,7 @@ interface QueuedRequest {
 let sysMessageId = 0;
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
-export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef }: Props) {
+export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef }: Props) {
 
   const [input, setInput] = useState("");
   const readPromptRef = useRef<(() => string) | null>(null);
@@ -126,7 +128,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     updateQueue(remaining);
     if (!remaining.length) setQueueBlocked(false);
   }, [updateQueue]);
-  const [config, setConfig] = useState(initialConfig);
+  // Session overrides must not become the default for /new or legacy resumes.
+  const defaultPermissionMode = useRef(initialConfig.permissionMode).current;
+  const [config, setConfig] = useState(() => ({
+    ...initialConfig,
+    permissionMode: resolveResumePermissionMode(initialConfig, { savedPermissionMode: resumePermissionMode }),
+  }));
   const modelSelectionVersion = useRef(0);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
@@ -252,6 +259,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [workflowBadge, setWorkflowBadge] = useState<string | undefined>(undefined);
   const [resourceAdapter, setResourceAdapter] = useState<ResourceAdapter | null>(null);
   const resourceTUIResolveRef = useRef<(() => void) | null>(null);
+  const [permissionPickerActive, setPermissionPickerActive] = useState(false);
+  const permissionPickerResolveRef = useRef<((mode?: AgavConfig["permissionMode"]) => void) | null>(null);
   const [customizeTUIActive, setCustomizeTUIActive] = useState(false);
   const customizeTUIResolveRef = useRef<(() => void) | null>(null);
   const [loginTUIActive, setLoginTUIActive] = useState(false);
@@ -296,6 +305,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     clearMessages,
     confirmTool,
     getEffectivePermissionMode,
+    setSessionPermissionMode,
     conversation,
     toolRegistry,
     saveNow,
@@ -312,7 +322,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     togglePause,
     interveneWhilePaused,
     iterationsBudget
-  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
+  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
   const [copyNotice, setCopyNotice] = useState<ClipboardNotice | null>(null);
@@ -1327,6 +1337,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             setEffort: (effort) => {
               setConfig((prev) => ({ ...prev, effort }));
             },
+            setPermissionMode: (mode) => {
+              // setSessionPermissionMode clamps to the org floor and persists the
+              // choice; mirror the applied (possibly clamped) mode into config so
+              // the footer and any config reader reflect the live session mode.
+              const applied = setSessionPermissionMode(mode);
+              setConfig((prev) => ({ ...prev, permissionMode: applied }));
+              return applied;
+            },
             showStatus: (text: string) => {
               setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: text }]);
             },
@@ -1334,6 +1352,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               updateQueue([]);
               setQueueBlocked(false);
               clearMessages();
+              setConfig((prev) => ({
+                ...prev,
+                permissionMode: resolveResumePermissionMode({ ...prev, permissionMode: defaultPermissionMode }, {}),
+              }));
               setSystemMessages([]);
               setPreview(null);
               clearAttachmentRegistry();
@@ -1344,10 +1366,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             refreshDisplay: () => {
               refreshDisplay();
             },
-            loadSession: (...args) => {
+            loadSession: (session) => {
               updateQueue([]);
               setQueueBlocked(false);
-              return loadSession(...args);
+              const permissionMode = resolveResumePermissionMode(
+                { ...config, permissionMode: defaultPermissionMode },
+                { savedPermissionMode: session.permissionMode },
+              );
+              // Restore the same mode for the foreground hook and config-based
+              // background/workflow authorization, including legacy sessions.
+              loadSession({ ...session, permissionMode });
+              setConfig((prev) => ({ ...prev, permissionMode }));
             },
             activateSession: (...args) => {
               updateQueue([]);
@@ -1426,6 +1455,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               skillsTUIResolveRef.current = onDone;
               setSkillsTUIActive(true);
             },
+            showPermissionPicker: stdout.isTTY && stdin.isTTY ? (onDone) => {
+              permissionPickerResolveRef.current = onDone;
+              setPermissionPickerActive(true);
+            } : undefined,
             showCustomizeTUI: stdout.isTTY && process.stdin.isTTY ? (onDone: () => void) => {
               customizeTUIResolveRef.current = onDone;
               setCustomizeTUIActive(true);
@@ -1906,6 +1939,21 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             model={pendingContextWindowRequest.model}
             defaultValue={DEFAULT_UNKNOWN_CONTEXT_WINDOW}
             onSubmit={resolveContextWindowRequest}
+          />
+        )}
+
+        {permissionPickerActive && (
+          <PermissionPicker
+            current={getEffectivePermissionMode()}
+            floor={config.orgPermissionFloor}
+            onDone={(mode) => {
+              setPermissionPickerActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = permissionPickerResolveRef.current;
+              permissionPickerResolveRef.current = null;
+              resolve?.(mode);
+            }}
           />
         )}
 
