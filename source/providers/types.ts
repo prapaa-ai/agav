@@ -46,7 +46,7 @@ export type StreamEvent =
   | { type: "message_start" }
   | { type: "message_end"; stopReason: string }
   | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
-  | { type: "retry"; message: string }
+  | { type: "retry"; message: string; delayMs?: number }
   | { type: "error"; error: Error };
 
 export interface ToolSchema {

@@ -283,7 +283,42 @@ export async function* runAgentLoop(
   const summarize = async (msgs: Message[]): Promise<string> => {
     let result = "";
     pendingSummarizeUsage = null;
+
+    const timeoutMs =
+      typeof params.providerIdleTimeout === "number" && params.providerIdleTimeout > 0
+        ? params.providerIdleTimeout
+        : undefined;
+
+    const summarizeController = new AbortController();
+    let idleTimer: NodeJS.Timeout | null = null;
+
+    const resetIdleTimer = () => {
+      if (timeoutMs === undefined) return;
+      if (idleTimer !== null) {
+        clearTimeout(idleTimer);
+      }
+      idleTimer = setTimeout(() => {
+        idleTimer = null;
+        summarizeController.abort(new ProviderIdleTimeoutError(timeoutMs));
+      }, timeoutMs);
+    };
+
+    const onParentAbort = () => {
+      if (idleTimer !== null) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+      summarizeController.abort(signal?.reason ?? new Error("Aborted"));
+    };
+
+    if (signal?.aborted) {
+      summarizeController.abort(signal.reason ?? new Error("Aborted"));
+    } else if (signal) {
+      signal.addEventListener("abort", onParentAbort, { once: true });
+    }
+
     try {
+      resetIdleTimer();
       for await (const event of provider.stream({
         model,
         messages: msgs,
@@ -297,8 +332,12 @@ export async function* runAgentLoop(
           "This summary replaces earlier messages — anything not included here is lost.",
         effort,
         maxTokens: 2048,
-        signal,
+        signal: summarizeController.signal,
       })) {
+        resetIdleTimer();
+        if (summarizeController.signal.aborted) {
+          return "";
+        }
         if (event.type === "text_delta") result += event.text;
         if (event.type === "usage") {
           // Providers may split input/cache and output usage across events.
@@ -309,8 +348,19 @@ export async function* runAgentLoop(
           pendingSummarizeUsage["cacheWriteTokens"]! += event.cacheWriteTokens ?? 0;
         }
       }
+      if (summarizeController.signal.aborted) {
+        return "";
+      }
     } catch {
       return "";
+    } finally {
+      if (idleTimer !== null) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+      if (signal) {
+        signal.removeEventListener("abort", onParentAbort);
+      }
     }
     return result || "";
   };
@@ -528,14 +578,41 @@ export async function* runAgentLoop(
               stopReason = event.stopReason;
               break;
 
-            case "retry":
+            case "retry": {
+              if (idleTimer !== null) {
+                clearTimeout(idleTimer);
+                idleTimer = null;
+              }
+              const backoffMs = event.delayMs ?? (() => {
+                const match = event.message.match(/Retrying in (\d+)s/);
+                return match ? parseInt(match[1], 10) * 1000 : 0;
+              })();
+              if (timeoutMs !== undefined) {
+                idleTimer = setTimeout(() => {
+                  resetIdleTimer();
+                }, backoffMs);
+              }
               yield event;
               break;
+            }
 
             case "error":
               yield { type: "error", error: event.error };
               return;
           }
+        }
+        if (attemptController.signal.aborted || signal?.aborted) {
+          if (timedOut || attemptController.signal.reason instanceof ProviderIdleTimeoutError) {
+            yield* commitPartialText();
+            yield {
+              type: "error",
+              error: timeoutError!,
+              reason: "provider_idle_timeout",
+            };
+            return;
+          }
+          yield { type: "error", error: new Error("Aborted") };
+          return;
         }
       }
     } catch (err) {

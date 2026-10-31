@@ -3,9 +3,29 @@ import { runAgentLoop, ProviderIdleTimeoutError, type AgentEvent } from "../agen
 import { ConversationState } from "../agent/conversation.js";
 import { ToolRegistry } from "../tools/registry.js";
 import type { LLMProvider, StreamEvent, StreamParams } from "../providers/types.js";
+import { RetryProvider } from "../providers/retry.js";
 import type { ToolDefinition } from "../tools/types.js";
 import { validateProviderIdleTimeout } from "../config/config.js";
 import { parseArgs } from "../main.js";
+
+vi.mock("node:timers/promises", () => ({
+  setTimeout: (ms: number, _val?: unknown, options?: { signal?: AbortSignal }) => {
+    return new Promise((resolve, reject) => {
+      if (options?.signal?.aborted) {
+        return reject(options.signal.reason ?? new Error("Aborted"));
+      }
+      const timer = setTimeout(() => {
+        options?.signal?.removeEventListener("abort", onAbort);
+        resolve(_val);
+      }, ms);
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(options?.signal?.reason ?? new Error("Aborted"));
+      };
+      options?.signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  },
+}));
 
 async function collectEvents(loop: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
@@ -529,6 +549,285 @@ describe("provider response idle timeout", () => {
       { type: "text", text: "Successfully answered after compaction recovery!" },
     ]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("drops incomplete tool calls and reports timeout when stream ends normally on abort without throwing (OpenAI behavior)", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const toolExecuted = vi.fn();
+
+    const provider: LLMProvider = {
+      name: "mock",
+      stream: vi.fn((params: StreamParams) => {
+        capturedSignal = params.signal;
+        return (async function* (): AsyncGenerator<StreamEvent> {
+          yield { type: "text_delta", text: "Partial reasoning " };
+          yield { type: "tool_call_start", toolCallId: "call_incomplete", toolName: "dangerous_exec" };
+          yield { type: "tool_call_delta", toolCallId: "call_incomplete", argsJson: '{"cmd":"rm -rf /' };
+
+          // Wait for abort signal from idle timeout, then return cleanly without throwing (like OpenAI SDK)
+          await new Promise<void>((resolve) => {
+            if (params.signal?.aborted) return resolve();
+            params.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          // Generator finishes cleanly without throw
+        })();
+      }),
+    };
+
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register({
+      schema: {
+        name: "dangerous_exec",
+        description: "A dangerous tool that must not run on partial input",
+        inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+      },
+      execute: toolExecuted,
+    });
+
+    const conversation = new ConversationState();
+    conversation.addUserMessage("Delete files");
+
+    const loopPromise = collectEvents(runAgentLoop({
+      provider,
+      conversation,
+      toolRegistry,
+      model: "test-model",
+      iterationsBudget: { remaining: 5, total: 5 },
+      providerIdleTimeout: 100,
+    }));
+
+    await vi.advanceTimersByTimeAsync(100);
+    const events = await loopPromise;
+
+    // Verify tool was NOT dispatched
+    expect(toolExecuted).not.toHaveBeenCalled();
+
+    // Verify timeout error is reported, not turn_complete
+    expect(events.some(e => e.type === "turn_complete")).toBe(false);
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      error: expect.any(ProviderIdleTimeoutError),
+      reason: "provider_idle_timeout",
+    });
+
+    // Verify partial text was committed
+    expect(conversation.getMessages()).toEqual([
+      { role: "user", content: [{ type: "text", text: "Delete files" }] },
+      { role: "assistant", content: [{ type: "text", text: "Partial reasoning " }] },
+    ]);
+  });
+
+  it("drops incomplete tool calls and reports abort when stream ends normally on user cancellation without throwing", async () => {
+    const toolExecuted = vi.fn();
+    const abortController = new AbortController();
+
+    const provider: LLMProvider = {
+      name: "mock",
+      stream: vi.fn((params: StreamParams) => {
+        return (async function* (): AsyncGenerator<StreamEvent> {
+          yield { type: "tool_call_start", toolCallId: "call_incomplete", toolName: "dangerous_exec" };
+          yield { type: "tool_call_delta", toolCallId: "call_incomplete", argsJson: '{"cmd":"delete' };
+
+          await new Promise<void>((resolve) => {
+            if (params.signal?.aborted) return resolve();
+            params.signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+          // Clean return on abort without throwing
+        })();
+      }),
+    };
+
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register({
+      schema: {
+        name: "dangerous_exec",
+        description: "A dangerous tool",
+        inputSchema: { type: "object", properties: { cmd: { type: "string" } } },
+      },
+      execute: toolExecuted,
+    });
+
+    const conversation = new ConversationState();
+    conversation.addUserMessage("Run cmd");
+
+    const loopPromise = collectEvents(runAgentLoop({
+      provider,
+      conversation,
+      toolRegistry,
+      model: "test-model",
+      iterationsBudget: { remaining: 5, total: 5 },
+      providerIdleTimeout: 5000,
+      signal: abortController.signal,
+    }));
+
+    // Trigger user cancellation (e.g. Esc)
+    abortController.abort(new Error("Aborted by user"));
+    const events = await loopPromise;
+
+    expect(toolExecuted).not.toHaveBeenCalled();
+    expect(events.some(e => e.type === "turn_complete")).toBe(false);
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      error: expect.any(Error),
+    });
+  });
+
+  it("pauses idle timer during RetryProvider backoff sleep and rearms when next attempt begins", async () => {
+    let attemptCount = 0;
+    const innerProvider: LLMProvider = {
+      name: "inner-mock",
+      stream: vi.fn((params: StreamParams) => {
+        const currentAttempt = attemptCount++;
+        return (async function* (): AsyncGenerator<StreamEvent> {
+          if (currentAttempt === 0) {
+            // Attempt 0 fails with a 429 Retry-After: 120 error
+            const err = new Error("Rate limit exceeded") as any;
+            err.status = 429;
+            err.headers = { "retry-after": "120" };
+            throw err;
+          }
+          // Attempt 1 succeeds after the 120s backoff
+          yield { type: "text_delta", text: "Successfully recovered after backoff!" };
+          yield { type: "message_end", stopReason: "stop" };
+        })();
+      }),
+    };
+
+    const retryProvider = new RetryProvider(innerProvider, 3);
+    const conversation = new ConversationState();
+    conversation.addUserMessage("Hello");
+    const toolRegistry = new ToolRegistry();
+
+    const loopPromise = collectEvents(runAgentLoop({
+      provider: retryProvider,
+      conversation,
+      toolRegistry,
+      model: "test-model",
+      iterationsBudget: { remaining: 5, total: 5 },
+      providerIdleTimeout: 60_000, // 60s timeout, less than 120s backoff!
+    }));
+
+    // Advance 60s into the 120s backoff
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    // Verify it did NOT time out during backoff
+    expect(attemptCount).toBe(1);
+
+    // Advance the remaining 60s of backoff (total 120s)
+    await vi.advanceTimersByTimeAsync(60_000);
+    const events = await loopPromise;
+
+    expect(attemptCount).toBe(2);
+    expect(events.some(e => e.type === "error" && (e as any).reason === "provider_idle_timeout")).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({ type: "retry" }));
+    expect(events).toContainEqual({ type: "turn_complete" });
+    expect(conversation.getMessages().at(-1)?.content).toEqual([
+      { type: "text", text: "Successfully recovered after backoff!" },
+    ]);
+  });
+
+  it("rearmer catches stalled stream on retried attempt after backoff completes", async () => {
+    let attemptCount = 0;
+    let attempt1Signal: AbortSignal | undefined;
+
+    const innerProvider: LLMProvider = {
+      name: "inner-mock",
+      stream: vi.fn((params: StreamParams) => {
+        const currentAttempt = attemptCount++;
+        return (async function* (): AsyncGenerator<StreamEvent> {
+          if (currentAttempt === 0) {
+            const err = new Error("Rate limit exceeded") as any;
+            err.status = 429;
+            err.headers = { "retry-after": "10" };
+            throw err;
+          }
+          // Attempt 1 begins after 10s backoff, but stalls before sending any event
+          attempt1Signal = params.signal;
+          await delayWithSignal(50_000, params.signal);
+          yield { type: "message_end", stopReason: "stop" };
+        })();
+      }),
+    };
+
+    const retryProvider = new RetryProvider(innerProvider, 3);
+    const conversation = new ConversationState();
+    conversation.addUserMessage("Hello");
+    const toolRegistry = new ToolRegistry();
+
+    const loopPromise = collectEvents(runAgentLoop({
+      provider: retryProvider,
+      conversation,
+      toolRegistry,
+      model: "test-model",
+      iterationsBudget: { remaining: 5, total: 5 },
+      providerIdleTimeout: 5_000, // 5s timeout
+    }));
+
+    // Advance 10s: backoff completes, attempt 1 begins
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(attemptCount).toBe(2);
+
+    // Advance 5s: idle watchdog on attempt 1 expires
+    await vi.advanceTimersByTimeAsync(5_000);
+    const events = await loopPromise;
+
+    expect(attempt1Signal?.aborted).toBe(true);
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      error: expect.any(ProviderIdleTimeoutError),
+      reason: "provider_idle_timeout",
+    });
+  });
+
+  it("applies idle watchdog to stalled conversation summarization during compaction", async () => {
+    let summarizeSignal: AbortSignal | undefined;
+
+    const provider: LLMProvider = {
+      name: "mock",
+      stream: vi.fn((params: StreamParams) => {
+        if (params.systemPrompt?.includes("Summarize this conversation concisely")) {
+          summarizeSignal = params.signal;
+          return (async function* (): AsyncGenerator<StreamEvent> {
+            // Stalled summarizer: never yields any text
+            await delayWithSignal(50_000, params.signal);
+            yield { type: "text_delta", text: "Summary text" };
+            yield { type: "message_end", stopReason: "stop" };
+          })();
+        }
+        return (async function* (): AsyncGenerator<StreamEvent> {
+          yield { type: "text_delta", text: "Final answer after compaction" };
+          yield { type: "message_end", stopReason: "stop" };
+        })();
+      }),
+    };
+
+    const conversation = new ConversationState();
+    conversation.setModel("mock");
+    conversation.setContextWindow(1000);
+    for (let i = 0; i < 10; i++) {
+      if (i % 2 === 0) conversation.addUserMessage("context ".repeat(100));
+      else conversation.addAssistantMessage([{ type: "text", text: "response ".repeat(100) }]);
+    }
+    conversation.addUserMessage("Latest query");
+    const toolRegistry = new ToolRegistry();
+
+    const loopPromise = collectEvents(runAgentLoop({
+      provider,
+      conversation,
+      toolRegistry,
+      model: "test-model",
+      iterationsBudget: { remaining: 5, total: 5 },
+      providerIdleTimeout: 1_000,
+    }));
+
+    // Advance timers so stalled summarizer times out after 1_000ms
+    await vi.advanceTimersByTimeAsync(1_000);
+    const events = await loopPromise;
+
+    expect(summarizeSignal?.aborted).toBe(true);
+    expect(summarizeSignal?.reason).toBeInstanceOf(ProviderIdleTimeoutError);
+    // Loop recovers and answers without hanging forever
+    expect(events).toContainEqual({ type: "turn_complete" });
   });
 });
 
