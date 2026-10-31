@@ -1,5 +1,5 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
-import { refreshStoredApiKeys, type AgavConfig } from "../config/config.js";
+import { type AgavConfig } from "../config/config.js";
 import { providerSetupHints, orgPolicyError } from "../config/startup.js";
 import { fetchVertexAIModels } from "../providers/vertex-ai.js";
 
@@ -201,10 +201,7 @@ export function findMatchingModels(models: FetchedModel[], model: string): Fetch
 
 /** Query every configured provider at once, in the order they appear in the picker. */
 export async function fetchAvailableModels(config: AgavConfig): Promise<FetchAllResult> {
-  const unresolved = await refreshStoredApiKeys(config);
-  const warnings: string[] = unresolved.length
-    ? ["Some saved provider credentials could not be read from the OS credential store. Unlock the store if needed and retry /model after 30 seconds."]
-    : [];
+  const warnings: string[] = [];
   const fetches: Promise<FetchedModel[]>[] = [];
 
   if (config.anthropicApiKey) fetches.push(fetchAnthropicModels(config.anthropicApiKey));

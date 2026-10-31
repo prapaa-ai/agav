@@ -4,7 +4,7 @@ import { main } from "../main.js";
 import { loadConfig } from "../config/config.js";
 import { render } from "../ink/index.js";
 
-vi.mock("../config/config.js", async (original) => ({ ...await original<typeof import("../config/config.js")>(), loadConfig: vi.fn(), migrateSecretsToKeychain: vi.fn(async () => 0) }));
+vi.mock("../config/config.js", async (original) => ({ ...await original<typeof import("../config/config.js")>(), loadConfig: vi.fn() }));
 vi.mock("../config/keybindings.js", () => ({ loadKeybindings: async () => ({}) }));
 vi.mock("../config/history.js", () => ({ listSessions: async () => [] }));
 vi.mock("../ink/index.js", () => ({ render: vi.fn(() => ({ waitUntilExit: async () => { } })) }));
