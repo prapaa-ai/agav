@@ -700,13 +700,6 @@ export async function getChangelog(): Promise<string> {
     }
   };
   const scanToken = (token: import("marked").Token, sourceOffset?: number): void => {
-    // Reference-definition tokens (`[id]: url "title"`) are not document prose.
-    // marked <=15 omitted them from the lexer output entirely; marked 18 emits
-    // them as top-level `def` tokens. Their raw title/URL can contain literal
-    // `<!--`/`-->`, which must not flip comment state or create boundaries.
-    if (token.type === "def") {
-      return;
-    }
     // Only scan content in its lexer context: HTML is raw, while Markdown
     // containers already have parsed children (not their link titles/URLs).
     if (token.type === "code" || token.type === "codespan" || token.type === "escape" || token.type === "image") {
