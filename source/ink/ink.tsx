@@ -355,10 +355,11 @@ export default class Ink {
 			false,
 			null,
 			"id",
-			noop,
-			noop,
-			noop,
-			noop,
+			noop, // onUncaughtError
+			noop, // onCaughtError
+			noop, // onRecoverableError
+			noop, // onDefaultTransitionIndicator (added in react-reconciler 0.34)
+			null, // transitionCallbacks
 		);
 
 		this.exitPromise = new Promise<void>((resolve, reject) => {

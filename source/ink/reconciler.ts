@@ -135,20 +135,26 @@ type HostContext = {
 };
 
 export default createReconciler<
-	ElementNames,
-	Props,
-	DOMElement,
-	DOMElement,
-	TextNode,
-	DOMElement,
-	unknown,
-	unknown,
-	DOMElement,
-	HostContext,
-	unknown,
-	NodeJS.Timeout,
-	number,
-	unknown
+	ElementNames, // Type
+	Props, // Props
+	DOMElement, // Container
+	DOMElement, // Instance
+	TextNode, // TextInstance
+	unknown, // ActivityInstance
+	DOMElement, // SuspenseInstance
+	unknown, // HydratableInstance
+	unknown, // FormInstance
+	DOMElement, // PublicInstance
+	HostContext, // HostContext
+	unknown, // ChildSet
+	NodeJS.Timeout, // TimeoutHandle
+	number, // NoTimeout
+	unknown, // TransitionStatus
+	unknown, // SuspendedState
+	unknown, // RendererInspectionConfig
+	unknown, // FormStateMarkerInstance
+	unknown, // HoistableRoot
+	unknown // Resource
 >({
 	getRootHostContext: () => ({
 		isInsideText: false,
@@ -311,18 +317,23 @@ export default createReconciler<
 	getInstanceFromScope: () => null,
 	appendChildToContainer: appendChildNode,
 	insertInContainerBefore: insertBeforeNode,
-	removeChildFromContainer(node, removeNode) {
+	// `child` is typed via the config's ActivityInstance union (unknown in a
+	// terminal renderer), so annotate the concrete node types explicitly.
+	removeChildFromContainer(node, removeNode: DOMElement | TextNode) {
 		removeChildNode(node, removeNode);
 		cleanupYogaNode(removeNode.yogaNode);
 
 		// Only clear staticNode if it still points at the removed node. On
 		// key-driven remounts, `createInstance` already registered the new node
 		// before this removal fires.
+		const rootNode = currentRootNode;
 		if (
+			rootNode &&
+			"internal_static" in removeNode &&
 			removeNode.internal_static &&
-			currentRootNode?.staticNode === removeNode
+			rootNode.staticNode === removeNode
 		) {
-			currentRootNode.staticNode = undefined;
+			rootNode.staticNode = undefined;
 		}
 	},
 	commitUpdate(node, _type, oldProps, newProps) {
@@ -378,17 +389,20 @@ export default createReconciler<
 	commitTextUpdate(node, _oldText, newText) {
 		setTextNodeValue(node, newText);
 	},
-	removeChild(node, removeNode) {
+	removeChild(node, removeNode: DOMElement | TextNode) {
 		removeChildNode(node, removeNode);
 		cleanupYogaNode(removeNode.yogaNode);
 
 		// Same guard as removeChildFromContainer: only clear if this is still
 		// the active static node.
+		const rootNode = currentRootNode;
 		if (
+			rootNode &&
+			"internal_static" in removeNode &&
 			removeNode.internal_static &&
-			currentRootNode?.staticNode === removeNode
+			rootNode.staticNode === removeNode
 		) {
-			currentRootNode.staticNode = undefined;
+			rootNode.staticNode = undefined;
 		}
 	},
 	setCurrentUpdatePriority(newPriority) {
@@ -431,6 +445,34 @@ export default createReconciler<
 	suspendInstance() {},
 	waitForCommitToBeReady() {
 		return null;
+	},
+	// Terminal host instances have no asynchronous resources to wait for.
+	// Added in react-reconciler 0.34 (React 19.3).
+	maySuspendCommitOnUpdate() {
+		return false;
+	},
+	maySuspendCommitInSyncRender() {
+		return false;
+	},
+	// Ink has no view transitions, so there is never anything to wait for.
+	suspendOnActiveViewTransition() {},
+	getSuspendedCommitReason() {
+		return null;
+	},
+	// Fragment refs (React 19.3) have no meaning in a terminal. Returning null
+	// makes a `<Fragment ref>` resolve to null instead of crashing inside React.
+	// eslint-disable-next-line @typescript-eslint/naming-convention
+	createFragmentInstance: () => null,
+	extraDevToolsConfig: null,
+	bindToConsole(methodName, args) {
+		// Replay React's captured console calls without browser-specific badge
+		// styling (the third `badgeName` argument is intentionally ignored).
+		const method: unknown = Reflect.get(console, methodName);
+		return () => {
+			if (typeof method === "function") {
+				Reflect.apply(method, console, args);
+			}
+		};
 	},
 	rendererPackageName: packageInfo.name,
 	rendererVersion: packageInfo.version,
