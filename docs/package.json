@@ -22,7 +22,7 @@
     "gray-matter": "^4.0.3",
     "lucide-react": "1.55.0",
     "mermaid": "^11.17.2",
-    "next": "^16.4.0",
+    "next": "^16.4.3",
     "next-themes": "^0.4.6",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -46,9 +46,18 @@
     "@types/react": "~19.3.0",
     "@types/react-dom": "~19.3.0",
     "eslint": "^9.39.5",
-    "eslint-config-next": "16.4.0",
+    "eslint-config-next": "16.4.3",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "dompurify": ">=3.4.17",
+      "zod": "^4.6.6",
+      "postcss-selector-parser": "^6.1.5",
+      "katex": "^0.18.2"
+    },
+    "overridesComment": "Force patched transitive deps: dompurify (>=3.4.17, GHSA-cg2g-xh64-v4q7 CRITICAL, GHSA-mrv2-3pqr-j5jr HIGH; via mermaid), zod (>=4.6.6, GHSA-mrhx-c7xc-m3w5; via eslint-plugin-react-hooks), postcss-selector-parser (>=6.1.5, GHSA-rj75-hqrm-r3gf; via @tailwindcss/typography), katex (>=0.18.2, GHSA-238p-pmpm-9mq7; via mermaid). Remove an entry once its dependents require a patched version on their own."
   }
 }

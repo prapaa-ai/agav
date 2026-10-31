@@ -43,7 +43,7 @@ describe("internal background tick flag", () => {
   it("is registered in the packaging manifest alongside the supervisor flag", () => {
     expect(BACKGROUND_TICK_INTERNAL_FLAG).toBe("--internal-background-jobs-tick");
     expect(BACKGROUND_TICK_INTERNAL_FLAG).not.toBe(SUPERVISOR_INTERNAL_FLAG);
-    expect(INTERNAL_FLAGS).toEqual([SUPERVISOR_INTERNAL_FLAG, BACKGROUND_TICK_INTERNAL_FLAG]);
+    expect(INTERNAL_FLAGS).toEqual([SUPERVISOR_INTERNAL_FLAG, BACKGROUND_TICK_INTERNAL_FLAG, "--internal-workflow-runner"]);
     expect(getBackgroundTickArgs()).toEqual([BACKGROUND_TICK_INTERNAL_FLAG]);
     expect(getBackgroundTickArgs("/opt/agav/build/cli.js")).toEqual(["/opt/agav/build/cli.js", BACKGROUND_TICK_INTERNAL_FLAG]);
   });

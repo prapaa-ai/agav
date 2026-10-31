@@ -14,7 +14,7 @@ vi.mock("../ink/termio/clipboard.js", () => ({
   },
 }));
 
-async function mount(overrides: Partial<ResourceAdapter> = {}, props: { height?: number } = {}) {
+async function mount(overrides: Partial<ResourceAdapter> = {}, props: { refreshIntervalMs?: number; height?: number } = {}) {
   let items: ResourceItem[] = Array.from({ length: 12 }, (_, i) => ({ id: String(i), title: `Item ${i}`, description: `Description ${i}`, detail: `Full detail ${i}`, enabled: true, removable: true }));
   const adapter: ResourceAdapter = {
     title: "Test resources",
@@ -235,6 +235,34 @@ describe("shared resource manager", () => {
       expect(ui.output()).toContain("No resources found");
       await ui.key("\x1b");
       expect(ui.onExit).toHaveBeenCalledOnce();
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("refreshes the list and the open detail on an interval, keeping the selection, and stops on unmount", async () => {
+    let tick = 0;
+    let items: ResourceItem[] = [0, 1, 2].map((i) => ({ id: `id${i}`, title: `Item ${i}`, description: "d", detail: `detail ${i} v0` }));
+    const list = vi.fn(async () => items);
+    const get = vi.fn(async (id: string) => { const found = items.find((i) => i.id === id); return found && { ...found, detail: `${found.detail} tick ${tick}` }; });
+    const ui = await mount({ list, get, remove: undefined, setEnabled: undefined }, { refreshIntervalMs: 40 });
+    const frame = () => ui.output().replaceAll(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+    try {
+      await ui.key("\x1b[B");
+      expect(frame()).toContain("→ Item 1");
+      // A new item arrives at the top: the selection follows Item 1.
+      items = [{ id: "new", title: "Item new", description: "d", detail: "detail new" }, ...items];
+      await ui.settle(); await ui.settle();
+      expect(frame()).toContain("Item new");
+      expect(frame()).toContain("→ Item 1");
+      await ui.key("\r");
+      expect(frame()).toContain("detail 1 v0 tick 0");
+      tick = 1;
+      await ui.settle(); await ui.settle();
+      expect(frame()).toContain("detail 1 v0 tick 1");
+      expect(frame()).toContain("Test resources · Inspect");
+      ui.instance.unmount();
+      const calls = list.mock.calls.length;
+      await new Promise((r) => setTimeout(r, 150));
+      expect(list.mock.calls.length).toBe(calls);
     } finally { ui.instance.unmount(); }
   });
 

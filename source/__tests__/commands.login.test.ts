@@ -3,12 +3,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 vi.mock("../cli/login-cli.js", () => ({
   runLoginCommand: vi.fn(),
 }));
+vi.mock("../account/account-login.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../account/account-login.js")>();
+  return { ...original, signOutAccount: vi.fn() };
+});
 
 import { runLoginCommand } from "../cli/login-cli.js";
 import { loginCommand, logoutCommand } from "../commands/login.js";
+import { signOutAccount } from "../account/account-login.js";
 import type { CommandContext } from "../commands/types.js";
 
 const runLoginMock = vi.mocked(runLoginCommand);
+const signOutMock = vi.mocked(signOutAccount);
 
 const createContext = (resume = vi.fn()): CommandContext => ({
   conversation: {} as any,
@@ -35,6 +41,16 @@ const createContext = (resume = vi.fn()): CommandContext => ({
   suspendTerminal: vi.fn(() => resume),
   showAgentsTUI: vi.fn(),
   showSkillsTUI: vi.fn(),
+});
+
+/** A context whose showLoginTUI immediately drives the wizard to a given outcome. */
+const createWizardContext = (
+  outcome: { cancelled: boolean; message?: string } | undefined,
+): CommandContext => ({
+  ...createContext(),
+  showLoginTUI: outcome === undefined
+    ? undefined
+    : vi.fn((onDone: (r: { cancelled: boolean; message?: string }) => void) => onDone(outcome)),
 });
 
 describe("commands/login", () => {
@@ -67,13 +83,13 @@ describe("commands/login", () => {
     expect(result.type).toBe("message");
   });
 
-  it("passes no args to runLoginCommand when /login is bare", async () => {
+  it("passes only the enterprise flags to runLoginCommand", async () => {
     runLoginMock.mockResolvedValue(0);
 
-    await loginCommand.execute("   ", createContext());
+    await loginCommand.execute("--device", createContext());
 
     expect(runLoginMock.mock.calls[0]![0]).toBe("login");
-    expect(runLoginMock.mock.calls[0]![1]).toEqual([]);
+    expect(runLoginMock.mock.calls[0]![1]).toEqual(["--device"]);
   });
 
   it("shows the captured success line verbatim on success", async () => {
@@ -94,7 +110,7 @@ describe("commands/login", () => {
       return 1;
     });
 
-    const result = await loginCommand.execute("", createContext());
+    const result = await loginCommand.execute("--device", createContext());
 
     expect((result as any).text).toContain("Sign-in failed.");
     expect((result as any).text).toContain("Could not reach the control plane");
@@ -145,7 +161,7 @@ describe("commands/login", () => {
     const resume = vi.fn();
     const context = createContext(resume);
 
-    await expect(loginCommand.execute("", context)).rejects.toThrow("boom");
+    await expect(loginCommand.execute("--device", context)).rejects.toThrow("boom");
     expect(resume).toHaveBeenCalledTimes(1);
     expect(process.stdin.listenerCount("data")).toBe(0);
   });
@@ -173,5 +189,91 @@ describe("commands/login", () => {
 
     expect((result as any).text.toLowerCase()).toContain("failed");
     expect((result as any).text).toContain("EACCES");
+  });
+
+  describe("consumer account routing", () => {
+    it("bare /login opens the consumer wizard (not enterprise)", async () => {
+      const ctx = createWizardContext({ cancelled: false, message: "Signed in to your Agav account as u@x.com. Restart Agav to use it." });
+      const result = await loginCommand.execute("", ctx);
+
+      expect(runLoginMock).not.toHaveBeenCalled();
+      expect(ctx.showLoginTUI).toHaveBeenCalledTimes(1);
+      expect(ctx.setPickerActive).toHaveBeenCalledWith(true);
+      expect(ctx.setPickerActive).toHaveBeenCalledWith(false);
+      expect((result as any).text.toLowerCase()).toContain("signed in to your agav account");
+    });
+
+    it("/login --consumer also opens the wizard", async () => {
+      const ctx = createWizardContext({ cancelled: false, message: "Signed in to your Agav account." });
+      await loginCommand.execute("--consumer", ctx);
+      expect(runLoginMock).not.toHaveBeenCalled();
+      expect(ctx.showLoginTUI).toHaveBeenCalledTimes(1);
+    });
+
+    it("enterprise flags still route to enterprise enrollment, not the wizard", async () => {
+      runLoginMock.mockResolvedValue(0);
+      const ctx = createWizardContext({ cancelled: true });
+      await loginCommand.execute("--oidc", ctx);
+      expect(ctx.showLoginTUI).not.toHaveBeenCalled();
+      expect(runLoginMock).toHaveBeenCalledTimes(1);
+      expect(runLoginMock.mock.calls[0]![0]).toBe("login");
+    });
+
+    it("reports cancellation when the wizard is dismissed", async () => {
+      const ctx = createWizardContext({ cancelled: true });
+      const result = await loginCommand.execute("", ctx);
+      expect((result as any).text.toLowerCase()).toContain("cancelled");
+      expect(ctx.setPickerActive).toHaveBeenCalledWith(false);
+    });
+
+    it("explains the wizard needs an interactive terminal when unavailable (headless)", async () => {
+      const ctx = createWizardContext(undefined); // showLoginTUI absent
+      const result = await loginCommand.execute("", ctx);
+      expect(runLoginMock).not.toHaveBeenCalled();
+      expect((result as any).text.toLowerCase()).toContain("interactive terminal");
+    });
+
+    it("rejects a bare key typed on the command line (never accept a key via argv)", async () => {
+      const ctx = createWizardContext({ cancelled: true });
+      const result = await loginCommand.execute("agav_sk_rawkey123456", ctx);
+      expect(ctx.showLoginTUI).not.toHaveBeenCalled();
+      expect((result as any).text.toLowerCase()).toContain("shell history");
+    });
+
+    it("/logout --account signs out the consumer account (not enterprise)", async () => {
+      signOutMock.mockResolvedValue(undefined);
+      const result = await logoutCommand.execute("--account", createContext());
+      expect(runLoginMock).not.toHaveBeenCalled();
+      expect(signOutMock).toHaveBeenCalledTimes(1);
+      expect((result as any).text.toLowerCase()).toContain("signed out of your agav account");
+    });
+
+    it("bare /logout still routes to enterprise (consumer sign-out needs --account)", async () => {
+      runLoginMock.mockResolvedValue(0);
+      await logoutCommand.execute("", createContext());
+      expect(signOutMock).not.toHaveBeenCalled();
+      expect(runLoginMock).toHaveBeenCalledTimes(1);
+      expect(runLoginMock.mock.calls[0]![0]).toBe("logout");
+    });
+  });
+});
+
+describe("wizard service routing", () => {
+  it("forwards the validated override through the UI boundary", async () => {
+    const ctx = createWizardContext({ cancelled: true });
+    await loginCommand.execute("--account-service https://staging.example/base", ctx);
+    expect(ctx.showLoginTUI).toHaveBeenCalledWith(expect.any(Function), "https://staging.example/base");
+  });
+  it.each(["http://remote.example", "https://user:password@example.test", "https://example.test/?token=secret"])("rejects unsafe base %s before opening UI", async service => {
+    const ctx = createWizardContext({ cancelled: true });
+    const result = await loginCommand.execute(`--account-service ${service}`, ctx);
+    expect(ctx.showLoginTUI).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ type: "message", text: expect.stringContaining("HTTPS") });
+  });
+  it("restores picker state if the UI cannot open", async () => {
+    const ctx = createContext();
+    ctx.showLoginTUI = () => { throw Error("unavailable"); };
+    await expect(loginCommand.execute("", ctx)).rejects.toThrow("unavailable");
+    expect(ctx.setPickerActive).toHaveBeenLastCalledWith(false);
   });
 });

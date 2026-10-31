@@ -1,5 +1,11 @@
 // Secret VALUES must never appear in diagnostics; only variable NAMES do.
 
+/**
+ * Private channel for the values of a spec's `envInherit` names: one JSON-encoded variable in the supervisor's
+ * process environment, never persisted. The supervisor removes it from its own environment on startup.
+ */
+export const INHERITED_ENV_VAR = "AGAV_BG_INHERITED_ENV";
+
 export interface BuildMinimalEnvironmentOptions {
   /** Names of additional process.env vars to inherit verbatim, nothing else. */
   inherit?: string[];

@@ -73,7 +73,12 @@ describe("native voice release packaging", () => {
     expect(embed).toContain("source/voice/bundled-runtime.ts");
     expect(embed).toContain('HELPER="$HELPER.exe"');
     expect(workflow.jobs["build-voice-helper"]).toBeUndefined();
-    expect(workflow.jobs.release.needs).toEqual(["check-version", "build-binaries"]);
+    // release depends on check-version and build-binaries (and the security
+    // dependency-audit); assert membership and the absence of a voice-helper job
+    // rather than an exact array, so adding security gates does not break this.
+    expect(workflow.jobs.release.needs).toContain("check-version");
+    expect(workflow.jobs.release.needs).toContain("build-binaries");
+    expect(workflow.jobs.release.needs).not.toContain("build-voice-helper");
     const upload = job.steps.find((step: any) => step.uses?.startsWith("actions/upload-artifact"));
     expect(upload.with.path).not.toContain("voice");
     const text = readFileSync(".github/workflows/release.yml", "utf8");

@@ -187,9 +187,9 @@ Credentials are stored per-agent in encrypted `config.json`:
 
 ```json
 {
-  "JIRA_URL": "encrypted:abc123...",
-  "JIRA_EMAIL": "encrypted:def456...",
-  "JIRA_API_TOKEN": "encrypted:ghi789..."
+  "JIRA_URL": "enc:abc123...",
+  "JIRA_EMAIL": "enc:def456...",
+  "JIRA_API_TOKEN": "enc:ghi789..."
 }
 ```
 

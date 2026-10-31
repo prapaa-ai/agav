@@ -18,6 +18,14 @@ Agav can read files, edit code, and execute commands. Choose controls appropriat
 
 Set a default in configuration or use `--auto-accept` and `--deny-writes` at startup. `allowedTools` can auto-approve named tools or scoped command patterns.
 
+### Changing the mode during a session
+
+In an interactive session you can switch the permission mode at any time with [`/permission`](/reference/slash-commands). Run bare `/permission` to open a picker, or pass a mode directly (`/permission deny-writes`). The chosen mode is saved with the session and **restored when you resume it**, so a session you escalated to `auto-accept` or tightened to `deny-writes` comes back in that mode. It does not change the launch default used for `/new` or for future sessions — set `permissionMode` in configuration for that.
+
+Explicit `--auto-accept` (`-y`) and `--deny-writes` flags at startup take precedence over a session's saved mode. An organization `permissionMode` floor is always applied last: `/permission` and the picker let you choose a *stricter* mode but clamp any attempt to loosen below the floor, and report the mode actually in force. Changing the mode is only available in an interactive session — in headless `agav run` and print mode, `permissionMode` from configuration is authoritative.
+
+> `/permission` (the interactive session mode) is distinct from the `--permission <json>` CLI flag, which supplies a JSON tool policy for `agav run`. See [CLI reference](/reference/cli).
+
 ### Project config safety
 
 Sensitive configuration fields are blocked from project-level `.agav/config.json` to prevent credential exfiltration and permission escalation when working in untrusted repositories. See [Configuration → Project config restrictions](/reference/configuration#project-config-restrictions) for the full list.
@@ -122,6 +130,12 @@ Set `sandboxRequired: true` in `~/.agav/config.json` or `.agav/config.json` to m
 { "sandboxRequired": true }
 ```
 
+Enforcement happens per `run_command` call against the *effective* backend: the requested `sandbox` override when one is given, otherwise the auto-detected backend. A call is refused, without executing, when that backend is `none`. This includes an explicit `sandbox: "none"` override, even with `AGAV_NO_SANDBOX=1`. An installed override such as `sandbox: "docker"` still runs.
+
+Agav still starts when no sandbox backend is available, but prints a startup warning that `run_command` calls will be refused.
+
+Project config (`.agav/config.json`) can't set or override `sandboxRequired`, so a repository can't turn it off. The setting covers only `run_command`. Skill shell blocks and background-job commands don't go through it, so they aren't covered.
+
 ## File tool path boundaries
 
 The file tools (`read_file`, `write_file`, `edit_file`) enforce path boundary checks at the application level, independent of the OS sandbox:
@@ -167,10 +181,15 @@ High-risk patterns are blocked by the shell tool before they reach the sandbox, 
 - Remote code execution: `curl ... | sh`, `wget ... | sh/bash`
 - File truncation: `truncate --size 0`
 
+These patterns match **POSIX/Unix command syntax**. The `git` patterns apply on every platform, but the filesystem, disk, permission, and process examples above are Unix forms. Windows-native equivalents — such as PowerShell `Remove-Item -Recurse -Force`, `rmdir /s`, `del`, `Format-Volume`, or `Stop-Process` — are **not** on this blocklist and are not pre-blocked. On Windows, rely on `ask` mode confirmations and the file-tool path boundaries above rather than this list, and review commands before approving `auto-accept`.
+
 ## Secrets and extensions
 
 - Prefer API-key environment variables.
-- Saved provider credentials are encrypted with AES-256-GCM before being written to global configuration.
+- Saved provider API keys use AES-256-GCM encryption in `~/.agav/config.json`. Plaintext keys entered manually and existing `enc:` values are accepted on load; saving through Agav encrypts the keys. Environment variables take precedence over global configuration; repository-level API keys are rejected.
+- Agav does not access macOS Keychain, Linux Secret Service, or Windows Credential Manager. There is no startup credential migration or OS-store authentication dialog. If an older configuration contains a `keychain:` reference, replace it with the actual API key or supply the corresponding environment variable. Previously stored consumer account references require signing in again. Existing OS-store entries are not read or deleted.
+- Encryption uses a key derived from the home directory and username, not a user-supplied password. It prevents casual plaintext disclosure but does not protect against someone who can access the files and derive the same key. Restrict filesystem access and prefer environment-provided credentials where appropriate.
+- Global-config writers use one shared exclusive-create file lock. Existing locks are **never automatically stolen or renamed**, regardless of age; saves fail closed if they cannot acquire the lock. If a crash leaves `~/.agav/.config.lock` behind, stop **all Agav processes** before manually removing that lock file, then retry. Config writes use an owner-only (`0600`) temporary file followed by atomic rename.
 - Vertex AI’s service-account JSON is not an API key and is never encrypted into `config.json` — it is read from the path in `VERTEX_AI_CREDENTIALS_PATH` or `vertexAICredentialsPath`. Keep the file outside the repository, restrict its permissions, and grant the service account only the `roles/aiplatform.user` role it needs.
 - Do not commit secrets to `./.agav/config.json`.
 - MCP servers and plugins are executable local integrations. Review their source and configuration before enabling them.

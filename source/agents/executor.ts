@@ -83,6 +83,8 @@ export async function executeNativeAgent(
     /** Explicit mode for direct executions such as a full-access agent lock. */
     permissionMode?: PermissionMode;
     iterationsBudget?: { remaining: number, total: number }
+    /** Strict gate (workflow nodes): `native-tools` only restricts, never pre-approves; see LoopParams.toolGate. */
+    toolGate?: { safeTools: ReadonlySet<string> };
   }
 ): Promise<string> {
   const callId = `${agent.manifest.name}-${randomUUID().slice(0, 8)}`;
@@ -135,13 +137,21 @@ export async function executeNativeAgent(
     // Wrap each tool's execute to inject credentials via context, not process.env.
     // Tools access credentials via process.env during their execute() call only.
     const childRegistry = new ToolRegistry();
+    // Reserve the full privileged namespace so agent-defined or per-agent MCP
+    // tools cannot shadow a built-in name (e.g. read_file) to inherit the
+    // permission gate's name-based trust — even for built-ins not in this
+    // agent's restricted native-tools set.
+    const { createBuiltinToolRegistry, PRIVILEGED_TOOL_NAMES } = await import("../tools/registry-factory.js");
+    childRegistry.reserveNames(PRIVILEGED_TOOL_NAMES);
     const nativeTools = agent.manifest["native-tools"] ?? [];
     if (nativeTools.length > 0) {
-      const { createBuiltinToolRegistry } = await import("../tools/registry-factory.js");
+      // Copied built-ins are trusted: install them past the reservation guard.
       for (const tool of createBuiltinToolRegistry(nativeTools).list()) {
-        childRegistry.register(tool);
+        childRegistry.registerBuiltin(tool);
       }
     }
+    // Agent-defined and per-agent MCP tools are untrusted: register() refuses
+    // any that claim a reserved privileged name.
     for (const tool of agent.tools) {
       childRegistry.register({
         schema: tool.schema,
@@ -183,6 +193,7 @@ export async function executeNativeAgent(
       permissionFloor: deps.config.orgPermissionFloor,
       iterationsBudget: deps.iterationsBudget ?? { remaining: deps.config.maxIterations, total: deps.config.maxIterations },
       allowedTools: nativeTools,
+      ...(deps.toolGate ? { toolGate: deps.toolGate } : {}),
       hooks: deps.hooks,
       providerIdleTimeout: deps.config.providerIdleTimeout,
     });

@@ -2,13 +2,19 @@ import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
-import { decrypt, encrypt } from "../utils/encrypt.js";
+import { decrypt, encrypt, isEncrypted } from "../utils/encrypt.js";
 import { loadOrgPolicy, applyOrgConfig, applyGatewayToken } from "./org-config.js";
 
 export type PermissionMode = "ask" | "auto-accept" | "deny-writes";
 export type EffortLevel = "minimal" | "low" | "medium" | "high" | "max";
 
 export const EFFORT_LEVELS: readonly EffortLevel[] = ["minimal", "low", "medium", "high", "max"];
+
+export const PERMISSION_MODES: readonly PermissionMode[] = ["ask", "auto-accept", "deny-writes"];
+
+export function isPermissionMode(value: unknown): value is PermissionMode {
+  return typeof value === "string" && PERMISSION_MODES.includes(value as PermissionMode);
+}
 
 const DEFAULT_MARKETPLACE_FALLBACK = "https://raw.githubusercontent.com/prapaa-ai/agav-marketplace/main";
 
@@ -75,7 +81,21 @@ export interface AgavConfig {
   statusBar?: import("./status-bar-layout.js").StatusBarLayout;
   /** Opt-in; when unset or false, `run_background_job` and `/job` refuse to do anything. */
   backgroundJobsEnabled?: boolean;
-  /** "paused" makes `agav job tick`/daemon do nothing. Global-only (PROJECT_CONFIG_DENY). */
+  /** Global-only opt-in to foreground JSON workflows; also requires backgroundJobsEnabled. */
+  workflowsEnabled?: boolean;
+  /** Pool size for background workflow runner processes (separate from maxConcurrentJobs). Defaults to 2. */
+  maxConcurrentWorkflowRuns?: number;
+  /**
+   * When true, `run_command` refuses to run if the effective sandbox backend
+   * is "none". Defaults to false. Global-only: project config cannot set it
+   * (listed in PROJECT_CONFIG_DENY) so a repository cannot disable it.
+  */
+ sandboxRequired?: boolean;
+ /**
+  * Master switch for headless background automation (`agav job tick` /
+  * daemon). "paused" makes tick/daemon exit early. Defaults to "on".
+  * Global-only (listed in PROJECT_CONFIG_DENY).
+ */
   backgroundAutomation?: "on" | "paused";
   search?: boolean;
   /**
@@ -203,6 +223,21 @@ export const PROJECT_CONFIG_TEMPLATE = {
     type: "boolean",
     eg: false,
   },
+  workflowsEnabled: {
+    description: "Opt in to foreground JSON workflows (tool, approval and job nodes). Also requires backgroundJobsEnabled. Global-only.",
+    type: "boolean",
+    eg: false,
+  },
+  maxConcurrentWorkflowRuns: {
+    description: "Maximum number of background workflow runs executing at once; further runs wait as queued. Separate from the background-job pool.",
+    type: "number",
+    eg: 2,
+  },
+  sandboxRequired: {
+    description: "Refuse to run shell commands when no sandbox backend is available. Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    type: "boolean",
+    eg: false,
+  },
   backgroundAutomation: {
     description: "Pause or resume headless background automation (agav job tick / daemon). Only honored from the global config (~/.agav/config.json); ignored in project config.",
     enum: ["on", "paused"],
@@ -323,7 +358,9 @@ const DEFAULT_CONFIG: AgavConfig = {
   maxTokens: 16384,
   maxIterations: 800,
   errorRetries: 5,
+  sandboxRequired: false,
   backgroundAutomation: "on",
+  maxConcurrentWorkflowRuns: 2,
 };
 
 /** Merge nested config objects while letting later sources override scalar values. */
@@ -395,7 +432,12 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "deepseekApiKey",
   "geminiApiKey",
   "permissionMode",
+  // A repository must not be able to disable sandbox enforcement or
+  // re-enable/pause headless automation (decisions D1, D8).
+  "sandboxRequired",
   "backgroundAutomation",
+  // Workflows are an opt-in automation surface; a repository must not enable them.
+  "workflowsEnabled",
   // A project-supplied controlPlane would redirect `agav login` to post the
   // user's identity proof (id_token + nonce) to an attacker-controlled /session.
   // The control-plane address may come only from the --control-plane flag,
@@ -479,6 +521,25 @@ function sanitizeConfig(merged: AgavConfig): void {
   if (merged.backgroundAutomation !== "on" && merged.backgroundAutomation !== "paused") {
     merged.backgroundAutomation = DEFAULT_CONFIG.backgroundAutomation;
   }
+  // Ignore invalid hand-edited values instead of passing unsupported effort levels to providers.
+  if (!isEffortLevel(merged.effort)) {
+    merged.effort = DEFAULT_CONFIG.effort;
+  }
+  if (!Number.isInteger(merged.maxIterations) || merged.maxIterations < 1) {
+    merged.maxIterations = DEFAULT_CONFIG.maxIterations;
+  }
+  if (!Number.isInteger(merged.errorRetries) || merged.errorRetries < 0) {
+    merged.errorRetries = DEFAULT_CONFIG.errorRetries;
+  }
+  if (typeof merged.sandboxRequired !== "boolean") {
+    merged.sandboxRequired = DEFAULT_CONFIG.sandboxRequired;
+  }
+  if (!Number.isInteger(merged.maxConcurrentWorkflowRuns) || merged.maxConcurrentWorkflowRuns! < 1) {
+    merged.maxConcurrentWorkflowRuns = DEFAULT_CONFIG.maxConcurrentWorkflowRuns;
+  }
+  if (merged.backgroundAutomation !== "on" && merged.backgroundAutomation !== "paused") {
+    merged.backgroundAutomation = DEFAULT_CONFIG.backgroundAutomation;
+  }
 }
 
 /**
@@ -498,6 +559,33 @@ export async function loadGlobalConfig(): Promise<AgavConfig> {
   ) as unknown as AgavConfig;
   sanitizeConfig(merged);
   return merged;
+}
+
+/**
+ * Decrypt a stored value to plaintext, returning undefined when it is an `enc:`
+ * ciphertext that cannot be decrypted. decrypt() returns the ciphertext
+ * unchanged on failure (e.g. a config restored under a different user/home, a
+ * truncated value, or a different machine key); passing that raw `enc:...` blob
+ * on to a provider would masquerade as an API key and fail at request time with
+ * a confusing error. Treating it as "no key" surfaces the real problem (missing
+ * credential) instead. A genuine plaintext value passes through untouched.
+ */
+function safeDecrypt(value: string): string | undefined {
+  const plain = decrypt(value);
+  // Legacy OS-store references are not credentials. Re-enter the actual key.
+  if (plain.startsWith("keychain:")) return undefined;
+  if (isEncrypted(value) && isEncrypted(plain)) return undefined; // decryption failed
+  return plain || undefined;
+}
+
+/** Resolve environment > project > global > default without OS-store access. */
+function resolveApiKey(
+  envValue: string | undefined,
+  projectValue: string | undefined,
+  globalValue: string | undefined,
+  defaultValue: string | undefined,
+): string | undefined {
+  return safeDecrypt(envValue ?? projectValue ?? globalValue ?? defaultValue ?? "");
 }
 
 /** Load config from global and project files, then apply environment-derived overrides. */
@@ -537,42 +625,32 @@ export async function loadConfig(): Promise<AgavConfig> {
     ];
   }
 
-  merged.anthropicApiKey = decrypt(
-    process.env["ANTHROPIC_API_KEY"] ??
-    projectConfig.anthropicApiKey ??
-    globalConfig.anthropicApiKey ??
-    DEFAULT_CONFIG.anthropicApiKey ?? "",
-  ) || undefined;
-  merged.openaiApiKey = decrypt(
-    process.env["OPENAI_API_KEY"] ??
-    projectConfig.openaiApiKey ??
-    globalConfig.openaiApiKey ??
-    DEFAULT_CONFIG.openaiApiKey ?? "",
-  ) || undefined;
-  merged.openrouterApiKey = decrypt(
-    process.env["OPENROUTER_API_KEY"] ??
-    projectConfig.openrouterApiKey ??
-    globalConfig.openrouterApiKey ??
-    DEFAULT_CONFIG.openrouterApiKey ?? "",
-  ) || undefined;
-  merged.nvidiaApiKey = decrypt(
-    process.env["NVIDIA_API_KEY"] ??
-    projectConfig.nvidiaApiKey ??
-    globalConfig.nvidiaApiKey ??
-    DEFAULT_CONFIG.nvidiaApiKey ?? "",
-  ) || undefined;
-  merged.deepseekApiKey = decrypt(
-    process.env["DEEPSEEK_API_KEY"] ??
-    projectConfig.deepseekApiKey ??
-    globalConfig.deepseekApiKey ??
-    DEFAULT_CONFIG.deepseekApiKey ?? "",
-  ) || undefined;
-  merged.geminiApiKey = decrypt(
-    process.env["GEMINI_API_KEY"] ??
-    projectConfig.geminiApiKey ??
-    globalConfig.geminiApiKey ??
-    DEFAULT_CONFIG.geminiApiKey ?? "",
-  ) || undefined;
+  // Environment variables override project and global file credentials.
+  // Plaintext and existing enc: values both work; saves encrypt file credentials.
+  merged.anthropicApiKey = resolveApiKey(
+    process.env["ANTHROPIC_API_KEY"],
+    projectConfig.anthropicApiKey, globalConfig.anthropicApiKey, DEFAULT_CONFIG.anthropicApiKey,
+  );
+  merged.openaiApiKey = resolveApiKey(
+    process.env["OPENAI_API_KEY"],
+    projectConfig.openaiApiKey, globalConfig.openaiApiKey, DEFAULT_CONFIG.openaiApiKey,
+  );
+  merged.openrouterApiKey = resolveApiKey(
+    process.env["OPENROUTER_API_KEY"],
+    projectConfig.openrouterApiKey, globalConfig.openrouterApiKey, DEFAULT_CONFIG.openrouterApiKey,
+  );
+  merged.nvidiaApiKey = resolveApiKey(
+    process.env["NVIDIA_API_KEY"],
+    projectConfig.nvidiaApiKey, globalConfig.nvidiaApiKey, DEFAULT_CONFIG.nvidiaApiKey,
+  );
+  merged.deepseekApiKey = resolveApiKey(
+    process.env["DEEPSEEK_API_KEY"],
+    projectConfig.deepseekApiKey, globalConfig.deepseekApiKey, DEFAULT_CONFIG.deepseekApiKey,
+  );
+  merged.geminiApiKey = resolveApiKey(
+    process.env["GEMINI_API_KEY"],
+    projectConfig.geminiApiKey, globalConfig.geminiApiKey, DEFAULT_CONFIG.geminiApiKey,
+  );
 
   // Vertex AI — the credentials path alone enables the provider; there is no
   // separate on/off flag to keep in sync with it.
@@ -599,12 +677,10 @@ export async function loadConfig(): Promise<AgavConfig> {
     const p = parseInt(process.env["OLLAMA_PORT"]!, 10);
     if (!isNaN(p)) merged.ollamaPort = p;
   }
-  merged.ollamaApiKey = decrypt(
-    process.env["OLLAMA_API_KEY"] ??
-    projectConfig.ollamaApiKey ??
-    globalConfig.ollamaApiKey ??
-    DEFAULT_CONFIG.ollamaApiKey ?? "",
-  ) || undefined;
+  merged.ollamaApiKey = resolveApiKey(
+    process.env["OLLAMA_API_KEY"],
+    projectConfig.ollamaApiKey, globalConfig.ollamaApiKey, DEFAULT_CONFIG.ollamaApiKey,
+  );
 
   // Organization policy applies last so it overrides global, project, and env
   // sources alike. An admin's managed config is a non-overridable floor; the
@@ -624,19 +700,158 @@ export async function loadConfig(): Promise<AgavConfig> {
   return merged;
 }
 
-/** Persist config to the global config file, encrypting any API keys present. */
-export async function saveConfig(config: AgavConfig): Promise<void> {
+/** Atomically write serialized config to the global config file (temp + rename, 0600). */
+async function writeConfigAtomic(data: Record<string, unknown>): Promise<void> {
   await ensureDir(AGAV_DIR);
-  const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
-  const out: Record<string, unknown> = { ...safe };
-  if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
-  if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
-  if (openrouterApiKey) out.openrouterApiKey = encrypt(openrouterApiKey);
-  if (nvidiaApiKey) out.nvidiaApiKey = encrypt(nvidiaApiKey);
-  if (deepseekApiKey) out.deepseekApiKey = encrypt(deepseekApiKey);
-  if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
-  if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
-  await writeFile(CONFIG_PATH, JSON.stringify(out, null, 2) + "\n");
+  const { randomBytes } = await import("node:crypto");
+  const tmpPath = `${CONFIG_PATH}.tmp.${randomBytes(8).toString("hex")}`;
+  const serialized = JSON.stringify(data, null, 2) + "\n";
+  const { rename, unlink } = await import("node:fs/promises");
+  try {
+    await writeFile(tmpPath, serialized, { mode: 0o600, flag: "wx" });
+    await rename(tmpPath, CONFIG_PATH);
+  } catch (err) {
+    await unlink(tmpPath).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * Read the raw on-disk global config object. A missing file (ENOENT) or
+ * unparseable JSON yields {} (there is nothing to preserve). Any OTHER read
+ * failure (EACCES, EIO, …) is rethrown: callers that merge onto the existing
+ * file to preserve credential references must not mistake "could not read" for
+ * "no existing config" and then drop those references.
+ */
+async function readStoredConfig(): Promise<Record<string, unknown>> {
+  let raw: string;
+  try {
+    raw = await readFile(CONFIG_PATH, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw err;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {}; // corrupt JSON: treat as empty (the file is effectively replaced)
+  }
+}
+
+/** Persist config with API keys encrypted in-file, never in an OS store. */
+export async function saveConfig(config: AgavConfig): Promise<void> {
+  await withConfigLock(async () => {
+    const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
+    const out: Record<string, unknown> = { ...safe };
+    if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
+    if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
+    if (openrouterApiKey) out.openrouterApiKey = encrypt(openrouterApiKey);
+    if (nvidiaApiKey) out.nvidiaApiKey = encrypt(nvidiaApiKey);
+    if (deepseekApiKey) out.deepseekApiKey = encrypt(deepseekApiKey);
+    if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
+    if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
+    await writeConfigAtomic(out);
+  });
+}
+
+// Serialize config and status-bar writes to prevent lost concurrent edits.
+const CONFIG_LOCK_PATH = join(AGAV_DIR, ".config.lock");
+/** How long a blocking writer waits before rejecting without changing config. */
+const CONFIG_LOCK_WAIT_MS = 5_000;
+/** Poll interval while waiting for a contended lock. */
+const CONFIG_LOCK_POLL_MS = 50;
+
+/** Raised when the shared config lock cannot be acquired within the budget. */
+class ConfigLockTimeoutError extends Error {
+  constructor() {
+    super(`Could not acquire the Agav config lock. Retry after other saves finish. If a process crashed, stop all Agav processes before manually removing ${CONFIG_LOCK_PATH}.`);
+    this.name = "ConfigLockTimeoutError";
+  }
+}
+
+/**
+ * In-process serialization. Every config writer in THIS process chains onto a
+ * single promise, so concurrent saves / a status-bar write never
+ * interleave regardless of the cross-process file lock. This is the dominant real
+ * case (one Agav process) and is race-free by construction (single-threaded
+ * event loop); the file lock below only guards the much rarer multi-process case.
+ */
+let inProcessChain: Promise<unknown> = Promise.resolve();
+function withInProcessLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = inProcessChain.then(fn, fn);
+  // Keep the chain alive even if fn rejects, but don't let it accumulate rejections.
+  inProcessChain = run.then(() => {}, () => {});
+  return run;
+}
+
+/**
+ * Exclusive-create lock. Never steal, rename, or remove another holder's lock,
+ * regardless of age: a suspended process can still own its transaction. With no
+ * automatic takeover, only the successful creator removes this path, after its
+ * complete transaction. A crashed holder requires manual recovery with all Agav
+ * processes stopped. External/manual lock removal during a live transaction is
+ * not supported. This deliberately favors safety over automatic crash recovery.
+ */
+async function tryAcquireConfigLock(): Promise<(() => Promise<void>) | null> {
+  const { open, unlink } = await import("node:fs/promises");
+  await ensureDir(AGAV_DIR);
+  let handle;
+  try {
+    handle = await open(CONFIG_LOCK_PATH, "wx", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
+    throw error;
+  }
+  // We own the pathname until release; nobody in this protocol can replace it.
+  // Set released before the await so even concurrent duplicate releases cannot
+  // remove a subsequent owner's lock.
+  let released = false;
+  const release = async () => {
+    if (released) return;
+    released = true;
+    await unlink(CONFIG_LOCK_PATH);
+  };
+  try {
+    try {
+      await handle.writeFile(String(process.pid));
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    await release();
+    throw error;
+  }
+  return release;
+}
+
+/**
+ * Run `fn` while holding the shared config lock, WAITING (bounded poll) for a
+ * contended lock. If the lock cannot be acquired within the budget, FAIL CLOSED
+ * by throwing rather than mutating without the lock — an unlocked write could
+ * interleave with another process and overwrite a credential rotation or settings
+ * edit. A rejected save is recoverable
+ * (the caller/user retries); a corrupted credential transaction is not.
+ *
+ * Wrapped in the in-process mutex so same-process writers serialize deterministically
+ * and only contend on the file lock against OTHER processes.
+ */
+async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
+  return withInProcessLock(async () => {
+    const deadline = Date.now() + CONFIG_LOCK_WAIT_MS;
+    let release: (() => Promise<void>) | null = null;
+    for (;;) {
+      release = await tryAcquireConfigLock();
+      if (release) break;
+      if (Date.now() >= deadline) throw new ConfigLockTimeoutError();
+      await new Promise((r) => setTimeout(r, CONFIG_LOCK_POLL_MS));
+    }
+    try {
+      return await fn();
+    } finally {
+      await release();
+    }
+  });
 }
 
 /**
@@ -655,38 +870,20 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
 export async function saveStatusBarLayout(
   layout: import("./status-bar-layout.js").StatusBarLayout | undefined,
 ): Promise<void> {
-  await ensureDir(AGAV_DIR);
-  let stored: Record<string, unknown> = {};
-  try {
-    stored = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
-    if (typeof stored !== "object" || stored === null) stored = {};
-  } catch {
-    // Missing or corrupt file: start from an empty object so we still persist
-    // the layout rather than failing. A corrupt file is effectively replaced.
-    stored = {};
-  }
-  if (layout === undefined) {
-    delete stored.statusBar;
-  } else {
-    stored.statusBar = layout;
-  }
-  // Unpredictable temp name (random suffix, not the guessable pid) in the same
-  // directory as the target so the final rename stays atomic on one filesystem.
-  const { randomBytes } = await import("node:crypto");
-  const tmpPath = `${CONFIG_PATH}.tmp.${randomBytes(8).toString("hex")}`;
-  const serialized = JSON.stringify(stored, null, 2) + "\n";
-  const { rename, unlink } = await import("node:fs/promises");
-  // "wx" (O_CREAT | O_EXCL) refuses to open an existing path, so a pre-planted
-  // symlink at tmpPath can never be followed; mode 0o600 keeps the config —
-  // which may hold encrypted API keys — owner-only even before the rename.
-  try {
-    await writeFile(tmpPath, serialized, { mode: 0o600, flag: "wx" });
-    await rename(tmpPath, CONFIG_PATH);
-  } catch (err) {
-    // Never leave an orphaned temp file behind on any failure.
-    await unlink(tmpPath).catch(() => {});
-    throw err;
-  }
+  // Held under the shared config lock so a concurrent saveConfig
+  // cannot read a stale copy and clobber this layout change (or vice versa).
+  await withConfigLock(async () => {
+    // A missing/corrupt file resolves to {} (effectively replaced); a real read
+    // error (EACCES/EIO) propagates rather than silently discarding existing keys.
+    const stored = await readStoredConfig();
+    if (layout === undefined) {
+      delete stored.statusBar;
+    } else {
+      stored.statusBar = layout;
+    }
+    // Preserve stored values; the temp+rename write stays atomic.
+    await writeConfigAtomic(stored);
+  });
 }
 
 /** Return the root directory used for Agav's global state files. */

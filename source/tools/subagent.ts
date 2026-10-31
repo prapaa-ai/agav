@@ -13,7 +13,7 @@ import type { ToolCallInfo } from "../components/tool-call-display.js";
 import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
 import { ToolRegistry as ToolRegistryClass } from "./registry.js";
-import { createWorktree, removeWorktree, applyWorktreeChanges } from "../utils/worktree.js";
+import { createWorktree, removeWorktree, applyWorktreeChanges, type WorkerWorktree } from "../utils/worktree.js";
 import { createSteerQueue, formatSteersForPrompt } from "../commands/steer.js";
 
 const MAX_CONCURRENT = 5;
@@ -101,7 +101,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           },
           model: {
             type: "string",
-            description: "Only set this when the user explicitly requested a different model. Omit to use the active model. The requested model must exist and requires explicit per-call user approval."
+            description: "Only set this when the user explicitly requested a different model. Omit to use the active model. The requested model must exist."
           },
         },
         required: ["title", "task"],
@@ -188,7 +188,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           input: { title, model: requestedModel, activeModel: config.model },
           subagentTask: title,
           explicitApprovalOnly: true,
-        });
+        }, deps.getSignal());
         if (approval !== "yes") {
           return { output: `Subagent model change to '${requestedModel}' was not approved.`, isError: true };
         }
@@ -210,9 +210,13 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       }
 
       const childRegistry = new ToolRegistryClass();
+      // Carry the parent's privileged-name reservations so the child registry
+      // keeps the same shadowing protection, and install the copied (trusted)
+      // parent tools past the reservation guard.
+      childRegistry.reserveNames(deps.parentToolRegistry.reservedNames());
       for (const tool of deps.parentToolRegistry.list()) {
         if (tool.schema.name !== "subagent") {
-          childRegistry.register(tool);
+          childRegistry.registerBuiltin(tool);
         }
       }
 
@@ -251,8 +255,9 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
 
       const WRITE_KEYWORDS = /\b(fix|edit|write|refactor|implement|create|add|update|modify|change|delete|remove|rename)\b/i;
       const useWorktree = WRITE_KEYWORDS.test(task);
-      let worktreePath: string | null = null;
-      const branchName = `agav-sa-${id}`;
+      let worktree: WorkerWorktree | null = null;
+      let retainWorktree = false;
+      let deliveryCompleted = false;
       const originalCwd = process.cwd();
 
       let finalText = "";
@@ -270,17 +275,17 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
 
       try {
         if (useWorktree) {
-          worktreePath = await createWorktree(id);
-          if (worktreePath) {
-            process.chdir(worktreePath);
+          worktree = await createWorktree(id);
+          if (worktree) {
+            process.chdir(worktree.path);
           }
         }
 
         // If cancelled during worktree setup, bail out before starting the loop.
         if (childController.signal.aborted) {
-          if (worktreePath) {
+          if (worktree) {
             process.chdir(originalCwd);
-            await removeWorktree(worktreePath, branchName).catch(() => { });
+            await removeWorktree(worktree).catch(() => { });
           }
           progress.status = "error";
           progress.error = "Cancelled";
@@ -420,9 +425,9 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
               active.set(id, { ...progress });
               controllers.delete(id);
               broadcastNow();
-              if (worktreePath) {
+              if (worktree) {
                 process.chdir(originalCwd);
-                await removeWorktree(worktreePath, branchName).catch(() => { });
+                await removeWorktree(worktree).catch(() => { });
               }
               return {
                 output: `Subagent error: ${event.error.message}`,
@@ -431,21 +436,26 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           }
         }
 
-        let mergeNote = "";
-        if (worktreePath) {
+        if (worktree) {
           process.chdir(originalCwd);
-          // Never merge partial edits from a cancelled subagent — discard the
-          // worktree so incomplete, unreviewed changes cannot reach the parent.
+          // Once delivery starts, any failure (including an exception) retains
+          // the worktree. Only a successful merge or safe cancellation discards it.
           if (!childController.signal.aborted) {
-            const { applied, error: mergeErr } = await applyWorktreeChanges(worktreePath);
-            if (!applied) {
-              mergeNote = `\n\n[Worktree merge warning]: ${mergeErr}`;
+            retainWorktree = true;
+            const result = await applyWorktreeChanges(worktree, childController.signal);
+            if (!result.applied && !result.cancelled) {
+              throw new Error(result.error || "Worker integration failed");
             }
+            retainWorktree = false;
+            deliveryCompleted = result.applied;
           }
-          await removeWorktree(worktreePath, branchName).catch(() => { });
+          // Delivery is finished. A later cancel must not report already merged
+          // output as discarded while asynchronous cleanup is running.
+          controllers.delete(id);
+          await removeWorktree(worktree).catch(() => { });
         }
 
-        if (childController.signal.aborted) {
+        if (childController.signal.aborted && !deliveryCompleted) {
           progress.status = "error";
           progress.error = "Cancelled";
           active.set(id, { ...progress });
@@ -468,20 +478,23 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
         }, 100);
 
         return {
-          output: (finalText || "Subagent completed but produced no output.") + mergeNote,
+          output: finalText || "Subagent completed but produced no output.",
           isError: false,
         };
       } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
+        const cause = err instanceof Error ? err.message : String(err);
+        const errMsg = retainWorktree && worktree
+          ? `Worker finished, but automatic integration failed. ${cause}\nRecoverable work retained at: ${worktree.path}\nBranch: ${worktree.branchName}`
+          : cause;
         progress.status = "error";
         progress.error = errMsg;
         active.set(id, { ...progress });
         controllers.delete(id);
         broadcastNow();
 
-        if (worktreePath) {
+        if (worktree) {
           process.chdir(originalCwd);
-          await removeWorktree(worktreePath, branchName).catch(() => { });
+          if (!retainWorktree) await removeWorktree(worktree).catch(() => { });
         }
 
         setTimeout(() => {
@@ -489,7 +502,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           broadcastNow();
         }, 100);
 
-        return { output: `Subagent error: ${errMsg}`, isError: true };
+        return { output: `${finalText ? `${finalText}\n\n` : ""}Subagent error: ${errMsg}`, isError: true };
       } finally {
         steerQueue.dispose();
       }

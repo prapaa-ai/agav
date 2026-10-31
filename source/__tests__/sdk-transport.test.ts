@@ -5,6 +5,14 @@ import { AnthropicProvider } from "../providers/anthropic.js";
 import { OpenAIProvider } from "../providers/openai.js";
 import type { LLMProvider, StreamEvent, StreamParams } from "../providers/types.js";
 
+// Each SDK stamps its own package version into x-stainless-package-version.
+// Keep these equal to the versions resolved in pnpm-lock.yaml (openai pinned
+// via the security override that forces patched transitive deps). The SDKs do
+// not export "./package.json", so these cannot be read at runtime — update them
+// in lockstep whenever the openai/@anthropic-ai/sdk versions change.
+const openaiVersion = "7.47.0";
+const anthropicVersion = "1.3.0";
+
 // Only the transport is replaced: the installed SDK request builders, SSE
 // decoders and (for messages.stream) MessageStream accumulator all run for real.
 const fetchMock = vi.fn<typeof fetch>();
@@ -75,7 +83,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe("real SDK SSE transport (Anthropic 0.133 / OpenAI 7.41)", () => {
+describe("real SDK SSE transport (installed Anthropic / OpenAI SDKs)", () => {
   it("runs Anthropic messages.stream through its accumulator and preserves exact text/tool deltas", async () => {
     const wire = anthropicStart()
       + sse({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, true)
@@ -103,7 +111,7 @@ describe("real SDK SSE transport (Anthropic 0.133 / OpenAI 7.41)", () => {
     ]);
     const req = request();
     expect(req.url.href).toBe("https://offline.invalid/v1/messages");
-    expect(req.headers.get("x-stainless-package-version")).toBe("0.133.0");
+    expect(req.headers.get("x-stainless-package-version")).toBe(anthropicVersion);
     expect(req.headers.get("x-stainless-helper-method")).toBe("stream");
     expect(req.body).toMatchObject({ stream: true, max_tokens: 128,
       tools: [{ name: "read_file", input_schema: params.tools![0]!.inputSchema, cache_control: { type: "ephemeral" } }] });
@@ -134,7 +142,7 @@ describe("real SDK SSE transport (Anthropic 0.133 / OpenAI 7.41)", () => {
     expect(req.url.searchParams.get("tenant")).toBe("team a");
     // 7.27 preserves repeated base-URL query parameters, not just the last one.
     expect(req.url.searchParams.getAll("tag")).toEqual(["one", "two"]);
-    expect(req.headers.get("x-stainless-package-version")).toBe("7.41.0");
+    expect(req.headers.get("x-stainless-package-version")).toBe(openaiVersion);
     expect(req.body).toMatchObject({ stream: true, max_completion_tokens: 128, stream_options: { include_usage: true } });
     expect(req.body).not.toHaveProperty("max_tokens");
   });

@@ -36,7 +36,9 @@ describe("reviewed release notes", () => {
     expect(step).toBeDefined();
     expect(step.if).toContain("steps.version.outputs.changed == 'true'");
     expect(step.run).toContain("validate");
-    expect(workflow.jobs["build-binaries"].needs).toBe("check-version");
+    // build-binaries runs after check-version (the notes gate blocks builds);
+    // it also depends on dependency-audit, so assert membership not equality.
+    expect(workflow.jobs["build-binaries"].needs).toContain("check-version");
     expect(run("validate").status).toBe(1);
     expect(run("validate").stderr).toContain("docs/releases/v0.2.4.md");
   });

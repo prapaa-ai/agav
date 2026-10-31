@@ -1,5 +1,5 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
-import type { AgavConfig } from "../config/config.js";
+import { type AgavConfig } from "../config/config.js";
 import { providerSetupHints, orgPolicyError } from "../config/startup.js";
 import { fetchVertexAIModels } from "../providers/vertex-ai.js";
 

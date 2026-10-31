@@ -141,7 +141,7 @@ export async function reconcileJob(args: ReconcileJobArgs): Promise<ReconcileRes
   }
 
   // (a) Terminal results are already verified and must never be re-touched.
-  if (isTerminalLifecycle(initial.state)) {
+  if (initial.abandonment || isTerminalLifecycle(initial.state)) {
     return { action: "none", record: initial };
   }
 

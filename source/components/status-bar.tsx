@@ -28,6 +28,8 @@ interface Props {
   psResponse?: string;
   psLoading?: boolean;
   loopStatus?: string;
+  /** Background workflow activity, e.g. "workflows: 1 running · 2 need approval" (omitted when idle). */
+  workflowStatus?: string;
   sandboxBackend?: string;
   branchName?: string;
   turnStartTime?: number | null;
@@ -108,6 +110,7 @@ export default function StatusBar({
   psResponse,
   psLoading,
   loopStatus,
+  workflowStatus,
   sandboxBackend,
   branchName,
   turnStartTime,
@@ -187,6 +190,9 @@ export default function StatusBar({
       )}
       {loopStatus && (
         <Text color="yellow" dimColor>{loopStatus}</Text>
+      )}
+      {workflowStatus && (
+        <Text color="yellow" dimColor>{workflowStatus}</Text>
       )}
       {psLoading ? (
         <Text color="cyan" dimColor><Spinner />{" ps: thinking..."}</Text>

@@ -48,7 +48,7 @@ The flag overrides `maxIterations` in configuration for the current session only
 | `--print`, `-P` | Print mode |
 | `--stream` | Stream print-mode response text |
 | `--output-schema <json\|@file>` | Validate print-mode output against JSON Schema |
-| `--permission <json>` | Tool policy for `agav run` |
+| `--permission <json>` | JSON tool policy for `agav run` (distinct from the interactive [`/permission`](/reference/slash-commands) session mode) |
 | `--max-turns <number>` | Limit the number of agent iterations per prompt in interactive, print, and run modes |
 | `--provider-idle-timeout <ms>` | Idle timeout in milliseconds waiting for provider stream activity (1–2147483647 or `disabled`) |
 | `--resume`, `-r [id]` | Open the session picker or resume by ID prefix |

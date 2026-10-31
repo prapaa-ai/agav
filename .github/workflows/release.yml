@@ -3,6 +3,20 @@ name: Release
 on:
   push:
     branches: [main, beta]
+  # Manual recovery entry point. Lets an operator re-run a release for the
+  # version currently in package.json without a new commit (e.g. after a
+  # transient infra failure), and - with force - rebuild and overwrite a
+  # release that already published but shipped a bad asset. See
+  # docs/deploy/release-recovery.md.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Re-release the current package.json version even if a non-draft GitHub Release already exists"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   check-version:
@@ -13,35 +27,105 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN }}
           fetch-depth: 2
-      - name: Detect version bump
+      # Publish-gap detection, not a HEAD~1 diff. The release runs whenever the
+      # committed package.json version has no completed (non-draft) GitHub
+      # Release yet - so a same-version fix commit (or a manual re-run) after a
+      # failed pipeline re-triggers automatically until the release actually
+      # lands, and a version that already published cleanly never re-releases.
+      # See docs/deploy/release-recovery.md for the full rationale.
+      - name: Detect unreleased version
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.TOKEN }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
         run: |
+          set -euo pipefail
           CURRENT=$(node -p "require('./package.json').version")
-          PREV=$(git show HEAD~1:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).version" 2>/dev/null || echo "")
-          if [ "$CURRENT" != "$PREV" ] && [ -n "$PREV" ]; then
-            # Validate version format
-            if ! echo "$CURRENT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+(\.[0-9]+)?)?$'; then
-              echo "::error::Invalid version format: $CURRENT. Expected: x.y.z or x.y.z-beta.N"
-              exit 1
-            fi
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
-            # Versions with a hyphen suffix (e.g. 0.2.0-beta.1) are pre-releases.
-            if echo "$CURRENT" | grep -q '-'; then
-              echo "prerelease=true" >> "$GITHUB_OUTPUT"
-              echo "Version changed: $PREV → $CURRENT (pre-release)"
-            else
-              echo "prerelease=false" >> "$GITHUB_OUTPUT"
-              echo "Version changed: $PREV → $CURRENT (stable)"
-            fi
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No version change"
+          # Validate version format up front - a malformed version must fail the
+          # release regardless of trigger, not be silently skipped.
+          if ! echo "$CURRENT" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+(\.[0-9]+)?)?$'; then
+            echo "::error::Invalid version format: $CURRENT. Expected: x.y.z or x.y.z-beta.N"
+            exit 1
           fi
+          TAG="v$CURRENT"
+
+          # Look up an existing GitHub Release for this exact tag. A draft counts
+          # as "not released" so an interrupted run that left a draft is
+          # completed rather than treated as done. Distinguish 404 (no release)
+          # from genuine API errors so a transient API failure fails closed
+          # instead of silently publishing.
+          if gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
+               --jq '.draft' > /tmp/rel_draft 2>/tmp/rel_err; then
+            if [ "$(cat /tmp/rel_draft)" = "false" ]; then
+              RELEASED=true
+            else
+              RELEASED=false   # draft release -> finish it
+            fi
+          elif grep -q "Not Found" /tmp/rel_err; then
+            RELEASED=false      # no release yet -> publish it
+          else
+            echo "::error::Could not determine release state for $TAG:"
+            cat /tmp/rel_err
+            exit 1
+          fi
+
+          # Downgrade guard: never auto-release a version older than the latest
+          # published release (e.g. package.json was reverted). An explicit bump
+          # is required; force overrides this for deliberate operator recovery.
+          if [ "$RELEASED" = "false" ] && [ "$FORCE" != "true" ]; then
+            LATEST=$(gh api "repos/${{ github.repository }}/releases/latest" \
+              --jq '.tag_name' 2>/dev/null || echo "")
+            if [ -n "$LATEST" ]; then
+              HIGHEST=$(printf '%s\n%s\n' "$CURRENT" "${LATEST#v}" | sort -V | tail -1)
+              if [ "$HIGHEST" = "${LATEST#v}" ] && [ "${LATEST#v}" != "$CURRENT" ]; then
+                echo "::error::package.json version $CURRENT is older than the latest release $LATEST. Bump the version, or re-run with force to override."
+                exit 1
+              fi
+            fi
+          fi
+
+          if [ "$FORCE" = "true" ]; then
+            RELEASED=false
+            echo "Force re-release requested for $TAG."
+          fi
+
+          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
+          # Versions with a hyphen suffix (e.g. 0.2.0-beta.1) are pre-releases.
+          if echo "$CURRENT" | grep -q '-'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ "$RELEASED" = "true" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG already published (non-draft). Nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG has no completed release yet - proceeding."
+          fi
+      # Fail the prerequisite job before any binary is built: the compiled
+      # release embeds the Bun runtime, so a Bun below the advisory floor would
+      # ship a vulnerable artifact to every user. Unconditional and fail-closed.
+      # The gate parses workflow YAML with the real `yaml` parser (a prod dep),
+      # so install dependencies from the lockfile first.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - run: pnpm install --frozen-lockfile
+      - name: Validate pinned Bun against advisory floor
+        run: node scripts/check-bun-advisories.mjs
+      # The voice-enabled binary statically links whisper.cpp (+ bundled ggml) and
+      # miniaudio; a version below their advisory floors would ship a vulnerable
+      # voice helper. Block the whole release here, before any binary is built.
+      - name: Validate native voice components against advisory floors
+        run: node scripts/check-voice-advisories.mjs
       # Fail the prerequisite job before spending time building stable binaries.
       - name: Validate reviewed release notes
         if: steps.version.outputs.changed == 'true'
@@ -49,9 +133,158 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: node scripts/release-notes.mjs validate "$VERSION"
 
+  # Audit the release commit's production dependencies, fail-closed on HIGH/
+  # CRITICAL. The PR-time audit cannot cover advisories disclosed between PR
+  # validation and release, so publication must re-check the exact commit being
+  # shipped. build-binaries and release both depend on this.
+  dependency-audit:
+    name: Dependency Vulnerability Audit
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          token: ${{ secrets.TOKEN }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level high
+      # Also re-check the dev/build dependency graph at the exact release commit:
+      # a compromised build tool (tsx, vitest, tsc, ...) could tamper with the
+      # artifact produced here even though it never ships. Fail-closed, same floor.
+      - run: pnpm audit --dev --audit-level high
+      - name: Check fresh runtime policy and live upstream advisories
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-runtime-security.mjs --live
+
+  # Produce the authoritative, attested, published SBOM for the EXACT release
+  # commit. The postmerge SBOM job is for merge-time visibility only (artifact,
+  # 90-day retention, mutable tag); this one is the record of record for the
+  # shipped version. It is a CycloneDX software bill of materials over the
+  # resolved production dependency graph, published as a release asset next to
+  # the binaries and backed by a Sigstore SBOM attestation bound to this commit.
+  # Consumers verify with `gh attestation verify agav-sbom-<version>.cdx.json
+  # --repo prapaa-ai/agav --predicate-type https://cyclonedx.org/bom` (the
+  # predicate type is required — the CLI defaults to SLSA provenance, which
+  # would reject an SBOM attestation). Does not cover the embedded Bun runtime
+  # and its vendored C libraries — those are invisible to the npm dependency
+  # graph and are tracked separately by scripts/check-bun-advisories.mjs.
+  sbom:
+    name: SBOM Generation and Attestation
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    # id-token mints the Sigstore OIDC identity; attestations writes the signed
+    # SBOM attestation to this repo. contents:read is the default but kept
+    # explicit now that the job holds extra scopes.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - run: pnpm install --frozen-lockfile
+      - name: Generate CycloneDX SBOM
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: node scripts/gen-sbom.mjs "agav-sbom-${VERSION}.cdx.json"
+      - name: Attest SBOM provenance
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          # The subject is the SBOM document itself: the attestation proves this
+          # repository's release workflow produced this SBOM from this commit.
+          subject-path: agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json
+          sbom-path: agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json
+      - name: Checksum the SBOM
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then hash() { sha256sum "$1"; }; else hash() { shasum -a 256 "$1"; }; fi
+          hash "agav-sbom-${VERSION}.cdx.json" > "agav-sbom-${VERSION}.cdx.json.sha256"
+          cat "agav-sbom-${VERSION}.cdx.json.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agav-sbom
+          # 90 days is the maximum workflow-artifact retention for a public
+          # repository; requesting more is silently clamped. This copy is a
+          # convenience for inspecting a run. The durable, long-lived copy is
+          # the SBOM published as a GitHub Release asset below (and mirrored to
+          # R2), which lives with the release, not the workflow run.
+          retention-days: 90
+          path: |
+            agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json
+            agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json.sha256
+
+  # Validate the release SHA here, not a separate workflow or a PR's merge SHA.
+  validation:
+    name: Release Validation
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm build
+      - run: pnpm exec vitest run
+      - name: Shell installer regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh scripts/tests/install-sh.test.sh
+          sh scripts/tests/install-sh-path.test.sh
+
+  installer-windows:
+    name: Release Windows Installer Tests
+    needs: check-version
+    if: needs.check-version.outputs.changed == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Suites under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $Fail = 0
+          foreach ($Suite in @("install-ps1.test.ps1", "install-ps1-path.test.ps1")) {
+            & powershell -NoProfile -File "scripts\tests\$Suite"
+            if ($LASTEXITCODE -ne 0) { $Fail = 1 }
+          }
+          exit $Fail
+      - name: Suites under pwsh 7
+        shell: pwsh
+        run: |
+          $Fail = 0
+          foreach ($Suite in @("install-ps1.test.ps1", "install-ps1-path.test.ps1", "install-ps1-lint.test.ps1")) {
+            & pwsh -NoProfile -File "scripts\tests\$Suite"
+            if ($LASTEXITCODE -ne 0) { $Fail = 1 }
+          }
+          exit $Fail
+
   build-binaries:
     name: Build ${{ matrix.target }}
-    needs: check-version
+    needs: [check-version, dependency-audit]
     if: needs.check-version.outputs.changed == 'true'
     strategy:
       matrix:
@@ -84,22 +317,48 @@ jobs:
             os: windows-latest
             ext: .exe
     runs-on: ${{ matrix.os }}
+    # Build provenance attestations: id-token mints the Sigstore OIDC identity,
+    # attestations writes the signed attestation to this repo. contents:read is
+    # the default; keep it explicit now that the job holds extra scopes.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4.2.2
+      # Build-egress monitoring: install the runner network monitor before any
+      # other step so every network call the build makes — dependency
+      # resolution, toolchain setup, the compile itself — is recorded and
+      # correlated to the process that made it. This is monitoring, not an
+      # isolation boundary: `egress-policy: audit` does NOT restrict traffic to
+      # an allow-list on any platform (only StepSecurity's global block list of
+      # known-malicious endpoints is enforced in audit mode). It runs across the
+      # whole matrix (full support on Linux, audit-only on macOS/Windows per the
+      # action's compatibility matrix) so it never breaks a cross-platform
+      # build, and an unexpected destination in the run's network report is the
+      # signal a compromised dependency exfiltrating or fetching a second stage
+      # would trip. Enforced isolation (`egress-policy: block` with a pinned
+      # allow-list) is the follow-up once a few clean runs establish the
+      # legitimate egress baseline; it is deliberately not enabled here because
+      # a premature allow-list would break the macOS/Windows legs, where the
+      # action cannot enforce anyway.
+      - uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
+          egress-policy: audit
+          disable-sudo: false
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN }}
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.3.14"
-      - uses: actions/setup-node@v4.4.0
+          bun-version: "1.4.4"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
       # react-devtools-core is a devDependency and a peer of ink, so
       # `pnpm install` already puts it where Bun's resolver finds it. The
       # separate `bun install` this used to run wrote an extra entry into
@@ -137,11 +396,24 @@ jobs:
           # hits Bun's EPERM cache bug (oven-sh/bun#11198). Since Bun's x64
           # binary now auto-selects AVX2 code paths at runtime, -baseline and
           # the standard build produce the same binary anyway.
+          # shellcheck disable=SC2193 # actionlint replaces ${{ matrix.target }} with
+          # a fixed placeholder before shellcheck runs, so it wrongly concludes the
+          # glob can never match; at runtime matrix.target is the real target string.
           if [[ "${{ matrix.target }}" == windows-* ]]; then
             bun build source/cli.tsx --compile --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
           else
             bun build source/cli.tsx --compile --target=bun-${{ matrix.target }} --outfile dist/agav-${{ matrix.target }}${{ matrix.ext }}
           fi
+      # Prove — per published artifact, including cross-compiled targets — that it
+      # embeds exactly the pinned Bun (the version whose runtime and vendored C
+      # libraries check-bun-advisories.mjs vetted in check-version). Trivy is not
+      # run on the binary: it cannot advisory-match statically linked C libraries
+      # from an SBOM (CycloneDX decoder keys on PURL ecosystem, no CPE path,
+      # pkg:generic skipped), so that scan would pass while scanning nothing.
+      # This runs BEFORE upload, and publication depends on build-binaries, so a
+      # mismatched runtime blocks the release.
+      - name: Verify the binary embeds the pinned Bun runtime
+        run: node scripts/verify-embedded-runtime.mjs "dist/agav-${{ matrix.target }}${{ matrix.ext }}"
       - name: Sign binary (macOS)
         if: startsWith(matrix.target, 'darwin')
         run: |
@@ -158,6 +430,22 @@ jobs:
           else
             echo "cosign not available, skipping signing."
           fi
+
+      # Run the exact signed artifact on its native runner before publishing it.
+      - name: Smoke test release binary
+        timeout-minutes: 2
+        env:
+          BINARY: ./dist/agav-${{ matrix.target }}${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          EXPECTED=$(node -p "require('./package.json').version")
+          ACTUAL=$("$BINARY" --version | tr -d '\r')
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::Binary version '$ACTUAL' does not match package.json '$EXPECTED'."
+            exit 1
+          fi
+          # Do not use grep -q: drain stdout to avoid a producer SIGPIPE.
+          "$BINARY" --help | grep -F "Agav"
 
       - name: Compress binary
         run: |
@@ -180,7 +468,22 @@ jobs:
             cat "$asset.sha256"
           done
 
-      - uses: actions/upload-artifact@v4.6.2
+      # Build provenance for the EXACT bytes that ship. Generated on the native
+      # runner right after checksums, so the attested digests are the published
+      # artifacts. Both the raw binary and the gzipped variant are subjects (the
+      # installers fetch either). GitHub stores a Sigstore-backed attestation
+      # that proves this artifact was built by this workflow from this commit;
+      # users verify with `gh attestation verify <file> --repo prapaa-ai/agav`.
+      # The detached .sha256/.sig files are not attested — they are not the
+      # artifact, and the checksum is redundant with the attested digest.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            dist/agav-${{ matrix.target }}${{ matrix.ext }}
+            dist/agav-${{ matrix.target }}${{ matrix.ext }}.gz
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: agav-${{ matrix.target }}
           path: |
@@ -192,13 +495,14 @@ jobs:
 
   release:
     name: Create Release
-    needs: [check-version, build-binaries]
+    needs: [check-version, dependency-audit, sbom, validation, installer-windows, build-binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN }}
           fetch-depth: 0
       # No README badge commit here. The version badge reads package.json from
@@ -207,14 +511,19 @@ jobs:
       # which the branch ruleset rejects with GH013, and it swallowed that
       # failure as a warning — so the badge silently stopped tracking after
       # 0.1.2 while every release still reported success.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
       - name: Prepare release assets
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
         run: |
+          set -euo pipefail
           mkdir -p release
           for dir in artifacts/agav-*; do
             target=$(basename "$dir")
+            # The SBOM artifact is handled separately below, not as a binary.
+            [ "$target" = "agav-sbom" ] && continue
             # The artifact dir is named after the target, but the Windows
             # binary inside it carries a .exe suffix, so try both.
             for asset in "$target" "$target.exe"; do
@@ -230,8 +539,21 @@ jobs:
               done
             done
           done
-          # Generate combined SHA256SUMS file. Both the raw and the compressed
-          # binary get a line; the detached .sha256 and .sig files do not.
+          # Publish the attested SBOM and its checksum alongside the binaries.
+          # Fail closed: the SBOM job is a prerequisite of this job, so both the
+          # SBOM and its checksum MUST exist. A missing file here means the
+          # attested SBOM would be silently dropped from the release, so stop
+          # rather than publish binaries without it.
+          SBOM="agav-sbom-${VERSION}.cdx.json"
+          for required in "$SBOM" "$SBOM.sha256"; do
+            if [ ! -f "artifacts/agav-sbom/$required" ]; then
+              echo "::error::Expected SBOM asset artifacts/agav-sbom/$required is missing."
+              exit 1
+            fi
+            cp "artifacts/agav-sbom/$required" "release/$required"
+          done
+          # Generate combined SHA256SUMS file. Each binary and the SBOM get a
+          # line; the detached .sha256 and .sig files do not.
           cd release
           sha256sum agav-* 2>/dev/null | grep -v -e '\.sha256$' -e '\.sig$' -e '\.sigstore$' > SHA256SUMS || true
           cat SHA256SUMS
@@ -253,8 +575,48 @@ jobs:
             printf '%s\n' "$NOTES"
             echo "$DELIMITER"
           } >> "$GITHUB_OUTPUT"
+      # Reconcile the tag BEFORE publishing so the release points at the commit
+      # being released now, not a stale commit from a prior failed attempt.
+      # softprops/action-gh-release creates the tag if absent but will NOT move
+      # an existing one, so a recovery run (fix on a new commit, same version)
+      # would otherwise publish assets against the broken commit's tree.
+      #   - no tag                -> leave it; the release action creates it.
+      #   - tag already at HEAD   -> leave it (idempotent).
+      #   - tag elsewhere, no non-draft release -> move it to this commit
+      #     (the earlier attempt never completed, so moving it is safe).
+      #   - tag elsewhere, non-draft release exists -> only move it when force
+      #     was requested, protecting a genuinely published release.
+      - name: Reconcile release tag
+        env:
+          GH_TOKEN: ${{ secrets.TOKEN }}
+          TAG: v${{ needs.check-version.outputs.version }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: |
+          set -euo pipefail
+          SHA="${{ github.sha }}"
+          EXISTING=$(git rev-parse -q --verify "refs/tags/$TAG" || echo "")
+          if [ -z "$EXISTING" ]; then
+            echo "No existing tag $TAG; the release step will create it at $SHA."
+            exit 0
+          fi
+          if [ "$EXISTING" = "$SHA" ]; then
+            echo "Tag $TAG already points at $SHA; nothing to reconcile."
+            exit 0
+          fi
+          PUBLISHED=false
+          if gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
+               --jq '.draft' > /tmp/reconcile_draft 2>/dev/null; then
+            [ "$(cat /tmp/reconcile_draft)" = "false" ] && PUBLISHED=true
+          fi
+          if [ "$PUBLISHED" = "true" ] && [ "$FORCE" != "true" ]; then
+            echo "::error::Tag $TAG exists at $EXISTING and backs a published release. Re-run with force to overwrite."
+            exit 1
+          fi
+          echo "Moving stale tag $TAG from $EXISTING to $SHA (prior attempt incomplete or force requested)."
+          git tag -f "$TAG" "$SHA"
+          git push -f origin "refs/tags/$TAG"
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ needs.check-version.outputs.version }}
           name: v${{ needs.check-version.outputs.version }}
@@ -284,6 +646,48 @@ jobs:
 
             The `www.` is deliberate: the apex answers with a 308 and Windows
             PowerShell 5.1 cannot follow that status.
+
+            ### Verify build provenance (optional)
+
+            Every binary carries a GitHub-signed build-provenance attestation
+            proving it was built by this repository's release workflow from this
+            release's commit. Constrain the check to the signer workflow and the
+            source commit, not just the repository, with the
+            [GitHub CLI](https://cli.github.com):
+
+            ```bash
+            gh attestation verify agav-darwin-arm64 \
+              --repo ${{ github.repository }} \
+              --signer-workflow ${{ github.repository }}/.github/workflows/release.yml \
+              --source-digest ${{ github.sha }}
+            ```
+
+            Works on the raw binary or the `.gz` before decompressing. If
+            verification fails, do not run the file until the failure is
+            resolved — treat an unverified artifact as untrusted (a failure can
+            also be a network or authentication problem, not only tampering).
+
+            ### Software Bill of Materials (SBOM)
+
+            This release publishes a CycloneDX SBOM of its production dependency
+            graph as `agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json`,
+            backed by a GitHub-signed SBOM attestation bound to this commit:
+
+            ```bash
+            gh attestation verify agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json \
+              --repo ${{ github.repository }} \
+              --predicate-type https://cyclonedx.org/bom \
+              --signer-workflow ${{ github.repository }}/.github/workflows/release.yml \
+              --source-digest ${{ github.sha }}
+            ```
+
+            The `--predicate-type` is required: `gh attestation verify`
+            defaults to SLSA provenance, but an SBOM attestation carries a
+            CycloneDX predicate, so the default would reject a valid SBOM.
+
+            The SBOM covers the npm dependency graph only. The embedded Bun
+            runtime and its vendored C libraries are not in that graph and are
+            tracked separately by the release's runtime advisory gate.
 
             <details>
             <summary>Manual install</summary>

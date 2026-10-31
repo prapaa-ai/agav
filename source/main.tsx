@@ -31,6 +31,7 @@ import {
   noProviderCredentialsError,
   providerConfigurationError,
   resolveInitialSessionName,
+  resolveResumePermissionMode,
   resolveStartupSelection,
   selectConfiguredProvider,
   type ProviderName,
@@ -43,6 +44,7 @@ const KNOWN_FLAGS = [
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
   "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--trajectory",
   "--name", "--search", "--provider-idle-timeout",
+  "--sandbox-required",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -156,7 +158,10 @@ export function parseArgs(argv: string[]) {
       continue;
     }
     
-    if ((arg === "--help" || arg === "-h") && flags.job) {
+    if (flags.workflows) {
+      // Workflow operands/options belong to its own strict parser. Global flags go before workflows.
+      flags._.push(arg);
+    } else if ((arg === "--help" || arg === "-h") && flags.job) {
       // `agav job [tick|daemon] --help` is handled by job-cli's own usage output.
       flags._.push(arg);
     } else if (arg === "--help" || arg === "-h") {
@@ -215,6 +220,8 @@ export function parseArgs(argv: string[]) {
       flags.cwd = val;
     } else if (arg === "--deny-writes") {
       flags.denyWrites = true;
+    } else if (arg === "--sandbox-required") {
+      flags.sandboxRequired = true;
     } else if (arg === "--resume" || arg === "-r") {
       flags.resume = argv[i + 1] && !argv[i + 1]!.startsWith("-") ? argv[++i]! : true;
     } else if (arg === "--ollama-host") {
@@ -283,6 +290,9 @@ export function parseArgs(argv: string[]) {
     } else if (arg === "run" && !subcommandSeen) {
       flags.run = true;
       subcommandSeen = true;
+    } else if (arg === "workflows" && !subcommandSeen) {
+      flags.workflows = true;
+      subcommandSeen = true;
     } else if (arg === "job" && !subcommandSeen) {
       flags.job = true;
       subcommandSeen = true;
@@ -324,20 +334,19 @@ export function parseArgs(argv: string[]) {
   if (flags.mcp && pos.length > 0) flags.mcpCommand = pos[0];
   if (flags.run && pos.length > 0) flags.runPrompt = pos.join(" ");
   if (flags.print && pos.length > 0) flags.printPrompt = pos.join(" ");
-
   // Recognize login/logout even when they arrive as the first positional — e.g.
   // after a `--` separator that package managers inject (`pnpm start -- login`),
   // which routes the token past the subcommand branch into positionals. Only when
   // no other subcommand is active, so an argument to another command (for example
   // `agav mcp logout <name>`) is never mistaken for the enterprise subcommand.
   const anotherSubcommand = flags.update || flags.agents || flags.skills ||
-    flags.sessions || flags.mcp || flags.run || flags.job || flags.print;
+    flags.sessions || flags.mcp || flags.run || flags.job || flags.workflows || flags.print;
   if (!anotherSubcommand && !flags.login && !flags.logout && (pos[0] === "login" || pos[0] === "logout")) {
     flags[pos[0]] = true;
     pos.shift();
   }
 
-  if (!flags.update && !flags.agents && !flags.skills && !flags.sessions && !flags.mcp && !flags.run && !flags.job && !flags.print && !flags.login && !flags.logout && pos.length > 0) {
+  if (!flags.update && !flags.agents && !flags.skills && !flags.sessions && !flags.mcp && !flags.run && !flags.job && !flags.workflows && !flags.print && !flags.login && !flags.logout && pos.length > 0) {
      process.stderr.write(`error: unexpected arguments: ${pos.join(" ")}\n`);
      process.exit(1);
   }
@@ -634,6 +643,7 @@ export async function main() {
     $ agav sessions delete <id>    Delete a saved session (alias: rm)
     $ agav mcp auth <name>         Sign in to an OAuth-protected MCP server
     $ agav mcp logout <name>       Remove cached MCP OAuth credentials
+    $ agav workflows help          Background JSON/YAML tool/approval/job workflows (opt-in)
     $ agav job tick                Evaluate due background schedules once and exit
     $ agav --print "prompt"
     $ cat file | agav -P "explain this"
@@ -652,10 +662,15 @@ export async function main() {
     --stream             Stream text to stdout in real time with --print
     --output-schema      Require pipe-mode output to match an inline JSON Schema or @file
     --openai-api         OpenAI API mode: responses or chat (default: responses)
-    --permission         JSON tool permissions for run mode (or set AGAV_PERMISSION env var)
+    --permission         JSON tool permissions for run mode only (or set AGAV_PERMISSION
+                         env var); does NOT set the interactive session permission mode
     --resume, -r [id]    Resume a session (list if no id, prefix match if given)
-    --auto-accept, -y    Skip tool confirmations
-    --deny-writes        Block all write operations
+    --auto-accept, -y    Session permission mode: auto-accept (skip tool confirmations)
+    --deny-writes        Session permission mode: deny-writes (block write operations)
+                         The session mode persists across resumes; change it in-session
+                         with /permission. Resuming without -y/--deny-writes keeps the
+                         saved mode.
+    --sandbox-required   Refuse run_command calls that would run without an OS-level sandbox
     --help, -h           Show this help
     --version, -v        Show version
     --trajectory <path> Export run/print transcript, token usage, and timing as JSON
@@ -722,10 +737,51 @@ export async function main() {
     return;
   }
 
-  // Enterprise enrollment does not require an LLM provider or a running TUI.
+  // Foreground workflows need neither an LLM provider nor the interactive host.
+  if (flags.workflows) {
+    const { runWorkflowsCli } = await import("./cli/workflows-cli.js");
+    const config = await loadConfig();
+    // Clamp to the org floor: `-y` must not loosen a managed permission policy.
+    if (flags.autoAccept) config.permissionMode = clampPermissionMode("auto-accept", config.orgPermissionFloor);
+    if (flags.denyWrites) config.permissionMode = "deny-writes";
+    if (flags.sandboxRequired) config.sandboxRequired = true;
+    process.exit(await runWorkflowsCli([...(flags._ as string[])], { config }));
+    return;
+  }
+
+  // Sign-in does not require an LLM provider or a running TUI. `/login` routes
+  // between the consumer Agav account (explicit --key / --consumer; --account for
+  // logout) and enterprise enrollment (everything else), using one shared,
+  // option-aware parser so an enterprise option's VALUE is never mistaken for a
+  // consumer key.
   if (flags.login || flags.logout) {
+    // Pass the remaining positionals UNCHANGED (the consumed subcommand is never
+    // among them). Do NOT filter stray "login"/"logout" tokens: a malformed
+    // command like `agav logout login --key` must be rejected as an unexpected
+    // operand, not silently reinterpreted into a credential-clearing action.
+    const args = flags._ as string[];
+    const { parseConsumerArgs } = await import("./account/account-login.js");
+    const parsedConsumer = parseConsumerArgs(args);
+    // A bare agav_sk_ operand / unknown consumer flag is a parse error; surface it.
+    if ("error" in parsedConsumer) {
+      console.error(parsedConsumer.error);
+      process.exit(1);
+      return;
+    }
+    // Routing differs by verb: `agav login` defaults to the CONSUMER account
+    // (parser default); `agav logout` defaults to ENTERPRISE, with consumer
+    // sign-out requiring an explicit --account/--consumer flag.
+    const explicitConsumer = /(^|\s)--(account|consumer)(\s|$)/.test(args.join(" "));
+    const isConsumer = flags.logout ? explicitConsumer : parsedConsumer.consumer;
+
+    if (isConsumer) {
+      const { runConsumerLoginCli } = await import("./cli/account-cli.js");
+      const exitCode = await runConsumerLoginCli(flags.logout ? "logout" : "login", args);
+      process.exit(exitCode);
+      return;
+    }
+
     const { runLoginCommand } = await import("./cli/login-cli.js");
-    const args = (flags._ as string[]).filter((a) => a !== "login" && a !== "logout");
     const exitCode = await runLoginCommand(flags.logout ? "logout" : "login", args);
     process.exit(exitCode);
     return;
@@ -857,6 +913,22 @@ export async function main() {
     config.permissionMode = "deny-writes";
   }
 
+  if (flags.sandboxRequired) {
+    config.sandboxRequired = true;
+  }
+  {
+    const { setSandboxRequired, detectSandboxBackend } = await import("./utils/sandbox.js");
+    const { applySandboxRequiredPolicy } = await import("./utils/sandbox-startup.js");
+    // D1: warn, don't refuse to start; run_command enforces per invocation.
+    applySandboxRequiredPolicy({
+      flagSet: flags.sandboxRequired === true,
+      configValue: config.sandboxRequired,
+      detectBackend: detectSandboxBackend,
+      setRequired: setSandboxRequired,
+      warn: (message) => { process.stderr.write(message); },
+    });
+  }
+
   loadTheme(config.theme);
 
   // Resolve an optional resume target before rendering so the app starts with restored context.
@@ -865,6 +937,7 @@ export async function main() {
   let resumeTokenUsage: import("./config/history.js").SessionTokenUsage | undefined;
   let resumeCompacted: boolean | undefined;
   let resumeSessionName: string | undefined;
+  let resumePermissionMode: import("./config/config.js").PermissionMode | undefined;
   let resumeSelection: Pick<import("./config/history.js").SessionRecord, "provider" | "model"> | undefined;
 
   if (flags.resume) {
@@ -892,6 +965,7 @@ export async function main() {
       resumeTokenUsage = session.tokenUsage;
       resumeCompacted = session.compacted;
       resumeSessionName = session.name;
+      resumePermissionMode = session.permissionMode;
       resumeSelection = session;
     } else {
       // ID prefix given — find matching session
@@ -912,8 +986,18 @@ export async function main() {
       resumeTokenUsage = session.tokenUsage;
       resumeCompacted = session.compacted;
       resumeSessionName = session.name;
+      resumePermissionMode = session.permissionMode;
       resumeSelection = session;
     }
+  }
+
+  // Keep config.permissionMode as the launch default for /new. Only the resumed
+  // session receives the saved mode, with CLI overrides and org policy applied.
+  if (resumeSelection) {
+    resumePermissionMode = resolveResumePermissionMode(config, {
+      cliPermissionMode: flags.autoAccept || flags.denyWrites ? config.permissionMode : undefined,
+      savedPermissionMode: resumePermissionMode,
+    });
   }
 
   Object.assign(config, await resolveStartupSelection(config, {
@@ -1098,18 +1182,18 @@ export async function main() {
     markCleanExitSync();
     stopAllA2AAgents();
   });
-  process.on("SIGINT", async () => {
-    markCleanExit();
-    stopAllA2AAgents();
-    await showResumeHint();
-    process.exit(0);
-  });
-  process.on("SIGTERM", async () => {
-    markCleanExit();
-    stopAllA2AAgents();
-    await showResumeHint();
-    process.exit(0);
-  });
+  const shutdownRef: { current: (() => Promise<void>) | null } = { current: null };
+  let unmount: (() => void) | undefined;
+  let signalShutdown: Promise<void> | undefined;
+  const handleSignal = () => {
+    // Repeated signals must not bypass foreground tool settlement.
+    signalShutdown ??= (async () => {
+      await shutdownRef.current?.();
+      unmount?.();
+    })();
+  };
+  process.on("SIGINT", handleSignal);
+  process.on("SIGTERM", handleSignal);
 
   const { getGitContext } = await import("./utils/git.js");
   const { detectKittyKeyboard } = await import("./utils/terminal-keyboard.js");
@@ -1134,8 +1218,9 @@ export async function main() {
     // Never block startup on changelog/launch-state failures.
   }
 
-  const { waitUntilExit } = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} />, {
-    exitOnCtrlC: true,
+  const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} resumePermissionMode={resumePermissionMode} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} shutdownRef={shutdownRef} />, {
+    // App owns Ctrl+C so foreground workflows can abort and checkpoint before exit.
+    exitOnCtrlC: false,
     // Alt-screen keeps the UI self-contained (no scrollback pollution, no
     // flicker on terminals without DEC 2026). In-app scrolling is handled by
     // the ScrollBox viewport + mouse wheel, so native scrollback isn't needed.
@@ -1143,9 +1228,16 @@ export async function main() {
     kittyKeyboard: { mode: enhancedKeyboard ? "enabled" : "disabled", flags: ["disambiguateEscapeCodes"] },
   });
 
-  await waitUntilExit();
+  unmount = instance.unmount;
+  // A signal received during startup must still close the newly mounted UI.
+  if (signalShutdown) await signalShutdown.then(() => instance.unmount());
+  await instance.waitUntilExit();
+  await shutdownRef.current?.();
+  await markCleanExit();
   stopAllA2AAgents();
   await showResumeHint();
+  process.off("SIGINT", handleSignal);
+  process.off("SIGTERM", handleSignal);
 
   // Ensure the process exits even if stray handles (timers, sockets, etc.)
   // are still referenced.  The "exit" event handler above will run

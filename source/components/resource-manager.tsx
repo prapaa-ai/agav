@@ -7,6 +7,7 @@ import type { ResourceAdapter, ResourceItem } from "../resources/types.js";
 import { filterResources, resourcePage } from "../resources/types.js";
 import { useSearch, SearchBar } from "./agents-search.js";
 import { wheelSelect, stepIndex } from "./wheel-select.js";
+import wrapText from "../ink/wrap-text.js";
 
 /** Returned by an action to open its own read-only view (e.g. a report) in the detail pane. */
 export interface ResourceActionView {
@@ -18,6 +19,8 @@ export interface ResourceAction {
   label: string;
   /** Hidden and ignored for items it returns false for (items are never passed when none is selected). */
   when?(item: ResourceItem): boolean;
+  /** Footer text replacing `key: label` (keeps the hint line short); "" hides it from the footer. */
+  hint?: string;
   /** Also available from the detail view, acting on the inspected item. */
   inDetail?: boolean;
   /** Ask y/n with this text before running (for permanent operations). */
@@ -25,7 +28,7 @@ export interface ResourceAction {
   run(item: ResourceItem | undefined): void | string | ResourceActionView | Promise<void | string | ResourceActionView>;
 }
 
-export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, height, prompt, promptDetails }: {
+export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, height, prompt, promptDetails, refreshIntervalMs, emptyText = "No resources found." }: {
   adapter: ResourceAdapter;
   onExit(): void;
   actions?: ResourceAction[];
@@ -35,6 +38,10 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   prompt?: string;
   /** Full terms for `prompt`; they scroll above the always-visible `controls` line, which replaces `prompt`. */
   promptDetails?: { lines: string[]; controls: string };
+  /** Re-list (and re-fetch an inspected item) on this interval, keeping the selection and detail scroll. */
+  refreshIntervalMs?: number;
+  /** Shown when the (filtered) list is empty. */
+  emptyText?: string;
 }) {
   const [items, setItems] = useState<ResourceItem[]>([]);
   const [index, setIndex] = useState(0);
@@ -63,19 +70,33 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   // prompts or notices add rows below the list/detail view.
   const scrollSlotRef = useRef<DOMElement | null>(null);
   const [scrollHeight, setScrollHeight] = useState(Math.max(2, availableRows - 8));
-  const pageSize = Math.max(1, Math.floor(Math.max(0, scrollHeight - 1) / 2));
+  const columns = Math.max(1, stdout.columns || 80);
   const filtered = filterResources(items, searchQuery);
-  const { selected, page, pages } = resourcePage(index, filtered.length, pageSize);
-  const item = filtered[selected];
+  const actionApplies = (a: ResourceAction, target: ResourceItem | undefined) => !a.when || (target !== undefined && a.when(target));
+  const actionHint = (a: ResourceAction) => a.hint ?? `${a.key}: ${a.label}`;
   const fields = adapter.fields ?? [];
   const field = fields[fieldIndex];
   const form = view === "create" || view === "edit";
-  const canRemove = Boolean(adapter.remove && item && item.removable !== false);
   const removeLabel = adapter.removeLabel ?? "Delete";
-  const actionApplies = (a: ResourceAction, target: ResourceItem | undefined) => !a.when || (target !== undefined && a.when(target));
   const detailTarget = detail && detail.id ? detail : undefined;
   const detailCanRemove = Boolean(adapter.remove && detailTarget && detailTarget.removable !== false);
   const detailActions = actions.filter((a) => a.inDetail && actionApplies(a, detailTarget));
+  // The footer depends on the selected item, whose page depends on the footer's height; the
+  // widest footer (every action) sizes the page so paging stays stable while moving.
+  const listHint = (target: ResourceItem | undefined, all: boolean) => [
+    "↑↓: Navigate", "←→: Page", `ENTER/i: ${adapter.inspectLabel ?? "Inspect"}`, "s: Search", "r: Refresh",
+    adapter.create && "n: Create", adapter.update && (all || target) && "e: Edit",
+    adapter.setEnabled && (all || target?.enabled !== undefined) && "t: Enable/disable",
+    adapter.remove && (all || (target && target.removable !== false)) && `d: ${removeLabel}`,
+    ...actions.filter((a) => all || actionApplies(a, target)).map(actionHint), "ESC: Exit/clear",
+  ].filter(Boolean).join(" | ");
+  /** Rows a footer line wraps to at the terminal width (the layout budgets one). */
+  const wrappedRows = (text: string) => Math.max(1, wrapText(text, columns, "wrap").split("\n").length);
+  const listHintExtraRows = wrappedRows(listHint(undefined, true)) - 1;
+  const pageSize = Math.max(1, Math.floor((availableRows - 8 - listHintExtraRows) / 2));
+  const { selected, page, pages } = resourcePage(index, filtered.length, pageSize);
+  const item = filtered[selected];
+  const canRemove = Boolean(adapter.remove && item && item.removable !== false);
   const removeConfirmation = (target: ResourceItem) => ({
     label: removeLabel,
     text: adapter.removeConfirm ?? "This cannot be undone.",
@@ -93,28 +114,35 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     doneLabel: `${action.label} done.`,
   });
   const canToggle = Boolean(adapter.setEnabled && item?.enabled !== undefined);
+  const hint = form ? "Tab/↑↓: Field | ENTER: Save | ESC: Cancel" : view === "detail" ? [
+    "↑↓: Scroll", "b/ESC: Back", detailCanRemove && `d: ${removeLabel}`,
+    ...detailActions.map(actionHint),
+  ].filter(Boolean).join(" | ") : view === "delete" ? `y: ${pendingConfirm?.label ?? removeLabel} | n/ESC: Cancel` : listHint(item, false);
+  const hintExtraRows = wrappedRows(hint) - 1;
   // Capped viewport keeps the controls line on screen.
   const detailLines = prompt && promptDetails ? promptDetails.lines : undefined;
   const promptContentRows = detailLines
-    ? detailLines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / Math.max(1, (stdout.columns || 80)))), 0)
+    ? detailLines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / columns)), 0)
     : 0;
   // Split remaining height between detail scroll (above) and controls line (below).
   const promptRows = detailLines ? Math.min(promptContentRows, Math.max(3, Math.floor((availableRows - 7) / 2))) : 0;
   const promptOverflows = promptContentRows > promptRows;
   const promptExtraRows = promptRows + (promptOverflows ? 1 : 0);
-  const columns = Math.max(1, stdout.columns || 80);
   const detailContentRows = view === "detail" && detail?.detail
-    ? detail.detail.split("\n").reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / columns)), 0)
+    ? wrapText(detail.detail, columns, "wrap").split("\n").length
     : 1;
   useEffect(() => {
-    const availableContent = Math.max(2, availableRows - 7 - promptExtraRows - (copyNotice ? 1 : 0));
+    const availableContent = Math.max(2, availableRows - 7 - promptExtraRows - (view === "list" ? hintExtraRows : 0) - (copyNotice ? 1 : 0));
     const measuredHeight = measureElement(scrollSlotRef.current).height;
     const nextHeight = view === "detail"
       ? Math.max(2, Math.min(detailContentRows, availableContent))
-      : Math.max(2, measuredHeight || availableContent);
+      : Math.max(2, Math.min(measuredHeight || availableContent, availableContent));
     setScrollHeight((current) => current === nextHeight ? current : nextHeight);
-  }, [availableRows, promptExtraRows, copyNotice, view, detailContentRows, columns, busy, status, searching, items.length]);
+  }, [availableRows, promptExtraRows, copyNotice, view, detailContentRows, columns, hintExtraRows, busy, status, searching, items.length]);
   useEffect(() => { setPromptOffset(Number.POSITIVE_INFINITY); }, [prompt]);
+  // Latest render state for the refresh timer, which outlives individual renders.
+  const live = useRef({ view, detail, itemId: item?.id, searchQuery, detailFromGet: false });
+  live.current = { ...live.current, view, detail, itemId: item?.id, searchQuery };
 
   const reload = async () => {
     const loaded = await adapter.list();
@@ -134,6 +162,33 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     void run(reload);
     return () => { mounted.current = false; };
   }, [adapter]);
+  useEffect(() => {
+    if (!refreshIntervalMs || refreshIntervalMs <= 0) return;
+    let refreshing = false;
+    const timer = setInterval(() => {
+      const state = live.current;
+      // Never race a user operation, a form or a pending confirmation.
+      if (refreshing || busyRef.current || (state.view !== "list" && state.view !== "detail")) return;
+      refreshing = true;
+      void (async () => {
+        try {
+          const loaded = await adapter.list();
+          if (!mounted.current) return;
+          setItems(loaded);
+          // Keep the same item selected even when new items are inserted above it.
+          const at = state.itemId === undefined ? -1 : filterResources(loaded, state.searchQuery).findIndex((entry) => entry.id === state.itemId);
+          setIndex((i) => at >= 0 ? at : Math.min(i, Math.max(0, loaded.length - 1)));
+          if (state.view === "detail" && state.detailFromGet && state.detail?.id) {
+            const fresh = await adapter.get(state.detail.id);
+            // Only replace the detail that is still open; a vanished item keeps its last snapshot.
+            if (fresh && mounted.current && live.current.view === "detail" && live.current.detail?.id === fresh.id) setDetail(fresh);
+          }
+        } catch { /* transient refresh failures keep the last snapshot */ }
+        finally { refreshing = false; }
+      })();
+    }, refreshIntervalMs);
+    return () => clearInterval(timer);
+  }, [adapter, refreshIntervalMs]);
   useEffect(() => {
     const unsubscribe = subscribeClipboardCopy((notice) => {
       setCopyNotice(notice);
@@ -227,6 +282,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     else if ((key.return || input === "i") && item) void run(async () => {
       const loaded = await adapter.get(item.id);
       if (!loaded) { await reload(); throw new Error("Resource no longer exists."); }
+      live.current.detailFromGet = true;
       setDetail(loaded); setScrollOffset(Number.POSITIVE_INFINITY); setView("detail");
     });
     else if (input === "r") void run(reload);
@@ -242,8 +298,9 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
       else if (action) void run(async () => {
         const result = await action.run(item);
         if (result && typeof result === "object" && mounted.current) {
-          // A report, not the item itself: never offer delete/stop on it.
-          setDetail({ ...(item ?? { id: "", title: "", description: "" }), detail: result.detail, removable: false, stoppable: false });
+          // A report, not the item itself: never offer delete/stop on it, and never refresh it.
+          live.current.detailFromGet = false;
+          setDetail({ ...(item ?? { id: "", title: "", description: "" }), detail: result.detail, removable: false, stoppable: false, abandonable: false });
           setScrollOffset(Number.POSITIVE_INFINITY);
           setView("detail");
         } else if (typeof result === "string" && mounted.current) {
@@ -268,7 +325,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
         {view === "list" && (filtered.length ? filtered.slice(page * pageSize, (page + 1) * pageSize).map((entry, i) => <Box key={entry.id} flexDirection="column">
           <Text color={page * pageSize + i === selected ? "cyan" : undefined}>{page * pageSize + i === selected ? "→ " : "  "}{entry.title}{entry.enabled === undefined ? "" : entry.enabled ? " [enabled]" : " [disabled]"}</Text>
           <Text dimColor>  {entry.description.replace(/\s+/g, " ").slice(0, Math.max(20, (stdout.columns || 80) - 6))}</Text>
-        </Box>) : <Text dimColor>No resources found.</Text>)}
+        </Box>) : <Text dimColor>{emptyText}</Text>)}
         {view === "detail" && <Text>{detail?.detail}</Text>}
         {view === "delete" && <Text color="yellow">{pendingConfirm?.label} "{detail?.title}"? {pendingConfirm?.text} y: Confirm · n/ESC: Cancel</Text>}
         {form && fields.map((f, i) => <Box key={f.name} flexDirection="column">
@@ -286,13 +343,6 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     {status && <Text color="yellow">{status}</Text>}
     {view === "list" && <Text dimColor>Page {page + 1}/{pages}{adapter.notice ? ` · ${adapter.notice}` : ""}</Text>}
     {copyNotice && <Text color={copyNotice === "Copied to clipboard" ? "green" : "cyan"}>{copyNotice === "Copied to clipboard" ? "✓ " : ""}{copyNotice}</Text>}
-    <Text dimColor>{form ? "Tab/↑↓: Field | ENTER: Save | ESC: Cancel" : view === "detail" ? [
-      "↑↓: Scroll", "b/ESC: Back", detailCanRemove && `d: ${removeLabel}`,
-      ...detailActions.map((a) => `${a.key}: ${a.label}`),
-    ].filter(Boolean).join(" | ") : view === "delete" ? `y: ${pendingConfirm?.label ?? removeLabel} | n/ESC: Cancel` : [
-      "↑↓: Navigate", "←→: Page", `ENTER/i: ${adapter.inspectLabel ?? "Inspect"}`, "s: Search", "r: Refresh",
-      adapter.create && "n: Create", adapter.update && item && "e: Edit", canToggle && "t: Enable/disable", canRemove && `d: ${removeLabel}`,
-      ...actions.filter((a) => actionApplies(a, item)).map((a) => `${a.key}: ${a.label}`), "ESC: Exit/clear",
-    ].filter(Boolean).join(" | ")}</Text>
+    <Text dimColor>{hint}</Text>
   </Box>;
 }

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
     log: vi.fn(),
     stop: vi.fn(),
     capabilities: vi.fn(),
+    abandonJob: vi.fn(),
   },
   engine: {
     listSchedules: vi.fn(),
@@ -178,6 +179,25 @@ describe("jobs adapter", () => {
   });
 });
 
+describe("jobs recovery visibility", () => {
+  const audit = { abandonedAt: "2026-10-20T00:00:00Z", acknowledgement: "outcome-and-descendants-unverified" as const, previousState: "unknown" as const, previousNonce: "" };
+  it("hides abandoned records by default without losing by-ID inspection or all-jobs access", async () => {
+    const abandoned = { ...summary, state: "unknown" as const, abandonment: audit };
+    mocks.coordinator.list.mockResolvedValue([abandoned]);
+    mocks.coordinator.poll.mockResolvedValue(abandoned);
+    mocks.coordinator.log.mockResolvedValue({ text: "", truncated: false });
+    expect(await createJobsAdapter().list()).toEqual([]);
+    const item = (await createJobsAdapter(true).list())[0]!;
+    expect(item.title).toContain("[abandoned]");
+    expect(item).toMatchObject({ removable: false, stoppable: false, abandonable: false });
+    expect((await createJobsAdapter().get(summary.jobId))!.detail).toContain("abandonedAt:");
+  });
+  it.each(["unknown", "recovery-required"] as const)("offers abandonment, not stop/delete, for %s", async state => {
+    mocks.coordinator.list.mockResolvedValue([{ ...summary, state }]);
+    expect((await createJobsAdapter().list())[0]).toMatchObject({ abandonable: true, removable: false, stoppable: false });
+  });
+});
+
 describe("job schedules adapter", () => {
   it("allows deleting inactive schedules but not enabled or revoked schedules", async () => {
     mocks.engine.listSchedules.mockResolvedValue([
@@ -273,7 +293,7 @@ describe("JobsTUI", () => {
     try {
       expect(mocks.props!.adapter.title).toBe("Background jobs");
       // Logs live in the ENTER/i detail view; no separate key duplicates it.
-      expect(mocks.props!.actions.map((a) => a.key)).toEqual(["Tab", "x", "c"]);
+      expect(mocks.props!.actions.map((a) => a.key)).toEqual(["Tab", "x", "a", "h", "c"]);
       expect(mocks.props!.prompt).toBeUndefined();
 
       mocks.coordinator.stop.mockResolvedValue(summary);

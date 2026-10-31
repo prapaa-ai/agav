@@ -1,8 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Lock-file handle; captures the ownership token written during acquisition so
+// the lock-path read during release can return it (and the release can unlink).
+const lockState = { token: "" };
+const lockHandle = {
+  writeFile: vi.fn(async (data: string) => { lockState.token = data; }),
+  close: vi.fn().mockResolvedValue(undefined),
+};
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
+  rename: vi.fn().mockResolvedValue(undefined),
+  unlink: vi.fn().mockResolvedValue(undefined),
+  open: vi.fn().mockResolvedValue(lockHandle),
+  stat: vi.fn().mockResolvedValue({ mtimeMs: Date.now() }),
 }));
 vi.mock("../utils/fs.js", () => ({
   ensureDir: vi.fn().mockResolvedValue(undefined),
@@ -10,8 +21,8 @@ vi.mock("../utils/fs.js", () => ({
 vi.mock("../utils/encrypt.js", () => ({
   encrypt: vi.fn((value: string) => `enc:${value}`),
   decrypt: vi.fn((value: string) => (value.startsWith("enc:") ? value.slice(4) : value)),
+  isEncrypted: vi.fn((value: string) => value.startsWith("enc:")),
 }));
-
 const fs = await import("node:fs/promises");
 const readFile = vi.mocked(fs.readFile);
 const writeFile = vi.mocked(fs.writeFile);
@@ -21,6 +32,14 @@ describe("config", () => {
     vi.resetModules();
     readFile.mockReset();
     writeFile.mockReset();
+    // Migration-lock primitives: default to a successfully acquired, non-stale lock.
+    vi.mocked(fs.open).mockReset().mockResolvedValue(lockHandle as any);
+    vi.mocked(fs.stat).mockReset().mockResolvedValue({ mtimeMs: Date.now() } as any);
+    vi.mocked(fs.rename).mockReset().mockResolvedValue(undefined);
+    vi.mocked(fs.unlink).mockReset().mockResolvedValue(undefined);
+    lockState.token = "";
+    lockHandle.writeFile.mockClear().mockImplementation(async (data: string) => { lockState.token = data; });
+    lockHandle.close.mockClear().mockResolvedValue(undefined);
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENROUTER_API_KEY;
@@ -32,6 +51,15 @@ describe("config", () => {
     delete process.env.OLLAMA_API_KEY;
     delete process.env.VERTEX_AI_CREDENTIALS_PATH;
     delete process.env.VERTEX_AI_LOCATION;
+  });
+
+  // Reset encrypt mocks to defaults before each test; some tests override decrypt
+  // to emulate an undecryptable value and must not leak into others.
+  beforeEach(async () => {
+    const encryptMod = await import("../utils/encrypt.js");
+    vi.mocked(encryptMod.encrypt).mockImplementation((value: string) => `enc:${value}`);
+    vi.mocked(encryptMod.decrypt).mockImplementation((value: string) => (value.startsWith("enc:") ? value.slice(4) : value));
+    vi.mocked(encryptMod.isEncrypted).mockImplementation((value: string) => value.startsWith("enc:"));
   });
 
   it("accepts valid effort levels", async () => {
@@ -304,4 +332,88 @@ describe("config", () => {
     expect(body).toContain("enc:g");
     expect(body).toContain("enc:l");
   });
+
+  it("exclusively creates and releases its lock without renaming it", async () => {
+    readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const mod = await import("../config/config.js");
+    await mod.saveConfig({
+      provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
+      errorRetries: 3, permissionMode: "ask",
+    });
+    expect(fs.open).toHaveBeenCalledWith(expect.stringContaining(".config.lock"), "wx", 0o600);
+    expect(fs.unlink).toHaveBeenCalledWith(expect.stringContaining(".config.lock"));
+    expect(vi.mocked(fs.rename).mock.calls.every(([from, to]) =>
+      !String(from).includes(".config.lock") && !String(to).includes(".config.lock"),
+    )).toBe(true);
+  });
+
+  it("closes and releases an acquired lock when writing its PID fails", async () => {
+    lockHandle.writeFile.mockRejectedValueOnce(new Error("disk full"));
+    const mod = await import("../config/config.js");
+    await expect(mod.saveStatusBarLayout(undefined)).rejects.toThrow("disk full");
+    expect(lockHandle.close).toHaveBeenCalledTimes(1);
+    expect(fs.unlink).toHaveBeenCalledWith(expect.stringContaining(".config.lock"));
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it("fails closed (throws) when the config lock cannot be acquired", async () => {
+    vi.useFakeTimers();
+    // Lock perpetually held by a live peer: open → EEXIST, stat → fresh mtime.
+    vi.mocked(fs.open).mockRejectedValue(Object.assign(new Error("exists"), { code: "EEXIST" }));
+    vi.mocked(fs.stat).mockResolvedValue({ mtimeMs: Date.now() } as any);
+    readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const mod = await import("../config/config.js");
+    const p = mod.saveConfig({
+      provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
+      errorRetries: 3, permissionMode: "ask",
+    });
+    const assertion = expect(p).rejects.toThrow(/config lock/i);
+    await vi.advanceTimersByTimeAsync(6000); // exceed CONFIG_LOCK_WAIT_MS
+    await assertion;
+    // Must NOT have written the config without the lock.
+    expect(writeFile).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("a blocking writer waits for a live lock, then proceeds once it frees", async () => {
+    readFile.mockRejectedValue(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    // First open() attempt: lock held by a live peer (EEXIST + fresh mtime).
+    // Second attempt (after a poll): lock is free and acquired.
+    let held = true;
+    vi.mocked(fs.open).mockImplementation(async (p: any, flags: any) => {
+      if (String(p).endsWith(".config.lock") && flags === "wx" && held) {
+        held = false; // peer releases before the next poll
+        throw Object.assign(new Error("exists"), { code: "EEXIST" });
+      }
+      return lockHandle as any;
+    });
+    vi.mocked(fs.stat).mockResolvedValue({ mtimeMs: Date.now() } as any); // fresh → live peer
+
+    const mod = await import("../config/config.js");
+    await mod.saveConfig({
+      provider: "anthropic", model: "m", effort: "low", maxTokens: 1, maxIterations: 2,
+      errorRetries: 3, permissionMode: "ask",
+    });
+    // Despite initial contention, the save eventually wrote the config.
+    expect(writeFile).toHaveBeenCalled();
+  });
+
+  it("treats an undecryptable enc: stored key as missing, not as a raw key", async () => {
+    const encryptMod = await import("../utils/encrypt.js");
+    vi.mocked(encryptMod.decrypt).mockImplementation((v: string) =>
+      v === "enc:broken" ? "enc:broken" : (v.startsWith("enc:") ? v.slice(4) : v),
+    );
+    const { homedir } = await import("node:os");
+    const globalPath = `${homedir()}/.agav/config.json`;
+    readFile.mockImplementation(async (path: any) => {
+      if (String(path) === globalPath) return JSON.stringify({ anthropicApiKey: "enc:broken" });
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    });
+
+    const mod = await import("../config/config.js");
+    const loaded = await mod.loadConfig();
+    // Must NOT surface the raw "enc:broken" ciphertext as the API key.
+    expect(loaded.anthropicApiKey).toBeUndefined();
+  });
+
 });

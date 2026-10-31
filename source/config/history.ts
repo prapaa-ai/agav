@@ -2,6 +2,7 @@ import { readFile, writeFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import crypto from "node:crypto";
 import type { Message } from "../providers/types.js";
+import type { PermissionMode } from "./config.js";
 import { getAgavDir } from "./config.js";
 import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { ensureDir } from "../utils/fs.js";
@@ -24,6 +25,13 @@ export interface SessionRecord {
   messages: Message[];
   tokenUsage?: SessionTokenUsage;
   compacted?: boolean;
+  /**
+   * The permission mode in force for this session, persisted so a resume
+   * restores the mode the user was last running under instead of silently
+   * falling back to the config default. Absent on sessions saved before this
+   * field existed; resume treats that as "use the config default".
+   */
+  permissionMode?: PermissionMode;
 }
 
 /** Resolve the directory where serialized chat sessions are stored on disk. */
@@ -62,6 +70,7 @@ export async function saveSession(
   compacted?: boolean,
   name?: string,
   parentId?: string,
+  permissionMode?: PermissionMode,
 ): Promise<string> {
   const dir = getHistoryDir();
   await ensureDir(dir);
@@ -70,6 +79,9 @@ export async function saveSession(
   const existing = existingId ? await loadSession(existingId) : null;
   const sessionName = name ?? existing?.name;
   const branchParentId = parentId ?? existing?.parentId;
+  // Preserve the stored mode when a save does not specify one, so a routine
+  // turn-complete save never erases a mode set earlier in the session.
+  const effectivePermissionMode = permissionMode ?? existing?.permissionMode;
   const record: SessionRecord = {
     id,
     createdAt: new Date().toISOString(),
@@ -81,6 +93,7 @@ export async function saveSession(
     messages,
     tokenUsage,
     compacted,
+    ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
   };
 
   const filePath = join(dir, `${id}.json`);
