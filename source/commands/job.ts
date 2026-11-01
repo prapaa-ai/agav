@@ -25,6 +25,7 @@ const USAGE =
   "  /job schedule list                              Show all registered schedules\n" +
   '  /job schedule create "<cron>" <timezone> <cmd>  Register a recurring background command\n' +
   "  /job schedule revoke <scheduleId>               Revoke a schedule by exact id (does not stop already-running jobs)\n" +
+  "  /job abandon <full-id> --acknowledge-unverified  Release capacity, NOT a verified stop\n" +
   "  /job capabilities                               Show platform capability/status report\n\n" +
   'Background jobs must be enabled via "backgroundJobsEnabled": true in your agav config.\n' +
   "Note: by default schedules are checked about every 30 seconds, but only while an interactive agav session with background jobs enabled is running. If unattended automation is explicitly configured (`agav job tick --install` or `agav job daemon start`), schedules also fire while agav is closed.";
@@ -170,6 +171,11 @@ export const jobCommand: SlashCommand = {
         const summary = await coordinator.stop(id, sessionFor(context));
         if (summary.stopState === "none" && !isLiveLifecycle(summary.state)) return message(describeStopResult(summary));
         return message(formatJobSummary(summary));
+      }
+
+      if (action === "abandon") {
+        if (parts.length !== 3 || parts[2] !== "--acknowledge-unverified") return message("Usage: /job abandon <full-id> --acknowledge-unverified\nReleases capacity and fences future startup; does NOT stop processes or verify outcome/descendants. Evidence is retained.");
+        return message(formatJobSummary(await coordinator.abandonJob(parts[1]!, true, sessionFor(context))));
       }
 
       if (action === "capabilities") {

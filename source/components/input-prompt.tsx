@@ -7,6 +7,7 @@ import { writeClipboard } from "../ink/termio/clipboard.js";
 import { readdir, realpath } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { ATTACHMENT_TILE_RE, attachmentTileScanner, attachmentTileForId } from "../utils/attachments.js";
+import { submissionCarriesApiKey } from "../account/credential-input.js";
 
 /** Metadata for a slash command suggestion. */
 export interface CommandInfo {
@@ -843,12 +844,21 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           applyEdit(before + "\n" + after, c + 1);
         } else {
           if (value.trim()) {
-            const deduped = historyRef.current.filter((h) => h !== value);
-            deduped.push(value);
-            historyRef.current = deduped;
-            historyIndexRef.current = -1;
-            draftRef.current = null;
-            savePromptHistory(deduped);
+            // Never record input that carries an Agav API key in prompt history:
+            // the key would persist in plaintext and be recallable with Up-arrow.
+            // Covers a /login carrying a key AND a bare key pasted into the text
+            // (e.g. repeat-paste expansion). These inputs should not be remembered.
+            if (!submissionCarriesApiKey(value)) {
+              const deduped = historyRef.current.filter((h) => h !== value);
+              deduped.push(value);
+              historyRef.current = deduped;
+              historyIndexRef.current = -1;
+              draftRef.current = null;
+              savePromptHistory(deduped);
+            } else {
+              historyIndexRef.current = -1;
+              draftRef.current = null;
+            }
             // No caret reset here. The parent clears the buffer only once it
             // has accepted the message, and the clamp above follows it down to
             // zero when it does. Resetting optimistically stranded the caret at

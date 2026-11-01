@@ -196,7 +196,7 @@ describe("normalizeLaunchSpec — environment / credentials", () => {
     expect(spec.env.AGAV_TEST_SECRET_LEAK_CHECK).toBeUndefined();
   });
 
-  it("includes explicitly inherited vars only", async () => {
+  it("records explicitly inherited vars by NAME only; their values are never part of the spec", async () => {
     process.env.MY_INHERITED_VAR = "abc";
     try {
       const spec = await normalizeLaunchSpec({
@@ -209,7 +209,9 @@ describe("normalizeLaunchSpec — environment / credentials", () => {
         envInherit: ["MY_INHERITED_VAR"],
         canonicalizeCwd: okCanonicalize,
       });
-      expect(spec.env.MY_INHERITED_VAR).toBe("abc");
+      expect(spec.envInherit).toEqual(["MY_INHERITED_VAR"]);
+      expect(spec.env.MY_INHERITED_VAR).toBeUndefined();
+      expect(JSON.stringify(spec)).not.toContain("abc");
       expect(spec.env.AGAV_TEST_SECRET_LEAK_CHECK).toBeUndefined();
     } finally {
       delete process.env.MY_INHERITED_VAR;

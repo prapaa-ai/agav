@@ -100,4 +100,4 @@ Drag across Agav output to select text; releasing the drag copies it. While an A
 
 Your terminal may instead manage its own selection and intercept copy shortcuts. Use **Cmd+C** on macOS or **Ctrl+Shift+C** on Linux and Windows Terminal for terminal-native copy, as supported by your terminal. In legacy encodings Ctrl+Shift+C may arrive as Ctrl+C; without an Agav selection, that exits.
 
-To save a full conversation to a file, use `/export` — it writes the entire session as Markdown.
+To save the retained conversation to a file, use `/export` for Markdown or `/export json` for structured data. Add `sanitize` for best-effort credential and home-path redaction; review the file before sharing. Earlier trimmed or compacted content cannot be recovered. See [Sessions and Memory](/workflows/sessions-and-memory#export-a-conversation).

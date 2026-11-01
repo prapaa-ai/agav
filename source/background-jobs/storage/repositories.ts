@@ -141,6 +141,8 @@ export function createFileRepositories(root: string): Repositories {
         if (existing === undefined) {
           throw new BackgroundJobError("not-found", `No JobRecord found for jobId "${jobId}".`);
         }
+        // Recovery tombstones are immutable, including against late supervisor writes.
+        if (existing.abandonment) throw new BackgroundJobError("invalid-state", "Job was abandoned; outcome remains unverified.");
         const updated: JobRecord = { ...existing, ...patch };
         await writeAtomic(path, JSON.stringify(updated, null, 2));
       });
@@ -163,6 +165,8 @@ export function createFileRepositories(root: string): Repositories {
     },
     async delete(jobId: JobId): Promise<void> {
       await withJobLock(root, jobId, async () => {
+        const existing = await jobs.get(jobId);
+        if (existing?.abandonment) throw new BackgroundJobError("invalid-state", "Abandoned job evidence and request tombstone must be retained.");
         await removeIfExists(jobPath(root, jobId));
       });
     },

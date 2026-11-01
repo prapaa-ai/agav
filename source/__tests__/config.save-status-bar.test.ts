@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Lock handle for the shared config lock (open(...,"wx")); always succeeds here.
+const lockHandle = { writeFile: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) };
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
   rename: vi.fn().mockResolvedValue(undefined),
   unlink: vi.fn().mockResolvedValue(undefined),
+  open: vi.fn().mockResolvedValue(lockHandle),
+  stat: vi.fn().mockResolvedValue({ mtimeMs: Date.now() }),
 }));
 vi.mock("../utils/fs.js", () => ({
   ensureDir: vi.fn().mockResolvedValue(undefined),
@@ -12,6 +16,7 @@ vi.mock("../utils/fs.js", () => ({
 vi.mock("../utils/encrypt.js", () => ({
   encrypt: vi.fn((v: string) => `enc:${v}`),
   decrypt: vi.fn((v: string) => (v.startsWith("enc:") ? v.slice(4) : v)),
+  isEncrypted: vi.fn((v: string) => v.startsWith("enc:")),
 }));
 
 const fs = await import("node:fs/promises");
@@ -33,6 +38,10 @@ describe("saveStatusBarLayout", () => {
     writeFile.mockReset();
     rename.mockReset().mockResolvedValue(undefined);
     unlink.mockReset().mockResolvedValue(undefined);
+    vi.mocked(fs.open).mockReset().mockResolvedValue(lockHandle as any);
+    vi.mocked(fs.stat).mockReset().mockResolvedValue({ mtimeMs: Date.now() } as any);
+    lockHandle.writeFile.mockClear().mockResolvedValue(undefined);
+    lockHandle.close.mockClear().mockResolvedValue(undefined);
   });
 
   it("writes only the statusBar key, preserving every other stored key verbatim", async () => {
@@ -75,9 +84,11 @@ describe("saveStatusBarLayout", () => {
 
     const tmpPath = writeFile.mock.calls.at(-1)![0] as string;
     expect(tmpPath).toContain(".tmp.");
-    expect(rename).toHaveBeenCalledTimes(1);
-    const [from, to] = rename.mock.calls.at(-1)!;
-    expect(from).toBe(tmpPath);
+    // The shared config lock also uses rename (CAS acquire/release), so locate the
+    // atomic config write specifically: temp file → config.json.
+    const writeRename = rename.mock.calls.find(([from]) => String(from) === tmpPath);
+    expect(writeRename).toBeDefined();
+    const [, to] = writeRename!;
     expect(to).not.toContain(".tmp.");
     expect(to).toContain("config.json");
   });
@@ -108,16 +119,25 @@ describe("saveStatusBarLayout", () => {
 
     await expect(saveStatusBarLayout([{ id: "model" as const, enabled: true }])).rejects.toThrow("EXDEV");
 
+    // The orphaned temp file must be cleaned up (the shared config lock release
+    // also unlinks its lock file, so assert on the specific temp path, not count).
     const tmpPath = writeFile.mock.calls.at(-1)![0] as string;
-    expect(unlink).toHaveBeenCalledTimes(1);
-    expect(unlink.mock.calls.at(-1)![0]).toBe(tmpPath);
+    expect(unlink.mock.calls.some((c) => c[0] === tmpPath)).toBe(true);
   });
 
   it("starts from an empty object when the config file is missing or corrupt", async () => {
-    readFile.mockRejectedValue(new Error("ENOENT"));
+    readFile.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }));
     const { saveStatusBarLayout } = await import("../config/config.js");
     await saveStatusBarLayout([{ id: "model" as const, enabled: true }]);
     const written = lastWritten();
     expect(written).toEqual({ statusBar: [{ id: "model", enabled: true }] });
+  });
+
+  it("propagates a real read error (EACCES) instead of discarding existing keys", async () => {
+    readFile.mockRejectedValue(Object.assign(new Error("denied"), { code: "EACCES" }));
+    const { saveStatusBarLayout } = await import("../config/config.js");
+    await expect(saveStatusBarLayout([{ id: "model" as const, enabled: true }])).rejects.toThrow("denied");
+    // Must NOT have written a config that drops the unreadable existing keys.
+    expect(writeFile).not.toHaveBeenCalled();
   });
 });

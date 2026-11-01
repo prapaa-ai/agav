@@ -48,3 +48,6 @@ jobs/
 terminal-bench-2-1/
 benchmarks/agav-agent/bin/
 .agav-worktrees/
+# Transient fixture root for the Linux bubblewrap enforcement tests (created
+# under the checkout because bwrap masks /tmp; removed in afterAll).
+.agav-sbx-bw-tmp/

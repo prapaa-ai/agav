@@ -13,9 +13,9 @@ vi.mock("node:os", async () => {
   return { ...actual, default: actual, homedir: () => home };
 });
 
-const { consumeChangelogDisplay } = await import("../config/launch-state.js");
+const { consumeChangelogDisplay, isChangelogAutoDisplayEnabled, setChangelogAutoDisplay } = await import("../config/launch-state.js");
 
-async function readState(): Promise<{ lastLaunchedVersion: string } | null> {
+async function readState(): Promise<{ lastLaunchedVersion: string; autoShowChangelog?: boolean } | null> {
   try {
     return JSON.parse(await readFile(statePath, "utf-8"));
   } catch {
@@ -83,6 +83,49 @@ describe("consumeChangelogDisplay", () => {
     await writeFile(agavDir, "blocker");
     await expect(consumeChangelogDisplay("0.3.0")).resolves.toBe(false);
     // Restore the directory for any later tests.
+    await rm(agavDir, { force: true });
+    await mkdir(agavDir, { recursive: true });
+  });
+
+  it("does not show the changelog after an update when auto-display is disabled", async () => {
+    await consumeChangelogDisplay("0.3.0"); // baseline
+    expect(await setChangelogAutoDisplay(false)).toBe(true);
+    // The update still advances the baseline, but no changelog is surfaced.
+    expect(await consumeChangelogDisplay("0.3.1")).toBe(false);
+    expect(await readState()).toEqual({ lastLaunchedVersion: "0.3.1", autoShowChangelog: false });
+  });
+
+  it("resumes showing the changelog after re-enabling auto-display", async () => {
+    await consumeChangelogDisplay("0.3.0");
+    await setChangelogAutoDisplay(false);
+    expect(await consumeChangelogDisplay("0.3.1")).toBe(false);
+    expect(await setChangelogAutoDisplay(true)).toBe(true);
+    expect(await consumeChangelogDisplay("0.3.2")).toBe(true);
+  });
+});
+
+describe("changelog auto-display preference", () => {
+  it("defaults to enabled when no state file exists", async () => {
+    expect(await isChangelogAutoDisplayEnabled()).toBe(true);
+  });
+
+  it("round-trips the disabled then enabled preference", async () => {
+    expect(await setChangelogAutoDisplay(false)).toBe(true);
+    expect(await isChangelogAutoDisplayEnabled()).toBe(false);
+    expect(await setChangelogAutoDisplay(true)).toBe(true);
+    expect(await isChangelogAutoDisplayEnabled()).toBe(true);
+  });
+
+  it("preserves the recorded launch version when toggling the preference", async () => {
+    await consumeChangelogDisplay("0.3.0");
+    await setChangelogAutoDisplay(false);
+    expect(await readState()).toEqual({ lastLaunchedVersion: "0.3.0", autoShowChangelog: false });
+  });
+
+  it("reports the default (enabled) when the state cannot be read", async () => {
+    await rm(agavDir, { recursive: true, force: true });
+    await writeFile(agavDir, "blocker");
+    await expect(isChangelogAutoDisplayEnabled()).resolves.toBe(true);
     await rm(agavDir, { force: true });
     await mkdir(agavDir, { recursive: true });
   });

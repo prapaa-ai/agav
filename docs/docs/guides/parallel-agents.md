@@ -41,7 +41,7 @@ When all workers finish, ask the main agent to resolve disagreements and remove 
 
 From the overview, **Esc** cancels the parent turn and signals all its subagents to stop. Cancelling from a subagent detail view targets only that worker; its pending confirmations are rejected so it can leave the approval wait. **Ctrl+C** with no Agav selection exits the application rather than cancelling just one worker.
 
-Cancellation can arrive during worktree setup, before the worker starts its agent loop. A cancelled worker does not intentionally merge its partial worktree edits back into the parent. This is not transactional rollback: edits made without a worktree, external actions already performed, or a merge already underway may remain. Review the resulting diff.
+Cancellation can arrive during worktree setup, before the worker starts its agent loop. A cancelled worker does not intentionally merge its partial worktree edits back into the parent. If cancellation arrives during worktree integration, Agav rolls the merge back before discarding the worker. A rollback failure retains the worker and reports an error for recovery. Edits made without a worktree, external actions already performed, and delivery that finished before cancellation are not undone. Review the resulting diff.
 
 There is no separate wall-clock timeout for the entire subagent task. Workers inherit the configured iteration limit, and individual tools have their own timeouts. Shell and test subprocesses receive the worker's cancellation signal; custom tools still need to honor it. Cancelling an MCP tool stops Agav's wait, not necessarily the server-side work, and cancelling a Docker command does not guarantee container cleanup.
 

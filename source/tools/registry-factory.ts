@@ -76,12 +76,29 @@ const BUILTIN_TOOLS = [
   backgroundJobTool,
 ];
 
-/** Create a registry containing the named Agav built-in tools. */
+/**
+ * The complete privileged tool namespace. The permission gate grants trust by
+ * NAME (SAFE_TOOLS skips confirmation; WRITE_TOOLS / run_command get special
+ * handling; activate_skill and subagent are dynamically created but trusted),
+ * so every one of these names must be protected from being claimed by an
+ * untrusted source — whether or not a built-in is actually installed for it.
+ * This is exactly the built-in catalog Agav ships.
+ */
+export const PRIVILEGED_TOOL_NAMES: ReadonlySet<string> = KNOWN_TOOL_NAMES;
+
+/**
+ * Create a registry containing the named Agav built-in tools. The full
+ * privileged namespace is reserved up-front, so a later register() from a
+ * plugin, MCP server or agent cannot shadow a built-in name to inherit the
+ * permission gate's trust — even for a built-in that was not installed here
+ * (e.g. an optional tool, or one omitted from a restricted native-agent set).
+ */
 export function createBuiltinToolRegistry(toolNames: Iterable<string>): ToolRegistry {
   const requested = new Set(toolNames);
   const registry = new ToolRegistry();
+  registry.reserveNames(PRIVILEGED_TOOL_NAMES);
   for (const tool of BUILTIN_TOOLS) {
-    if (requested.has(tool.schema.name)) registry.register(tool === shellTool ? createShellTool() : tool);
+    if (requested.has(tool.schema.name)) registry.registerBuiltin(tool === shellTool ? createShellTool() : tool);
   }
   return registry;
 }

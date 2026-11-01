@@ -66,7 +66,14 @@ describe("explicit skill turn lifecycle", () => {
     const { instance, getAgent } = await harness(provider);
     const write = vi.fn(async () => ({ output: "written", isError: false }));
     try {
-      getAgent().toolRegistry.register({ schema: { name: "write_file", description: "write", destructive: true, inputSchema: { type: "object", properties: {} } }, execute: write });
+      // write_file is a reserved privileged name, so register() would be
+      // refused and leave the real writer installed. Install the test spy via
+      // the trusted built-in slot and confirm it is the installed implementation
+      // so the "write not called" assertions below exercise this spy, not a
+      // silently-rejected one.
+      const writeTool = { schema: { name: "write_file", description: "write", destructive: true, inputSchema: { type: "object", properties: {} } }, execute: write };
+      getAgent().toolRegistry.registerBuiltin(writeTool);
+      expect(getAgent().toolRegistry.get("write_file")).toBe(writeTool);
       getAgent().conversation.addUserMessage("prior relevant discussion");
       const command = await getAgent().skillCommands[0]!.execute("exact args", {} as any);
       expect(command).toEqual({ type: "skill_invoke", skillName: "Demo", arguments: "exact args" });

@@ -1,6 +1,5 @@
 /**
- * WP-01 — additive contract changes to `types.ts` (Phase 0 of
- * docs/design/job-workflow-implementation-plan.md). Mostly compile-time
+ * WP-01 — additive contract changes to `types.ts`. Mostly compile-time
  * checks: if any of these optional members are removed or made required,
  * `tsc --noEmit` fails on this file.
  */

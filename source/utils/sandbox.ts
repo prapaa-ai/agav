@@ -566,12 +566,33 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
   return { ...result, backend };
 }
 
+let sandboxRequired = false;
+
 /**
- * Throw if no OS-level sandbox backend is available. Used when
- * `sandboxRequired` is enabled in config or via `--sandbox-required`.
+ * Process-wide `sandboxRequired` policy, set once at startup from config or
+ * `--sandbox-required`. Enforced per `run_command` invocation.
  */
-export function requireSandbox(): void {
-  const backend = detectSandboxBackend();
+export function setSandboxRequired(required: boolean): void {
+  sandboxRequired = required;
+}
+
+export function isSandboxRequired(): boolean {
+  return sandboxRequired;
+}
+
+/**
+ * Throw if the effective sandbox backend (`forceBackend` when given, otherwise
+ * the auto-detected one) is `"none"`. Used when `sandboxRequired` is enabled
+ * in config or via `--sandbox-required`.
+ */
+export function requireSandbox(forceBackend?: SandboxBackend): void {
+  if (forceBackend === "none") {
+    throw new Error(
+      "Sandbox required: the unsandboxed override (sandbox: none) is not allowed " +
+      "while the sandboxRequired setting is enabled. Omit sandbox to use the default backend.",
+    );
+  }
+  const backend = forceBackend ?? detectSandboxBackend();
   if (backend === "none") {
     throw new Error(
       "Sandbox required but no sandbox backend is available. " +

@@ -1,0 +1,52 @@
+name: Scheduled Security Review
+
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  monitor:
+    name: Security review (${{ matrix.branch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [main, beta]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ matrix.branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # Explicit version, unlike the other workflows: this job checks out other
+      # branches (main, beta) whose package.json may predate the central
+      # "packageManager" pin, and pnpm/action-setup errors with "No pnpm version
+      # is specified" when a checked-out branch has neither. Pinning here matches
+      # the migrated branches' packageManager (so no mismatch error) and still
+      # supplies a version for any branch that lacks the field. Keep in lockstep
+      # with the root package.json "packageManager".
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 10.34.9
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check runtime policy freshness and upstream advisories
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-runtime-security.mjs --live
+      - name: Audit production dependencies
+        if: ${{ !cancelled() }}
+        run: pnpm audit --prod --audit-level high
+      - name: Audit dev/build dependencies
+        if: ${{ !cancelled() }}
+        run: pnpm audit --dev --audit-level high
+      - name: Record triage instructions
+        if: failure()
+        run: |
+          echo 'Security checks failed. Owner: prapaa-ai/security. Review the failed feed/audit or expired policy; do not renew the review date without reviewing upstream advisories. HIGH/CRITICAL findings require triage within one business day.' >> "$GITHUB_STEP_SUMMARY"

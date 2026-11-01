@@ -28,6 +28,11 @@ export function formatJobSummary(summary: JobSummary): string {
   if (summary.startedAt) lines.push(`startedAt: ${summary.startedAt}`);
   if (summary.endedAt) lines.push(`endedAt: ${summary.endedAt}`);
   if (summary.exitCode !== undefined) lines.push(`exitCode: ${summary.exitCode}`);
+  if (summary.uncertaintyReason) lines.push(`uncertainty: ${summary.uncertaintyReason}`);
+  if (summary.abandonment) lines.push(`abandonedAt: ${summary.abandonment.abandonedAt}`,
+    "Capacity released. Outcome and descendants remain unverified; no processes were stopped. Evidence/request tombstone retained; no retry authorized.");
+  else if (summary.state === "unknown" || summary.state === "recovery-required") lines.push(
+    `Inspect side effects first. To abandon without claiming stopped: /job abandon ${summary.jobId} --acknowledge-unverified`);
   return lines.join("\n");
 }
 
@@ -47,6 +52,7 @@ export function formatCapabilities(caps: PlatformCapabilities): string {
 
 /** `stop()` leaves `stopState` at "none" when it found nothing live to stop (it never prompted). */
 export function describeStopResult(summary: JobSummary): string {
+  if (summary.abandonment || summary.state === "unknown" || summary.state === "recovery-required") return formatJobSummary(summary) + (summary.stopState === "none" ? "\nTermination is unverified; no stop was dispatched." : "\nTermination is unverified; a stop request does not prove descendants stopped.");
   if (summary.stopState === "none" && !isLiveLifecycle(summary.state)) {
     return `Job ${shortId(summary.jobId)} is not running (state: ${summary.state}); there is nothing to stop.`;
   }
@@ -61,7 +67,7 @@ export function describeBackgroundJobError(error: unknown): string {
     case "authorization-denied":
       return `This action requires confirmation; it was not approved. (${error.message})`;
     case "capacity-exceeded":
-      return "Too many background jobs are already running (limit reached).";
+      return "Background job capacity is full (including unresolved uncertain jobs). Inspect /job list and /job poll <id>.";
     case "not-found":
       return `No matching background job was found: ${error.message}`;
     case "invalid-state":
@@ -155,7 +161,7 @@ function jobItem(summary: JobSummary, origins?: JobOrigins): ResourceItem {
   const originSearch = schedule ? `scheduled ${schedule.scheduleId}` : known ? "independent" : "";
   return {
     id: summary.jobId,
-    title: `${shortId(summary.jobId)}  ${summary.state}  · ${originLabel}`,
+    title: `${shortId(summary.jobId)}  ${summary.state}${summary.abandonment ? " [abandoned]" : ""}  · ${originLabel}`,
     description: `started ${displayTime(summary.startedAt)} · ended ${displayTime(summary.endedAt)} · exit ${exit}`,
     detail: [
       formatJobSummary(summary),
@@ -164,7 +170,8 @@ function jobItem(summary: JobSummary, origins?: JobOrigins): ResourceItem {
       originDetail,
     ].join("\n"),
     searchText: [summary.jobId, summary.requestId, summary.state, originSearch, summary.command, summary.cwd].filter(Boolean).join(" "),
-    stoppable: isLiveLifecycle(summary.state),
+    stoppable: !summary.abandonment && isLiveLifecycle(summary.state),
+    abandonable: !summary.abandonment && (summary.state === "unknown" || summary.state === "recovery-required"),
     // Display hint only; deleteJob() re-checks against fresh liveness evidence.
     removable: isTerminalLifecycle(summary.state),
   };
@@ -185,7 +192,7 @@ function logSection(label: string, tail: { text: string; truncated: boolean }): 
   return `── ${label}${tail.truncated ? ` (last ${LOG_VIEW_BYTES / 1024} KB)` : ""} ──\n${body}`;
 }
 
-export function createJobsAdapter(): ResourceAdapter {
+export function createJobsAdapter(includeAbandoned = false): ResourceAdapter {
   return {
     title: "Background jobs",
     inspectLabel: "Details & logs",
@@ -195,7 +202,7 @@ export function createJobsAdapter(): ResourceAdapter {
     remove: (id) => deleteJob(id),
     list: () => friendly(async () => {
       const [summaries, origins] = await Promise.all([(await getSharedCoordinator()).list(), loadJobOrigins()]);
-      return sortJobsNewestFirst(summaries).map((summary) => jobItem(summary, origins));
+      return sortJobsNewestFirst(summaries).filter((summary) => includeAbandoned || !summary.abandonment).map((summary) => jobItem(summary, origins));
     }),
     // One view for everything about a job: summary, origin, then both streams
     // read tail-first so long-running jobs show their latest output.
@@ -211,6 +218,17 @@ export function createJobsAdapter(): ResourceAdapter {
       return { ...item, detail: `${item.detail}\n\n${logSection("stdout", stdout)}\n\n${logSection("stderr", stderr)}` };
     }),
   };
+}
+
+export const ABANDON_JOB_CONFIRM =
+  "I acknowledge that outcome and descendants remain unverified. No processes will be stopped and no retry is authorized. This releases accounting capacity and hides the job from the active list; immutable evidence and the request tombstone are retained (h: Show abandoned). Inspect command, logs and external side effects first.";
+
+/** Called only after the manager's explicit acknowledgement, even in auto-accept mode. */
+export async function abandonJob(id: string, session: SessionPolicySnapshot): Promise<string> {
+  return friendly(async () => {
+    await (await getSharedCoordinator()).abandonJob(id, true, session);
+    return "Capacity released; hidden from the default active list. Outcome and descendants unverified; no processes stopped, no retry authorized. Evidence retained (h: Show/hide abandoned).";
+  });
 }
 
 export async function stopJob(id: string, session: SessionPolicySnapshot): Promise<string> {

@@ -59,6 +59,13 @@ export interface CommandContext {
    * mode, where `config.permissionMode` is authoritative.
    */
   getEffectivePermissionMode?: () => AgavConfig["permissionMode"]
+  /**
+   * Explicitly change the permission mode for the current session. The applied
+   * mode is clamped to the organization floor; the returned value is the mode
+   * actually in force after clamping, which may be stricter than requested.
+   * Absent in headless mode, where `config.permissionMode` is authoritative.
+   */
+  setPermissionMode?: (mode: AgavConfig["permissionMode"]) => AgavConfig["permissionMode"]
   /** Whether an agent turn is currently in flight. */
   isLoading?: boolean
   getMCPAuthenticationRequired?: () => string[]
@@ -87,12 +94,27 @@ export interface CommandContext {
     action: import("../background-jobs/types.js").GrantAction,
     spec: Omit<import("../background-jobs/types.js").LaunchSpec, "requestId" | "createdAt">,
     subject?: import("../background-jobs/types.js").ConfirmSubject,
+    signal?: AbortSignal,
   ) => Promise<boolean>
+  /**
+   * Per-invocation consent for a background workflow run (capabilities plus an env-var checklist).
+   * Resolves the selected env NAMES, or undefined when denied; absent when no interactive UI can show it.
+   */
+  requestWorkflowConsent?: (request: import("../workflows/consent-prompt.js").ConsentRequest) => Promise<string[] | undefined>
   showResourceTUI?: (kind: import("../resources/types.js").ResourceKind, onDone: () => void, marketplace?: boolean) => void
   showAgentsTUI: (onDone: () => void) => void
   showSkillsTUI: (onDone: () => void) => void
+  /** Pick a session permission mode; undefined means cancelled. Interactive only. */
+  showPermissionPicker?: (onDone: (mode?: AgavConfig["permissionMode"]) => void) => void
   /** Open the /customize overlay; only the interactive app supplies this. */
   showCustomizeTUI?: (onDone: () => void) => void
+  /**
+   * Open the consumer account sign-in wizard (/login). Resolves when the wizard
+   * closes: `cancelled` when the user backed out, otherwise the final
+   * success/error message to show in the transcript. Only the interactive app
+   * supplies this; absent in headless mode.
+   */
+  showLoginTUI?: (onDone: (result: { cancelled: boolean; message?: string }) => void, accountService: string) => void
 }
 
 /** Represents the result of executing a slash command. */

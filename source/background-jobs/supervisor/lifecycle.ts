@@ -27,6 +27,7 @@ import { buildShellInvocation } from "../launch-spec/shell.js";
 import { SegmentedLogWriter } from "../logging/segment-writer.js";
 import { buildCompletionExcerpt, readCursor, readTail } from "../logging/segment-reader.js";
 import { describeLoggingFailureAction } from "../logging/failure-policy.js";
+import { withJobLock } from "../storage/single-writer-lock.js";
 import { IpcServer } from "../ipc/server.js";
 
 /** Grace period between SIGTERM and SIGKILL escalation. */
@@ -56,6 +57,8 @@ export interface JobSupervisorOptions {
   logOperationTimeoutMs?: number;
   idleExitMs?: number;
   idleExitCheckIntervalMs?: number;
+  /** Values for the spec's `envInherit` names (from the launcher's private channel); never persisted. */
+  inheritedEnv?: Record<string, string>;
 }
 
 type PollResponse = { type: "poll"; job: JobRecord | undefined };
@@ -63,6 +66,34 @@ type LogResponse = { type: "log"; text: string; truncated: boolean; cursor?: str
 type StopResponse = { type: "stop"; job: JobRecord | undefined };
 type WaitResponse = { type: "wait"; job: JobRecord | undefined };
 type ErrorResponse = { type: "error"; message: string };
+
+/**
+ * The workload env: the persisted spec env plus the values of its `envInherit` names taken from
+ * `inherited` (handed over by the launcher, never persisted). Explicit spec values win, matching the
+ * normalize-time order (minimal + inherited, then the explicit overlay).
+ */
+export function workloadEnvironment(spec: Pick<LaunchSpec, "env" | "envInherit">, inherited: Record<string, string>, isWindows: boolean): Record<string, string> {
+  const resolved: Record<string, string> = {};
+  for (const name of spec.envInherit ?? []) {
+    const value = inherited[name];
+    if (typeof value === "string") resolved[isWindows ? name.toUpperCase() : name] = value;
+  }
+  return { ...resolved, ...spec.env };
+}
+
+/** Reads and removes the launcher's inherited-values channel from `env`; malformed input yields none. */
+export function takeInheritedEnvironment(env: NodeJS.ProcessEnv, variable: string): Record<string, string> {
+  const raw = env[variable];
+  delete env[variable];
+  if (raw === undefined) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch {
+    return {};
+  }
+}
 
 function logsDir(root: string, jobId: string): string {
   return join(root, "jobs", jobId, "logs");
@@ -78,6 +109,7 @@ export class JobSupervisor {
   private readonly logOperationTimeoutMs: number;
   private readonly idleExitMs: number;
   private readonly idleExitCheckIntervalMs: number;
+  private readonly inheritedEnv: Record<string, string>;
 
   private child: WorkloadChild | undefined;
   private workloadOwnershipScope: LaunchSpec["ownershipScope"] = "process-group";
@@ -131,6 +163,7 @@ export class JobSupervisor {
     this.logOperationTimeoutMs = opts.logOperationTimeoutMs ?? 5000;
     this.idleExitMs = opts.idleExitMs ?? SUPERVISOR_IDLE_EXIT_MS;
     this.idleExitCheckIntervalMs = opts.idleExitCheckIntervalMs ?? IDLE_EXIT_CHECK_INTERVAL_MS;
+    this.inheritedEnv = opts.inheritedEnv ?? {};
   }
 
   /**
@@ -156,6 +189,9 @@ export class JobSupervisor {
           `"accepted" JobRecord before spawning the supervisor (solution.md §6).`,
       );
     }
+
+    if (existing.abandonment || isTerminalLifecycle(existing.state)) return;
+    if (existing.requestId !== this.requestId || spec.requestId !== this.requestId) throw new Error("Supervisor request identity mismatch.");
 
     const nonce = randomUUID();
     await this.updateJob({ state: "starting", nonce });
@@ -194,62 +230,72 @@ export class JobSupervisor {
     // cmd parses command text, not CRT argv. /s strips this outer quote pair.
     const spawnArgs = isCmd ? [...args.slice(0, -1), `"${args.at(-1)}"`] : args;
 
-    let child: WorkloadChild;
-    try {
-      child = spawn(executable, spawnArgs, {
-        cwd: spec.cwd,
-        env: spec.env,
-        // POSIX needs a separate workload group; Windows shells need the
-        // supervisor's hidden console to retain pipe/output behavior.
-        detached: !isWindows,
-        windowsHide: true,
-        windowsVerbatimArguments: isCmd,
-        stdio: ["ignore", "pipe", "pipe"],
-      }) as WorkloadChild;
-    } catch (error) {
-      // Synchronous throw: same as an async spawn error, a confirmed failure.
-      await this.publishSpawnFailure(error instanceof Error ? error : new Error(String(error)));
-      return;
-    }
-
-    // Listeners (and the stdio drains below) must be attached synchronously after spawn(),
-    // before any `await`: a fast child can emit 'close' on the next tick and EventEmitter
-    // doesn't replay. Terminal events are captured here and processed once "running" is persisted.
-    let earlySpawnError: Error | undefined;
     let earlyClose: { code: number | null; signal: NodeJS.Signals | null } | undefined;
-    let sawSpawn = false;
     let publishedRunning = false;
-    child.on("error", (err) => {
-      if (!sawSpawn && earlyClose === undefined) {
-        earlySpawnError = err instanceof Error ? err : new Error(String(err));
+    let child: WorkloadChild | undefined;
+    let earlySpawnError: Error | undefined;
+    let sawSpawn = false;
+    // Fence check and spawn share the abandonment lock; slow log init does not.
+    await this.withSpawnLock(async () => {
+      const fresh = await this.repositories.jobs.get(this.jobId);
+      if (!fresh || fresh.abandonment || isTerminalLifecycle(fresh.state)) {
+        await this.ipcServer?.stop();
+        await this.logWriter?.close();
+        return;
       }
-      // A late 'error' after "running" is not a lifecycle event; `close` is the source of truth.
-    });
-    child.once("spawn", () => {
-      sawSpawn = true;
-    });
-    child.stdout.on("data", (chunk: Buffer) => {
-      child.stdout.pause();
-      this.queueLogWrite(writer, "stdout", chunk, child.stdout);
-    });
-    child.stderr.on("data", (chunk: Buffer) => {
-      child.stderr.pause();
-      this.queueLogWrite(writer, "stderr", chunk, child.stderr);
-    });
-    // 'close', not 'exit': 'exit' can fire before buffered output is delivered, racing the
-    // completion excerpt against unflushed log writes.
-    child.on("close", (code, signal) => {
-      earlyClose = { code, signal };
-      if (publishedRunning) this.runBackground(this.finalizeChild(code, signal));
-    });
+      try {
+        child = spawn(executable, spawnArgs, {
+          cwd: spec.cwd,
+          env: workloadEnvironment(spec, this.inheritedEnv, isWindows),
+          // POSIX needs a separate workload group; Windows shells need the
+          // supervisor's hidden console to retain pipe/output behavior.
+          detached: !isWindows,
+          windowsHide: true,
+          windowsVerbatimArguments: isCmd,
+          stdio: ["ignore", "pipe", "pipe"],
+        }) as WorkloadChild;
+      } catch (error) {
+        // Synchronous throw: same as an async spawn error, a confirmed failure.
+        await this.publishSpawnFailure(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
 
+      // Listeners (and the stdio drains below) must be attached synchronously after spawn(),
+      // before any `await`: a fast child can emit 'close' on the next tick and EventEmitter
+      // doesn't replay. Terminal events are captured here and processed once "running" is persisted.
+      child.on("error", (err) => {
+        if (!sawSpawn && earlyClose === undefined) {
+          earlySpawnError = err instanceof Error ? err : new Error(String(err));
+        }
+        // A late 'error' after "running" is not a lifecycle event; `close` is the source of truth.
+      });
+      child.once("spawn", () => {
+        sawSpawn = true;
+      });
+      child.stdout.on("data", (chunk: Buffer) => {
+        child!.stdout.pause();
+        this.queueLogWrite(writer, "stdout", chunk, child!.stdout);
+      });
+      child.stderr.on("data", (chunk: Buffer) => {
+        child!.stderr.pause();
+        this.queueLogWrite(writer, "stderr", chunk, child!.stderr);
+      });
+      // 'close', not 'exit': 'exit' can fire before buffered output is delivered, racing the
+      // completion excerpt against unflushed log writes.
+      child.on("close", (code, signal) => {
+        earlyClose = { code, signal };
+        if (publishedRunning) this.runBackground(this.finalizeChild(code, signal));
+      });
+    });
+    if (!child) return;
+    const spawned = child;
     await new Promise<void>((resolve) => {
       if (sawSpawn || earlySpawnError) {
         resolve();
         return;
       }
-      child.once("spawn", () => resolve());
-      child.once("error", () => resolve());
+      spawned.once("spawn", () => resolve());
+      spawned.once("error", () => resolve());
     });
 
     if ((earlySpawnError && earlyClose === undefined) || child.pid === undefined) {
@@ -288,6 +334,20 @@ export class JobSupervisor {
 
     // Fast close events are deferred until running is persisted; serialization
     // cannot correct a terminal update queued before the running update.
+  }
+
+  private async withSpawnLock(fn: () => Promise<void>): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      let entered = false;
+      try {
+        await withJobLock(this.root, this.jobId, () => { entered = true; return fn(); });
+        return;
+      } catch (error) {
+        // Retry acquisition only; never repeat a spawn.
+        if (entered || !(error instanceof BackgroundJobError) || error.code !== "lock-held" || attempt === 20) throw error;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
   }
 
   /** Own detached callbacks so teardown cannot race their durable publication. */
@@ -490,16 +550,24 @@ export class JobSupervisor {
       truncated: excerpt.truncated,
       createdAt: new Date().toISOString(),
     };
-    await this.repositories.events.create(event);
+    // Serialize completion publication with abandonment; no orphan terminal event.
+    const publication = this.updateChain.then(() => this.withSpawnLock(async () => {
+      const fresh = await this.repositories.jobs.get(this.jobId);
+      if (!fresh) return;
+      if (fresh.abandonment) return;
+      await this.repositories.events.create(event);
 
-    // Result and completion-event ID are published in one atomic update.
-    await this.updateJob({
-      state: outcome,
-      exitCode: code,
-      signal,
-      endedAt: new Date().toISOString(),
-      resultEventId: eventId,
-    });
+      // Result and completion-event ID are published in one atomic update.
+      await this.repositories.jobs.update(this.jobId, {
+        state: outcome,
+        exitCode: code,
+        signal,
+        endedAt: new Date().toISOString(),
+        resultEventId: eventId,
+      });
+    }));
+    this.updateChain = publication.then(() => undefined, () => undefined);
+    await publication;
 
     if (this.logWriter) {
       const writer = this.logWriter;

@@ -146,6 +146,11 @@ export interface LaunchSpec {
   cwd: string;
   /** Minimal constructed environment; never contains raw secret values. */
   env: Record<string, string>;
+  /**
+   * Names (never values) of variables inherited from the launching process. Their values reach the
+   * supervisor only through its process environment and are resolved at workload spawn, never persisted.
+   */
+  envInherit?: string[];
   /** Names of credentials resolved at launch time; values never persisted here. */
   credentialRefs: string[];
   isolation: IsolationPolicy;
@@ -233,7 +238,16 @@ export interface PlatformAdapter {
 // Storage ownership: one authoritative writer per record kind
 // ---------------------------------------------------------------------------
 
+export interface JobAbandonment {
+  abandonedAt: string;
+  acknowledgement: "outcome-and-descendants-unverified";
+  previousState: "unknown" | "recovery-required";
+  previousNonce: string;
+}
+
 export interface JobRecord {
+  /** Permanent operator audit/tombstone; NOT a verified terminal outcome. */
+  abandonment?: JobAbandonment;
   jobId: JobId;
   requestId: RequestId;
   specHash: string;
@@ -368,7 +382,7 @@ export interface Repositories {
 // Authorization / grants
 // ---------------------------------------------------------------------------
 
-export type GrantAction = "start" | "stop" | "cleanup" | "schedule-create" | "schedule-revoke" | "headless-start";
+export type GrantAction = "start" | "stop" | "cleanup" | "schedule-create" | "schedule-revoke" | "headless-start" | "workflow-run";
 
 export interface Grant {
   grantId: GrantId;
@@ -401,6 +415,8 @@ export interface SessionPolicySnapshot {
     action: GrantAction,
     spec: Omit<LaunchSpec, "requestId" | "createdAt">,
     subject?: ConfirmSubject,
+    /** Aborts when the authorizer stops waiting (session.signal); the host should withdraw its prompt. */
+    signal?: AbortSignal,
   ) => Promise<boolean>;
   signal?: AbortSignal;
 }
@@ -476,6 +492,8 @@ export interface StartJobRequest {
 }
 
 export interface JobSummary {
+  abandonment?: JobAbandonment;
+  uncertaintyReason?: string;
   jobId: JobId;
   requestId: RequestId;
   state: LifecycleState;

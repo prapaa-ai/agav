@@ -17,7 +17,12 @@ import type {
 } from "../background-jobs/host/daemon.js";
 import type { OsSchedulerDeps } from "../background-jobs/host/os-scheduler/index.js";
 
-type TickConfig = Partial<Pick<AgavConfig, "permissionMode" | "backgroundJobsEnabled" | "backgroundAutomation">>;
+type TickConfig = Partial<Pick<AgavConfig, "permissionMode" | "backgroundJobsEnabled" | "backgroundAutomation" | "workflowsEnabled" | "maxConcurrentWorkflowRuns">>;
+
+/** Workflow reconcile options for a tick, mirroring the in-app ticker; only when the workflows gate is on. */
+function workflowTickOptions(config: TickConfig): Pick<BackgroundTickOptions, "workflows"> {
+  return config.workflowsEnabled === true ? { workflows: { maxConcurrentWorkflowRuns: config.maxConcurrentWorkflowRuns } } : {};
+}
 
 export interface JobCliDeps {
   loadConfig?: () => Promise<TickConfig>;
@@ -63,6 +68,7 @@ const USAGE = `Usage
   $ agav job daemon start    Run the background-jobs daemon in the foreground (ticks every 15s)
   $ agav job daemon stop     Stop the running daemon
   $ agav job daemon status   Show daemon status (exit 0 running, 3 not running)
+  $ agav job abandon <full-id> --acknowledge-unverified  Release capacity without claiming stopped
   $ agav job help            Show this help
 `;
 
@@ -79,6 +85,8 @@ export async function runJobCli(argv: string[], deps: JobCliDeps = {}): Promise<
     case "-h":
       stdout(USAGE);
       return 0;
+    case "abandon":
+      return runAbandonCommand(rest, deps, stdout, stderr);
     case "tick":
       return runTickCommand(rest, deps, stdout, stderr);
     case "daemon":
@@ -238,6 +246,7 @@ async function runDaemonStart(
       coordinator,
       session: { permissionMode: config.permissionMode ?? "ask", headlessApprovedActions: [] },
       backgroundAutomation: config.backgroundAutomation,
+      ...workflowTickOptions(config),
     });
     if (summary.dispatched > 0 || summary.errors > 0) {
       stdout(`tick: dispatched=${summary.dispatched} skipped=${summary.skipped} errors=${summary.errors}\n`);
@@ -345,6 +354,7 @@ async function runTickCommand(
     coordinator,
     session,
     backgroundAutomation: config.backgroundAutomation,
+    ...workflowTickOptions(config),
   });
 
   stdout(`tick: dispatched=${summary.dispatched} skipped=${summary.skipped} errors=${summary.errors}\n`);
@@ -385,6 +395,28 @@ async function runTickSchedulerCommand(
     return 0;
   } catch (err) {
     stderr(`error: job tick ${action} failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+async function runAbandonCommand(
+  args: string[], deps: JobCliDeps, stdout: (s: string) => void, stderr: (s: string) => void,
+): Promise<number> {
+  if (args.length !== 2 || args[1] !== "--acknowledge-unverified") {
+    stderr("Usage: agav job abandon <full-id> --acknowledge-unverified\nReleases capacity and fences future startup; does NOT stop processes or verify outcome/descendants. Evidence is retained.\n");
+    return 1;
+  }
+  try {
+    const config = await (deps.loadConfig ?? (async () => (await import("../config/config.js")).loadGlobalConfig()))();
+    if (config.backgroundJobsEnabled !== true) throw new Error("Background jobs are not enabled.");
+    const coordinator = await (deps.getCoordinator ?? (await import("../background-jobs-integration.js")).getSharedCoordinator)();
+    const summary = await coordinator.abandonJob(args[0]!, true, {
+      permissionMode: config.permissionMode ?? "ask", headlessApprovedActions: [],
+    });
+    stdout(`Job ${summary.jobId} abandoned at ${summary.abandonment!.abandonedAt}.\nCapacity released; outcome and descendants remain unverified. No processes were stopped and no retry is authorized. Evidence/request tombstone retained.\n`);
+    return 0;
+  } catch (error) {
+    stderr(`error: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
 }

@@ -97,9 +97,13 @@ export function createAuthorizationService(root: string): AuthorizationService {
             if (session.signal?.aborted) resolve(false);
           });
           const accepted = await Promise.race([
-            opts?.subject === undefined
-              ? session.confirmBackgroundAction(action, structuredClone(approvedSpec))
-              : session.confirmBackgroundAction(action, structuredClone(approvedSpec), opts.subject),
+            // Pass the watched signal as the 4th arg so the host can withdraw its prompt; trailing
+            // arguments are omitted when absent so existing 2/3-arg implementations see no change.
+            session.signal !== undefined
+              ? session.confirmBackgroundAction(action, structuredClone(approvedSpec), opts?.subject, session.signal)
+              : opts?.subject === undefined
+                ? session.confirmBackgroundAction(action, structuredClone(approvedSpec))
+                : session.confirmBackgroundAction(action, structuredClone(approvedSpec), opts.subject),
             cancelled,
           ]);
           if (accepted !== true || session.signal?.aborted || hashLaunchSpecForConsent(spec) !== specHash) {

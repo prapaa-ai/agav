@@ -39,7 +39,7 @@ The flag overrides `maxIterations` in configuration for the current session only
 | `--print`, `-P` | Print mode |
 | `--stream` | Stream print-mode response text |
 | `--output-schema <json\|@file>` | Validate print-mode output against JSON Schema |
-| `--permission <json>` | Tool policy for `agav run` |
+| `--permission <json>` | JSON tool policy for `agav run` (distinct from the interactive [`/permission`](/reference/slash-commands) session mode) |
 | `--max-turns <number>` | Limit the number of agent iterations per prompt in interactive, print, and run modes |
 | `--resume`, `-r [id]` | Open the session picker or resume by ID prefix |
 | `--name <title>` | Set the initial name for a new interactive session. Interactive mode only; rejected with `-P`/`run`. |
@@ -143,16 +143,31 @@ agav sessions rm <id>                  # Alias for delete
 
 `delete` (and its `rm` alias) accept an exact session ID or a unique ID prefix. An unknown ID returns an error; an ambiguous prefix that matches more than one session is rejected rather than guessing. List session IDs with `--resume` or the `/resume` slash command.
 
-## Enterprise login subcommands
+## Account sign-in
 
-For organizations running an Agav control plane, `agav login` enrolls a developer: it authenticates through the organization's identity provider, retrieves the enforced [organization policy](./configuration#organization-managed-configuration), and caches it so subsequent sessions apply it.
+`agav login` is smart-routed. With **no enterprise flags** it signs in to your consumer Agav account; any enterprise flag instead routes to [organization enrollment](#enterprise-login-subcommands).
 
 ```bash
-agav login                              # Sign in; auto-selects the login flow
-agav login --auth-code                  # Force Authorization Code + PKCE (browser)
-agav login --device                     # Force the device flow (SSH / headless)
-agav login --oidc                       # Force OIDC token exchange (CI / automation)
-agav login --saml                       # Force SAML, brokered by the control plane
+agav login                              # Sign in to your Agav account
+cat key.txt | agav login                # Non-interactive: read the key from stdin
+agav logout --account                   # Sign out of your Agav account
+```
+
+On a TTY, `agav login` collects your Agav API key through a masked prompt (hidden as you paste); create or copy a key at `https://agav.dev/account`. With no TTY it reads a single key line from stdin, which is the way to sign in from scripts. There is no `--key` flag — the key is never passed as an argument. The key is validated against the account service, then stored in Agav's encrypted, owner-only credential file.
+
+`agav logout` defaults to **enterprise** sign-out; pass `--account` (alias `--consumer`) to sign out of the consumer account and clear its local store and credential entry.
+
+> Inside an interactive session, `/login` opens a richer wizard that also offers browser device-authorization sign-in in addition to pasting a key, and `/logout --account` signs the account out. See [slash commands](./slash-commands#account).
+
+## Enterprise login subcommands
+
+For organizations running an Agav control plane, `agav login` with a login flow flag enrolls a developer: it authenticates through the organization's identity provider, retrieves the enforced [organization policy](./configuration#organization-managed-configuration), and caches it so subsequent sessions apply it. A bare `agav login` (no flags) is the consumer account path above, so enterprise enrollment must be requested with one of the flow flags below.
+
+```bash
+agav login --auth-code                  # Authorization Code + PKCE (browser)
+agav login --device                     # Device flow (SSH / headless)
+agav login --oidc                       # OIDC token exchange (CI / automation)
+agav login --saml                       # SAML, brokered by the control plane
 agav logout                             # Remove the cached organization policy
 ```
 

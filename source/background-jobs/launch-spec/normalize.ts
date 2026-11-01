@@ -75,12 +75,14 @@ export async function normalizeLaunchSpec(input: NormalizeLaunchSpecInput): Prom
     );
   }
 
+  // Inherited variables are recorded by NAME only: their values are secrets that must never be persisted
+  // with the spec. The supervisor receives them through its process environment and resolves them at spawn.
   const { env: baseEnv, missingCredentials } = input.envExact
     ? { env: {}, missingCredentials: [] }
     : buildMinimalEnvironment(input.platform, {
-        inherit: input.envInherit,
         credentialRefs: input.credentialRefs,
       });
+  const envInherit = input.envExact ? [] : [...new Set(input.envInherit ?? [])].sort();
   if (missingCredentials.length > 0) {
     // Names only, never values.
     throw new BackgroundJobError(
@@ -102,6 +104,7 @@ export async function normalizeLaunchSpec(input: NormalizeLaunchSpecInput): Prom
     invocation,
     cwd,
     env,
+    ...(envInherit.length > 0 ? { envInherit } : {}),
     credentialRefs,
     isolation,
     ownershipScope: input.ownershipScope,

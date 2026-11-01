@@ -7,7 +7,7 @@ if ("Bun" in globalThis) {
   process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0";
 }
 
-import { BACKGROUND_TICK_INTERNAL_FLAG, SUPERVISOR_INTERNAL_FLAG } from "./background-jobs/packaging/manifest.js";
+import { BACKGROUND_TICK_INTERNAL_FLAG, SUPERVISOR_INTERNAL_FLAG, WORKFLOW_RUNNER_INTERNAL_FLAG } from "./background-jobs/packaging/manifest.js";
 
 try {
   if (process.argv[2] === SUPERVISOR_INTERNAL_FLAG) {
@@ -25,6 +25,11 @@ try {
     }
     const code = await entry.runJobCli(["tick", ...process.argv.slice(3)]);
     if (typeof code === "number") process.exitCode = code;
+  } else if (process.argv[2] === WORKFLOW_RUNNER_INTERNAL_FLAG) {
+    // Headless workflow runner: never imports main.js, so Ink is never loaded or rendered.
+    const { runWorkflowRunner } = await import("./workflows/runner.js");
+    const code = await runWorkflowRunner(process.argv[3]);
+    if (typeof code === "number") process.exitCode = code;
   } else {
     const { main } = await import("./main.js");
     await main();
@@ -37,7 +42,9 @@ try {
     ? "supervisor failed"
     : process.argv[2] === BACKGROUND_TICK_INTERNAL_FLAG
       ? "background tick failed"
-      : (await import("./main.js")).hasStartupFinished() ? "failed" : "startup failed";
+      : process.argv[2] === WORKFLOW_RUNNER_INTERNAL_FLAG
+        ? "workflow runner failed"
+        : (await import("./main.js")).hasStartupFinished() ? "failed" : "startup failed";
   process.stderr.write(`\n  Agav — ${stage}: ${message}\n\n`);
   process.exitCode = 1;
 }

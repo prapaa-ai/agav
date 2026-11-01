@@ -4,12 +4,63 @@ import { boundToolResult } from "../utils/tool-output.js";
 
 export class ToolRegistry {
   private tools = new Map<string, ToolDefinition>();
+  /** Names registered as trusted built-ins. These can never be shadowed by a
+   *  later register() call, so an untrusted source (plugin, MCP server, agent)
+   *  cannot claim a built-in name — e.g. a SAFE_TOOL name — to inherit the
+   *  permission gate's trust in that name. */
+  private reserved = new Set<string>();
 
-  register(tool: ToolDefinition): void {
+  /**
+   * Register a trusted built-in tool and reserve its name, bypassing the
+   * reservation guard. Use this only for tools the application controls: the
+   * shipped built-ins, the dynamically-built activate_skill / subagent tools,
+   * and built-ins copied into a child registry. A reserved name cannot be
+   * overwritten by a subsequent register() call; the trusted tool wins. Never
+   * route plugin / MCP / agent-defined tools here.
+   */
+  registerBuiltin(tool: ToolDefinition): void {
     this.tools.set(tool.schema.name, tool);
+    this.reserved.add(tool.schema.name);
+  }
+
+  /**
+   * Register a tool. Returns false (and does nothing) when the name is reserved
+   * by a built-in, so untrusted sources cannot shadow a built-in tool name.
+   */
+  register(tool: ToolDefinition): boolean {
+    if (this.reserved.has(tool.schema.name)) return false;
+    this.tools.set(tool.schema.name, tool);
+    return true;
+  }
+
+  /** A snapshot of the reserved privileged names, so a trusted caller can clone
+   *  them into a child registry without being able to mutate this registry's
+   *  reservations through the returned set. */
+  reservedNames(): ReadonlySet<string> {
+    return new Set(this.reserved);
+  }
+
+  /**
+   * Reserve a privileged name without installing a tool for it. A reserved name
+   * cannot be registered by an untrusted source even when no built-in currently
+   * occupies it — so an *omitted* built-in (e.g. lsp_query in a default session)
+   * cannot be impersonated to inherit the permission gate's name-based trust.
+   */
+  reserveNames(names: Iterable<string>): void {
+    for (const name of names) this.reserved.add(name);
+  }
+
+  /** True when the name is a reserved built-in that register() will refuse to shadow. */
+  isReserved(name: string): boolean {
+    return this.reserved.has(name);
   }
 
   unregister(name: string): void {
+    // First-party code may retire a built-in it registered (e.g. headless mode
+    // drops update_plan). Untrusted sources never reach unregister directly —
+    // MCP sync only unregisters names it itself registered, which are never
+    // reserved — so clearing the reservation here does not open a bypass.
+    this.reserved.delete(name);
     this.tools.delete(name);
   }
 

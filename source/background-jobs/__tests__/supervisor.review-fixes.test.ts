@@ -106,9 +106,25 @@ describe("review lifecycle regressions", () => {
       spec.invocation = { mode: "direct", executable: process.execPath, args: ["-e", 'console.log("final-output")'] };
       await supervisor.start(spec);
       await writing;
+      // Shutdown drains observed exit, not a still-running child.
+      // Log write entry alone does not establish exit under load.
+      await vi.waitFor(() => {
+        const child = (supervisor as unknown as { child: import('node:child_process').ChildProcess }).child;
+        expect(child.exitCode).toBe(0);
+      }, { timeout: 5000 });
       let drained = false;
       const shutdown = supervisor.shutdown().then(() => { drained = true; });
-      await new Promise(resolve => setTimeout(resolve, 20));
+      // Shutdown must stay pending while the final log write is held at the
+      // barrier. Assert pending-ness by racing shutdown against a sentinel rather
+      // than by any timing delay: the barrier-held write is raced against
+      // logOperationTimeoutMs (100ms here), so ANY fixed sleep OR a bare
+      // setImmediate can slip past that window under CI load and flake. A
+      // Promise.race with a unique sentinel resolves in the SAME microtask flush,
+      // so it is immune to scheduling jitter — yet a too-early shutdown resolution
+      // (the real regression) still loses the race and flips `drained`.
+      const pending = Symbol("pending");
+      const winner = await Promise.race([shutdown.then(() => "drained"), Promise.resolve(pending)]);
+      expect(winner).toBe(pending);
       expect(drained).toBe(false);
       release();
       await shutdown;

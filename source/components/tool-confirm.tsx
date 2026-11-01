@@ -11,6 +11,10 @@ import { type ConfirmResult, MAX_FEEDBACK_LENGTH, countGraphemes, truncateGraphe
 import { isEscapeResidue } from "./input-prompt.js";
 import { writeClipboard } from "../ink/termio/clipboard.js";
 import stringWidth from "string-width";
+import { checkWrite, formatWorkspaceWarning } from "../utils/workspace-guard.js";
+
+/** Write tools whose targets get an outside-the-project warning line. */
+const WARN_TOOLS = new Set(["write_file", "edit_file", "edit_notebook"]);
 
 /** Represents the user's approval decision for a tool request. */
 export type ConfirmChoice = ConfirmResult;
@@ -24,6 +28,8 @@ interface Props {
   subagentTask?: string;
   explicitApprovalOnly?: boolean;
   keybindings: Keybindings;
+  /** Informational one-line warning, e.g. a write target outside the project. */
+  warning?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +77,7 @@ function wordBoundsAt(text: string, offset: number): [number, number] {
 }
 
 /** Prompts the user to approve or reject a pending tool action. */
-export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, explicitApprovalOnly, keybindings }: Props) {
+export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, explicitApprovalOnly, keybindings, warning }: Props) {
   const keyResolver = React.useRef(new KeybindingResolver(keybindings, ["cancel", "submit", "clearInput", "deleteWordBackward"]));
   const { stdout } = useStdout();
   const [rows, setRows] = React.useState(stdout.rows || 24);
@@ -486,6 +492,22 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
       </Box>
     );
   }
+  // Hosts that don't forward the loop's warning (the confirmation queue
+  // carries no warning field) still get it: compute it here for write tools.
+  const [computedWarning, setComputedWarning] = React.useState<string | undefined>(undefined);
+  const targetPath = typeof input.path === "string" ? input.path : "";
+  React.useEffect(() => {
+    if (warning !== undefined || !WARN_TOOLS.has(toolName) || !targetPath) {
+      setComputedWarning(undefined);
+      return;
+    }
+    let cancelled = false;
+    checkWrite(targetPath, process.cwd())
+      .then((result) => { if (!cancelled) setComputedWarning(formatWorkspaceWarning(result)); })
+      .catch(() => { });
+    return () => { cancelled = true; };
+  }, [warning, toolName, targetPath]);
+  const shownWarning = warning ?? computedWarning;
 
   const label = getToolLabel(toolName);
   const summary = getToolSummary(toolName, input);
@@ -513,10 +535,11 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
         <Text dimColor>Subagent "{subagentTask}" requests:</Text>
       )}
       <Text bold color="yellow">
-        {explicitApprovalOnly ? "Explicit approval required: " : "Allow "}{label}?{mcpServer ? <Text dimColor bold={false}>{` (MCP: ${mcpServer})`}</Text> : null}
+        Allow {label}?{mcpServer ? <Text dimColor bold={false}>{` (MCP: ${mcpServer})`}</Text> : null}
       </Text>
       {summary ? <Text dimColor>  {summary}</Text> : null}
       {details ? <Text dimColor>{details}</Text> : null}
+      {shownWarning ? <Text color="yellow">  ⚠ {shownWarning}</Text> : null}
 
       {visibleDiff && visibleDiff.length > 0 && (
         <Box flexDirection="column" marginTop={1}>

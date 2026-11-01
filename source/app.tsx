@@ -12,6 +12,7 @@ import RequestQueue from "./components/request-queue.js";
 import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
 import ToolConfirm from "./components/tool-confirm.js";
+import WorkflowConsent from "./components/workflow-consent.js";
 import ContextWindowPrompt from "./components/context-window-prompt.js";
 import { DEFAULT_UNKNOWN_CONTEXT_WINDOW } from "./agent/loop.js";
 import ToolDetailPanel from "./components/tool-detail-panel.js";
@@ -20,7 +21,7 @@ import SubagentDisplay from "./components/subagent-display.js";
 import { makeAgentProgressTracker } from "./agent/subagent-progress.js";
 import type { SubagentProgress } from "./agent/subagent-types.js";
 import type { AgavConfig } from "./config/config.js";
-import { orgPolicyError } from "./config/startup.js";
+import { orgPolicyError, resolveResumePermissionMode } from "./config/startup.js";
 import type { LLMProvider } from "./providers/types.js";
 import { createProvider } from "./providers/registry.js";
 import type { ContentBlock, InvocationReason } from "./providers/types.js";
@@ -33,8 +34,12 @@ import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { JobsTUI } from "./components/jobs-tui.js";
+import { PermissionPicker } from "./components/permission-picker.js";
 import { CustomizeTUI } from "./components/customize-tui.js";
+import { LoginTUI } from "./components/login-tui.js";
+import { openExternal } from "./utils/open-external.js";
 import type { StatusBarSegments } from "./components/status-bar.js";
+
 import { normalizeStatusBarLayout, isDefaultStatusBarLayout, type StatusBarLayout } from "./config/status-bar-layout.js";
 import { ResourceManager } from "./components/resource-manager.js";
 import { createResourceAdapter } from "./resources/adapters.js";
@@ -52,8 +57,8 @@ import { useClipboardImageDetector } from "./hooks/use-paste-handler.js";
 import { KeybindingResolver, GLOBAL_ACTIONS, formatKeybinding, formatKeybindings, normalizeKeyEvent, type Keybindings } from "./config/keybindings.js";
 import { getLoopStatus, stopActiveLoop } from "./commands/loop.js";
 import { loadScheduledTasks, cronMatches, markTaskRun } from "./config/scheduler.js";
-import { startScheduleTicker, stopScheduleTicker } from "./background-jobs-integration.js";
-import { getSandboxName, runInSandbox } from "./utils/sandbox.js";
+import { getSharedCoordinator, reconcileWorkflowRunsOnStartup, startScheduleTicker, stopScheduleTicker } from "./background-jobs-integration.js";
+import { getSandboxName, isSandboxRequired, runInSandbox } from "./utils/sandbox.js";
 import { expandFileMentions } from "./utils/file-mentions.js";
 import { terminalRelativePaths } from "./utils/display-path.js";
 import { openTarget } from "./utils/open-target.js";
@@ -73,11 +78,14 @@ interface Props {
   resumeTokenUsage?: import("./config/history.js").SessionTokenUsage;
   resumeCompacted?: boolean;
   resumeSessionName?: string;
+  resumePermissionMode?: AgavConfig["permissionMode"];
   repoBranch?: string;
   /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
   enhancedKeyboard?: boolean;
   /** Show the changelog once on the first interactive launch after an update. */
   showChangelogOnLaunch?: boolean;
+  /** Retained after unmount so the terminal host can await foreground settlement. */
+  shutdownRef?: { current: (() => Promise<void>) | null };
 }
 
 const BANNER: DisplayMessage = {
@@ -96,7 +104,7 @@ interface QueuedRequest {
 let sysMessageId = 0;
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
-export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false }: Props) {
+export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef }: Props) {
 
   const [input, setInput] = useState("");
   const readPromptRef = useRef<(() => string) | null>(null);
@@ -120,7 +128,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     updateQueue(remaining);
     if (!remaining.length) setQueueBlocked(false);
   }, [updateQueue]);
-  const [config, setConfig] = useState(initialConfig);
+  // Session overrides must not become the default for /new or legacy resumes.
+  const defaultPermissionMode = useRef(initialConfig.permissionMode).current;
+  const [config, setConfig] = useState(() => ({
+    ...initialConfig,
+    permissionMode: resolveResumePermissionMode(initialConfig, { savedPermissionMode: resumePermissionMode }),
+  }));
   const modelSelectionVersion = useRef(0);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
@@ -186,6 +199,48 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, []);
   const [showCompactionSummary, setShowCompactionSummary] = useState(false);
   const [runningShellCommand, setRunningShellCommand] = useState<string | null>(null);
+  const workflowAbortRef = useRef<AbortController | null>(null);
+  const workflowTaskRef = useRef<Promise<import("./workflows/store.js").WorkflowRun> | null>(null);
+  /** Resolver for the displayed background-run consent; called with `false` to deny (Esc, shutdown). */
+  const workflowConfirmRef = useRef<((approved: false) => void) | null>(null);
+  const [workflowConsent, setWorkflowConsent] = useState<{ request: import("./workflows/consent-prompt.js").ConsentRequest; resolve: (envNames: string[] | undefined) => void } | null>(null);
+  /** Aborted once, when shutdown begins: later job consent prompts are denied at once instead of appearing. */
+  const workflowShutdownRef = useRef(new AbortController());
+  /**
+   * Job start/stop consent prompts currently queued or displayed; aborting one withdraws it (denied).
+   * `kind` says who owns the prompt, so the global Esc/Ctrl+C handler can tell the active run's own
+   * prompts (`run-start`, `run-stop`) from a stop prompt raised by the `/workflows cancel` interception
+   * (`cancel-other-stop`; the interception does not know the active run's id, so even a cancel of the
+   * active run's own id is treated this way, which errs towards not aborting). `input` is the exact object
+   * handed to the confirmation queue, so the displayed prompt is matched to its entry by identity.
+   */
+  const pendingJobConsentRef = useRef(new Map<AbortController, { kind: "run-start" | "run-stop" | "cancel-other-stop"; input: Record<string, unknown> }>());
+  /**
+   * The prompt that was displayed when the current key event reached the App handler (cleared by a
+   * microtask, i.e. after every listener of that event has run). The App handler may withdraw the displayed
+   * prompt, which advances the queue before ToolConfirm's own handler sees the same key; ToolConfirm's
+   * answer must still bind to the prompt the user was looking at, not to the one that became active.
+   */
+  const keyStartConfirmationRef = useRef<typeof pendingConfirmation | undefined>(undefined);
+  /** In-flight `/workflows cancel` interceptions (never reject); shutdown awaits them. */
+  const pendingWorkflowCancelsRef = useRef(new Set<Promise<void>>());
+  const denyJobConsents = useCallback(() => {
+    for (const consent of [...pendingJobConsentRef.current.keys()]) consent.abort();
+  }, []);
+  const settleWorkflow = useCallback(async () => {
+    // Order matters: mark shutdown first so a stop prompt raised by the abort below is denied too.
+    workflowShutdownRef.current.abort();
+    workflowAbortRef.current?.abort();
+    workflowConfirmRef.current?.(false);
+    denyJobConsents();
+    await workflowTaskRef.current?.catch(() => {});
+    await Promise.all([...pendingWorkflowCancelsRef.current]);
+  }, [denyJobConsents]);
+  React.useLayoutEffect(() => {
+    if (shutdownRef) shutdownRef.current = settleWorkflow;
+    // React cleanup cannot await; the terminal host awaits this same callback.
+    return () => { void settleWorkflow(); };
+  }, [settleWorkflow, shutdownRef]);
   const shellAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => { shellAbortRef.current?.abort(); }, []);
   const [runningSkillName, setRunningSkillName] = useState<string | null>(null);
@@ -198,10 +253,19 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [skillsMarketplace, setSkillsMarketplace] = useState(true);
   const [jobsTUIActive, setJobsTUIActive] = useState(false);
   const jobsTUIResolveRef = useRef<(() => void) | null>(null);
+  // Lazily loaded so workflow modules stay out of startup.
+  const [workflowsTUI, setWorkflowsTUI] = useState<typeof import("./components/workflows-tui.js") | null>(null);
+  const workflowsTUIResolveRef = useRef<(() => void) | null>(null);
+  const [workflowBadge, setWorkflowBadge] = useState<string | undefined>(undefined);
   const [resourceAdapter, setResourceAdapter] = useState<ResourceAdapter | null>(null);
   const resourceTUIResolveRef = useRef<(() => void) | null>(null);
+  const [permissionPickerActive, setPermissionPickerActive] = useState(false);
+  const permissionPickerResolveRef = useRef<((mode?: AgavConfig["permissionMode"]) => void) | null>(null);
   const [customizeTUIActive, setCustomizeTUIActive] = useState(false);
   const customizeTUIResolveRef = useRef<(() => void) | null>(null);
+  const [loginTUIActive, setLoginTUIActive] = useState(false);
+  const [loginTUIService, setLoginTUIService] = useState("https://agav.dev");
+  const loginTUIResolveRef = useRef<((result: { cancelled: boolean; message?: string }) => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
@@ -241,6 +305,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     clearMessages,
     confirmTool,
     getEffectivePermissionMode,
+    setSessionPermissionMode,
     conversation,
     toolRegistry,
     saveNow,
@@ -257,7 +322,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     togglePause,
     interveneWhilePaused,
     iterationsBudget
-  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
+  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
   const [copyNotice, setCopyNotice] = useState<ClipboardNotice | null>(null);
@@ -371,7 +436,53 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     cancel();
     stopActiveLoop();
     exitInk();
-  }, [cancel, exitInk, updateQueue, voice.cancel]);
+    // Keep Ink alive until the foreground executor has checkpointed settlement.
+    void settleWorkflow().then(() => exitInk());
+  }, [cancel, exitInk, updateQueue, voice.cancel, settleWorkflow]);
+
+  /**
+   * Background-job support for workflow `job` nodes and job-aware `/workflows cancel`.
+   * Start and stop each go through the exact-spec background prompt (the same `run_background_job`
+   * confirmation `/job` uses): never tool consent, never workflow approval, and a generic "Always"
+   * is downgraded to a single "yes" by the confirmation queue. A start prompt is withdrawn when the
+   * run aborts; a stop prompt deliberately is not linked to the outer run signal (it must stay
+   * answerable while the run is aborting). Both are also withdrawn when the signal the authorizer
+   * itself is waiting on aborts (the executor's inner cancel for start, the stop deadline for stop).
+   * Pending prompts are denied on Esc/Ctrl+C or shutdown; a stop prompt raised after the keypress is
+   * answerable (deny it with Esc a second time) so the cancellation is reported incomplete, not hung.
+   * Prompts are tagged by owner (`pendingJobConsentRef`): deps created for a run (`runSignal` present)
+   * own `run-start`/`run-stop` prompts; deps created by the `/workflows cancel` interception (no
+   * `runSignal`) own `cancel-other-stop` prompts. While such a prompt is displayed, Esc/Ctrl+C declines
+   * only that prompt and never aborts the active run. Otherwise (the run's own prompts, or any other
+   * prompt displayed) Esc/Ctrl+C aborts the run and denies every pending job prompt; shutdown does the same.
+   */
+  const createWorkflowJobDeps = useCallback((runSignal?: AbortSignal): import("./workflows/job-node.js").JobNodeDeps => {
+    const confirmJobConsent: NonNullable<import("./background-jobs/types.js").SessionPolicySnapshot["confirmBackgroundAction"]> = async (action, spec, subject, authorizerSignal) => {
+      if (workflowShutdownRef.current.signal.aborted) return false;
+      const consent = new AbortController();
+      const withdrawOn = [action === "start" ? runSignal : undefined, authorizerSignal].filter((s): s is AbortSignal => s !== undefined);
+      const relay = (): void => consent.abort();
+      for (const s of withdrawOn) s.addEventListener("abort", relay, { once: true });
+      if (withdrawOn.some((s) => s.aborted)) relay();
+      const input: Record<string, unknown> = { action, spec, subject };
+      pendingJobConsentRef.current.set(consent, { kind: action === "start" ? "run-start" : runSignal ? "run-stop" : "cancel-other-stop", input });
+      try {
+        const choice = await requestConfirmation("run_background_job", input, consent.signal);
+        return choice === "yes" || choice === "always";
+      } finally {
+        pendingJobConsentRef.current.delete(consent);
+        for (const s of withdrawOn) s.removeEventListener("abort", relay);
+      }
+    };
+    return {
+      getCoordinator: getSharedCoordinator,
+      // Same snapshot shape as /job; the run signal is attached per start by the job-node adapter.
+      session: () => ({ permissionMode: config.permissionMode, headlessApprovedActions: [], confirmBackgroundAction: confirmJobConsent }),
+      sandboxRequired: isSandboxRequired(),
+      headless: false,
+    };
+  }, [config.permissionMode, requestConfirmation]);
+
 
   /** Preview a pasted-text attachment in the document. */
   const previewAttachment = useCallback((attachment: Attachment) => {
@@ -513,7 +624,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         const { getChangelogSummary } = await import("./utils/auto-update.js");
         const text = await getChangelogSummary();
         if (cancelled || !text) return;
-        addDisplayMessage({ id: `changelog-launch-${++sysMessageId}`, role: "system", content: text });
+        // Inline hint (shown in the transcript, not the status bar) telling the
+        // user how to turn off this automatic display. It only reaches here when
+        // auto-display is enabled, so the hint is always relevant. Reuse the
+        // command's shared text so both surfaces read identically.
+        const { CHANGELOG_DISABLE_HINT } = await import("./commands/changelog.js");
+        addDisplayMessage({ id: `changelog-launch-${++sysMessageId}`, role: "system", content: `${text}\n\n${CHANGELOG_DISABLE_HINT}` });
       } catch {
         // Never surface changelog failures during startup.
       }
@@ -713,6 +829,50 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     return () => stopScheduleTicker();
   }, [config.backgroundJobsEnabled, config.permissionMode, config.backgroundAutomation]);
 
+  // Once per process, next to the job reconcile that getSharedCoordinator schedules: recover workflow runs
+  // whose runner died and admit queued ones. Never rejects (errors are logged), so it cannot block startup.
+  useEffect(() => {
+    if (config.backgroundJobsEnabled !== true || config.workflowsEnabled !== true) return;
+    void reconcileWorkflowRunsOnStartup({ maxConcurrentWorkflowRuns: config.maxConcurrentWorkflowRuns });
+  }, [config.backgroundJobsEnabled, config.workflowsEnabled, config.maxConcurrentWorkflowRuns]);
+
+  // Create-once seen markers ensure workflow notifications appear in only one session.
+  useEffect(() => {
+    if (config.backgroundJobsEnabled !== true || config.workflowsEnabled !== true) return;
+    const sessionId = `session-${process.pid}-${Date.now()}`;
+    let polling = false;
+    const poll = async (): Promise<void> => {
+      if (polling) return;
+      polling = true;
+      try {
+        const [{ claimUnseenNotifications }, { WorkflowStore }] = await Promise.all([import("./workflows/notify.js"), import("./workflows/store.js")]);
+        for (const notification of await claimUnseenNotifications(new WorkflowStore(), sessionId)) showStatusLine(notification.text, notification.kind === "failed" || notification.kind === "timed_out");
+      } catch { /* notifications are best effort */ } finally { polling = false; }
+    };
+    void poll();
+    const timer = setInterval(() => { void poll(); }, 5_000);
+    return () => clearInterval(timer);
+  }, [config.backgroundJobsEnabled, config.workflowsEnabled, showStatusLine]);
+
+  // Status bar badge: "workflows: N running · M need approval", polled cheaply while workflows are enabled.
+  useEffect(() => {
+    if (config.backgroundJobsEnabled !== true || config.workflowsEnabled !== true) { setWorkflowBadge(undefined); return; }
+    let polling = false;
+    let active = true;
+    const poll = async (): Promise<void> => {
+      if (polling) return;
+      polling = true;
+      try {
+        const [{ workflowActivity, workflowBadge: badge }, { WorkflowStore }] = await Promise.all([import("./resources/workflow-adapters.js"), import("./workflows/store.js")]);
+        const text = badge(await workflowActivity(new WorkflowStore()));
+        if (active) setWorkflowBadge(text);
+      } catch { /* the badge is best effort */ } finally { polling = false; }
+    };
+    void poll();
+    const timer = setInterval(() => { void poll(); }, 5_000);
+    return () => { active = false; clearInterval(timer); };
+  }, [config.backgroundJobsEnabled, config.workflowsEnabled]);
+
   const hasSubagents = isLoading && subagentStates.length > 0;
 
   // Drop the detail view when the plan it was showing is cleared or finished,
@@ -737,6 +897,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
   useInput((rawChar, rawKey) => {
+    if (workflowsTUI) return; // The full-screen workflow view owns the keyboard.
     if (voice.isActive()) {
       const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
       if (key.eventType === "release" || key.eventType === "repeat") return;
@@ -758,6 +919,26 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
       return;
     }
+    // Capture this key's prompt before handlers advance the queue; ToolConfirm runs later.
+    keyStartConfirmationRef.current = pendingConfirmation;
+    queueMicrotask(() => { keyStartConfirmationRef.current = undefined; });
+    // Foreground cancellation must remain reachable even while a confirmation or queue owns input.
+    if (workflowAbortRef.current && ((rawKey.ctrl && rawChar === "c") || rawKey.escape)) {
+      // A stop prompt raised by `/workflows cancel <other run>` is not part of the active run's abort path:
+      // while it is displayed, Esc/Ctrl+C only declines it (a further press then aborts the run).
+      const displayed = pendingConfirmation
+        ? [...pendingJobConsentRef.current].find(([, owned]) => owned.input === pendingConfirmation.input)
+        : undefined;
+      if (displayed?.[1].kind === "cancel-other-stop") {
+        displayed[0].abort();
+        return;
+      }
+      workflowAbortRef.current.abort();
+      workflowConfirmRef.current?.(false);
+      denyJobConsents();
+      return;
+    }
+    if (workflowConsent) return;
     if (pickerActive || (queueActive && !(rawKey.ctrl && rawChar === "c"))) return;
     if (rawKey.ctrl && rawChar === "q" && queueRef.current.length > 0 && !pendingConfirmation && !pendingContextWindowRequest) {
       setQueueActive(true);
@@ -799,6 +980,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       } else {
         cancel();
       }
+      return;
+    }
+    // Ink no longer exits on Ctrl+C (main passes exitOnCtrlC: false so workflows can settle),
+    // so an idle Ctrl+C must take the same clean exit path explicitly.
+    if (rawKey.ctrl && rawChar === "c") {
+      exit();
       return;
     }
     if (focusedSubagentId && isLoading && !pendingConfirmation && key.tab) {
@@ -843,7 +1030,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       setShowThinking((prev) => !prev);
       return;
     }
-    if (match.action === "retryLastTurn" && !isLoading && !pendingConfirmation && (readPromptRef.current?.() ?? input).length === 0) {
+    // Retry bypasses handleSubmit serialization, so refuse it while any foreground owner or queue exists.
+    if (match.action === "retryLastTurn" && !isLoading && !pendingConfirmation && !requestPendingRef.current && !workflowAbortRef.current && !shellAbortRef.current && queueRef.current.length === 0 && (readPromptRef.current?.() ?? input).length === 0) {
       const lastMessage = [...messages].reverse().find((message) => message.role === "user");
       const lastPrompt = lastMessage?.sourceText ?? lastMessage?.content;
       if (lastPrompt) submit(lastPrompt);
@@ -904,6 +1092,45 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       const trimmed = value.trim();
       const composerEditVersion = composerEditVersionRef.current;
 
+      // Credential guard — runs FIRST, before the busy-queue, intervention, slash
+      // dispatch, or model submission, and independently of the visible composer
+      // text. A consumer API key can arrive either as a credential-bearing /login
+      // in the text OR as the key pasted into an attachment (a long paste becomes
+      // an attachment tile, so the visible text would not start with "/login").
+      // In either case we must neither queue it, submit it to the model, nor keep
+      // it: drop the input, unregister the attachments, and point the user at the
+      // masked prompt.
+      //
+      // Gate on a cheap synchronous pre-check so the normal submit hot path (no
+      // login text, no "agav_sk_" in the text, no text attachments) never pays for
+      // the dynamic import — this preserves the exact timing the request-queue
+      // handoff relies on. The text gate uses a bare "agav_sk_" substring so a key
+      // pasted WITHOUT a /login prefix (incl. repeat-paste expansion) is caught.
+      if (/^\/(login|logout)\b/.test(trimmed) || trimmed.includes("agav_sk_")
+          || promptAttachments.some((a) => a.contentBlock.type === "text")) {
+        const { containsApiKey, submissionCarriesApiKey } = await import("./account/credential-input.js");
+        const attachmentHasKey = promptAttachments.some(
+          (a) => a.contentBlock.type === "text" && containsApiKey((a.contentBlock as { text?: string }).text ?? ""),
+        );
+        if (submissionCarriesApiKey(trimmed) || attachmentHasKey) {
+          // Clear composer + fully unregister any attachments so the key is not
+          // retained in the session attachment registry.
+          composerEditVersionRef.current++;
+          setInput("");
+          for (const a of promptAttachments) unregisterAttachment(a.id);
+          setAttachments([]);
+          lastPasteRef.current = null;
+          setSystemMessages([{
+            id: `sys-${++sysMessageId}`,
+            role: "system",
+            content:
+              "For your security, don't paste your Agav API key into the prompt — it could be saved or sent to the model.\n" +
+              "Run `/login`, choose Paste an Agav API key, and enter it in the secure prompt; it won't enter chat or prompt history.",
+          }]);
+          return;
+        }
+      }
+
       if (trimmed.split(/\s+/)[0] === "/voice") {
         if (invocationReason || queued) {
           showStatusLine("Voice input requires a direct user action; automated workflows cannot open the microphone.", true);
@@ -950,7 +1177,32 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
 
       const commandName = trimmed.slice(1).split(/\s+/)[0]?.toLowerCase() ?? "";
-      const immediateCommand = trimmed.startsWith("/") && promptAttachments.length === 0 && isCommandAllowedMidTurn(commandName);
+      // Only read-only status and cancellation bypass foreground input serialization.
+      if (workflowAbortRef.current && /^\/workflows\s+cancel(?:\s|$)/.test(trimmed) && promptAttachments.length === 0) {
+        const cancelTask = (async () => {
+          try {
+            // Same parsing as /workflows (quoted targets are JSON-decoded).
+            const { parseWorkflowsArgs } = await import("./commands/workflows.js");
+            const parsed = parseWorkflowsArgs(trimmed.replace(/^\/workflows\s+/, ""));
+            if (parsed?.action !== "cancel" || parsed.rest !== "") { showStatusLine("Usage: /workflows cancel <run-id>"); return; }
+            const { WorkflowStore } = await import("./workflows/store.js");
+            const { resolveRunId } = await import("./workflows/format.js");
+            const id = await resolveRunId(new WorkflowStore(), parsed.target);
+            const { cancelRun } = await import("./workflows/control.js");
+            const { createBuiltinToolRegistry } = await import("./tools/registry-factory.js");
+            const { WORKFLOW_TOOLS } = await import("./workflows/definition.js");
+            const run = await cancelRun(new WorkflowStore(), id, createBuiltinToolRegistry(WORKFLOW_TOOLS), workflowShutdownRef.current.signal, createWorkflowJobDeps());
+            showStatusLine(`Workflow ${id}: ${run.status}.`);
+            setInput("");
+          } catch (error) { showStatusLine(error instanceof Error ? error.message : String(error), true); }
+        })();
+        // Tracked so shutdown awaits an in-flight stop instead of cutting it off.
+        pendingWorkflowCancelsRef.current.add(cancelTask);
+        try { await cancelTask; } finally { pendingWorkflowCancelsRef.current.delete(cancelTask); }
+        return;
+      }
+      const workflowStatus = workflowAbortRef.current && /^\/workflows\s+status\s+\S+\s*$/.test(trimmed);
+      const immediateCommand = trimmed.startsWith("/") && promptAttachments.length === 0 && (isCommandAllowedMidTurn(commandName) || !!workflowStatus);
       if (!queued && !immediateCommand && (requestPendingRef.current || !isGenerationPaused || trimmed.startsWith("/") || trimmed.startsWith("!")) &&
           (isLoading || requestPendingRef.current || shellAbortRef.current || queueRef.current.length > 0)) {
         if (!trimmed && promptAttachments.length === 0) return;
@@ -1085,6 +1337,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             setEffort: (effort) => {
               setConfig((prev) => ({ ...prev, effort }));
             },
+            setPermissionMode: (mode) => {
+              // setSessionPermissionMode clamps to the org floor and persists the
+              // choice; mirror the applied (possibly clamped) mode into config so
+              // the footer and any config reader reflect the live session mode.
+              const applied = setSessionPermissionMode(mode);
+              setConfig((prev) => ({ ...prev, permissionMode: applied }));
+              return applied;
+            },
             showStatus: (text: string) => {
               setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: text }]);
             },
@@ -1092,6 +1352,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               updateQueue([]);
               setQueueBlocked(false);
               clearMessages();
+              setConfig((prev) => ({
+                ...prev,
+                permissionMode: resolveResumePermissionMode({ ...prev, permissionMode: defaultPermissionMode }, {}),
+              }));
               setSystemMessages([]);
               setPreview(null);
               clearAttachmentRegistry();
@@ -1102,10 +1366,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             refreshDisplay: () => {
               refreshDisplay();
             },
-            loadSession: (...args) => {
+            loadSession: (session) => {
               updateQueue([]);
               setQueueBlocked(false);
-              return loadSession(...args);
+              const permissionMode = resolveResumePermissionMode(
+                { ...config, permissionMode: defaultPermissionMode },
+                { savedPermissionMode: session.permissionMode },
+              );
+              // Restore the same mode for the foreground hook and config-based
+              // background/workflow authorization, including legacy sessions.
+              loadSession({ ...session, permissionMode });
+              setConfig((prev) => ({ ...prev, permissionMode }));
             },
             activateSession: (...args) => {
               updateQueue([]);
@@ -1143,6 +1414,16 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               const choice = await requestConfirmation("run_background_job", { action, spec, subject });
               return choice === "yes" || choice === "always";
             },
+            requestWorkflowConsent: stdout.isTTY && process.stdin.isTTY ? (request) => new Promise<string[] | undefined>(resolve => {
+              if (workflowShutdownRef.current.signal.aborted || workflowConfirmRef.current) { resolve(undefined); return; }
+              const finish = (envNames: string[] | undefined) => {
+                workflowConfirmRef.current = null;
+                setWorkflowConsent(null);
+                resolve(envNames);
+              };
+              workflowConfirmRef.current = () => finish(undefined);
+              setWorkflowConsent({ request, resolve: finish });
+            }) : undefined,
             showResourceTUI: stdout.isTTY && process.stdin.isTTY ? (kind: ResourceKind, onDone: () => void, marketplace = false) => {
               if (kind === "agents") {
                 agentsTUIResolveRef.current = onDone;
@@ -1154,6 +1435,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               } else if (kind === "jobs") {
                 jobsTUIResolveRef.current = onDone;
                 setJobsTUIActive(true);
+              } else if (kind === "workflows") {
+                workflowsTUIResolveRef.current = onDone;
+                void import("./components/workflows-tui.js").then(setWorkflowsTUI, (error: unknown) => {
+                  workflowsTUIResolveRef.current = null;
+                  showStatusLine(`Workflows TUI failed to load: ${error instanceof Error ? error.message : String(error)}`, true);
+                  onDone();
+                });
               } else {
                 resourceTUIResolveRef.current = onDone;
                 setResourceAdapter(createResourceAdapter(kind));
@@ -1167,9 +1455,18 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               skillsTUIResolveRef.current = onDone;
               setSkillsTUIActive(true);
             },
+            showPermissionPicker: stdout.isTTY && stdin.isTTY ? (onDone) => {
+              permissionPickerResolveRef.current = onDone;
+              setPermissionPickerActive(true);
+            } : undefined,
             showCustomizeTUI: stdout.isTTY && process.stdin.isTTY ? (onDone: () => void) => {
               customizeTUIResolveRef.current = onDone;
               setCustomizeTUIActive(true);
+            } : undefined,
+            showLoginTUI: stdout.isTTY && stdin.isTTY ? (onDone: (result: { cancelled: boolean; message?: string }) => void, accountService: string) => {
+              loginTUIResolveRef.current = onDone;
+              setLoginTUIService(accountService);
+              setLoginTUIActive(true);
             } : undefined,
             startVoiceInput: stdout.isTTY && stdin.isTTY ? () => {
               // Capture the version after the slash command clears its composer.
@@ -1284,7 +1581,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY],
+    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.
@@ -1354,6 +1651,25 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   const statusHint = useMemo(() => getRandomHint(keybindings, enhancedKeyboard), [messages.length, keybindings, enhancedKeyboard]);
 
+  // Workflows owns the entire frame, not the home footer. Keeping the document
+  // mounted behind it leaves the banner and status bar visible above/below it.
+  if (workflowsTUI) return (
+    <Box flexDirection="column" height={termRows}>
+      <workflowsTUI.WorkflowsTUI
+        config={config}
+        height={termRows}
+        copyNotice={copyNotice}
+        onExit={() => {
+          setWorkflowsTUI(null);
+          setPickerActive(false);
+          setInput("");
+          const resolve = workflowsTUIResolveRef.current;
+          workflowsTUIResolveRef.current = null;
+          resolve?.();
+        }}
+      />
+    </Box>
+  );
   // Resource managers own the entire viewport while active. Keeping them in the
   // home footer leaves the transcript and status bar visible and steals rows
   // from their scrollable content (including a second clipboard notice).
@@ -1595,7 +1911,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         <RequestQueue
           requests={queuedRequests.map(request => ({ id: request.id, text: request.text, attachmentCount: request.attachments.length }))}
           onCancel={cancelQueuedRequest}
-          active={queueActive && !pickerActive && !pendingConfirmation && !pendingContextWindowRequest}
+          active={queueActive && !pickerActive && !workflowConsent && !pendingConfirmation && !pendingContextWindowRequest}
           onClose={() => setQueueActive(false)} onActivate={() => setQueueActive(true)} columns={termCols}
         />
         {queueBlocked && queuedRequests.length > 0 && <Text color="yellow">Queue paused · /queue retry to retry</Text>}
@@ -1605,10 +1921,16 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             input={pendingConfirmation.input}
             diffLines={pendingConfirmation.diffLines}
             mcpServerName={pendingConfirmation.mcpServerName}
-            onConfirm={confirmTool}
+            onConfirm={(choice) => confirmTool(choice, keyStartConfirmationRef.current ?? pendingConfirmation ?? undefined)}
             subagentTask={pendingConfirmation.subagentTask}
             explicitApprovalOnly={pendingConfirmation.explicitApprovalOnly}
             keybindings={keybindings}
+          />
+        )}
+        {workflowConsent && (
+          <WorkflowConsent
+            request={workflowConsent.request}
+            onDecide={workflowConsent.resolve}
           />
         )}
 
@@ -1617,6 +1939,21 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             model={pendingContextWindowRequest.model}
             defaultValue={DEFAULT_UNKNOWN_CONTEXT_WINDOW}
             onSubmit={resolveContextWindowRequest}
+          />
+        )}
+
+        {permissionPickerActive && (
+          <PermissionPicker
+            current={getEffectivePermissionMode()}
+            floor={config.orgPermissionFloor}
+            onDone={(mode) => {
+              setPermissionPickerActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = permissionPickerResolveRef.current;
+              permissionPickerResolveRef.current = null;
+              resolve?.(mode);
+            }}
           />
         )}
 
@@ -1663,6 +2000,21 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           />
         )}
 
+        {loginTUIActive && (
+          <LoginTUI
+            accountService={loginTUIService}
+            openBrowser={openExternal}
+            onDone={(result) => {
+              setLoginTUIActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = loginTUIResolveRef.current;
+              loginTUIResolveRef.current = null;
+              resolve?.(result);
+            }}
+          />
+        )}
+
         {(voice.phase === "model-consent" || voice.phase === "downloading") && voice.model && <VoiceModelSetup
           model={voice.model} downloading={voice.phase === "downloading"} bytes={voice.downloadedBytes}
           onDownload={voice.confirmDownload} onCancel={cancelVoice}
@@ -1679,7 +2031,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           {voiceFeedback === "error" && <Text dimColor>{voiceError}</Text>}
           {voiceFeedback === "error" && <Text dimColor>Check microphone access and local setup: /help voice</Text>}
         </Box>}
-        {!pendingConfirmation && !pendingContextWindowRequest && (
+        {!workflowConsent && !pendingConfirmation && !pendingContextWindowRequest && (
           <Box marginTop={1}><InputPrompt
             value={input}
             onChange={(value) => {
@@ -1749,6 +2101,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           psResponse={psResponse}
           psLoading={psLoading}
           loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
+          workflowStatus={workflowBadge}
           sandboxBackend={`sandbox: ${getSandboxName()}`}
           branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
           turnStartTime={turnStartTime}

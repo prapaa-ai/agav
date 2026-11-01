@@ -8,13 +8,15 @@ import { getPlatformAdapter } from "../platform/index.js";
 import { resolveSupervisorEntryPath, assertSupervisorAssetExists } from "../packaging/locator.js";
 import { isStandaloneBinary, SUPERVISOR_INTERNAL_FLAG } from "../packaging/manifest.js";
 import { getSocketPath } from "../ipc/socket-path.js";
-import { buildMinimalEnvironment, normalizeWindowsEnvKeyCasing } from "../launch-spec/environment.js";
+import { buildMinimalEnvironment, INHERITED_ENV_VAR, normalizeWindowsEnvKeyCasing } from "../launch-spec/environment.js";
 
 export interface LaunchSupervisorForJobArgs {
   jobId: string;
   requestId: string;
   root: string;
   repositories: Repositories;
+  /** Values of the spec's `envInherit` names, resolved from this process; sent via `INHERITED_ENV_VAR` only. */
+  inheritedEnv?: Record<string, string>;
 }
 
 /** Deterministically derive a job's IPC socket/pipe name. Shared by coordinator and tests. */
@@ -53,6 +55,9 @@ export async function launchSupervisorForJob(args: LaunchSupervisorForJobArgs): 
     : {};
   if (process.env.PATH !== undefined) env.PATH = process.env.PATH;
   if (process.env.NODE_OPTIONS !== undefined) env.NODE_OPTIONS = process.env.NODE_OPTIONS;
+  if (args.inheritedEnv !== undefined && Object.keys(args.inheritedEnv).length > 0) {
+    env[INHERITED_ENV_VAR] = JSON.stringify(args.inheritedEnv);
+  }
 
   return adapter.launchDetachedSupervisor({
     supervisorEntry,

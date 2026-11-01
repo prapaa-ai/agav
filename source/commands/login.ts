@@ -89,20 +89,105 @@ async function runEnrollment(
   return { type: "message", text: transcript ? `${header}\n\n${transcript}` : header, preservePaths: true };
 }
 
+/**
+ * Smart /login routing. The command serves two distinct products:
+ *   - Consumer Agav account (opt-in paid): an interactive sign-in WIZARD.
+ *   - Enterprise enrollment: org policy + gateway via the control plane.
+ *
+ * `/login` with no enterprise flags opens the consumer wizard (choose "sign in
+ * with your Agav account" or "paste an API key"). The key is entered in a masked
+ * Ink field inside the overlay — never via the composer, so it can't reach prompt
+ * history, attachments, or the model. Enterprise flags (--device/--oidc/… and the
+ * control-plane/issuer/client-id options) route to enterprise enrollment,
+ * unchanged.
+ */
+
+/** Open the consumer sign-in wizard overlay and fold its outcome into a result. */
+function runConsumerWizard(context: CommandContext, accountService: string): Promise<CommandResult> {
+  context.setPickerActive(true);
+  return new Promise<CommandResult>((resolve, reject) => {
+    try { context.showLoginTUI!((result) => {
+      context.setPickerActive(false);
+      if (result.cancelled) {
+        resolve({ type: "message", text: "Agav account sign-in cancelled.", preservePaths: true });
+        return;
+      }
+      resolve({ type: "message", text: result.message ?? "Signed in to your Agav account.", preservePaths: true });
+    }, accountService); } catch (error) {
+      context.setPickerActive(false);
+      reject(error);
+    }
+  });
+}
+
+/** Sign out of the consumer account (clear the local store + credential entry). */
+async function runConsumerLogout(): Promise<CommandResult> {
+  const { signOutAccount } = await import("../account/account-login.js");
+  try {
+    await signOutAccount();
+    return { type: "message", text: "Signed out of your Agav account.", preservePaths: true };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      type: "message",
+      text: `Could not sign out of your Agav account: ${detail}\nYour account is still connected. Fix the file permissions and try again.`,
+      preservePaths: true,
+    };
+  }
+}
+
 export const loginCommand: SlashCommand = {
   name: "login",
-  description: "Sign in to your organization (enterprise enrollment)",
-  usage: "Usage: /login [--device | --oidc | --auth-code | --saml] [--control-plane URL] [--issuer URL] [--client-id ID]\n\nPress Ctrl-C or Esc to cancel an in-progress sign-in.",
-  execute(args: string, context: CommandContext): Promise<CommandResult> {
-    return runEnrollment("login", args, context);
+  description: "Sign in to your Agav account, or your organization (enterprise)",
+  usage: "Usage:\n  /login     Open the Agav account sign-in wizard (sign in with your account, or paste an API key)\n  /login [--device | --oidc | --auth-code | --saml] [--control-plane URL] [--issuer URL] [--client-id ID]     Enterprise enrollment\n\nIn the wizard: ↑/↓ or 1/2 to choose · Enter · Esc / Ctrl-C to cancel. During secure key entry: Ctrl-C or Esc then Enter cancels. An incomplete paste stays isolated until its closing marker or EOF.",
+  async execute(args: string, context: CommandContext): Promise<CommandResult> {
+    const { parseConsumerArgs } = await import("../account/account-login.js");
+    const argv = args.trim().length ? args.trim().split(/\s+/) : [];
+    const parsed = parseConsumerArgs(argv);
+    if ("error" in parsed) {
+      return { type: "message", text: parsed.error, preservePaths: true };
+    }
+    // Any enterprise flag routes to enterprise enrollment. Everything else —
+    // including a bare `/login` — opens the consumer wizard.
+    if (!parsed.consumer) {
+      return runEnrollment("login", args, context);
+    }
+    // Consumer path: the interactive wizard requires a TTY overlay. In headless
+    // mode there is no overlay, so explain rather than failing silently.
+    if (!context.showLoginTUI) {
+      return {
+        type: "message",
+        text: "Run /login in an interactive terminal to sign in to your Agav account.",
+        preservePaths: true,
+      };
+    }
+    const { resolveAccountService } = await import("../account/account-address.js");
+    const { secureURL } = await import("../enterprise/secure-url.js");
+    let service: URL;
+    try {
+      service = secureURL(resolveAccountService({ flag: parsed.accountService }));
+      if (service.search || service.hash) throw new Error("Invalid service base");
+    } catch {
+      return { type: "message", text: "Use an HTTPS account-service base URL without credentials, query, or fragment (HTTP is allowed on localhost)." };
+    }
+    return runConsumerWizard(context, service.href);
   },
 };
 
 export const logoutCommand: SlashCommand = {
   name: "logout",
-  description: "Sign out of your organization and clear cached enrollment",
-  usage: "Usage: /logout",
-  execute(args: string, context: CommandContext): Promise<CommandResult> {
+  description: "Sign out of your Agav account (--account) or your organization",
+  usage: "Usage:\n  /logout --account     Sign out of your Agav account (consumer)\n  /logout               Sign out of your organization (enterprise)",
+  async execute(args: string, context: CommandContext): Promise<CommandResult> {
+    const { parseConsumerArgs } = await import("../account/account-login.js");
+    const argv = args.trim().length ? args.trim().split(/\s+/) : [];
+    const parsed = parseConsumerArgs(argv);
+    if ("error" in parsed) {
+      return { type: "message", text: parsed.error, preservePaths: true };
+    }
+    // /logout defaults to ENTERPRISE; consumer sign-out requires an explicit
+    // --account/--consumer flag (so a bare /logout keeps its established meaning).
+    if (/(^|\s)--(account|consumer)(\s|$)/.test(args)) return runConsumerLogout();
     return runEnrollment("logout", args, context);
   },
 };

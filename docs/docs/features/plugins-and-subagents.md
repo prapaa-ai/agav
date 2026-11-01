@@ -49,7 +49,24 @@ A subagent accepts an optional `model` parameter. Omit it to use the active sess
 
 While subagents run, the terminal shows a live overview. Use `↑`/`↓` to select a subagent and `Enter` to inspect it. Press the cancel key (`Esc` by default) to cancel just the focused subagent while inspecting it, or to cancel all running subagents from the overview. See [Keybindings](/reference/keybindings) for the subagent navigation shortcuts.
 
-Tasks whose description indicates file changes attempt to use an isolated Git worktree. Agav applies the resulting changes back to the original checkout and reports a warning if that merge step fails. Read-only tasks use the current working directory directly.
+Tasks whose description indicates file changes attempt to use an isolated Git worktree. On successful completion, Agav commits remaining tracked edits and non-ignored new files, then merges the complete worker branch back into the original checkout. Worker directory and branch names include a unique suffix so retained work does not collide with workers in later sessions. If Git cannot create the worktree, the task stops with an error instead of running in the parent checkout. Read-only tasks and tasks outside Git repositories use the current working directory directly.
+
+### Worktree delivery and recovery
+
+Agav records the Git commit where each worker started. Delivery uses a normal merge commit, preserving all worker commits since that base along with any final uncommitted edits. An unchanged worker is a no-op; ignored files are excluded unless the worker explicitly tracks them. Both the parent and worker histories must still descend from the recorded base.
+
+Automatic integration requires a clean parent index and tracked working files, with no merge, rebase, or cherry-pick in progress. Parent commits made while the worker runs are preserved. Agav previews the merge before modifying the parent, including directory-rename destinations, and checks local untracked and ignored files for collisions using filesystem identity. This also protects case-equivalent file and directory names on case-insensitive volumes. Automatic integration ignores `branch.<name>.mergeOptions` for its Git commands so preview and execution agree; the saved repository configuration is unchanged. Automatic integration requires Git with `merge-tree --write-tree` support; if the preview is unavailable or conflicts, work is retained for manual integration.
+
+If staging, committing, or merging fails, the tool reports an error and retains the worker directory and branch. The error includes both names so you can inspect the output, resolve conflicts, or integrate it manually. For example, using the actual path and branch from the error:
+
+```bash
+git -C /path/from/error status
+git -C /path/from/error diff HEAD
+# After committing any remaining worker edits and preparing the parent checkout:
+git merge --no-ff <branch-from-error>
+```
+
+Failed automatic merges are aborted. If Git cannot abort or roll back, the error also asks you to inspect the parent repository. Successful delivery removes only that worker's directory and branch. Cancellation discards worker output; if it arrives during integration, Agav rolls the merge back before cleanup. Once delivery has completed, cancellation does not undo it.
 
 Give a subagent all necessary paths, constraints, and expected output because it is instructed to work without follow-up questions.
 

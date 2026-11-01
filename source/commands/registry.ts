@@ -16,9 +16,11 @@ import { planCommand } from "./plan.js"
 import { debugCommand } from "./debug.js"
 import { searchCommand, searchHistoryCommand } from "./search-history.js"
 import { effortCommand } from "./effort.js"
+import { permissionCommand } from "./permission.js"
 import { loopCommand } from "./loop.js"
 import { scheduleCommand } from "./schedule.js"
 import { jobCommand } from "./job.js"
+import { workflowsCommand } from "./workflows.js"
 import { skillsCommand } from "../skills/commands.js"
 import { steerCommand } from "./steer.js"
 import { changelogCommand } from "./changelog.js"
@@ -47,6 +49,7 @@ export class CommandRegistry {
     this.register(nameCommand)
     this.register(modelCommand)
     this.register(effortCommand)
+    this.register(permissionCommand)
     this.register(exitCommand)
     this.register(resumeCommand)
     this.register(historyCommand)
@@ -67,6 +70,7 @@ export class CommandRegistry {
     this.register(loopCommand)
     this.register(scheduleCommand)
     this.register(jobCommand)
+    this.register(workflowsCommand)
     this.register(skillsCommand)
     this.register(steerCommand)
     this.register(changelogCommand)
@@ -112,7 +116,8 @@ export class CommandRegistry {
 
     const parts = input.slice(1).split(/\s+/)
     const name = parts[0]!
-    const args = parts.slice(1).join(" ")
+    // Workflow JSON and quoted paths must retain their literal whitespace.
+    const args = name === "workflows" ? input.slice(1 + name.length).trim() : parts.slice(1).join(" ")
 
     const command = this.commands.get(name)
     if (!command) {

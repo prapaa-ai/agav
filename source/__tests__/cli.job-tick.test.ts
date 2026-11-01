@@ -80,6 +80,18 @@ describe("agav job tick", () => {
     );
   });
 
+  it("passes workflow reconcile options when workflowsEnabled is on", async () => {
+    const { deps } = makeDeps({ ...enabled, workflowsEnabled: true, maxConcurrentWorkflowRuns: 3 });
+    expect(await runJobCli(["tick"], deps)).toBe(0);
+    expect(deps.runTick).toHaveBeenCalledWith(expect.objectContaining({ workflows: { maxConcurrentWorkflowRuns: 3 } }));
+  });
+
+  it("omits workflow options when workflowsEnabled is off", async () => {
+    const { deps } = makeDeps({ ...enabled, workflowsEnabled: false, maxConcurrentWorkflowRuns: 3 });
+    await runJobCli(["tick"], deps);
+    expect(deps.runTick).toHaveBeenCalledWith(expect.not.objectContaining({ workflows: expect.anything() }));
+  });
+
   it("awaits a slow reconcile before running the tick", async () => {
     const { deps } = makeDeps(enabled);
     const events: string[] = [];
@@ -174,6 +186,20 @@ describe("agav job daemon start (V-11 / V-2)", () => {
       await vi.waitFor(() => expect(deps.runTick).toHaveBeenCalledTimes(1));
       expect(events).toEqual(["getCoordinator", "reconcile:start", "reconcile:end", "runTick"]);
       expect(deps.reconcile).toHaveBeenCalledTimes(1);
+      emit("SIGTERM");
+      expect(await exit).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("passes workflow reconcile options on daemon ticks when workflowsEnabled is on", async () => {
+    const root = await makeRoot();
+    try {
+      const { deps, emit } = daemonDeps(root, [{ ...enabled, workflowsEnabled: true, maxConcurrentWorkflowRuns: 4 }]);
+      const exit = runJobCli(["daemon", "start"], deps);
+      await vi.waitFor(() => expect(deps.runTick).toHaveBeenCalledTimes(1));
+      expect(deps.runTick).toHaveBeenCalledWith(expect.objectContaining({ workflows: { maxConcurrentWorkflowRuns: 4 } }));
       emit("SIGTERM");
       expect(await exit).toBe(0);
     } finally {

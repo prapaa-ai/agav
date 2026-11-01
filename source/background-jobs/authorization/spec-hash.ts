@@ -32,6 +32,8 @@ export function hashLaunchSpecForConsent(spec: ConsentRelevantSpec): string {
     invocation: spec.invocation,
     cwd: spec.cwd,
     env: spec.env,
+    // Names only; absent for specs without inherited variables so their hashes are unchanged.
+    ...(spec.envInherit !== undefined && spec.envInherit.length > 0 ? { envInherit: spec.envInherit } : {}),
     credentialRefs: spec.credentialRefs,
     isolation: spec.isolation,
     ownershipScope: spec.ownershipScope,

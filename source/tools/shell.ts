@@ -6,6 +6,8 @@ import {
   detectSandboxBackend,
   getAvailableSandboxOverrides,
   isDestructiveCommand,
+  isSandboxRequired,
+  requireSandbox,
   type SandboxBackend,
 } from "../utils/sandbox.js";
 
@@ -171,6 +173,15 @@ export const shellTool: ToolDefinition = {
         output: `Blocked: "${command}" matches a destructive command pattern. This command requires explicit user confirmation and cannot be auto-approved.`,
         isError: true,
       };
+    }
+
+    if (isSandboxRequired()) {
+      // Enforce against the effective backend (honours the override) before executing.
+      try {
+        requireSandbox(forceBackend ?? detectSandboxBackend());
+      } catch (cause) {
+        return { output: `Command refused: ${cause instanceof Error ? cause.message : String(cause)}`, isError: true };
+      }
     }
 
     const capture = new ShellOutput();

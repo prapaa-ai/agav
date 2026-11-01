@@ -4,10 +4,11 @@ on:
   pull_request:
     branches: [main, beta]
 
+# Least privilege: default every job to read-only source access. The only job
+# that needs more (pr-title reads PR metadata) declares `pull-requests: read`
+# itself. No job uploads SARIF, so `security-events: write` is not granted.
 permissions:
   contents: read
-  pull-requests: read
-  security-events: write
 
 jobs:
   # --- Change detection ---
@@ -21,8 +22,9 @@ jobs:
       deps: ${{ steps.diff.outputs.deps }}
       scripts: ${{ steps.diff.outputs.scripts }}
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
           fetch-depth: 0
       - name: Compute changed paths
@@ -31,26 +33,14 @@ jobs:
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
           FILES=$(git diff --name-only "$BASE" "$HEAD")
-          echo "source=false" >> "$GITHUB_OUTPUT"
-          echo "workflows=false" >> "$GITHUB_OUTPUT"
-          echo "docs=false" >> "$GITHUB_OUTPUT"
-          echo "deps=false" >> "$GITHUB_OUTPUT"
-          echo "scripts=false" >> "$GITHUB_OUTPUT"
-          if echo "$FILES" | grep -qE '^source/'; then
-            echo "source=true" >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$FILES" | grep -qE '^\.github/'; then
-            echo "workflows=true" >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$FILES" | grep -qE '(README|\.md$|docs/)'; then
-            echo "docs=true" >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$FILES" | grep -qE '(package\.json|pnpm-lock\.yaml)'; then
-            echo "deps=true" >> "$GITHUB_OUTPUT"
-          fi
-          if echo "$FILES" | grep -qE '^scripts/'; then
-            echo "scripts=true" >> "$GITHUB_OUTPUT"
-          fi
+          match() { echo "$FILES" | grep -qE "$1" && echo true || echo false; }
+          {
+            echo "source=$(match '^source/')"
+            echo "workflows=$(match '^\.github/')"
+            echo "docs=$(match '(README|\.md$|docs/)')"
+            echo "deps=$(match '(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml)')"
+            echo "scripts=$(match '^scripts/')"
+          } >> "$GITHUB_OUTPUT"
 
   # --- Core checks (only when source or deps change) ---
   typecheck:
@@ -59,15 +49,14 @@ jobs:
     if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
       - run: pnpm install --frozen-lockfile
       - run: npx tsc --noEmit
       - name: Check clean worktree
@@ -84,15 +73,14 @@ jobs:
     if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
       - run: pnpm install --frozen-lockfile
       - run: npx tsx source/cli.tsx --version
       - name: Check clean worktree
@@ -106,18 +94,20 @@ jobs:
   test:
     name: Tests
     needs: changed
-    if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true'
+    # Also run on workflow-only changes: the CI-hardening suite (SHA pins +
+    # permissions) lives here, so a PR touching only .github/workflows must still
+    # execute it or a mutable action ref could slip in unguarded.
+    if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       # `pnpm build` regenerates the bundled-skills manifest. If that changed
@@ -137,18 +127,17 @@ jobs:
     if: needs.changed.outputs.source == 'true' || needs.changed.outputs.deps == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.3.14"
-      - uses: actions/setup-node@v4.4.0
+          bun-version: "1.4.4"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
       # Only pnpm, deliberately: the release workflow no longer runs a separate
       # `bun install react-devtools-core`, so this is the check that the ink
       # devtools import still resolves through pnpm's peer layout. A compiled
@@ -170,10 +159,13 @@ jobs:
 
           RAW=$(wc -c < dist/agav-linux-x64)
           GZ=$(wc -c < dist/agav-linux-x64.gz)
-          # ~99 MiB of this is the embedded Bun runtime and is not ours to
-          # shrink. The budget leaves room for a few MB of growth and trips on
-          # the kind of regression that added 30 MB of native image codecs.
-          BUDGET=$((110 * 1024 * 1024))
+          # ~114 MiB of this is the embedded Bun runtime (1.4.4) and is not ours
+          # to shrink; the runtime grew when the Brotli-CVE fix moved the pin up
+          # from 1.3.14. The budget leaves room for a few MB of growth and trips
+          # on the kind of regression that added 30 MB of native image codecs.
+          # Raise it in lockstep with a Bun pin bump that legitimately grows the
+          # runtime, never to accommodate our own bloat.
+          BUDGET=$((125 * 1024 * 1024))
 
           {
             echo "| Asset | Bytes | MiB |"
@@ -202,8 +194,9 @@ jobs:
     if: needs.changed.outputs.scripts == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: ShellCheck
         run: |
@@ -233,8 +226,9 @@ jobs:
     if: needs.changed.outputs.scripts == 'true' || needs.changed.outputs.workflows == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: Suites under Windows PowerShell 5.1
         # This is the host install.cmd actually launches, and the only place the
@@ -269,7 +263,7 @@ jobs:
     permissions:
       pull-requests: read
     steps:
-      - uses: amannn/action-semantic-pull-request@v6
+      - uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
         env:
           GITHUB_TOKEN: ${{ secrets.TOKEN || github.token }}
         with:
@@ -284,37 +278,19 @@ jobs:
             ci
           requireScope: false
 
-  secret-scan:
-    name: Secret Leak Detection
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4.2.2
-        with:
-          token: ${{ secrets.TOKEN || github.token }}
-          fetch-depth: 0
-      - name: Scan for leaked secrets
-        run: |
-          echo "Scanning for hardcoded secrets..."
-          FAIL=0
-          if grep -rn --include='*.ts' --include='*.tsx' --include='*.json' --include='*.env' \
-            -E '(sk-ant-|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|AKIA[0-9A-Z]{16}|-----BEGIN (RSA |EC )?PRIVATE KEY)' \
-            source/ .github/ 2>/dev/null | grep -v 'node_modules' | grep -v '.test.' | grep -v 'sk-ant-\.\.\.' | grep -v 'sk-\.\.\.'; then
-            echo "::error::Potential secrets found in source files"
-            FAIL=1
-          fi
-          if find . -name '.env' -not -path '*/node_modules/*' -not -path '*/.git/*' | grep -q .; then
-            echo "::error::Found .env file(s) — these should be gitignored"
-            FAIL=1
-          fi
-          if [ "$FAIL" -eq 1 ]; then exit 1; fi
-          echo "No secrets detected."
+  # NOTE: content-based secret detection now lives in secret-scan.yml (Gitleaks),
+  # which scans the PR commit range and, on push/schedule, the full history —
+  # replacing the former regex `secret-scan` job that only matched a handful of
+  # fixed key formats in a few file types. Tracked credential files are still
+  # covered by the `sensitive-files` job below.
 
   blob-size:
     name: Blob Size Policy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
           fetch-depth: 0
       - name: Check for oversized files
@@ -339,8 +315,9 @@ jobs:
     name: Dangerous Pattern Detection
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: Scan for dangerous code patterns
         run: |
@@ -377,23 +354,147 @@ jobs:
           if [ "$FAIL" -eq 1 ]; then exit 1; fi
           echo "No dangerous patterns detected."
 
+  # Always runs: a new advisory can raise the Bun floor with no file change in
+  # the PR, and the embedded runtime ships to users regardless of what this PR
+  # touches. The embedded Bun runtime (and its vendored C libraries such as
+  # Brotli) is invisible to pnpm audit / SBOM / Semgrep, so this is the only
+  # gate that maps the pinned Bun version to known advisories. Fail-closed.
+  runtime-audit:
+    name: Embedded Runtime Advisory Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          token: ${{ secrets.TOKEN || github.token }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      # The gate parses workflow YAML with the real `yaml` parser (a prod dep);
+      # install it from the lockfile first so validation is correct, not a
+      # fragile hand-rolled scanner.
+      - run: pnpm install --frozen-lockfile
+      - name: Validate pinned Bun against advisory floor
+        run: node scripts/check-bun-advisories.mjs
+      # The native voice helper statically links whisper.cpp (+ bundled ggml) and
+      # miniaudio into the voice-enabled binary; pnpm audit / SBOM / Semgrep / the
+      # Bun gate never see them. This maps the CMake-pinned versions to their
+      # advisory floors. Fail-closed.
+      - name: Validate native voice components against advisory floors
+        run: node scripts/check-voice-advisories.mjs
+      - name: Enforce runtime policy review deadline
+        run: node scripts/check-runtime-security.mjs
+
   dependency-audit:
     name: Dependency Vulnerability Audit
     needs: changed
     if: needs.changed.outputs.deps == 'true' || needs.changed.outputs.source == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit --prod || echo "::warning::Dependency vulnerabilities found"
+      # Fail-closed on known production vulnerabilities. Enterprise posture: a
+      # shipped dependency CVE blocks the merge rather than emitting a warning
+      # that every green run quietly ignores. `--audit-level high` keeps low and
+      # moderate advisories out of the gate while blocking high and critical.
+      - run: pnpm audit --prod --audit-level high
+
+  # Audit the dev/build dependencies (tsx, vitest, tsc, husky, coverage, etc.)
+  # separately from the shipped production graph. These never ship to users, but
+  # they run in CI and on maintainers' machines with repo-write access and can
+  # read source/secrets, so a HIGH/CRITICAL advisory in a build tool is a
+  # supply-chain / CI-integrity risk — a compromised test runner or transpiler
+  # could tamper with the artifact or exfiltrate. Kept a distinct job (not folded
+  # into the --prod audit) so a failure says plainly which tier is affected, and
+  # each carries its own rationale. Fail-closed at HIGH/CRITICAL, same floor as
+  # the production gate.
+  dev-dependency-audit:
+    name: Dev Dependency Vulnerability Audit
+    needs: changed
+    if: needs.changed.outputs.deps == 'true' || needs.changed.outputs.source == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          token: ${{ secrets.TOKEN || github.token }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --dev --audit-level high
+
+  # Supply-chain gate on dependency changes. Fail-closed on a new direct or
+  # transitive dependency carrying a HIGH/CRITICAL advisory or a disallowed
+  # license — caught at the PR that introduces it, before it reaches the
+  # lockfile that `pnpm audit` later re-checks at release. The license allow
+  # list mirrors the postmerge license-check job so the two cannot drift. Only
+  # runs when the dependency manifest/lockfile changes; the comparison is
+  # between the PR base and head so unchanged deps are never re-flagged.
+  dependency-review:
+    name: Dependency Review
+    needs: changed
+    if: needs.changed.outputs.deps == 'true'
+    runs-on: ubuntu-latest
+    # pull-requests:write is required for `comment-summary-in-pr: on-failure`;
+    # without it the action catches the 403 and only warns, silently dropping
+    # the summary. contents:read is the default, kept explicit alongside it.
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          token: ${{ secrets.TOKEN || github.token }}
+      - name: Review dependency changes
+        id: review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          base-ref: ${{ github.event.pull_request.base.sha }}
+          head-ref: ${{ github.event.pull_request.head.sha }}
+          fail-on-severity: high
+          # Keep in lockstep with the postmerge license-check allow list.
+          allow-licenses: >-
+            MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC0-1.0,
+            CC-BY-4.0, Unlicense, Python-2.0, BlueOak-1.0.0
+          comment-summary-in-pr: on-failure
+      # Fail closed on licenses the action cannot resolve. With an allow-list
+      # set, the action hard-fails `forbidden` and `unresolved` license changes,
+      # but it only *logs* dependencies whose license is unknown/NOASSERTION —
+      # so a new runtime dependency with no identifiable license would pass
+      # despite not being on the allow-list. Enforce that gap here by reading
+      # the action's `invalid-license-changes` output (which includes the
+      # `unlicensed` bucket) and failing if it is non-empty. Runs even when the
+      # action step above failed, so one finding does not mask the other.
+      - name: Fail on unresolved or unlicensed dependencies
+        if: always() && steps.review.outputs.invalid-license-changes != ''
+        env:
+          INVALID: ${{ steps.review.outputs.invalid-license-changes }}
+        run: |
+          # shellcheck disable=SC2016 # the ${...} below is a JS template literal
+          # inside node -e, deliberately single-quoted so the shell does not expand it.
+          UNLICENSED=$(node -e '
+            const data = JSON.parse(process.env.INVALID || "{}");
+            const bad = [...(data.unlicensed || []), ...(data.unresolved || [])];
+            for (const d of bad) console.log(`  ${d.package_url || d.name || "unknown"}`);
+            process.exit(bad.length > 0 ? 1 : 0);
+          ') && {
+            echo "No unlicensed or unresolved dependency changes."
+            exit 0
+          }
+          echo "::error::Dependency change(s) with an unknown/unresolved license (not on the allow-list):"
+          printf '%s\n' "$UNLICENSED"
+          exit 1
 
   lockfile-integrity:
     name: Lockfile Integrity
@@ -401,8 +502,9 @@ jobs:
     if: needs.changed.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: Verify lockfile exists
         run: |
@@ -410,24 +512,29 @@ jobs:
             echo "::error::pnpm-lock.yaml missing"
             exit 1
           fi
-      - uses: actions/setup-node@v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
       - run: pnpm install --frozen-lockfile
 
   semgrep:
     name: SAST (Semgrep)
     needs: changed
-    if: needs.changed.outputs.source == 'true'
+    # Also run on scripts changes: the build/release/SBOM/advisory scripts run in
+    # CI with repo-write privileges, so a command-injection or unsafe-exec defect
+    # there is as dangerous as one in the shipped CLI. They were previously
+    # unscanned.
+    if: needs.changed.outputs.source == 'true' || needs.changed.outputs.scripts == 'true'
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep:latest
+      # Pinned by digest, not `:latest`: a mutable tag could be moved to a build
+      # that changes or disables the scan. semgrep/semgrep:1.183.0.
+      image: semgrep/semgrep@sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - run: |
           semgrep scan \
@@ -438,14 +545,78 @@ jobs:
             --config "p/command-injection" \
             --config "p/xss" \
             --error \
-            source/
+            source/ scripts/
+
+  # GitHub Actions static analysis. actionlint catches workflow syntax/expression
+  # errors and shellcheck issues in `run:` blocks; zizmor finds Actions-specific
+  # security defects (template injection via untrusted ${{ }} interpolation,
+  # over-broad GITHUB_TOKEN permissions, credential persistence, untrusted
+  # checkout of PR code, mutable action refs). This is the gap SAST on source/
+  # never covered: a workflow compromise can exfiltrate secrets or tamper with a
+  # release even when the application code is clean. Runs on any .github change.
+  # Both tools are pinned (actionlint: checksum-verified release binary; zizmor:
+  # container by digest), never a mutable tag.
+  workflow-lint:
+    name: Workflow Security (actionlint + zizmor)
+    needs: changed
+    if: needs.changed.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      # linux_amd64 tarball SHA-256 from the v1.7.12 release checksums. Bump in
+      # lockstep with ACTIONLINT_VERSION; a mismatch fails the install closed.
+      ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          token: ${{ secrets.TOKEN || github.token }}
+          persist-credentials: false
+      - name: Install actionlint (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          url="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          curl --fail --location --retry 3 --proto '=https' --tlsv1.2 -o "$tarball" "$url"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum --check --strict
+          tar -xzf "$tarball" actionlint
+          chmod +x actionlint
+          ./actionlint --version
+      - name: actionlint
+        # shellcheck is preinstalled on ubuntu-latest, so run: block linting works.
+        run: ./actionlint -color
+      - name: zizmor (pinned by digest)
+        # Run the official zizmor container by digest. GH_TOKEN lets zizmor's
+        # online audits (impostor-commit, stale action refs) query the API;
+        # contents:read is sufficient.
+        #
+        # --min-severity medium fails the gate on the dangerous class (template
+        # injection from untrusted ${{ }}, credential exfiltration, unscoped
+        # app-token permissions) AND on `artipacked` (checkout persisting its
+        # credential), now that the repo-wide artipacked backlog is cleared — the
+        # one legitimate exception (agav-docs, which pushes) carries an inline
+        # `# zizmor: ignore[artipacked]`. Two informational findings remain below
+        # this threshold (superfluous-actions, adhoc-packages in release.yml) and
+        # are a separate follow-up; lower the threshold further once addressed.
+        env:
+          GH_TOKEN: ${{ secrets.TOKEN || github.token }}
+        # zizmorcore/zizmor:1.31.1
+        run: |
+          docker run --rm \
+            -e GH_TOKEN \
+            -v "${{ github.workspace }}:/src:ro" \
+            ghcr.io/zizmorcore/zizmor@sha256:42d409dbb851d4c5d35a058cf042b828bea1e3f2884378c526eb0974780e18d9 \
+            --persona regular \
+            --min-severity medium \
+            /src/.github/workflows
 
   sensitive-files:
     name: Sensitive File Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: Check sensitive files are not tracked
         run: |
@@ -459,6 +630,14 @@ jobs:
               FAIL=1
             fi
           done
+          # Also flag an untracked `.env` sitting in the worktree. Gitleaks scans
+          # git history, not an uncommitted file, so this guards the window before
+          # such a file is (accidentally) committed. Carried over from the former
+          # regex secret-scan job.
+          if find . -name '.env' -not -path '*/node_modules/*' -not -path '*/.git/*' | grep -q .; then
+            echo "::error::Found untracked .env file(s) — these should be gitignored"
+            FAIL=1
+          fi
           if [ "$FAIL" -eq 1 ]; then exit 1; fi
           echo "No sensitive files tracked."
 
@@ -466,8 +645,9 @@ jobs:
     name: README Badge Freshness
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          persist-credentials: false
           token: ${{ secrets.TOKEN || github.token }}
       - name: Check the version badge is derived, not hardcoded
         run: |
@@ -497,12 +677,15 @@ jobs:
       - installer-sh
       - installer-ps1
       - pr-title
-      - secret-scan
       - blob-size
       - security-patterns
+      - runtime-audit
       - dependency-audit
+      - dev-dependency-audit
+      - dependency-review
       - lockfile-integrity
       - semgrep
+      - workflow-lint
       - sensitive-files
       - readme-badges
     runs-on: ubuntu-latest
@@ -519,12 +702,15 @@ jobs:
             "${{ needs.installer-sh.result }}" \
             "${{ needs.installer-ps1.result }}" \
             "${{ needs.pr-title.result }}" \
-            "${{ needs.secret-scan.result }}" \
             "${{ needs.blob-size.result }}" \
             "${{ needs.security-patterns.result }}" \
+            "${{ needs.runtime-audit.result }}" \
             "${{ needs.dependency-audit.result }}" \
+            "${{ needs.dev-dependency-audit.result }}" \
+            "${{ needs.dependency-review.result }}" \
             "${{ needs.lockfile-integrity.result }}" \
             "${{ needs.semgrep.result }}" \
+            "${{ needs.workflow-lint.result }}" \
             "${{ needs.sensitive-files.result }}" \
             "${{ needs.readme-badges.result }}"; do
             case "$result" in

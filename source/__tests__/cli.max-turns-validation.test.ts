@@ -6,6 +6,7 @@ import { createProvider } from "../providers/registry.js";
 vi.mock("../config/config.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../config/config.js")>(),
   loadConfig: vi.fn(),
+
 }));
 vi.mock("../config/keybindings.js", () => ({ loadKeybindings: vi.fn(async () => ({})) }));
 vi.mock("../config/theme.js", () => ({ loadTheme: vi.fn() }));

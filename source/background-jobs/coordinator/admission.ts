@@ -1,5 +1,5 @@
 /**
- * Unknown and recovery-required jobs still occupy a capacity slot; only terminal states are excluded.
+ * Unknown and recovery-required jobs still occupy a capacity slot; only terminal states or explicitly abandoned tombstones are excluded.
  * Does not take the coordinator lock: the caller must hold it across check + create.
  */
 import { isTerminalLifecycle, type Repositories } from "../types.js";
@@ -17,7 +17,7 @@ export async function reserveCapacity(
   void root;
 
   const jobs = await repositories.jobs.list();
-  const activeCount = jobs.filter((job) => !isTerminalLifecycle(job.state)).length;
+  const activeCount = jobs.filter((job) => !isTerminalLifecycle(job.state) && !job.abandonment).length;
 
   return {
     granted: activeCount < limits.maxConcurrentJobs,
