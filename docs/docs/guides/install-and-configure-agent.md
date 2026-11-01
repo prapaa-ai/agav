@@ -46,11 +46,13 @@ Press `1` to install globally. Agav copies the agent files and registers it. You
 
 ## Step 4: Switch to the List tab
 
-Press `1` to open the **List** tab. You should see the jira agent under **Global:** with status `[disabled] ⚠ Needs config`.
+Press `1` to open the **List** tab. You should see the jira agent with origin `global` and its `[enabled]` or `[disabled]` state. The List tab is searchable with `s` and paginated with `←` / `→`; page size adapts to available terminal height.
 
 ## Step 5: Inspect the agent
 
-Navigate to the jira entry and press `i`. The inspect view shows:
+Navigate to the jira entry and press `ENTER` or `i` for standard inspection: description, origin, version, tool names, and system prompt. Use `↑` / `↓` to scroll, then `b` or `ESC` to return to the list.
+
+For credential readiness and tool permissions, press `v` from the list to open the legacy agent diagnostics view. It shows:
 
 - **Required Config** — credentials the agent needs
 - **Tools** — individual tool names with `safe` / `modifies` labels
@@ -58,7 +60,7 @@ Navigate to the jira entry and press `i`. The inspect view shows:
 
 ## Step 6: Open the config editor
 
-Press `e` to open the credential and settings editor. Each required credential appears in the list with its status:
+Return to the list with `b` or `ESC`, then press `c` on jira to open the credential and settings editor directly. Standard inspection does not accept `e`; that shortcut is available only in the legacy diagnostics view. Each required credential appears in the list with its status:
 
 ```
 → JIRA_URL         ✗ not set
@@ -80,15 +82,15 @@ For **JIRA_API_TOKEN**: paste your [Atlassian API token](https://id.atlassian.co
 
 After saving each value, the status changes to `✓ configured`.
 
-Press `ESC` to return to the inspect view.
+Press `ESC` to return to the List tab (the entry point used here).
 
 ## Step 8: Enable the agent
 
-Press `b` to return to the List tab. Navigate to jira and press `ENTER` to toggle it **enabled**. The status changes to `[enabled] Ready ✓`.
+In the List tab, navigate to jira. If it is `[disabled]`, press `t` to enable it; an already-enabled agent needs no toggle. The list shows `[enabled]`; press `v` to check that diagnostics reports `Ready ✓`.
 
 ## Step 9: Use the agent
 
-Return to your main chat and ask Agav something Jira-related:
+If you opened diagnostics, press `b` or `ESC` to return to the list. Clear any active search with `ESC`, then press `ESC` to return to your main chat and ask Agav something Jira-related:
 
 ```
 what are my open Jira tickets?
@@ -105,9 +107,9 @@ Read-only (`safe`) tools like `jira_search_issues` run without prompting.
 
 ## Troubleshooting
 
-**`⚠ Needs config` after entering credentials** — credentials are checked immediately on save. If the indicator persists, press `e` again and verify the values, particularly that there are no leading or trailing spaces.
+**`⚠ Needs config` in config or diagnostics after entering credentials** — credentials are checked immediately on save. If the indicator persists, return to the List tab, press `c`, and verify the values, particularly that there are no leading or trailing spaces.
 
-**Agent not appearing in the list** — press `r` in the marketplace to refresh, or restart Agav if you just installed.
+**Agent not appearing in the list** — press `r` in the List tab to refresh, or restart Agav if you just installed.
 
 **Credential forgotten** — open the config editor again and re-enter the value. Old values are overwritten.
 

@@ -73,6 +73,14 @@ function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolR
       if (!parent.list().some((entry) => entry.schema.name === tool.schema.name)) child.registerBuiltin(tool);
     }
   }
+  // Only explicitly listed optional built-ins can be added beyond the parent set.
+  // Preserve parent overrides and let disallowed-tools take precedence.
+  if (allowed) {
+    const optional = [...allowed].filter((name) => OPTIONAL_TOOL_NAMES.has(name) && !disallowed.has(name));
+    for (const tool of createBuiltinToolRegistry(optional).list()) {
+      if (!parent.list().some((entry) => entry.schema.name === tool.schema.name)) child.register(tool);
+    }
+  }
   return child;
 }
 
