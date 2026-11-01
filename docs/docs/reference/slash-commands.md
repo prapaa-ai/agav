@@ -86,15 +86,15 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 
 | Command | Purpose |
 | --- | --- |
-| `/login` | Sign in to your organization (enterprise enrollment). Accepts the same flags as `agav login`: `--device`, `--oidc`, `--auth-code`, `--saml`, `--control-plane URL`, `--issuer URL`, and `--client-id ID`. Restart Agav to apply the new policy. |
-| `/logout` | Sign out of your organization and clear the cached enrollment. Restart Agav to apply. |
+| `/login` | Smart sign-in. A bare `/login` opens the Agav account wizard — choose "sign in with your Agav account" (browser device authorization) or "paste an API key" (entered in a masked field inside the overlay, never through the composer). Any enterprise flag instead routes to organization enrollment: `--device`, `--oidc`, `--auth-code`, `--saml`, `--control-plane URL`, `--issuer URL`, and `--client-id ID`. The consumer wizard needs an interactive terminal; in headless mode it explains this instead of failing. Restart Agav to apply a new enterprise policy. |
+| `/logout` | Defaults to signing out of your organization and clearing the cached enrollment (restart Agav to apply). Pass `--account` (alias `--consumer`) to sign out of your Agav account instead, clearing the local store and credential entry. |
 
 ## Diagnostics and exit
 
 | Command | Purpose |
 | --- | --- |
 | `/debug` | Show conversation, plan, sandbox, token, plugin, MCP, undo, and memory state. |
-| `/changelog` | Show release notes from the latest update. Agav also shows the changelog automatically once on the first launch after an update. |
+| `/changelog` | Show release notes from the latest update. Agav also shows the changelog automatically once on the first launch after an update. Use `/changelog off` to stop the automatic post-update display and `/changelog on` to resume it; the preference persists across updates. |
 | `/exit` | Save the current session and exit Agav. |
 
 MCP prompts appear as additional slash commands supplied by their connected server. Project skills and user-installed skills likewise add commands after Agav restarts; use `/help` or type `/` to see what is available in the current session.
