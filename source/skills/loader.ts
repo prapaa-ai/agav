@@ -216,7 +216,7 @@ async function collectSkills(): Promise<SkillDefinition[]> {
 
   const registry = await loadSkillRegistry();
   for (const s of skills) {
-    if (isSkillDisabled(s.slug, registry)) s.disabled = true;
+    if (isSkillDisabled(s.slug, registry, s.origin)) s.disabled = true;
   }
 
   return skills;
@@ -242,6 +242,11 @@ export async function loadSkills(): Promise<SkillDefinition[]> {
 
 export function getCachedSkills(): SkillDefinition[] {
   return cachedSkills ?? [];
+}
+
+/** Preserve the runtime snapshot, including an empty one, until an explicit reload. */
+export async function getOrLoadSkills(): Promise<SkillDefinition[]> {
+  return cachedSkills ?? await loadSkills();
 }
 
 export function getSkill(name: string): SkillDefinition | undefined {

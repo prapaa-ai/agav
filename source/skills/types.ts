@@ -29,6 +29,9 @@ export interface SkillFrontmatter {
   tags?: string[];
 }
 
+/** Where a skill came from, in ascending order of trust/override precedence. */
+export type SkillOrigin = "bundled" | "global" | "project";
+
 export interface SkillDefinition {
   name: string;
   slug: string;
@@ -36,7 +39,7 @@ export interface SkillDefinition {
   body: string;
   frontmatter: SkillFrontmatter;
   filePath: string;
-  origin: "bundled" | "global" | "project";
+  origin: SkillOrigin;
   /** When a project/global skill overrides one from a higher-trust tier. */
   overriddenOrigin?: "bundled" | "global";
   /**

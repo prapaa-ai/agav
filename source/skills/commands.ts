@@ -1,7 +1,7 @@
 import type { SlashCommand, CommandResult, CommandContext } from "../commands/types.js";
 import { openResourceManager } from "../commands/resource-manager.js";
 import type { SkillDefinition } from "./types.js";
-import {  loadAllSkills, getSkill } from "./loader.js";
+import { loadAllSkills } from "./loader.js";
 import { executeSkill } from "./executor.js";
 import { installFromUrl, installFromPath, removeSkill, clearSkills } from "./marketplace.js";
 import { setSkillEnabled } from "./skill-registry.js";
@@ -61,7 +61,7 @@ export const skillsCommand: SlashCommand = {
   description: "Manage skills",
   // agavHomePath rather than a literal "~/.agav/skills": on PowerShell and cmd
   // that spelling is neither typeable nor recognisable.
-  usage: `Usage: /skills [action]\n\n  /skills                 Open manager (list in headless mode)\n  /skills list            Print installed skills\n  /skills add <url|path>  Install from a URL or a local skill directory\n  /skills remove <name>   Uninstall a skill\n  /skills disable <name>  Turn off a skill (works for bundled skills too)\n  /skills enable <name>   Turn a disabled skill back on\n  /skills clear           Remove all user-installed skills\n  /skills info <name>     Show details about a skill\n  /skills marketplace     Browse available skills\n\nA skill is a directory holding a SKILL.md with YAML frontmatter, plus\noptional scripts/, references/ and assets/. The agent can activate one\nautomatically or you can invoke it as a slash command.\n\nInstalls are written to ${agavHomePath("skills")} and take effect after a\nrestart. Point a path at the skill directory to install all of it, or at a\nlone SKILL.md to take just that file and any scripts/, references/ or\nassets/ beside it. GitHub URLs install the whole directory; other hosts\noffer no listing, so only the SKILL.md itself is fetched.`,
+  usage: `Usage: /skills [action]\n\n  /skills                 Open manager (list in headless mode)\n  /skills list            Print installed skills\n  /skills add <url|path>  Install from a URL or a local skill directory\n  /skills remove <name>   Uninstall a skill\n  /skills enable <name>   Turn a skill on (bundled skills are off by default)\n  /skills disable <name>  Turn a skill off (works for bundled skills too)\n  /skills clear           Remove all user-installed skills\n  /skills info <name>     Show details about a skill\n  /skills marketplace     Browse available skills\n\nA skill is a directory holding a SKILL.md with YAML frontmatter, plus\noptional scripts/, references/ and assets/. The agent can activate one\nautomatically or you can invoke it as a slash command.\n\nBundled skills ship disabled by default; enable the ones you want with\n/skills enable <name>. Global and project skills are enabled by default.\n\nInstalls are written to ${agavHomePath("skills")} and take effect after a\nrestart. Point a path at the skill directory to install all of it, or at a\nlone SKILL.md to take just that file and any scripts/, references/ or\nassets/ beside it. GitHub URLs install the whole directory; other hosts\noffer no listing, so only the SKILL.md itself is fetched.`,
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     if (!args.trim() || args.trim().toLowerCase() === "marketplace") {
       const interactive = openResourceManager("skills", context, Boolean(args.trim()));
@@ -151,7 +151,8 @@ export const skillsCommand: SlashCommand = {
     if (action === "info") {
       const name = parts.slice(1).join(" ").trim();
       if (!name) return { type: "message", text: "Usage: /skills info <name>" };
-      const skill = getSkill(name);
+      const slug = slugify(name);
+      const skill = (await loadAllSkills()).find((s) => s.slug === slug || s.name === name);
       if (!skill) return { type: "message", text: `Skill "${name}" not found.` };
       const traces = await getSkillTraces(skill.name);
       const totalTokens = traces.reduce((sum, t) => sum + t.tokensUsed, 0);
