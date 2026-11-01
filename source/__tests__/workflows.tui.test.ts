@@ -20,6 +20,17 @@ beforeEach(async () => {
 });
 afterEach(async () => { await cleanup(); });
 
+/** Waits for the decision to be persisted. The confirmation resolves the keypress promise before the
+ * async decide/write completes, so a single settle can race the on-disk write; poll until it lands. */
+async function waitDecision(store: WorkflowStore, runId: string, decisionId: string) {
+  for (let i = 0; i < 50; i++) {
+    const decided = (await readDecision(store, runId, decisionId))?.decided;
+    if (decided) return decided;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return (await readDecision(store, runId, decisionId))?.decided;
+}
+
 async function mount(size: { columns: number; rows: number } = { columns: 140, rows: 30 }, reconcileRuns?: (opts: { maxConcurrentWorkflowRuns?: number }) => Promise<void>, height?: number) {
   const onExit = vi.fn();
   let output = "";
@@ -75,7 +86,7 @@ describe("WorkflowsTUI", () => {
       expect((await readDecision(store, run.id, pending!.decisionId))?.decided).toBeUndefined();
       await ui.key("y");
       await ui.settle();
-      expect((await readDecision(store, run.id, pending!.decisionId))?.decided?.decision).toBe("approve");
+      expect((await waitDecision(store, run.id, pending!.decisionId))?.decision).toBe("approve");
       expect(ui.frame()).toContain("approved");
       await ui.key("\t");
       expect(ui.frame()).toContain("Workflows · List");
@@ -99,7 +110,7 @@ describe("WorkflowsTUI", () => {
       expect(ui.frame()).toContain("Workflow inbox · List");
       expect((await readDecision(store, run.id, pending!.decisionId))?.decided).toBeUndefined();
       await ui.key("D"); await ui.key("y"); await ui.settle();
-      expect((await readDecision(store, run.id, pending!.decisionId))?.decided?.decision).toBe("deny");
+      expect((await waitDecision(store, run.id, pending!.decisionId))?.decision).toBe("deny");
     } finally { ui.instance.unmount(); }
   });
 

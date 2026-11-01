@@ -28,7 +28,11 @@ Bundled skills are compiled directly into the binary, so they work even when run
 
 ## Bundled skills
 
-Agav ships with 21 bundled skills:
+Agav ships with 21 bundled skills. **They are disabled by default** — each is
+compiled into the binary but opt-in, so none are offered to the model or exposed
+as a slash command until you enable it with `/skills enable <name>` (see
+[Enabling bundled skills](#enabling-bundled-skills)). Global and project skills
+remain enabled by default.
 
 | Skill | Description | Invocation |
 |-------|-------------|------------|
@@ -169,21 +173,25 @@ starts enabled again.
 
 Restart Agav after installing or removing a skill.
 
-### Disabling bundled skills
+### Enabling bundled skills
 
-Bundled skills are compiled into the binary, so they cannot be removed with
-`/skills remove` or `/skills clear`. To turn one off, disable it instead:
+Bundled skills ship **disabled by default**, so you opt into the ones you want:
 
 ```text
-/skills disable pdf              # hide a bundled (or global/project) skill
-/skills enable pdf               # turn it back on
+/skills enable pdf               # turn a bundled skill on
+/skills disable pdf              # turn it back off
 ```
 
-A disabled skill is excluded from the catalog the model sees, loses its slash
-command, and can no longer be activated — but it still appears in `/skills list`
-marked `[disabled]` so you can re-enable it. The choice is stored in
-`~/.agav/skills/registry.json` and survives upgrades. Restart Agav after
-disabling or enabling a skill.
+A disabled skill is excluded from the catalog the model sees, has no slash
+command, and cannot be activated — but it still appears in `/skills list` marked
+`[disabled]` so you can enable it. Enabling one records an explicit opt-in; the
+choice is stored in `~/.agav/skills/registry.json` and survives upgrades.
+Restart Agav after enabling or disabling a skill.
+
+Global and project skills behave the opposite way: they are enabled by default
+and `/skills disable` turns them off. Bundled skills are compiled into the
+binary, so they cannot be removed with `/skills remove` or `/skills clear` —
+disable them instead.
 
 You can also toggle skills from the Installed tab of `/skills marketplace`
 (press **d**), or from outside a session with the CLI:
