@@ -355,7 +355,10 @@ Body.
     await writeSkill(globalSkillsDir, "explain", shadowBundled);
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const skills = await loadSkills();
+    // loadAllSkills, not loadSkills: bundled skills are disabled by default, so
+    // the active set would omit the winning bundled "explain". Collision
+    // resolution runs regardless of enablement, which is what this asserts.
+    const skills = await loadAllSkills();
 
     // Bundled wins — the global duplicate is dropped.
     const explain = skills.find((s) => s.slug === "explain");
@@ -465,8 +468,10 @@ describe("skills/loader — loadBundled", () => {
     expect(Object.keys(BUNDLED_SKILL_FILES).length).toBeGreaterThan(0);
   });
 
-  it("every bundled entry parses into a valid SkillDefinition via loadSkills", async () => {
-    const skills = await loadSkills();
+  it("every bundled entry parses into a valid SkillDefinition via loadAllSkills", async () => {
+    // Bundled skills are disabled by default, so loadSkills (active only) omits
+    // them; loadAllSkills still lists every bundled skill for management UIs.
+    const skills = await loadAllSkills();
     const bundled = skills.filter((s) => s.origin === "bundled");
 
     expect(bundled.length).toBeGreaterThan(0);
@@ -480,11 +485,23 @@ describe("skills/loader — loadBundled", () => {
   });
 
   it("all bundled skills have unique slugs", async () => {
-    const skills = await loadSkills();
+    const skills = await loadAllSkills();
     const bundled = skills.filter((s) => s.origin === "bundled");
     const slugs = bundled.map((s) => s.slug);
 
     expect(new Set(slugs).size).toBe(slugs.length);
+  });
+
+  it("bundled skills are disabled by default (excluded from active loadSkills)", async () => {
+    const active = await loadSkills();
+    expect(active.some((s) => s.origin === "bundled")).toBe(false);
+
+    const all = await loadAllSkills();
+    const bundled = all.filter((s) => s.origin === "bundled");
+    expect(bundled.length).toBe(Object.keys(BUNDLED_SKILL_FILES).length);
+    for (const s of bundled) {
+      expect(s.disabled).toBe(true);
+    }
   });
 
   it("all bundled skills pass validation (have name and description, no dangerous patterns)", () => {
@@ -516,7 +533,9 @@ describe("skills/loader — loadBundled", () => {
     mockAgavDir = join(tmpBase, "nonexistent-global");
     vi.spyOn(process, "cwd").mockReturnValue(join(tmpBase, "nonexistent-project"));
 
-    const skills = await loadSkills();
+    // loadAllSkills, since bundled skills are disabled by default and loadSkills
+    // would filter them out.
+    const skills = await loadAllSkills();
     const bundled = skills.filter((s) => s.origin === "bundled");
 
     // All manifest entries should still load despite no disk dirs existing.
@@ -544,11 +563,13 @@ describe("skills/loader — disable/enable", () => {
     await rm(tmpBase, { recursive: true, force: true });
   });
 
-  it("disabling a bundled skill excludes it from loadSkills but keeps it in loadAllSkills", async () => {
+  it("a bundled skill is off by default and stays off after an explicit disable", async () => {
     const target = Object.keys(BUNDLED_SKILL_FILES)[0]!;
 
-    // Sanity: present and enabled before disabling.
-    expect((await loadSkills()).some((s) => s.slug === target)).toBe(true);
+    // Off by default: absent from the active set, present and flagged disabled
+    // in the full listing.
+    expect((await loadSkills()).some((s) => s.slug === target)).toBe(false);
+    expect((await loadAllSkills()).find((s) => s.slug === target)!.disabled).toBe(true);
 
     await setSkillEnabled(target, false);
 
@@ -561,16 +582,18 @@ describe("skills/loader — disable/enable", () => {
     expect(entry!.disabled).toBe(true);
   });
 
-  it("re-enabling a disabled bundled skill restores it to loadSkills", async () => {
+  it("enabling a bundled skill opts it into loadSkills; disabling returns it to the default off state", async () => {
     const target = Object.keys(BUNDLED_SKILL_FILES)[0]!;
 
-    await setSkillEnabled(target, false);
-    expect((await loadSkills()).some((s) => s.slug === target)).toBe(false);
-
+    // Opt in.
     await setSkillEnabled(target, true);
     const active = await loadSkills();
     expect(active.some((s) => s.slug === target)).toBe(true);
     expect(active.find((s) => s.slug === target)!.disabled).toBeFalsy();
+
+    // Opt back out.
+    await setSkillEnabled(target, false);
+    expect((await loadSkills()).some((s) => s.slug === target)).toBe(false);
   });
 
   it("a disabled skill is excluded from the catalog fed to the model", async () => {
@@ -580,5 +603,27 @@ describe("skills/loader — disable/enable", () => {
 
     const catalog = buildSkillCatalog(await loadSkills());
     expect(catalog).not.toContain(`- ${disabledName}:`);
+  });
+
+  it("an enabled bundled skill appears in the catalog fed to the model", async () => {
+    const target = Object.keys(BUNDLED_SKILL_FILES)[0]!;
+    const name = (await loadAllSkills()).find((s) => s.slug === target)!.name;
+    await setSkillEnabled(target, true);
+
+    const catalog = buildSkillCatalog(await loadSkills());
+    expect(catalog).toContain(`- ${name}:`);
+  });
+
+  it("a global skill stays enabled by default (opt-out default unchanged)", async () => {
+    await mkdir(join(tmpBase, "global", "skills", "my-helper"), { recursive: true });
+    await writeFile(
+      join(tmpBase, "global", "skills", "my-helper", "SKILL.md"),
+      "---\nname: my-helper\ndescription: A helpful skill\n---\nDoes helpful things.\n",
+    );
+
+    const active = await loadSkills();
+    const helper = active.find((s) => s.slug === "my-helper");
+    expect(helper).toBeDefined();
+    expect(helper!.origin).toBe("global");
   });
 });
