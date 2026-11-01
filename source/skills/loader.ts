@@ -244,6 +244,11 @@ export function getCachedSkills(): SkillDefinition[] {
   return cachedSkills ?? [];
 }
 
+/** Preserve the runtime snapshot, including an empty one, until an explicit reload. */
+export async function getOrLoadSkills(): Promise<SkillDefinition[]> {
+  return cachedSkills ?? await loadSkills();
+}
+
 export function getSkill(name: string): SkillDefinition | undefined {
   const slug = slugify(name);
   return (cachedSkills ?? []).find((s) => s.slug === slug || s.name === name);

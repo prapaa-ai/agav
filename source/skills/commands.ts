@@ -1,7 +1,7 @@
 import type { SlashCommand, CommandResult, CommandContext } from "../commands/types.js";
 import { openResourceManager } from "../commands/resource-manager.js";
 import type { SkillDefinition } from "./types.js";
-import {  loadAllSkills, getSkill } from "./loader.js";
+import { loadAllSkills } from "./loader.js";
 import { executeSkill } from "./executor.js";
 import { installFromUrl, installFromPath, removeSkill, clearSkills } from "./marketplace.js";
 import { setSkillEnabled } from "./skill-registry.js";
@@ -150,7 +150,8 @@ export const skillsCommand: SlashCommand = {
     if (action === "info") {
       const name = parts.slice(1).join(" ").trim();
       if (!name) return { type: "message", text: "Usage: /skills info <name>" };
-      const skill = getSkill(name);
+      const slug = slugify(name);
+      const skill = (await loadAllSkills()).find((s) => s.slug === slug || s.name === name);
       if (!skill) return { type: "message", text: `Skill "${name}" not found.` };
       const traces = await getSkillTraces(skill.name);
       const totalTokens = traces.reduce((sum, t) => sum + t.tokensUsed, 0);
