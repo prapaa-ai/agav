@@ -7,6 +7,9 @@ import { RetryProvider } from "../providers/retry.js";
 import type { ToolDefinition } from "../tools/types.js";
 import { validateProviderIdleTimeout } from "../config/config.js";
 import { parseArgs } from "../main.js";
+import * as skillLoader from "../skills/loader.js";
+import { createSkillTool } from "../skills/tool.js";
+import { createSkillSlashCommand } from "../skills/commands.js";
 
 vi.mock("node:timers/promises", () => ({
   setTimeout: (ms: number, _val?: unknown, options?: { signal?: AbortSignal }) => {
@@ -828,6 +831,168 @@ describe("provider response idle timeout", () => {
     expect(summarizeSignal?.reason).toBeInstanceOf(ProviderIdleTimeoutError);
     // Loop recovers and answers without hanging forever
     expect(events).toContainEqual({ type: "turn_complete" });
+  });
+
+  it("pauses summarization idle watchdog during RetryProvider backoff sleep and stays un-aborted", async () => {
+    let summarizeCallCount = 0;
+    let summarizeSignal: AbortSignal | undefined;
+
+    const innerProvider: LLMProvider = {
+      name: "mock-inner",
+      stream: vi.fn((params: StreamParams) => {
+        if (params.systemPrompt?.includes("Summarize this conversation concisely")) {
+          const attempt = summarizeCallCount++;
+          summarizeSignal = params.signal;
+          return (async function* (): AsyncGenerator<StreamEvent> {
+            if (attempt === 0) {
+              const err = new Error("Rate limit on summary") as any;
+              err.status = 429;
+              err.headers = { "retry-after": "120" };
+              throw err;
+            }
+            yield { type: "text_delta", text: "Successfully summarized after backoff" };
+            yield { type: "message_end", stopReason: "stop" };
+          })();
+        }
+        return (async function* (): AsyncGenerator<StreamEvent> {
+          yield { type: "text_delta", text: "Final answer after summary" };
+          yield { type: "message_end", stopReason: "stop" };
+        })();
+      }),
+    };
+
+    const retryProvider = new RetryProvider(innerProvider, 3);
+    const conversation = new ConversationState();
+    conversation.setModel("mock");
+    conversation.setContextWindow(1000);
+    for (let i = 0; i < 10; i++) {
+      if (i % 2 === 0) conversation.addUserMessage("context ".repeat(100));
+      else conversation.addAssistantMessage([{ type: "text", text: "response ".repeat(100) }]);
+    }
+    conversation.addUserMessage("Latest query");
+    const toolRegistry = new ToolRegistry();
+
+    const loopPromise = collectEvents(runAgentLoop({
+      provider: retryProvider,
+      conversation,
+      toolRegistry,
+      model: "test-model",
+      iterationsBudget: { remaining: 5, total: 5 },
+      providerIdleTimeout: 1_000, // 1s timeout vs 120s backoff
+    }));
+
+    // Advance 1000ms: should NOT abort while in 120s backoff
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(summarizeSignal?.aborted).toBe(false);
+
+    // Advance another 50s: still in 120s backoff, must stay un-aborted
+    await vi.advanceTimersByTimeAsync(50_000);
+    expect(summarizeSignal?.aborted).toBe(false);
+
+    // Advance the remaining backoff (to complete 120s total backoff)
+    await vi.advanceTimersByTimeAsync(70_000);
+    const events = await loopPromise;
+
+    expect(summarizeSignal?.aborted).toBe(false);
+    expect(summarizeCallCount).toBe(2);
+    expect(events).toContainEqual(expect.objectContaining({ type: "compacted" }));
+    expect(events).toContainEqual({ type: "turn_complete" });
+  });
+
+  it("forwards providerIdleTimeout to child runAgentLoop via activate_skill tool", async () => {
+    const testSkill = {
+      name: "Test Skill",
+      slug: "test-skill",
+      description: "Test skill description",
+      body: "Test skill instructions",
+      frontmatter: { name: "Test Skill", description: "Test skill description", invocation: "both" as const },
+      filePath: "/tmp/test/SKILL.md",
+      origin: "project" as const,
+    };
+    vi.spyOn(skillLoader, "getSkill").mockReturnValue(testSkill);
+
+    let childSignal: AbortSignal | undefined;
+    const provider: LLMProvider = {
+      name: "mock",
+      stream: vi.fn((params: StreamParams) => {
+        childSignal = params.signal;
+        return (async function* (): AsyncGenerator<StreamEvent> {
+          await delayWithSignal(5000, params.signal);
+          yield { type: "message_end", stopReason: "stop" };
+        })();
+      }),
+    };
+
+    const tool = createSkillTool({
+      provider,
+      parentRegistry: new ToolRegistry(),
+      getConfig: () => ({
+        model: "test-model",
+        systemPrompt: "sys",
+        permissionMode: "ask",
+        effort: "medium",
+        iterationsBudget: { remaining: 5, total: 5 },
+        providerIdleTimeout: 100,
+      }),
+      getSignal: () => undefined,
+    });
+
+    const execPromise = tool.execute({ name: "Test Skill", arguments: "run task" });
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await execPromise;
+
+    expect(childSignal?.aborted).toBe(true);
+    expect(childSignal?.reason).toBeInstanceOf(ProviderIdleTimeoutError);
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Provider response idle timeout after 100ms");
+  });
+
+  it("forwards providerIdleTimeout to child runAgentLoop via slash command", async () => {
+    const userSkill = {
+      name: "User Only Skill",
+      slug: "user-only-skill",
+      description: "User skill description",
+      body: "User skill instructions",
+      frontmatter: { name: "User Only Skill", description: "User skill description", invocation: "user" as const },
+      filePath: "/tmp/test/SKILL.md",
+      origin: "project" as const,
+    };
+
+    let childSignal: AbortSignal | undefined;
+    const provider: LLMProvider = {
+      name: "mock",
+      stream: vi.fn((params: StreamParams) => {
+        childSignal = params.signal;
+        return (async function* (): AsyncGenerator<StreamEvent> {
+          await delayWithSignal(5000, params.signal);
+          yield { type: "message_end", stopReason: "stop" };
+        })();
+      }),
+    };
+
+    const cmd = createSkillSlashCommand(userSkill);
+    const execPromise = cmd.execute("run task", {
+      conversation: new ConversationState(),
+      provider,
+      toolRegistry: new ToolRegistry(),
+      config: {
+        model: "test-model",
+        systemPrompt: "sys",
+        permissionMode: "ask",
+        effort: "medium",
+        maxIterations: 5,
+        providerIdleTimeout: 250,
+      } as any,
+      setRunningSkill: vi.fn(),
+    } as any);
+
+    await vi.advanceTimersByTimeAsync(250);
+    const result = await execPromise;
+
+    expect(childSignal?.aborted).toBe(true);
+    expect(childSignal?.reason).toBeInstanceOf(ProviderIdleTimeoutError);
+    expect(result.type).toBe("message");
+    expect((result as any).text).toContain("Provider response idle timeout after 250ms");
   });
 });
 

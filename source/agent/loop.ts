@@ -343,6 +343,23 @@ export async function* runAgentLoop(
         maxTokens: 2048,
         signal: summarizeController.signal,
       })) {
+        if (event.type === "retry") {
+          if (idleTimer !== null) {
+            clearTimeout(idleTimer);
+            idleTimer = null;
+          }
+          const backoffMs = event.delayMs ?? (() => {
+            const match = event.message.match(/Retrying in (\d+)s/);
+            return match ? parseInt(match[1], 10) * 1000 : 0;
+          })();
+          if (timeoutMs !== undefined) {
+            idleTimer = setTimeout(() => {
+              resetIdleTimer();
+            }, backoffMs);
+          }
+          continue;
+        }
+
         resetIdleTimer();
         if (summarizeController.signal.aborted) {
           return "";

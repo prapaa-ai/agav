@@ -339,7 +339,7 @@ export const PROJECT_CONFIG_TEMPLATE = {
     },
   },
   providerIdleTimeout: {
-    description: "Idle timeout in milliseconds waiting for provider stream activity (0 or 'disabled' to unset). When unset or disabled, Agav adds no timer and existing SDK defaults stay unchanged.",
+    description: "Idle timeout in milliseconds waiting for provider stream activity ('disabled' or 'off' to unset). When unset or disabled, Agav adds no timer and existing SDK defaults stay unchanged.",
     type: "number",
     eg: 60000,
   },

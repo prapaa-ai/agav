@@ -28,6 +28,7 @@ export function createSkillSlashCommand(skill: SkillDefinition): SlashCommand {
             permissionMode: context.config.permissionMode,
             effort: context.config.effort,
             iterationsBudget: { remaining: context.config.maxIterations, total: context.config.maxIterations },
+            providerIdleTimeout: context.config.providerIdleTimeout,
             policy: {
               provider: context.config.provider,
               orgPermissionFloor: context.config.orgPermissionFloor,

@@ -469,6 +469,7 @@ export function useAgent(
             permissionMode: configRef.current.permissionMode,
             effort: configRef.current.effort,
             iterationsBudget: currentIterationsBudgetRef.current ?? { remaining: configRef.current.maxIterations, total: configRef.current.maxIterations },
+            providerIdleTimeout: configRef.current.providerIdleTimeout,
           }),
           getProviderConfig: () => configRef.current,
           confirmTool: skillConfirmCallback,
