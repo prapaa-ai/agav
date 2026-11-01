@@ -36,7 +36,7 @@ describe("cli/skills-cli", () => {
     vi.restoreAllMocks();
   });
 
-  it("list shows bundled skills as enabled by default", async () => {
+  it("list shows bundled skills as disabled by default", async () => {
     const cap = captureConsole();
     const code = await runSkillsCommand("list", []);
     const output = cap.out();
@@ -45,10 +45,36 @@ describe("cli/skills-cli", () => {
     expect(code).toBe(0);
     expect(output).toContain("Bundled:");
     expect(output).toContain(target);
-    expect(output).toContain("[enabled]");
+    // Bundled skills are opt-in: off until explicitly enabled.
+    const line = output.split("\n").find((l) => l.includes(target));
+    expect(line).toBeDefined();
+    expect(line).toContain("[disabled]");
   });
 
-  it("disable writes a registry entry and list marks it disabled", async () => {
+  it("enable writes a registry entry and list marks it enabled", async () => {
+    const c1 = captureConsole();
+    const code = await runSkillsCommand("enable", [target]);
+    const enableOut = c1.out();
+    c1.restore();
+
+    expect(code).toBe(0);
+    expect(enableOut).toContain(`Enabled skill:`);
+
+    const registry = JSON.parse(await readFile(join(agavDir, "skills", "registry.json"), "utf-8"));
+    expect(registry.skills[target]).toEqual({ slug: target, enabled: true });
+
+    const c2 = captureConsole();
+    await runSkillsCommand("list", []);
+    const listOut = c2.out();
+    c2.restore();
+
+    // Once opted in, the skill's line carries the [enabled] marker.
+    const line = listOut.split("\n").find((l) => l.includes(target));
+    expect(line).toBeDefined();
+    expect(line).toContain("[enabled]");
+  });
+
+  it("disable writes a registry entry marking the skill off", async () => {
     const c1 = captureConsole();
     const code = await runSkillsCommand("disable", [target]);
     const disableOut = c1.out();
@@ -65,13 +91,13 @@ describe("cli/skills-cli", () => {
     const listOut = c2.out();
     c2.restore();
 
-    // The disabled skill's line carries the [disabled] marker.
     const line = listOut.split("\n").find((l) => l.includes(target));
     expect(line).toBeDefined();
     expect(line).toContain("[disabled]");
   });
 
-  it("enable flips a disabled skill back on", async () => {
+  it("disable then enable flips the skill back on", async () => {
+    await runSkillsCommand("enable", [target]);
     await runSkillsCommand("disable", [target]);
 
     const cap = captureConsole();

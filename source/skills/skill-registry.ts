@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { getAgavDir } from "../config/config.js";
 import { slugify } from "./skill-utils.js";
+import type { SkillOrigin } from "./types.js";
 
 export interface SkillRegistryEntry {
   /** Skill slug (slugified name). */
@@ -98,8 +99,24 @@ export async function unsetSkillEnabled(nameOrSlug: string): Promise<void> {
   }
 }
 
-/** A skill is disabled only when an entry exists and is explicitly disabled. */
-export function isSkillDisabled(slug: string, registry: SkillRegistry): boolean {
+/**
+ * Resolve whether a skill is disabled, honouring origin-specific defaults.
+ *
+ * Bundled skills are opt-in: they are disabled unless the registry records an
+ * explicit `enabled: true` for them. Global and project skills keep the opposite
+ * default — enabled unless an entry explicitly turns them off. In both cases a
+ * registry entry, when present, is authoritative.
+ */
+export function isSkillDisabled(
+  slug: string,
+  registry: SkillRegistry,
+  origin?: SkillOrigin,
+): boolean {
   const entry = registry.skills[slug];
+  if (origin === "bundled") {
+    // Opt-in: off by default, on only when explicitly enabled.
+    return entry === undefined || entry.enabled === false;
+  }
+  // Opt-out: on by default, off only when explicitly disabled.
   return entry !== undefined && entry.enabled === false;
 }

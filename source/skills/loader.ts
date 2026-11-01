@@ -216,7 +216,7 @@ async function collectSkills(): Promise<SkillDefinition[]> {
 
   const registry = await loadSkillRegistry();
   for (const s of skills) {
-    if (isSkillDisabled(s.slug, registry)) s.disabled = true;
+    if (isSkillDisabled(s.slug, registry, s.origin)) s.disabled = true;
   }
 
   return skills;
