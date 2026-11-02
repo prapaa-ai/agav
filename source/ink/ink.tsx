@@ -1,5 +1,6 @@
 import {EventEmitter} from "node:events";
 import process from "node:process";
+import sliceAnsi from "slice-ansi";
 import React, {type ReactNode} from "react";
 import {LegacyRoot} from "react-reconciler/constants.js";
 import Yoga from "yoga-layout";
@@ -49,6 +50,7 @@ import {writeClipboard} from "./termio/clipboard.js";
 import parseKeypress from "./parse-keypress.js";
 import {
 	type SelectionRange,
+	type CopyLine,
 	normalizeSelection,
 	selectWordAt,
 	selectLineAt,
@@ -112,6 +114,7 @@ const SEL_COLOR_OFF = "\x1b[39m";
 function applySelectionHighlight(
 	output: string,
 	selection: SelectionRange,
+	columns?: {left: number; right: number},
 ): string {
 	const lines = output.split("\n");
 
@@ -122,8 +125,8 @@ function applySelectionHighlight(
 	for (let row = startRow; row <= endRow; row++) {
 
 		const line = lines[row]!;
-		const selStartCol = row === selection.startY ? selection.startX : 0;
-		const selEndCol = row === selection.endY ? selection.endX : Infinity;
+		const selStartCol = Math.max(columns?.left ?? 0, row === selection.startY ? selection.startX : 0);
+		const selEndCol = Math.min(columns?.right ?? Infinity, row === selection.endY ? selection.endX : Infinity);
 
 		// Walk the line character by character, tracking visible column.
 		let result = "";
@@ -322,6 +325,15 @@ export default class Ink {
 	private selectionLastRepaint = 0;
 	/** Whether the engine consumed the mouse-down for selection (component didn't handle it). */
 	private selectionOwned = false;
+	private selectionScrollTimer: NodeJS.Timeout | undefined;
+	private selectionDocument: {
+		viewport: DOMElement;
+		anchor: {x: number; y: number};
+		pointer: {x: number; y: number};
+		range: SelectionRange | null;
+		rows: Map<number, {text: string; copy: CopyLine | undefined}>;
+		geometry: string;
+	} | null = null;
 	/** Lines currently displayed on screen (may include highlight), for surgical repaint diffing. */
 	private displayedLines: string[] = [];
 
@@ -583,6 +595,7 @@ export default class Ink {
 			// one on screen so the caller starts from a clean cursor position and
 			// `log` no longer believes it owns any lines.
 			this.throttledOnRender.cancel();
+			this.clearGlobalSelection();
 
 			if (this.interactive) {
 				this.log.clear();
@@ -664,6 +677,7 @@ export default class Ink {
 
 		const {output, staticOutput, copyLines} = renderer(this.rootNode, false);
 		this.copyLines = copyLines ?? [];
+		this.captureSelectionDocument(output);
 
 		// New <Static> children have been added when static output is non-empty.
 		const hasStaticOutput = staticOutput && staticOutput !== "\n";
@@ -691,7 +705,7 @@ export default class Ink {
 
 		// Apply selection highlighting if there's an active global selection.
 		const displayOutput = this.selectionRange
-			? applySelectionHighlight(output, this.selectionRange)
+			? applySelectionHighlight(output, this.selectionRange, this.selectionColumns())
 			: output;
 
 		this.log(displayOutput + "\n");
@@ -951,6 +965,7 @@ export default class Ink {
 		// clicks keep working, and the host's native right-click menu still
 		// appears. Wheel events also carry a button number, so exclude them.
 		if (!ev.wheel && ev.button !== 0) {
+			this.stopSelectionScroll();
 			this.resetMouseTracking();
 			return;
 		}
@@ -1008,6 +1023,7 @@ export default class Ink {
 			if (!consumed) {
 				// No component claimed this press — start global text selection.
 				this.beginGlobalSelection(ev.x, y);
+				this.beginSelectionDocument(target, ev.x, y);
 			} else {
 				// A component owns this press — clear any stale global selection.
 				this.clearGlobalSelection();
@@ -1021,7 +1037,7 @@ export default class Ink {
 				dispatchMouseUp(target, base);
 
 				// A click fires only when press and release land on the same node.
-				if (target === this.mouseDownTarget) {
+				if (target === this.mouseDownTarget && !this.selectionDragging) {
 					dispatchClick(target, base);
 				}
 			}
@@ -1047,6 +1063,7 @@ export default class Ink {
 				if (this.selectionOwned) {
 					// Extend global selection.
 					this.extendGlobalSelection(ev.x, y);
+					this.updateSelectionScroll();
 				} else if (this.mouseDownTarget) {
 					dispatchMouseMove(this.mouseDownTarget, base);
 				}
@@ -1060,6 +1077,135 @@ export default class Ink {
 	// -----------------------------------------------------------------------
 	// Global text selection — select and copy text anywhere on the screen.
 	// -----------------------------------------------------------------------
+
+	/** Visible frame bounds, including ancestor clips and terminal scrollback. */
+	private selectionViewportBounds(node: DOMElement): {top: number; bottom: number} {
+		let top = Math.max(node.internal_y ?? 0, this.frameScrollOffset);
+		let bottom = Math.min((node.internal_y ?? 0) + (node.internal_height ?? 0) - 1,
+			this.frameScrollOffset + (this.options.stdout.rows ?? 24) - 1);
+		for (let parent = node.parentNode; parent; parent = parent.parentNode) {
+			if (parent.style.overflow === "hidden" || parent.style.overflowY === "hidden") {
+				top = Math.max(top, parent.internal_y ?? 0);
+				bottom = Math.min(bottom, (parent.internal_y ?? 0) + (parent.internal_height ?? 0) - 1);
+			}
+		}
+		return {top, bottom};
+	}
+
+	private selectionColumns(): {left: number; right: number} | undefined {
+		const node = this.selectionDocument?.viewport;
+		if (!node) return undefined;
+		const left = Math.max(0, node.internal_x ?? 0);
+		return {left, right: Math.min(this.options.stdout.columns ?? 80,
+			(node.internal_x ?? 0) + (node.internal_width ?? 0))};
+	}
+
+	private selectionGeometry(node: DOMElement): string {
+		return [node.internal_x, node.internal_y, node.internal_width, node.internal_height,
+			this.options.stdout.columns, this.options.stdout.rows].join(":");
+	}
+
+	private beginSelectionDocument(target: DOMElement | null, x: number, y: number): void {
+		for (let node = target; node; node = node.parentNode ?? null) {
+			const scroll = node.internal_scroll;
+			if (!scroll || (scroll.content.internal_height ?? 0) <= (node.internal_height ?? 0)) continue;
+			this.selectionDocument = {
+				viewport: node,
+				anchor: {x, y: y - (scroll.content.internal_y ?? 0)},
+				pointer: {x, y}, range: null, rows: new Map(),
+				geometry: this.selectionGeometry(node),
+			};
+			this.captureSelectionDocument(this.lastOutput);
+			break;
+		}
+	}
+
+	/** Save rows before they leave the viewport, with their source wrap metadata. */
+	private captureSelectionDocument(output: string): void {
+		const doc = this.selectionDocument;
+		if (!doc) return;
+		let root = doc.viewport;
+		while (root.parentNode) root = root.parentNode;
+		const scroll = doc.viewport.internal_scroll;
+		if (!scroll || root !== this.rootNode || doc.geometry !== this.selectionGeometry(doc.viewport)) {
+			this.clearGlobalSelection();
+			return;
+		}
+		const {top, bottom} = this.selectionViewportBounds(doc.viewport);
+		const origin = scroll.content.internal_y ?? 0;
+		const lines = stripAnsi(output).split("\n");
+		for (let y = top; y <= bottom; y++) {
+			const index = y - origin;
+			const {left, right} = this.selectionColumns()!;
+			const text = " ".repeat(left) + sliceAnsi(lines[y] ?? "", left, right);
+			const previous = doc.rows.get(index);
+			// Reflow/replacement changes document row meanings. Cancel rather than
+			// silently combining stale selected text with a different document.
+			if (previous && previous.text !== text && doc.range
+				&& index >= doc.range.startY && index <= doc.range.endY) {
+				this.clearGlobalSelection();
+				return;
+			}
+			const copy = this.copyLines[y];
+			doc.rows.set(index, {text, copy: copy ? {...copy,
+				startX: Math.max(left, copy.startX), endX: Math.min(right, copy.endX ?? right),
+			} : undefined});
+		}
+		if (this.selectionDragging) this.updateDocumentSelection();
+	}
+
+	private updateDocumentSelection(): void {
+		const doc = this.selectionDocument;
+		if (!doc) return;
+		const {top, bottom} = this.selectionViewportBounds(doc.viewport);
+		const origin = doc.viewport.internal_scroll?.content.internal_y ?? 0;
+		if (this.selectionOwned) {
+			doc.range = normalizeSelection(doc.anchor, {
+				x: doc.pointer.x,
+				y: Math.max(top, Math.min(bottom, doc.pointer.y)) - origin,
+			});
+		}
+		if (!doc.range) return;
+		const start = doc.range.startY + origin;
+		const end = doc.range.endY + origin;
+		this.selectionRange = end < top || start > bottom ? null : {
+			startX: start < top ? 0 : doc.range.startX,
+			startY: Math.max(top, start),
+			endX: end > bottom ? Infinity : doc.range.endX,
+			endY: Math.min(bottom, end),
+		};
+	}
+
+	private stopSelectionScroll(): void {
+		clearInterval(this.selectionScrollTimer);
+		this.selectionScrollTimer = undefined;
+	}
+
+	private selectionScrollDirection(): number {
+		const doc = this.selectionDocument;
+		if (!doc || !this.selectionOwned || !this.selectionDragging) return 0;
+		const {top, bottom} = this.selectionViewportBounds(doc.viewport);
+		if (bottom < top) return 0;
+		return doc.pointer.y <= top ? 1 : doc.pointer.y >= bottom ? -1 : 0;
+	}
+
+	private updateSelectionScroll(): void {
+		if (!this.selectionScrollDirection()) {
+			this.stopSelectionScroll();
+			return;
+		}
+		if (this.selectionScrollTimer) return;
+		// DEC 1002 emits no motion while the pointer is stationary. Keep moving
+		// one row per tick so every selected row is captured before it disappears.
+		this.selectionScrollTimer = setInterval(() => {
+			this.throttledOnRender.flush();
+			const direction = this.selectionScrollDirection();
+			if (!direction || !this.selectionDocument?.viewport.internal_scroll?.scrollBy(direction)) {
+				this.stopSelectionScroll();
+			}
+		}, 80);
+		this.selectionScrollTimer.unref();
+	}
 
 	/** Get the plain-text lines of the last rendered frame. */
 	private getPlainLines(): string[] {
@@ -1078,7 +1224,7 @@ export default class Ink {
 		if (!this.interactive || !this.lastOutput) return;
 
 		const displayOutput = this.selectionRange
-			? applySelectionHighlight(this.lastOutput, this.selectionRange)
+			? applySelectionHighlight(this.lastOutput, this.selectionRange, this.selectionColumns())
 			: this.lastOutput;
 
 		const newLines = displayOutput.split("\n");
@@ -1126,6 +1272,7 @@ export default class Ink {
 
 	/** Begin a potential global text selection at the given frame coordinate. */
 	private beginGlobalSelection(x: number, y: number): void {
+		this.clearGlobalSelection();
 		const MULTI_CLICK_MS = 400;
 		const now = Date.now();
 
@@ -1169,7 +1316,12 @@ export default class Ink {
 		if (!this.selectionAnchor) return;
 
 		this.selectionDragging = true;
-		this.selectionRange = normalizeSelection(this.selectionAnchor, {x, y});
+		if (this.selectionDocument) {
+			this.selectionDocument.pointer = {x, y};
+			this.updateDocumentSelection();
+		} else {
+			this.selectionRange = normalizeSelection(this.selectionAnchor, {x, y});
+		}
 
 		// Throttle repaints to ~30 fps. Drag events arrive at 60+ Hz; full
 		// erase-and-rewrite on every one causes visible flicker on terminals
@@ -1183,9 +1335,23 @@ export default class Ink {
 
 	/** Copy the active frame-wide selection without changing its highlight. */
 	private copyGlobalSelection(): void {
-		if (!this.selectionRange) return;
+		if (!this.selectionRange && !this.selectionDocument?.range) return;
 
-		const text = getSelectedText(this.getPlainLines(), this.selectionRange, this.copyLines);
+		let text: string;
+		const doc = this.selectionDocument;
+		if (doc?.range) {
+			const {startY, endY} = doc.range;
+			const rows = [];
+			for (let y = startY; y <= endY; y++) {
+				const row = doc.rows.get(y);
+				if (!row) return; // Never copy a selection with uncaptured gaps.
+				rows.push(row);
+			}
+			text = getSelectedText(rows.map(row => row.text),
+				{...doc.range, startY: 0, endY: endY - startY}, rows.map(row => row.copy));
+		} else {
+			text = getSelectedText(this.getPlainLines(), this.selectionRange!, this.copyLines);
+		}
 		if (text.trim()) {
 			writeClipboard(this.options.stdout, text);
 		}
@@ -1193,6 +1359,7 @@ export default class Ink {
 
 	/** Finalise the global selection: copy to clipboard and keep highlight. */
 	private finaliseGlobalSelection(): void {
+		this.stopSelectionScroll();
 		if (this.selectionRange) {
 			// Ensure the highlight reflects the final drag position — the last
 			// drag event may have been throttled.
@@ -1216,6 +1383,8 @@ export default class Ink {
 
 	/** Clear any active global selection and repaint. */
 	private clearGlobalSelection(): void {
+		this.stopSelectionScroll();
+		this.selectionDocument = null;
 		const hadSelection = this.selectionRange !== null;
 		this.selectionAnchor = null;
 		this.selectionRange = null;
@@ -1326,6 +1495,7 @@ export default class Ink {
 		}
 
 		this.isUnmounted = true;
+		this.stopSelectionScroll();
 		clearTimeout(this.escapeTimer);
 		this.throttledOnRender.cancel();
 
