@@ -150,6 +150,7 @@ async function saveExport(directory: string, stem: string, extension: string, ou
 export const exportCommand: SlashCommand = {
   name: "export",
   description: "Export the retained conversation as Markdown or JSON, optionally sanitized",
+  argumentHint: "[json] [sanitize]",
   usage: USAGE,
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const options = args.trim().split(/\s+/).filter(Boolean);
