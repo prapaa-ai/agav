@@ -18,6 +18,7 @@ import {
 export const scheduleCommand: SlashCommand = {
   name: "schedule",
   description: "Manage persistent scheduled tasks",
+  argumentHint: "[list|add|remove|enable|disable]",
   usage: `Usage: /schedule [action]\n\n  /schedule                           Open manager (list in headless mode)\n  /schedule list                      Show all scheduled tasks\n  /schedule add "0 9 * * *" prompt    Add a cron-scheduled task\n  /schedule remove <id>               Remove a task by ID\n  /schedule enable <id>               Enable a disabled task\n  /schedule disable <id>              Disable a task\n\nCron format: minute hour day-of-month month day-of-week\nTasks persist across sessions in ${agavHomePath("scheduled-tasks.json")}.`,
   /**
    * Handle schedule management actions.

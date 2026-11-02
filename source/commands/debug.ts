@@ -8,6 +8,7 @@ import { getSandboxName } from "../utils/sandbox.js";
 export const debugCommand: SlashCommand = {
   name: "debug",
   description: "Show internal state for debugging",
+  autoSubmit: true,
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
     const [plan, memories] = await Promise.all([
       loadPlan(),
