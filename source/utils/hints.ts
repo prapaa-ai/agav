@@ -27,6 +27,7 @@ const HINTS = [
   "Press [A]lways during confirmation to auto-accept all",
   "/model shows or changes the current model",
   "/status shows session, model, permissions, directory, and usage at a glance",
+  "/permission switches between ask, auto-accept, and deny-writes — it sticks on resume",
   "/customize shows, hides, and reorders footer segments",
   "/voice dictates an editable prompt with offline transcription",
   "/branch lists conversation forks or creates one with a name",

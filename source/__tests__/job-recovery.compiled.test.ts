@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,7 +9,10 @@ import { pathToFileURL } from "node:url";
 // Compile into a disposable directory, never into the repository's generated build/dist.
 describe("freshly compiled job recovery CLI", () => {
   it("runs the actual entry in an isolated profile and retains hidden evidence after restart", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agav-compiled-recovery-"));
+    // Darwin's per-user temp path alone can consume most of sockaddr_un's
+    // 104-byte limit. Keep this fixture short, including its Unicode profile.
+    const base = process.platform === "darwin" ? "/tmp" : tmpdir();
+    const root = await realpath(await mkdtemp(join(base, "agav-rec-")));
     const home = join(root, "profile ü");
     const output = join(root, "compiled");
     const exec = promisify(execFile);

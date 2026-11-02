@@ -49,6 +49,7 @@ interface SkillExecDeps {
   signal?: AbortSignal;
   contextMessages?: import("../providers/types.js").Message[];
   onEvent?: (event: AgentEvent) => void;
+  providerIdleTimeout?: number;
 }
 
 function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolRegistry {
@@ -245,6 +246,7 @@ export async function executeSkill(
         : clampPermissionMode(deps.backgroundPermissionMode, deps.policy?.orgPermissionFloor),
       permissionFloor: deps.policy?.orgPermissionFloor,
       iterationsBudget: deps.iterationsBudget,
+      providerIdleTimeout: deps.providerIdleTimeout,
     });
 
     // Account for each usage event immediately, including tokens spent before

@@ -17,6 +17,7 @@ interface SkillToolDeps {
     backgroundPermissionMode?: PermissionMode;
     effort: EffortLevel;
     iterationsBudget: { remaining: number, total: number };
+    providerIdleTimeout?: number;
   };
   /** Full parent config for deriving the org selection/permission policy. */
   getProviderConfig?: () => AgavConfig;
@@ -75,6 +76,7 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
           contextMessages: context?.conversation,
           effort: config.effort,
           iterationsBudget: config.iterationsBudget,
+          providerIdleTimeout: config.providerIdleTimeout,
           policy: providerConfig ? {
             provider: providerConfig.provider,
             orgPermissionFloor: providerConfig.orgPermissionFloor,

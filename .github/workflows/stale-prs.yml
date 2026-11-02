@@ -19,6 +19,10 @@ jobs:
         with:
           app-id: ${{ secrets.AGAV_APP_ID }}
           private-key: ${{ secrets.AGAV_APP_PRIVATE_KEY }}
+          # Scope the installation token: this workflow only comments on / closes
+          # stale PRs. Without a permission-* input the token inherits every
+          # permission the app is installed with.
+          permission-pull-requests: write
 
       - name: Close stale PRs
         env:

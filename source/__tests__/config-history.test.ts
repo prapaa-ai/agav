@@ -76,6 +76,21 @@ describe("history persistence", () => {
     expect(await store.read(record.id)).toMatchObject({ messages: [], model: "local", provider: "openai", tokenUsage: { ...tokens, outputTokens: 30 }, compacted: true, name: "Local name" });
   });
 
+  it("preserves runtime permissions across local saves and worker history mirrors", async () => {
+    const record = await create();
+    await store.update(record.id, record.generation, current => { current.status = "completed"; current.permissionMode = "deny-writes"; });
+    await saveSession(messages, record.model, record.provider, record.id);
+    expect((await loadSession(record.id))!.permissionMode).toBe("deny-writes");
+    await saveSession(messages, record.model, record.provider, record.id, undefined, undefined, undefined, undefined, "ask");
+    expect((await store.read(record.id))!.permissionMode).toBe("ask");
+    expect((await loadSession(record.id))!.permissionMode).toBe("ask");
+    await store.update(record.id, record.generation, current => { current.status = "running"; current.permissionMode = "deny-writes"; });
+    await saveSession(messages, "stale", "openai", record.id, undefined, undefined, undefined, undefined, "auto-accept");
+    expect((await store.read(record.id))!.permissionMode).toBe("deny-writes");
+    await saveSessionRuntime(record); // Even a stale checkpoint must use the current mode.
+    expect((await loadSession(record.id))!.permissionMode).toBe("deny-writes");
+  });
+
   it("fences worker checkpoints after deletion", async () => {
     const record = await create();
     await store.update(record.id, record.generation, current => { current.status = "completed"; });

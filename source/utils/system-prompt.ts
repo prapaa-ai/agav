@@ -2,7 +2,7 @@ import { getGitContext, formatGitPrompt } from "./git.js";
 import { loadProjectInstructions } from "./project-instructions.js";
 import { formatMemoriesForPrompt } from "../config/memory.js";
 import type { MCPManager } from "../mcp/manager.js";
-import { getCachedSkills, buildSkillCatalog, loadSkills } from "../skills/loader.js";
+import { getOrLoadSkills, buildSkillCatalog } from "../skills/loader.js";
 import { formatSteersForPrompt } from "../commands/steer.js";
 import type { AgentDefinition } from "../agents/types.js";
 
@@ -115,10 +115,7 @@ export async function refreshStableContext(mcpManager?: MCPManager): Promise<str
     parts.push(memories);
   }
 
-  let skills = getCachedSkills();
-  if (skills.length === 0) {
-    skills = await loadSkills();
-  }
+  const skills = await getOrLoadSkills();
   const skillCatalog = buildSkillCatalog(skills);
   if (skillCatalog) {
     parts.push(skillCatalog);

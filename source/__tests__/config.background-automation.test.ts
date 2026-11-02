@@ -16,6 +16,7 @@ vi.mock("../utils/fs.js", () => ({
 vi.mock("../utils/encrypt.js", () => ({
   encrypt: vi.fn((value: string) => `enc:${value}`),
   decrypt: vi.fn((value: string) => value),
+  isEncrypted: vi.fn((value: string) => value.startsWith("enc:")),
 }));
 
 const fs = await import("node:fs/promises");

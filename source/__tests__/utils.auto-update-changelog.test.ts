@@ -636,8 +636,12 @@ describe("getChangelog full cached release notes", () => {
     delete state.updatedFrom;
     await writeFile(statePath, JSON.stringify(state));
     const before = await readFile(statePath, "utf8");
+    // Auto-display defaults to on (no launch-state.json here), so /changelog
+    // appends the inline opt-out hint after the notes.
+    const { CHANGELOG_DISABLE_HINT } = await import("../commands/changelog.js");
     expect(await changelogCommand.execute("", {} as any)).toEqual({
-      type: "message", text: "Agav v0.2.4\n\n## Changes\n\n- Cached notes",
+      type: "message",
+      text: `Agav v0.2.4\n\n## Changes\n\n- Cached notes\n\n${CHANGELOG_DISABLE_HINT}`,
     });
     expect(await readFile(statePath, "utf8")).toBe(before);
     await seed("Fresh cached notes");
@@ -706,5 +710,41 @@ describe("getChangelogSummary (first-launch auto-display)", () => {
   it("returns null for unreadable state rather than an explanatory sentinel", async () => {
     await writeFile(statePath, "not JSON");
     expect(await getChangelogSummary()).toBeNull();
+  });
+});
+
+describe("/changelog on|off subcommands", () => {
+  const launchStatePath = join(agavDir, "launch-state.json");
+
+  beforeEach(async () => {
+    await rm(launchStatePath, { force: true });
+  });
+
+  it("disables automatic display and confirms", async () => {
+    const result = await changelogCommand.execute("off", {} as any);
+    expect(result.type).toBe("message");
+    expect((result as { text: string }).text).toContain("disabled");
+    const { isChangelogAutoDisplayEnabled } = await import("../config/launch-state.js");
+    expect(await isChangelogAutoDisplayEnabled()).toBe(false);
+  });
+
+  it("re-enables automatic display and confirms", async () => {
+    await changelogCommand.execute("off", {} as any);
+    const result = await changelogCommand.execute("on", {} as any);
+    expect((result as { text: string }).text).toContain("enabled");
+    const { isChangelogAutoDisplayEnabled } = await import("../config/launch-state.js");
+    expect(await isChangelogAutoDisplayEnabled()).toBe(true);
+  });
+
+  it("omits the inline hint from /changelog output once disabled", async () => {
+    await seed("## Changes\n\n- Cached notes");
+    await changelogCommand.execute("off", {} as any);
+    const result = await changelogCommand.execute("", {} as any);
+    expect((result as { text: string }).text).not.toContain("/changelog off");
+  });
+
+  it("rejects an unknown option", async () => {
+    const result = await changelogCommand.execute("nonsense", {} as any);
+    expect((result as { text: string }).text).toContain("Unknown option");
   });
 });

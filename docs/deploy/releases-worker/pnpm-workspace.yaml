@@ -8,3 +8,15 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - '@cloudflare/workers-types@5.20261003.1'
   - wrangler@4.147.0
+
+# Force patched versions of transitive deps with open advisories
+# (vite via vitest, undici via wrangler>miniflare).
+# sharp is removed entirely ("-"): miniflare only uses it for local Cloudflare
+# Images emulation via a guarded dynamic import (503 if missing), which this
+# Worker does not use. This drops libvips (LGPL) and the sharp advisory
+# GHSA-wq5f-xc86-pv6w. Revisit once miniflare makes sharp optional.
+# Remove an entry once every dependent requires a patched version on its own.
+overrides:
+  vite: ^8.3.5
+  undici: ^7.30.1
+  sharp: "-"

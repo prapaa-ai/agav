@@ -11,8 +11,7 @@ vi.mock("../config/memory.js", () => ({
   formatMemoriesForPrompt: vi.fn(() => "memories"),
 }));
 vi.mock("../skills/loader.js", () => ({
-  getCachedSkills: vi.fn(() => []),
-  loadSkills: vi.fn(() => [{ name: "skill-one" }]),
+  getOrLoadSkills: vi.fn(async () => [{ name: "skill-one" }]),
   buildSkillCatalog: vi.fn(() => "skills catalog"),
 }));
 vi.mock("../commands/steer.js", () => ({
@@ -29,7 +28,7 @@ import {
 import { formatGitPrompt, getGitContext } from "../utils/git.js";
 import { loadProjectInstructions } from "../utils/project-instructions.js";
 import { formatMemoriesForPrompt } from "../config/memory.js";
-import { buildSkillCatalog, getCachedSkills, loadSkills } from "../skills/loader.js";
+import { buildSkillCatalog, getOrLoadSkills } from "../skills/loader.js";
 import { formatSteersForPrompt } from "../commands/steer.js";
 
 describe("utils/system-prompt", () => {
@@ -91,7 +90,7 @@ describe("utils/system-prompt", () => {
     const second = await buildSystemPrompt();
     expect(second).toBe(first);
     expect(first).toContain(`The user's current working directory is: ${process.cwd()}`);
-    for (const load of [getGitContext, loadProjectInstructions, formatMemoriesForPrompt, getCachedSkills, loadSkills, formatSteersForPrompt]) {
+    for (const load of [getGitContext, loadProjectInstructions, formatMemoriesForPrompt, getOrLoadSkills, formatSteersForPrompt]) {
       expect(load).not.toHaveBeenCalled();
     }
   });
@@ -117,8 +116,7 @@ describe("utils/system-prompt", () => {
     expect(formatGitPrompt).toHaveBeenCalled();
     expect(loadProjectInstructions).toHaveBeenCalled();
     expect(formatMemoriesForPrompt).toHaveBeenCalled();
-    expect(getCachedSkills).toHaveBeenCalled();
-    expect(loadSkills).toHaveBeenCalled();
+    expect(getOrLoadSkills).toHaveBeenCalled();
     expect(buildSkillCatalog).toHaveBeenCalled();
     expect(formatSteersForPrompt).toHaveBeenCalled();
     expect(ctx).toContain("git block");

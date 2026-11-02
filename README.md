@@ -99,7 +99,7 @@ We’re building the alternative, an AI that works for you, runs on your terms, 
 
 * **Providers** — switch mid-session with `/model`. Fast `/fast` and deep `/deep` shortcuts.
 * **Non-interactive mode** — `agav run` and `agav --print` with per-tool permissions and optional JSON Schema output.
-* **Sessions that survive** — resume, branch, name, search and export. `/compact` reclaims context without losing plans.
+* **Sessions that survive** — resume, branch, name, search and export. `/compact` reclaims context without losing plans, and `/permission` switches between ask, auto-accept, and deny-writes mid-session and sticks on resume.
 * **Skills & Agents** — reusable instruction bundles and installable service agents from a marketplace. Delegate scoped work to fresh-context subagents.
 * **Memory** — cross-session memories per project: user preferences, feedback, project decisions, references.
 * **Voice input** — `/voice` dictates an editable prompt with offline, English-only transcription. No FFmpeg, Python, or extra setup.
@@ -117,7 +117,7 @@ We’re building the alternative, an AI that works for you, runs on your terms, 
 ## Community
 
 Email: contact@agav.dev  
-Discord: [discord.com/invite/qD7xBaRVT](https://discord.com/invite/qD7xBaRVT)
+Discord: [discord.com/invite/bqDaTQ9ZNS](https://discord.com/invite/bqDaTQ9ZNS)
 
 ## License
 

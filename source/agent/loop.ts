@@ -30,7 +30,103 @@ export type AgentEvent =
   | { type: "turn_complete" }
   | { type: "steer_applied"; directives: string[] }
   | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
-  | { type: "error"; error: Error; reason?: "iterations_exhausted" };
+  | { type: "error"; error: Error; reason?: "iterations_exhausted" | "provider_idle_timeout" };
+
+export class ProviderIdleTimeoutError extends Error {
+  readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
+    super(`Provider response idle timeout after ${timeoutMs}ms`);
+    this.name = "ProviderIdleTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
+ * Shared idle-watchdog lifecycle for provider streams. Both the main response
+ * loop and summarize() stream from the provider and must abort an attempt that
+ * stalls past `timeoutMs` of inactivity, while forwarding parent cancellation,
+ * suspending the watchdog across retry backoffs, and always cleaning up timers
+ * and listeners. Consolidated here so the two paths cannot drift (see #619).
+ *
+ * Path-specific behavior stays with the caller: the main loop records that the
+ * abort was a timeout (so it can preserve partial text and emit
+ * `provider_idle_timeout`), while summarize() just aborts and falls back. The
+ * `onTimeout` callback lets each path run its own bookkeeping before the
+ * attempt is aborted with a `ProviderIdleTimeoutError`.
+ */
+function createIdleWatchdog(options: {
+  /** Idle timeout in ms; `undefined` or non-positive disables the watchdog. */
+  timeoutMs: number | undefined;
+  /** Attempt controller aborted on idle timeout or parent cancellation. */
+  controller: AbortController;
+  /** Parent signal whose cancellation is forwarded to the attempt controller. */
+  signal?: AbortSignal;
+  /** Caller bookkeeping run immediately before an idle-timeout abort. */
+  onTimeout?: () => void;
+}): {
+  /** Clears any armed timer and re-arms it; no-op when disabled or aborted. */
+  reset: () => void;
+  /** Suspends the watchdog for `backoffMs`, then re-arms via reset(). */
+  suspendForBackoff: (backoffMs: number) => void;
+  /** Clears the timer and removes the parent-abort listener. Idempotent. */
+  cleanup: () => void;
+} {
+  const { controller, signal, onTimeout } = options;
+  const enabled = typeof options.timeoutMs === "number" && options.timeoutMs > 0;
+  const timeoutMs = enabled ? (options.timeoutMs as number) : 0;
+  let idleTimer: NodeJS.Timeout | null = null;
+
+  const clearTimer = () => {
+    if (idleTimer !== null) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+
+  const reset = () => {
+    if (!enabled || controller.signal.aborted) return;
+    clearTimer();
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      onTimeout?.();
+      controller.abort(new ProviderIdleTimeoutError(timeoutMs));
+    }, timeoutMs);
+  };
+
+  const suspendForBackoff = (backoffMs: number) => {
+    // Suspend the watchdog while the provider backs off: a retry wait is not an
+    // idle stall. Re-arm after the backoff so a stall after the retry still trips.
+    clearTimer();
+    if (!enabled || controller.signal.aborted) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      reset();
+    }, backoffMs);
+  };
+
+  const onParentAbort = () => {
+    clearTimer();
+    controller.abort(signal?.reason ?? new Error("Aborted"));
+  };
+
+  let listenerAttached = false;
+  if (signal?.aborted) {
+    controller.abort(signal.reason ?? new Error("Aborted"));
+  } else if (signal) {
+    signal.addEventListener("abort", onParentAbort, { once: true });
+    listenerAttached = true;
+  }
+
+  const cleanup = () => {
+    clearTimer();
+    if (listenerAttached && signal) {
+      signal.removeEventListener("abort", onParentAbort);
+      listenerAttached = false;
+    }
+  };
+
+  return { reset, suspendForBackoff, cleanup };
+}
 
 import type { DiffLine } from "../utils/diff.js";
 import { computeEditDiff, computeDiff } from "../utils/diff.js";
@@ -132,6 +228,13 @@ interface LoopParams {
    * contexts (subagents, skills, pipe mode), which just take the default.
    */
   requestManualContextWindow?: (model: string, signal?: AbortSignal) => Promise<number | undefined>;
+  /**
+   * Idle timeout in milliseconds waiting for provider stream activity.
+   * Clock starts when an attempt begins and resets on stream activity.
+   * On expiry, the attempt is aborted with ProviderIdleTimeoutError.
+   * When unset or <= 0, no timer is set and SDK defaults stay unchanged.
+   */
+  providerIdleTimeout?: number;
 }
 
 /** Assumed window for a model no catalog can report and the user declined to specify. */
@@ -276,7 +379,21 @@ export async function* runAgentLoop(
   const summarize = async (msgs: Message[]): Promise<string> => {
     let result = "";
     pendingSummarizeUsage = null;
+
+    const timeoutMs =
+      typeof params.providerIdleTimeout === "number" && params.providerIdleTimeout > 0
+        ? params.providerIdleTimeout
+        : undefined;
+
+    const summarizeController = new AbortController();
+    const watchdog = createIdleWatchdog({
+      timeoutMs,
+      controller: summarizeController,
+      signal,
+    });
+
     try {
+      watchdog.reset();
       for await (const event of provider.stream({
         model,
         messages: msgs,
@@ -290,8 +407,21 @@ export async function* runAgentLoop(
           "This summary replaces earlier messages — anything not included here is lost.",
         effort,
         maxTokens: 2048,
-        signal,
+        signal: summarizeController.signal,
       })) {
+        if (event.type === "retry") {
+          const backoffMs = event.delayMs ?? (() => {
+            const match = event.message.match(/Retrying in (\d+)s/);
+            return match ? parseInt(match[1], 10) * 1000 : 0;
+          })();
+          watchdog.suspendForBackoff(backoffMs);
+          continue;
+        }
+
+        watchdog.reset();
+        if (summarizeController.signal.aborted) {
+          return "";
+        }
         if (event.type === "text_delta") result += event.text;
         if (event.type === "usage") {
           // Providers may split input/cache and output usage across events.
@@ -302,8 +432,13 @@ export async function* runAgentLoop(
           pendingSummarizeUsage["cacheWriteTokens"]! += event.cacheWriteTokens ?? 0;
         }
       }
+      if (summarizeController.signal.aborted) {
+        return "";
+      }
     } catch {
       return "";
+    } finally {
+      watchdog.cleanup();
     }
     return result || "";
   };
@@ -408,79 +543,146 @@ export async function* runAgentLoop(
       yield { type: "tool_call_input_delta", toolCallId: id, argsJson };
     }
 
+    let timedOut = false;
+    const timeoutMs = params.providerIdleTimeout;
+    const hasIdleTimeout = typeof timeoutMs === "number" && timeoutMs > 0;
+    const timeoutError = hasIdleTimeout ? new ProviderIdleTimeoutError(timeoutMs) : undefined;
+    const attemptController = new AbortController();
+
+    const watchdog = createIdleWatchdog({
+      timeoutMs,
+      controller: attemptController,
+      signal,
+      // Record that the abort was an idle timeout so the stream drain below can
+      // preserve partial text and emit provider_idle_timeout rather than a
+      // generic abort.
+      onTimeout: () => { timedOut = true; },
+    });
+    const resetIdleTimer = watchdog.reset;
+
+    const commitPartialText = function* (): Generator<AgentEvent, void, unknown> {
+      if (textAccum) {
+        conversation.addAssistantMessage([{ type: "text", text: textAccum }]);
+        yield { type: "assistant_message_complete", text: textAccum };
+      }
+    };
+
     try {
-      if (!seededCall) for await (const event of provider.stream({
-        model,
-        messages: conversation.getMessages(),
-        tools: toolRegistry.getSchemas(),
-        systemPrompt,
-        effort,
-        maxTokens,
-        signal,
-      })) {
-        if (signal?.aborted) {
+      // Seeded skill dispatches are synthetic tool calls with no provider stream; the idle timer only arms when a real stream starts.
+      if (!seededCall) {
+        resetIdleTimer();
+        for await (const event of provider.stream({
+          model,
+          messages: conversation.getMessages(),
+          tools: toolRegistry.getSchemas(),
+          systemPrompt,
+          effort,
+          maxTokens,
+          signal: attemptController.signal,
+        })) {
+          resetIdleTimer();
+
+          if (attemptController.signal.aborted) {
+            if (timedOut || attemptController.signal.reason instanceof ProviderIdleTimeoutError) {
+              yield* commitPartialText();
+              yield { type: "error", error: timeoutError!, reason: "provider_idle_timeout" };
+              return;
+            }
+            yield { type: "error", error: new Error("Aborted") };
+            return;
+          }
+
+          switch (event.type) {
+            case "text_delta":
+              textAccum += event.text;
+              yield { type: "streaming_text", text: event.text };
+              break;
+
+            case "thinking_delta":
+              yield { type: "thinking", text: event.text };
+              break;
+
+            case "tool_call_start":
+              toolCalls.set(event.toolCallId, {
+                name: event.toolName,
+                argsJson: "",
+              });
+              yield {
+                type: "tool_call_start",
+                toolName: event.toolName,
+                toolCallId: event.toolCallId,
+              };
+              break;
+
+            case "tool_call_delta": {
+              const call = toolCalls.get(event.toolCallId);
+              if (call) {
+                call.argsJson += event.argsJson;
+                if (event.providerMetadata) {
+                  call.providerMetadata = { ...call.providerMetadata, ...event.providerMetadata };
+                }
+                if (event.argsJson) {
+                  yield {
+                    type: "tool_call_input_delta",
+                    toolCallId: event.toolCallId,
+                    argsJson: event.argsJson,
+                  };
+                }
+              }
+              break;
+            }
+
+            case "usage":
+              yield { type: "usage", inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens };
+              break;
+
+            case "message_end":
+              stopReason = event.stopReason;
+              break;
+
+            case "retry": {
+              const backoffMs = event.delayMs ?? (() => {
+                const match = event.message.match(/Retrying in (\d+)s/);
+                return match ? parseInt(match[1], 10) * 1000 : 0;
+              })();
+              watchdog.suspendForBackoff(backoffMs);
+              yield event;
+              break;
+            }
+
+            case "error":
+              yield { type: "error", error: event.error };
+              return;
+          }
+        }
+        if (attemptController.signal.aborted || signal?.aborted) {
+          if (timedOut || attemptController.signal.reason instanceof ProviderIdleTimeoutError) {
+            yield* commitPartialText();
+            yield {
+              type: "error",
+              error: timeoutError!,
+              reason: "provider_idle_timeout",
+            };
+            return;
+          }
           yield { type: "error", error: new Error("Aborted") };
           return;
         }
-
-        switch (event.type) {
-          case "text_delta":
-            textAccum += event.text;
-            yield { type: "streaming_text", text: event.text };
-            break;
-
-          case "thinking_delta":
-            yield { type: "thinking", text: event.text };
-            break;
-
-          case "tool_call_start":
-            toolCalls.set(event.toolCallId, {
-              name: event.toolName,
-              argsJson: "",
-            });
-            yield {
-              type: "tool_call_start",
-              toolName: event.toolName,
-              toolCallId: event.toolCallId,
-            };
-            break;
-
-          case "tool_call_delta": {
-            const call = toolCalls.get(event.toolCallId);
-            if (call) {
-              call.argsJson += event.argsJson;
-              if (event.providerMetadata) {
-                call.providerMetadata = { ...call.providerMetadata, ...event.providerMetadata };
-              }
-              if (event.argsJson) {
-                yield {
-                  type: "tool_call_input_delta",
-                  toolCallId: event.toolCallId,
-                  argsJson: event.argsJson,
-                };
-              }
-            }
-            break;
-          }
-
-          case "usage":
-            yield { type: "usage", inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens };
-            break;
-
-          case "message_end":
-            stopReason = event.stopReason;
-            break;
-
-          case "retry":
-            yield event;
-            break;
-
-          case "error":
-            yield { type: "error", error: event.error };
-            return;
-        }
       }
     } catch (err) {
+      if (timedOut || attemptController.signal.reason instanceof ProviderIdleTimeoutError || err instanceof ProviderIdleTimeoutError) {
+        yield* commitPartialText();
+        yield {
+          type: "error",
+          error: timeoutError!,
+          reason: "provider_idle_timeout",
+        };
+        return;
+      }
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       if (/context.*(length|window|limit|overflow)|too many tokens|maximum.*token/i.test(msg)) {
         const { compacted: recovered, droppedCount: recoveredCount } = await conversation.compactIfNeeded(true, summarize);
@@ -498,6 +700,8 @@ export async function* runAgentLoop(
         error: err instanceof Error ? err : new Error(String(err)),
       };
       return;
+    } finally {
+      watchdog.cleanup();
     }
 
     // Build assistant message content blocks

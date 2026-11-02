@@ -22,8 +22,16 @@ jobs:
         with:
           app-id: ${{ secrets.AGAV_APP_ID }}
           private-key: ${{ secrets.AGAV_APP_PRIVATE_KEY }}
+          # Scope the installation token to exactly what this workflow does
+          # (commit and push docs). Without a permission-* input the token
+          # inherits every permission the app is installed with.
+          permission-contents: write
 
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      # This job commits docs and `git push`es them, so it needs the checkout
+      # credential to persist in .git/config. The token is the scoped app token
+      # above (contents: write only), not the default GITHUB_TOKEN, and it is
+      # never uploaded as an artifact.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2 # zizmor: ignore[artipacked]
         with:
           token: ${{ steps.app-token.outputs.token }}
           fetch-depth: 50

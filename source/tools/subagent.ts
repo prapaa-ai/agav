@@ -30,6 +30,7 @@ export interface SubagentToolDeps {
     iterationsBudget: { remaining: number, total: number };
     /** Org-managed permission floor; child "Always" cannot widen past it. */
     orgPermissionFloor?: PermissionMode;
+    providerIdleTimeout?: number;
   };
   getProviderConfig?: () => AgavConfig;
   confirmationQueue: Pick<ConfirmationQueue, "enqueue" | "rejectBySubagentId">;
@@ -323,6 +324,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           permissionFloor: config.orgPermissionFloor,
           effort: config.effort,
           iterationsBudget: config.iterationsBudget,
+          providerIdleTimeout: config.providerIdleTimeout,
           drainSteers: steerQueue.drain,
         });
 

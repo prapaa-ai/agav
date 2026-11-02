@@ -17,6 +17,7 @@ import { planCommand } from "./plan.js"
 import { debugCommand } from "./debug.js"
 import { searchCommand, searchHistoryCommand } from "./search-history.js"
 import { effortCommand } from "./effort.js"
+import { permissionCommand } from "./permission.js"
 import { loopCommand } from "./loop.js"
 import { scheduleCommand } from "./schedule.js"
 import { jobCommand } from "./job.js"
@@ -49,6 +50,7 @@ export class CommandRegistry {
     this.register(nameCommand)
     this.register(modelCommand)
     this.register(effortCommand)
+    this.register(permissionCommand)
     this.register(exitCommand)
     this.register(detachCommand)
     this.register(resumeCommand)

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import crypto from "node:crypto";
 import type { Message } from "../providers/types.js";
 import { SessionRuntimeStore, assertSessionRuntimeId, type SessionRuntimeRecord, type SessionRuntimeStatus } from "../sessions/store.js";
+import type { PermissionMode } from "./config.js";
 import { getAgavDir } from "./config.js";
 import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { ensureDir } from "../utils/fs.js";
@@ -27,6 +28,13 @@ export interface SessionRecord {
   tokenUsage?: SessionTokenUsage;
   compacted?: boolean;
   runtime?: { generation: string; status: SessionRuntimeStatus; pendingCount: number; cwd: string };
+  /**
+   * The permission mode in force for this session, persisted so a resume
+   * restores the mode the user was last running under instead of silently
+   * falling back to the config default. Absent on sessions saved before this
+   * field existed; resume treats that as "use the config default".
+   */
+  permissionMode?: PermissionMode;
 }
 
 /** Resolve the directory where serialized chat sessions are stored on disk. */
@@ -85,6 +93,7 @@ export async function saveSession(
   compacted?: boolean,
   name?: string,
   parentId?: string,
+  permissionMode?: PermissionMode,
 ): Promise<string> {
   const id = existingId ?? generateId();
   return withRuntimeLock(id, async store => {
@@ -94,12 +103,15 @@ export async function saveSession(
     const existing = existingId ? await loadSession(existingId) : null;
     const sessionName = name ?? runtime?.name ?? existing?.name ?? runtime?.title;
     const branchParentId = parentId ?? existing?.parentId;
+    // An explicit mode wins; otherwise the runtime is authoritative, then saved history.
+    const effectivePermissionMode = permissionMode ?? runtime?.permissionMode ?? existing?.permissionMode;
     const record: SessionRecord = {
       id, createdAt: new Date().toISOString(), model, provider,
       title: sessionName ?? extractTitle(messages),
       ...(sessionName ? { name: sessionName } : {}),
       ...(branchParentId ? { parentId: branchParentId } : {}),
       messages, tokenUsage, compacted,
+      ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
     };
     await writeAtomic(historyPath(id), JSON.stringify(record, null, 2));
     // Local continuations may update a terminal snapshot, never a live owner.
@@ -114,6 +126,7 @@ export async function saveSession(
         }
         current.title = record.title;
         current.name = sessionName;
+        if (effectivePermissionMode) current.permissionMode = effectivePermissionMode;
       });
     }
     return id;
@@ -134,6 +147,7 @@ export async function saveSessionRuntime(record: SessionRuntimeRecord, store = n
       title: name ?? extractTitle(record.messages),
       ...(name ? { name } : {}),
       messages: record.messages, compacted: record.compacted, tokenUsage: record.tokenUsage,
+      permissionMode: current.permissionMode,
     };
     await writeAtomic(historyPath(record.id), JSON.stringify(saved, null, 2));
     return record.id;

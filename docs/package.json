@@ -53,8 +53,11 @@
   },
   "pnpm": {
     "overrides": {
-      "dompurify": ">=3.4.17"
+      "dompurify": ">=3.4.17",
+      "zod": "^4.6.6",
+      "postcss-selector-parser": "^6.1.5",
+      "katex": "^0.18.2"
     },
-    "overridesComment": "Force a patched dompurify (>=3.4.17) for GHSA-cg2g-xh64-v4q7 (CRITICAL) and GHSA-mrv2-3pqr-j5jr (HIGH); it reaches the docs site transitively via mermaid. Remove once mermaid requires a patched version on its own."
+    "overridesComment": "Force patched transitive deps: dompurify (>=3.4.17, GHSA-cg2g-xh64-v4q7 CRITICAL, GHSA-mrv2-3pqr-j5jr HIGH; via mermaid), zod (>=4.6.6, GHSA-mrhx-c7xc-m3w5; via eslint-plugin-react-hooks), postcss-selector-parser (>=6.1.5, GHSA-rj75-hqrm-r3gf; via @tailwindcss/typography), katex (>=0.18.2, GHSA-238p-pmpm-9mq7; via mermaid). Remove an entry once its dependents require a patched version on their own."
   }
 }
