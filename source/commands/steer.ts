@@ -60,6 +60,7 @@ export function formatSteersForPrompt(): string {
 export const steerCommand: SlashCommand = {
   name: "steer",
   description: "Add context or direction to guide the agent",
+  argumentHint: "<directive>",
   usage: "Usage: /steer <directive>\n\n  /steer be concise       Add a steering directive\n  /steer list             Show active steers\n  /steer remove <N>       Remove a specific steer\n  /steer clear            Remove all steers\n\nWorks while the agent is running — the directive is delivered to it before\nits next step. Steers also persist and are injected into every subsequent turn.",
   async execute(args: string, contextArg?: CommandContext): Promise<CommandResult> {
     const trimmed = args.trim();
