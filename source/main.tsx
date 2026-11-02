@@ -1,6 +1,6 @@
 import { render } from "./ink/index.js";
 import App from "./app.js";
-import { EFFORT_LEVELS, isEffortLevel, loadConfig, type AgavConfig } from "./config/config.js";
+import { EFFORT_LEVELS, isEffortLevel, loadConfig, validateProviderIdleTimeout, type AgavConfig } from "./config/config.js";
 import { createProvider } from "./providers/registry.js";
 import type { LLMProvider } from "./providers/types.js";
 import { fetchAvailableModels, findMatchingModels, type FetchedModel } from "./commands/model.js";
@@ -43,7 +43,7 @@ const KNOWN_FLAGS = [
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
   "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--trajectory",
-  "--name", "--search",
+  "--name", "--search", "--provider-idle-timeout",
   "--sandbox-required",
 ];
 
@@ -71,6 +71,16 @@ function findClosestFlag(input: string): string | undefined {
     if (d < bestDist) { bestDist = d; best = flag; }
   }
   return best;
+}
+
+function parseProviderIdleTimeout(raw: string): number | null {
+  try {
+    const validated = validateProviderIdleTimeout(raw);
+    return validated ?? null;
+  } catch {
+    process.stderr.write("Error: --provider-idle-timeout must be a positive integer in milliseconds (1–2147483647) or \"disabled\".\n");
+    process.exit(1);
+  }
 }
 
 function parseMaxTurns(raw: string): number {
@@ -245,6 +255,15 @@ export function parseArgs(argv: string[]) {
       flags.maxTurns = parseMaxTurns(argv[++i] ?? "");
     } else if (arg.startsWith("--max-turns=")) {
       flags.maxTurns = parseMaxTurns(arg.slice("--max-turns=".length));
+    } else if (arg === "--provider-idle-timeout") {
+      const nextArg = argv[i + 1];
+      if (nextArg === undefined || nextArg.startsWith("-")) {
+        process.stderr.write("Error: --provider-idle-timeout requires an argument: a positive integer in milliseconds (1–2147483647) or \"disabled\".\n");
+        process.exit(1);
+      }
+      flags.providerIdleTimeout = parseProviderIdleTimeout(argv[++i]!);
+    } else if (arg.startsWith("--provider-idle-timeout=")) {
+      flags.providerIdleTimeout = parseProviderIdleTimeout(arg.slice("--provider-idle-timeout=".length));
     } else if (arg === "--search") {
       flags.search = true;
     } else if (arg === "update" && !subcommandSeen) {
@@ -428,6 +447,7 @@ export async function runPipeMode(
         // print/run mode has no human to confirm background jobs.
         headless: true,
         allowedTools: options.allowedToolsOverride,
+        providerIdleTimeout: config.providerIdleTimeout,
       });
 
       for await (const event of loop) {
@@ -874,6 +894,9 @@ export async function main() {
       process.exit(1);
     }
     config.effort = flags.effort;
+  }
+  if (flags.providerIdleTimeout !== undefined) {
+    config.providerIdleTimeout = flags.providerIdleTimeout === null ? undefined : flags.providerIdleTimeout;
   }
   if (flags.search === true) {
     config.search = true;

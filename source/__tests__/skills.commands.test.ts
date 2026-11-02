@@ -116,4 +116,25 @@ describe("skills/commands", () => {
     expect(failed).toMatchObject({ type: "message", text: 'Skill "User Skill" failed: Aborted', _isSkill: true });
     expect(failed).not.toHaveProperty("_tokenUsage");
   });
+
+  it("forwards providerIdleTimeout to executeSkill", async () => {
+    const command = createSkillSlashCommand(skill);
+    await command.execute("args", {
+      conversation: new ConversationState(),
+      provider: { name: "mock", stream: vi.fn() } as any,
+      toolRegistry: {} as any,
+      config: {
+        model: "test-model",
+        systemPrompt: "",
+        permissionMode: "ask",
+        effort: "medium",
+        maxIterations: 5,
+        providerIdleTimeout: 54321,
+      } as any,
+      setRunningSkill: vi.fn(),
+    } as any);
+
+    const [, , deps] = vi.mocked(executeSkill).mock.calls[0]!;
+    expect(deps.providerIdleTimeout).toBe(54321);
+  });
 });
