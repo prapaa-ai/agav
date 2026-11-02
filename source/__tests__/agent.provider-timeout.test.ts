@@ -945,10 +945,15 @@ describe("provider response idle timeout", () => {
 
     // Compaction ran (the summarize path was exercised).
     expect(events).toContainEqual(expect.objectContaining({ type: "compacted" }));
-    // Both the summarize watchdog and the main-loop watchdog attached/detached
-    // their parent-abort listeners, and no idle timers remain armed.
-    expect(addSpy).toHaveBeenCalled();
-    expect(removeSpy).toHaveBeenCalled();
+    // Match both watchdogs' callbacks by identity so main-loop cleanup alone
+    // cannot hide a leaked summarization listener.
+    const abortRegistrations = addSpy.mock.calls.filter(([type]) => type === "abort");
+    const abortRemovals = removeSpy.mock.calls.filter(([type]) => type === "abort");
+    expect(abortRegistrations).toHaveLength(2);
+    expect(abortRemovals).toHaveLength(2);
+    for (const [, listener] of abortRegistrations) {
+      expect(removeSpy).toHaveBeenCalledWith("abort", listener);
+    }
     expect(vi.getTimerCount()).toBe(0);
     expect(events).toContainEqual({ type: "turn_complete" });
   });
