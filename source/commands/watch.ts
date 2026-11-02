@@ -33,6 +33,7 @@ function getWatchRoot(pattern: string): string {
 export const watchCommand: SlashCommand = {
   name: "watch",
   description: "Watch files and run a command on change",
+  argumentHint: "<path|glob> <command>",
   usage: "Usage: /watch <path|glob> <command>\n\n  /watch source npm test          Watch a directory\n  /watch source/**/*.ts npm test   Watch with glob pattern\n  /watch stop                      Stop the active watcher\n\nGlob patterns are supported. Changes are debounced (300ms).",
   async execute(args: string, _context: CommandContext): Promise<CommandResult> {
     const trimmed = args.trim()

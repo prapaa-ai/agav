@@ -5,6 +5,7 @@ import { performUndo, hasUndo, getUndoStack } from "../utils/undo.js"
 export const undoCommand: SlashCommand = {
   name: "undo",
   description: "Revert the last file change",
+  autoSubmit: true,
   usage: "Usage: /undo\n\nRestores the previous version of the last file modified by the agent.\nOnly tracks file writes and edits from the current session.",
   async execute(args: string): Promise<CommandResult> {
     if (args.trim() === "list") {

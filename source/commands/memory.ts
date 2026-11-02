@@ -13,6 +13,7 @@ import {
 export const memoryCommand: SlashCommand = {
   name: "memory",
   description: "Manage persistent memories",
+  argumentHint: "[list|add|delete|clear|path]",
   usage: "Usage: /memory <action>\n\n  /memory              Open manager (list in headless mode)\n  /memory list         Print saved memories\n  /memory add <text>   Save a new memory\n  /memory delete <N>   Delete memory by index\n  /memory clear        Delete all memories\n  /memory path         Show the memory storage path\n\nMemories persist across sessions and are injected into the system prompt.",
   async execute(args: string, context): Promise<CommandResult> {
     if (!args.trim()) {
@@ -73,6 +74,7 @@ export const memoryCommand: SlashCommand = {
 export const rememberCommand: SlashCommand = {
   name: "remember",
   description: "Save a memory",
+  argumentHint: "<text>",
   usage: "Usage: /remember <text>\n\n  /remember prefer tabs over spaces\n  /remember this project uses pnpm\n\nShortcut for /memory add. Memories persist across sessions.",
   async execute(args: string, context): Promise<CommandResult> {
     return memoryCommand.execute(`add ${args}`, context)
@@ -83,6 +85,7 @@ export const rememberCommand: SlashCommand = {
 export const forgetCommand: SlashCommand = {
   name: "forget",
   description: "Delete a memory by name",
+  argumentHint: "[name]",
   usage: "Usage: /forget [name]\n\n  /forget              List all memories (same as /memory list)\n  /forget prefer-tabs  Delete the memory named 'prefer-tabs'\n\nShortcut for /memory delete.",
   async execute(args: string, context): Promise<CommandResult> {
     if (!args.trim()) return memoryCommand.execute("list", context)

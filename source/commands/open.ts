@@ -12,6 +12,7 @@ import { openTarget } from "../utils/open-target.js";
 export const openCommand: SlashCommand = {
   name: "open",
   description: "List or open/preview an attachment from this session",
+  argumentHint: "[n]",
   usage: "Usage: /open — list every attachment in the session\n/open <n> — open or preview attachment #n",
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const trimmed = args.trim();

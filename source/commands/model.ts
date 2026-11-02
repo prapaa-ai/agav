@@ -394,7 +394,8 @@ function pickModel(
 
 export const modelCommand: SlashCommand = {
   name: "model",
-  description: "Show or change the current model",
+  description: "View all available models or change current model",
+  argumentHint: "[name]",
   usage: "Usage: /model [name]\n\n  /model                Open interactive model picker\n  /model gpt-5.4-mini   Switch to a specific model\n  /model gemini-3.5-pro  Auto-switches provider if needed",
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const model = args.trim();
