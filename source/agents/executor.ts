@@ -195,6 +195,7 @@ export async function executeNativeAgent(
       allowedTools: nativeTools,
       ...(deps.toolGate ? { toolGate: deps.toolGate } : {}),
       hooks: deps.hooks,
+      providerIdleTimeout: deps.config.providerIdleTimeout,
     });
 
     for await (const event of loopGenerator) {

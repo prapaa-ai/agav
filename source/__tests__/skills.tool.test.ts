@@ -54,6 +54,25 @@ describe("skills/tool", () => {
     expect(deps.permissionMode).toBe("deny-writes");
   });
 
+  it("forwards providerIdleTimeout to executeSkill", async () => {
+    const tool = createSkillTool({
+      provider: { name: "mock", stream: vi.fn() } as any,
+      parentRegistry: new ToolRegistry(),
+      getConfig: () => ({
+        model: "m",
+        systemPrompt: "base",
+        permissionMode: "ask",
+        effort: "high",
+        iterationsBudget: { remaining: 1, total: 1 },
+        providerIdleTimeout: 15_000,
+      }),
+      getSignal: () => undefined,
+    });
+    await tool.execute({ name: "Nested Skill", arguments: "exact args" });
+    const [, , deps] = vi.mocked(executeSkill).mock.calls[0]!;
+    expect(deps.providerIdleTimeout).toBe(15_000);
+  });
+
   it("passes token usage from activate_skill runs into the parent accounting callback", async () => {
     const onTokenUsage = vi.fn();
     const onEvent = vi.fn();
