@@ -899,6 +899,65 @@ describe("provider response idle timeout", () => {
     expect(events).toContainEqual({ type: "turn_complete" });
   });
 
+  it("removes the summarization idle timer and parent-abort listener after compaction completes", async () => {
+    // The summarize() path shares the idle-watchdog lifecycle (#619); verify it
+    // detaches its parent-abort listener and leaves no armed timers behind once
+    // a normal (non-stalled) summarization finishes.
+    const provider: LLMProvider = {
+      name: "mock",
+      stream: vi.fn((params: StreamParams) => {
+        if (params.systemPrompt?.includes("Summarize this conversation concisely")) {
+          return (async function* (): AsyncGenerator<StreamEvent> {
+            yield { type: "text_delta", text: "Concise summary" };
+            yield { type: "message_end", stopReason: "stop" };
+          })();
+        }
+        return (async function* (): AsyncGenerator<StreamEvent> {
+          yield { type: "text_delta", text: "Final answer after compaction" };
+          yield { type: "message_end", stopReason: "stop" };
+        })();
+      }),
+    };
+
+    const conversation = new ConversationState();
+    conversation.setModel("mock");
+    conversation.setContextWindow(1000);
+    for (let i = 0; i < 10; i++) {
+      if (i % 2 === 0) conversation.addUserMessage("context ".repeat(100));
+      else conversation.addAssistantMessage([{ type: "text", text: "response ".repeat(100) }]);
+    }
+    conversation.addUserMessage("Latest query");
+    const toolRegistry = new ToolRegistry();
+
+    const parentSignal = new AbortController().signal;
+    const addSpy = vi.spyOn(parentSignal, "addEventListener");
+    const removeSpy = vi.spyOn(parentSignal, "removeEventListener");
+
+    const events = await collectEvents(runAgentLoop({
+      provider,
+      conversation,
+      toolRegistry,
+      model: "test-model",
+      iterationsBudget: { remaining: 5, total: 5 },
+      providerIdleTimeout: 1_000,
+      signal: parentSignal,
+    }));
+
+    // Compaction ran (the summarize path was exercised).
+    expect(events).toContainEqual(expect.objectContaining({ type: "compacted" }));
+    // Match both watchdogs' callbacks by identity so main-loop cleanup alone
+    // cannot hide a leaked summarization listener.
+    const abortRegistrations = addSpy.mock.calls.filter(([type]) => type === "abort");
+    const abortRemovals = removeSpy.mock.calls.filter(([type]) => type === "abort");
+    expect(abortRegistrations).toHaveLength(2);
+    expect(abortRemovals).toHaveLength(2);
+    for (const [, listener] of abortRegistrations) {
+      expect(removeSpy).toHaveBeenCalledWith("abort", listener);
+    }
+    expect(vi.getTimerCount()).toBe(0);
+    expect(events).toContainEqual({ type: "turn_complete" });
+  });
+
   it("forwards providerIdleTimeout to child runAgentLoop via activate_skill tool", async () => {
     const testSkill = {
       name: "Test Skill",

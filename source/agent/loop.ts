@@ -41,6 +41,93 @@ export class ProviderIdleTimeoutError extends Error {
   }
 }
 
+/**
+ * Shared idle-watchdog lifecycle for provider streams. Both the main response
+ * loop and summarize() stream from the provider and must abort an attempt that
+ * stalls past `timeoutMs` of inactivity, while forwarding parent cancellation,
+ * suspending the watchdog across retry backoffs, and always cleaning up timers
+ * and listeners. Consolidated here so the two paths cannot drift (see #619).
+ *
+ * Path-specific behavior stays with the caller: the main loop records that the
+ * abort was a timeout (so it can preserve partial text and emit
+ * `provider_idle_timeout`), while summarize() just aborts and falls back. The
+ * `onTimeout` callback lets each path run its own bookkeeping before the
+ * attempt is aborted with a `ProviderIdleTimeoutError`.
+ */
+function createIdleWatchdog(options: {
+  /** Idle timeout in ms; `undefined` or non-positive disables the watchdog. */
+  timeoutMs: number | undefined;
+  /** Attempt controller aborted on idle timeout or parent cancellation. */
+  controller: AbortController;
+  /** Parent signal whose cancellation is forwarded to the attempt controller. */
+  signal?: AbortSignal;
+  /** Caller bookkeeping run immediately before an idle-timeout abort. */
+  onTimeout?: () => void;
+}): {
+  /** Clears any armed timer and re-arms it; no-op when disabled or aborted. */
+  reset: () => void;
+  /** Suspends the watchdog for `backoffMs`, then re-arms via reset(). */
+  suspendForBackoff: (backoffMs: number) => void;
+  /** Clears the timer and removes the parent-abort listener. Idempotent. */
+  cleanup: () => void;
+} {
+  const { controller, signal, onTimeout } = options;
+  const enabled = typeof options.timeoutMs === "number" && options.timeoutMs > 0;
+  const timeoutMs = enabled ? (options.timeoutMs as number) : 0;
+  let idleTimer: NodeJS.Timeout | null = null;
+
+  const clearTimer = () => {
+    if (idleTimer !== null) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+
+  const reset = () => {
+    if (!enabled || controller.signal.aborted) return;
+    clearTimer();
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      onTimeout?.();
+      controller.abort(new ProviderIdleTimeoutError(timeoutMs));
+    }, timeoutMs);
+  };
+
+  const suspendForBackoff = (backoffMs: number) => {
+    // Suspend the watchdog while the provider backs off: a retry wait is not an
+    // idle stall. Re-arm after the backoff so a stall after the retry still trips.
+    clearTimer();
+    if (!enabled || controller.signal.aborted) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      reset();
+    }, backoffMs);
+  };
+
+  const onParentAbort = () => {
+    clearTimer();
+    controller.abort(signal?.reason ?? new Error("Aborted"));
+  };
+
+  let listenerAttached = false;
+  if (signal?.aborted) {
+    controller.abort(signal.reason ?? new Error("Aborted"));
+  } else if (signal) {
+    signal.addEventListener("abort", onParentAbort, { once: true });
+    listenerAttached = true;
+  }
+
+  const cleanup = () => {
+    clearTimer();
+    if (listenerAttached && signal) {
+      signal.removeEventListener("abort", onParentAbort);
+      listenerAttached = false;
+    }
+  };
+
+  return { reset, suspendForBackoff, cleanup };
+}
+
 import type { DiffLine } from "../utils/diff.js";
 import { computeEditDiff, computeDiff } from "../utils/diff.js";
 import { readFile } from "node:fs/promises";
@@ -299,35 +386,14 @@ export async function* runAgentLoop(
         : undefined;
 
     const summarizeController = new AbortController();
-    let idleTimer: NodeJS.Timeout | null = null;
-
-    const resetIdleTimer = () => {
-      if (timeoutMs === undefined) return;
-      if (idleTimer !== null) {
-        clearTimeout(idleTimer);
-      }
-      idleTimer = setTimeout(() => {
-        idleTimer = null;
-        summarizeController.abort(new ProviderIdleTimeoutError(timeoutMs));
-      }, timeoutMs);
-    };
-
-    const onParentAbort = () => {
-      if (idleTimer !== null) {
-        clearTimeout(idleTimer);
-        idleTimer = null;
-      }
-      summarizeController.abort(signal?.reason ?? new Error("Aborted"));
-    };
-
-    if (signal?.aborted) {
-      summarizeController.abort(signal.reason ?? new Error("Aborted"));
-    } else if (signal) {
-      signal.addEventListener("abort", onParentAbort, { once: true });
-    }
+    const watchdog = createIdleWatchdog({
+      timeoutMs,
+      controller: summarizeController,
+      signal,
+    });
 
     try {
-      resetIdleTimer();
+      watchdog.reset();
       for await (const event of provider.stream({
         model,
         messages: msgs,
@@ -344,23 +410,15 @@ export async function* runAgentLoop(
         signal: summarizeController.signal,
       })) {
         if (event.type === "retry") {
-          if (idleTimer !== null) {
-            clearTimeout(idleTimer);
-            idleTimer = null;
-          }
           const backoffMs = event.delayMs ?? (() => {
             const match = event.message.match(/Retrying in (\d+)s/);
             return match ? parseInt(match[1], 10) * 1000 : 0;
           })();
-          if (timeoutMs !== undefined) {
-            idleTimer = setTimeout(() => {
-              resetIdleTimer();
-            }, backoffMs);
-          }
+          watchdog.suspendForBackoff(backoffMs);
           continue;
         }
 
-        resetIdleTimer();
+        watchdog.reset();
         if (summarizeController.signal.aborted) {
           return "";
         }
@@ -380,13 +438,7 @@ export async function* runAgentLoop(
     } catch {
       return "";
     } finally {
-      if (idleTimer !== null) {
-        clearTimeout(idleTimer);
-        idleTimer = null;
-      }
-      if (signal) {
-        signal.removeEventListener("abort", onParentAbort);
-      }
+      watchdog.cleanup();
     }
     return result || "";
   };
@@ -491,38 +543,22 @@ export async function* runAgentLoop(
       yield { type: "tool_call_input_delta", toolCallId: id, argsJson };
     }
 
-    let idleTimer: NodeJS.Timeout | null = null;
     let timedOut = false;
     const timeoutMs = params.providerIdleTimeout;
     const hasIdleTimeout = typeof timeoutMs === "number" && timeoutMs > 0;
     const timeoutError = hasIdleTimeout ? new ProviderIdleTimeoutError(timeoutMs) : undefined;
     const attemptController = new AbortController();
 
-    const resetIdleTimer = () => {
-      if (!hasIdleTimeout || attemptController.signal.aborted) return;
-      if (idleTimer !== null) {
-        clearTimeout(idleTimer);
-      }
-      idleTimer = setTimeout(() => {
-        idleTimer = null;
-        timedOut = true;
-        attemptController.abort(timeoutError);
-      }, timeoutMs);
-    };
-
-    const onParentAbort = () => {
-      if (idleTimer !== null) {
-        clearTimeout(idleTimer);
-        idleTimer = null;
-      }
-      attemptController.abort(signal?.reason ?? new Error("Aborted"));
-    };
-
-    if (signal?.aborted) {
-      attemptController.abort(signal.reason ?? new Error("Aborted"));
-    } else if (signal) {
-      signal.addEventListener("abort", onParentAbort, { once: true });
-    }
+    const watchdog = createIdleWatchdog({
+      timeoutMs,
+      controller: attemptController,
+      signal,
+      // Record that the abort was an idle timeout so the stream drain below can
+      // preserve partial text and emit provider_idle_timeout rather than a
+      // generic abort.
+      onTimeout: () => { timedOut = true; },
+    });
+    const resetIdleTimer = watchdog.reset;
 
     const commitPartialText = function* (): Generator<AgentEvent, void, unknown> {
       if (textAccum) {
@@ -605,19 +641,11 @@ export async function* runAgentLoop(
               break;
 
             case "retry": {
-              if (idleTimer !== null) {
-                clearTimeout(idleTimer);
-                idleTimer = null;
-              }
               const backoffMs = event.delayMs ?? (() => {
                 const match = event.message.match(/Retrying in (\d+)s/);
                 return match ? parseInt(match[1], 10) * 1000 : 0;
               })();
-              if (timeoutMs !== undefined) {
-                idleTimer = setTimeout(() => {
-                  resetIdleTimer();
-                }, backoffMs);
-              }
+              watchdog.suspendForBackoff(backoffMs);
               yield event;
               break;
             }
@@ -673,13 +701,7 @@ export async function* runAgentLoop(
       };
       return;
     } finally {
-      if (idleTimer !== null) {
-        clearTimeout(idleTimer);
-        idleTimer = null;
-      }
-      if (signal) {
-        signal.removeEventListener("abort", onParentAbort);
-      }
+      watchdog.cleanup();
     }
 
     // Build assistant message content blocks
