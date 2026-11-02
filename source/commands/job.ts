@@ -122,6 +122,7 @@ async function confirmationNeeded(error: unknown, manualHint: string, context: C
 export const jobCommand: SlashCommand = {
   name: "job",
   description: "Inspect and control background jobs (manual, opt-in subsystem)",
+  argumentHint: "[list|poll|log|stop|schedule]",
   usage: USAGE,
 
   async execute(args, context): Promise<CommandResult> {

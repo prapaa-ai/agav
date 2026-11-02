@@ -43,6 +43,7 @@ function pct(n: number, total: number): string {
 export const statusCommand: SlashCommand = {
   name: "status",
   description: "Show session status, model, and resource usage at a glance",
+  autoSubmit: true,
   usage: "Usage: /status\n\nShows active session configuration, model, reasoning effort, permissions, working directory, token usage, and MCP servers.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
     await resolveContextWindow(context);

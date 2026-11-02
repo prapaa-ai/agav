@@ -25,6 +25,7 @@ function relativeAge(when: Date): string {
 export const planCommand: SlashCommand = {
   name: "plan",
   description: "Show or manage the active plan",
+  argumentHint: "[list|clear|<n> <status>]",
   usage: "Usage: /plan [action]\n\n  /plan                    Show this session's plan and step status\n  /plan list               List every plan saved for this project\n  /plan <n> <status>       Set step <n> to pending, in_progress, done or failed\n  /plan clear              Delete this session's plan\n\nPlans belong to the session that created them and survive restarts.\nResume that session with 'agav --resume <id>' to pick a plan back up.\nUse 'no plan' in your prompt to skip auto-planning.",
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const sub = args.trim().toLowerCase()

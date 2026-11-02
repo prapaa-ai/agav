@@ -4,6 +4,7 @@ import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 export const compactCommand: SlashCommand = {
   name: "compact",
   description: "Compact conversation history to free up context",
+  autoSubmit: true,
   usage: "Usage: /compact\n\nSummarizes and drops older messages to free up context window space.\nHappens automatically when context gets full, but you can trigger it manually.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
     const before = context.conversation.tokenCount;

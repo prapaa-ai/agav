@@ -2068,11 +2068,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             suppressHistory={isLoading}
             commands={[
               { name: "queue", description: "Manage queued requests (retry to resume)" },
-              { name: "ps", description: "Side query while agent is working" },
+              { name: "ps", description: "Side query while agent is working", argumentHint: "<question>" },
               ...commandRegistryRef.current.list().map((c) => ({
                 name: c.name,
                 description: c.description,
                 category: c.description.startsWith("[agent]") ? "agent" as const : "command" as const,
+                argumentHint: c.argumentHint,
+                autoSubmit: c.autoSubmit,
               })),
             ]}
             keybindings={keybindings}
