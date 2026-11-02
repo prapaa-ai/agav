@@ -363,6 +363,7 @@ export function useAgent(
           effort: configRef.current.effort,
           iterationsBudget: currentIterationsBudgetRef.current ?? { remaining: configRef.current.maxIterations, total: configRef.current.maxIterations },
           orgPermissionFloor: configRef.current.orgPermissionFloor,
+          providerIdleTimeout: configRef.current.providerIdleTimeout,
         }),
         getProviderConfig: () => configRef.current,
         confirmationQueue: confirmationQueueRef.current,
@@ -468,6 +469,7 @@ export function useAgent(
             permissionMode: configRef.current.permissionMode,
             effort: configRef.current.effort,
             iterationsBudget: currentIterationsBudgetRef.current ?? { remaining: configRef.current.maxIterations, total: configRef.current.maxIterations },
+            providerIdleTimeout: configRef.current.providerIdleTimeout,
           }),
           getProviderConfig: () => configRef.current,
           confirmTool: skillConfirmCallback,
@@ -1081,6 +1083,7 @@ export function useAgent(
               input: { name: skillInvocation.name, arguments: skillInvocation.arguments },
             } : undefined,
             requestManualContextWindow,
+            providerIdleTimeout: configRef.current.providerIdleTimeout,
           });
 
           for await (const event of loop) {
