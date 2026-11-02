@@ -74,6 +74,7 @@ export default function ScrollBox({
 	const offset = isControlled ? scrollOffset : internalOffset;
 
 	const contentRef = useRef<DOMElement | null>(null);
+	const viewportRef = useRef<DOMElement | null>(null);
 	const [contentHeight, setContentHeight] = useState(0);
 
 	// Measure after every commit. Ink lays the yoga tree out during
@@ -150,6 +151,22 @@ export default function ScrollBox({
 		};
 	}, [controls, setOffset]);
 
+	useEffect(() => {
+		const node = viewportRef.current;
+		const content = contentRef.current;
+		if (!node || !content) return;
+		node.internal_scroll = {
+			content,
+			scrollBy: lines => {
+				const next = Math.min(Math.max(0, offsetRef.current + lines), maxScroll);
+				if (next === offsetRef.current) return false;
+				setOffset(next);
+				return true;
+			},
+		};
+		return () => { delete node.internal_scroll; };
+	}, [maxScroll, setOffset]);
+
 	// Consume the event only when this viewport can actually act on it, the way
 	// a browser chains an over-scroll out to the nearest scrollable ancestor.
 	// Swallowing it unconditionally makes an unscrollable box — one whose content
@@ -185,6 +202,7 @@ export default function ScrollBox({
 
 	return (
 		<Box
+			ref={viewportRef}
 			flexDirection="column"
 			height={viewport}
 			overflow="hidden"

@@ -1638,7 +1638,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     if (measured > 0 && measured !== footerHeight) setFooterHeight(measured);
   });
 
-  const documentHeight = Math.max(3, termRows - footerHeight);
+  const documentHeight = Math.max(3, termRows - 1 - footerHeight);
 
   // Scroll the document wherever the pointer happens to be. ScrollBox has its
   // own onWheel, but it only ever sees events that hit-test into it — with the
@@ -1712,9 +1712,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }
 
   return (
-    // Pinned to the terminal height so the frame can never grow past the screen
-    // even while a measurement is still settling.
-    <Box flexDirection="column" height={termRows} onWheel={handleWheel}>
+    // Reserve the renderer's trailing newline so the oldest document row
+    // stays visible and selectable when scrolled all the way to the top.
+    <Box flexDirection="column" height={Math.max(1, termRows - 1)} onWheel={handleWheel}>
       {/*
         One scrolling document, not a stack of viewports. Everything the user
         reads lives in here at its natural height and moves together; giving
