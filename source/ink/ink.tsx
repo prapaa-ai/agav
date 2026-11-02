@@ -760,8 +760,8 @@ export default class Ink {
 
 		// CMD cannot distinguish Ctrl+Shift+C from Ctrl+C: both arrive as ETX.
 		// When a global selection is active, treat ETX as the copy shortcut rather
-		// than exiting. A plain Ctrl+C (with no selection) still exits normally.
-		if (this.exitOnCtrlC && chunk.includes("\x03")) {
+		// than interrupting. Without a selection, respect exitOnCtrlC.
+		if ((this.exitOnCtrlC || this.selectionRange) && chunk.includes("\x03")) {
 			if (this.selectionRange) {
 				this.copyGlobalSelection();
 				chunk = chunk.replaceAll("\x03", "");
@@ -789,7 +789,7 @@ export default class Ink {
 					pendingInput = pendingInput.replaceAll("\x1b[99;6u", "").replaceAll("\x1b[99;9u", "");
 				}
 
-				if (this.exitOnCtrlC && pendingInput.length > 0) {
+				if ((this.exitOnCtrlC || this.selectionRange) && pendingInput.length > 0) {
 					// Tokenize bounded escape sequences amid text without splitting pasted
 					// text into input events. CSI 3;5u is ETX, not CSI 3;5~ Delete.
 					const keys = pendingInput.match(/\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e])|[^\x1b]+|\x1b/g) ?? [pendingInput];

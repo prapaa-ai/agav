@@ -42,3 +42,23 @@ describe("interactive changelog launch", () => {
     expect((app as { props: { shutdownRef: { current: unknown } } }).props.shutdownRef.current).toBeNull();
   });
 });
+
+it("ignores interactive SIGINT but still settles and unmounts on SIGTERM", async () => {
+  const shutdown = vi.fn(async () => {});
+  const unmount = vi.fn();
+  vi.mocked(render).mockImplementationOnce((app) => {
+    (app as { props: { shutdownRef: { current: () => Promise<void> } } }).props.shutdownRef.current = shutdown;
+    return { unmount, waitUntilExit: async () => {
+      const listener = (signal: string) => vi.mocked(process.on).mock.calls.find(([name]) => name === signal)?.[1] as () => void;
+      listener("SIGINT")();
+      listener("SIGINT")();
+      await Promise.resolve();
+      expect(shutdown).not.toHaveBeenCalled();
+      expect(unmount).not.toHaveBeenCalled();
+      listener("SIGTERM")();
+      await vi.waitFor(() => expect(unmount).toHaveBeenCalledTimes(1));
+      expect(shutdown).toHaveBeenCalledTimes(1);
+    } } as unknown as ReturnType<typeof render>;
+  });
+  await expect(main()).rejects.toBe(exited);
+});

@@ -12,7 +12,7 @@ Most slash commands run when Agav is idle. These commands can also run while Aga
 
 Other commands, such as `/model` and `/clear`, are not dispatched while a turn is busy. Their text stays in the prompt; submit it again once Agav is idle, or press **Esc** to cancel the turn first. They are not queued for automatic execution. While generation is paused, input that is not an allowed mid-turn command is treated as new direction for the turn, so wait until idle to run other slash commands. Mid-turn command dispatch also requires no pending attachments.
 
-`/exit` works mid-turn: it cancels the active turn and stops the repeating `/loop` before closing the terminal UI. To cancel without leaving Agav, use **Esc** instead. **Ctrl+C** exits unless an Agav text selection is active, in which case it copies the selection.
+`/exit` works mid-turn: it cancels the active turn and stops the repeating `/loop` before closing the terminal UI. To cancel without leaving Agav, use **Esc** or **Ctrl+C** with no active Agav text selection. With a selection, Ctrl+C copies instead; when idle, it keeps Agav open. **Ctrl+Q** also exits while idle with an empty prompt; queued requests take priority and open request queue management instead.
 
 ## Chat and models
 

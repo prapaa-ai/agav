@@ -1192,7 +1192,10 @@ export async function main() {
       unmount?.();
     })();
   };
-  process.on("SIGINT", handleSignal);
+  // Some terminals deliver the copy shortcut as SIGINT instead of raw input.
+  // Keep interactive sessions open; raw Ctrl+C cancellation belongs to App.
+  const ignoreInterrupt = () => {};
+  process.on("SIGINT", ignoreInterrupt);
   process.on("SIGTERM", handleSignal);
 
   const { getGitContext } = await import("./utils/git.js");
@@ -1219,7 +1222,7 @@ export async function main() {
   }
 
   const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} resumePermissionMode={resumePermissionMode} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} shutdownRef={shutdownRef} />, {
-    // App owns Ctrl+C so foreground workflows can abort and checkpoint before exit.
+    // App owns Ctrl+C cancellation; idle copy gestures must not exit.
     exitOnCtrlC: false,
     // Alt-screen keeps the UI self-contained (no scrollback pollution, no
     // flicker on terminals without DEC 2026). In-app scrolling is handled by
@@ -1236,7 +1239,7 @@ export async function main() {
   await markCleanExit();
   stopAllA2AAgents();
   await showResumeHint();
-  process.off("SIGINT", handleSignal);
+  process.off("SIGINT", ignoreInterrupt);
   process.off("SIGTERM", handleSignal);
 
   // Ensure the process exits even if stray handles (timers, sockets, etc.)

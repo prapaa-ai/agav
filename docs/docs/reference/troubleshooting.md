@@ -34,9 +34,9 @@ Use `read_file` with a narrower line or page range. PDF and Office page requests
 
 Run the show-keybindings chord and inspect global and project JSON overrides. Terminal encoding may collapse `Ctrl+M` into Enter or hide `Shift+Enter`; try `Option+Return` on macOS or `Alt+Enter` elsewhere.
 
-## Interrupting a task exits Agav
+## Cancel a task without exiting Agav
 
-Use **Esc** to cancel the current turn and stay in Agav. **Ctrl+C** with no Agav text selection exits; with a selection, it copies instead. In an actual `subagent` detail view, Esc targets that worker; skill and named-agent entries have no individual focused-cancel handler, so return to the overview before cancelling the parent; in a confirmation prompt, it denies that tool call. Close a picker or preview first if it consumes Esc. See [Keybindings](/reference/keybindings#cancel-versus-exit).
+Use **Esc** to cancel the current turn and stay in Agav. **Ctrl+C** with no Agav text selection cancels active work and keeps Agav open when idle; with a selection, it copies instead. To quit, use `/exit` or **Ctrl+Q** while idle with an empty prompt (queued requests take priority). In an actual `subagent` detail view, Esc targets that worker; skill and named-agent entries have no individual focused-cancel handler, so return to the overview before cancelling the parent; in a confirmation prompt, it denies that tool call. Close a picker or preview first if it consumes Esc. See [Keybindings](/reference/keybindings#cancel-versus-exit).
 
 Cancellation preserves already-applied edits and external side effects. Review `git diff` before retrying. Retry backoff is cancellable, but custom tools must honor cancellation, MCP server work can continue, and Docker containers may need separate cleanup. See [cancellation limits](/reference/security#cancellation-is-not-isolation).
 

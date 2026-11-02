@@ -97,6 +97,35 @@ describe("request queuing", () => {
     } finally { resolve(false); boundary.busy = false; ui.instance.unmount(); }
   });
 
+  it("prioritizes Ctrl+Q queue management over exit until the final item is removed", async () => {
+    boundary.busy = true;
+    boundary.cancel.mockReset();
+    boundary.submit.mockReset().mockResolvedValue(false);
+    const ui = await mount();
+    try {
+      await boundary.handleSubmit!("retained queued request");
+      boundary.busy = false; ui.rerender();
+      await vi.waitFor(() => expect(ui.output()).toContain("Queue paused"));
+      // A rejected dispatch leaves an idle, empty prompt with a retained queue.
+      expect(boundary.promptProps.value).toBe("");
+      ui.stdin.emit("data", Buffer.from("\x11"));
+      await vi.waitFor(() => expect(ui.frame()).toContain("Delete cancel"));
+      expect(ui.stdin.listenerCount("data")).toBe(1);
+      ui.stdin.emit("data", Buffer.from("\x11"));
+      await vi.waitFor(() => expect(ui.frame()).toContain("Ctrl+Q manage"));
+      expect(ui.stdin.listenerCount("data")).toBe(1);
+      expect(boundary.cancel).not.toHaveBeenCalled();
+      expect(boundary.submit).toHaveBeenCalledTimes(1);
+      // Removing the final queued item restores the default idle exit shortcut.
+      ui.stdin.emit("data", Buffer.from("\x11"));
+      await vi.waitFor(() => expect(ui.frame()).toContain("Delete cancel"));
+      ui.stdin.emit("data", Buffer.from("\x7f"));
+      await vi.waitFor(() => expect(ui.frame()).not.toContain("Queued 1"));
+      ui.stdin.emit("data", Buffer.from("\x11"));
+      await vi.waitFor(() => expect(ui.stdin.listenerCount("data")).toBe(0));
+    } finally { boundary.busy = false; ui.instance.unmount(); }
+  });
+
   it("preserves synchronous text edits and removes only submitted attachments after acceptance", async () => {
     boundary.busy = false;
     let resolve!: (accepted: boolean) => void;

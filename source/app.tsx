@@ -982,12 +982,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
       return;
     }
-    // Ink no longer exits on Ctrl+C (main passes exitOnCtrlC: false so workflows can settle),
-    // so an idle Ctrl+C must take the same clean exit path explicitly.
-    if (rawKey.ctrl && rawChar === "c") {
-      exit();
-      return;
-    }
+    // Ctrl+C may be a copy gesture. Active work is interrupted above, but
+    // an idle press must never close the session (use /exit or Ctrl+Q).
+    if (rawKey.ctrl && rawChar === "c") return;
     if (focusedSubagentId && isLoading && !pendingConfirmation && key.tab) {
       setFocusedSubagentId(null);
       return;

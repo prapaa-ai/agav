@@ -206,11 +206,11 @@ describe("global text selection", () => {
 		}
 	});
 
-	it.each(["\x1b[99;5u", "\x1b[3;5u"])("copies and keeps the active selection on enhanced Ctrl+C (%j)", async (input) => {
+	it.each(["\x03", "\x1b[99;5u", "\x1b[3;5u"].flatMap(input => [false, true].map(exitOnCtrlC => ({input, exitOnCtrlC}))))("copies and keeps the active selection on Ctrl+C ($input, exitOnCtrlC: $exitOnCtrlC)", async ({input, exitOnCtrlC}) => {
 		const stdout = makeStdout();
 		const stdin = makeStdin();
 		const instance = render(createElement(Text, null, "hello"), {
-			stdout, stdin, patchConsole: false, exitOnCtrlC: true,
+			stdout, stdin, patchConsole: false, exitOnCtrlC,
 		});
 		await instance.waitUntilRenderFlush();
 		try {
