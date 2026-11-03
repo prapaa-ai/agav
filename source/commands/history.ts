@@ -1,5 +1,6 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
-import { listSessions, loadSession } from "../config/history.js";
+import { listSessions, type SessionRecord } from "../config/history.js";
+import { listResumableSessions, loadResumableSession } from "../sessions/history.js";
 import { isProviderName } from "../config/startup.js";
 import { pickSession } from "../utils/session-picker.js";
 import { openResourceManager } from "./resource-manager.js";
@@ -20,7 +21,7 @@ export const historyCommand: SlashCommand = {
 };
 
 /** Load a session into the active conversation and restore its model/provider. */
-function applySession(loaded: NonNullable<Awaited<ReturnType<typeof loadSession>>>, context: CommandContext): CommandResult {
+function applySession(loaded: SessionRecord, context: CommandContext): CommandResult {
   context.loadSession(loaded);
   context.setModel(loaded.model || context.config.model);
   if (isProviderName(loaded.provider)) {
@@ -28,7 +29,9 @@ function applySession(loaded: NonNullable<Awaited<ReturnType<typeof loadSession>
   }
   return {
     type: "message",
-    text: `Loaded session: ${loaded.title} (${loaded.messages.length} messages)`,
+    text: loaded.runtime
+      ? `Attached session: ${loaded.title} · ${loaded.runtime.status} · ${loaded.runtime.pendingCount} pending approval(s)\nWorking directory: ${loaded.runtime.cwd}`
+      : `Loaded session: ${loaded.title} (${loaded.messages.length} messages)`,
   };
 }
 
@@ -42,12 +45,16 @@ export const resumeCommand: SlashCommand = {
 
     // Direct load by session ID prefix
     if (prefix) {
-      const sessions = await listSessions();
-      const match = sessions.find((s) => s.id.startsWith(prefix));
+      const sessions = await listResumableSessions();
+      const matches = sessions.filter(s => s.id.startsWith(prefix));
+      const match = sessions.find(s => s.id === prefix) ?? (matches.length === 1 ? matches[0] : undefined);
+      if (!match && matches.length > 1) {
+        return { type: "message", text: `Ambiguous session ID prefix "${prefix}". Use a longer ID.` };
+      }
       if (!match) {
         return { type: "message", text: `No session matching "${prefix}". Use /resume to browse all sessions.` };
       }
-      const loaded = await loadSession(match.id);
+      const loaded = await loadResumableSession(match.id);
       if (!loaded) {
         return { type: "message", text: "Failed to load session." };
       }
@@ -55,7 +62,7 @@ export const resumeCommand: SlashCommand = {
     }
 
     // Interactive picker
-    const sessions = await listSessions();
+    const sessions = await listResumableSessions();
     if (sessions.length === 0) {
       return { type: "message", text: "No saved sessions." };
     }
@@ -77,7 +84,7 @@ export const resumeCommand: SlashCommand = {
       return { type: "message", text: "Cancelled." };
     }
 
-    const loaded = await loadSession(session.id);
+    const loaded = await loadResumableSession(session.id);
     if (!loaded) {
       return { type: "message", text: "Failed to load session." };
     }

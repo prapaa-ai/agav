@@ -79,7 +79,7 @@ export interface AgavConfig {
   /** Customized footer layout (which segments show and their order). Reconciled
    * against the current catalog on use; see config/status-bar-layout.ts. */
   statusBar?: import("./status-bar-layout.js").StatusBarLayout;
-  /** Opt-in; when unset or false, `run_background_job` and `/job` refuse to do anything. */
+  /** Opt-in to background jobs and worker-owned interactive turns with `/detach`. */
   backgroundJobsEnabled?: boolean;
   /** Global-only opt-in to foreground JSON workflows; also requires backgroundJobsEnabled. */
   workflowsEnabled?: boolean;
@@ -219,7 +219,7 @@ export const PROJECT_CONFIG_TEMPLATE = {
     eg: false,
   },
   backgroundJobsEnabled: {
-    description: "Opt in to the background-jobs subsystem, enabling the run_background_job tool and /job command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
+    description: "Opt in to the background-jobs subsystem, enabling worker-owned interactive turns with /detach, and the run_background_job tool and /job command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
     type: "boolean",
     eg: false,
   },
