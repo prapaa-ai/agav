@@ -287,6 +287,7 @@ export default class Ink {
 	private suspendCount = 0;
 	private isRawModeEnabled = false;
 	private rawModeEnabledCount = 0;
+	private mouseMotionTrackingCount = 0;
 	private isBracketedPasteEnabled = false;
 	private bracketedPasteEnabledCount = 0;
 	// Buffer holding an in-progress paste whose start marker arrived without its
@@ -393,6 +394,7 @@ export default class Ink {
 		}
 
 		stdout.write(ENABLE_MOUSE_TRACKING);
+		if (this.mouseMotionTrackingCount > 0) stdout.write("\x1b[?1003h");
 		stdout.write(HIDE_CURSOR);
 
 		// Pin the kitty keyboard protocol mode if requested. Only force-enable
@@ -487,6 +489,7 @@ export default class Ink {
 
 		// Mouse tracking — idempotent, safe to re-assert unconditionally.
 		stdout.write(ENABLE_MOUSE_TRACKING);
+		if (this.mouseMotionTrackingCount > 0) stdout.write("\x1b[?1003h");
 
 		// Kitty keyboard — pop-before-push keeps the stack balanced instead of
 		// accumulating an entry on every idle gap (which the single pop on exit
@@ -513,8 +516,17 @@ export default class Ink {
 		if (this.isUnmounted || this.suspendCount > 0 || !stdout.isTTY) {
 			return;
 		}
-		stdout.write(DISABLE_MOUSE_TRACKING);
+		stdout.write("\x1b[?1003l" + DISABLE_MOUSE_TRACKING);
 		stdout.write(ENABLE_MOUSE_TRACKING);
+		if (this.mouseMotionTrackingCount > 0) stdout.write("\x1b[?1003h");
+	};
+
+	private readonly setMouseMotionTracking = (value: boolean): void => {
+		this.mouseMotionTrackingCount = Math.max(0, this.mouseMotionTrackingCount + (value ? 1 : -1));
+		if (this.isUnmounted || this.suspendCount > 0 || !this.options.stdout.isTTY) return;
+		this.options.stdout.write(this.mouseMotionTrackingCount > 0
+			? "\x1b[?1003h"
+			: "\x1b[?1003l" + ENABLE_MOUSE_TRACKING);
 	};
 
 	private readonly setRawMode = (value: boolean): void => {
@@ -601,7 +613,7 @@ export default class Ink {
 				this.log.clear();
 			}
 
-			this.options.stdout.write(DISABLE_MOUSE_TRACKING);
+			this.options.stdout.write("\x1b[?1003l" + DISABLE_MOUSE_TRACKING);
 
 			// Pop kitty keyboard flags so raw stdin handlers in the suspended
 			// caller receive legacy escape sequences they can parse (e.g. bare
@@ -643,6 +655,7 @@ export default class Ink {
 			}
 
 			stdout.write(ENABLE_MOUSE_TRACKING);
+			if (this.mouseMotionTrackingCount > 0) stdout.write("\x1b[?1003h");
 			stdout.write(HIDE_CURSOR);
 
 			// Re-push the kitty keyboard flags that were popped on suspend.
@@ -845,6 +858,7 @@ export default class Ink {
 				this.lastMouseConsumedAt = now;
 				const parsed = parseMouseEvent(match.sequence);
 				if (parsed) {
+					this.internalEventEmitter.emit("mouse", parsed);
 					this.handleMouseEvent(parsed);
 				}
 
@@ -1447,6 +1461,7 @@ export default class Ink {
 						setRawMode: this.setRawMode,
 						isRawModeSupported: Boolean(this.options.stdin.isTTY),
 						setBracketedPasteMode: this.setBracketedPasteMode,
+						setMouseMotionTracking: this.setMouseMotionTracking,
 						// eslint-disable-next-line @typescript-eslint/naming-convention
 						internal_exitOnCtrlC: this.exitOnCtrlC,
 						// eslint-disable-next-line @typescript-eslint/naming-convention
@@ -1542,7 +1557,7 @@ export default class Ink {
 			stdout.write("\x1b[<u");
 		}
 
-		stdout.write(DISABLE_MOUSE_TRACKING);
+		stdout.write("\x1b[?1003l" + DISABLE_MOUSE_TRACKING);
 		stdout.write(SHOW_CURSOR);
 
 		if (this.alternateScreen) {
