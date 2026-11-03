@@ -6,6 +6,7 @@ import { openResourceManager } from "./resource-manager.js"
 export const searchCommand: SlashCommand = {
   name: "search",
   description: "Search past sessions by keyword",
+  argumentHint: "<query>",
   usage: "Usage: /search <query>\n\n  /search OAuth\n  /search provider bug\n\nSearches saved session messages for the given keyword.\nResults show matching sessions with context.",
   async execute(args: string, context): Promise<CommandResult> {
     if (!args.trim()) {

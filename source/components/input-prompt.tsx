@@ -14,6 +14,10 @@ export interface CommandInfo {
   name: string;
   description: string;
   category?: "command" | "agent";
+  /** Dimmed inline placeholder shown after the command name (e.g. "<title>"). */
+  argumentHint?: string;
+  /** Run immediately when chosen from the dropdown, instead of waiting for args. */
+  autoSubmit?: boolean;
 }
 
 interface Props {
@@ -541,6 +545,26 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const hasCommandSuggestions = matchingCommands.length > 0;
   const hasFileSuggestions = Boolean(activeFileToken) && fileSuggestions.length > 0;
 
+  // Inline argument hint ("ghost" placeholder) shown on the composer line once a
+  // slash command is fully named and expects arguments — e.g. `/name <title>`.
+  // Kept off the hot path: the cheap `text[0] !== "/"` guard bails before any
+  // regex or array scan, so an ordinary prompt keystroke does zero extra work.
+  // Only a line that already looks like a bare slash command pays for the match.
+  const inlineArgumentHint: string | null = (() => {
+    if (text.charCodeAt(0) !== 47 /* "/" */) return null;
+    const exact = text.match(/^\/([a-zA-Z][\w-]*)(\s?)$/);
+    if (!exact) return null;
+    // While the dropdown is still filtering (no trailing space, several matches
+    // and the name isn't an exact single hit), defer to the dropdown's own hint
+    // so the line doesn't show a hint for a command the user may not pick.
+    const trailingSpace = exact[2] === " ";
+    if (!trailingSpace && matchingCommands.length > 1) return null;
+    const name = exact[1]!.toLowerCase();
+    const command = matchingCommands.find((c) => c.name.toLowerCase() === name)
+      ?? (trailingSpace ? commands.find((c) => c.name.toLowerCase() === name) : undefined);
+    return command?.argumentHint ?? null;
+  })();
+
   // Agent argument suggestions for `/agent <partial>`
   const agentArgMatch = text.match(/^\/agent\s+(\S*)$/i);
   const agentArgPartial = agentArgMatch?.[1]?.toLowerCase() ?? "";
@@ -746,14 +770,26 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         if (key.tab) {
           const selected = matchingCommands[selectedSuggestion];
           if (selected) {
-            const completed = `/${selected.name} `;
-            applyEdit(completed, completed.length);
-            setSelectedSuggestion(0);
+            // Argument-less commands run on selection; the rest complete to
+            // `/name ` so the user can type arguments.
+            if (selected.autoSubmit) {
+              setSelectedSuggestion(0);
+              onSubmit(`/${selected.name}`);
+            } else {
+              const completed = `/${selected.name} `;
+              applyEdit(completed, completed.length);
+              setSelectedSuggestion(0);
+            }
           }
           return;
         }
         if (match.action === "submit") {
           const selected = matchingCommands[selectedSuggestion];
+          if (selected && selected.autoSubmit) {
+            setSelectedSuggestion(0);
+            onSubmit(`/${selected.name}`);
+            return;
+          }
           if (selected && partial !== selected.name) {
             const completed = `/${selected.name} `;
             applyEdit(completed, completed.length);
@@ -1152,12 +1188,17 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
             ? graphemeAt(wl.text, col)
             : { grapheme: " ", length: 1 };
           const after = col < wl.text.length ? wl.text.slice(col + chLen) : "";
+          // Show the ghost argument hint only on the last visible line, past all
+          // typed text (the caret sits on the synthetic trailing space). The hint
+          // only triggers for a single short `/command ` line, so this is safe.
+          const showInlineHint = inlineArgumentHint && i === visibleLines.length - 1 && after.length === 0;
           return (
             <Box key={i} {...rowHandlers}>
               {renderPrefix(wl.isFirst)}
               <Text>{before}</Text>
               <Text inverse>{ch}</Text>
               <Text>{after}</Text>
+              {showInlineHint && <Text dimColor>{inlineArgumentHint}</Text>}
             </Box>
           );
         }
@@ -1191,6 +1232,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
                   </Text>
                   {isAgent && <Text dimColor color={isSelected ? "magenta" : undefined}>[agent] </Text>}
                   <Text dimColor={!isSelected} color={isSelected ? "white" : undefined}> {displayDesc}</Text>
+                  {isSelected && cmd.argumentHint && <Text dimColor>{"  "}{cmd.argumentHint}</Text>}
                 </Text>
               );
             })}

@@ -143,5 +143,20 @@ export interface SlashCommand {
   name: string
   description: string
   usage?: string
+  /**
+   * Short inline hint for the command's arguments, shown as dimmed ghost text
+   * after the command name in the composer once the command is the active
+   * suggestion (e.g. "<title>" for /name). Purely cosmetic guidance; keep it to
+   * a single compact token/placeholder, not full usage prose (that's `usage`).
+   */
+  argumentHint?: string
+  /**
+   * Run this command immediately when it is chosen from the suggestion dropdown
+   * (Tab/Enter) instead of completing to `/name ` and waiting for more input.
+   * Only set it on commands whose bare, no-argument invocation is the intended
+   * action (e.g. /customize, /status, /clear). Commands that accept arguments
+   * must leave this unset so the user can still type them.
+   */
+  autoSubmit?: boolean
   execute(args: string, context: CommandContext): Promise<CommandResult>
 }

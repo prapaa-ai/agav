@@ -191,8 +191,9 @@ const renderNodeToOutput = (
 					copyLines[0]!.separator = node.attributes.copySeparator;
 					copyLines[0]!.explicit = true;
 				}
-				if (copyLines && typeof node.attributes.copySource === "string") {
-					for (const copy of copyLines) copy.source = node.attributes.copySource;
+				if (copyLines) {
+					// Keep wrapped-row provenance stable when selection spans scroll frames.
+					for (const copy of copyLines) copy.source = typeof node.attributes.copySource === "string" ? node.attributes.copySource : node;
 				}
 				text = applyPaddingToText(node, text);
 				output.write(x, y, text, {transformers: newTransformers, copyLines});

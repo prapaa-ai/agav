@@ -3,6 +3,7 @@ import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 export const customizeCommand: SlashCommand = {
   name: "customize",
   description: "Customize Agav's appearance (status bar, …)",
+  autoSubmit: true,
   usage:
     "Usage: /customize\n\nOpens the customization interface.\n\nStatus bar:\n  ↑/↓ Navigate · Space Show/Hide · [ / ] or Shift+↑/↓ Reorder\n  r Restore defaults · Enter Save & close · Esc Back\n\nChanges apply to the footer live and persist across sessions.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
