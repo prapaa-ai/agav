@@ -173,3 +173,15 @@ it("restores mouse tracking when the turn ends or the hint unmounts", async () =
   ui.unmount();
   expect(rawOutput()).toContain("\x1b[?1003l");
 });
+
+it("does not reset terminal tracking for successive unpressed pointer movements", async () => {
+  const { advance, rawOutput, stdin, clearOutput } = await mount();
+  await advance(30_000);
+  // Allow the independent idle-gap mode reassertion before measuring motion.
+  stdin.emit("data", "\x1b[97;1:3u");
+  clearOutput();
+  for (const column of [12, 13, 14]) stdin.emit("data", `\x1b[<35;${column};5M`);
+  expect(rawOutput()).not.toContain("\x1b[?1003l");
+  expect(rawOutput()).not.toContain("\x1b[?1000l");
+  expect(rawOutput()).not.toContain("\x1b[?1003h");
+});

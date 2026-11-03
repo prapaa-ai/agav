@@ -378,6 +378,27 @@ describe("global text selection", () => {
 		instance.unmount();
 	});
 
+	it("dispatches hover without resetting tracking for unpressed pointer motion", async () => {
+		const stdout = makeStdout();
+		const stdin = makeStdin();
+		const onMouseEnter = vi.fn();
+		const onMouseLeave = vi.fn();
+		const instance = render(createElement(Text, {onMouseEnter, onMouseLeave}, "hello"), {
+			stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+		});
+		try {
+			await instance.waitUntilRenderFlush();
+			stdout.chunks.length = 0;
+			stdin.emit("data", "\x1b[<35;1;1M");
+			stdin.emit("data", "\x1b[<35;2;1M");
+			stdin.emit("data", "\x1b[<35;80;24M");
+			expect(stdout.chunks.join("")).not.toContain(DISABLE_MOUSE_TRACKING);
+			expect(stdout.chunks.join("")).not.toContain(ENABLE_MOUSE_TRACKING);
+			expect(onMouseEnter).toHaveBeenCalledOnce();
+			expect(onMouseLeave).toHaveBeenCalledOnce();
+		} finally { instance.unmount(); }
+	});
+
 	it("ignores right-click reports so the host's native context menu handles them", async () => {
 		const stdout = makeStdout();
 		const stdin = makeStdin();

@@ -977,8 +977,9 @@ export default class Ink {
 		// re-assert mouse tracking, which resets the terminal's button-state
 		// machine (a fresh DISABLE→ENABLE clears any half-held button). Left
 		// clicks keep working, and the host's native right-click menu still
-		// appears. Wheel events also carry a button number, so exclude them.
-		if (!ev.wheel && ev.button !== 0) {
+		// appears. Exclude wheel reports and unpressed motion (button 3), which
+		// must reach normal hover dispatch without resetting tracking.
+		if (!ev.wheel && ev.button !== 0 && !(ev.button === 3 && ev.action === "move")) {
 			this.stopSelectionScroll();
 			this.resetMouseTracking();
 			return;
