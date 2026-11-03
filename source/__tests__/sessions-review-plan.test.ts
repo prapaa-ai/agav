@@ -37,7 +37,7 @@ import render from "../ink/render.js";
 import { SessionRuntimeStore } from "../sessions/store.js";
 
 const config: AgavConfig = { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000,
-  maxIterations: 4, errorRetries: 1, permissionMode: "ask", backgroundJobsEnabled: true, detachedSessionsEnabled: true };
+  maxIterations: 4, errorRetries: 1, permissionMode: "ask", backgroundJobsEnabled: true };
 let store: SessionRuntimeStore;
 const mounts: ReturnType<typeof render>[] = [];
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));

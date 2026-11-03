@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,7 +78,7 @@ async function worker(root: string, mode: PermissionMode, floor?: "ask" | "deny-
 // Backend process boundary only, not the currently missing public UI detach flow.
 describe("session backend in a separate worker process", () => {
   it.each(["yes", "no"] as const)("stalls in ask across observer disconnect/reconnect then consumes %s exactly once", async choice => {
-    const root = await mkdtemp(join(tmpdir(), "agav-session-process-"));
+    const root = await realpath(await mkdtemp(join(tmpdir(), "agav-session-process-")));
     let running: Awaited<ReturnType<typeof worker>> | undefined;
     let detach: (() => void) | undefined;
     try {
@@ -130,7 +130,7 @@ describe("session backend in a separate worker process", () => {
     { mode: "auto-accept", allowed: true }, { mode: "deny-writes", allowed: false },
     { mode: "auto-accept", floor: "deny-writes", allowed: false },
   ] as const)("honors stored $mode and stricter $floor without an observer", async test => {
-    const root = await mkdtemp(join(tmpdir(), "agav-session-process-policy-"));
+    const root = await realpath(await mkdtemp(join(tmpdir(), "agav-session-process-policy-")));
     let running: Awaited<ReturnType<typeof worker>> | undefined;
     try {
       const floor = "floor" in test ? test.floor : undefined;
@@ -145,7 +145,7 @@ describe("session backend in a separate worker process", () => {
   }, 20_000);
 
   it("tightens stored auto-accept to ask under a new worker policy floor", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agav-session-process-floor-"));
+    const root = await realpath(await mkdtemp(join(tmpdir(), "agav-session-process-floor-")));
     let running: Awaited<ReturnType<typeof worker>> | undefined;
     try {
       running = await worker(root, "auto-accept", "ask");

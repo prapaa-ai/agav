@@ -368,7 +368,7 @@ export async function runSessionRunner(id: string | undefined, expectedGeneratio
   let handle: SessionExecutionHandle;
   try {
     const local = await loadConfig();
-    if (local.backgroundJobsEnabled !== true || local.detachedSessionsEnabled !== true) throw new Error("Detached sessions require backgroundJobsEnabled=true.");
+    if (local.backgroundJobsEnabled !== true) throw new Error("Detached sessions require backgroundJobsEnabled=true.");
     const config = sessionExecutionConfig(record, local);
     applySandboxRequiredPolicy({ flagSet: record.sandboxRequired, configValue: config.sandboxRequired,
       detectBackend: detectSandboxBackend, setRequired: setSandboxRequired, warn: message => process.stderr.write(message) });

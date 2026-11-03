@@ -1189,7 +1189,7 @@ export function useAgent(
             );
           }
 
-          if (config.detachedSessionsEnabled === true && config.backgroundJobsEnabled === true && !skillInvocation) {
+          if (config.backgroundJobsEnabled === true && !skillInvocation) {
             workerLaunch = true;
             try {
               const { startInteractiveSessionWorker } = await import("../sessions/interactive.js");
@@ -1839,8 +1839,8 @@ export function useAgent(
     detachSession: async () => {
       const current = attachmentRef.current;
       if (!current.live || !current.snapshot?.record.jobId) {
-        throw new Error(configRef.current.backgroundJobsEnabled !== true || configRef.current.detachedSessionsEnabled !== true
-          ? "Enable detachedSessionsEnabled and backgroundJobsEnabled before starting a task to use /detach."
+        throw new Error(configRef.current.backgroundJobsEnabled !== true
+          ? "Enable backgroundJobsEnabled before starting a task to use /detach."
           : "The current task is not owned by a background worker yet. Wait for preparation to finish.");
       }
       const { readSessionSnapshot } = await import("../sessions/client.js");

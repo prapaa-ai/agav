@@ -12,15 +12,15 @@ This is different from simply saving a conversation: a saved transcript preserve
 
 ## Enable before starting a task
 
-Merge these settings into `~/.agav/config.json`, then start Agav:
+Merge this setting into `~/.agav/config.json`, then start Agav:
 
 ```json
-{ "backgroundJobsEnabled": true, "detachedSessionsEnabled": true }
+{ "backgroundJobsEnabled": true }
 ```
 
-Both flags must be `true`; `detachedSessionsEnabled` defaults to `false` and is **global-only** (ignored in project config). `backgroundJobsEnabled` alone leaves ordinary prompts executing locally. Enable both **before submitting the task**; `/detach` does not migrate an already-running in-process turn into a worker. See [Configuration](/reference/configuration) for config precedence and Windows paths.
+`backgroundJobsEnabled` defaults to `false` and is the only flag needed to enable worker-owned ordinary interactive turns and detaching. Enable it **before submitting the task**; `/detach` does not migrate an already-running in-process turn into a worker. See [Configuration](/reference/configuration) for config precedence and Windows paths.
 
-With both flags enabled, ordinary interactive prompts start execution in a supervised worker after initial preparation, even while you are still watching the terminal. Detaching disconnects that presentation; it does not restart the task or run a second copy. Initial context and plan preparation happen before worker ownership is established, so wait for the detach hint to appear.
+With `backgroundJobsEnabled: true`, ordinary interactive prompts start execution in a supervised worker after initial preparation, even while you are still watching the terminal. Detaching disconnects that presentation; it does not restart the task or run a second copy. Initial context and plan preparation happen before worker ownership is established, so wait for the detach hint to appear.
 
 ## Detach and return
 
@@ -80,7 +80,7 @@ Detaching does **not** change the permission mode, widen tool access, or bypass 
 
 ## Supported paths and limitations
 
-Detaching is for **worker-owned ordinary interactive turns**. It is unavailable while disabled, before worker preparation finishes, or after the turn is terminal. Direct slash-command skill invocations and direct named/service-agent submissions use different execution paths and are not made detachable by these flags. This differs from a normal prompt whose model delegates to a skill, subagent, or service agent inside its worker.
+Detaching is for **worker-owned ordinary interactive turns**. It is unavailable while disabled, before worker preparation finishes, or after the turn is terminal. Direct slash-command skill invocations and direct named/service-agent submissions use different execution paths and are not made detachable by this flag. This differs from a normal prompt whose model delegates to a skill, subagent, or service agent inside its worker.
 
 **Steering and pause are not supported for live worker-owned turns**, including while attached before detaching or after resuming. `/steer` rejects these turns rather than queuing a directive that the worker cannot receive. Foreground in-process turns retain their steering and pause controls. To change a worker's direction, wait for completion and submit a follow-up prompt, or request cancellation and inspect its effects before starting another turn.
 
@@ -100,7 +100,7 @@ If launch admission is uncertain (for example, a response was lost), Agav retain
 
 **Do:**
 
-- Enable both flags and set reloadable credentials before the task starts.
+- Enable `backgroundJobsEnabled: true` and set reloadable credentials before the task starts.
 - Wait for the detach hint, save the exact resume command, and check the picker for pending approvals.
 - Review each approval and inspect the workspace before asking for follow-up work after an interruption.
 - Keep the machine awake, connected, and running if you need uninterrupted local execution.
@@ -116,7 +116,7 @@ If launch admission is uncertain (for example, a response was lost), Agav retain
 
 | Symptom | What to check |
 | --- | --- |
-| Detach is disabled | Set both `detachedSessionsEnabled: true` and `backgroundJobsEnabled: true` in global config, restart Agav, and start a new ordinary task. It cannot retrofit the current in-process execution. |
+| Detach is disabled | Set `backgroundJobsEnabled: true` in global config, restart Agav, and start a new ordinary task. It cannot retrofit the current in-process execution. |
 | “The current task is not owned by a background worker yet” | Wait for preparation and the detach hint. If it never appears, check whether you invoked a skill or service agent directly. |
 | “This session is no longer running” | The turn may have finished while you were detaching. Use `/resume` or `agav --resume` to inspect its terminal state. |
 | Session appears stuck | Look for `needs-approval` and its pending count. Resume and explicitly approve or deny the displayed request. |

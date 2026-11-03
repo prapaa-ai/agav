@@ -43,7 +43,7 @@ import { SessionRuntimeStore } from "../sessions/store.js";
 import { SessionApprovalBroker, decideSessionApproval, listPendingApprovals } from "../sessions/approvals.js";
 
 const config: AgavConfig = { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000,
-  maxIterations: 4, errorRetries: 1, permissionMode: "ask", backgroundJobsEnabled: true, detachedSessionsEnabled: true };
+  maxIterations: 4, errorRetries: 1, permissionMode: "ask", backgroundJobsEnabled: true };
 const request = { toolName: "write_file", input: { path: "example.txt", content: "hello" } };
 let store: SessionRuntimeStore;
 const brokers: SessionApprovalBroker[] = [];
@@ -223,8 +223,8 @@ describe("useAgent worker-first detach", () => {
     }
   });
 
-  it("background jobs alone do not opt ordinary prompts into worker execution", async () => {
-    const ui = await mount({ detachedSessionsEnabled: false });
+  it("executes ordinary prompts locally when background jobs are unset", async () => {
+    const ui = await mount({ backgroundJobsEnabled: undefined });
     expect(await ui.agent().submit("Say hello")).toBe(true);
     await ui.until(() => ui.stream.mock.calls.length === 1 && !ui.agent().isLoading);
     expect(startInteractiveSessionWorker).not.toHaveBeenCalled();
@@ -265,7 +265,7 @@ describe("useAgent worker-first detach", () => {
     await ui.until(() => ui.stream.mock.calls.length === 1 && !ui.agent().isLoading);
     expect(ui.agent().messages.some(message => message.content === "local response")).toBe(true);
     expect(ui.agent().canDetach).toBe(false);
-    await expect(ui.agent().detachSession()).rejects.toThrow("Enable detachedSessionsEnabled");
+    await expect(ui.agent().detachSession()).rejects.toThrow("Enable backgroundJobsEnabled");
     expect(startInteractiveSessionWorker).not.toHaveBeenCalled();
   });
 

@@ -26,11 +26,8 @@ export function sessionWorkerEnvironmentNames(): string[] {
 export async function startInteractiveSessionWorker(config: AgavConfig, conversation: ConversationState,
   options: { id?: string; previousGeneration?: string; permissionMode: AgavConfig["permissionMode"]; iterationsBudget: { remaining: number; total: number }; signal: AbortSignal; onCreated?: (record: import("./store.js").SessionRuntimeRecord) => void | Promise<void> }) {
   if (config.backgroundJobsEnabled !== true) throw new Error("Detached execution requires backgroundJobsEnabled=true.");
-  // This dedicated host opt-in authorizes ONLY the submitted turn's process owner, not arbitrary
-  // background commands and not worker tools. General background-job enablement is not consent.
-  if (config.detachedSessionsEnabled !== true) {
-    throw new Error("Detached execution requires detachedSessionsEnabled=true.");
-  }
+  // Enablement selects worker ownership; submitting the turn authorizes only its exact
+  // process owner. Arbitrary background commands and worker tools retain separate consent.
   options.signal.throwIfAborted();
   const { loadConfig } = await import("../config/config.js");
   const persisted = await loadConfig();

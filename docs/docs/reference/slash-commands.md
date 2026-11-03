@@ -36,7 +36,7 @@ Other commands, such as `/model` and `/clear`, are not dispatched while a turn i
 | Command | Purpose |
 | --- | --- |
 | `/resume [id]` | Open the saved/live session picker or resume one by ID or prefix match, including worker progress and pending approvals. |
-| `/detach` | Close the UI while the current worker-owned turn continues locally. Requires both global `detachedSessionsEnabled: true` and `backgroundJobsEnabled: true` before starting the task; the configurable `detachSession` chord (default Ctrl+K Ctrl+D) also works at approval prompts. See [Detached sessions](/features/detached-sessions). |
+| `/detach` | Close the UI while the current worker-owned turn continues locally. Requires `backgroundJobsEnabled: true` before starting the task; the configurable `detachSession` chord (default Ctrl+K Ctrl+D) also works at approval prompts. See [Detached sessions](/features/detached-sessions). |
 | `/search <query>` | Search saved session messages by keyword. |
 | `/name <title>` | Give the current session a descriptive name. |
 | `/branch [name]` | List branches in the current session lineage, or fork the current conversation into a named branch. |

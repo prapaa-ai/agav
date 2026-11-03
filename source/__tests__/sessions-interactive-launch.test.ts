@@ -21,7 +21,7 @@ import { startInteractiveSessionWorker, sessionWorkerEnvironmentNames } from "..
 let root: string;
 let store: SessionRuntimeStore;
 let published: SessionRuntimeRecord | undefined;
-let config: AgavConfig & { detachedSessionsEnabled?: boolean };
+let config: AgavConfig;
 const start = vi.fn();
 const lookup = vi.fn(async () => undefined);
 beforeEach(async () => {
@@ -31,7 +31,7 @@ beforeEach(async () => {
   store = new SessionRuntimeStore();
   published = undefined;
   config = { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000,
-    maxIterations: 2, errorRetries: 1, permissionMode: "ask", backgroundJobsEnabled: true, detachedSessionsEnabled: true };
+    maxIterations: 2, errorRetries: 1, permissionMode: "ask", backgroundJobsEnabled: true };
   mocks.config = config;
   mocks.create.mockImplementation(async (target: SessionRuntimeStore) => target.create({ cwd: root,
     provider: "anthropic", model: "mock", permissionMode: "ask", sandboxRequired: false }));
@@ -55,11 +55,17 @@ function launch(signal = new AbortController().signal) {
 }
 
 describe("interactive owner launch consent and private environment", () => {
-  it("requires dedicated detached-session opt-in, not merely background-jobs enablement", async () => {
-    delete config.detachedSessionsEnabled;
-    await expect(launch()).rejects.toThrow(/detachedSessionsEnabled=true/);
+  it.each([false, undefined])("rejects worker launch when backgroundJobsEnabled is %s", async enabled => {
+    config.backgroundJobsEnabled = enabled;
+    await expect(launch()).rejects.toThrow(/backgroundJobsEnabled=true/);
     expect(mocks.create).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
+  });
+
+  it("starts a detachable worker with background jobs enabled alone", async () => {
+    const record = await launch();
+    expect(await store.read(record.id)).toMatchObject({ jobId: "owner-job" });
+    expect(start).toHaveBeenCalledOnce();
   });
 
   it.each(["ask", "auto-accept"] as const)("uses exact ask consent even under %s, without a blanket action grant", async mode => {

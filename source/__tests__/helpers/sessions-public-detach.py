@@ -231,7 +231,7 @@ def main():
         endpoint = f"http://127.0.0.1:{server.server_port}"
         (home / ".agav/config.json").write_text(json.dumps({
             "provider": "ollama", "model": "detach-fixture:latest", "ollamaEndpoint": endpoint,
-            "backgroundJobsEnabled": True, "detachedSessionsEnabled": True, "permissionMode": "ask", "maxIterations": 6,
+            "backgroundJobsEnabled": True, "permissionMode": "ask", "maxIterations": 6,
             "errorRetries": 0,
             "systemPrompt": "Use write_file once to write hello.txt, verify with cat hello.txt, then finish."}))
         # Do not leak the real profile, provider keys, preloads or organization settings.

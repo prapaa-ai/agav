@@ -36,7 +36,7 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Cut prompt text | `Ctrl+X` |
 | Open the request queue when requests are queued; otherwise exit while idle with an empty prompt | `Ctrl+Q` |
 
-For worker-owned turns, **Ctrl+K Ctrl+D** closes the UI without cancelling or answering pending consent. Enable both `detachedSessionsEnabled: true` and `backgroundJobsEnabled: true` in global config before starting the task and wait for the detach hint. Return with `agav --resume <session-id>` or `/resume`. Ctrl+X cuts prompt text; Ctrl+Q manages the queue/idle exit. Neither is detach. See [Detached sessions](/features/detached-sessions) for requirements and cancellation semantics.
+For worker-owned turns, **Ctrl+K Ctrl+D** closes the UI without cancelling or answering pending consent. Enable `backgroundJobsEnabled: true` in global config before starting the task and wait for the detach hint. Return with `agav --resume <session-id>` or `/resume`. Ctrl+X cuts prompt text; Ctrl+Q manages the queue/idle exit. Neither is detach. See [Detached sessions](/features/detached-sessions) for requirements and cancellation semantics.
 
 ## Cancel versus exit
 
