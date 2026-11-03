@@ -1,0 +1,50 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { main } from "../main.js";
+import { resumeCommand } from "../commands/history.js";
+import { listResumableSessions, loadResumableSession } from "../sessions/history.js";
+import { render } from "../ink/index.js";
+vi.mock("../config/config.js", async original => ({ ...await original<typeof import("../config/config.js")>(), loadConfig: async () => ({ provider: "ollama", model: "test", effort: "low", maxTokens: 1000, maxIterations: 5, errorRetries: 0, permissionMode: "ask" }) }));
+vi.mock("../config/keybindings.js", () => ({ loadKeybindings: async () => ({}) }));
+vi.mock("../config/history.js", () => ({ listSessions: async () => [] }));
+vi.mock("../sessions/history.js", () => ({ listResumableSessions: vi.fn(), loadResumableSession: vi.fn() }));
+vi.mock("../ink/index.js", () => ({ render: vi.fn(() => ({ waitUntilExit: async () => {} })) }));
+vi.mock("../utils/auto-update.js", () => ({ checkAndUpdate: async () => {} }));
+vi.mock("../utils/git.js", () => ({ getGitContext: async () => null }));
+vi.mock("../utils/terminal-keyboard.js", () => ({ detectKittyKeyboard: async () => false }));
+vi.mock("../config/launch-state.js", () => ({ consumeChangelogDisplay: async () => false }));
+const argv = process.argv;
+const exited = new Error("exited");
+beforeEach(() => {
+  vi.clearAllMocks(); process.argv = [process.execPath, "agav"];
+  vi.spyOn(process, "exit").mockImplementation(() => { throw exited; });
+  vi.spyOn(process, "stdout", "get").mockReturnValue({ write: vi.fn(() => true) } as never);
+  vi.spyOn(process, "stderr", "get").mockReturnValue({ write: vi.fn(() => true) } as never);
+  vi.spyOn(process, "stdin", "get").mockReturnValue({ isTTY: true } as never);
+  vi.spyOn(process, "on").mockImplementation(() => process);
+  vi.spyOn(console, "error").mockImplementation(() => {});
+});
+afterEach(() => { process.argv = argv; vi.restoreAllMocks(); });
+const record = (id: string) => ({ id, title: id, provider: "ollama", model: "test", messages: [], createdAt: "2026-01-01" });
+describe("resume ID selection", () => {
+  it("rejects ambiguous prefixes in CLI and slash resume without loading", async () => {
+    vi.mocked(listResumableSessions).mockResolvedValue([record("abc-two"), record("abc-one")]);
+    process.argv.push("--resume", "abc");
+    await expect(main()).rejects.toBe(exited);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Ambiguous session ID prefix "abc"'));
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(await resumeCommand.execute("abc", {} as never)).toMatchObject({ text: expect.stringContaining("Ambiguous") });
+    expect(loadResumableSession).not.toHaveBeenCalled();
+  });
+  it.each(["abc", "abc-one"])("prefers exact IDs and accepts unique prefixes: %s", async id => {
+    const selected = record("abc-one");
+    vi.mocked(listResumableSessions).mockResolvedValue([record(id === "abc" ? "other" : "abc-one-longer"), selected]);
+    vi.mocked(loadResumableSession).mockResolvedValue(selected);
+    process.argv.push("--resume", id);
+    await expect(main()).rejects.toBe(exited);
+    expect(loadResumableSession).toHaveBeenCalledWith(selected.id);
+    expect(vi.mocked(render).mock.calls[0]![0]).toHaveProperty("props.resumeSessionId", selected.id);
+    const context = { loadSession: vi.fn(), setModel: vi.fn(), setProvider: vi.fn(), config: {} };
+    await resumeCommand.execute(id, context as never);
+    expect(context.loadSession).toHaveBeenCalledWith(selected);
+  });
+});

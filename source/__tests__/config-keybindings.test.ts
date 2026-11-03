@@ -53,6 +53,24 @@ describe("keybindings", () => {
     expect(bindings.openCommandPalette).toEqual(["ctrl+k ctrl+p"]);
   });
 
+  it("loads and routes a configurable detach shortcut without taking Ctrl+X or Ctrl+Q", async () => {
+    readFile.mockResolvedValueOnce(JSON.stringify({ detachSession: "ctrl+k ctrl+e" }));
+    const mod = await import("../config/keybindings.js");
+    expect(mod.DEFAULT_KEYBINDINGS.detachSession).toEqual(["ctrl+d"]);
+    const defaults = new mod.KeybindingResolver(mod.DEFAULT_KEYBINDINGS, mod.GLOBAL_ACTIONS);
+    expect(defaults.feed("d", { ...NO_KEY, ctrl: true })).toMatchObject({ action: "detachSession", pending: false });
+    expect(mod.formatKeybinding(mod.DEFAULT_KEYBINDINGS, "detachSession")).toBe("Ctrl+D");
+    const bindings = await mod.loadKeybindings();
+    expect(bindings.detachSession).toEqual(["ctrl+k ctrl+e"]);
+    expect(mod.GLOBAL_ACTIONS).toContain("detachSession");
+    const resolver = new mod.KeybindingResolver(bindings, mod.GLOBAL_ACTIONS);
+    expect(resolver.feed("k", { ...NO_KEY, ctrl: true })).toMatchObject({ pending: true });
+    expect(resolver.feed("e", { ...NO_KEY, ctrl: true })).toMatchObject({ action: "detachSession" });
+    expect(resolver.feed("x", { ...NO_KEY, ctrl: true }).action).toBeNull();
+    expect(resolver.feed("q", { ...NO_KEY, ctrl: true }).action).toBe("exit");
+    expect(mod.formatKeybinding(bindings, "detachSession")).toBe("Ctrl+K Ctrl+E");
+  });
+
   it("formats bindings with platform-aware names", async () => {
     const mod = await import("../config/keybindings.js");
     const bindings = {
@@ -102,7 +120,7 @@ describe("keybindings", () => {
     expect(resolver.feed("w", { ctrl: true, meta: false, shift: false, return: false, escape: false, tab: false, upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, backspace: false, delete: false, super: false })).toMatchObject({ action: "deleteWordBackward" });
   });
 
-  // Ctrl+V is the clipboard-image paste and Ctrl+D the tool detail panel, so
+  // Ctrl+V is the clipboard-image paste and Ctrl+D detaches the session, so
   // the plan shortcut has to be a stroke of its own and must not fire on those.
   it("binds the plan detail panel to a single free stroke", async () => {
     const mod = await import("../config/keybindings.js");
@@ -117,7 +135,9 @@ describe("keybindings", () => {
 
     expect(ctrl("g")).toMatchObject({ action: "togglePlanDetail", pending: false });
     expect(ctrl("v")).toMatchObject({ action: null });
-    expect(ctrl("d")).toMatchObject({ action: "toggleToolDetail" });
+    expect(ctrl("d")).toMatchObject({ action: null });
+    expect(ctrl("k")).toMatchObject({ pending: true });
+    expect(ctrl("e")).toMatchObject({ action: "toggleToolDetail" });
   });
 
   // A resolver only reports actions it was constructed with, so an action in

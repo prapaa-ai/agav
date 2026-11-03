@@ -30,6 +30,7 @@ interface Props {
   keybindings: Keybindings;
   /** Informational one-line warning, e.g. a write target outside the project. */
   warning?: string;
+  detachAvailable?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +78,8 @@ function wordBoundsAt(text: string, offset: number): [number, number] {
 }
 
 /** Prompts the user to approve or reject a pending tool action. */
-export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, explicitApprovalOnly, keybindings, warning }: Props) {
+export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, explicitApprovalOnly, keybindings, warning, detachAvailable }: Props) {
+  const detachResolver = React.useRef(new KeybindingResolver(keybindings, ["detachSession"]));
   const keyResolver = React.useRef(new KeybindingResolver(keybindings, ["cancel", "submit", "clearInput", "deleteWordBackward"]));
   const { stdout } = useStdout();
   const [rows, setRows] = React.useState(stdout.rows || 24);
@@ -174,6 +176,8 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
 
   useInput((rawChar, rawKey) => {
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
+    const detachMatch = detachResolver.current.feed(char, key);
+    if (detachMatch.pending || detachMatch.action) return;
 
     if (feedbackModeRef.current) {
       const match = keyResolver.current.feed(char, key);
@@ -360,6 +364,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
       return;
     }
     const match = keyResolver.current.feed(char, key);
+    if (match.pending) return;
     if (char === "y" || char === "Y" || match.action === "submit") {
       onConfirm("yes");
     } else if (char === "n" || char === "N" || match.action === "cancel") {
