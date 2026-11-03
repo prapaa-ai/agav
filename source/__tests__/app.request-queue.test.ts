@@ -161,13 +161,14 @@ describe("request queuing", () => {
       await vi.waitFor(() => expect(ui.output()).toContain("Queued 3"));
       expect(boundary.submit).not.toHaveBeenCalled();
       ui.stdin.emit("data", Buffer.from("\x11"));
-      await new Promise(resolve => setTimeout(resolve, 60));
+      await vi.waitFor(() => expect(ui.output()).toContain("› 1. first queued"));
       ui.stdin.emit("data", Buffer.from("\x1b[B"));
-      await new Promise(resolve => setTimeout(resolve, 60));
+      // Wait for selection to commit before Delete; fixed sleeps race under load.
+      await vi.waitFor(() => expect(ui.output()).toContain("› 2. middle queued"));
       ui.stdin.emit("data", Buffer.from("\x7f"));
-      await vi.waitFor(() => expect(ui.output()).toContain("Queued 2"));
+      await vi.waitFor(() => expect(ui.output()).toContain("› 2. last queued"));
       ui.stdin.emit("data", Buffer.from("\x1b"));
-      await new Promise(resolve => setTimeout(resolve, 60));
+      await vi.waitFor(() => expect(boundary.promptProps.disabled).toBe(false));
       boundary.busy = false; ui.rerender();
       await vi.waitFor(() => expect(boundary.submit).toHaveBeenCalledTimes(1));
       expect(boundary.submit.mock.calls[0]![0]).toBe("first queued");

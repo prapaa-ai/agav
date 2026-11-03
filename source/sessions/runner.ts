@@ -83,6 +83,15 @@ export function sessionExecutionConfig(record: SessionRuntimeRecord, local: Agav
       record.connection.openaiBaseURL !== (local.openaiBaseURL ?? process.env["OPENAI_BASE_URL"])) {
     throw new Error("Session endpoint routing changed; refusing to send current credentials to the stored endpoint.");
   }
+  if (record.provider === "ollama" && record.connection) {
+    // Match createProvider's endpoint > host/port > defaults resolution. loadConfig
+    // has already applied environment overrides to the current trusted route.
+    const endpoint = (connection: Pick<AgavConfig, "ollamaEndpoint" | "ollamaHost" | "ollamaPort">) =>
+      connection.ollamaEndpoint ?? `http://${connection.ollamaHost ?? "localhost"}:${connection.ollamaPort ?? 11434}`;
+    if (endpoint(record.connection) !== endpoint(local)) {
+      throw new Error("Session endpoint routing changed; refusing to send current credentials to the stored endpoint.");
+    }
+  }
   const permissionFloor = clampPermissionMode(record.permissionFloor ?? "auto-accept", local.orgPermissionFloor);
   const config: AgavConfig = {
     ...local, ...(record.connection ? {
@@ -110,18 +119,18 @@ export async function prepareSessionTools(ctx: SessionToolContext): Promise<() =
     const subagent = createSubagentTool({
       provider, parentToolRegistry: registry,
       getConfig: () => ({ model: config.model, systemPrompt: config.systemPrompt ?? "", permissionMode: config.permissionMode, backgroundPermissionMode,
-        effort: config.effort, orgPermissionFloor: config.orgPermissionFloor, iterationsBudget }),
+        effort: config.effort, orgPermissionFloor: config.orgPermissionFloor, iterationsBudget, providerIdleTimeout: config.providerIdleTimeout }),
       getProviderConfig: () => config,
       confirmationQueue: { enqueue: (request, childSignal) => broker.confirm(request, childSignal ?? signal),
         rejectBySubagentId: id => broker.rejectBySubagentId(id) },
       onProgressUpdate: states => ctx.onSubagentProgress?.(states), onTokenUsage: () => {}, getSignal: () => signal,
     });
-    registry.register(subagent);
+    registry.registerBuiltin(subagent);
     ctx.registerSubagentCancellation?.(id => subagent.cancelSubagent(id));
-    registry.register(createSkillTool({
+    registry.registerBuiltin(createSkillTool({
       provider, parentRegistry: registry,
       getConfig: () => ({ model: config.model, systemPrompt: config.systemPrompt ?? "", permissionMode: config.permissionMode, backgroundPermissionMode,
-        effort: config.effort, iterationsBudget }),
+        effort: config.effort, iterationsBudget, providerIdleTimeout: config.providerIdleTimeout }),
       getProviderConfig: () => config, confirmTool, getSignal: () => signal,
     }));
     for (const agent of await loadAgents()) {
@@ -247,7 +256,7 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
         backgroundPermissionMode: clampPermissionMode(initial.backgroundPermissionMode, config.orgPermissionFloor),
         // This is an interactive session with a durable approval channel, not unattended headless consent.
         headless: false, confirmTool, allowedTools: config.allowedTools, hooks: config.hooks,
-        iterationsBudget, signal: controller.signal,
+        iterationsBudget, signal: controller.signal, providerIdleTimeout: config.providerIdleTimeout,
       })) {
         eventLines += JSON.stringify({
           sequence: ++sequence, generation: initial.generation, at: new Date().toISOString(),

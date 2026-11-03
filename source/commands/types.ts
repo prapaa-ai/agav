@@ -70,6 +70,8 @@ export interface CommandContext {
   setPermissionMode?: (mode: AgavConfig["permissionMode"]) => AgavConfig["permissionMode"]
   /** Whether an agent turn is currently in flight. */
   isLoading?: boolean
+  /** Read live worker ownership; process-local steering cannot reach an attached worker. */
+  isWorkerAttached?: () => boolean
   getMCPAuthenticationRequired?: () => string[]
   logoutMCPServer?: (name: string) => Promise<void>
   authenticateMCPServer?: (name: string) => Promise<void>

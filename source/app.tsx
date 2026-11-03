@@ -306,6 +306,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     cancel,
     detachSession,
     canDetach,
+    isWorkerAttached,
     cancelSubagent,
     clearMessages,
     confirmTool,
@@ -992,7 +993,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       shellAbortRef.current.abort();
       return;
     }
-    if (match.action === "togglePause" && isLoading && !pendingConfirmation) {
+    if (match.action === "togglePause" && isLoading && !isWorkerAttached && !pendingConfirmation) {
       togglePause();
       return;
     }
@@ -1310,7 +1311,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           && promptAttachments.length === 0
           && (!isLoading || isCommandAllowedMidTurn(commandName));
         if (!isSlashCommand && isLoading) {
-          if (isGenerationPaused && (trimmed || promptAttachments.length > 0)) {
+          if (!isWorkerAttached && isGenerationPaused && (trimmed || promptAttachments.length > 0)) {
             const extraBlocks: ContentBlock[] = promptAttachments.map((attachment) => ({ ...attachment.contentBlock }));
             const llmText = trimmed || "See attached content";
             const imageIds = promptAttachments.filter((a) => a.kind === "image").map((a) => a.id);
@@ -1415,6 +1416,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             currentSessionId: sessionId,
             exit,
             isLoading,
+            isWorkerAttached: () => isWorkerAttached,
             getMCPAuthenticationRequired,
             authenticateMCPServer,
             logoutMCPServer,
@@ -1609,7 +1611,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
+    [detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.

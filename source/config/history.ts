@@ -133,6 +133,22 @@ export async function saveSession(
   });
 }
 
+/** Change terminal policy only, preserving the authoritative worker transcript and generation. */
+export async function saveSessionPermissionMode(id: string, generation: string, mode: PermissionMode): Promise<void> {
+  const store = new SessionRuntimeStore();
+  await store.lock(id, async () => {
+    const runtime = await store.read(id);
+    if (!runtime || runtime.generation !== generation) throw new Error(`Missing or stale session runtime generation: ${id}`);
+    // A live worker owns its policy as well as its transcript. Local choices apply to its continuation.
+    if (!terminal(runtime.status)) return;
+    const { clampPermissionMode } = await import("./org-config.js");
+    const updated = await store.update(id, generation, current => {
+      current.permissionMode = clampPermissionMode(mode, current.permissionFloor);
+    });
+    await saveSessionRuntime(updated, store);
+  });
+}
+
 /** Worker-owned history mirror. Fenced by generation; never writes the runtime. */
 export async function saveSessionRuntime(record: SessionRuntimeRecord, store = new SessionRuntimeStore()): Promise<string> {
   return store.lock(record.id, async () => {

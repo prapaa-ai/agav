@@ -24,7 +24,7 @@ export function sessionWorkerEnvironmentNames(): string[] {
 
 /** Start execution in its permanent owner before tools or model streaming begin. */
 export async function startInteractiveSessionWorker(config: AgavConfig, conversation: ConversationState,
-  options: { id?: string; previousGeneration?: string; permissionMode: AgavConfig["permissionMode"]; iterationsBudget: { remaining: number; total: number }; signal: AbortSignal; onCreated?: (record: import("./store.js").SessionRuntimeRecord) => void }) {
+  options: { id?: string; previousGeneration?: string; permissionMode: AgavConfig["permissionMode"]; iterationsBudget: { remaining: number; total: number }; signal: AbortSignal; onCreated?: (record: import("./store.js").SessionRuntimeRecord) => void | Promise<void> }) {
   if (config.backgroundJobsEnabled !== true) throw new Error("Detached execution requires backgroundJobsEnabled=true.");
   // This dedicated host opt-in authorizes ONLY the submitted turn's process owner, not arbitrary
   // background commands and not worker tools. General background-job enablement is not consent.
@@ -48,7 +48,7 @@ export async function startInteractiveSessionWorker(config: AgavConfig, conversa
   let expectedHash: string;
   try {
     // Publish ownership before admission: a lost response must never permit a second local loop.
-    options.onCreated?.(record);
+    await options.onCreated?.(record);
     options.signal.throwIfAborted();
     cliPath = await realpath(resolve(process.argv[1] ?? "")).catch(() => resolve(process.argv[1] ?? ""));
     names = sessionWorkerEnvironmentNames();

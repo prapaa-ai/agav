@@ -82,6 +82,8 @@ Detaching does **not** change the permission mode, widen tool access, or bypass 
 
 Detaching is for **worker-owned ordinary interactive turns**. It is unavailable while disabled, before worker preparation finishes, or after the turn is terminal. Direct slash-command skill invocations and direct named/service-agent submissions use different execution paths and are not made detachable by these flags. This differs from a normal prompt whose model delegates to a skill, subagent, or service agent inside its worker.
 
+**Steering and pause are not supported for live worker-owned turns**, including while attached before detaching or after resuming. `/steer` rejects these turns rather than queuing a directive that the worker cannot receive. Foreground in-process turns retain their steering and pause controls. To change a worker's direction, wait for completion and submit a follow-up prompt, or request cancellation and inspect its effects before starting another turn.
+
 Use the documented `--resume` and `/resume` entry points to observe and answer a session. There is no separate public session `attach`, `approve`, `list`, or `stop` command to substitute for this flow. To interrupt a worker, resume it and use the ordinary interrupt controls described below.
 
 ## Detach versus cancellation

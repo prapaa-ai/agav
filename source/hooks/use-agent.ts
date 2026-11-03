@@ -156,6 +156,7 @@ interface UseAgentReturn {
   cancel: () => void | Promise<void>;
   detachSession: () => Promise<string>;
   canDetach: boolean;
+  isWorkerAttached: boolean;
   cancelSubagent: (id: string) => void;
   clearMessages: () => void;
   /** `expected` is the prompt the caller rendered; the answer is dropped if a different prompt is displayed by now. */
@@ -286,6 +287,7 @@ export function useAgent(
       ? clampPermissionMode(resumePermissionMode, config.orgPermissionFloor)
       : undefined,
   );
+  const localPermissionOverrideRef = useRef(resumePermissionMode !== undefined);
   // Lets callbacks defined before saveNow (e.g. setSessionPermissionMode)
   // persist without a declaration-order dependency on it.
   const saveNowRef = useRef<((extraUsage?: TokenUsage) => void) | null>(null);
@@ -302,7 +304,11 @@ export function useAgent(
   const attachment = useSessionAttachment({
     initialId: resumeSessionId, initialRuntime: resumeRuntime,
     onSnapshot: ({ record }) => {
-      sessionPermissionModeRef.current = record.permissionMode;
+      // Polling observes worker policy, but must not undo a resolved CLI choice
+      // or a newer /permission decision for the next turn.
+      if (!localPermissionOverrideRef.current) {
+        sessionPermissionModeRef.current = clampPermissionMode(record.permissionMode, config.orgPermissionFloor);
+      }
       setToolCalls(record.toolCalls ?? []);
       setSubagentStates(record.subagentStates ?? []);
       setStreamingText(record.streamingText ?? "");
@@ -370,6 +376,7 @@ export function useAgent(
   const [isGenerationPaused, setIsGenerationPaused] = useState(false);
 
   const togglePause = useCallback(() => {
+    if (attachmentRef.current.live) return;
     if (isPausedRef.current) {
       isPausedRef.current = false;
       setIsGenerationPaused(false);
@@ -631,6 +638,7 @@ export function useAgent(
     sessionNameRef.current = undefined;
     setSessionName(undefined);
     sessionPermissionModeRef.current = undefined;
+    localPermissionOverrideRef.current = false;
     setTokenUsage({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
     resetPlanContinue();
     // Back to the draft slot, and drop whatever the last unsaved session left
@@ -666,6 +674,7 @@ export function useAgent(
     // A stale answer for a prompt that is no longer displayed changes nothing (not even the turn timer).
     if (expected && resolvedChoice === undefined) return;
     if (resolvedChoice === "always") {
+      localPermissionOverrideRef.current = true;
       sessionPermissionModeRef.current = clampPermissionMode(
         "auto-accept",
         configRef.current.orgPermissionFloor,
@@ -703,6 +712,7 @@ export function useAgent(
     (mode: AgavConfig["permissionMode"]): AgavConfig["permissionMode"] => {
       const applied = clampPermissionMode(mode, configRef.current.orgPermissionFloor);
       sessionPermissionModeRef.current = applied;
+      localPermissionOverrideRef.current = true;
       // Persist immediately so the updated mode is recorded even if the session
       // ends before the next turn completes.
       saveNowRef.current?.();
@@ -760,7 +770,16 @@ export function useAgent(
 
   const saveNow = useCallback((extraUsage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => {
     // The worker is the sole transcript writer; a presentation exit must not overwrite it.
-    if (attachmentRef.current.attached) return;
+    if (attachmentRef.current.attached) {
+      const record = attachmentRef.current.snapshot?.record;
+      if (record && !attachmentRef.current.live && localPermissionOverrideRef.current) {
+        const mode = getEffectivePermissionMode();
+        void import("../config/history.js").then(({ saveSessionPermissionMode }) =>
+          saveSessionPermissionMode(record.id, record.generation, mode),
+        ).catch(error => setError(error instanceof Error ? error.message : String(error)));
+      }
+      return;
+    }
     setTokenUsage((currentUsage) => {
       const merged = extraUsage
         ? {
@@ -789,6 +808,14 @@ export function useAgent(
     });
   }, [config.model, config.provider, attachment.attached]);
   saveNowRef.current = saveNow;
+
+  // A choice made while the worker was live becomes durable only after it
+  // releases policy ownership. Persist metadata, never this UI's transcript.
+  useEffect(() => {
+    const record = attachment.snapshot?.record;
+    if (record && !attachment.live && localPermissionOverrideRef.current &&
+        record.permissionMode !== getEffectivePermissionMode()) saveNow();
+  }, [attachment.snapshot, attachment.live, saveNow, getEffectivePermissionMode]);
 
   const loadSession = useCallback((session: SessionRecord) => {
     cancel(false);
@@ -826,7 +853,7 @@ export function useAgent(
       .catch(() => { });
     refreshDisplay();
     attachedTranscriptRef.current = "";
-    sessionPermissionModeRef.current = undefined;
+    localPermissionOverrideRef.current = session.permissionMode !== undefined;
     if (session.runtime) attachment.attach(session.id, session.runtime.generation);
   }, [refreshDisplay, cancel, attachment.attach]);
 
@@ -974,6 +1001,7 @@ export function useAgent(
       (async () => {
         let currentText = "";
         let currentThinking = "";
+        let workerLaunch = false;
 
         try {
           // Split per-turn context by how often it changes. Stable pieces (AGAV.md,
@@ -1162,30 +1190,48 @@ export function useAgent(
           }
 
           if (config.detachedSessionsEnabled === true && config.backgroundJobsEnabled === true && !skillInvocation) {
-            const { startInteractiveSessionWorker } = await import("../sessions/interactive.js");
-            const record = await startInteractiveSessionWorker({ ...config, systemPrompt: effectiveSystemPrompt }, turnConversation, {
-              id: sessionIdRef.current ?? undefined,
-              previousGeneration: previousExecutionRef.current,
-              permissionMode: getEffectivePermissionMode(), iterationsBudget,
-              signal: abortController.signal,
-              onCreated: created => {
-                if (requestEpoch !== requestEpochRef.current || sessionRevision !== sessionRevisionRef.current) return;
-                previousExecutionRef.current = created.generation;
-                sessionIdRef.current = created.id;
-                setSessionId(created.id);
-                attachment.attach(created.id, created.generation);
-                attachmentRef.current = { ...attachmentRef.current, attached: true, live: true,
-                  target: { id: created.id, generation: created.generation }, snapshot: null };
-              },
-            });
-            if (requestEpoch !== requestEpochRef.current || sessionRevision !== sessionRevisionRef.current || abortController.signal.aborted) return;
-            sessionIdRef.current = record.id;
-            setSessionId(record.id);
-            setPlanScope(record.id);
-            attachment.attach(record.id, record.generation);
-            setIsLoading(false);
-            submitPendingRef.current = false;
-            abortRef.current = null;
+            workerLaunch = true;
+            try {
+              const { startInteractiveSessionWorker } = await import("../sessions/interactive.js");
+              const record = await startInteractiveSessionWorker({ ...config, systemPrompt: effectiveSystemPrompt }, turnConversation, {
+                id: sessionIdRef.current ?? undefined,
+                previousGeneration: previousExecutionRef.current,
+                permissionMode: getEffectivePermissionMode(), iterationsBudget,
+                signal: abortController.signal,
+                onCreated: created => {
+                  abortController.signal.throwIfAborted();
+                  if (requestEpoch !== requestEpochRef.current || sessionRevision !== sessionRevisionRef.current) {
+                    throw new Error("Session selection changed before worker admission.");
+                  }
+                  // The worker selects this scope before its first turn. Move the prepared
+                  // draft before admission, not after the launch response returns.
+                  adoptPlanScope(created.id);
+                  previousExecutionRef.current = created.generation;
+                  sessionIdRef.current = created.id;
+                  setSessionId(created.id);
+                  attachment.attach(created.id, created.generation);
+                  attachmentRef.current = { ...attachmentRef.current, attached: true, live: true,
+                    target: { id: created.id, generation: created.generation }, snapshot: null };
+                },
+              });
+              if (abortRef.current !== abortController || requestEpoch !== requestEpochRef.current ||
+                  sessionRevision !== sessionRevisionRef.current || abortController.signal.aborted) return;
+              sessionIdRef.current = record.id;
+              setSessionId(record.id);
+              // Also support launch clients that return without an onCreated publication.
+              adoptPlanScope(record.id);
+              if (attachmentRef.current.target?.id !== record.id || attachmentRef.current.target?.generation !== record.generation) {
+                attachment.attach(record.id, record.generation);
+              }
+            } finally {
+              // Even an aborted/stale response must release its local launch latch, but
+              // must never release a newer request's controller or loading state.
+              if (abortRef.current === abortController) {
+                setIsLoading(false);
+                submitPendingRef.current = false;
+                abortRef.current = null;
+              }
+            }
             return;
           }
 
@@ -1483,9 +1529,11 @@ export function useAgent(
           // Tool-only turns (no text response) are normal during plan execution
           // and agentic loops — no safeguard message needed.
         } catch (err) {
+          if (workerLaunch && (requestEpoch !== requestEpochRef.current || sessionRevision !== sessionRevisionRef.current)) return;
           const launchError = err as { admission?: string; record?: import("../sessions/store.js").SessionRuntimeRecord };
           if (launchError.admission === "not-admitted" && launchError.record &&
-              sessionIdRef.current === launchError.record.id && requestEpoch === requestEpochRef.current) {
+              sessionIdRef.current === launchError.record.id && requestEpoch === requestEpochRef.current &&
+              attachmentRef.current.target?.generation === launchError.record.generation) {
             previousExecutionRef.current = launchError.record.generation;
             attachment.detach();
             attachmentRef.current = { ...attachmentRef.current, attached: false, live: false };
@@ -1723,7 +1771,7 @@ export function useAgent(
       followUpMessages?: DisplayMessage[],
       invocationReason?: InvocationReason,
     ): Promise<boolean> => {
-      if (!isPausedRef.current || interventionPendingRef.current) return false;
+      if (attachmentRef.current.live || !isPausedRef.current || interventionPendingRef.current) return false;
       const trimmed = input.trim();
       if (!trimmed && (!extraBlocks || extraBlocks.length === 0)) return false;
       interventionPendingRef.current = true;
@@ -1786,6 +1834,7 @@ export function useAgent(
     refreshAgentCommands,
     addDisplayMessage,
     cancel,
+    isWorkerAttached: attachment.live,
     canDetach: attachment.live && !!attachment.snapshot?.record.jobId,
     detachSession: async () => {
       const current = attachmentRef.current;
