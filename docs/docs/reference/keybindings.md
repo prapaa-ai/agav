@@ -32,11 +32,11 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Command palette | `Ctrl+K Ctrl+P` |
 | Show keybindings | `Ctrl+K Ctrl+S` |
 | Clear screen | `Ctrl+L` |
-| Detach a worker-owned session, including at approval prompts (`detachSession`) | `Ctrl+K Ctrl+D` |
+| Detach a worker-owned session, including at approval prompts (`detachSession`) | `Ctrl+D` |
 | Cut prompt text | `Ctrl+X` |
 | Open the request queue when requests are queued; otherwise exit while idle with an empty prompt | `Ctrl+Q` |
 
-For worker-owned turns, **Ctrl+K Ctrl+D** closes the UI without cancelling or answering pending consent. Enable `backgroundJobsEnabled: true` in global config before starting the task and wait for the detach hint. Return with `agav --resume <session-id>` or `/resume`. Ctrl+X cuts prompt text; Ctrl+Q manages the queue/idle exit. Neither is detach. See [Detached sessions](/features/detached-sessions) for requirements and cancellation semantics.
+For worker-owned turns, **Ctrl+D** closes the UI without cancelling or answering pending consent. Enable `backgroundJobsEnabled: true` in global config before starting the task and wait for the detach hint. Return with `agav --resume <session-id>` or `/resume`. Ctrl+X cuts prompt text; Ctrl+Q manages the queue/idle exit. Neither is detach. See [Detached sessions](/features/detached-sessions) for requirements and cancellation semantics.
 
 ## Cancel versus exit
 
@@ -63,7 +63,7 @@ Values can be a string or an array. Chords separate strokes with spaces:
 ```json
 {
   "newline": ["meta+enter"],
-  "detachSession": ["ctrl+k ctrl+d"],
+  "detachSession": ["ctrl+d"],
   "openCommandPalette": ["ctrl+k ctrl+p"],
   "exit": ["ctrl+q", "ctrl+k ctrl+x"]
 }

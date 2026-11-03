@@ -25,7 +25,7 @@ With `backgroundJobsEnabled: true`, ordinary interactive prompts start execution
 ## Detach and return
 
 1. Start `agav` in your project and submit an ordinary task, for example: “Investigate the failing build and propose a fix.”
-2. Once the worker is ready, type `/detach`, or press **Ctrl+K Ctrl+D**. Agav exits the UI and prints:
+2. Once the worker is ready, type `/detach`, or press **Ctrl+D**. Agav exits the UI and prints:
 
    ```text
    Session <session-id> is running in the background. Resume with: agav --resume <session-id>
@@ -39,7 +39,7 @@ With `backgroundJobsEnabled: true`, ordinary interactive prompts start execution
 
 You can also run `agav --resume` to open the picker at startup, or `/resume` inside Agav. `/resume <id>` selects a session directly; ID prefixes are supported, but the full printed ID avoids choosing the wrong session.
 
-**The detach chord works at a worker's approval prompt too.** It leaves the request pending; it is not Yes, No, or Always. Use it when the confirmation owns input and you cannot type `/detach`. The configurable `detachSession` action defaults to **Ctrl+K Ctrl+D** (press the strokes in sequence). **Ctrl+X cuts prompt text; it is not detach.** **Ctrl+Q is not detach**: it opens the request queue when requests are queued, or exits while idle with an empty prompt.
+**The detach shortcut works at a worker's approval prompt too.** It leaves the request pending; it is not Yes, No, or Always. Use it when the confirmation owns input and you cannot type `/detach`. The configurable `detachSession` action defaults to **Ctrl+D**. **Ctrl+X cuts prompt text; it is not detach.** **Ctrl+Q is not detach**: it opens the request queue when requests are queued, or exits while idle with an empty prompt.
 
 Detaching continues the **current worker-owned turn**, not an unattended stream of future chat requests. Do not rely on unsent drafts or requests waiting in the terminal's queue being executed after the UI closes.
 
@@ -88,7 +88,7 @@ Use the documented `--resume` and `/resume` entry points to observe and answer a
 
 ## Detach versus cancellation
 
-Only `/detach` or the configured `detachSession` chord intentionally exits the UI while leaving the worker running. Ordinary `/exit` and Ctrl+C exit **request cancellation** of the selected worker-owned turn; the cancel action (Esc by default) requests cancellation while keeping Agav open. Ctrl+C still copies an active Agav text selection instead of exiting. Esc can instead dismiss an overlay, deny a tool confirmation, or target a focused subagent; return to the overview to cancel the parent turn.
+Only `/detach` or the configured `detachSession` shortcut intentionally exits the UI while leaving the worker running. Ordinary `/exit` and Ctrl+C exit **request cancellation** of the selected worker-owned turn; the cancel action (Esc by default) requests cancellation while keeping Agav open. Ctrl+C still copies an active Agav text selection instead of exiting. Esc can instead dismiss an overlay, deny a tool confirmation, or target a focused subagent; return to the overview to cancel the parent turn.
 
 The cancellation request is durable and bound to the current execution generation, so it cannot cancel a later turn in the same session. It is **not synchronous termination**: the worker must observe the request and settle its tools. Do not treat an exit, acknowledgement, or terminal status as proof that every process or external effect stopped. Already-applied edits are not rolled back; inspect the workspace and remote services before retrying.
 
