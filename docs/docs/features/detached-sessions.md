@@ -20,7 +20,7 @@ Merge this setting into `~/.agav/config.json`, then start Agav:
 
 `backgroundJobsEnabled` defaults to `false` and is the only flag needed to enable worker-owned ordinary interactive turns and detaching. Enable it **before submitting the task**; `/detach` does not migrate an already-running in-process turn into a worker. See [Configuration](/reference/configuration) for config precedence and Windows paths.
 
-With `backgroundJobsEnabled: true`, ordinary interactive prompts start execution in a supervised worker after initial preparation, even while you are still watching the terminal. Detaching disconnects that presentation; it does not restart the task or run a second copy. Initial context and plan preparation happen before worker ownership is established, so wait for the detach hint to appear.
+With `backgroundJobsEnabled: true`, ordinary interactive prompts start execution in a supervised worker after initial preparation, even while you are still watching the terminal. Detaching disconnects that presentation; it does not restart the task or run a second copy. Initial context and plan preparation happen before worker ownership is established. **Ctrl+D** works as soon as the worker is ready, even before the hint appears. The detach hint appears in bold cyan after 30 seconds if the turn is still working and worker-owned. Once visible, it disappears two seconds after your first keypress and stays hidden for the rest of that turn; the detach shortcut remains available.
 
 ## Detach and return
 
@@ -101,7 +101,7 @@ If launch admission is uncertain (for example, a response was lost), Agav retain
 **Do:**
 
 - Enable `backgroundJobsEnabled: true` and set reloadable credentials before the task starts.
-- Wait for the detach hint, save the exact resume command, and check the picker for pending approvals.
+- Detach once the worker is ready, save the exact resume command, and check the picker for pending approvals.
 - Review each approval and inspect the workspace before asking for follow-up work after an interruption.
 - Keep the machine awake, connected, and running if you need uninterrupted local execution.
 
@@ -117,7 +117,7 @@ If launch admission is uncertain (for example, a response was lost), Agav retain
 | Symptom | What to check |
 | --- | --- |
 | Detach is disabled | Set `backgroundJobsEnabled: true` in global config, restart Agav, and start a new ordinary task. It cannot retrofit the current in-process execution. |
-| “The current task is not owned by a background worker yet” | Wait for preparation and the detach hint. If it never appears, check whether you invoked a skill or service agent directly. |
+| “The current task is not owned by a background worker yet” | Wait for worker preparation to finish; the delayed hint is not required. If detaching remains unavailable, check whether you invoked a skill or service agent directly. |
 | “This session is no longer running” | The turn may have finished while you were detaching. Use `/resume` or `agav --resume` to inspect its terminal state. |
 | Session appears stuck | Look for `needs-approval` and its pending count. Resume and explicitly approve or deny the displayed request. |
 | “Background execution cannot reload this transient credential override” | Move the credential to the matching provider environment variable or global config, then start a new task. |

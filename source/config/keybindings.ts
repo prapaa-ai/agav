@@ -73,9 +73,9 @@ export const PROMPT_ACTIONS: KeybindingAction[] = [
 ];
 
 export const DEFAULT_KEYBINDINGS: Keybindings = {
-  detachSession: ["ctrl+k ctrl+d"],
+  detachSession: ["ctrl+d"],
   cancel: ["escape"],
-  toggleToolDetail: ["ctrl+d"],
+  toggleToolDetail: ["ctrl+k ctrl+e"],
   // Modified rather than a bare "v": the prompt keeps focus while the agent
   // works, so an unmodified letter is typed into it instead of reaching a
   // shortcut. Ctrl+G because Ctrl+V is the clipboard-image paste.

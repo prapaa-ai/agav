@@ -12,6 +12,7 @@ import RequestQueue from "./components/request-queue.js";
 import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
 import ToolConfirm from "./components/tool-confirm.js";
+import DetachHint from "./components/detach-hint.js";
 import WorkflowConsent from "./components/workflow-consent.js";
 import ContextWindowPrompt from "./components/context-window-prompt.js";
 import { DEFAULT_UNKNOWN_CONTEXT_WINDOW } from "./agent/loop.js";
@@ -1966,7 +1967,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           />
         )}
 
-        {canDetach && <Text dimColor>{formatKeybinding(keybindings, "detachSession")}: detach · worker continues · resume with /resume</Text>}
+        <DetachHint canDetach={canDetach} isLoading={isLoading} turnStartTime={turnStartTime} sessionId={sessionId} shortcut={formatKeybinding(keybindings, "detachSession")} />
 
         {!voice.phase && !pendingConfirmation && pendingContextWindowRequest && (
           <ContextWindowPrompt

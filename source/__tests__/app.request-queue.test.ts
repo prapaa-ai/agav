@@ -42,13 +42,13 @@ async function mount(keybindings = DEFAULT_KEYBINDINGS) {
 }
 
 describe("request queuing", () => {
-  it("resolves configured detach before consent guards and formats the footer", async () => {
+  it("resolves configured detach before consent guards without waiting for the hint", async () => {
     boundary.canDetach = true;
     boundary.confirmation = { toolName: "write_file", input: {}, resolve: vi.fn() };
     boundary.detach.mockReset().mockRejectedValue(new Error("fixture detach failure"));
     const ui = await mount({ ...DEFAULT_KEYBINDINGS, detachSession: ["ctrl+k ctrl+e"] });
     try {
-      expect(ui.output()).toContain("Ctrl+K Ctrl+E: detach");
+      expect(ui.output()).not.toContain("Ctrl+K Ctrl+E: detach");
       ui.stdin.emit("data", "\x18");
       await new Promise(r => setTimeout(r, 30));
       expect(boundary.detach).not.toHaveBeenCalled();

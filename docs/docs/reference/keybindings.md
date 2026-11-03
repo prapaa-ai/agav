@@ -11,7 +11,7 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Action | Default |
 | --- | --- |
 | Cancel current turn / focused subagent, or dismiss active UI | `Esc` |
-| Expand tool detail | `Ctrl+D` |
+| Expand tool detail | `Ctrl+K Ctrl+E` |
 | Plan detail panel | `Ctrl+G` |
 | Toggle thinking text | `Ctrl+T` |
 | Toggle compaction summary | `Ctrl+O` |
@@ -36,7 +36,7 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Cut prompt text | `Ctrl+X` |
 | Open the request queue when requests are queued; otherwise exit while idle with an empty prompt | `Ctrl+Q` |
 
-For worker-owned turns, **Ctrl+D** closes the UI without cancelling or answering pending consent. Enable `backgroundJobsEnabled: true` in global config before starting the task and wait for the detach hint. Return with `agav --resume <session-id>` or `/resume`. Ctrl+X cuts prompt text; Ctrl+Q manages the queue/idle exit. Neither is detach. See [Detached sessions](/features/detached-sessions) for requirements and cancellation semantics.
+For worker-owned turns, **Ctrl+D** closes the UI without cancelling or answering pending consent. Enable `backgroundJobsEnabled: true` in global config before starting the task. The shortcut works as soon as the worker is ready; it does not require the bold cyan detach hint, which appears after 30 seconds if the turn is still working and worker-owned. The hint disappears two seconds after your first keypress while it is visible, without disabling the shortcut. Return with `agav --resume <session-id>` or `/resume`. Ctrl+X cuts prompt text; Ctrl+Q manages the queue/idle exit. Neither is detach. See [Detached sessions](/features/detached-sessions) for requirements and cancellation semantics.
 
 ## Cancel versus exit
 
