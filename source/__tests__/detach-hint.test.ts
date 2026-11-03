@@ -26,7 +26,7 @@ async function mount(overrides: Partial<Parameters<typeof DetachHint>[0]> = {}) 
   await advance(0);
   const output = () => chunks.join("").replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
   const rerender = async (patch: Partial<typeof props>) => { Object.assign(props, patch); chunks.length = 0; ui.rerender(h(DetachHint, props)); await advance(0); };
-  return { props, ui, advance, output, rerender, stdin, clearOutput: () => { chunks.length = 0; } };
+  return { props, ui, advance, output, rerender, stdin, rawOutput: () => chunks.join(""), clearOutput: () => { chunks.length = 0; } };
 }
 
 it("waits 30 seconds, then highlights the configured shortcut", async () => {
@@ -131,4 +131,45 @@ it("does not dismiss on a key release without a key press", async () => {
   await advance(2_000);
   await rerender({ shortcut: "Ctrl+E" });
   expect(output()).toContain("Ctrl+E: detach");
+});
+
+it("dismisses two seconds after pointer movement, including split terminal reports", async () => {
+  const { advance, output, rawOutput, stdin, rerender, clearOutput } = await mount();
+  expect(rawOutput()).not.toContain("\x1b[?1003h");
+  await advance(30_000);
+  expect(rawOutput()).toContain("\x1b[?1003h");
+  stdin.emit("data", "\x1b[<35;12");
+  stdin.emit("data", ";5M");
+  await advance(1_999);
+  await rerender({ shortcut: "Still visible" });
+  expect(output()).toContain("Still visible: detach");
+  clearOutput();
+  await advance(1);
+  expect(rawOutput()).toContain("\x1b[?1003l");
+  await rerender({ shortcut: "Hidden" });
+  expect(output()).not.toContain(": detach");
+});
+
+it("does not postpone dismissal when the pointer keeps moving", async () => {
+  const { advance, output, stdin, rerender } = await mount();
+  await advance(30_000);
+  stdin.emit("data", "\x1b[<35;12;5M");
+  await advance(1_000);
+  stdin.emit("data", "\x1b[<35;13;5M");
+  await advance(1_000);
+  await rerender({ shortcut: "Hidden" });
+  expect(output()).not.toContain(": detach");
+});
+
+it("restores mouse tracking when the turn ends or the hint unmounts", async () => {
+  const { advance, rawOutput, rerender, ui, clearOutput } = await mount();
+  await advance(30_000);
+  clearOutput();
+  await rerender({ isLoading: false });
+  expect(rawOutput()).toContain("\x1b[?1003l");
+  await rerender({ isLoading: true, turnStartTime: Date.now() });
+  await advance(30_000);
+  clearOutput();
+  ui.unmount();
+  expect(rawOutput()).toContain("\x1b[?1003l");
 });

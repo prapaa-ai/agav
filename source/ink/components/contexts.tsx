@@ -117,6 +117,8 @@ export type StdinContextProps = {
 	 * Enable or disable bracketed paste mode on the terminal.
 	 */
 	readonly setBracketedPasteMode: (value: boolean) => void;
+	/** Temporarily request unpressed pointer motion reports; reference-counted. */
+	readonly setMouseMotionTracking: (value: boolean) => void;
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	readonly internal_exitOnCtrlC: boolean;
 	// eslint-disable-next-line @typescript-eslint/naming-convention
@@ -133,6 +135,7 @@ export const StdinContext = createContext<StdinContextProps>({
 	internal_eventEmitter: new EventEmitter(),
 	setRawMode() {},
 	setBracketedPasteMode() {},
+	setMouseMotionTracking() {},
 	isRawModeSupported: false,
 	// eslint-disable-next-line @typescript-eslint/naming-convention
 	internal_exitOnCtrlC: true,
