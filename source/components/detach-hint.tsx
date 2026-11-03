@@ -1,5 +1,8 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Text, useInput } from "../ink/index.js";
+
+import { useStdinContext } from "../ink/hooks/use-stdin.js";
+import type { ParsedMouse } from "../ink/parse-mouse.js";
 
 interface Props {
   canDetach: boolean;
@@ -13,10 +16,27 @@ interface Props {
 export default function DetachHint({ canDetach, isLoading, turnStartTime, sessionId, shortcut }: Props) {
   const [ready, setReady] = useState(false);
   const dismissalTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useInput((_input, key) => {
-    if (key.eventType === "release" || dismissalTimer.current !== undefined) return;
+  const { internal_eventEmitter, setMouseMotionTracking } = useStdinContext();
+  const visible = canDetach && isLoading && ready;
+  const dismiss = useCallback(() => {
+    if (dismissalTimer.current !== undefined) return;
     dismissalTimer.current = setTimeout(() => setReady(false), 2000);
-  }, { isActive: canDetach && isLoading && ready });
+  }, []);
+  useInput((_input, key) => {
+    if (key.eventType !== "release") dismiss();
+  }, { isActive: visible });
+  useEffect(() => {
+    if (!visible) return;
+    const onMouse = (event: ParsedMouse) => {
+      if (!event.wheel && (event.action === "move" || event.action === "drag")) dismiss();
+    };
+    internal_eventEmitter.on("mouse", onMouse);
+    setMouseMotionTracking(true);
+    return () => {
+      internal_eventEmitter.off("mouse", onMouse);
+      setMouseMotionTracking(false);
+    };
+  }, [visible, internal_eventEmitter, setMouseMotionTracking, dismiss]);
   useEffect(() => {
     setReady(false);
     dismissalTimer.current = undefined;
