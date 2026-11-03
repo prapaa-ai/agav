@@ -91,7 +91,7 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | `allowedTools` | Tool names or scoped patterns that can run without confirmation |
 | `search` | When `true`, enable the `web_search` tool (off by default). Also settable per session with `--search`. See [Built-in tools](/features/built-in-tools). |
 | `systemPrompt` | Additional project instructions |
-| `backgroundJobsEnabled` | Opt in (default `false`) to the `run_background_job` tool and `/job`. Jobs run outside the shell sandbox. See [Background jobs](/features/background-jobs). |
+| `backgroundJobsEnabled` | Opt in (default `false`) to `run_background_job`, `/job`, and worker-owned ordinary interactive turns with `/detach`. Set `true` before starting the task; no separate flag is needed for detached sessions. Shell jobs run outside the shell sandbox; session tools retain their permission and sandbox policy. See [Background jobs](/features/background-jobs) and [Detached sessions](/features/detached-sessions). |
 | `backgroundAutomation` | `on` (default) or `paused`. `paused` makes `agav job tick` and `agav job daemon` do nothing. Global config only. |
 | `hooks` | Optional commands for `afterEdit`, `afterShell`, and `preCommit` |
 | `theme` | Partial terminal color overrides |

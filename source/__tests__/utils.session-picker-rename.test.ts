@@ -120,6 +120,39 @@ afterEach(() => {
 });
 
 describe("session picker rename view", () => {
+  it("shows pending runtime state and permits rename but not deletion of an active worker", async () => {
+    stdout.columns = 48;
+    const sessions = makeSessions();
+    sessions[0]!.runtime = { generation: "generation", status: "needs-approval", pendingCount: 2, cwd: "/work" };
+    const promise = pickSession(sessions);
+    await tick();
+    expect(allOutput(stdout)).toContain("[needs-approval · 2 pending]");
+    stdin.send("d");
+    stdin.send("r");
+    await tick();
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(renameSession).not.toHaveBeenCalled();
+    expect(allOutput(stdout)).toContain("Rename session");
+    stdin.send("\x1b");
+    await wait(60);
+    stdin.send("\n");
+    expect(await promise).toEqual(sessions[0]);
+  });
+
+  it("offers deletion for a completed detached session", async () => {
+    const sessions = makeSessions();
+    sessions[0]!.runtime = { generation: "generation", status: "completed", pendingCount: 0, cwd: "/work" };
+    const promise = pickSession(sessions);
+    await tick();
+    expect(allOutput(stdout)).toContain("D delete · M/R rename");
+    expect(allOutput(stdout)).not.toContain("runtime read-only");
+    stdin.send("d");
+    await tick();
+    expect(deleteSession).toHaveBeenCalledWith(sessions[0]!.id);
+    stdin.send("\n");
+    expect(await promise).toEqual(sessions[1]);
+  });
+
   it("shows the rename prompt with a visible cancel/back hint", async () => {
     const promise = pickSession(makeSessions());
     await tick();
@@ -1359,5 +1392,25 @@ describe("session picker narrow terminal", () => {
     stdin.send("\r");
     const picked = await promise;
     expect(picked?.id).toBe(sessions[10]!.id);
+  });
+});
+
+describe("runtime session rows", () => {
+  it.each([40, 32])("shows status and pending count before a long title at %i columns", async columns => {
+    stdout.columns = columns;
+    const session = makeSessions()[0]!;
+    session.title = "A very long session title that cannot fit beside metadata";
+    session.runtime = { generation: "generation", status: "needs-approval", pendingCount: 2, cwd: "/repo" };
+    const promise = pickSession([session]);
+    const frame = allOutput(stdout);
+    expect(frame).toContain("needs-approval · 2 pending");
+    expect(frame).not.toContain("D delete");
+    stdin.send("dDrRmM");
+    await tick();
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(renameSession).not.toHaveBeenCalled();
+    expect(allOutput(stdout)).not.toContain("Rename session");
+    stdin.send("\n");
+    expect(await promise).toEqual(session);
   });
 });
