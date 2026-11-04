@@ -120,7 +120,7 @@ export async function saveSession(
     const effectivePermissionMode = permissionMode ?? runtime?.permissionMode ?? existing?.permissionMode;
     const now = new Date().toISOString();
     const record: SessionRecord = {
-      id, createdAt: runtime?.createdAt ?? existing?.createdAt ?? now, updatedAt: now, model, provider,
+      id, createdAt: runtime?.createdAt ?? existing?.createdAt ?? existing?.updatedAt ?? now, updatedAt: now, model, provider,
       title: sessionName ?? extractTitle(messages),
       ...(sessionName ? { name: sessionName } : {}),
       ...(branchParentId ? { parentId: branchParentId } : {}),
@@ -244,7 +244,9 @@ export async function renameSession(id: string, name: string): Promise<SessionRe
         updatedAt: updated.updatedAt, cwd: updated.cwd,
         runtime: { generation: updated.generation, status: updated.status, pendingCount, cwd: updated.cwd } };
     }
-    const renamed: SessionRecord = { ...saved!, name: trimmedName, title: trimmedName, updatedAt: new Date().toISOString() };
+    const now = new Date().toISOString();
+    const renamed: SessionRecord = { ...saved!, name: trimmedName, title: trimmedName,
+      createdAt: saved!.createdAt ?? saved!.updatedAt ?? now, updatedAt: now };
     await writeAtomic(join(getHistoryDir(), `${id}.json`), JSON.stringify(renamed, null, 2));
     return renamed;
   });

@@ -165,3 +165,34 @@ it("keeps creation time separate from activity across saves and renames", async 
     expect((await listSessions()).map(s => s.id)).toEqual([id, newer]);
   } finally { vi.useRealTimers(); }
 });
+
+it.each(["save", "rename"] as const)("preserves legacy timestamp history on %s", async operation => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const now = "2026-01-01T00:00:00.000Z";
+    const oldUpdatedAt = "2024-06-01T00:00:00.000Z";
+    const oldCreatedAt = "2024-01-01T00:00:00.000Z";
+    vi.setSystemTime(new Date(now));
+    await mkdir(join(root, "history"), { recursive: true });
+    for (const [index, timestamps] of [
+      { updatedAt: oldUpdatedAt },
+      { createdAt: oldCreatedAt, updatedAt: oldUpdatedAt },
+      { createdAt: oldCreatedAt },
+      {},
+    ].entries()) {
+      const id = `legacy-${index}`;
+      const createdAt = timestamps.createdAt ?? timestamps.updatedAt ?? now;
+      await writeFile(join(root, "history", `${id}.json`), JSON.stringify({
+        id, title: "Legacy", model: "model", provider: "openai", messages, ...timestamps,
+      }));
+      if (operation === "save") await saveSession(messages, "model", "openai", id);
+      else expect(await renameSession(id, "Renamed")).toMatchObject({ createdAt, updatedAt: now });
+      expect(await loadSession(id)).toMatchObject({ createdAt, updatedAt: now });
+      // Subsequent updates must retain the recovered date, not the new activity date.
+      vi.setSystemTime(new Date("2026-02-01T00:00:00.000Z"));
+      await saveSession(messages, "model", "openai", id);
+      expect(await loadSession(id)).toMatchObject({ createdAt, updatedAt: "2026-02-01T00:00:00.000Z" });
+      vi.setSystemTime(new Date(now));
+    }
+  } finally { vi.useRealTimers(); }
+});
