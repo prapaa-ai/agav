@@ -433,11 +433,24 @@ export async function pickSession(
       // where reverse-video doesn't render (accessibility) and so tests/tools
       // can detect it after ANSI is stripped. Reverse-video reinforces it.
       const marker = isSel ? "\x1b[32m❯\x1b[0m" : " ";
-      const suffix = `  \x1b[2m${project}\x1b[0m\x1b[2m · ${age} · ${msgs} · ${id}\x1b[0m`;
 
       if (isSel) {
-        lines.push(`  ${gutter}${marker} \x1b[7m\x1b[1m${title}\x1b[0m${suffix}`);
+        // Reverse-video spans the WHOLE row, not just the title. To keep the
+        // highlight continuous we build the row from its plain-text segments
+        // (no embedded \x1b[0m resets, which would cut the background short),
+        // pad to the full terminal width so the background fills the row, then
+        // wrap the whole thing in a single reverse-video span. The status
+        // gutter glyph still renders as a plain character so it stays visible
+        // inside the highlight.
+        const gutterGlyph = needsApproval(s) ? "!" : isRunning(s) ? "●" : " ";
+        const plainMeta = `  ${project} · ${age} · ${msgs} · ${id}`;
+        const plain = `  ${gutterGlyph}❯ ${title}${plainMeta}`;
+        // Pad to the clamp budget so the reverse background covers the full row.
+        const budget = Math.max(1, cols - 1);
+        const padded = plain.length >= budget ? plain.slice(0, budget) : plain.padEnd(budget);
+        lines.push(`\x1b[7m${padded}\x1b[0m`);
       } else {
+        const suffix = `  \x1b[2m${project}\x1b[0m\x1b[2m · ${age} · ${msgs} · ${id}\x1b[0m`;
         lines.push(`  ${gutter}${marker} \x1b[2m${title}\x1b[0m${suffix}`);
       }
     }
