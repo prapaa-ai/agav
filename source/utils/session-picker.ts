@@ -81,7 +81,9 @@ export async function pickSession(
   // How many sessions in the full list currently need approval — drives the
   // top-of-list CTA banner (req 4) regardless of the active filters.
   function pendingApprovalCount(): number {
-    return allItems.filter(needsApproval).length;
+    let count = 0;
+    for (const item of allItems) if (needsApproval(item)) count++;
+    return count;
   }
 
   // Compact relative age ("3m", "2h", "5d", "3w", "1y") — scans faster and is
@@ -130,9 +132,11 @@ export async function pickSession(
       return true;
     });
     if (sortRequested) {
-      filtered.sort((a, b) => sortKey === "created"
-        ? (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0)
-        : recencyOf(b) - recencyOf(a));
+      // Parse once per record, not on every sort comparison. Rebuild for each
+      // sort so renames and refreshed metadata cannot leave stale cached keys.
+      const timestamps = new Map(filtered.map(s => [s, sortKey === "created"
+        ? Date.parse(s.createdAt) || 0 : recencyOf(s)]));
+      filtered.sort((a, b) => timestamps.get(b)! - timestamps.get(a)!);
     }
     items = filtered;
     const next = priorId ? items.findIndex((s) => s.id === priorId) : -1;
@@ -154,15 +158,15 @@ export async function pickSession(
   // overwrite fewer lines than the previous tall frame and leave stale rows on
   // screen. The reserve covers the header lines (variable — see headerLineCount),
   // the 2-line footer, and one pad line.
-  function currentCapacity(): number {
+  function currentCapacity(headerLines = headerLineCount()): number {
     const rows = process.stdout.rows || 21;
-    return Math.max(1, rows - headerLineCount() - 3);
+    return Math.max(1, rows - headerLines - 3);
   }
 
   // Number of session rows actually DRAWN this frame: never more than match the
   // current filter, and never more than the viewport can hold.
-  function currentPageSize(): number {
-    return Math.min(items.length, currentCapacity());
+  function currentPageSize(capacity = currentCapacity()): number {
+    return Math.min(items.length, capacity);
   }
 
   const stdin = process.stdin;
@@ -209,8 +213,8 @@ export async function pickSession(
   //   6.   hint line (or operationError)
   //   7.   CTA banner — ONLY when pendingApprovalCount() > 0
   //   8.   blank spacer
-  function headerLineCount(): number {
-    return pendingApprovalCount() > 0 ? 8 : 7;
+  function headerLineCount(pending = pendingApprovalCount()): number {
+    return pending > 0 ? 8 : 7;
   }
 
   // Index of the first session row currently drawn on screen. Tracked in the
@@ -236,9 +240,15 @@ export async function pickSession(
   const graphemes = (text: string) => Array.from(segmenter.segment(text), s => s.segment);
 
   function fitCells(text: string, budget: number, pad = false): string {
+    // Printable ASCII is exactly one cell per code unit; Unicode still uses
+    // grapheme boundaries so emoji and combining sequences stay intact.
+    if (/^[\x20-\x7e]*$/.test(text)) {
+      const clipped = text.slice(0, budget);
+      return pad ? clipped.padEnd(budget) : clipped;
+    }
     let out = "";
     let width = 0;
-    for (const ch of graphemes(text)) {
+    for (const { segment: ch } of segmenter.segment(text)) {
       const cells = stringWidth(ch);
       if (width + cells > budget) break;
       out += ch;
@@ -254,7 +264,14 @@ export async function pickSession(
     // Keep SGR sequences intact, but count printable graphemes in terminal cells.
     for (const token of line.split(/(\x1b\[[0-9;?]*[a-zA-Z])/g)) {
       if (token.startsWith("\x1b[")) { out += token; continue; }
-      for (const ch of graphemes(token)) {
+      if (/^[\x20-\x7e]*$/.test(token)) {
+        const remaining = budget - visible;
+        if (token.length > remaining) return out + token.slice(0, remaining) + "\x1b[0m";
+        out += token;
+        visible += token.length;
+        continue;
+      }
+      for (const { segment: ch } of segmenter.segment(token)) {
         const cells = stringWidth(ch);
         if (visible + cells > budget) return out + "\x1b[0m";
         out += ch;
@@ -270,7 +287,10 @@ export async function pickSession(
       process.stdout.write(`\x1b[${totalLinesRendered}A\x1b[G`);
     }
 
-    const pageSize = currentPageSize();
+    const pending = pendingApprovalCount();
+    const headerLines = headerLineCount(pending);
+    const capacity = currentCapacity(headerLines);
+    const pageSize = currentPageSize(capacity);
     const cols = currentCols();
 
     const total = items.length;
@@ -367,7 +387,6 @@ export async function pickSession(
     // Header line 7 (conditional): the approval CTA banner. Shown whenever ANY
     // session needs approval, regardless of the active filters, so pending
     // consent is never buried. Bold + a shape glyph (not color alone).
-    const pending = pendingApprovalCount();
     if (pending > 0) {
       const sessionWord = pending === 1 ? "session needs" : "sessions need";
       lines.push(`\x1b[1;33m  ⚠ ${pending} ${sessionWord} your approval\x1b[0m\x1b[2m — press a to filter by status\x1b[0m`);
@@ -500,7 +519,7 @@ export async function pickSession(
     // drawn this pass: a filtered-short list must still pad to the full height so
     // its shorter frame overwrites every row of the previous (taller) frame
     // instead of leaving stale sessions on screen below it.
-    const frameHeight = currentCapacity() + headerLineCount() + 3; // header + rows + footer + pad
+    const frameHeight = capacity + headerLines + 3; // header + rows + footer + pad
     const rows = process.stdout.rows ?? frameHeight;
     const fixedHeight = Math.min(frameHeight, rows);
     while (clamped.length < fixedHeight) clamped.push("");

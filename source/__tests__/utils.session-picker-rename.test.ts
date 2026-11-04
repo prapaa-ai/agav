@@ -1745,3 +1745,53 @@ it.each([0, 3, 18])("keeps focused row %i fixed when toggling sort in either dir
   expect(createdRow).toContain(`Sort session ${29 - index}`);
   expect(result?.id).toBe(`sort-${index}`);
 });
+
+it.each([100, 1000, 10000])("preserves rendering and selection with %i sessions", async count => {
+  const sessions = Array.from({ length: count }, (_, i) => ({
+    ...makeSessions()[0]!, id: `perf-${i}`, title: `Session ${i}`,
+    cwd: i % 2 ? "/work/项目👩‍💻e\u0301" : "/work/project",
+    createdAt: new Date(Date.UTC(2024, 0, 1 + ((i * 37) % 365))).toISOString(),
+    updatedAt: new Date(Date.UTC(2025, 0, 1 + ((i * 17) % 365))).toISOString(),
+    runtime: { generation: "g", status: "needs-approval" as const, pendingCount: 1, cwd: "/work/project" },
+  }));
+  const date = vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 0, 1));
+  const start = performance.now();
+  let result: SessionRecord | null;
+  try {
+    const promise = pickSession(sessions);
+    for (let i = 0; i < 10; i++) stdin.send("j");
+    stdin.send("s"); stdin.send("s");
+    stdin.send("/"); stdin.send("Session 9"); stdin.send("\r");
+    stdin.send("\x7f");
+    stdin.send("\n");
+    result = await promise;
+  } finally { date.mockRestore(); }
+  const elapsed = performance.now() - start;
+  expect(result!).not.toBeNull();
+  for (const chunk of stdout.chunks) {
+    for (const line of chunk.split("\n")) expect(stringWidth(line)).toBeLessThan(stdout.columns);
+  }
+  if (process.env.AGAV_PICKER_BENCH) {
+    const { createHash } = await import("node:crypto");
+    const hash = createHash("sha256").update(stdout.chunks.join("")).digest("hex");
+    console.error(JSON.stringify({ count, elapsed, hash, selected: result!.id }));
+  }
+});
+
+it("parses each sort key once and preserves stable ties and invalid-date fallback", async () => {
+  const sessions = Array.from({ length: 100 }, (_, i) => ({
+    ...makeSessions()[0]!, id: `key-${i}`, title: `Key ${i}`,
+    createdAt: i < 2 ? "invalid" : "2024-01-01T00:00:00Z",
+  }));
+  const promise = pickSession(sessions);
+  const parse = vi.spyOn(Date, "parse");
+  let calls: number;
+  try {
+    stdin.send("s");
+    calls = parse.mock.calls.length;
+  } finally { parse.mockRestore(); }
+  stdin.send("\n");
+  expect((await promise)?.id).toBe("key-2");
+  // One parse per input plus visible-row ages, rather than two per comparison.
+  expect(calls!).toBeLessThanOrEqual(sessions.length + stdout.rows);
+});
