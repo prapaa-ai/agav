@@ -41,6 +41,14 @@ agav -P -c provider=ollama "summarize this repo"
 - Dedicated flags still win on conflict (`-c effort=low --effort high` → `high`), and overrides are never written back to `config.json`.
 - `agav login`, `agav logout`, `agav job`, `agav mcp`, and `agav workflows` reject `-c` outright: they dispatch before any session exists, so an override would be silently dropped. Use `agav login --control-plane <url>` to point login at a control plane.
 - Organization-managed policy outranks `-c` on every field it enforces; enforcement keys such as `orgManagedProvider` or `orgPermissionFloor` are rejected outright.
+### --provider-idle-timeout
+
+`--provider-idle-timeout <ms>` sets an idle timeout in milliseconds waiting for provider stream activity (positive safe integer from 1 to 2147483647, or `disabled`).
+
+- The idle timer starts when an LLM provider stream attempt begins (bounding time to the first event) and resets on each stream event (text, thinking, tool deltas, usage, retry).
+- The idle clock is stopped while tools, user confirmations, and retry backoffs run.
+- On expiry, the attempt is aborted, partial text is preserved in history without dispatching incomplete tool calls, and the session remains interactive and ready for subsequent prompts.
+- Overrides `providerIdleTimeout` in configuration for the current session. Pass `disabled` or `off` to disable the idle timer and retain provider SDK defaults.
 
 ## Options
 
@@ -56,9 +64,10 @@ agav -P -c provider=ollama "summarize this repo"
 | `--print`, `-P` | Print mode |
 | `--stream` | Stream print-mode response text |
 | `--output-schema <json\|@file>` | Validate print-mode output against JSON Schema |
-| `--permission <json>` | Tool policy for `agav run` |
+| `--permission <json>` | JSON tool policy for `agav run` (distinct from the interactive [`/permission`](/reference/slash-commands) session mode) |
 | `--max-turns <number>` | Limit the number of agent iterations per prompt in interactive, print, and run modes |
 | `--config`, `-c key=value` | Override one config value for the session; repeatable ([details](#--config--c)) |
+| `--provider-idle-timeout <ms>` | Idle timeout in milliseconds waiting for provider stream activity (1–2147483647 or `disabled`) |
 | `--resume`, `-r [id]` | Open the session picker or resume by ID prefix |
 | `--name <title>` | Set the initial name for a new interactive session. Interactive mode only; rejected with `-P`/`run`. |
 | `--search` | Enable the web search tool for this session |
@@ -68,7 +77,8 @@ agav -P -c provider=ollama "summarize this repo"
 | `--version`, `-v` | Print the version |
 | `--help`, `-h` | Print help |
 
-Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, and max turns. `--config` accepts `--config key=value` and `--config=key=value`; `-c` takes its `key=value` argument as a single token.
+Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, and max turns  and provider idle timeout. 
+`--config` accepts `--config key=value` and `--config=key=value`; `-c` takes its `key=value` argument as a single token.
 
 ## Startup provider and model selection
 

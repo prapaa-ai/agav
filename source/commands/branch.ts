@@ -54,6 +54,7 @@ async function listBranches(context: CommandContext): Promise<CommandResult> {
 export const branchCommand: SlashCommand = {
   name: "branch",
   description: "Fork a new session or list branches",
+  argumentHint: "[name]",
   usage: "Usage: /branch [name]\n\n  /branch              List all branches of this session\n  /branch experiment   Fork current session into a new branch\n\nBranching creates a copy of the current conversation so you can\nexplore a different approach without losing the original.",
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const name = args.trim();

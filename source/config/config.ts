@@ -3,22 +3,18 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
 import { decrypt, encrypt, isEncrypted } from "../utils/encrypt.js";
-import {
-  isKeychainAvailable,
-  isKeychainRef,
-  isStoreUnresponsive,
-  keychainAccount,
-  keychainRef,
-  getSecret,
-  setSecret,
-  deleteSecret,
-} from "../utils/keychain.js";
 import { loadOrgPolicy, applyOrgConfig, applyGatewayToken } from "./org-config.js";
 
 export type PermissionMode = "ask" | "auto-accept" | "deny-writes";
 export type EffortLevel = "minimal" | "low" | "medium" | "high" | "max";
 
 export const EFFORT_LEVELS: readonly EffortLevel[] = ["minimal", "low", "medium", "high", "max"];
+
+export const PERMISSION_MODES: readonly PermissionMode[] = ["ask", "auto-accept", "deny-writes"];
+
+export function isPermissionMode(value: unknown): value is PermissionMode {
+  return typeof value === "string" && PERMISSION_MODES.includes(value as PermissionMode);
+}
 
 const DEFAULT_MARKETPLACE_FALLBACK = "https://raw.githubusercontent.com/prapaa-ai/agav-marketplace/main";
 
@@ -83,7 +79,7 @@ export interface AgavConfig {
   /** Customized footer layout (which segments show and their order). Reconciled
    * against the current catalog on use; see config/status-bar-layout.ts. */
   statusBar?: import("./status-bar-layout.js").StatusBarLayout;
-  /** Opt-in; when unset or false, `run_background_job` and `/job` refuse to do anything. */
+  /** Opt-in to background jobs and worker-owned interactive turns with `/detach`. */
   backgroundJobsEnabled?: boolean;
   /** Global-only opt-in to foreground JSON workflows; also requires backgroundJobsEnabled. */
   workflowsEnabled?: boolean;
@@ -102,6 +98,13 @@ export interface AgavConfig {
  */
   backgroundAutomation?: "on" | "paused";
   search?: boolean;
+  /**
+   * Idle timeout in milliseconds waiting for provider stream activity.
+   * Clock starts when an attempt begins and resets on stream activity.
+   * On expiry, the attempt is aborted. When unset or disabled, Agav adds
+   * no timer and existing SDK defaults stay unchanged.
+   */
+  providerIdleTimeout?: number;
   /**
    * Organization policy (org tier) fields. Populated only when an admin ships an
    * org config; see config/org-config.ts. These take precedence over global,
@@ -216,7 +219,7 @@ export const PROJECT_CONFIG_TEMPLATE = {
     eg: false,
   },
   backgroundJobsEnabled: {
-    description: "Opt in to the background-jobs subsystem, enabling the run_background_job tool and /job command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
+    description: "Opt in to the background-jobs subsystem, enabling worker-owned interactive turns with /detach, and the run_background_job tool and /job command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
     type: "boolean",
     eg: false,
   },
@@ -334,6 +337,11 @@ export const PROJECT_CONFIG_TEMPLATE = {
         tools: ["echo", "add"],
       },
     },
+  },
+  providerIdleTimeout: {
+    description: "Idle timeout in milliseconds waiting for provider stream activity ('disabled' or 'off' to unset). When unset or disabled, Agav adds no timer and existing SDK defaults stay unchanged.",
+    type: "number",
+    eg: 60000,
   },
   search: {
     description: "Whether web search is enabled.",
@@ -459,7 +467,48 @@ const PROJECT_CONFIG_DENY = new Set<string>([
 ]);
 
 /** Ignore invalid hand-edited values instead of passing unsupported effort levels to providers. */
+/**
+ * Validate provider-response idle timeout.
+ * Accepts a positive finite integer in milliseconds (1 to 2,147,483,647)
+ * or explicit disabled forms (null, undefined, "disabled", "off").
+ * Rejects invalid, non-finite, zero, negative, or out-of-range values with a clear error.
+ */
+export function validateProviderIdleTimeout(value: unknown): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed === "disabled" || trimmed === "off") {
+      return undefined;
+    }
+    if (/^[0-9]+$/.test(value.trim())) {
+      const num = Number(value.trim());
+      if (Number.isSafeInteger(num) && num > 0 && num <= 2147483647) {
+        return num;
+      }
+    }
+    throw new Error(
+      `Invalid providerIdleTimeout: "${String(value)}". providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
+    );
+  }
+  if (typeof value === "number") {
+    if (Number.isSafeInteger(value) && value > 0 && value <= 2147483647) {
+      return value;
+    }
+    throw new Error(
+      `Invalid providerIdleTimeout: ${value}. providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
+    );
+  }
+  throw new Error(
+    `Invalid providerIdleTimeout: "${String(value)}". providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
+  );
+}
+
 function sanitizeConfig(merged: AgavConfig): void {
+  if (merged.providerIdleTimeout !== undefined) {
+    merged.providerIdleTimeout = validateProviderIdleTimeout(merged.providerIdleTimeout);
+  }
   if (!isEffortLevel(merged.effort)) {
     merged.effort = DEFAULT_CONFIG.effort;
   }
@@ -535,42 +584,20 @@ export async function loadGlobalConfig(): Promise<AgavConfig> {
  */
 function safeDecrypt(value: string): string | undefined {
   const plain = decrypt(value);
+  // Legacy OS-store references are not credentials. Re-enter the actual key.
+  if (plain.startsWith("keychain:")) return undefined;
   if (isEncrypted(value) && isEncrypted(plain)) return undefined; // decryption failed
   return plain || undefined;
 }
 
-/**
- * Resolve a secret value read from a config file into its plaintext. A stored
- * value is one of:
- *   - a `keychain:` placeholder — the real secret lives in the OS credential
- *     store; look it up by account. On any store failure, return undefined so
- *     the provider reports a missing key rather than leaking the placeholder.
- *   - an `enc:` ciphertext or plaintext — safeDecrypt() handles both (file
- *     fallback), returning undefined on an undecryptable ciphertext.
- */
-async function resolveStoredSecret(value: string | undefined): Promise<string | undefined> {
-  if (!value) return undefined;
-  if (isKeychainRef(value)) {
-    const secret = await getSecret(keychainAccount(value));
-    return secret || undefined;
-  }
-  return safeDecrypt(value);
-}
-
-/**
- * Pick the highest-precedence API-key source and resolve it to plaintext. An
- * env var wins (and may itself be an enc: value a user exported); otherwise the
- * project file, then the global file, then the built-in default — each of which
- * may be a keychain: or enc: stored value.
- */
-async function resolveApiKey(
+/** Resolve environment > project > global > default without OS-store access. */
+function resolveApiKey(
   envValue: string | undefined,
   projectValue: string | undefined,
   globalValue: string | undefined,
   defaultValue: string | undefined,
-): Promise<string | undefined> {
-  if (envValue !== undefined) return safeDecrypt(envValue);
-  return (await resolveStoredSecret(projectValue ?? globalValue ?? defaultValue)) || undefined;
+): string | undefined {
+  return safeDecrypt(envValue ?? projectValue ?? globalValue ?? defaultValue ?? "");
 }
 
 /** Load config from global and project files, then apply environment-derived overrides. */
@@ -610,31 +637,29 @@ export async function loadConfig(): Promise<AgavConfig> {
     ];
   }
 
-  // Resolve each API key once, preferring an env var, then the project file,
-  // then the global file, then the built-in default. A stored value may be a
-  // keychain: placeholder (secret lives in the OS credential store) or an enc:
-  // ciphertext (file fallback); resolveStoredSecret handles both.
-  merged.anthropicApiKey = await resolveApiKey(
+  // Environment variables override project and global file credentials.
+  // Plaintext and existing enc: values both work; saves encrypt file credentials.
+  merged.anthropicApiKey = resolveApiKey(
     process.env["ANTHROPIC_API_KEY"],
     projectConfig.anthropicApiKey, globalConfig.anthropicApiKey, DEFAULT_CONFIG.anthropicApiKey,
   );
-  merged.openaiApiKey = await resolveApiKey(
+  merged.openaiApiKey = resolveApiKey(
     process.env["OPENAI_API_KEY"],
     projectConfig.openaiApiKey, globalConfig.openaiApiKey, DEFAULT_CONFIG.openaiApiKey,
   );
-  merged.openrouterApiKey = await resolveApiKey(
+  merged.openrouterApiKey = resolveApiKey(
     process.env["OPENROUTER_API_KEY"],
     projectConfig.openrouterApiKey, globalConfig.openrouterApiKey, DEFAULT_CONFIG.openrouterApiKey,
   );
-  merged.nvidiaApiKey = await resolveApiKey(
+  merged.nvidiaApiKey = resolveApiKey(
     process.env["NVIDIA_API_KEY"],
     projectConfig.nvidiaApiKey, globalConfig.nvidiaApiKey, DEFAULT_CONFIG.nvidiaApiKey,
   );
-  merged.deepseekApiKey = await resolveApiKey(
+  merged.deepseekApiKey = resolveApiKey(
     process.env["DEEPSEEK_API_KEY"],
     projectConfig.deepseekApiKey, globalConfig.deepseekApiKey, DEFAULT_CONFIG.deepseekApiKey,
   );
-  merged.geminiApiKey = await resolveApiKey(
+  merged.geminiApiKey = resolveApiKey(
     process.env["GEMINI_API_KEY"],
     projectConfig.geminiApiKey, globalConfig.geminiApiKey, DEFAULT_CONFIG.geminiApiKey,
   );
@@ -664,7 +689,7 @@ export async function loadConfig(): Promise<AgavConfig> {
     const p = parseInt(process.env["OLLAMA_PORT"]!, 10);
     if (!isNaN(p)) merged.ollamaPort = p;
   }
-  merged.ollamaApiKey = await resolveApiKey(
+  merged.ollamaApiKey = resolveApiKey(
     process.env["OLLAMA_API_KEY"],
     projectConfig.ollamaApiKey, globalConfig.ollamaApiKey, DEFAULT_CONFIG.ollamaApiKey,
   );
@@ -693,77 +718,7 @@ export async function loadConfig(): Promise<AgavConfig> {
   // and an org-pinned Authorization header (which wins over the token).
   applyGatewayToken(merged, org.config, org.gatewayToken);
 
-  // Remember only failed file-backed keychain lookups, never environment keys.
-  // The symbol survives the shallow config copies used by the TUI, but is omitted
-  // by JSON serialization (config saves, transcripts and exports).
-  const pending: Partial<Record<ApiKeyField, string>> = {};
-  for (const field of Object.keys(KEYCHAIN_ACCOUNTS) as ApiKeyField[]) {
-    const stored = globalConfig[field];
-    if (process.env[API_KEY_ENV[field]] === undefined && !merged[field]
-      && typeof stored === "string" && isKeychainRef(stored)) pending[field] = stored;
-  }
-  (merged as RecoverableConfig)[PENDING_KEYCHAIN_REFS] = pending;
   return merged;
-}
-
-/** config.json account names for each API key stored in the OS credential store. */
-const KEYCHAIN_ACCOUNTS = {
-  anthropicApiKey: "anthropic-api-key",
-  openaiApiKey: "openai-api-key",
-  openrouterApiKey: "openrouter-api-key",
-  nvidiaApiKey: "nvidia-api-key",
-  deepseekApiKey: "deepseek-api-key",
-  geminiApiKey: "gemini-api-key",
-  ollamaApiKey: "ollama-api-key",
-} as const;
-
-type ApiKeyField = keyof typeof KEYCHAIN_ACCOUNTS;
-const API_KEY_ENV: Record<ApiKeyField, string> = {
-  anthropicApiKey: "ANTHROPIC_API_KEY", openaiApiKey: "OPENAI_API_KEY",
-  openrouterApiKey: "OPENROUTER_API_KEY", nvidiaApiKey: "NVIDIA_API_KEY",
-  deepseekApiKey: "DEEPSEEK_API_KEY", geminiApiKey: "GEMINI_API_KEY", ollamaApiKey: "OLLAMA_API_KEY",
-};
-const PENDING_KEYCHAIN_REFS = Symbol("pendingKeychainRefs");
-type RecoverableConfig = AgavConfig & { [PENDING_KEYCHAIN_REFS]?: Partial<Record<ApiKeyField, string>> };
-
-/**
- * Retry only unresolved keychain references from this session's config load.
- * Called by model discovery, not a full config reload: session/org settings and
- * explicit credentials stay untouched. Store cooldown/deadlines remain in force.
- * Revalidate the persisted reference before and after lookup so a cleared or
- * replaced reference is not resurrected. Returns unresolved field names only,
- * never helper errors, accounts or secret values.
- */
-export async function refreshStoredApiKeys(config: AgavConfig): Promise<string[]> {
-  const pending = (config as RecoverableConfig)[PENDING_KEYCHAIN_REFS];
-  if (!pending) return [];
-  try {
-    // Serialize lookup with account rotation/clear as well: replacing a secret
-    // under the same account leaves its reference unchanged.
-    return await withConfigLock(async () => {
-      const unresolved: string[] = [];
-      for (const field of Object.keys(pending) as ApiKeyField[]) {
-        const ref = pending[field];
-        if (!ref || config[field] !== undefined || process.env[API_KEY_ENV[field]] !== undefined
-          || (field === "openaiApiKey" && config.openaiGatewayAuth)) continue;
-        try {
-          if ((await readStoredConfig())[field] !== ref) continue;
-          const value = await getSecret(keychainAccount(ref));
-          if ((await readStoredConfig())[field] !== ref) continue;
-          // A caller may have supplied a credential while the lookup was pending.
-          if (value && config[field] === undefined && process.env[API_KEY_ENV[field]] === undefined) {
-            config[field] = value;
-          } else if (!config[field]) unresolved.push(field);
-        } catch {
-          unresolved.push(field);
-        }
-      }
-      return unresolved;
-    });
-  } catch {
-    return (Object.keys(pending) as ApiKeyField[]).filter(field =>
-      config[field] === undefined && process.env[API_KEY_ENV[field]] === undefined);
-  }
 }
 
 /** Atomically write serialized config to the global config file (temp + rename, 0600). */
@@ -805,30 +760,18 @@ async function readStoredConfig(): Promise<Record<string, unknown>> {
   }
 }
 
-/**
- * Persist config to the global config file. API keys are stored in the OS
- * credential store when one is available (preferred), leaving only a
- * `keychain:` placeholder in config.json so the plaintext never touches the
- * file. When no store is available (e.g. a headless box without libsecret) we
- * fall back to the existing AES-encrypted-in-file representation.
- *
- * An absent/empty key field is NOT treated as a request to delete the stored
- * secret: a live AgavConfig can carry an undefined key purely because a
- * transient credential-store read failed during loadConfig, and deleting on
- * that would destroy a working credential. Instead the existing stored value
- * (keychain ref or enc: ciphertext) is preserved from the on-disk file. Use
- * clearStoredApiKey() for an explicit removal.
- */
+/** Persist config with API keys encrypted in-file, never in an OS store. */
 export async function saveConfig(config: AgavConfig): Promise<void> {
   await withConfigLock(async () => {
     const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
     const out: Record<string, unknown> = { ...safe };
 
-    const existing = await readStoredConfig();
-
-    // Session `-c` values must never reach disk: restore each overridden path's stored value.
+    // Session `-c` values must never reach disk: restore each overridden path's
+    // stored value (and drop it entirely when the path is absent on disk), so a
+    // save never bakes a transient override into config.json.
     const overridden = new Set<string>();
     if (sessionConfigOverrides) {
+      const existing = await readStoredConfig();
       for (const { path } of sessionConfigOverrides.entries) {
         overridden.add(path[0]!);
         let storedValue: unknown = existing;
@@ -849,73 +792,21 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
       }
     }
 
-    const keychain = await isKeychainAvailable();
-    const keys: Array<[keyof typeof KEYCHAIN_ACCOUNTS, string | undefined]> = [
-      ["anthropicApiKey", anthropicApiKey],
-      ["openaiApiKey", openaiApiKey],
-      ["openrouterApiKey", openrouterApiKey],
-      ["nvidiaApiKey", nvidiaApiKey],
-      ["deepseekApiKey", deepseekApiKey],
-      ["geminiApiKey", geminiApiKey],
-      ["ollamaApiKey", ollamaApiKey],
-    ];
-
-    for (const [field, value] of keys) {
-      if (overridden.has(field)) continue; // already restored; never store a session value
-      const account = KEYCHAIN_ACCOUNTS[field];
-      if (!value) {
-        // Absent/empty: preserve whatever is already persisted (never delete the
-        // store entry here — see the docblock). If nothing was stored, leave the
-        // field unset.
-        const prior = existing[field];
-        if (typeof prior === "string" && prior.length > 0) out[field] = prior;
-        continue;
-      }
-      if (keychain && (await setSecret(account, value))) {
-        out[field] = keychainRef(account);
-      } else {
-        // No store, or the store write failed: fall back to in-file encryption so
-        // a save never silently loses the user's key.
-        out[field] = encrypt(value);
-      }
-    }
-
+    // A session-supplied credential was already restored above (or dropped);
+    // never encrypt it over the stored value.
+    if (anthropicApiKey && !overridden.has("anthropicApiKey")) out.anthropicApiKey = encrypt(anthropicApiKey);
+    if (openaiApiKey && !overridden.has("openaiApiKey")) out.openaiApiKey = encrypt(openaiApiKey);
+    if (openrouterApiKey && !overridden.has("openrouterApiKey")) out.openrouterApiKey = encrypt(openrouterApiKey);
+    if (nvidiaApiKey && !overridden.has("nvidiaApiKey")) out.nvidiaApiKey = encrypt(nvidiaApiKey);
+    if (deepseekApiKey && !overridden.has("deepseekApiKey")) out.deepseekApiKey = encrypt(deepseekApiKey);
+    if (geminiApiKey && !overridden.has("geminiApiKey")) out.geminiApiKey = encrypt(geminiApiKey);
+    if (ollamaApiKey && !overridden.has("ollamaApiKey")) out.ollamaApiKey = encrypt(ollamaApiKey);
     await writeConfigAtomic(out);
   });
 }
 
-/**
- * Explicitly remove a provider API key: delete it from the OS credential store
- * (if present) and from the global config file. This is the deliberate counterpart
- * to saveConfig's non-destructive handling of absent fields.
- */
-export async function clearStoredApiKey(field: keyof typeof KEYCHAIN_ACCOUNTS): Promise<void> {
-  const account = KEYCHAIN_ACCOUNTS[field];
-  await withConfigLock(async () => {
-    // Remove the config FIELD first, then the store secret. If we crash between
-    // the two, the config no longer references the secret (no dangling
-    // placeholder that resolves to nothing), and the orphaned store entry is
-    // harmlessly overwritten or re-cleared later. Doing the delete first would
-    // risk the opposite: a failed config write leaving a placeholder pointing at
-    // an already-deleted secret.
-    const stored = await readStoredConfig();
-    if (field in stored) {
-      delete stored[field];
-      await writeConfigAtomic(stored);
-    }
-    if (await isKeychainAvailable()) {
-      await deleteSecret(account);
-    }
-  });
-}
-
-// A single lock serializes EVERY writer of the global config file — the
-// migration, saveConfig, saveStatusBarLayout, and clearStoredApiKey — so no two
-// read-modify-write cycles can interleave and clobber each other (a credential
-// rotation vs. a migration, a status-bar edit vs. a key save, etc.).
+// Serialize config and status-bar writes to prevent lost concurrent edits.
 const CONFIG_LOCK_PATH = join(AGAV_DIR, ".config.lock");
-/** Overall wall-clock budget for the whole migration (bounds first-run startup). */
-const MIGRATION_BUDGET_MS = 15_000;
 /** How long a blocking writer waits before rejecting without changing config. */
 const CONFIG_LOCK_WAIT_MS = 5_000;
 /** Poll interval while waiting for a contended lock. */
@@ -931,7 +822,7 @@ class ConfigLockTimeoutError extends Error {
 
 /**
  * In-process serialization. Every config writer in THIS process chains onto a
- * single promise, so concurrent saves / a migration / a status-bar write never
+ * single promise, so concurrent saves / a status-bar write never
  * interleave regardless of the cross-process file lock. This is the dominant real
  * case (one Agav process) and is race-free by construction (single-threaded
  * event loop); the file lock below only guards the much rarer multi-process case.
@@ -988,8 +879,8 @@ async function tryAcquireConfigLock(): Promise<(() => Promise<void>) | null> {
  * Run `fn` while holding the shared config lock, WAITING (bounded poll) for a
  * contended lock. If the lock cannot be acquired within the budget, FAIL CLOSED
  * by throwing rather than mutating without the lock — an unlocked write could
- * interleave with another process and leave a `keychain:` reference whose secret
- * was deleted, or overwrite a credential rotation. A rejected save is recoverable
+ * interleave with another process and overwrite a credential rotation or settings
+ * edit. A rejected save is recoverable
  * (the caller/user retries); a corrupted credential transaction is not.
  *
  * Wrapped in the in-process mutex so same-process writers serialize deterministically
@@ -1014,140 +905,6 @@ async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * One-time, best-effort migration of existing in-file secrets into the OS
- * credential store. Run once at startup so users upgrading to the keychain-aware
- * build transition automatically on their next launch.
- *
- * It is a surgical read-rewrite of the global config.json — NOT a saveConfig():
- * saveConfig persists the live merged config, which carries env-derived keys and
- * CLI/session overrides that must never be baked into the file. Here we touch
- * only the API-key fields actually stored as `enc:` (or legacy plaintext) in the
- * file, replacing each with a `keychain:` placeholder after the secret lands in
- * the store. Every other key — and any already-migrated `keychain:` ref — is
- * written back verbatim.
- *
- * Safety properties:
- *   - No store available  → returns immediately; nothing is touched.
- *   - A per-key store write that fails leaves that key's `enc:` value in place,
- *     so a key is never lost and the user can still authenticate.
- *   - Nothing to migrate  → no write occurs (no needless config churn).
- *   - Atomic write (temp + rename, mode 0600) mirrors saveStatusBarLayout so a
- *     crash mid-write cannot truncate the config.
- *   - Never throws: a migration failure must not block startup.
- *
- * @returns the number of secrets moved into the store (0 when nothing changed).
- */
-export async function migrateSecretsToKeychain(): Promise<number> {
-  return withInProcessLock(async () => {
-    try {
-      // Read the config FIRST (cheap) and only probe/lock if there is actually an
-      // in-file secret to move. Detecting the store spawns a child process
-      // (notably a cold PowerShell on Windows), so gating on a cheap file read
-      // keeps steady-state startup — the vast majority of launches, where keys are
-      // already migrated, set via env, or absent — free of any subprocess or lock.
-      let preview: Record<string, unknown>;
-      try {
-        const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
-        if (typeof parsed !== "object" || parsed === null) return 0;
-        preview = parsed as Record<string, unknown>;
-      } catch {
-        return 0; // missing or corrupt config: nothing to migrate
-      }
-      const anyMigratable = Object.keys(KEYCHAIN_ACCOUNTS).some((field) => {
-        const v = preview[field];
-        return typeof v === "string" && v.length > 0 && !isKeychainRef(v);
-      });
-      if (!anyMigratable) return 0;
-
-      // Serialize the whole read→store→rewrite transaction against concurrent
-      // startups/writers so a slow migration cannot clobber another process's
-      // credential rotation or config edit. A live peer's lock means another
-      // process is already migrating — skip this launch.
-      const release = await tryAcquireConfigLock();
-      if (!release) return 0;
-
-      const deadline = Date.now() + MIGRATION_BUDGET_MS;
-      const budgetLeft = () => Date.now() < deadline;
-      try {
-        // Re-read UNDER THE LOCK so we act on the authoritative current state.
-        let snapshot: Record<string, unknown>;
-        try {
-          const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf-8"));
-          if (typeof parsed !== "object" || parsed === null) return 0;
-          snapshot = parsed as Record<string, unknown>;
-        } catch {
-          return 0;
-        }
-
-        // Decrypt up front so an undecryptable `enc:` value (config restored under
-        // a different user/home, or corrupt) is skipped rather than stored as a
-        // bogus "secret".
-        const pending: Array<{ field: string; account: string; plaintext: string }> = [];
-        for (const [field, account] of Object.entries(KEYCHAIN_ACCOUNTS)) {
-          const value = snapshot[field];
-          if (typeof value !== "string" || value.length === 0) continue;
-          if (isKeychainRef(value)) continue;
-          const plaintext = safeDecrypt(value);
-          if (!plaintext) continue;
-          pending.push({ field, account, plaintext });
-        }
-        if (pending.length === 0) return 0;
-
-        if (!(await isKeychainAvailable())) return 0;
-
-        // Store each secret, honoring the overall budget. A placeholder is recorded
-        // ONLY when the secret is both stored AND still resolvable this process: if
-        // a store call trips the breaker (timeout), getSecret() would fast-fail for
-        // the rest of this launch, so committing the placeholder would orphan the
-        // key until restart. In that case we stop and leave the file value intact.
-        const placeholders = new Map<string, string>();
-        for (const { field, account, plaintext } of pending) {
-          if (!budgetLeft() || isStoreUnresponsive()) break;
-          const stored = await setSecret(account, plaintext);
-          if (isStoreUnresponsive()) break; // this call just timed out — do not commit
-          if (stored) placeholders.set(field, keychainRef(account));
-          // A non-timeout failure leaves the file value untouched; continue.
-        }
-        if (placeholders.size === 0) return 0;
-
-        // Re-read immediately before writing and merge ONLY migrated fields onto
-        // the current file, and only when the field still holds the exact value we
-        // migrated (so a key rotated concurrently is never overwritten). A read
-        // failure here means the secrets are already stored; skip the rewrite and
-        // let the next launch retry (idempotent).
-        let current: Record<string, unknown>;
-        try {
-          current = await readStoredConfig();
-        } catch {
-          return placeholders.size;
-        }
-
-        let applied = 0;
-        for (const [field, ref] of placeholders) {
-          if (current[field] === snapshot[field]) {
-            current[field] = ref;
-            applied++;
-          }
-        }
-        if (applied === 0) return placeholders.size;
-
-        try {
-          await writeConfigAtomic(current);
-        } catch {
-          // Secrets are already in the store; next launch retries (idempotent).
-          return placeholders.size;
-        }
-        return applied;
-      } finally {
-        await release();
-      }
-    } catch {
-      return 0;
-    }
-  });
-}
-
-/**
  * Persist only the status bar layout to the global config file, preserving every
  * other key exactly as written on disk.
  *
@@ -1163,7 +920,7 @@ export async function migrateSecretsToKeychain(): Promise<number> {
 export async function saveStatusBarLayout(
   layout: import("./status-bar-layout.js").StatusBarLayout | undefined,
 ): Promise<void> {
-  // Held under the shared config lock so a concurrent saveConfig / key migration
+  // Held under the shared config lock so a concurrent saveConfig
   // cannot read a stale copy and clobber this layout change (or vice versa).
   await withConfigLock(async () => {
     // A missing/corrupt file resolves to {} (effectively replaced); a real read
@@ -1174,8 +931,7 @@ export async function saveStatusBarLayout(
     } else {
       stored.statusBar = layout;
     }
-    // writeConfigAtomic reuses the stored object so already-encrypted API keys and
-    // keychain: placeholders stay untouched, and the temp+rename write stays atomic.
+    // Preserve stored values; the temp+rename write stays atomic.
     await writeConfigAtomic(stored);
   });
 }

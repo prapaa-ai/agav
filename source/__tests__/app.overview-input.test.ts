@@ -131,8 +131,11 @@ describe("overview input routing", () => {
   it("keeps completion arrows and Enter out of the overview", async () => {
     const { instance, key } = await mount();
     try {
+      // "/st" matches [/steer, /status]; /steer (no auto-submit) is selected
+      // first. Enter completes it to "/steer " rather than auto-running, and the
+      // arrow/Enter must not leak into the overview. (Down would move to
+      // /status, which auto-submits — a different path exercised elsewhere.)
       await key("/st");
-      await key("\x1b[B");
       await key("\r");
       expect(details()).toEqual([]);
       // Complete /steer, then clear the prompt. Completion must not have

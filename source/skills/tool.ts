@@ -13,8 +13,11 @@ interface SkillToolDeps {
     model: string;
     systemPrompt: string;
     permissionMode: PermissionMode;
+    /** Original background consent mode, independent of generic Always. */
+    backgroundPermissionMode?: PermissionMode;
     effort: EffortLevel;
     iterationsBudget: { remaining: number, total: number };
+    providerIdleTimeout?: number;
   };
   /** Full parent config for deriving the org selection/permission policy. */
   getProviderConfig?: () => AgavConfig;
@@ -69,9 +72,11 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
           model: config.model,
           systemPrompt: context?.systemPrompt ?? config.systemPrompt,
           permissionMode: context?.permissionMode ?? config.permissionMode,
+          backgroundPermissionMode: config.backgroundPermissionMode,
           contextMessages: context?.conversation,
           effort: config.effort,
           iterationsBudget: config.iterationsBudget,
+          providerIdleTimeout: config.providerIdleTimeout,
           policy: providerConfig ? {
             provider: providerConfig.provider,
             orgPermissionFloor: providerConfig.orgPermissionFloor,

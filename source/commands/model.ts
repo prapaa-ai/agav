@@ -1,5 +1,5 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
-import { refreshStoredApiKeys, type AgavConfig } from "../config/config.js";
+import { type AgavConfig } from "../config/config.js";
 import { providerSetupHints, orgPolicyError } from "../config/startup.js";
 import { fetchVertexAIModels } from "../providers/vertex-ai.js";
 
@@ -201,10 +201,7 @@ export function findMatchingModels(models: FetchedModel[], model: string): Fetch
 
 /** Query every configured provider at once, in the order they appear in the picker. */
 export async function fetchAvailableModels(config: AgavConfig): Promise<FetchAllResult> {
-  const unresolved = await refreshStoredApiKeys(config);
-  const warnings: string[] = unresolved.length
-    ? ["Some saved provider credentials could not be read from the OS credential store. Unlock the store if needed and retry /model after 30 seconds."]
-    : [];
+  const warnings: string[] = [];
   const fetches: Promise<FetchedModel[]>[] = [];
 
   if (config.anthropicApiKey) fetches.push(fetchAnthropicModels(config.anthropicApiKey));
@@ -397,7 +394,8 @@ function pickModel(
 
 export const modelCommand: SlashCommand = {
   name: "model",
-  description: "Show or change the current model",
+  description: "View all available models or change current model",
+  argumentHint: "[name]",
   usage: "Usage: /model [name]\n\n  /model                Open interactive model picker\n  /model gpt-5.4-mini   Switch to a specific model\n  /model gemini-3.5-pro  Auto-switches provider if needed",
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const model = args.trim();

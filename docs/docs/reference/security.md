@@ -18,6 +18,14 @@ Agav can read files, edit code, and execute commands. Choose controls appropriat
 
 Set a default in configuration or use `--auto-accept` and `--deny-writes` at startup. `allowedTools` can auto-approve named tools or scoped command patterns.
 
+### Changing the mode during a session
+
+In an interactive session you can switch the permission mode at any time with [`/permission`](/reference/slash-commands). Run bare `/permission` to open a picker, or pass a mode directly (`/permission deny-writes`). The chosen mode is saved with the session and **restored when you resume it**, so a session you escalated to `auto-accept` or tightened to `deny-writes` comes back in that mode. It does not change the launch default used for `/new` or for future sessions — set `permissionMode` in configuration for that.
+
+Explicit `--auto-accept` (`-y`) and `--deny-writes` flags at startup take precedence over a session's saved mode. An organization `permissionMode` floor is always applied last: `/permission` and the picker let you choose a *stricter* mode but clamp any attempt to loosen below the floor, and report the mode actually in force. Changing the mode is only available in an interactive session — in headless `agav run` and print mode, `permissionMode` from configuration is authoritative.
+
+> `/permission` (the interactive session mode) is distinct from the `--permission <json>` CLI flag, which supplies a JSON tool policy for `agav run`. See [CLI reference](/reference/cli).
+
 ### Project config safety
 
 Sensitive configuration fields are blocked from project-level `.agav/config.json` to prevent credential exfiltration and permission escalation when working in untrusted repositories. See [Configuration → Project config restrictions](/reference/configuration#project-config-restrictions) for the full list.
@@ -90,7 +98,7 @@ With `backgroundJobsEnabled`, the `run_background_job` tool starts commands that
 
 ### Cancellation is not isolation
 
-**Esc** cancels an interactive turn while keeping Agav open; **Ctrl+C** exits unless it copies an active Agav selection. See [Keybindings](/reference/keybindings#cancel-versus-exit).
+**Esc** cancels an interactive turn while keeping Agav open; **Ctrl+C** exits unless it copies an active Agav selection. For worker-owned turns, ordinary cancellation and exit request durable, generation-bound cancellation, not synchronous termination. Only `/detach` or the configured detach chord intentionally exits while leaving the worker running; session switches and presentation unmounts do not cancel. See [Keybindings](/reference/keybindings#cancel-versus-exit).
 
 Native, Seatbelt, and Bubblewrap shell commands use process-group cleanup on failure, cancellation, timeout, and orderly exit; Windows uses tree termination. Successful background commands are preserved on ordinary successful completion. Cleanup is best-effort, cannot undo edits or external actions, and cannot guarantee termination of descendants that detach from the owned group.
 
@@ -173,14 +181,15 @@ High-risk patterns are blocked by the shell tool before they reach the sandbox, 
 - Remote code execution: `curl ... | sh`, `wget ... | sh/bash`
 - File truncation: `truncate --size 0`
 
+These patterns match **POSIX/Unix command syntax**. The `git` patterns apply on every platform, but the filesystem, disk, permission, and process examples above are Unix forms. Windows-native equivalents — such as PowerShell `Remove-Item -Recurse -Force`, `rmdir /s`, `del`, `Format-Volume`, or `Stop-Process` — are **not** on this blocklist and are not pre-blocked. On Windows, rely on `ask` mode confirmations and the file-tool path boundaries above rather than this list, and review commands before approving `auto-accept`.
+
 ## Secrets and extensions
 
 - Prefer API-key environment variables.
-- Saved provider credentials are stored in the operating system's credential store when one is available — macOS Keychain (`security`), the Linux Secret Service / login keyring (`secret-tool`/libsecret), or the Windows Credential Manager (DPAPI). In that case `~/.agav/config.json` holds only a `keychain:` placeholder, never the secret, and the key stays under the OS's access control. When no credential store is available (for example a headless Linux host without libsecret), Agav falls back to encrypting the key with AES-256-GCM in the global configuration file.
-- Global-config writers and credential recovery use one shared exclusive-create file lock. Migration holds the in-process mutex for its entire transaction. Existing locks are **never automatically stolen or renamed**, regardless of age; saves fail closed if they cannot acquire the lock. If a crash leaves `~/.agav/.config.lock` behind, stop **all Agav processes** before manually removing that lock file, then retry. Do not remove a lock while any process may still be writing. Older experimental builds that steal locks must not run concurrently with this build. Config writes use an owner-only (`0600`) temporary file followed by atomic rename.
-- Startup migration moves readable global-config API keys to the OS store when available, leaving environment credentials untouched. Failed decryption or storage leaves the file value in place for a later attempt. Migration skips when another process holds the lock. Coordination covers Agav writers using this protocol, not external editors changing the config during a transaction.
-- Credential-helper secrets travel over stdin on macOS/Linux and through a child-specific environment variable on Windows, rather than plaintext command-line arguments. Helper input failures and oversized output fail closed. macOS interactive commands reject control characters and enforce byte-length limits for writes, reads and deletes. UTF-8 output is decoded after combining chunks.
-- Helper calls have deadlines and terminate with SIGTERM followed by SIGKILL when needed. Detection and credential-read timeouts impose a 30-second retry cooldown. A failed lookup leaves that credential unavailable; it does not recover plaintext from a `keychain:` placeholder. `/model` retries unresolved session keychain references after the cooldown and updates the live config when reads recover, without reloading session settings or overriding explicit environment credentials. It shows retry guidance when recovery still fails. Writes remain disabled for that process after a helper timeout; restart to retry writes.
+- Saved provider API keys use AES-256-GCM encryption in `~/.agav/config.json`. Plaintext keys entered manually and existing `enc:` values are accepted on load; saving through Agav encrypts the keys. Environment variables take precedence over global configuration; repository-level API keys are rejected.
+- Agav does not access macOS Keychain, Linux Secret Service, or Windows Credential Manager. There is no startup credential migration or OS-store authentication dialog. If an older configuration contains a `keychain:` reference, replace it with the actual API key or supply the corresponding environment variable. Previously stored consumer account references require signing in again. Existing OS-store entries are not read or deleted.
+- Encryption uses a key derived from the home directory and username, not a user-supplied password. It prevents casual plaintext disclosure but does not protect against someone who can access the files and derive the same key. Restrict filesystem access and prefer environment-provided credentials where appropriate.
+- Global-config writers use one shared exclusive-create file lock. Existing locks are **never automatically stolen or renamed**, regardless of age; saves fail closed if they cannot acquire the lock. If a crash leaves `~/.agav/.config.lock` behind, stop **all Agav processes** before manually removing that lock file, then retry. Config writes use an owner-only (`0600`) temporary file followed by atomic rename.
 - Vertex AI’s service-account JSON is not an API key and is never encrypted into `config.json` — it is read from the path in `VERTEX_AI_CREDENTIALS_PATH` or `vertexAICredentialsPath`. Keep the file outside the repository, restrict its permissions, and grant the service account only the `roles/aiplatform.user` role it needs.
 - Do not commit secrets to `./.agav/config.json`.
 - MCP servers and plugins are executable local integrations. Review their source and configuration before enabling them.

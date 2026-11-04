@@ -31,6 +31,8 @@ interface SkillExecDeps {
   model: string;
   systemPrompt: string;
   permissionMode: PermissionMode;
+  /** Original background consent mode, independent of generic Always. */
+  backgroundPermissionMode?: PermissionMode;
   effort: EffortLevel;
   iterationsBudget: { remaining: number, total: number };
   /**
@@ -47,6 +49,7 @@ interface SkillExecDeps {
   signal?: AbortSignal;
   contextMessages?: import("../providers/types.js").Message[];
   onEvent?: (event: AgentEvent) => void;
+  providerIdleTimeout?: number;
 }
 
 function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolRegistry {
@@ -239,8 +242,11 @@ export async function executeSkill(
       signal: deps.signal,
       confirmTool: deps.confirmTool,
       permissionMode: effectiveMode,
+      backgroundPermissionMode: deps.backgroundPermissionMode === undefined ? undefined
+        : clampPermissionMode(deps.backgroundPermissionMode, deps.policy?.orgPermissionFloor),
       permissionFloor: deps.policy?.orgPermissionFloor,
       iterationsBudget: deps.iterationsBudget,
+      providerIdleTimeout: deps.providerIdleTimeout,
     });
 
     // Account for each usage event immediately, including tokens spent before

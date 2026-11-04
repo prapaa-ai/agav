@@ -1,6 +1,6 @@
 import { render } from "./ink/index.js";
 import App from "./app.js";
-import { EFFORT_LEVELS, expandHome, isEffortLevel, loadConfig, setSessionConfigOverrides, type AgavConfig, migrateSecretsToKeychain } from "./config/config.js";
+import { EFFORT_LEVELS, expandHome, isEffortLevel, loadConfig, validateProviderIdleTimeout, setSessionConfigOverrides, type AgavConfig} from "./config/config.js";
 import {
   applyConfigOverrides,
   describeConfigOverrides,
@@ -39,6 +39,7 @@ import {
   noProviderCredentialsError,
   providerConfigurationError,
   resolveInitialSessionName,
+  resolveResumePermissionMode,
   resolveStartupSelection,
   selectConfiguredProvider,
   type ProviderName,
@@ -50,7 +51,7 @@ const KNOWN_FLAGS = [
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
   "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--trajectory",
-  "--name", "--search","--sandbox-required","--config", "-c"
+  "--name", "--search","--provider-idle-timeout","--sandbox-required","--config", "-c"
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -70,6 +71,16 @@ function levenshtein(a: string, b: string): number {
 
 function findClosestFlag(input: string): string | undefined {
   return findClosest(input, KNOWN_FLAGS);
+}
+
+function parseProviderIdleTimeout(raw: string): number | null {
+  try {
+    const validated = validateProviderIdleTimeout(raw);
+    return validated ?? null;
+  } catch {
+    process.stderr.write("Error: --provider-idle-timeout must be a positive integer in milliseconds (1–2147483647) or \"disabled\".\n");
+    process.exit(1);
+  }
 }
 
 /** Choose between providers which expose the same model during interactive startup. */
@@ -235,6 +246,15 @@ export function parseArgs(argv: string[]) {
       flags.maxTurns = parseMaxTurns(argv[++i] ?? "");
     } else if (arg.startsWith("--max-turns=")) {
       flags.maxTurns = parseMaxTurns(arg.slice("--max-turns=".length));
+    } else if (arg === "--provider-idle-timeout") {
+      const nextArg = argv[i + 1];
+      if (nextArg === undefined || nextArg.startsWith("-")) {
+        process.stderr.write("Error: --provider-idle-timeout requires an argument: a positive integer in milliseconds (1–2147483647) or \"disabled\".\n");
+        process.exit(1);
+      }
+      flags.providerIdleTimeout = parseProviderIdleTimeout(argv[++i]!);
+    } else if (arg.startsWith("--provider-idle-timeout=")) {
+      flags.providerIdleTimeout = parseProviderIdleTimeout(arg.slice("--provider-idle-timeout=".length));
     } else if (arg === "--search") {
       flags.search = true;
     } else if (arg === "-c" || arg === "--config") {
@@ -438,6 +458,7 @@ export async function runPipeMode(
         // print/run mode has no human to confirm background jobs.
         headless: true,
         allowedTools: options.allowedToolsOverride,
+        providerIdleTimeout: config.providerIdleTimeout,
       });
 
       for await (const event of loop) {
@@ -652,10 +673,14 @@ export async function main() {
     --stream             Stream text to stdout in real time with --print
     --output-schema      Require pipe-mode output to match an inline JSON Schema or @file
     --openai-api         OpenAI API mode: responses or chat (default: responses)
-    --permission         JSON tool permissions for run mode (or set AGAV_PERMISSION env var)
+    --permission         JSON tool permissions for run mode only (or set AGAV_PERMISSION
+                         env var); does NOT set the interactive session permission mode
     --resume, -r [id]    Resume a session (list if no id, prefix match if given)
-    --auto-accept, -y    Skip tool confirmations
-    --deny-writes        Block all write operations
+    --auto-accept, -y    Session permission mode: auto-accept (skip tool confirmations)
+    --deny-writes        Session permission mode: deny-writes (block write operations)
+                         The session mode persists across resumes; change it in-session
+                         with /permission. Resuming without -y/--deny-writes keeps the
+                         saved mode.
     --sandbox-required   Refuse run_command calls that would run without an OS-level sandbox
     --help, -h           Show this help
     --version, -v        Show version
@@ -740,10 +765,39 @@ export async function main() {
     return;
   }
 
-  // Enterprise enrollment does not require an LLM provider or a running TUI.
+  // Sign-in does not require an LLM provider or a running TUI. `/login` routes
+  // between the consumer Agav account (explicit --key / --consumer; --account for
+  // logout) and enterprise enrollment (everything else), using one shared,
+  // option-aware parser so an enterprise option's VALUE is never mistaken for a
+  // consumer key.
   if (flags.login || flags.logout) {
+    // Pass the remaining positionals UNCHANGED (the consumed subcommand is never
+    // among them). Do NOT filter stray "login"/"logout" tokens: a malformed
+    // command like `agav logout login --key` must be rejected as an unexpected
+    // operand, not silently reinterpreted into a credential-clearing action.
+    const args = flags._ as string[];
+    const { parseConsumerArgs } = await import("./account/account-login.js");
+    const parsedConsumer = parseConsumerArgs(args);
+    // A bare agav_sk_ operand / unknown consumer flag is a parse error; surface it.
+    if ("error" in parsedConsumer) {
+      console.error(parsedConsumer.error);
+      process.exit(1);
+      return;
+    }
+    // Routing differs by verb: `agav login` defaults to the CONSUMER account
+    // (parser default); `agav logout` defaults to ENTERPRISE, with consumer
+    // sign-out requiring an explicit --account/--consumer flag.
+    const explicitConsumer = /(^|\s)--(account|consumer)(\s|$)/.test(args.join(" "));
+    const isConsumer = flags.logout ? explicitConsumer : parsedConsumer.consumer;
+
+    if (isConsumer) {
+      const { runConsumerLoginCli } = await import("./cli/account-cli.js");
+      const exitCode = await runConsumerLoginCli(flags.logout ? "logout" : "login", args);
+      process.exit(exitCode);
+      return;
+    }
+
     const { runLoginCommand } = await import("./cli/login-cli.js");
-    const args = (flags._ as string[]).filter((a) => a !== "login" && a !== "logout");
     const exitCode = await runLoginCommand(flags.logout ? "logout" : "login", args);
     process.exit(exitCode);
     return;
@@ -811,12 +865,6 @@ export async function main() {
       process.exit(1);
     }
   }
-
-  // One-time, best-effort move of any in-file API keys into the OS credential
-  // store so upgrading users transition automatically. It never throws and only
-  // rewrites config.json when it actually migrated something; the subsequent
-  // loadConfig then resolves the new keychain: placeholders transparently.
-  await migrateSecretsToKeychain();
 
   const config = await loadConfig();
   const keybindings = await loadKeybindings();
@@ -901,6 +949,9 @@ export async function main() {
     }
     config.effort = flags.effort;
   }
+  if (flags.providerIdleTimeout !== undefined) {
+    config.providerIdleTimeout = flags.providerIdleTimeout === null ? undefined : flags.providerIdleTimeout;
+  }
   if (flags.search === true) {
     config.search = true;
   }
@@ -940,11 +991,13 @@ export async function main() {
   let resumeTokenUsage: import("./config/history.js").SessionTokenUsage | undefined;
   let resumeCompacted: boolean | undefined;
   let resumeSessionName: string | undefined;
+  let resumeRuntime: import("./config/history.js").SessionRecord["runtime"];
+  let resumePermissionMode: import("./config/config.js").PermissionMode | undefined;
   let resumeSelection: Pick<import("./config/history.js").SessionRecord, "provider" | "model"> | undefined;
 
   if (flags.resume) {
-    const { listSessions, loadSession } = await import("./config/history.js");
-    const sessions = await listSessions();
+    const { listResumableSessions, loadResumableSession } = await import("./sessions/history.js");
+    const sessions = await listResumableSessions();
 
     if (sessions.length === 0) {
       console.error("\n  No saved sessions found.\n");
@@ -957,7 +1010,7 @@ export async function main() {
       if (!picked) {
         process.exit(0);
       }
-      const session = await loadSession(picked.id);
+      const session = await loadResumableSession(picked.id);
       if (!session) {
         console.error("\n  Failed to load session.\n");
         process.exit(1);
@@ -967,16 +1020,23 @@ export async function main() {
       resumeTokenUsage = session.tokenUsage;
       resumeCompacted = session.compacted;
       resumeSessionName = session.name;
+      resumeRuntime = session.runtime;
+      resumePermissionMode = session.permissionMode;
       resumeSelection = session;
     } else {
       // ID prefix given — find matching session
       const prefix = String(flags.resume);
-      const match = sessions.find((s) => s.id.startsWith(prefix));
+      const matches = sessions.filter((s) => s.id.startsWith(prefix));
+      const match = sessions.find((s) => s.id === prefix) ?? (matches.length === 1 ? matches[0] : undefined);
+      if (!match && matches.length > 1) {
+        console.error(`\n  Ambiguous session ID prefix "${prefix}". Use a longer ID.\n`);
+        process.exit(1);
+      }
       if (!match) {
         console.error(`\n  No session matching "${prefix}". Use --resume to list all.\n`);
         process.exit(1);
       }
-      const session = await loadSession(match.id);
+      const session = await loadResumableSession(match.id);
       if (!session) {
         console.error(`\n  Failed to load session ${match.id}.\n`);
         process.exit(1);
@@ -987,15 +1047,27 @@ export async function main() {
       resumeTokenUsage = session.tokenUsage;
       resumeCompacted = session.compacted;
       resumeSessionName = session.name;
+      resumeRuntime = session.runtime;
+      resumePermissionMode = session.permissionMode;
       resumeSelection = session;
     }
   }
+
 
   // Restore the pre-(-c) pairing so the resolver's providerChanged check sees the change;
   // -c provider/model travel as cliProvider/cliModel inputs instead.
   if (configOverrides?.length) {
     config.provider = providerBeforeOverrides;
     config.model = modelBeforeOverrides;
+  }
+
+  // Keep config.permissionMode as the launch default for /new. Only the resumed
+  // session receives the saved mode, with CLI overrides and org policy applied.
+  if (resumeSelection) {
+    resumePermissionMode = resolveResumePermissionMode(config, {
+      cliPermissionMode: flags.autoAccept || flags.denyWrites ? config.permissionMode : undefined,
+      savedPermissionMode: resumePermissionMode,
+    });
   }
 
   Object.assign(config, await resolveStartupSelection(config, {
@@ -1169,7 +1241,10 @@ export async function main() {
         new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 2000).unref()),
       ]);
       const lines: string[] = [];
-      if (sessions.length > 0) lines.push(`To resume: agav --resume ${sessions[0]!.id}`);
+      if (detachedSessionRef.current) {
+        lines.push(`Session ${detachedSessionRef.current} continues in the background.`);
+        lines.push(`To resume: agav --resume ${detachedSessionRef.current}`);
+      } else if (sessions.length > 0) lines.push(`To resume: agav --resume ${sessions[0]!.id}`);
       if (jobIds.length > 0) lines.push(`Running background jobs: ${jobIds.join(", ")}  (inspect with /job)`);
       if (lines.length > 0) process.stderr.write(`\n${lines.map((line) => dim(line)).join("\n")}\n\n`);
     } catch { }
@@ -1181,6 +1256,7 @@ export async function main() {
     stopAllA2AAgents();
   });
   const shutdownRef: { current: (() => Promise<void>) | null } = { current: null };
+  const detachedSessionRef: { current: string | null } = { current: null };
   let unmount: (() => void) | undefined;
   let signalShutdown: Promise<void> | undefined;
   const handleSignal = () => {
@@ -1216,7 +1292,7 @@ export async function main() {
     // Never block startup on changelog/launch-state failures.
   }
 
-  const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} shutdownRef={shutdownRef} />, {
+  const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} resumePermissionMode={resumePermissionMode} resumeRuntime={resumeRuntime} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} shutdownRef={shutdownRef} detachedSessionRef={detachedSessionRef} />, {
     // App owns Ctrl+C so foreground workflows can abort and checkpoint before exit.
     exitOnCtrlC: false,
     // Alt-screen keeps the UI self-contained (no scrollback pollution, no

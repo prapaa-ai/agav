@@ -28,6 +28,18 @@ async function waitForFile(path: string): Promise<string> {
   throw new Error(`Child did not start: ${path}`);
 }
 
+// The abort rejects as soon as the group leader's stdio closes, but the kernel
+// reaps sibling/descendant group members (the exec'd sleep) a moment later.
+// Under heavy parallel CI load that gap is observable, so poll for the process
+// to disappear instead of checking exactly once.
+async function waitForDead(pid: number): Promise<boolean> {
+  for (let i = 0; i < 100; i++) {
+    try { process.kill(pid, 0); } catch { return true; }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  return false;
+}
+
 // Real subprocesses, not mocks: catch open stdin and pipelines retaining pipes.
 describe.skipIf(process.platform === "win32")("shell process ownership", () => {
   it("cancels active skill shell blocks and their descendants before child requests", async () => {
@@ -53,7 +65,7 @@ describe.skipIf(process.platform === "win32")("shell process ownership", () => {
       controller.abort();
       await rejected;
       expect(Date.now() - started).toBeLessThan(1000);
-      expect(() => process.kill(pid, 0)).toThrow();
+      expect(await waitForDead(pid)).toBe(true);
       expect(stream).not.toHaveBeenCalled();
       expect(onEvent).toHaveBeenLastCalledWith({ type: "error", error: expect.any(Error) });
     } finally {

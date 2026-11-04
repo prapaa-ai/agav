@@ -1,0 +1,36 @@
+# Gitleaks configuration for Agav.
+#
+# Extends the bundled default rule set (so every built-in detector stays active)
+# and adds a narrowly-scoped allowlist for synthetic credentials that live in the
+# test suite. Those fixtures are deliberately fake tokens used to exercise login,
+# redaction, and export code paths — e.g. "agav_sk_validkey123456",
+# "sk-ant-api03-abcdefgh", "gho_abcdefgh123456". They are not real secrets.
+
+[extend]
+# Keep every built-in detector active; we only add an allowlist, no rules are
+# disabled.
+useDefault = true
+
+# A finding is ignored only when BOTH conditions hold: it lives under
+# source/__tests__/ AND its matched value has one of the obviously-synthetic
+# placeholder shapes the fixtures use ("abcdefgh"/"validkey123456" style). With
+# condition = "AND", a real key accidentally pasted into a test file is still
+# reported (it would not match the placeholder regex), and a placeholder-shaped
+# string outside the tests is still reported (it is not under __tests__/). The
+# default condition is OR, which would make either criterion alone suppress a
+# finding — too permissive — so the AND is deliberate. Add entries only for
+# verified test fixtures.
+[[allowlists]]
+description = "Synthetic credentials in the test suite"
+condition = "AND"
+regexTarget = "match"
+paths = [
+  '''source/__tests__/.*\.test\.ts''',
+]
+regexes = [
+  # Obviously-synthetic placeholder shapes used across the fixtures: literal
+  # "abcdefgh"/"validkey" style stand-ins, and the short "<word>123456" fakes the
+  # login/account tests use (e.g. agav_sk_secret123456, agav_sk_mykey123456).
+  '''(agav_sk_|sk-ant-api03-|sk-proj-|sk-|gho_|ghp_|github_pat_)[a-z]*(abcdefgh|validkey)[0-9a-z]*''',
+  '''agav_sk_[a-z]+123456''',
+]

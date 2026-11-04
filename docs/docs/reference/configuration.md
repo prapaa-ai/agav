@@ -40,6 +40,7 @@ Because the key fields are removed from project config, a value like `openaiApiK
   "maxTokens": 16384,
   "maxIterations": 800,
   "errorRetries": 5,
+  "providerIdleTimeout": 60000,
   "permissionMode": "ask",
   "sandboxRequired": false,
   "allowedTools": ["read_file", "run_command:npm run *"],
@@ -85,12 +86,13 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | `maxTokens` | Maximum output tokens per model response |
 | `maxIterations` | Maximum agent/tool iterations per prompt; must be a positive integer; can be overridden at startup with `--max-turns` or `-c maxIterations` for the current session |
 | `errorRetries` | Transient provider retries; must be zero or greater |
+| `providerIdleTimeout` | Idle timeout in milliseconds waiting for provider stream activity (positive safe integer 1–2147483647). When unset, `null`, or `"disabled"`, Agav adds no timer and retains provider SDK defaults. Can be overridden at startup with `--provider-idle-timeout`. |
 | `permissionMode` | `ask`, `auto-accept`, or `deny-writes` |
 | `sandboxRequired` | When `true`, refuse to start if no OS-level sandbox (Seatbelt, Bubblewrap, or Docker) is available |
 | `allowedTools` | Tool names or scoped patterns that can run without confirmation |
 | `search` | When `true`, enable the `web_search` tool (off by default). Also settable per session with `--search`. See [Built-in tools](/features/built-in-tools). |
 | `systemPrompt` | Additional project instructions |
-| `backgroundJobsEnabled` | Opt in (default `false`) to the `run_background_job` tool and `/job`. Jobs run outside the shell sandbox. See [Background jobs](/features/background-jobs). |
+| `backgroundJobsEnabled` | Opt in (default `false`) to `run_background_job`, `/job`, and worker-owned ordinary interactive turns with `/detach`. Set `true` before starting the task; no separate flag is needed for detached sessions. Shell jobs run outside the shell sandbox; session tools retain their permission and sandbox policy. See [Background jobs](/features/background-jobs) and [Detached sessions](/features/detached-sessions). |
 | `backgroundAutomation` | `on` (default) or `paused`. `paused` makes `agav job tick` and `agav job daemon` do nothing. Global config only. |
 | `hooks` | Optional commands for `afterEdit`, `afterShell`, and `preCommit` |
 | `theme` | Partial terminal color overrides |

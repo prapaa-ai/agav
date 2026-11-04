@@ -12,6 +12,7 @@ import RequestQueue from "./components/request-queue.js";
 import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
 import ToolConfirm from "./components/tool-confirm.js";
+import DetachHint from "./components/detach-hint.js";
 import WorkflowConsent from "./components/workflow-consent.js";
 import ContextWindowPrompt from "./components/context-window-prompt.js";
 import { DEFAULT_UNKNOWN_CONTEXT_WINDOW } from "./agent/loop.js";
@@ -21,7 +22,7 @@ import SubagentDisplay from "./components/subagent-display.js";
 import { makeAgentProgressTracker } from "./agent/subagent-progress.js";
 import type { SubagentProgress } from "./agent/subagent-types.js";
 import type { AgavConfig } from "./config/config.js";
-import { orgPolicyError } from "./config/startup.js";
+import { orgPolicyError, resolveResumePermissionMode } from "./config/startup.js";
 import type { LLMProvider } from "./providers/types.js";
 import { createProvider } from "./providers/registry.js";
 import type { ContentBlock, InvocationReason } from "./providers/types.js";
@@ -34,8 +35,12 @@ import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { JobsTUI } from "./components/jobs-tui.js";
+import { PermissionPicker } from "./components/permission-picker.js";
 import { CustomizeTUI } from "./components/customize-tui.js";
+import { LoginTUI } from "./components/login-tui.js";
+import { openExternal } from "./utils/open-external.js";
 import type { StatusBarSegments } from "./components/status-bar.js";
+
 import { normalizeStatusBarLayout, isDefaultStatusBarLayout, type StatusBarLayout } from "./config/status-bar-layout.js";
 import { ResourceManager } from "./components/resource-manager.js";
 import { createResourceAdapter } from "./resources/adapters.js";
@@ -74,6 +79,8 @@ interface Props {
   resumeTokenUsage?: import("./config/history.js").SessionTokenUsage;
   resumeCompacted?: boolean;
   resumeSessionName?: string;
+  resumeRuntime?: import("./config/history.js").SessionRecord["runtime"];
+  resumePermissionMode?: AgavConfig["permissionMode"];
   repoBranch?: string;
   /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
   enhancedKeyboard?: boolean;
@@ -81,6 +88,7 @@ interface Props {
   showChangelogOnLaunch?: boolean;
   /** Retained after unmount so the terminal host can await foreground settlement. */
   shutdownRef?: { current: (() => Promise<void>) | null };
+  detachedSessionRef?: { current: string | null };
 }
 
 const BANNER: DisplayMessage = {
@@ -99,7 +107,7 @@ interface QueuedRequest {
 let sysMessageId = 0;
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
-export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef }: Props) {
+export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode, resumeRuntime, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef, detachedSessionRef }: Props) {
 
   const [input, setInput] = useState("");
   const readPromptRef = useRef<(() => string) | null>(null);
@@ -123,7 +131,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     updateQueue(remaining);
     if (!remaining.length) setQueueBlocked(false);
   }, [updateQueue]);
-  const [config, setConfig] = useState(initialConfig);
+  // Session overrides must not become the default for /new or legacy resumes.
+  const defaultPermissionMode = useRef(initialConfig.permissionMode).current;
+  const [config, setConfig] = useState(() => ({
+    ...initialConfig,
+    permissionMode: resolveResumePermissionMode(initialConfig, { savedPermissionMode: resumePermissionMode }),
+  }));
   const modelSelectionVersion = useRef(0);
   const activeProvider = useMemo<LLMProvider | null>(() => {
     try { return createProvider(config); } catch { return null; }
@@ -249,11 +262,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [workflowBadge, setWorkflowBadge] = useState<string | undefined>(undefined);
   const [resourceAdapter, setResourceAdapter] = useState<ResourceAdapter | null>(null);
   const resourceTUIResolveRef = useRef<(() => void) | null>(null);
+  const [permissionPickerActive, setPermissionPickerActive] = useState(false);
+  const permissionPickerResolveRef = useRef<((mode?: AgavConfig["permissionMode"]) => void) | null>(null);
   const [customizeTUIActive, setCustomizeTUIActive] = useState(false);
   const customizeTUIResolveRef = useRef<(() => void) | null>(null);
+  const [loginTUIActive, setLoginTUIActive] = useState(false);
+  const [loginTUIService, setLoginTUIService] = useState("https://agav.dev");
+  const loginTUIResolveRef = useRef<((result: { cancelled: boolean; message?: string }) => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
-  const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
+  const detachResolverRef = useRef(new KeybindingResolver(keybindings, ["detachSession"]));
+  const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS.filter(action => action !== "detachSession")));
   /** Lets handleSubmit re-sync InputPrompt's caret after rewriting its buffer. */
 
   const {
@@ -286,10 +305,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     refreshAgentCommands,
     addDisplayMessage,
     cancel,
+    detachSession,
+    canDetach,
+    isWorkerAttached,
     cancelSubagent,
     clearMessages,
     confirmTool,
     getEffectivePermissionMode,
+    setSessionPermissionMode,
     conversation,
     toolRegistry,
     saveNow,
@@ -306,7 +329,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     togglePause,
     interveneWhilePaused,
     iterationsBudget
-  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName);
+  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumeRuntime, resumePermissionMode);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
   const [copyNotice, setCopyNotice] = useState<ClipboardNotice | null>(null);
@@ -417,12 +440,25 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     voice.cancel();
     updateQueue([]);
     shellAbortRef.current?.abort();
-    cancel();
+    // Explicit detach leaves the worker alone. Ordinary exit/interrupt requests a
+    // generation-bound cancellation and waits for its durable publication before exit.
+    const cancellation = detachedSessionRef?.current ? undefined : cancel();
     stopActiveLoop();
-    exitInk();
-    // Keep Ink alive until the foreground executor has checkpointed settlement.
-    void settleWorkflow().then(() => exitInk());
+    void Promise.resolve(cancellation).then(settleWorkflow).then(() => exitInk());
   }, [cancel, exitInk, updateQueue, voice.cancel, settleWorkflow]);
+
+  React.useLayoutEffect(() => {
+    if (shutdownRef) shutdownRef.current = async () => {
+      if (!detachedSessionRef?.current) await cancel();
+      await settleWorkflow();
+    };
+  }, [shutdownRef, detachedSessionRef, cancel, settleWorkflow]);
+
+  const detachCurrentSession = useCallback(async () => {
+    const id = await detachSession();
+    if (detachedSessionRef) detachedSessionRef.current = id;
+    return id;
+  }, [detachSession, detachedSessionRef]);
 
   /**
    * Background-job support for workflow `job` nodes and job-aware `/workflows cancel`.
@@ -608,7 +644,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         const { getChangelogSummary } = await import("./utils/auto-update.js");
         const text = await getChangelogSummary();
         if (cancelled || !text) return;
-        addDisplayMessage({ id: `changelog-launch-${++sysMessageId}`, role: "system", content: text });
+        // Inline hint (shown in the transcript, not the status bar) telling the
+        // user how to turn off this automatic display. It only reaches here when
+        // auto-display is enabled, so the hint is always relevant. Reuse the
+        // command's shared text so both surfaces read identically.
+        const { CHANGELOG_DISABLE_HINT } = await import("./commands/changelog.js");
+        addDisplayMessage({ id: `changelog-launch-${++sysMessageId}`, role: "system", content: `${text}\n\n${CHANGELOG_DISABLE_HINT}` });
       } catch {
         // Never surface changelog failures during startup.
       }
@@ -877,6 +918,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
   useInput((rawChar, rawKey) => {
     if (workflowsTUI) return; // The full-screen workflow view owns the keyboard.
+    // Resolve before confirmation/queue guards: detaching must never answer consent.
+    const normalized = normalizeKeyEvent(rawChar, rawKey);
+    const detachMatch = detachResolverRef.current.feed(normalized.input, normalized.key);
+    if (detachMatch.pending || detachMatch.action) {
+      if (detachMatch.action && canDetach) {
+        void detachCurrentSession().then(() => exit()).catch(error => showStatusLine(error instanceof Error ? error.message : String(error)));
+      }
+      return;
+    }
     if (voice.isActive()) {
       const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
       if (key.eventType === "release" || key.eventType === "repeat") return;
@@ -944,7 +994,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       shellAbortRef.current.abort();
       return;
     }
-    if (match.action === "togglePause" && isLoading && !pendingConfirmation) {
+    if (match.action === "togglePause" && isLoading && !isWorkerAttached && !pendingConfirmation) {
       togglePause();
       return;
     }
@@ -1070,6 +1120,45 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       const promptAttachments = queued?.attachments ?? attachments;
       const trimmed = value.trim();
       const composerEditVersion = composerEditVersionRef.current;
+
+      // Credential guard — runs FIRST, before the busy-queue, intervention, slash
+      // dispatch, or model submission, and independently of the visible composer
+      // text. A consumer API key can arrive either as a credential-bearing /login
+      // in the text OR as the key pasted into an attachment (a long paste becomes
+      // an attachment tile, so the visible text would not start with "/login").
+      // In either case we must neither queue it, submit it to the model, nor keep
+      // it: drop the input, unregister the attachments, and point the user at the
+      // masked prompt.
+      //
+      // Gate on a cheap synchronous pre-check so the normal submit hot path (no
+      // login text, no "agav_sk_" in the text, no text attachments) never pays for
+      // the dynamic import — this preserves the exact timing the request-queue
+      // handoff relies on. The text gate uses a bare "agav_sk_" substring so a key
+      // pasted WITHOUT a /login prefix (incl. repeat-paste expansion) is caught.
+      if (/^\/(login|logout)\b/.test(trimmed) || trimmed.includes("agav_sk_")
+          || promptAttachments.some((a) => a.contentBlock.type === "text")) {
+        const { containsApiKey, submissionCarriesApiKey } = await import("./account/credential-input.js");
+        const attachmentHasKey = promptAttachments.some(
+          (a) => a.contentBlock.type === "text" && containsApiKey((a.contentBlock as { text?: string }).text ?? ""),
+        );
+        if (submissionCarriesApiKey(trimmed) || attachmentHasKey) {
+          // Clear composer + fully unregister any attachments so the key is not
+          // retained in the session attachment registry.
+          composerEditVersionRef.current++;
+          setInput("");
+          for (const a of promptAttachments) unregisterAttachment(a.id);
+          setAttachments([]);
+          lastPasteRef.current = null;
+          setSystemMessages([{
+            id: `sys-${++sysMessageId}`,
+            role: "system",
+            content:
+              "For your security, don't paste your Agav API key into the prompt — it could be saved or sent to the model.\n" +
+              "Run `/login`, choose Paste an Agav API key, and enter it in the secure prompt; it won't enter chat or prompt history.",
+          }]);
+          return;
+        }
+      }
 
       if (trimmed.split(/\s+/)[0] === "/voice") {
         if (invocationReason || queued) {
@@ -1223,7 +1312,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           && promptAttachments.length === 0
           && (!isLoading || isCommandAllowedMidTurn(commandName));
         if (!isSlashCommand && isLoading) {
-          if (isGenerationPaused && (trimmed || promptAttachments.length > 0)) {
+          if (!isWorkerAttached && isGenerationPaused && (trimmed || promptAttachments.length > 0)) {
             const extraBlocks: ContentBlock[] = promptAttachments.map((attachment) => ({ ...attachment.contentBlock }));
             const llmText = trimmed || "See attached content";
             const imageIds = promptAttachments.filter((a) => a.kind === "image").map((a) => a.id);
@@ -1255,6 +1344,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             provider: activeProvider ?? undefined,
             getModelSelectionVersion: () => modelSelectionVersion.current,
             getEffectivePermissionMode,
+            detachSession: detachCurrentSession,
             setModel: (model: string) => {
               // Enforce the org policy on interactive model changes (/model,
               // /fast, /deep): a managed pin or allowlist applies to every
@@ -1277,6 +1367,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             setEffort: (effort) => {
               setConfig((prev) => ({ ...prev, effort }));
             },
+            setPermissionMode: (mode) => {
+              // setSessionPermissionMode clamps to the org floor and persists the
+              // choice; mirror the applied (possibly clamped) mode into config so
+              // the footer and any config reader reflect the live session mode.
+              const applied = setSessionPermissionMode(mode);
+              setConfig((prev) => ({ ...prev, permissionMode: applied }));
+              return applied;
+            },
             showStatus: (text: string) => {
               setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: text }]);
             },
@@ -1284,6 +1382,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               updateQueue([]);
               setQueueBlocked(false);
               clearMessages();
+              setConfig((prev) => ({
+                ...prev,
+                permissionMode: resolveResumePermissionMode({ ...prev, permissionMode: defaultPermissionMode }, {}),
+              }));
               setSystemMessages([]);
               setPreview(null);
               clearAttachmentRegistry();
@@ -1294,10 +1396,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             refreshDisplay: () => {
               refreshDisplay();
             },
-            loadSession: (...args) => {
+            loadSession: (session) => {
               updateQueue([]);
               setQueueBlocked(false);
-              return loadSession(...args);
+              const permissionMode = resolveResumePermissionMode(
+                { ...config, permissionMode: defaultPermissionMode },
+                { savedPermissionMode: session.permissionMode },
+              );
+              // Restore the same mode for the foreground hook and config-based
+              // background/workflow authorization, including legacy sessions.
+              loadSession({ ...session, permissionMode });
+              setConfig((prev) => ({ ...prev, permissionMode }));
             },
             activateSession: (...args) => {
               updateQueue([]);
@@ -1308,6 +1417,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             currentSessionId: sessionId,
             exit,
             isLoading,
+            isWorkerAttached: () => isWorkerAttached,
             getMCPAuthenticationRequired,
             authenticateMCPServer,
             logoutMCPServer,
@@ -1376,9 +1486,18 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               skillsTUIResolveRef.current = onDone;
               setSkillsTUIActive(true);
             },
+            showPermissionPicker: stdout.isTTY && stdin.isTTY ? (onDone) => {
+              permissionPickerResolveRef.current = onDone;
+              setPermissionPickerActive(true);
+            } : undefined,
             showCustomizeTUI: stdout.isTTY && process.stdin.isTTY ? (onDone: () => void) => {
               customizeTUIResolveRef.current = onDone;
               setCustomizeTUIActive(true);
+            } : undefined,
+            showLoginTUI: stdout.isTTY && stdin.isTTY ? (onDone: (result: { cancelled: boolean; message?: string }) => void, accountService: string) => {
+              loginTUIResolveRef.current = onDone;
+              setLoginTUIService(accountService);
+              setLoginTUIActive(true);
             } : undefined,
             startVoiceInput: stdout.isTTY && stdin.isTTY ? () => {
               // Capture the version after the slash command clears its composer.
@@ -1493,7 +1612,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
+    [detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.
@@ -1550,7 +1669,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     if (measured > 0 && measured !== footerHeight) setFooterHeight(measured);
   });
 
-  const documentHeight = Math.max(3, termRows - footerHeight);
+  const documentHeight = Math.max(3, termRows - 1 - footerHeight);
 
   // Scroll the document wherever the pointer happens to be. ScrollBox has its
   // own onWheel, but it only ever sees events that hit-test into it — with the
@@ -1624,9 +1743,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }
 
   return (
-    // Pinned to the terminal height so the frame can never grow past the screen
-    // even while a measurement is still settling.
-    <Box flexDirection="column" height={termRows} onWheel={handleWheel}>
+    // Reserve the renderer's trailing newline so the oldest document row
+    // stays visible and selectable when scrolled all the way to the top.
+    <Box flexDirection="column" height={Math.max(1, termRows - 1)} onWheel={handleWheel}>
       {/*
         One scrolling document, not a stack of viewports. Everything the user
         reads lives in here at its natural height and moves together; giving
@@ -1829,10 +1948,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         {queueBlocked && queuedRequests.length > 0 && <Text color="yellow">Queue paused · /queue retry to retry</Text>}
         {!voice.phase && pendingConfirmation && (
           <ToolConfirm
+            detachAvailable={canDetach}
             toolName={pendingConfirmation.toolName}
             input={pendingConfirmation.input}
             diffLines={pendingConfirmation.diffLines}
             mcpServerName={pendingConfirmation.mcpServerName}
+            warning={pendingConfirmation.warning}
             onConfirm={(choice) => confirmTool(choice, keyStartConfirmationRef.current ?? pendingConfirmation ?? undefined)}
             subagentTask={pendingConfirmation.subagentTask}
             explicitApprovalOnly={pendingConfirmation.explicitApprovalOnly}
@@ -1846,11 +1967,28 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           />
         )}
 
+        <DetachHint canDetach={canDetach} isLoading={isLoading} turnStartTime={turnStartTime} sessionId={sessionId} shortcut={formatKeybinding(keybindings, "detachSession")} />
+
         {!voice.phase && !pendingConfirmation && pendingContextWindowRequest && (
           <ContextWindowPrompt
             model={pendingContextWindowRequest.model}
             defaultValue={DEFAULT_UNKNOWN_CONTEXT_WINDOW}
             onSubmit={resolveContextWindowRequest}
+          />
+        )}
+
+        {permissionPickerActive && (
+          <PermissionPicker
+            current={getEffectivePermissionMode()}
+            floor={config.orgPermissionFloor}
+            onDone={(mode) => {
+              setPermissionPickerActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = permissionPickerResolveRef.current;
+              permissionPickerResolveRef.current = null;
+              resolve?.(mode);
+            }}
           />
         )}
 
@@ -1893,6 +2031,21 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               const resolve = customizeTUIResolveRef.current;
               customizeTUIResolveRef.current = null;
               resolve?.();
+            }}
+          />
+        )}
+
+        {loginTUIActive && (
+          <LoginTUI
+            accountService={loginTUIService}
+            openBrowser={openExternal}
+            onDone={(result) => {
+              setLoginTUIActive(false);
+              setPickerActive(false);
+              setInput("");
+              const resolve = loginTUIResolveRef.current;
+              loginTUIResolveRef.current = null;
+              resolve?.(result);
             }}
           />
         )}
@@ -1950,11 +2103,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             suppressHistory={isLoading}
             commands={[
               { name: "queue", description: "Manage queued requests (retry to resume)" },
-              { name: "ps", description: "Side query while agent is working" },
+              { name: "ps", description: "Side query while agent is working", argumentHint: "<question>" },
               ...commandRegistryRef.current.list().map((c) => ({
                 name: c.name,
                 description: c.description,
                 category: c.description.startsWith("[agent]") ? "agent" as const : "command" as const,
+                argumentHint: c.argumentHint,
+                autoSubmit: c.autoSubmit,
               })),
             ]}
             keybindings={keybindings}
