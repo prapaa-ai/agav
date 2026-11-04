@@ -1,33 +1,50 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getRandomHint } from "../utils/hints.js";
-import { DEFAULT_KEYBINDINGS, formatKeybinding } from "../config/keybindings.js";
+import { DEFAULT_KEYBINDINGS } from "../config/keybindings.js";
 
-// getRandomHint samples one hint at random. Rather than mock Math.random
-// (which destabilizes the test runner), sample enough times to observe the
-// whole space with overwhelming probability, then assert membership/absence.
-function sample(backgroundJobsEnabled: boolean, iterations = 4000): Set<string> {
-  const seen = new Set<string>();
-  for (let i = 0; i < iterations; i++) {
-    seen.add(getRandomHint(DEFAULT_KEYBINDINGS, false, backgroundJobsEnabled));
+// Sweep a uniform grid finer than the hint list. Advance on EVERY random draw,
+// including retries of the previous index, so the no-repeat loop cannot stall.
+// Keep a hard limit so a regression fails rather than hanging or exhausting memory.
+function collectHints(nextHint: () => string): Set<string> {
+  const steps = 256;
+  let draws = 0;
+  const random = vi.spyOn(Math, "random").mockImplementation(() => {
+    if (draws >= steps * steps) throw new Error("Hint selection exceeded its random-draw budget");
+    return ((draws++ % steps) + 0.5) / steps;
+  });
+  try {
+    const seen = new Set<string>();
+    for (let i = 0; i < steps; i++) seen.add(nextHint());
+    // If the pool outgrows the grid, increase the resolution rather than silently
+    // checking only a subset of hints.
+    expect(seen.size).toBeLessThan(steps);
+    return seen;
+  } finally {
+    random.mockRestore();
   }
-  return seen;
 }
 
 describe("getRandomHint detach hint", () => {
-  const shortcut = formatKeybinding(DEFAULT_KEYBINDINGS, "detachSession");
-  const detachHint = `${shortcut} detaches a running turn — the worker continues; resume with /resume`;
+  const detachHint = "Ctrl+D detaches a running turn — the worker continues; resume with /resume";
 
   it("advertises detaching when background jobs are enabled", () => {
-    expect(sample(true)).toContain(detachHint);
+    expect(collectHints(() => getRandomHint(DEFAULT_KEYBINDINGS, false, true))).toContain(detachHint);
   });
 
   it("omits the detach hint when background jobs are disabled", () => {
-    for (const hint of sample(false)) expect(hint).not.toContain("detaches a running turn");
+    for (const hint of collectHints(() => getRandomHint(DEFAULT_KEYBINDINGS, false, false))) {
+      expect(hint).not.toContain("detaches a running turn");
+    }
   });
 
   it("defaults to omitting the detach hint", () => {
-    const seen = new Set<string>();
-    for (let i = 0; i < 4000; i++) seen.add(getRandomHint());
-    for (const hint of seen) expect(hint).not.toContain("detaches a running turn");
+    for (const hint of collectHints(() => getRandomHint())) expect(hint).not.toContain("detaches a running turn");
+  });
+
+  it("uses the configured detach chord instead of the default shortcut", () => {
+    const keybindings = { ...DEFAULT_KEYBINDINGS, detachSession: ["ctrl+k ctrl+e"] };
+    const hints = collectHints(() => getRandomHint(keybindings, false, true));
+    expect(hints).toContain("Ctrl+K Ctrl+E detaches a running turn — the worker continues; resume with /resume");
+    expect(hints).not.toContain(detachHint);
   });
 });
