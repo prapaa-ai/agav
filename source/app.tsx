@@ -12,7 +12,6 @@ import RequestQueue from "./components/request-queue.js";
 import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
 import ToolConfirm from "./components/tool-confirm.js";
-import DetachHint from "./components/detach-hint.js";
 import WorkflowConsent from "./components/workflow-consent.js";
 import ContextWindowPrompt from "./components/context-window-prompt.js";
 import { DEFAULT_UNKNOWN_CONTEXT_WINDOW } from "./agent/loop.js";
@@ -1680,7 +1679,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     docControls.current?.scrollBy(event.direction === "up" ? step : -step);
   }, [documentHeight]);
 
-  const statusHint = useMemo(() => getRandomHint(keybindings, enhancedKeyboard), [messages.length, keybindings, enhancedKeyboard]);
+  const statusHint = useMemo(() => getRandomHint(keybindings, enhancedKeyboard, config.backgroundJobsEnabled === true), [messages.length, keybindings, enhancedKeyboard, config.backgroundJobsEnabled]);
 
   // Workflows owns the entire frame, not the home footer. Keeping the document
   // mounted behind it leaves the banner and status bar visible above/below it.
@@ -1966,8 +1965,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             onDecide={workflowConsent.resolve}
           />
         )}
-
-        <DetachHint canDetach={canDetach} isLoading={isLoading} turnStartTime={turnStartTime} sessionId={sessionId} shortcut={formatKeybinding(keybindings, "detachSession")} />
 
         {!voice.phase && !pendingConfirmation && pendingContextWindowRequest && (
           <ContextWindowPrompt
