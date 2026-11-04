@@ -29,6 +29,19 @@ export interface SessionRecord {
   compacted?: boolean;
   runtime?: { generation: string; status: SessionRuntimeStatus; pendingCount: number; cwd: string };
   /**
+   * Last activity time for saved sessions and runtime snapshots. Legacy history
+   * may omit this field, so consumers fall back to `createdAt`. Surfaced by
+   * {@link listResumableSessions} so the resume picker can sort by recency
+   * without re-reading every runtime.
+   */
+  updatedAt?: string;
+  /**
+   * Working directory the session ran in. Sourced from the runtime record, so
+   * it is absent for saved-only sessions that never produced a runtime; the
+   * resume picker buckets those under an "unknown project" group.
+   */
+  cwd?: string;
+  /**
    * The permission mode in force for this session, persisted so a resume
    * restores the mode the user was last running under instead of silently
    * falling back to the config default. Absent on sessions saved before this
@@ -105,8 +118,9 @@ export async function saveSession(
     const branchParentId = parentId ?? existing?.parentId;
     // An explicit mode wins; otherwise the runtime is authoritative, then saved history.
     const effectivePermissionMode = permissionMode ?? runtime?.permissionMode ?? existing?.permissionMode;
+    const now = new Date().toISOString();
     const record: SessionRecord = {
-      id, createdAt: new Date().toISOString(), model, provider,
+      id, createdAt: existing?.createdAt ?? existing?.updatedAt ?? runtime?.createdAt ?? now, updatedAt: now, model, provider,
       title: sessionName ?? extractTitle(messages),
       ...(sessionName ? { name: sessionName } : {}),
       ...(branchParentId ? { parentId: branchParentId } : {}),
@@ -159,7 +173,11 @@ export async function saveSessionRuntime(record: SessionRuntimeRecord, store = n
     const name = current.name ?? existing?.name ?? current.title;
     const saved: SessionRecord = {
       ...existing,
-      id: record.id, createdAt: record.createdAt, model: record.model, provider: record.provider,
+      // The original history createdAt is authoritative: a resumed session gets
+      // a fresh runtime whose own createdAt is the resume time, which must not
+      // overwrite the session's true creation date (it would wrongly jump the
+      // session to the top of a sort-by-created view).
+      id: record.id, createdAt: existing?.createdAt ?? existing?.updatedAt ?? record.createdAt, updatedAt: record.updatedAt, model: record.model, provider: record.provider,
       title: name ?? extractTitle(record.messages),
       ...(name ? { name } : {}),
       messages: record.messages, compacted: record.compacted, tokenUsage: record.tokenUsage,
@@ -192,7 +210,7 @@ export async function listSessions(): Promise<SessionRecord[]> {
       .filter((s): s is SessionRecord => s !== null)
       .sort(
         (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+          new Date(b.updatedAt ?? b.createdAt).getTime() - new Date(a.updatedAt ?? a.createdAt).getTime(),
       );
   } catch {
     return [];
@@ -220,16 +238,19 @@ export async function renameSession(id: string, name: string): Promise<SessionRe
     const saved = await loadSession(id);
     if (!runtime && !saved) return null;
     if (runtime) {
-      await store!.update(id, runtime.generation, current => { current.title = trimmedName; current.name = trimmedName; });
+      const updated = await store!.update(id, runtime.generation, current => { current.title = trimmedName; current.name = trimmedName; });
       // The runtime remains authoritative. Only mirror metadata when history already exists.
       if (saved) await writeAtomic(join(getHistoryDir(), `${id}.json`), JSON.stringify({ ...saved, title: trimmedName, name: trimmedName }, null, 2));
       const { listPendingApprovals } = await import("../sessions/approvals.js");
       const pendingCount = (await listPendingApprovals(store!, id)).length;
-      return { ...saved, id, createdAt: runtime.createdAt, model: runtime.model, provider: runtime.provider,
-        title: trimmedName, name: trimmedName, messages: runtime.messages, compacted: runtime.compacted, tokenUsage: runtime.tokenUsage ?? saved?.tokenUsage,
-        runtime: { generation: runtime.generation, status: runtime.status, pendingCount, cwd: runtime.cwd } };
+      return { ...saved, id, createdAt: saved?.createdAt ?? saved?.updatedAt ?? updated.createdAt, model: updated.model, provider: updated.provider,
+        title: trimmedName, name: trimmedName, messages: updated.messages, compacted: updated.compacted, tokenUsage: updated.tokenUsage ?? saved?.tokenUsage,
+        updatedAt: updated.updatedAt, cwd: updated.cwd,
+        runtime: { generation: updated.generation, status: updated.status, pendingCount, cwd: updated.cwd } };
     }
-    const renamed: SessionRecord = { ...saved!, name: trimmedName, title: trimmedName, createdAt: new Date().toISOString() };
+    const now = new Date().toISOString();
+    const renamed: SessionRecord = { ...saved!, name: trimmedName, title: trimmedName,
+      createdAt: saved!.createdAt ?? saved!.updatedAt ?? now, updatedAt: now };
     await writeAtomic(join(getHistoryDir(), `${id}.json`), JSON.stringify(renamed, null, 2));
     return renamed;
   });

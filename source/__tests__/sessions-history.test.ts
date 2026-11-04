@@ -31,6 +31,13 @@ describe("resumable history", () => {
     expect(await loadResumableSession("missing")).toBeNull();
   });
 
+  it("orders saved-only sessions by activity rather than creation", async () => {
+    const old = { ...saved, updatedAt: "2024-03-01T00:00:00Z" };
+    const newer = { ...saved, id: "newer", createdAt: "2024-02-01T00:00:00Z" };
+    vi.mocked(listSessions).mockResolvedValue([newer, old]);
+    expect((await listResumableSessions()).map(s => s.id)).toEqual([old.id, newer.id]);
+  });
+
   it("merges by id with runtime settings and transcript winning, retaining saved metadata", async () => {
     const runtime = await create(saved.id);
     const [record] = await listResumableSessions();
