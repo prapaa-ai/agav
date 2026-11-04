@@ -67,6 +67,34 @@ describe("history persistence", () => {
     expect(await loadSession(record.id)).toMatchObject({ name: "New name" });
   });
 
+  it.each([false, true])("returns updated runtime metadata after rename (saved history: %s)", async (withHistory) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+      const record = await create();
+      if (withHistory) {
+        await saveSessionRuntime(record);
+        const saved = await loadSession(record.id);
+        await writeFile(join(root, "history", `${record.id}.json`), JSON.stringify({
+          ...saved, updatedAt: record.updatedAt, cwd: "stale-project",
+        }));
+      }
+      vi.setSystemTime(new Date("2024-01-02T00:00:00Z"));
+      const renamed = await renameSession(record.id, " New name ");
+      const updated = await store.read(record.id);
+      expect(updated!.updatedAt).not.toBe(record.updatedAt);
+      expect(renamed).toMatchObject({
+        title: "New name", name: "New name", createdAt: record.createdAt,
+        updatedAt: updated!.updatedAt, cwd: updated!.cwd,
+        messages, tokenUsage: tokens,
+        runtime: { generation: record.generation, status: record.status, pendingCount: 0, cwd: root },
+      });
+      expect(await loadSession(record.id)).toEqual(withHistory
+        ? expect.objectContaining({ title: "New name", name: "New name" })
+        : null);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("updates terminal runtime tokens but never overwrites an active runtime", async () => {
     const record = await create();
     await saveSession([], "local", "openai", record.id, { ...tokens, outputTokens: 30 });

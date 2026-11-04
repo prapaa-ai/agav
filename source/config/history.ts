@@ -234,14 +234,15 @@ export async function renameSession(id: string, name: string): Promise<SessionRe
     const saved = await loadSession(id);
     if (!runtime && !saved) return null;
     if (runtime) {
-      await store!.update(id, runtime.generation, current => { current.title = trimmedName; current.name = trimmedName; });
+      const updated = await store!.update(id, runtime.generation, current => { current.title = trimmedName; current.name = trimmedName; });
       // The runtime remains authoritative. Only mirror metadata when history already exists.
       if (saved) await writeAtomic(join(getHistoryDir(), `${id}.json`), JSON.stringify({ ...saved, title: trimmedName, name: trimmedName }, null, 2));
       const { listPendingApprovals } = await import("../sessions/approvals.js");
       const pendingCount = (await listPendingApprovals(store!, id)).length;
-      return { ...saved, id, createdAt: runtime.createdAt, model: runtime.model, provider: runtime.provider,
-        title: trimmedName, name: trimmedName, messages: runtime.messages, compacted: runtime.compacted, tokenUsage: runtime.tokenUsage ?? saved?.tokenUsage,
-        runtime: { generation: runtime.generation, status: runtime.status, pendingCount, cwd: runtime.cwd } };
+      return { ...saved, id, createdAt: updated.createdAt, model: updated.model, provider: updated.provider,
+        title: trimmedName, name: trimmedName, messages: updated.messages, compacted: updated.compacted, tokenUsage: updated.tokenUsage ?? saved?.tokenUsage,
+        updatedAt: updated.updatedAt, cwd: updated.cwd,
+        runtime: { generation: updated.generation, status: updated.status, pendingCount, cwd: updated.cwd } };
     }
     const renamed: SessionRecord = { ...saved!, name: trimmedName, title: trimmedName, createdAt: new Date().toISOString() };
     await writeAtomic(join(getHistoryDir(), `${id}.json`), JSON.stringify(renamed, null, 2));
