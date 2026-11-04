@@ -21,7 +21,8 @@ async function runtimeSession(store: SessionRuntimeStore, record: SessionRuntime
   return {
     ...saved,
     id: record.id,
-    createdAt: record.createdAt,
+    // A legacy session may receive its first runtime long after it was created.
+    createdAt: saved?.createdAt ?? saved?.updatedAt ?? record.createdAt,
     model: record.model,
     provider: record.provider,
     ...(record.title ? { name: record.title } : {}),

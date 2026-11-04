@@ -242,3 +242,50 @@ it("preserves history creation time when a saved-only session first gets a runti
     expect(after!.updatedAt).toBe(active.updatedAt);
   } finally { vi.useRealTimers(); }
 });
+
+it.each([
+  { createdAt: "2024-01-01T00:00:00.000Z" },
+  { createdAt: "2024-01-01T00:00:00.000Z", updatedAt: "2024-02-01T00:00:00.000Z" },
+  { updatedAt: "2024-01-01T00:00:00.000Z" },
+])("preserves legacy creation in the resume view across first runtime, checkpoints, rename and local save: %j", async timestamps => {
+  const { listResumableSessions, loadResumableSession } = await import("../sessions/history.js");
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    const createdAt = timestamps.createdAt ?? timestamps.updatedAt;
+    const id = "legacy-first-runtime";
+    await mkdir(join(root, "history"), { recursive: true });
+    await writeFile(join(root, "history", id + ".json"), JSON.stringify({
+      id, title: "Legacy", model: "model", provider: "openai", messages, ...timestamps,
+    }));
+    vi.setSystemTime(new Date("2025-01-01T00:00:00Z"));
+    const newerId = await saveSession(messages, "model", "openai");
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const runtime = await store.create({ id, cwd: root, model: "model", provider: "openai",
+      permissionMode: "ask", sandboxRequired: false, messages });
+    expect(runtime.createdAt).not.toBe(createdAt);
+    const checkView = async () => {
+      const current = (await store.read(id))!;
+      expect(await loadResumableSession(id)).toMatchObject({ createdAt, updatedAt: current.updatedAt, messages: current.messages });
+      const listed = await listResumableSessions();
+      expect(listed.map(s => s.id)).toEqual([id, newerId]);
+      expect(listed.find(s => s.id === id)).toMatchObject({ createdAt, updatedAt: current.updatedAt });
+      expect(listed.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)).map(s => s.id)).toEqual([newerId, id]);
+    };
+    await checkView();
+    vi.setSystemTime(new Date("2026-02-01T00:00:00Z"));
+    const active = await store.update(id, runtime.generation, current => {
+      current.status = "running";
+      current.messages = [...messages, { role: "user", content: [{ type: "text", text: "Resumed message" }] }];
+    });
+    await saveSessionRuntime(active);
+    expect(await loadSession(id)).toMatchObject({ createdAt, updatedAt: active.updatedAt });
+    await checkView();
+    expect(await renameSession(id, "Renamed")).toMatchObject({ createdAt });
+    await checkView();
+    await store.update(id, runtime.generation, current => { current.status = "completed"; });
+    vi.setSystemTime(new Date("2026-03-01T00:00:00Z"));
+    await saveSession(active.messages, "model", "openai", id);
+    expect(await loadSession(id)).toMatchObject({ createdAt, updatedAt: "2026-03-01T00:00:00.000Z" });
+    await checkView();
+  } finally { vi.useRealTimers(); }
+});

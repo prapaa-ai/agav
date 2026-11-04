@@ -120,7 +120,7 @@ export async function saveSession(
     const effectivePermissionMode = permissionMode ?? runtime?.permissionMode ?? existing?.permissionMode;
     const now = new Date().toISOString();
     const record: SessionRecord = {
-      id, createdAt: runtime?.createdAt ?? existing?.createdAt ?? existing?.updatedAt ?? now, updatedAt: now, model, provider,
+      id, createdAt: existing?.createdAt ?? existing?.updatedAt ?? runtime?.createdAt ?? now, updatedAt: now, model, provider,
       title: sessionName ?? extractTitle(messages),
       ...(sessionName ? { name: sessionName } : {}),
       ...(branchParentId ? { parentId: branchParentId } : {}),
@@ -177,7 +177,7 @@ export async function saveSessionRuntime(record: SessionRuntimeRecord, store = n
       // a fresh runtime whose own createdAt is the resume time, which must not
       // overwrite the session's true creation date (it would wrongly jump the
       // session to the top of a sort-by-created view).
-      id: record.id, createdAt: existing?.createdAt ?? record.createdAt, updatedAt: record.updatedAt, model: record.model, provider: record.provider,
+      id: record.id, createdAt: existing?.createdAt ?? existing?.updatedAt ?? record.createdAt, updatedAt: record.updatedAt, model: record.model, provider: record.provider,
       title: name ?? extractTitle(record.messages),
       ...(name ? { name } : {}),
       messages: record.messages, compacted: record.compacted, tokenUsage: record.tokenUsage,
@@ -243,7 +243,7 @@ export async function renameSession(id: string, name: string): Promise<SessionRe
       if (saved) await writeAtomic(join(getHistoryDir(), `${id}.json`), JSON.stringify({ ...saved, title: trimmedName, name: trimmedName }, null, 2));
       const { listPendingApprovals } = await import("../sessions/approvals.js");
       const pendingCount = (await listPendingApprovals(store!, id)).length;
-      return { ...saved, id, createdAt: updated.createdAt, model: updated.model, provider: updated.provider,
+      return { ...saved, id, createdAt: saved?.createdAt ?? saved?.updatedAt ?? updated.createdAt, model: updated.model, provider: updated.provider,
         title: trimmedName, name: trimmedName, messages: updated.messages, compacted: updated.compacted, tokenUsage: updated.tokenUsage ?? saved?.tokenUsage,
         updatedAt: updated.updatedAt, cwd: updated.cwd,
         runtime: { generation: updated.generation, status: updated.status, pendingCount, cwd: updated.cwd } };
