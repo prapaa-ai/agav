@@ -196,3 +196,49 @@ it.each(["save", "rename"] as const)("preserves legacy timestamp history on %s",
     }
   } finally { vi.useRealTimers(); }
 });
+
+it("preserves the original creation time when a resumed runtime mirrors history", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    // A session created long ago and saved to history.
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    const original = await create();
+    await saveSessionRuntime(original);
+    const before = await loadSession(original.id);
+    expect(before!.createdAt).toBe("2024-01-01T00:00:00.000Z");
+
+    // Resume much later: a fresh runtime whose own createdAt is "now".
+    vi.setSystemTime(new Date("2026-06-01T00:00:00Z"));
+    await store.update(original.id, original.generation, current => { current.status = "completed"; });
+    const resumed = await store.create({ id: original.id, cwd: root, model: "worker-model", provider: "anthropic",
+      permissionMode: "ask", sandboxRequired: false, messages }, original.generation);
+    const active = await store.update(resumed.id, resumed.generation, current => { current.status = "running"; });
+    await saveSessionRuntime(active);
+
+    const after = await loadSession(original.id);
+    // Creation date stays put; only activity advances. Sort-by-created restores order.
+    expect(after!.createdAt).toBe("2024-01-01T00:00:00.000Z");
+    expect(after!.updatedAt).toBe(active.updatedAt);
+  } finally { vi.useRealTimers(); }
+});
+
+it("preserves history creation time when a saved-only session first gets a runtime", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    const id = await saveSession(messages, "model", "openai");
+    const before = await loadSession(id);
+    expect(before!.createdAt).toBe("2024-01-01T00:00:00.000Z");
+
+    // Later this saved-only session is resumed, creating its first runtime.
+    vi.setSystemTime(new Date("2026-06-01T00:00:00Z"));
+    const runtime = await store.create({ id, cwd: root, model: "model", provider: "openai",
+      permissionMode: "ask", sandboxRequired: false, messages });
+    const active = await store.update(runtime.id, runtime.generation, current => { current.status = "running"; });
+    await saveSessionRuntime(active);
+
+    const after = await loadSession(id);
+    expect(after!.createdAt).toBe("2024-01-01T00:00:00.000Z");
+    expect(after!.updatedAt).toBe(active.updatedAt);
+  } finally { vi.useRealTimers(); }
+});

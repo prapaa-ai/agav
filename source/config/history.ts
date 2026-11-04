@@ -173,7 +173,11 @@ export async function saveSessionRuntime(record: SessionRuntimeRecord, store = n
     const name = current.name ?? existing?.name ?? current.title;
     const saved: SessionRecord = {
       ...existing,
-      id: record.id, createdAt: record.createdAt, updatedAt: record.updatedAt, model: record.model, provider: record.provider,
+      // The original history createdAt is authoritative: a resumed session gets
+      // a fresh runtime whose own createdAt is the resume time, which must not
+      // overwrite the session's true creation date (it would wrongly jump the
+      // session to the top of a sort-by-created view).
+      id: record.id, createdAt: existing?.createdAt ?? record.createdAt, updatedAt: record.updatedAt, model: record.model, provider: record.provider,
       title: name ?? extractTitle(record.messages),
       ...(name ? { name } : {}),
       messages: record.messages, compacted: record.compacted, tokenUsage: record.tokenUsage,
