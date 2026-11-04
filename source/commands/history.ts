@@ -29,6 +29,7 @@ function applySession(loaded: SessionRecord, context: CommandContext): CommandRe
   }
   return {
     type: "message",
+    preservePaths: true,
     text: loaded.runtime
       ? `Attached session: ${loaded.title} · ${loaded.runtime.status} · ${loaded.runtime.pendingCount} pending approval(s)\nWorking directory: ${loaded.runtime.cwd}`
       : `Loaded session: ${loaded.title} (${loaded.messages.length} messages)`,
