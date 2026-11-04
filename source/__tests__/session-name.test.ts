@@ -137,8 +137,15 @@ describe("session naming and persistence", () => {
     agentWithCustomName.conversation.addUserMessage("Hello world");
     agentWithCustomName.saveNow();
 
-    // Give asynchronous saveSession a tick to write
-    await new Promise((r) => setTimeout(r, 50));
+    // saveSession writes asynchronously; poll until the id is assigned rather
+    // than sleeping a fixed amount. A single fixed delay is flaky under full-
+    // suite parallelism (the write occasionally lands after the timeout, leaving
+    // sessionId undefined and racing the afterEach cleanup -> ENOTEMPTY). Only
+    // unmount once the write has completed so teardown never races it.
+    const deadline = Date.now() + 5000;
+    while (agentWithCustomName.sessionId === undefined && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     instance.unmount();
 
     // Verify session was saved with the custom name
