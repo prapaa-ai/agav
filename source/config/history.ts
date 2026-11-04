@@ -29,6 +29,20 @@ export interface SessionRecord {
   compacted?: boolean;
   runtime?: { generation: string; status: SessionRuntimeStatus; pendingCount: number; cwd: string };
   /**
+   * Last activity time. Present only for sessions that have (or had) a live
+   * runtime, whose store tracks `updatedAt`; saved-only history has no such
+   * field, so consumers fall back to `createdAt`. Surfaced by
+   * {@link listResumableSessions} so the resume picker can sort by recency
+   * without re-reading every runtime.
+   */
+  updatedAt?: string;
+  /**
+   * Working directory the session ran in. Sourced from the runtime record, so
+   * it is absent for saved-only sessions that never produced a runtime; the
+   * resume picker buckets those under an "unknown project" group.
+   */
+  cwd?: string;
+  /**
    * The permission mode in force for this session, persisted so a resume
    * restores the mode the user was last running under instead of silently
    * falling back to the config default. Absent on sessions saved before this

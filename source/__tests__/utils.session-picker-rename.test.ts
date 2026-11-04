@@ -126,7 +126,9 @@ describe("session picker rename view", () => {
     sessions[0]!.runtime = { generation: "generation", status: "needs-approval", pendingCount: 2, cwd: "/work" };
     const promise = pickSession(sessions);
     await tick();
-    expect(allOutput(stdout)).toContain("[needs-approval · 2 pending]");
+    // Approval state is now surfaced by the CTA banner + a status gutter glyph,
+    // not an in-title "[needs-approval · N pending]" prefix.
+    expect(allOutput(stdout)).toContain("1 session needs your approval");
     stdin.send("d");
     stdin.send("r");
     await tick();
@@ -144,7 +146,7 @@ describe("session picker rename view", () => {
     sessions[0]!.runtime = { generation: "generation", status: "completed", pendingCount: 0, cwd: "/work" };
     const promise = pickSession(sessions);
     await tick();
-    expect(allOutput(stdout)).toContain("D delete · M/R rename");
+    expect(allOutput(stdout)).toContain("d del · r rename");
     expect(allOutput(stdout)).not.toContain("runtime read-only");
     stdin.send("d");
     await tick();
@@ -1045,7 +1047,10 @@ describe("session picker mouse support", () => {
     }));
 
   // SGR mouse report helpers. Button 0 = left click, 64 = wheel up, 65 = wheel
-  // down. Header occupies 3 lines, so the first session row is terminal row 4.
+  // down. Header occupies 7 lines (3-row search box, title, facet bar, hint,
+  // blank) when no session needs approval, so the first session row is terminal
+  // row 8. X=5 lands on the left edge of a session row (the search box only
+  // spans rows 1-3, so this never accidentally focuses it).
   const wheelDown = () => "\x1b[<65;1;1M";
   const wheelUp = () => "\x1b[<64;1;1M";
   const click = (row: number) => `\x1b[<0;5;${row}M`;
@@ -1127,9 +1132,9 @@ describe("session picker mouse support", () => {
     const promise = pickSession(sessions);
     await tick();
 
-    // First session row is terminal row 4 (after 3 header lines). Clicking
-    // row 6 targets the third visible session (index 2).
-    stdin.send(click(6));
+    // First session row is terminal row 8 (after 7 header lines). Clicking
+    // row 10 targets the third visible session (index 2).
+    stdin.send(click(10));
     await tick();
     stdin.send("\r");
 
@@ -1137,14 +1142,14 @@ describe("session picker mouse support", () => {
     expect(picked?.id).toBe(sessions[2]!.id);
   });
 
-  it("maps the first session row (terminal row 4) to index 0", async () => {
+  it("maps the first session row (terminal row 8) to index 0", async () => {
     const sessions = makeManySessions(50);
     const promise = pickSession(sessions);
     await tick();
 
     // Move off index 0 first so a click landing on it is an observable change.
     stdin.send(wheelDown()); // → 1
-    stdin.send(click(4)); // first session row → back to index 0
+    stdin.send(click(8)); // first session row → back to index 0
     await tick();
     stdin.send("\r");
 
@@ -1152,12 +1157,12 @@ describe("session picker mouse support", () => {
     expect(picked?.id).toBe(sessions[0]!.id);
   });
 
-  it("maps the second session row (terminal row 5) to index 1", async () => {
+  it("maps the second session row (terminal row 9) to index 1", async () => {
     const sessions = makeManySessions(50);
     const promise = pickSession(sessions);
     await tick();
 
-    stdin.send(click(5)); // second visible session → index 1
+    stdin.send(click(9)); // second visible session → index 1
     await tick();
     stdin.send("\r");
 
@@ -1249,8 +1254,8 @@ describe("session picker mouse support", () => {
     const promise = pickSession(sessions);
     await tick();
 
-    // Click row 6 (index 2) and the Enter keypress batched into one chunk.
-    stdin.send(click(6) + "\r");
+    // Click row 10 (index 2) and the Enter keypress batched into one chunk.
+    stdin.send(click(10) + "\r");
 
     const picked = await promise;
     expect(picked?.id).toBe(sessions[2]!.id);
@@ -1265,12 +1270,14 @@ describe("session picker mouse support", () => {
     expect(await promise).toBeNull();
   });
 
-  it("clicks in the header area are ignored", async () => {
+  it("clicks in the non-search header area are ignored", async () => {
     const sessions = makeManySessions(50);
     const promise = pickSession(sessions);
     await tick();
 
-    stdin.send(click(1)); // title line — not a session row
+    // Row 5 is the facet bar — a header row that is neither the search box
+    // (rows 1-3) nor a session row, so the click changes nothing.
+    stdin.send(click(5));
     await tick();
     stdin.send("\r");
 
@@ -1279,13 +1286,29 @@ describe("session picker mouse support", () => {
     expect(picked?.id).toBe(sessions[0]!.id);
   });
 
+  it("clicking inside the search box activates it; clicking a row deactivates it", async () => {
+    const sessions = makeManySessions(50);
+    const promise = pickSession(sessions);
+    await tick();
+
+    // Click inside the box (row 2 = input line, x within the border) → focused.
+    stdin.send("\x1b[<0;6;2M");
+    await tick();
+    expect(allOutput(stdout)).toContain("Esc done"); // focused-state top hint
+    // Click a session row → blurs the box AND selects that row.
+    stdin.send(click(10)); // row 10 → index 2
+    await tick();
+    stdin.send("\r");
+    expect((await promise)?.id).toBe(sessions[2]!.id);
+  });
+
   it("a mouse release event does not re-fire the selection", async () => {
     const sessions = makeManySessions(50);
     const promise = pickSession(sessions);
     await tick();
 
-    stdin.send("\x1b[<0;5;6M"); // press on row 6 → index 2
-    stdin.send("\x1b[<0;5;6m"); // release — must be ignored
+    stdin.send("\x1b[<0;5;10M"); // press on row 10 → index 2
+    stdin.send("\x1b[<0;5;10m"); // release — must be ignored
     await tick();
     stdin.send("\r");
 
@@ -1348,9 +1371,10 @@ describe("session picker narrow terminal", () => {
     const promise = pickSession(sessions);
     await tick();
 
-    // With no wrap, the first session still sits at terminal row 4; clicking
-    // row 6 selects the third visible session (index 2).
-    stdin.send("\x1b[<0;3;6M");
+    // With no wrap, the first session sits at terminal row 8 (7 header lines);
+    // clicking row 10 selects the third visible session (index 2). X=3 is on a
+    // session row, below the 3-row search box, so it maps to a row not the box.
+    stdin.send("\x1b[<0;3;10M");
     await tick();
     stdin.send("\r");
 
@@ -1396,21 +1420,205 @@ describe("session picker narrow terminal", () => {
 });
 
 describe("runtime session rows", () => {
-  it.each([40, 32])("shows status and pending count before a long title at %i columns", async columns => {
+  it.each([40, 32])("surfaces approval state via the CTA banner and a clean title at %i columns", async columns => {
     stdout.columns = columns;
     const session = makeSessions()[0]!;
     session.title = "A very long session title that cannot fit beside metadata";
     session.runtime = { generation: "generation", status: "needs-approval", pendingCount: 2, cwd: "/repo" };
     const promise = pickSession([session]);
     const frame = allOutput(stdout);
-    expect(frame).toContain("needs-approval · 2 pending");
-    expect(frame).not.toContain("D delete");
-    stdin.send("dDrRmM");
-    await tick();
-    expect(deleteSession).not.toHaveBeenCalled();
-    expect(renameSession).not.toHaveBeenCalled();
-    expect(allOutput(stdout)).not.toContain("Rename session");
+    // Approval is signalled by the CTA banner, not an in-title prefix. Use a
+    // substring that survives width-clamping even at 32 columns.
+    expect(frame).toContain("session needs your");
+    expect(frame).not.toContain("needs-approval · 2 pending");
+    // An active session cannot be deleted: the hint drops the delete action.
+    expect(frame).not.toContain("d del");
     stdin.send("\n");
     expect(await promise).toEqual(session);
+  });
+
+  it("delete (d) is a no-op but rename (r) opens for an active session", async () => {
+    const session = makeSessions()[0]!;
+    session.title = "Active one";
+    session.runtime = { generation: "generation", status: "needs-approval", pendingCount: 2, cwd: "/repo" };
+    const promise = pickSession([session]);
+    await tick();
+    stdin.send("d"); // delete — must be a no-op on an active session
+    stdin.send("r"); // rename — IS allowed for active sessions
+    await tick();
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(allOutput(stdout)).toContain("Rename session");
+    stdin.send("\x1b");
+    await wait(60);
+    stdin.send("\n");
+    expect(await promise).toEqual(session);
+  });
+});
+
+describe("session picker filtering, sorting and facets", () => {
+  const sessionsWithProjects = (): SessionRecord[] => [
+    {
+      id: "aaaaaaaa1111", createdAt: "2024-01-03T00:00:00Z", updatedAt: "2024-01-03T00:00:00Z",
+      model: "m", provider: "p", title: "Alpha auth bug", cwd: "/work/repo-a", messages: [],
+    },
+    {
+      id: "bbbbbbbb2222", createdAt: "2024-01-02T00:00:00Z", updatedAt: "2024-01-05T00:00:00Z",
+      model: "m", provider: "p", title: "Beta refactor", cwd: "/work/repo-b", messages: [],
+      runtime: { generation: "g", status: "running", pendingCount: 0, cwd: "/work/repo-b" },
+    },
+    {
+      id: "cccccccc3333", createdAt: "2024-01-01T00:00:00Z", updatedAt: "2024-01-04T00:00:00Z",
+      model: "m", provider: "p", title: "Gamma deploy", cwd: "/work/repo-a", messages: [],
+      runtime: { generation: "g", status: "needs-approval", pendingCount: 3, cwd: "/work/repo-a" },
+    },
+  ];
+
+  it("filters by typing in the search bar after pressing / (req 1)", async () => {
+    const promise = pickSession(sessionsWithProjects());
+    await tick();
+    stdin.send("/"); // focus the inline search bar
+    for (const ch of "refac") stdin.send(ch);
+    await tick();
+    const out = allOutput(stdout);
+    // The query is drawn inside the bordered box; the focused box shows "Esc done".
+    expect(out).toContain("refac");
+    expect(out).toContain("Esc done");
+    expect(out).toContain("1 of 3");
+    stdin.send("\r"); // Enter commits the search and blurs the bar (no resume)
+    await tick();
+    stdin.send("\r"); // now Enter resumes the only match
+    expect((await promise)?.id).toBe("bbbbbbbb2222");
+  });
+
+  it("plain letters do NOT filter until the search bar is focused (no d-conflict)", async () => {
+    const promise = pickSession(sessionsWithProjects());
+    await tick();
+    // Typing without pressing "/" must NOT change the query — "d" would delete,
+    // "a"/"s" toggle facets. Assert the query stays empty and the search prompt
+    // is still shown.
+    stdin.send("s"); // cycles sort, not a filter
+    await tick();
+    const out = allOutput(stdout);
+    // The blurred box shows its placeholder, and the query stays empty (no "s").
+    expect(out).toContain("filter by name…");
+    expect(out).not.toContain("│ s");
+    stdin.send("\x1b");
+    await promise;
+  });
+
+  it("Backspace in the search bar removes characters and restores the full list", async () => {
+    const promise = pickSession(sessionsWithProjects());
+    await tick();
+    stdin.send("/");
+    for (const ch of "zzz") stdin.send(ch); // matches nothing
+    await tick();
+    expect(allOutput(stdout)).toContain("No sessions match");
+    stdin.send("\x7f"); stdin.send("\x7f"); stdin.send("\x7f");
+    await tick();
+    stdin.send("\r"); // Enter blurs the search bar (filter now empty)
+    await tick();
+    // Enter now resumes the first session again (list restored).
+    stdin.send("\r");
+    expect((await promise)?.id).toBe("aaaaaaaa1111");
+  });
+
+  it("Tab cycles the project scope and narrows the list (req 2)", async () => {
+    const promise = pickSession(sessionsWithProjects());
+    await tick();
+    stdin.send("\t"); // all → first distinct cwd (/work/repo-a)
+    await tick();
+    const out = allOutput(stdout);
+    expect(out).toContain("[Tab] Project:");
+    // repo-a holds Alpha + Gamma (2 of 3).
+    expect(out).toContain("2 of 3");
+    stdin.send("\x1b");
+    await promise;
+  });
+
+  it("'s' cycles the sort between updated and created (req 3)", async () => {
+    const promise = pickSession(sessionsWithProjects());
+    await tick();
+    // Incoming order is preserved for "updated" (the default). Switch to created:
+    stdin.send("s");
+    await tick();
+    expect(allOutput(stdout)).toContain("[s] Sort: created");
+    // Created-desc: Alpha (Jan 3) is newest by creation → first → resumes it.
+    stdin.send("\r");
+    expect((await promise)?.id).toBe("aaaaaaaa1111");
+  });
+
+  it("'a' cycles the status facet to running-only then approval-only (reqs 4 & 5)", async () => {
+    const promise = pickSession(sessionsWithProjects());
+    await tick();
+    stdin.send("a"); // all → running
+    await tick();
+    let out = allOutput(stdout);
+    expect(out).toContain("[a] Status: running");
+    expect(out).toContain("2 of 3"); // running + needs-approval both count as active
+    stdin.send("a"); // running → needs-approval
+    await tick();
+    out = allOutput(stdout);
+    expect(out).toContain("[a] Status: needs-approval");
+    expect(out).toContain("1 of 3");
+    stdin.send("\r");
+    expect((await promise)?.id).toBe("cccccccc3333");
+  });
+
+  it("shows the approval CTA banner whenever any session needs approval (req 4)", async () => {
+    const promise = pickSession(sessionsWithProjects());
+    await tick();
+    expect(allOutput(stdout)).toContain("session needs your");
+    stdin.send("\x1b");
+    await promise;
+  });
+
+  it("does not show the CTA banner when nothing needs approval", async () => {
+    const clean = sessionsWithProjects().map((s) =>
+      s.id === "cccccccc3333" ? { ...s, runtime: { ...s.runtime!, status: "running" as const, pendingCount: 0 } } : s,
+    );
+    const promise = pickSession(clean);
+    await tick();
+    expect(allOutput(stdout)).not.toContain("need your approval");
+    expect(allOutput(stdout)).not.toContain("needs your approval");
+    stdin.send("\x1b");
+    await promise;
+  });
+
+  it("clears non-matching rows when a filter shrinks a full-height list", async () => {
+    // Regression: filtering a long list down to a few matches must repaint a
+    // frame that OVERWRITES the taller pre-filter frame, not leave stale,
+    // non-matching sessions visible below the matches.
+    stdout.rows = 24;
+    const many: SessionRecord[] = Array.from({ length: 40 }, (_, i) => ({
+      id: `id${String(i).padStart(8, "0")}`,
+      createdAt: new Date(2024, 0, 1, 0, 0, i).toISOString(),
+      model: "m", provider: "p",
+      title: i === 7 ? "KEEPME unique session" : `Noise session ${i}`,
+      messages: [],
+    }));
+    const promise = pickSession(many);
+    await tick();
+
+    // Focus the search bar and type all but the final character (the list is
+    // already narrowed to the single match by "KEEPM"). Then clear the captured
+    // output so only the FINAL repaint is inspected — earlier frames legitimately
+    // contained other rows before the filter narrowed.
+    stdin.send("/");
+    for (const ch of "KEEPM") stdin.send(ch);
+    await tick();
+    stdout.chunks.length = 0;
+    stdin.send("E"); // final keystroke → the frame we assert on
+    await tick();
+
+    const frame = allOutput(stdout);
+    expect(frame).toContain("KEEPME unique session");
+    expect(frame).toContain("1 of 40");
+    // No non-matching session may survive in the repainted frame.
+    expect(frame).not.toContain("Noise session");
+
+    stdin.send("\r"); // blur
+    await tick();
+    stdin.send("\r"); // resume the only match
+    expect((await promise)?.id).toBe("id00000007");
   });
 });

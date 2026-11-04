@@ -23,8 +23,122 @@ export async function pickSession(
   // recent sessions, which silently hid everything else with no way to reach
   // it. The viewport below already scrolls through more items than fit on
   // screen, so there's no reason to truncate the backing list.
-  const items = sessions.slice();
+  //
+  // `allItems` is the authoritative source (mutated by delete). `items` is the
+  // derived VIEW — `allItems` after applying the name filter, project scope,
+  // status filter and sort. Navigation, rendering and mouse mapping all index
+  // into `items`; `selected` is an index into the view, not the source.
+  const allItems = sessions.slice();
+  let items: SessionRecord[] = allItems.slice();
   let selected = 0;
+
+  // ── Filter / sort state ──────────────────────────────────────────────────
+  // Free-text name filter (req 1): a case-insensitive substring match over the
+  // session title. Edited only through the inline search bar — never by stray
+  // list keystrokes — so plain shortcuts like "d" (delete) never conflict with
+  // typing a query.
+  let nameFilter = "";
+  // Whether the inline search bar at the top has keyboard focus. When true,
+  // printable keys + Backspace edit `nameFilter`; when false, keys act as list
+  // shortcuts (d/r/arrows/…). Toggled with "/" (focus) and Esc (blur). The bar
+  // itself is ALWAYS rendered so the current query is always visible.
+  let searchActive = false;
+  // Project scope (req 2): "" means "all projects"; otherwise an exact cwd.
+  // Cycled with Tab through the distinct cwds present in the source list.
+  let projectScope = "";
+  // Status facet (req 4 & 5): cycle all → running → needs-approval.
+  type StatusFilter = "all" | "running" | "needs-approval";
+  let statusFilter: StatusFilter = "all";
+  // Sort key (req 3): recency ("updated", the historical default) or creation.
+  type SortKey = "updated" | "created";
+  let sortKey: SortKey = "updated";
+
+  const ACTIVE_STATUSES = ["starting", "running", "needs-approval"];
+  const UNKNOWN_PROJECT = "(unknown project)";
+
+  function projectOf(s: SessionRecord): string {
+    return s.cwd ?? s.runtime?.cwd ?? UNKNOWN_PROJECT;
+  }
+  function isRunning(s: SessionRecord): boolean {
+    return !!s.runtime && ACTIVE_STATUSES.includes(s.runtime.status);
+  }
+  function needsApproval(s: SessionRecord): boolean {
+    return s.runtime?.status === "needs-approval" || (s.runtime?.pendingCount ?? 0) > 0;
+  }
+  function recencyOf(s: SessionRecord): number {
+    return Date.parse(s.updatedAt ?? s.createdAt) || 0;
+  }
+
+  // Distinct project directories across the full source list, used to cycle the
+  // project scope. "All projects" ("") is prepended so Tab always returns to it.
+  function projectCycle(): string[] {
+    const seen = new Set<string>();
+    for (const s of allItems) seen.add(projectOf(s));
+    return ["", ...[...seen].sort((a, b) => a.localeCompare(b))];
+  }
+
+  // How many sessions in the full list currently need approval — drives the
+  // top-of-list CTA banner (req 4) regardless of the active filters.
+  function pendingApprovalCount(): number {
+    return allItems.filter(needsApproval).length;
+  }
+
+  // Compact relative age ("3m", "2h", "5d", "3w", "1y") — scans faster and is
+  // far shorter than an absolute toLocaleString timestamp, freeing row width for
+  // the project and title columns. "now" for < 1 minute.
+  function relativeAge(epochMs: number): string {
+    if (!epochMs) return "—";
+    const sec = Math.max(0, Math.floor((Date.now() - epochMs) / 1000));
+    if (sec < 60) return "now";
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h`;
+    const day = Math.floor(hr / 24);
+    if (day < 7) return `${day}d`;
+    const wk = Math.floor(day / 7);
+    if (wk < 52) return `${wk}w`;
+    return `${Math.floor(day / 365)}y`;
+  }
+
+  // Shorten a cwd for display: home → "~", and keep only the last two path
+  // segments so deeply-nested project paths still fit the project column.
+  function abbreviateProject(cwd: string): string {
+    if (cwd === UNKNOWN_PROJECT) return cwd;
+    const home = process.env.HOME || process.env.USERPROFILE;
+    let path = home && cwd.startsWith(home) ? "~" + cwd.slice(home.length) : cwd;
+    const parts = path.split(/[/\\]/).filter(Boolean);
+    if (parts.length > 2) path = "…/" + parts.slice(-2).join("/");
+    return path;
+  }
+
+  // Recompute the derived view from `allItems` + the active filter/sort state.
+  // Keeps the previously-selected session highlighted when it survives the new
+  // filter; otherwise clamps to the nearest valid row.
+  //
+  // Sort note: the DEFAULT ("updated") preserves the INCOMING order. The caller
+  // (`listResumableSessions`) already sorts by recency-desc, so re-sorting here
+  // would be redundant and would reorder any list a caller deliberately ordered.
+  // Only the explicit "created" choice re-sorts, by createdAt-desc.
+  function recomputeView() {
+    const priorId = items[selected]?.id;
+    const lower = nameFilter.toLowerCase();
+    const filtered = allItems.filter((s) => {
+      if (lower && !s.title.toLowerCase().includes(lower)) return false;
+      if (projectScope && projectOf(s) !== projectScope) return false;
+      if (statusFilter === "running" && !isRunning(s)) return false;
+      if (statusFilter === "needs-approval" && !needsApproval(s)) return false;
+      return true;
+    });
+    if (sortKey === "created") {
+      filtered.sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+    }
+    items = filtered;
+    const next = priorId ? items.findIndex((s) => s.id === priorId) : -1;
+    selected = next !== -1 ? next : 0;
+    if (selected >= items.length) selected = Math.max(0, items.length - 1);
+  }
+  recomputeView();
 
   // Current terminal width. Read on every render (not cached at startup) so a
   // mid-session shrink still clamps lines to the live width instead of wrapping.
@@ -32,13 +146,22 @@ export async function pickSession(
     return process.stdout.columns || 80;
   }
 
-  // Number of session rows that fit given the current terminal height. Recomputed
-  // on every render (not cached at startup) so a mid-session resize keeps the
-  // viewport — and the selected row — within what is actually drawn. The 6-line
-  // reserve covers the 3 header lines, the 2-line footer, and one pad line.
-  function currentPageSize(): number {
+  // Number of session rows the terminal can hold given its height. This is the
+  // VIEWPORT CAPACITY — it depends only on the terminal size, never on how many
+  // items currently match the filter, so the rendered frame keeps a stable
+  // height. If it shrank with the filtered count, a short filtered frame would
+  // overwrite fewer lines than the previous tall frame and leave stale rows on
+  // screen. The reserve covers the header lines (variable — see headerLineCount),
+  // the 2-line footer, and one pad line.
+  function currentCapacity(): number {
     const rows = process.stdout.rows || 21;
-    return Math.min(items.length, Math.max(1, rows - 6));
+    return Math.max(1, rows - headerLineCount() - 3);
+  }
+
+  // Number of session rows actually DRAWN this frame: never more than match the
+  // current filter, and never more than the viewport can hold.
+  function currentPageSize(): number {
+    return Math.min(items.length, currentCapacity());
   }
 
   const stdin = process.stdin;
@@ -75,16 +198,32 @@ export async function pickSession(
   let closed = false;
   const deleting = new Set<string>();
 
-  // The three header lines (title, hint, blank) sit above the first session
-  // row. Mouse clicks map a 1-based terminal row to an item index using this
-  // offset, so it must match the number of header lines pushed in render().
-  const HEADER_LINES = 3;
+  // Header lines sitting above the first session row. Mouse clicks map a 1-based
+  // terminal row to an item index using this offset, so it MUST match the number
+  // of header lines pushed in render(). The count is dynamic: a one-line CTA
+  // banner is added only when some session needs approval (req 4). Layout:
+  //   1-3. inline search box (top border, input line, bottom border)
+  //   4.   title + count
+  //   5.   facet bar ([Tab] Project · [a] Status · [s] Sort)
+  //   6.   hint line (or operationError)
+  //   7.   CTA banner — ONLY when pendingApprovalCount() > 0
+  //   8.   blank spacer
+  function headerLineCount(): number {
+    return pendingApprovalCount() > 0 ? 8 : 7;
+  }
 
   // Index of the first session row currently drawn on screen. Tracked in the
   // outer scope so the mouse handler can translate a click's Y coordinate into
   // the item it landed on. Kept in sync at the end of every render().
   let visibleStart = 0;
   let visibleEnd = 0;
+
+  // On-screen geometry of the bordered search box (1-based terminal coords),
+  // updated every render. The mouse handler hit-tests a click against this
+  // rectangle to focus the search bar when clicked inside, or blur it when
+  // clicked outside. The box spans three terminal rows: top border, the input
+  // line, and the bottom border.
+  const searchBox = { top: 1, bottom: 3, left: 1, right: 1 };
 
   // Truncate a styled line so its VISIBLE width never exceeds maxWidth,
   // preventing wrap onto a second physical row. ANSI escape sequences (SGR
@@ -135,13 +274,104 @@ export async function pickSession(
     const cols = currentCols();
 
     const total = items.length;
-    const countLabel = `${total} session${total === 1 ? "" : "s"}`;
+    const totalAll = allItems.length;
+    // Count reflects filtering: "12 of 48" when a filter narrows the list,
+    // mirroring the /model picker's "(N of M)" convention.
+    const countLabel = total === totalAll
+      ? `${total} session${total === 1 ? "" : "s"}`
+      : `${total} of ${totalAll}`;
     const lines: string[] = [];
+
+    // Header lines 1-3: the inline search bar, drawn as a visible bordered box
+    // pinned to the very top. It is ALWAYS drawn (stable header height) so the
+    // query is always visible. A bright cyan border + block caret mark the
+    // FOCUSED state; a dim border marks the blurred state. Typing only edits the
+    // query while focused, so plain list keys (d, r, …) never leak into it. The
+    // box geometry is recorded in `searchBox` so a click can focus it (inside)
+    // or blur it (outside) — see the mouse handler.
+    //
+    // Box width: 2-column left margin, then a border spanning to a right margin,
+    // leaving at least a small inner field even on narrow terminals.
+    const boxLeft = 2;                                   // 0-based column of "┌"/"└"/"│"
+    const boxInnerLeft = boxLeft + 2;                    // 1-based column of first input cell
+    const boxWidth = Math.max(12, Math.min(cols - 4, 60)); // total border width incl. corners
+    const innerWidth = boxWidth - 2;                     // cells available between the "│"s
+    const pad = " ".repeat(boxLeft);
+    const borderColor = searchActive ? "\x1b[36m" : "\x1b[2m"; // bright cyan when focused
+    // Record geometry (1-based, inclusive) for the mouse hit-test.
+    searchBox.top = 1;
+    searchBox.bottom = 3;
+    searchBox.left = boxLeft + 1;
+    searchBox.right = boxLeft + boxWidth;
+
+    // Top border carries the "Search" label; a hint sits on the right when there
+    // is room. The label/hint are embedded in the horizontal rule.
+    const title = " Search ";
+    const topHint = searchActive ? " Esc done " : nameFilter ? " / edit " : " click or / ";
+    const dashBudget = Math.max(0, boxWidth - 2 - title.length - topHint.length);
+    const topRule = `${borderColor}┌${title}${"─".repeat(dashBudget)}${topHint}┐\x1b[0m`;
+
+    // Middle: the query (or a dim prompt) plus a block caret when focused, inside
+    // the vertical borders, padded so the right "│" aligns.
+    const caret = searchActive ? "\x1b[7m \x1b[0m" : "";
+    const queryText = nameFilter
+      ? `\x1b[0m${nameFilter}`
+      : searchActive
+        ? ""
+        : "\x1b[2mfilter by name…\x1b[0m";
+    // Visible length of the inner content (caret counts as 1 cell).
+    const innerVisible = nameFilter.length + (searchActive ? 1 : 0) + (!nameFilter && !searchActive ? "filter by name…".length : 0);
+    const fill = " ".repeat(Math.max(0, innerWidth - 1 - innerVisible));
+    const midLine = `${borderColor}│\x1b[0m ${queryText}${caret}${fill}${borderColor}│\x1b[0m`;
+
+    const bottomRule = `${borderColor}└${"─".repeat(boxWidth - 2)}┘\x1b[0m`;
+
+    lines.push(`${pad}${topRule}`);
+    lines.push(`${pad}${midLine}`);
+    lines.push(`${pad}${bottomRule}`);
+
+    // Header line 4: title + count.
     lines.push(`\x1b[1;36m  Resume Session\x1b[0m \x1b[2m(${countLabel})\x1b[0m`);
+
+    // Header line 5: the facet bar — current Sort/Status/Project values, each
+    // prefixed with the key that cycles it (in yellow) so every facet is both
+    // visible AND self-documenting. On its own line so nothing clamps off at
+    // 80 cols the way it would if appended to the title. The fixed-width facets
+    // (Sort, Status) come FIRST and the variable-width Project comes LAST, so if
+    // a long project path forces width-clamping it only trims the project value
+    // — never a key hint.
+    const projectChip = projectScope ? abbreviateProject(projectScope) : "all";
+    const statusChip = statusFilter === "all" ? "all" : statusFilter;
+    const sortChip = sortKey === "updated" ? "updated ↓" : "created ↓";
+    lines.push(
+      `\x1b[2m  [\x1b[0m\x1b[33ms\x1b[0m\x1b[2m] Sort: \x1b[0m\x1b[36m${sortChip}\x1b[0m` +
+      `\x1b[2m  [\x1b[0m\x1b[33ma\x1b[0m\x1b[2m] Status: \x1b[0m\x1b[36m${statusChip}\x1b[0m` +
+      `\x1b[2m  [\x1b[0m\x1b[33mTab\x1b[0m\x1b[2m] Project: \x1b[0m\x1b[36m${projectChip}\x1b[0m`,
+    );
+
+    // Header line 6: hint (or any pending operation error). When the search bar
+    // is focused the hint is search-specific; otherwise it lists the plain list
+    // shortcuts — delete/rename are bare "d"/"r", since typing only happens
+    // inside the focused search bar. Facet keys (Tab/a/s) are advertised on the
+    // facet bar above, so the hint stays short enough to clear 80-col clamping.
     const runtime = items[selected]?.runtime;
-    const active = runtime && ["starting", "running", "needs-approval"].includes(runtime.status);
-    const editHint = active ? "M/R rename · running (delete unavailable)" : "D delete · M/R rename";
-    lines.push(operationError ? `  ${operationError}` : `\x1b[2m  ↑↓/scroll/click select · Enter resume · ${editHint} · Esc cancel\x1b[0m`);
+    const active = runtime && ACTIVE_STATUSES.includes(runtime.status);
+    const editHint = active ? "r rename" : "d del · r rename";
+    lines.push(operationError
+      ? `  \x1b[31m${operationError}\x1b[0m`
+      : searchActive
+        ? `\x1b[2m  type to filter · Backspace delete · Enter/Esc done\x1b[0m`
+        : `\x1b[2m  ↑↓/scroll/click · Enter resume · / search · ${editHint} · q quit\x1b[0m`);
+
+    // Header line 7 (conditional): the approval CTA banner. Shown whenever ANY
+    // session needs approval, regardless of the active filters, so pending
+    // consent is never buried. Bold + a shape glyph (not color alone).
+    const pending = pendingApprovalCount();
+    if (pending > 0) {
+      const sessionWord = pending === 1 ? "session needs" : "sessions need";
+      lines.push(`\x1b[1;33m  ⚠ ${pending} ${sessionWord} your approval\x1b[0m\x1b[2m — press a to filter by status\x1b[0m`);
+    }
+
     lines.push("");
 
     // Center the selection in the viewport, clamped so we never scroll past the
@@ -152,12 +382,14 @@ export async function pickSession(
     visibleStart = scrollStart;
     visibleEnd = scrollEnd;
 
-    const msgsCol = 8;  // "999 msgs"
-    const dateCol = 22; // "7/29/2026, 12:28 PM"
-    const idCol = 10;   // "9d166168"
-    const metaWidth = msgsCol + 3 + dateCol + 3 + idCol; // " · " separators
-    const prefixLen = 4; // "  ❯ " or "    "
-    const titleCol = Math.min(50, Math.max(20, cols - prefixLen - metaWidth - 2));
+    const msgsCol = 8;   // "999 msgs"
+    const ageCol = 8;    // "yesterday" trimmed / "3d" — relative age
+    const projCol = 16;  // abbreviated project/cwd
+    const idCol = 8;     // "9d166168"
+    // Prefix is now: 2 pad + status gutter (1) + marker (1) + space.
+    const metaWidth = projCol + 3 + ageCol + 3 + msgsCol + 3 + idCol; // " · " separators
+    const prefixLen = 5; // "  ! ❯ " minus one — "  " + gutter + marker + " "
+    const titleCol = Math.min(50, Math.max(16, cols - prefixLen - metaWidth - 2));
 
     function sanitizeTitle(raw: string, maxLen: number): string {
       let result = "";
@@ -184,21 +416,39 @@ export async function pickSession(
     for (let i = scrollStart; i < scrollEnd; i++) {
       const s = items[i]!;
       const isSel = i === selected;
-      const date = new Date(s.createdAt).toLocaleString();
+      const age = relativeAge(recencyOf(s)).padStart(ageCol);
       const msgs = `${s.messages.length} msgs`.padStart(msgsCol);
-      const id = s.id.slice(0, 8);
+      const id = s.id.slice(0, idCol);
       const rawTitle = s.title.replace(/\n/g, " ");
-      // Put runtime state before the title, not in the metadata suffix that
-      // narrow terminals clip. Pending consent must remain discoverable.
-      const runtimeLabel = s.runtime ? `[${s.runtime.status} · ${s.runtime.pendingCount} pending] ` : "";
-      const title = runtimeLabel + sanitizeTitle(rawTitle, Math.max(1, titleCol - runtimeLabel.length));
-      const suffix = `  ${msgs} · ${date} · ${id}`;
+      const title = sanitizeTitle(rawTitle, titleCol);
+      const project = abbreviateProject(projectOf(s)).slice(0, projCol).padEnd(projCol);
+
+      // Status gutter: a shape-distinct glyph per state (accessible — not color
+      // alone). "!" needs-approval (bold yellow), "●" running (cyan), else blank.
+      let gutter = " ";
+      if (needsApproval(s)) gutter = "\x1b[1;33m!\x1b[0m";
+      else if (isRunning(s)) gutter = "\x1b[36m●\x1b[0m";
+
+      // Selection marker: a strip-safe "❯" glyph so selection is visible even
+      // where reverse-video doesn't render (accessibility) and so tests/tools
+      // can detect it after ANSI is stripped. Reverse-video reinforces it.
+      const marker = isSel ? "\x1b[32m❯\x1b[0m" : " ";
+      const suffix = `  \x1b[2m${project}\x1b[0m\x1b[2m · ${age} · ${msgs} · ${id}\x1b[0m`;
 
       if (isSel) {
-        lines.push(`  \x1b[32m❯\x1b[0m \x1b[1m${title}\x1b[0m\x1b[2m${suffix}\x1b[0m`);
+        lines.push(`  ${gutter}${marker} \x1b[7m\x1b[1m${title}\x1b[0m${suffix}`);
       } else {
-        lines.push(`\x1b[2m    ${title}${suffix}\x1b[0m`);
+        lines.push(`  ${gutter}${marker} \x1b[2m${title}\x1b[0m${suffix}`);
       }
+    }
+
+    // No-matches state (a filter excluded everything). The source list is never
+    // empty here — pickSession returns early for that — so this only appears
+    // when the active filters are too narrow. Tell the user how to recover.
+    if (items.length === 0) {
+      lines.push("");
+      lines.push("\x1b[2m  No sessions match the current filters.\x1b[0m");
+      lines.push("\x1b[2m  Backspace to clear text · Tab/S/A to change facets.\x1b[0m");
     }
 
     if (items.length > pageSize) {
@@ -232,8 +482,13 @@ export async function pickSession(
     // the whole display up a row, which then breaks the click-to-row mapping
     // below (the first session would no longer sit at HEADER_LINES + 1). Cap
     // the height at the terminal size for the same reason.
-    const rows = process.stdout.rows ?? pageSize + 6;
-    const fixedHeight = Math.min(pageSize + 6, rows);
+    // Base the frame height on the viewport CAPACITY, not on how many rows were
+    // drawn this pass: a filtered-short list must still pad to the full height so
+    // its shorter frame overwrites every row of the previous (taller) frame
+    // instead of leaving stale sessions on screen below it.
+    const frameHeight = currentCapacity() + headerLineCount() + 3; // header + rows + footer + pad
+    const rows = process.stdout.rows ?? frameHeight;
+    const fixedHeight = Math.min(frameHeight, rows);
     while (clamped.length < fixedHeight) clamped.push("");
     if (clamped.length > fixedHeight) clamped.length = fixedHeight;
 
@@ -596,8 +851,10 @@ export async function pickSession(
           resizeRenameEditor = null;
           void renameSession(session.id, name)
             .then((renamed) => {
-              const index = items.findIndex((item) => item.id === session.id);
-              if (editorActive && renamed && index !== -1) items[index] = renamed;
+              // Update the authoritative source; the view is rebuilt on return
+              // so a rename that changes sort/filter membership is reflected.
+              const index = allItems.findIndex((item) => item.id === session.id);
+              if (editorActive && renamed && index !== -1) allItems[index] = renamed;
             })
             .catch(() => {})
             .finally(() => {
@@ -605,6 +862,7 @@ export async function pickSession(
               disposeEditor();
               listActive = true;
               enableMouse();
+              recomputeView();
               process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
               totalLinesRendered = 0;
               stdin.on("data", onData);
@@ -734,17 +992,18 @@ export async function pickSession(
     // scrolling the terminal batches several reports into a single stdin chunk
     // (e.g. "\x1b[<65;1;1M\x1b[<65;1;1M"), so a global, un-anchored scan is
     // required — an anchored single-match regex would drop all but nothing.
-    // Only the low button bits and the Y coordinate matter here; X is ignored
-    // since a click anywhere on a row selects it.
+    // X is captured too now: a click's column is needed to hit-test the search
+    // box (clicking a session row still only cares about Y).
     function parseMouseEvents(
       seq: string,
-    ): { button: number; y: number; release: boolean }[] {
-      const events: { button: number; y: number; release: boolean }[] = [];
+    ): { button: number; x: number; y: number; release: boolean }[] {
+      const events: { button: number; x: number; y: number; release: boolean }[] = [];
       const re = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(seq)) !== null) {
         events.push({
           button: Number(m[1]),
+          x: Number(m[2]),
           y: Number(m[3]),
           release: m[4] === "m",
         });
@@ -757,6 +1016,7 @@ export async function pickSession(
     // events instead of repainting per report during rapid scrolling.
     function applyMouseEvent(ev: {
       button: number;
+      x: number;
       y: number;
       release: boolean;
     }): boolean {
@@ -776,16 +1036,35 @@ export async function pickSession(
         return true;
       }
 
-      // Left-button press (code 0) on a session row selects it. Ignore the
-      // release event so a single click doesn't fire twice. Map the 1-based
-      // terminal row to an item index via the header offset and the currently
-      // visible window.
+      // Left-button press (code 0). Ignore the release so a single click doesn't
+      // fire twice.
       if (ev.button === 0 && !ev.release) {
-        const rowIndex = ev.y - 1 - HEADER_LINES; // 0-based offset into visible rows
-        if (rowIndex < 0) return false;
+        // 1) Click INSIDE the search box focuses it (click-to-activate). The box
+        //    spans searchBox.top..bottom rows and left..right columns.
+        const insideSearch =
+          ev.y >= searchBox.top && ev.y <= searchBox.bottom &&
+          ev.x >= searchBox.left && ev.x <= searchBox.right;
+        if (insideSearch) {
+          if (searchActive) return false; // already focused — no repaint needed
+          searchActive = true;
+          return true;
+        }
+
+        // 2) Click OUTSIDE the box while it is focused blurs it (the filter stays
+        //    applied). The click then also falls through to row selection below,
+        //    so a single click on a session row both blurs AND selects it. Track
+        //    whether a blur happened so a click that changes nothing else still
+        //    repaints the now-dimmed box.
+        const blurred = searchActive;
+        searchActive = false;
+
+        // 3) Click on a session row selects it. Map the 1-based terminal row to
+        //    an item index via the header offset and the visible window.
+        const rowIndex = ev.y - 1 - headerLineCount(); // 0-based offset into visible rows
+        if (rowIndex < 0) return blurred; // other header row: repaint only if we blurred
         const idx = visibleStart + rowIndex;
-        if (idx < visibleStart || idx >= visibleEnd) return false;
-        if (idx === selected) return false;
+        if (idx < visibleStart || idx >= visibleEnd) return blurred;
+        if (idx === selected) return blurred;
         selected = idx;
         return true;
       }
@@ -798,39 +1077,126 @@ export async function pickSession(
     // exited, or switched to the rename editor — so the caller stops draining
     // any remaining input in the current chunk.
     function handleKey(key: string): boolean {
+      // Ctrl-C always exits, in either mode.
+      if (key === "\x03") {
+        cleanup();
+        process.exit(0);
+      }
+
+      // ── Search bar focused ──────────────────────────────────────────────
+      // While the inline search bar has focus, keystrokes edit the query rather
+      // than acting as list shortcuts. Only navigation (arrows) and submit/blur
+      // (Enter/Esc) are special; every other printable character types into the
+      // query. This is what keeps "d" (and every letter) from colliding with the
+      // list's delete/rename shortcuts: letters only ever reach a shortcut when
+      // the bar is NOT focused.
+      if (searchActive) {
+        // Enter or Esc blur the bar and return to the list; the filter stays
+        // applied. Enter does not resume here — it just commits the search.
+        if (key === "\r" || key === "\n" || key === "\r\n" || key === "\x1b") {
+          searchActive = false;
+          render();
+          return false;
+        }
+        // Arrows still move the selection so the user can scan matches while the
+        // bar is focused, without leaving search.
+        if (key === "\x1b[A") { selected = Math.max(0, selected - 1); render(); return false; }
+        if (key === "\x1b[B") { selected = Math.min(items.length - 1, selected + 1); render(); return false; }
+        // Backspace edits the query (and clears the whole bar once empty).
+        if (key === "\x7f" || key === "\b") {
+          if (nameFilter.length > 0) { nameFilter = nameFilter.slice(0, -1); recomputeView(); render(); }
+          return false;
+        }
+        // Any printable character (incl. space) appends to the query.
+        if (key.length === 1 && key >= " " && key <= "~") {
+          nameFilter += key;
+          recomputeView();
+          render();
+          return false;
+        }
+        // Ignore anything else (function keys, etc.) so stray bytes never leak.
+        return false;
+      }
+
+      // ── List mode (search bar NOT focused) ──────────────────────────────
+      // Esc or "q" cancels the picker. With the search bar unfocused, "q" is a
+      // safe immediate-cancel alias (it can never be part of a typed query).
       if (key === "\x1b" || key === "q") {
         cleanup();
         resolve(null);
         return true;
       }
 
-      // Handle Enter: \r, \n, or \r\n as a single token.
-      // Only drain a trailing \n when we got a bare \r — if the terminal
-      // delivered \r\n together the newline is already consumed.
+      // "/" focuses the inline search bar so the user can type a name filter.
+      if (key === "/") {
+        searchActive = true;
+        render();
+        return false;
+      }
+
+      // Enter resumes the selected session (\r drains a trailing \n).
       if (key === "\r") {
+        if (items.length === 0) return false; // nothing to resume (filtered out)
         cleanup(true);
         resolve(items[selected]!);
         return true;
       }
-
       if (key === "\n" || key === "\r\n") {
+        if (items.length === 0) return false;
         cleanup();
         resolve(items[selected]!);
         return true;
       }
 
+      // Navigation: arrows plus vim-style j/k (safe now that typing only happens
+      // in the focused search bar).
       if (key === "\x1b[A" || key === "k") {
         selected = Math.max(0, selected - 1);
         render();
         return false;
       }
-
       if (key === "\x1b[B" || key === "j") {
         selected = Math.min(items.length - 1, selected + 1);
         render();
         return false;
       }
 
+      // Backspace clears the name filter in one stroke (a quick "show all" that
+      // doesn't require re-entering the search bar).
+      if (key === "\x7f" || key === "\b") {
+        if (nameFilter.length > 0) { nameFilter = ""; recomputeView(); render(); }
+        return false;
+      }
+
+      // Facet toggles (plain keys, no conflict now that letters aren't captured):
+      // Tab cycles project (req 2), "s" cycles sort (req 3), "a" cycles status
+      // (reqs 4 & 5).
+      if (key === "\t") {
+        const cycle = projectCycle();
+        const i = cycle.indexOf(projectScope);
+        projectScope = cycle[(i + 1) % cycle.length] ?? "";
+        recomputeView();
+        render();
+        return false;
+      }
+      if (key === "s" || key === "S") {
+        sortKey = sortKey === "updated" ? "created" : "updated";
+        recomputeView();
+        render();
+        return false;
+      }
+      if (key === "a" || key === "A") {
+        statusFilter = statusFilter === "all" ? "running"
+          : statusFilter === "running" ? "needs-approval"
+          : "all";
+        recomputeView();
+        render();
+        return false;
+      }
+
+      // "d"/"D" deletes the selected session. Safe as a bare key again: typing
+      // only edits the query while the search bar is focused, so pressing "d"
+      // here always means delete, never a filter character.
       if (key === "d" || key === "D") {
         if (items.length === 0) return false;
         const toDelete = items[selected]!;
@@ -841,15 +1207,17 @@ export async function pickSession(
         deleteSession(toDelete.id).then((ok) => {
           if (!ok && !closed) { operationError = "Cannot delete: session is active or no longer exists."; if (listActive) render(); }
           if (ok && !closed) {
-            const index = items.findIndex(item => item.id === toDelete.id);
-            if (index === -1) return;
-            items.splice(index, 1);
-            if (items.length === 0) {
+            // Remove from the authoritative source, then rebuild the view. When
+            // the SOURCE is now empty there is nothing left to resume; otherwise
+            // recomputeView re-clamps the selection within the filtered list.
+            const index = allItems.findIndex(item => item.id === toDelete.id);
+            if (index !== -1) allItems.splice(index, 1);
+            if (allItems.length === 0) {
               cleanup();
               resolve(null);
               return;
             }
-            if (selected >= items.length) selected = items.length - 1;
+            recomputeView();
             if (listActive) render();
           }
         }).catch(error => {
@@ -861,6 +1229,8 @@ export async function pickSession(
         return false;
       }
 
+      // "m"/"M"/"r"/"R" opens the rename editor — plain keys again, since typing
+      // only reaches the query inside the focused search bar.
       if (key === "m" || key === "M" || key === "r" || key === "R") {
         const selectedSession = items[selected];
         if (!selectedSession) return false;
@@ -871,11 +1241,6 @@ export async function pickSession(
         stdin.removeListener("data", onData);
         renameRequested = selectedSession;
         return true;
-      }
-
-      if (key === "\x03") {
-        cleanup();
-        process.exit(0);
       }
 
       return false;

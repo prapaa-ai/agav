@@ -30,6 +30,8 @@ async function runtimeSession(store: SessionRuntimeStore, record: SessionRuntime
     tokenUsage: record.tokenUsage ?? saved?.tokenUsage,
     compacted: record.compacted,
     permissionMode: record.permissionMode,
+    updatedAt: record.updatedAt,
+    cwd: record.cwd,
     runtime: {
       generation: record.generation,
       status: record.status,
