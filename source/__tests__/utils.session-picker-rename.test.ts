@@ -1622,3 +1622,84 @@ describe("session picker filtering, sorting and facets", () => {
     expect((await promise)?.id).toBe("id00000007");
   });
 });
+
+describe("resume picker review regressions", () => {
+  it.each(["Second", "café", "项目", "👩‍💻"])("accepts a pasted search query %s", async query => {
+    const sessions = makeSessions();
+    sessions[1]!.title = query;
+    const promise = pickSession(sessions);
+    stdin.send("/");
+    stdin.send(query);
+    const frame = stripAnsi(stdout.chunks.at(-1)!);
+    stdin.send("\r");
+    stdin.send("\r");
+    const result = await promise;
+    expect(frame).toContain("1 of 2");
+    expect(result?.id).toBe(sessions[1]!.id);
+  });
+
+  it("decodes split UTF-8 and backspaces a whole search grapheme", async () => {
+    const sessions = makeSessions();
+    sessions[1]!.title = "café";
+    const promise = pickSession(sessions);
+    stdin.send("/");
+    for (const byte of Buffer.from("café👩‍💻")) stdin.emit("data", Buffer.from([byte]));
+    stdin.send("\x7f");
+    const frame = stripAnsi(stdout.chunks.at(-1)!);
+    stdin.send("\r");
+    stdin.send("\r");
+    const result = await promise;
+    expect(frame).toContain("café");
+    expect(frame).toContain("1 of 2");
+    expect(result?.id).toBe(sessions[1]!.id);
+  });
+
+  it.each([false, true])("commits a search without resuming on CRLF (split=%s)", async split => {
+    const promise = pickSession(makeSessions());
+    let resolved = false;
+    void promise.then(() => { resolved = true; });
+    stdin.send("/");
+    stdin.send("Second");
+    if (split) { stdin.send("\r"); stdin.send("\n"); }
+    else stdin.send("\r\n");
+    await tick();
+    const resumedEarly = resolved;
+    if (!resolved) stdin.send("\n"); // independent Enter must still resume
+    const result = await promise;
+    expect(resumedEarly).toBe(false);
+    expect(result?.id).toBe("bbbbbbbb2222");
+  });
+
+  it("processes a pasted query followed by Enter in one chunk", async () => {
+    const promise = pickSession(makeSessions());
+    stdin.send("/");
+    stdin.send("Second\r\n");
+    const frame = stripAnsi(stdout.chunks.at(-1)!);
+    stdin.send("\r");
+    expect((await promise)?.id).toBe("bbbbbbbb2222");
+    expect(frame).toContain("1 of 2");
+  });
+
+  it.each(["/项目项目项目项目项目项目", "/work/👩‍💻👩‍💻👩‍💻", "/work/e\u0301e\u0301"])("fits project %s in terminal cells and preserves click rows", async cwd => {
+    const sessions = makeSessions().map(s => ({ ...s, cwd }));
+    const promise = pickSession(sessions);
+    const frame = stdout.chunks.find(c => c.includes("Resume Session"))!;
+    const rows = frame.split("\n");
+    stdin.send("\x1b[<0;10;9M");
+    stdin.send("\r");
+    expect((await promise)?.id).toBe(sessions[1]!.id);
+    for (const row of rows) expect(stringWidth(row)).toBeLessThan(stdout.columns);
+    expect(stringWidth(rows[7]!)).toBe(stdout.columns - 1);
+    expect(rows[7]).toContain("\x1b[7m");
+  });
+
+  it.each([2, 3])("keeps an adjacent row selected after deleting index %i", async index => {
+    const sessions = Array.from({ length: 4 }, (_, i) => ({ ...makeSessions()[0]!, id: `session-${i}`, title: `Session ${i}` }));
+    const promise = pickSession(sessions);
+    for (let i = 0; i < index; i++) stdin.send("j");
+    stdin.send("d");
+    await tick();
+    stdin.send("\r");
+    expect((await promise)?.id).toBe(sessions[index === 3 ? 2 : 3]!.id);
+  });
+});

@@ -106,7 +106,7 @@ export async function pickSession(
   function abbreviateProject(cwd: string): string {
     if (cwd === UNKNOWN_PROJECT) return cwd;
     const home = process.env.HOME || process.env.USERPROFILE;
-    let path = home && cwd.startsWith(home) ? "~" + cwd.slice(home.length) : cwd;
+    let path = (home && cwd.startsWith(home) ? "~" + cwd.slice(home.length) : cwd).replace(/[\x00-\x1f\x7f-\x9f]/g, "?");
     const parts = path.split(/[/\\]/).filter(Boolean);
     if (parts.length > 2) path = "…/" + parts.slice(-2).join("/");
     return path;
@@ -135,7 +135,7 @@ export async function pickSession(
     }
     items = filtered;
     const next = priorId ? items.findIndex((s) => s.id === priorId) : -1;
-    selected = next !== -1 ? next : 0;
+    selected = next !== -1 ? next : Math.max(0, Math.min(selected, items.length - 1));
     if (selected >= items.length) selected = Math.max(0, items.length - 1);
   }
   recomputeView();
@@ -231,35 +231,34 @@ export async function pickSession(
   // the visible budget runs out a reset ("\x1b[0m") is appended so truncation
   // never leaves color bleeding into later rows. maxWidth is reduced by one so
   // a line exactly as wide as the terminal cannot trip last-column autowrap.
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  const graphemes = (text: string) => Array.from(segmenter.segment(text), s => s.segment);
+
+  function fitCells(text: string, budget: number, pad = false): string {
+    let out = "";
+    let width = 0;
+    for (const ch of graphemes(text)) {
+      const cells = stringWidth(ch);
+      if (width + cells > budget) break;
+      out += ch;
+      width += cells;
+    }
+    return pad ? out + " ".repeat(Math.max(0, budget - width)) : out;
+  }
+
   function clampVisibleWidth(line: string, terminalCols: number): string {
     const budget = Math.max(1, terminalCols - 1);
     let out = "";
     let visible = 0;
-    let sawEscape = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i]!;
-      if (ch === "\x1b") {
-        // Copy the whole CSI sequence: ESC [ ... final-byte (0x40–0x7E).
-        let j = i + 1;
-        if (line[j] === "[") {
-          j++;
-          while (j < line.length) {
-            const code = line.charCodeAt(j);
-            if (code >= 0x40 && code <= 0x7e) break;
-            j++;
-          }
-        }
-        out += line.slice(i, j + 1);
-        i = j;
-        sawEscape = true;
-        continue;
+    // Keep SGR sequences intact, but count printable graphemes in terminal cells.
+    for (const token of line.split(/(\x1b\[[0-9;?]*[a-zA-Z])/g)) {
+      if (token.startsWith("\x1b[")) { out += token; continue; }
+      for (const ch of graphemes(token)) {
+        const cells = stringWidth(ch);
+        if (visible + cells > budget) return out + "\x1b[0m";
+        out += ch;
+        visible += cells;
       }
-      if (visible >= budget) {
-        // Out of visible room; stop before adding more printable characters.
-        return sawEscape ? out + "\x1b[0m" : out;
-      }
-      out += ch;
-      visible++;
     }
     return out;
   }
@@ -314,13 +313,14 @@ export async function pickSession(
     // Middle: the query (or a dim prompt) plus a block caret when focused, inside
     // the vertical borders, padded so the right "│" aligns.
     const caret = searchActive ? "\x1b[7m \x1b[0m" : "";
+    const visibleQuery = fitCells(nameFilter, Math.max(0, innerWidth - 1 - (searchActive ? 1 : 0)));
     const queryText = nameFilter
-      ? `\x1b[0m${nameFilter}`
+      ? `\x1b[0m${visibleQuery}`
       : searchActive
         ? ""
         : "\x1b[2mfilter by name…\x1b[0m";
     // Visible length of the inner content (caret counts as 1 cell).
-    const innerVisible = nameFilter.length + (searchActive ? 1 : 0) + (!nameFilter && !searchActive ? "filter by name…".length : 0);
+    const innerVisible = stringWidth(visibleQuery) + (searchActive ? 1 : 0) + (!nameFilter && !searchActive ? "filter by name…".length : 0);
     const fill = " ".repeat(Math.max(0, innerWidth - 1 - innerVisible));
     const midLine = `${borderColor}│\x1b[0m ${queryText}${caret}${fill}${borderColor}│\x1b[0m`;
 
@@ -421,7 +421,7 @@ export async function pickSession(
       const id = s.id.slice(0, idCol);
       const rawTitle = s.title.replace(/\n/g, " ");
       const title = sanitizeTitle(rawTitle, titleCol);
-      const project = abbreviateProject(projectOf(s)).slice(0, projCol).padEnd(projCol);
+      const project = fitCells(abbreviateProject(projectOf(s)), projCol, true);
 
       // Status gutter: a shape-distinct glyph per state (accessible — not color
       // alone). "!" needs-approval (bold yellow), "●" running (cyan), else blank.
@@ -447,7 +447,7 @@ export async function pickSession(
         const plain = `  ${gutterGlyph}❯ ${title}${plainMeta}`;
         // Pad to the clamp budget so the reverse background covers the full row.
         const budget = Math.max(1, cols - 1);
-        const padded = plain.length >= budget ? plain.slice(0, budget) : plain.padEnd(budget);
+        const padded = fitCells(plain, budget, true);
         lines.push(`\x1b[7m${padded}\x1b[0m`);
       } else {
         const suffix = `  \x1b[2m${project}\x1b[0m\x1b[2m · ${age} · ${msgs} · ${id}\x1b[0m`;
@@ -1089,7 +1089,12 @@ export async function pickSession(
     // reports). Returns true if control was handed off — the picker resolved,
     // exited, or switched to the rename editor — so the caller stops draining
     // any remaining input in the current chunk.
+    let searchCRDeadline = 0;
     function handleKey(key: string): boolean {
+      // A split CRLF is one Enter, not a search commit followed by resume.
+      const swallowLF = searchCRDeadline > 0 && Date.now() <= searchCRDeadline;
+      searchCRDeadline = 0;
+      if (swallowLF && key === "\n") return false;
       // Ctrl-C always exits, in either mode.
       if (key === "\x03") {
         cleanup();
@@ -1107,6 +1112,7 @@ export async function pickSession(
         // Enter or Esc blur the bar and return to the list; the filter stays
         // applied. Enter does not resume here — it just commits the search.
         if (key === "\r" || key === "\n" || key === "\r\n" || key === "\x1b") {
+          searchCRDeadline = key === "\r" ? Date.now() + 50 : 0;
           searchActive = false;
           render();
           return false;
@@ -1117,11 +1123,11 @@ export async function pickSession(
         if (key === "\x1b[B") { selected = Math.min(items.length - 1, selected + 1); render(); return false; }
         // Backspace edits the query (and clears the whole bar once empty).
         if (key === "\x7f" || key === "\b") {
-          if (nameFilter.length > 0) { nameFilter = nameFilter.slice(0, -1); recomputeView(); render(); }
+          if (nameFilter.length > 0) { nameFilter = graphemes(nameFilter).slice(0, -1).join(""); recomputeView(); render(); }
           return false;
         }
         // Any printable character (incl. space) appends to the query.
-        if (key.length === 1 && key >= " " && key <= "~") {
+        if (key.length > 0 && !/[\x00-\x1f\x7f-\x9f]/.test(key)) {
           nameFilter += key;
           recomputeView();
           render();
@@ -1299,10 +1305,11 @@ export async function pickSession(
       }
     }
 
+    const decoder = new StringDecoder("utf8");
     function onData(data: Buffer) {
       // A continuation arrived before the flush timer — combine and reprocess.
       clearPendingTimer();
-      let input = pendingSeq + data.toString();
+      let input = pendingSeq + decoder.write(data);
       pendingSeq = "";
 
       // Walk the combined input left to right, peeling off complete mouse
@@ -1355,8 +1362,13 @@ export async function pickSession(
         // Split before escape prefixes too, so a rename key can hand even a
         // bare ESC or CSI remainder to the editor for disambiguation.
         const nextEscape = input.indexOf("\x1b", input.startsWith("\x1b") ? 1 : 0);
-        const key = nextEscape === -1 ? input : input.slice(0, nextEscape);
-        input = nextEscape === -1 ? "" : input.slice(nextEscape);
+        let key = nextEscape === -1 ? input : input.slice(0, nextEscape);
+        if (searchActive || searchCRDeadline > 0) {
+          // Text may arrive pasted/coalesced, with controls in the same chunk.
+          // Consume complete CSI sequences atomically so their bytes never type.
+          key = /^(?:\x1b\[[0-?]*[ -/]*[@-~]|\r\n|[^\x00-\x1f\x7f-\x9f]+|[\s\S])/u.exec(input)![0];
+        }
+        input = input.slice(key.length);
         if (mouseChanged) {
           render();
           mouseChanged = false;
