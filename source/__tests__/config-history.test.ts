@@ -149,3 +149,19 @@ describe("history deletion failures", () => {
     await expect(deleteSession("directory")).rejects.toMatchObject({ code: expect.stringMatching(/EISDIR|EPERM/) });
   });
 });
+
+it("keeps creation time separate from activity across saves and renames", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    vi.setSystemTime(new Date("2024-01-01T00:00:00Z"));
+    const id = await saveSession(messages, "model", "openai");
+    const first = await loadSession(id);
+    vi.setSystemTime(new Date("2024-02-01T00:00:00Z"));
+    await saveSession(messages, "model", "openai", id);
+    expect(await loadSession(id)).toMatchObject({ createdAt: first!.createdAt, updatedAt: "2024-02-01T00:00:00.000Z" });
+    const newer = await saveSession(messages, "model", "openai");
+    vi.setSystemTime(new Date("2024-03-01T00:00:00Z"));
+    expect(await renameSession(id, "Renamed")).toMatchObject({ createdAt: first!.createdAt, updatedAt: "2024-03-01T00:00:00.000Z" });
+    expect((await listSessions()).map(s => s.id)).toEqual([id, newer]);
+  } finally { vi.useRealTimers(); }
+});

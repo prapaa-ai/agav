@@ -52,6 +52,7 @@ export async function pickSession(
   // Sort key (req 3): recency ("updated", the historical default) or creation.
   type SortKey = "updated" | "created";
   let sortKey: SortKey = "updated";
+  let sortRequested = false;
 
   const ACTIVE_STATUSES = ["starting", "running", "needs-approval"];
   const UNKNOWN_PROJECT = "(unknown project)";
@@ -116,12 +117,10 @@ export async function pickSession(
   // Keeps the previously-selected session highlighted when it survives the new
   // filter; otherwise clamps to the nearest valid row.
   //
-  // Sort note: the DEFAULT ("updated") preserves the INCOMING order. The caller
-  // (`listResumableSessions`) already sorts by recency-desc, so re-sorting here
-  // would be redundant and would reorder any list a caller deliberately ordered.
-  // Only the explicit "created" choice re-sorts, by createdAt-desc.
-  function recomputeView() {
-    const priorId = items[selected]?.id;
+  // Preserve the caller's order on entry. Once the user chooses a sort,
+  // calculate either order from current metadata (including after a rename).
+  function recomputeView(preserveSession = true) {
+    const priorId = preserveSession ? items[selected]?.id : undefined;
     const lower = nameFilter.toLowerCase();
     const filtered = allItems.filter((s) => {
       if (lower && !s.title.toLowerCase().includes(lower)) return false;
@@ -130,8 +129,10 @@ export async function pickSession(
       if (statusFilter === "needs-approval" && !needsApproval(s)) return false;
       return true;
     });
-    if (sortKey === "created") {
-      filtered.sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0));
+    if (sortRequested) {
+      filtered.sort((a, b) => sortKey === "created"
+        ? (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0)
+        : recencyOf(b) - recencyOf(a));
     }
     items = filtered;
     const next = priorId ? items.findIndex((s) => s.id === priorId) : -1;
@@ -1199,8 +1200,10 @@ export async function pickSession(
         return false;
       }
       if (key === "s" || key === "S") {
+        sortRequested = true;
         sortKey = sortKey === "updated" ? "created" : "updated";
-        recomputeView();
+        // Sorting keeps the focused row (and viewport), not the session identity.
+        recomputeView(false);
         render();
         return false;
       }

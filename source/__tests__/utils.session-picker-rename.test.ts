@@ -1703,3 +1703,45 @@ describe("resume picker review regressions", () => {
     expect((await promise)?.id).toBe(sessions[index === 3 ? 2 : 3]!.id);
   });
 });
+
+it("sorts visible rows by creation then actual updated timestamps", async () => {
+  const sessions = makeSessions().map((s, i) => ({ ...s, updatedAt: i === 0 ? "2024-03-01T00:00:00Z" : "2024-02-01T00:00:00Z" }));
+  const promise = pickSession(sessions);
+  stdin.send("s");
+  const created = stripAnsi(stdout.chunks.at(-1)!);
+  stdin.send("s");
+  const byActivity = stripAnsi(stdout.chunks.at(-1)!);
+  stdin.send("s");
+  // Simulate newly refreshed metadata without changing the source array order.
+  sessions[1]!.updatedAt = "2024-04-01T00:00:00Z";
+  stdin.send("s");
+  const updated = stripAnsi(stdout.chunks.at(-1)!);
+  stdin.send("q");
+  await promise;
+  expect(byActivity.indexOf("First session")).toBeLessThan(byActivity.indexOf("Second session"));
+  expect(created.indexOf("Second session")).toBeLessThan(created.indexOf("First session"));
+  expect(updated.indexOf("Second session")).toBeLessThan(updated.indexOf("First session"));
+});
+
+it.each([0, 3, 18])("keeps focused row %i fixed when toggling sort in either direction", async index => {
+  const sessions = Array.from({ length: 30 }, (_, i) => ({
+    ...makeSessions()[0]!, id: `sort-${i}`, title: `Sort session ${i}`,
+    createdAt: new Date(Date.UTC(2024, 0, i + 1)).toISOString(),
+    updatedAt: new Date(Date.UTC(2025, 0, 30 - i)).toISOString(),
+  }));
+  const promise = pickSession(sessions);
+  for (let i = 0; i < index; i++) stdin.send("j");
+  const selectedRow = () => stripAnsi(stdout.chunks.at(-1)!).split("\n").findIndex(line => line.includes("❯"));
+  const before = selectedRow();
+  stdin.send("s");
+  const afterCreated = selectedRow();
+  const createdRow = stripAnsi(stdout.chunks.at(-1)!).split("\n")[afterCreated];
+  stdin.send("S");
+  const afterUpdated = selectedRow();
+  stdin.send("\r");
+  const result = await promise;
+  expect(afterCreated).toBe(before);
+  expect(afterUpdated).toBe(before);
+  expect(createdRow).toContain(`Sort session ${29 - index}`);
+  expect(result?.id).toBe(`sort-${index}`);
+});
