@@ -268,17 +268,29 @@ function prepareSnapshot(cwd: string, gitStateRoots: string[] = [], protection: 
 	const path = join(parent, "workspace");
 	let baseline: Tree;
 	let snapshotRoot: Entry;
+	// Keep the original inode alive until cleanup. A dev/ino pair alone is not
+	// a durable identity after deletion: Linux may immediately reuse it.
+	let snapshotHandle: Directory | undefined;
+	const releaseSnapshot = () => {
+		if (snapshotHandle) { fs.closeSync(snapshotHandle.fd); snapshotHandle = undefined; }
+	};
 	let snapshot: Tree;
 	let baselineAliases: string[];
-	const baselineProtection = protection();
+	let baselineProtection: SandboxProtectedPath[];
 	try {
+		baselineProtection = protection();
 		fs.mkdirSync(path, { mode: 0o700 });
+		snapshotHandle = directory(path);
+		snapshotRoot = snapshotHandle.entry;
 		baseline = scan(host, hostRoot, path);
-		snapshotRoot = entry(fs.lstatSync(path));
 		snapshot = scan(path, snapshotRoot);
 		compareTrees(baseline, snapshot);
 		baselineAliases = protectedAliases(baseline, host, resolve(cwd), gitStateRoots);
-	} catch (error) { fs.rmSync(parent, { recursive: true, force: true }); throw error; }
+	} catch (error) {
+		releaseSnapshot();
+		fs.rmSync(parent, { recursive: true, force: true });
+		throw error;
+	}
 	let used = false;
 	let cleaned = false;
 
@@ -286,13 +298,15 @@ function prepareSnapshot(cwd: string, gitStateRoots: string[] = [], protection: 
 		if (cleaned) return;
 		// Never recurse through a replaced parent/root symlink. rm removes a final
 		// symlink itself; Linux additionally anchors this to the original parent.
-		const current = lstat(parent);
-		if (!current || !identity(parentEntry, entry(current))) { cleaned = true; return; }
-		const dir = directory(parent, parentEntry);
-		try { fs.rmSync(join(dir.path, "workspace"), { recursive: true, force: true }); }
-		finally { fs.closeSync(dir.fd); }
-		fs.rmdirSync(parent);
-		cleaned = true;
+		try {
+			const current = lstat(parent);
+			if (!current || !identity(parentEntry, entry(current))) { cleaned = true; return; }
+			const dir = directory(parent, parentEntry);
+			try { fs.rmSync(join(dir.path, "workspace"), { recursive: true, force: true }); }
+			finally { fs.closeSync(dir.fd); }
+			fs.rmdirSync(parent);
+			cleaned = true;
+		} finally { releaseSnapshot(); }
 	}
 
 	function stagePublication(): Publication {

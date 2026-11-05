@@ -323,6 +323,44 @@ describe("sandbox workspace snapshot and publication", () => {
 		expect(read(host, "safe")).toBe("original");
 	});
 
+	it("pins the original snapshot inode until cleanup and closes the handle exactly once", () => {
+		write(host, "safe", "original");
+		const opened = vi.spyOn(fs, "openSync");
+		const closed = vi.spyOn(fs, "closeSync");
+		const workspace = prepare();
+		const handles = opened.mock.calls.flatMap(([path], index) =>
+			path === workspace.path ? [opened.mock.results[index]!.value as number] : []);
+		const pinned = handles.filter(fd => {
+			try { return fs.fstatSync(fd).ino === fs.statSync(workspace.path).ino; } catch { return false; }
+		});
+		expect(pinned.length).toBeGreaterThan(0);
+		const fd = pinned[0]!;
+		const original = fs.fstatSync(fd);
+		fs.rmSync(workspace.path, { recursive: true });
+		fs.mkdirSync(workspace.path);
+		expect(fs.fstatSync(fd).ino).toBe(original.ino);
+		expect(fs.statSync(workspace.path).ino).not.toBe(original.ino);
+		expect(() => workspace.publish()).toThrow(/directory replaced/);
+		expect(read(host, "safe")).toBe("original");
+		closed.mockClear();
+		workspace.cleanup();
+		workspace.cleanup();
+		expect(closed.mock.calls.filter(([value]) => value === fd)).toHaveLength(1);
+		expect(() => fs.fstatSync(fd)).toThrow();
+	});
+
+	it("releases the pinned snapshot when preparation fails", () => {
+		const opened = vi.spyOn(fs, "openSync");
+		const closed = vi.spyOn(fs, "closeSync");
+		vi.spyOn(fs, "opendirSync").mockImplementationOnce(() => { throw new Error("scan failed"); });
+		expect(() => prepare()).toThrow("scan failed");
+		const index = opened.mock.calls.findIndex(([path]) => String(path).endsWith("/workspace"));
+		expect(index).toBeGreaterThanOrEqual(0);
+		const fd = opened.mock.results[index]!.value as number;
+		expect(closed).toHaveBeenCalledWith(fd);
+		expect(() => fs.fstatSync(fd)).toThrow();
+	});
+
 	it("rejects special files in both input and output without blocking on a FIFO", () => {
 		execFileSync("mkfifo", [join(host, "pipe")]);
 		expect(() => prepare()).toThrow(/special files/);
