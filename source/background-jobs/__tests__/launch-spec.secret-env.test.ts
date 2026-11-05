@@ -28,7 +28,7 @@ import { createFileRepositories } from "../storage/repositories.js";
 import { resolveStorageRoot } from "../storage/paths.js";
 import { getSocketPath } from "../ipc/socket-path.js";
 import { JobSupervisor, takeInheritedEnvironment, workloadEnvironment } from "../supervisor/lifecycle.js";
-import type { LaunchSpec } from "../types.js";
+import { DEFAULT_RESOURCE_LIMITS, type LaunchSpec, type SessionPolicySnapshot } from "../types.js";
 
 const SECRET_NAME = "AGAV_TEST_INHERITED_SECRET";
 const SECRET_VALUE = `s3cr3t-${randomUUID()}`;
@@ -50,6 +50,7 @@ beforeEach(async () => {
   captured.launches.length = 0;
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
   delete process.env[SECRET_NAME];
   await rm(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
@@ -74,6 +75,83 @@ describe("inherited env values are never persisted", () => {
     expect(spec!.envInherit).toEqual([SECRET_NAME]);
     expect(spec!.env[SECRET_NAME]).toBeUndefined();
     expect(captured.launches).toEqual([{ inheritedEnv: { [SECRET_NAME]: SECRET_VALUE } }]);
+  });
+
+  it("uses only consented host values privately, overriding process env without mutating it", async () => {
+    const coordinator = await createCoordinator({ root: base });
+    const hostSecret = `host-${randomUUID()}`;
+    const unselectedSecret = `unselected-${randomUUID()}`;
+    vi.stubEnv("AGAV_HOST_ONLY", undefined);
+    vi.stubEnv("AGAV_HOST_EMPTY", "parent-nonempty");
+    const inheritedEnv = Object.freeze({ [SECRET_NAME]: hostSecret, AGAV_HOST_ONLY: "host-only-value",
+      AGAV_HOST_EMPTY: "", AGAV_UNSELECTED: unselectedSecret });
+    const confirmBackgroundAction = vi.fn(async () => true);
+    const session: SessionPolicySnapshot = { permissionMode: "ask", headlessApprovedActions: [], inheritedEnv, confirmBackgroundAction };
+    const request = {
+      requestId: randomUUID(),
+      invocation: { mode: "direct" as const, executable: process.execPath, args: ["-e", ""] },
+      cwd: base, envInherit: [SECRET_NAME, "AGAV_HOST_ONLY", "AGAV_HOST_EMPTY"],
+      isolation: { backend: "none" as const, required: false },
+    };
+    const beforeEnv = { ...process.env };
+    const beforeRequest = structuredClone(request);
+    const first = await coordinator.start(request, session);
+    expect(captured.launches).toEqual([{ inheritedEnv: { [SECRET_NAME]: hostSecret, AGAV_HOST_ONLY: "host-only-value", AGAV_HOST_EMPTY: "" } }]);
+    expect(process.env).toEqual(beforeEnv);
+    expect(request).toEqual(beforeRequest);
+    expect(session.inheritedEnv).toBe(inheritedEnv);
+    const spec = await coordinator.repositories.specs.get(request.requestId);
+    expect(spec!.envInherit).toEqual([...request.envInherit].sort());
+    for (const name of request.envInherit) expect(spec!.env).not.toHaveProperty(name);
+    expect(confirmBackgroundAction).toHaveBeenCalledTimes(1);
+    for (const secret of [hostSecret, unselectedSecret, "host-only-value"]) {
+      expect(JSON.stringify(request)).not.toContain(secret);
+      expect(JSON.stringify(confirmBackgroundAction.mock.calls)).not.toContain(secret);
+      expect(JSON.stringify(first)).not.toContain(secret);
+      for (const file of await filesUnder(coordinator.root)) expect(await readFile(file, "utf8"), file).not.toContain(secret);
+    }
+    // Values are not consent metadata and must not force a relaunch on retry.
+    expect((await coordinator.start(request, { ...session, inheritedEnv: { [SECRET_NAME]: "rotated-host-value" } })).jobId).toBe(first.jobId);
+    expect(captured.launches).toHaveLength(1);
+  });
+
+  it("ignores prototype values and falls back to process env for names without own host values", async () => {
+    const coordinator = await createCoordinator({ root: base });
+    vi.stubEnv("AGAV_HOST_PROTOTYPE_ONLY", undefined);
+    const inheritedEnv = Object.freeze(Object.create({ [SECRET_NAME]: "prototype-secret", AGAV_HOST_PROTOTYPE_ONLY: "prototype-only" })) as Readonly<Record<string, string>>;
+    const session: SessionPolicySnapshot = { permissionMode: "auto-accept", headlessApprovedActions: [], inheritedEnv };
+    const request = { requestId: randomUUID(), invocation: { mode: "direct" as const, executable: process.execPath, args: [] },
+      cwd: base, envInherit: [SECRET_NAME, "AGAV_HOST_PROTOTYPE_ONLY"], isolation: { backend: "none" as const, required: false } };
+    await coordinator.start(request, session);
+    expect(captured.launches).toEqual([{ inheritedEnv: { [SECRET_NAME]: SECRET_VALUE } }]);
+  });
+
+  it("does not forward host values when no names were selected", async () => {
+    const coordinator = await createCoordinator({ root: base });
+    const session: SessionPolicySnapshot = { permissionMode: "auto-accept", headlessApprovedActions: [], inheritedEnv: { [SECRET_NAME]: "not-selected" } };
+    await coordinator.start({ requestId: randomUUID(), invocation: { mode: "direct", executable: process.execPath, args: [] },
+      cwd: base, isolation: { backend: "none", required: false } }, session);
+    expect(captured.launches).toEqual([{ inheritedEnv: {} }]);
+  });
+
+  it("ignores host overrides and caller inheritance for an approved schedule template", async () => {
+    const coordinator = await createCoordinator({ root: base });
+    const template: Omit<LaunchSpec, "requestId" | "createdAt"> = {
+      invocation: { mode: "direct", executable: process.execPath, args: [] }, cwd: base,
+      env: { [SECRET_NAME]: "approved-template-value" }, credentialRefs: [],
+      isolation: { backend: "none", required: false }, ownershipScope: "unverified",
+      limits: DEFAULT_RESOURCE_LIMITS, headless: true,
+    };
+    const grant = await coordinator.authorization.recordExplicitApproval("schedule-create", template);
+    const session: SessionPolicySnapshot = { permissionMode: "deny-writes", headlessApprovedActions: [], inheritedEnv: { [SECRET_NAME]: "host-must-not-override-template" } };
+    const requestId = randomUUID();
+    await coordinator.start({ requestId, invocation: template.invocation, cwd: base, isolation: template.isolation,
+      envInherit: [SECRET_NAME], scheduleGrant: { grantId: grant.grantId, template } }, session);
+    expect(captured.launches).toEqual([{ inheritedEnv: {} }]);
+    const spec = await coordinator.repositories.specs.get(requestId);
+    expect(spec!.env).toEqual(template.env);
+    expect(spec!.envInherit).toBeUndefined();
+    for (const file of await filesUnder(coordinator.root)) expect(await readFile(file, "utf8"), file).not.toContain("host-must-not-override-template");
   });
 
   it("an idempotent retry with the same envInherit attaches; a changed secret value does not change the consent", async () => {

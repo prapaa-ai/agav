@@ -95,7 +95,9 @@ export async function launchSessionWorker(record: SessionRuntimeRecord, deps: Se
     if (crossedAdmission) throw new Error(`Session ${current.id} has no recoverable worker; refusing to replay this execution.`);
     const request = sessionWorkerStartRequest(current, deps.cliPath, deps.envNames);
     if (deps.interactiveOwner) request.headless = false;
-    const missing = request.envInherit!.filter(name => process.env[name] === undefined);
+    const hostEnv = deps.session.inheritedEnv;
+    const missing = request.envInherit!.filter(name =>
+      (hostEnv !== undefined && Object.hasOwn(hostEnv, name) ? hostEnv[name] : process.env[name]) === undefined);
     if (missing.length) throw new Error(`Session worker was not launched: missing selected environment variable(s): ${missing.join(", ")}`);
     deps.session.signal?.throwIfAborted();
     // Persist an ownership barrier BEFORE start. A crash or an empty subsequent lookup is not

@@ -410,6 +410,8 @@ export interface ConfirmSubject {
 export interface SessionPolicySnapshot {
   permissionMode: "ask" | "auto-accept" | "deny-writes";
   headlessApprovedActions: GrantAction[];
+  /** Trusted host-only per-launch values for consented envInherit names; never populated from tool arguments or persisted. */
+  inheritedEnv?: Readonly<Record<string, string>>;
   /** Trusted interactive host callback; never populated from tool arguments. */
   confirmBackgroundAction?: (
     action: GrantAction,
