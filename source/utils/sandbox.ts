@@ -32,7 +32,7 @@ function execCommand(
   }, signal);
 }
 import { platform } from "node:os";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, userInfo } from "node:os";
 
@@ -152,21 +152,49 @@ function filterEnv(): Record<string, string> {
   return env;
 }
 
-// Rules use last-match-wins semantics. The blanket $HOME write deny protects
-// the user's home, then targeted allows restore the well-known cache/config
-// directories that ordinary tooling (npm, pip, git, language version managers)
-// must write to — otherwise those commands fail with "Operation not permitted".
-// The credential-directory denies are listed last so a broad allow can never
-// re-expose ~/.ssh, ~/.aws, or ~/.gnupg.
+// Workspace-relative paths that a sandboxed command must never write, even
+// though the workspace itself is writable: a later process (git, the user's
+// shell, an editor, or Agav) executes these OUTSIDE the sandbox, so a write
+// here is a sandbox escape. Mirrors the protected-path lists in Codex and
+// Claude Code. `dir` entries protect the whole subtree.
+//
+// `.git/config` is intentionally NOT protected: git opens it read-write on
+// nearly every invocation, so denying writes to it breaks `git status`/`add`/
+// `commit` entirely. `.git/hooks` is the real auto-exec escape vector and is
+// safe to deny. Enforced on both Seatbelt (deny rules under a deny-write base)
+// and Bubblewrap (read-only bind over the writable workspace).
+const WORKSPACE_PROTECTED_PATHS: ReadonlyArray<{ sub: string; dir: boolean }> = [
+  { sub: ".git/hooks", dir: true },
+  { sub: ".agav", dir: true },     // project config, agents, skills — loaded/executed by Agav
+  { sub: ".vscode", dir: true },   // tasks.json / settings can auto-run commands
+  { sub: ".idea", dir: true },
+  { sub: ".bashrc", dir: false },
+  { sub: ".bash_profile", dir: false },
+  { sub: ".profile", dir: false },
+  { sub: ".zshrc", dir: false },
+  { sub: ".zprofile", dir: false },
+  { sub: ".envrc", dir: false },   // direnv auto-sources this
+];
+const WORKSPACE_PROTECTED_SUBPATHS = WORKSPACE_PROTECTED_PATHS.map(p => p.sub);
+
+// Writes are denied by default; targeted allows restore /dev (git/tools open
+// /dev/null read-write), the workspace, temp dirs, and the well-known
+// cache/config directories that ordinary tooling (npm, pip, git, language
+// version managers) must write to. Reads stay broadly allowed (allow default)
+// except the credential directories. Under a (deny file-write*) base, a later
+// (deny …) for a workspace subpath wins over the workspace allow, which lets us
+// carve read-only holes for sensitive config (verified on macOS; this does NOT
+// work under a plain (allow default) base). Paths are passed as resolved
+// (realpath) params so the /var→/private/var firmlink does not defeat matching.
 const SEATBELT_PROFILE_BASE = `
 (version 1)
 (allow default)
-(deny file-write* (subpath "/System"))
-(deny file-write* (subpath "/usr"))
-(deny file-write* (subpath "/Library"))
-(deny file-write* (subpath "/Applications"))
-(deny file-write* (subpath (param "HOME")))
+(deny file-write*)
+(allow file-write* (subpath "/dev"))
 (allow file-write* (subpath (param "CWD")))
+(allow file-write* (subpath (param "TMPDIR")))
+(allow file-write* (subpath "/tmp"))
+(allow file-write* (subpath "/private/tmp"))
 (allow file-write* (subpath (param "HOME_CACHE")))
 (allow file-write* (subpath (param "HOME_CONFIG")))
 (allow file-write* (subpath (param "HOME_LOCAL")))
@@ -180,6 +208,21 @@ const SEATBELT_PROFILE_BASE = `
 (deny file-read* (subpath (param "HOME_GPG")))
 (deny process-exec (subpath "/System/Library/CoreServices"))
 `;
+
+// Deny-write rules for the workspace-protected paths, parameterized so the
+// resolved CWD never needs escaping in the profile. Appended after the
+// workspace allow; under the (deny file-write*) base these denies win.
+// Directories use `subpath`; files use `literal` (a subpath filter does not
+// match a regular file, which would silently leave it writable).
+function seatbeltWorkspaceProtection(): string {
+  return WORKSPACE_PROTECTED_PATHS
+    .map(({ dir }, i) =>
+      dir
+        ? `(deny file-write* (subpath (param "PROTECTED_${i}")))`
+        : `(deny file-write* (literal (param "PROTECTED_${i}")))`,
+    )
+    .join("\n") + "\n";
+}
 
 // Network isolation (last-match-wins): deny all network, then re-allow
 // host-local TCP/IP so local dev servers / language servers work, plus Unix-domain
@@ -198,7 +241,8 @@ const SEATBELT_NETWORK_DENY = `
 `;
 
 function seatbeltProfile(network: SandboxNetwork): string {
-  return network === "deny" ? SEATBELT_PROFILE_BASE + SEATBELT_NETWORK_DENY : SEATBELT_PROFILE_BASE;
+  const base = SEATBELT_PROFILE_BASE + seatbeltWorkspaceProtection();
+  return network === "deny" ? base + SEATBELT_NETWORK_DENY : base;
 }
 
 type OutputCallback = (chunk: Buffer, stream: "stdout" | "stderr") => void;
@@ -328,15 +372,29 @@ function createSeatbeltProfile(network: SandboxNetwork): { path: string; cleanup
   return { path, cleanup: () => { try { unlinkSync(path); } catch {} } };
 }
 
+// Seatbelt matches the kernel's resolved path, so the /var→/private/var
+// firmlink (and any symlinked workspace/home) defeats a rule built from the
+// unresolved path. Resolve to realpath; fall back to the input if it cannot be
+// resolved (e.g. the path does not exist yet, or realpathSync is unavailable).
+function resolvePath(p: string): string {
+  try { return realpathSync(p); } catch { return p; }
+}
+
 /** `sandbox-exec` argv that runs `inner` (file + its args) under the profile. */
 function seatbeltArgv(profilePath: string, cwd: string, inner: string[]): { file: string; args: string[] } {
-  const home = process.env.HOME ?? "/tmp";
+  const home = resolvePath(process.env.HOME ?? "/tmp");
+  const resolvedCwd = resolvePath(cwd);
+  const tmp = resolvePath((process.env.TMPDIR ?? "/tmp").replace(/\/+$/, "") || "/tmp");
+  const protectedParams = WORKSPACE_PROTECTED_SUBPATHS.flatMap((sub, i) => [
+    "-D", `PROTECTED_${i}=${join(resolvedCwd, sub)}`,
+  ]);
   return {
     file: "sandbox-exec",
     args: [
       "-f", profilePath,
       "-D", `HOME=${home}`,
-      "-D", `CWD=${cwd}`,
+      "-D", `CWD=${resolvedCwd}`,
+      "-D", `TMPDIR=${tmp}`,
       "-D", `HOME_CACHE=${home}/.cache`,
       "-D", `HOME_CONFIG=${home}/.config`,
       "-D", `HOME_LOCAL=${home}/.local`,
@@ -345,6 +403,7 @@ function seatbeltArgv(profilePath: string, cwd: string, inner: string[]): { file
       "-D", `HOME_SSH=${home}/.ssh`,
       "-D", `HOME_AWS=${home}/.aws`,
       "-D", `HOME_GPG=${home}/.gnupg`,
+      ...protectedParams,
       ...inner,
     ],
   };
@@ -374,6 +433,15 @@ function bubblewrapArgv(cwd: string, inner: string[], network: SandboxNetwork): 
       ...scratchMounts(scratch.filter(path => !isWithinRoot(cwd, path))),
       "--bind", cwd, cwd,
       ...scratchMounts(scratch.filter(path => isWithinRoot(cwd, path))),
+      // Re-bind sensitive workspace config read-only OVER the writable bind so a
+      // sandboxed command cannot write files a later process runs outside the
+      // sandbox (git hooks/config, .agav, editor autoruns, shell startup files).
+      // --ro-bind-try skips paths that do not exist. Placed after the workspace
+      // bind and its nested scratch mounts so these read-only binds win.
+      ...WORKSPACE_PROTECTED_SUBPATHS.flatMap(sub => {
+        const p = join(cwd, sub);
+        return ["--ro-bind-try", p, p];
+      }),
       "--dev", "/dev",
       "--proc", "/proc",
       // ~/.local and ~/.rustup remain visible through the root read-only bind.

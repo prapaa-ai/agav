@@ -497,10 +497,14 @@ describe("utils/sandbox", () => {
       expect(profile).toContain('(allow file-write* (subpath (param "HOME_NPM")))');
       expect(profile).toContain('(deny file-write* (subpath (param "HOME_SSH")))');
       expect(profile).toContain('(deny file-read* (subpath (param "HOME_SSH")))');
-      // The blanket home deny must appear before the carve-out allows so
-      // last-match-wins can re-enable the cache dirs.
-      expect(profile.indexOf('(deny file-write* (subpath (param "HOME")))'))
+      // Writes are denied by default; the blanket deny must appear before the
+      // carve-out allows so last-match-wins can re-enable the cache dirs.
+      expect(profile).toContain("(deny file-write*)");
+      expect(profile.indexOf("(deny file-write*)"))
         .toBeLessThan(profile.indexOf('(allow file-write* (subpath (param "HOME_CACHE")))'));
+      // Credential denies come AFTER the workspace/cache allows so they win.
+      expect(profile.indexOf('(allow file-write* (subpath (param "CWD")))'))
+        .toBeLessThan(profile.indexOf('(deny file-write* (subpath (param "HOME_SSH")))'));
 
       const runArgs = vi.mocked(cp.spawn).mock.calls.find(
         (call) => call[0] === "sandbox-exec",
@@ -699,6 +703,55 @@ describe("utils/sandbox", () => {
       expect(built.backend).toBe("bubblewrap");
       expect(built.args).toContain("--unshare-net");
       built.cleanup();
+    });
+  });
+
+  describe("workspace config protection (bubblewrap)", () => {
+    it("re-binds sensitive workspace config read-only after the workspace bind", async () => {
+      vi.resetModules();
+      const cp = await import("node:child_process");
+      const sandbox = await import("../utils/sandbox.js");
+      vi.mocked(cp.execFile).mockImplementation((...args: any[]) => { args.at(-1)(null, "ok", ""); return {} as any; });
+      await sandbox.runInSandbox({ command: "echo test", cwd: "/home/tester/project", timeout: 1000, maxBuffer: 1024, forceBackend: "bubblewrap" });
+
+      const args = vi.mocked(spawn).mock.calls.find(call => call[0] === "bwrap")![1] as string[];
+      const workspaceBind = args.indexOf("--bind");
+      // Each protected path is re-bound read-only AFTER the writable workspace
+      // bind, so the read-only bind wins.
+      for (const sub of [".git/hooks", ".agav", ".vscode", ".zshrc", ".envrc"]) {
+        const p = `/home/tester/project/${sub}`;
+        const roIdx = args.findIndex((arg, i) => arg === "--ro-bind-try" && args[i + 1] === p && args[i + 2] === p);
+        expect(roIdx).toBeGreaterThan(workspaceBind);
+      }
+      // .git/config is intentionally NOT protected (git opens it read-write).
+      expect(args.some((a) => a === "/home/tester/project/.git/config")).toBe(false);
+    });
+
+    it("carves workspace config out of the seatbelt deny-write base", async () => {
+      // Under (deny file-write*), a later (deny subpath) wins over the workspace
+      // allow, so the protected paths are emitted as deny rules + PROTECTED_N
+      // params resolving under the (realpath-resolved) workspace.
+      vi.resetModules();
+      const cp = await import("node:child_process");
+      const fs = await import("node:fs");
+      const sandbox = await import("../utils/sandbox.js");
+      vi.mocked(cp.execFile).mockImplementation((...args: any[]) => { args.at(-1)(null, "ok", ""); return {} as any; });
+      await sandbox.runInSandbox({ command: "echo test", cwd: "/Users/tester/project", timeout: 1000, maxBuffer: 1024, forceBackend: "seatbelt" });
+      const profile = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
+      const runArgs = vi.mocked(cp.spawn).mock.calls.find(call => call[0] === "sandbox-exec")?.[1] as string[];
+
+      // Deny-write base + /dev carve-out (git/tools open /dev/null read-write).
+      expect(profile).toContain("(deny file-write*)");
+      expect(profile).toContain('(allow file-write* (subpath "/dev"))');
+      // .git/hooks (dir) uses subpath; .zshrc (file) uses literal.
+      expect(profile).toContain('(deny file-write* (subpath (param "PROTECTED_0")))');
+      expect(profile).toMatch(/\(deny file-write\* \(literal \(param "PROTECTED_\d+"\)\)\)/);
+      // PROTECTED_0 resolves to <cwd>/.git/hooks; .git/config is NOT protected.
+      expect(runArgs.some((a) => typeof a === "string" && a.endsWith("/.git/hooks"))).toBe(true);
+      expect(runArgs.some((a) => typeof a === "string" && a.endsWith("/.git/config"))).toBe(false);
+      // The protection denies come AFTER the workspace allow (so they win).
+      expect(profile.indexOf('(allow file-write* (subpath (param "CWD")))'))
+        .toBeLessThan(profile.indexOf('(deny file-write* (subpath (param "PROTECTED_0")))'));
     });
   });
 });
