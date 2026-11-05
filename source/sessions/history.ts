@@ -21,7 +21,8 @@ async function runtimeSession(store: SessionRuntimeStore, record: SessionRuntime
   return {
     ...saved,
     id: record.id,
-    createdAt: record.createdAt,
+    // A legacy session may receive its first runtime long after it was created.
+    createdAt: saved?.createdAt ?? saved?.updatedAt ?? record.createdAt,
     model: record.model,
     provider: record.provider,
     ...(record.title ? { name: record.title } : {}),
@@ -30,6 +31,8 @@ async function runtimeSession(store: SessionRuntimeStore, record: SessionRuntime
     tokenUsage: record.tokenUsage ?? saved?.tokenUsage,
     compacted: record.compacted,
     permissionMode: record.permissionMode,
+    updatedAt: record.updatedAt,
+    cwd: record.cwd,
     runtime: {
       generation: record.generation,
       status: record.status,
@@ -44,7 +47,6 @@ export async function listResumableSessions(): Promise<SessionRecord[]> {
   const store = new SessionRuntimeStore();
   const [saved, runtimes] = await Promise.all([listSessions(), store.list()]);
   const sessions = new Map(saved.map(record => [record.id, record]));
-  const updated = new Map(runtimes.map(record => [record.id, record.updatedAt]));
   for (const record of runtimes) {
     try { sessions.set(record.id, await runtimeSession(store, record, sessions.get(record.id))); }
     catch (error) {
@@ -54,7 +56,7 @@ export async function listResumableSessions(): Promise<SessionRecord[]> {
     }
   }
   return [...sessions.values()].sort((a, b) =>
-    Date.parse(updated.get(b.id) ?? b.createdAt) - Date.parse(updated.get(a.id) ?? a.createdAt));
+    Date.parse(b.updatedAt ?? b.createdAt) - Date.parse(a.updatedAt ?? a.createdAt));
 }
 
 /** Re-read the runtime at selection time rather than loading a stale saved transcript. */
