@@ -3,7 +3,7 @@ import { loadConfig, type AgavConfig, type PermissionMode } from "../config/conf
 import { createBuiltinToolRegistry } from "../tools/registry-factory.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { applySandboxRequiredPolicy } from "../utils/sandbox-startup.js";
-import { detectSandboxBackend, isSandboxRequired, setSandboxRequired } from "../utils/sandbox.js";
+import { detectSandboxBackend, isSandboxRequired, setSandboxRequired, setSandboxNetwork } from "../utils/sandbox.js";
 import { WORKFLOW_TOOLS } from "./definition.js";
 import { clampConsent, consentCoversJob, consentSession, effectivePermissionMode, type WorkflowConsent } from "./grant.js";
 import { createBackgroundHost } from "./hosts.js";
@@ -92,7 +92,10 @@ export function startRunner(runId: string, ctx: RunnerContext): RunnerHandle {
     // a floor tightened since consent (or on this host) wins, and a tightened floor voids the stored coverage.
     const floor = ctx.config.orgPermissionFloor;
     const consent = clampConsent(run.consent, floor);
-    const config: AgavConfig = { ...ctx.config, permissionMode: effectivePermissionMode(run.consent, floor) };
+    // Disk config is a fallback, not the launch policy: it may still say deny after an explicit --sandbox-network allow.
+    // Relaunch callers persist any tightening at launchRun before this process starts.
+    const sandboxNetwork = run.sandboxNetwork ?? (ctx.config.sandboxNetwork === "allow" ? "allow" : "deny");
+    const config: AgavConfig = { ...ctx.config, sandboxNetwork, permissionMode: effectivePermissionMode(run.consent, floor) };
     // The run's persisted requirement (from the launching process) can only be strengthened by this process's config/flags, never weakened.
     const sandboxRequired = run.sandboxRequired === true || ctx.sandboxRequired === true || ctx.config.sandboxRequired === true || isSandboxRequired();
     if (sandboxRequired) {
@@ -130,6 +133,7 @@ export async function runWorkflowRunner(runId: string | undefined): Promise<numb
   const config = await loadConfig();
   if (config.backgroundJobsEnabled !== true || config.workflowsEnabled !== true) throw new Error("Workflows require backgroundJobsEnabled=true AND workflowsEnabled=true.");
   applySandboxRequiredPolicy({ flagSet: false, configValue: config.sandboxRequired, detectBackend: detectSandboxBackend, setRequired: setSandboxRequired, warn: message => { process.stderr.write(message); } });
+  setSandboxNetwork(config.sandboxNetwork === "allow" ? "allow" : "deny");
   const { getSharedCoordinator } = await import("../background-jobs-integration.js");
   const { cliEntryPath } = await import("./background.js");
   const handle = startRunner(runId, {

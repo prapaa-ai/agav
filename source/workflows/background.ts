@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgavConfig } from "../config/config.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import { isSandboxRequired } from "../utils/sandbox.js";
+import { getSandboxNetwork, isSandboxRequired } from "../utils/sandbox.js";
 import type { WorkflowDefinition } from "./definition.js";
 import { buildConsent, consentSession } from "./grant.js";
 import { resolveInputs } from "./inputs.js";
@@ -37,16 +37,17 @@ export async function prepareLaunch(definition: WorkflowDefinition, inputs: Reco
   return { definition, inputs, cwd, request: { workflowName, cwd, permissionMode: config.permissionMode, capabilities: preview.capabilities, envNames } };
 }
 
-export interface StartRunDeps { coordinator: RunnerCoordinator; cliPath: string; maxConcurrentWorkflowRuns?: number; registry?: ToolRegistry; sandboxRequired?: boolean }
+export interface StartRunDeps { coordinator: RunnerCoordinator; cliPath: string; maxConcurrentWorkflowRuns?: number; registry?: ToolRegistry; sandboxRequired?: boolean; sandboxNetwork?: AgavConfig["sandboxNetwork"] }
 
 /** Creates the background run with its per-invocation consent (env NAMES only) and launches its runner. */
 export async function startBackgroundRun(store: WorkflowStore, prepared: PreparedLaunch, permissionMode: AgavConfig["permissionMode"], envNames: string[], deps: StartRunDeps & { registry: ToolRegistry }): Promise<LaunchResult> {
+  const sandboxNetwork = deps.sandboxNetwork ?? getSandboxNetwork();
   const created = await createRun(store, prepared.definition, prepared.inputs, { host: "background" });
   const consent = buildConsent(prepared.definition, created.cwd, permissionMode, envNames);
   // The detached runner only reloads disk config, so the parent's effective requirement (e.g. `--sandbox-required`) is persisted.
   const sandboxRequired = deps.sandboxRequired === true || isSandboxRequired();
-  await updateRun(store, created.id, deps.registry, run => { run.consent = consent; if (sandboxRequired) run.sandboxRequired = true; });
-  return launchRun(store, created.id, { ...deps, sandboxRequired });
+  await updateRun(store, created.id, deps.registry, run => { run.consent = consent; run.sandboxNetwork = sandboxNetwork; if (sandboxRequired) run.sandboxRequired = true; });
+  return launchRun(store, created.id, { ...deps, sandboxRequired, sandboxNetwork });
 }
 
 /** One-line launch summary with the follow-up hints. */
