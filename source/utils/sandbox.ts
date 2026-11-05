@@ -310,25 +310,29 @@ function bubblewrapArgv(cwd: string, inner: string[]): { file: string; args: str
     file: "bwrap",
     args: [
       "--ro-bind", "/", "/",
-      "--bind", cwd, cwd,
       "--tmpfs", "/tmp",
       "--dev", "/dev",
       "--proc", "/proc",
-      // Empty, writable tmpfs over the credential directories hides their
-      // contents from the sandbox while still letting a tool that probes them
-      // succeed against an empty dir.
+      // Writable scratch for tooling caches/config, without persisting home
+      // writes. Keep ~/.local (user executables, uv Python installs, etc.) and
+      // ~/.rustup visible read-only through the root bind.
+      "--tmpfs", home + "/.cache",
+      "--tmpfs", home + "/.config",
+      "--tmpfs", home + "/.npm",
+      "--tmpfs", home + "/.cargo",
+      // Cargo needs writable locks/registry state, but its installed executables
+      // (including rustup shims) must survive the scratch overlay. Missing bin
+      // directories are normal on hosts without Rust.
+      "--ro-bind-try", home + "/.cargo/bin", home + "/.cargo/bin",
+      // Restore the workspace AFTER scratch mounts so /tmp checkouts and repos
+      // nested in cache directories remain visible and writes reach the host.
+      "--bind", cwd, cwd,
+      // Credential masks must win even when the workspace contains (or is
+      // nested within) one of these directories. Such nested workspaces stay
+      // hidden; do not restore them after these mounts.
       "--tmpfs", home + "/.ssh",
       "--tmpfs", home + "/.aws",
       "--tmpfs", home + "/.gnupg",
-      // The rest of $HOME is read-only via the root ro-bind, which breaks
-      // tooling that must write to its cache/config dirs (npm, pip, cargo,
-      // git). Give each a writable scratch tmpfs so those commands work
-      // without exposing or persisting anything on the host.
-      "--tmpfs", home + "/.cache",
-      "--tmpfs", home + "/.config",
-      "--tmpfs", home + "/.local",
-      "--tmpfs", home + "/.npm",
-      "--tmpfs", home + "/.cargo",
       "--die-with-parent",
       "--chdir", cwd,
       ...inner,

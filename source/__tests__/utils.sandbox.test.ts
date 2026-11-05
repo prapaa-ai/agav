@@ -545,6 +545,13 @@ describe("utils/sandbox", () => {
       expect(joined).toContain("--tmpfs /home/tester/.config");
       expect(joined).toContain("--tmpfs /home/tester/.npm");
       expect(joined).toContain("--tmpfs /home/tester/.cargo");
+      // Installed Python/uv runtimes and user executables remain visible via
+      // the root read-only bind; Cargo shims are restored over its scratch home.
+      expect(joined).not.toContain("--tmpfs /home/tester/.local");
+      expect(joined).not.toContain("--tmpfs /home/tester/.rustup");
+      expect(joined).toContain("--ro-bind-try /home/tester/.cargo/bin /home/tester/.cargo/bin");
+      expect(args.indexOf("--ro-bind-try")).toBeGreaterThan(args.indexOf("/home/tester/.cargo"));
+      expect(joined).not.toContain("--bind /home/tester /home/tester");
       // Credential dirs are still masked with tmpfs.
       expect(joined).toContain("--tmpfs /home/tester/.ssh");
       expect(joined).toContain("--tmpfs /home/tester/.gnupg");
@@ -556,4 +563,34 @@ describe("utils/sandbox", () => {
       else process.env.HOME = prevHome;
     }
   });
+  it.each([
+    "/tmp/project",
+    "/home/tester/.cache/project",
+    "/home/tester/.config/project",
+    "/home/tester/.cargo/project",
+    "/home/tester/.cargo/bin/project",
+    "/home/tester",
+    "/home/tester/.ssh/project",
+  ])("bubblewrap restores workspace %s after scratch mounts but before credential masks", async (cwd) => {
+    vi.resetModules();
+    vi.stubEnv("HOME", "/home/tester");
+    try {
+      const sandbox = await import("../utils/sandbox.js");
+      await sandbox.runInSandbox({ command: "echo test", cwd, timeout: 1000, maxBuffer: 1024, forceBackend: "bubblewrap" });
+      const args = vi.mocked(spawn).mock.calls.find(call => call[0] === "bwrap")![1] as string[];
+      const workspace = args.indexOf("--bind");
+      expect(args.slice(workspace, workspace + 3)).toEqual(["--bind", cwd, cwd]);
+      for (const scratch of ["/tmp", "/home/tester/.cache", "/home/tester/.config", "/home/tester/.npm", "/home/tester/.cargo"]) {
+        expect(args.indexOf(scratch)).toBeLessThan(workspace);
+      }
+      expect(args.indexOf("--ro-bind-try")).toBeLessThan(workspace);
+      for (const credential of [".ssh", ".aws", ".gnupg"]) {
+        expect(args.indexOf(`/home/tester/${credential}`)).toBeGreaterThan(workspace);
+      }
+      expect(args.indexOf("--chdir")).toBeGreaterThan(workspace);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
 });

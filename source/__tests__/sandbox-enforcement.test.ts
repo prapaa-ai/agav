@@ -26,7 +26,7 @@
  *    Docker-only (which configures --network=none).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, type TestContext } from "vitest";
@@ -280,10 +280,9 @@ describe("real sandbox enforcement (per-OS)", () => {
       // (no-bwrap) Tests job never creates a stray dir under the checkout that a
       // clean-worktree check could trip.
       if (!backendInstalled("bubblewrap")) return;
-      // IMPORTANT: NOT under /tmp. production runBubblewrap applies `--tmpfs /tmp`
-      // AFTER `--bind {cwd} {cwd}`, so a workdir under /tmp would be masked by the
-      // empty tmpfs and host writes would vanish. Real users' CWDs are project
-      // dirs, never /tmp; mirror that by rooting the fixture under the checkout.
+      // Keep the fixture HOME outside /tmp so its installed toolchains remain
+      // visible through the root bind. A separate test exercises /tmp checkouts
+      // without binding the rest of the host's temporary files into the sandbox.
       mkdirSync(base, { recursive: true });
       root = mkdtempSync(join(base, "run-"));
       seeded = seedHome(root);
@@ -308,6 +307,101 @@ describe("real sandbox enforcement (per-OS)", () => {
       expect(r.stdout).toContain("WROTE");
       // The bind is read-write to the host, so the file is visible outside.
       expect(existsSync(marker)).toBe(true);
+    });
+
+    it("preserves a /tmp checkout while hiding neighboring host temporary files", async (ctx) => {
+      guard(ctx);
+      const temp = mkdtempSync("/tmp/agav-bw-workspace-");
+      const work = join(temp, "checkout");
+      mkdirSync(work);
+      const source = join(work, "source.txt");
+      const neighbor = join(temp, "outside.txt");
+      writeFileSync(source, "workspace-source");
+      writeFileSync(neighbor, SEED);
+      const command = `cat ${JSON.stringify(source)} && printf wrote > result.txt`;
+      try {
+        // Positive control: exact workload and neighboring file both work on host.
+        expect(execFileSync("/bin/sh", ["-c", command], { cwd: work, encoding: "utf8" })).toBe("workspace-source");
+        expect(readFileSync(neighbor, "utf8")).toBe(SEED);
+        rmSync(join(work, "result.txt"));
+        const r = await sandboxed("bubblewrap", `${command} && if cat ${JSON.stringify(neighbor)} 2>/dev/null; then exit 9; fi; echo DONE`, work);
+        expect(r.error).toBeNull();
+        expect(r.stdout).toBe("workspace-sourceDONE\n");
+        expect(readFileSync(join(work, "result.txt"), "utf8")).toBe("wrote");
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    });
+
+    it.for([".cache", ".config", ".npm", ".cargo"])("restores workspaces nested in %s scratch", async (dir, ctx) => {
+      const env = guard(ctx);
+      const work = join(env.home, dir, "checkout");
+      mkdirSync(work, { recursive: true });
+      writeFileSync(join(work, "source.txt"), "source");
+      const command = "cat source.txt && printf persisted > output.txt";
+      expect(execFileSync("/bin/sh", ["-c", command], { cwd: work, encoding: "utf8" })).toBe("source");
+      rmSync(join(work, "output.txt"));
+      const r = await sandboxed("bubblewrap", command, work);
+      expect(r.error).toBeNull();
+      expect(r.stdout).toBe("source");
+      expect(readFileSync(join(work, "output.txt"), "utf8")).toBe("persisted");
+    });
+
+    it("keeps user executables and their installed runtimes visible read-only, with writable Cargo/cache scratch", async (ctx) => {
+      const env = guard(ctx);
+      const cargoBin = join(env.home, ".cargo", "bin");
+      const rustupBin = join(env.home, ".rustup", "toolchains", "test", "bin");
+      const localBin = join(env.home, ".local", "bin");
+      const pythonBin = join(env.home, ".local", "share", "uv", "python", "test", "bin");
+      for (const dir of [cargoBin, rustupBin, localBin, pythonBin]) mkdirSync(dir, { recursive: true });
+      // Deterministic executable fixtures reproduce rustup and uv's indirection
+      // without requiring downloads or a particular installed language version.
+      const rust = join(rustupBin, "rustc");
+      const python = join(pythonBin, "python");
+      writeFileSync(rust, "#!/bin/sh\nprintf RUST_OK\n", { mode: 0o755 });
+      writeFileSync(python, "#!/bin/sh\nprintf PYTHON_OK\n", { mode: 0o755 });
+      const cargo = join(cargoBin, "cargo");
+      writeFileSync(cargo, `#!/bin/sh\nset -e\nmkdir -p "$HOME/.cargo/registry" "$HOME/.cache/tool"\nprintf lock > "$HOME/.cargo/.package-cache"\nprintf cache > "$HOME/.cargo/registry/cache"\nprintf cache > "$HOME/.cache/tool/cache"\nexec ${JSON.stringify(rust)}\n`, { mode: 0o755 });
+      symlinkSync(python, join(localBin, "python"));
+      const command = `${JSON.stringify(cargo)} && ${JSON.stringify(join(localBin, "python"))}`;
+      expect(execFileSync("/bin/sh", ["-c", command], { encoding: "utf8" })).toBe("RUST_OKPYTHON_OK");
+      const lock = join(env.home, ".cargo", ".package-cache");
+      const cache = join(env.home, ".cargo", "registry", "cache");
+      const pipCache = join(env.home, ".cache", "tool", "cache");
+      for (const file of [lock, cache, pipCache]) rmSync(file);
+      const credentials = join(env.home, ".cargo", "credentials.toml");
+      writeFileSync(credentials, SEED);
+      expect(readFileSync(credentials, "utf8")).toBe(SEED);
+      const r = await sandboxed("bubblewrap", `${command} && test -f ${JSON.stringify(lock)} && test ! -e ${JSON.stringify(credentials)}`, env.workdir);
+      expect(r.error).toBeNull();
+      expect(r.stdout).toBe("RUST_OKPYTHON_OK");
+      for (const file of [lock, cache, pipCache]) expect(existsSync(file)).toBe(false);
+      for (const dir of [cargoBin, localBin, pythonBin, rustupBin]) {
+        const target = join(dir, "write-control");
+        writeFileSync(target, "host");
+        expect(readFileSync(target, "utf8")).toBe("host");
+        const denied = await sandboxed("bubblewrap", `printf changed > ${JSON.stringify(target)}`, env.workdir);
+        expect(denied.error).not.toBeNull();
+        expect(readFileSync(target, "utf8")).toBe("host");
+      }
+    });
+
+    it.for([".ssh", ".aws", ".gnupg"])("keeps %s masked when the workspace is HOME or inside credentials", async (dir, ctx) => {
+      const env = guard(ctx);
+      const work = join(env.home, dir, "checkout");
+      mkdirSync(work, { recursive: true });
+      const secret = join(work, "secret");
+      writeFileSync(secret, SEED);
+      expect(execFileSync("cat", [secret], { encoding: "utf8" })).toBe(SEED);
+      const parent = await sandboxed("bubblewrap", `test ! -e ${JSON.stringify(secret)} && echo MASKED`, env.home);
+      expect(parent.error).toBeNull();
+      expect(parent.stdout).toBe("MASKED\n");
+      // The final credential mask hides the nested checkout itself: chdir must
+      // fail closed rather than restoring a credential directory for the command.
+      const nested = await sandboxed("bubblewrap", "echo WORKLOAD_STARTED; cat secret", work);
+      expect(nested.error).not.toBeNull();
+      expect(nested.stdout).not.toContain("WORKLOAD_STARTED");
+      expect(nested.stdout).not.toContain(SEED);
     });
 
     it("masks a seeded credential file with tmpfs (control: host CAN read it)", async (ctx) => {
