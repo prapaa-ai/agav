@@ -121,6 +121,8 @@ export class OpenAIProvider implements LLMProvider {
           break;
 
         case "response.completed":
+        case "response.incomplete":
+        case "response.failed":
           if (event.response.usage) {
             yield {
               type: "usage",
@@ -129,15 +131,21 @@ export class OpenAIProvider implements LLMProvider {
               cacheReadTokens: (event.response.usage as any).input_tokens_details?.cached_tokens ?? 0,
             };
           }
-          yield { type: "message_end", stopReason: event.response.status ?? "completed" };
-          break;
-
-        case "response.failed":
-          yield {
-            type: "error",
-            error: new Error((event.response as any).status_details?.error?.message ?? "Response failed"),
-          };
-          break;
+          if (event.type === "response.failed") {
+            yield {
+              type: "error",
+              error: new Error(event.response.error?.message
+                ?? (event.response as any).status_details?.error?.message ?? "Response failed"),
+            };
+          } else {
+            yield {
+              type: "message_end",
+              stopReason: event.type === "response.incomplete"
+                ? event.response.incomplete_details?.reason ?? "incomplete"
+                : event.response.status ?? "completed",
+            };
+          }
+          return;
       }
     }
   }

@@ -73,10 +73,30 @@ export class AnthropicProvider implements LLMProvider {
     // Track which content block index maps to which tool call ID
     const blockToolIds = new Map<number, string>();
     let currentBlockIndex = -1;
+    let lastUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
     yield { type: "message_start" };
 
     for await (const event of stream) {
+      // Both message_start and message_delta carry cumulative, possibly partial usage.
+      const usage = event.type === "message_start" ? event.message.usage
+        : event.type === "message_delta" ? event.usage : undefined;
+      if (usage) {
+        const next = {
+          inputTokens: usage.input_tokens ?? lastUsage.inputTokens,
+          outputTokens: usage.output_tokens ?? lastUsage.outputTokens,
+          cacheReadTokens: usage.cache_read_input_tokens ?? lastUsage.cacheReadTokens,
+          cacheWriteTokens: usage.cache_creation_input_tokens ?? lastUsage.cacheWriteTokens,
+        };
+        const delta = {
+          inputTokens: next.inputTokens - lastUsage.inputTokens,
+          outputTokens: next.outputTokens - lastUsage.outputTokens,
+          cacheReadTokens: next.cacheReadTokens - lastUsage.cacheReadTokens,
+          cacheWriteTokens: next.cacheWriteTokens - lastUsage.cacheWriteTokens,
+        };
+        lastUsage = next;
+        if (Object.values(delta).some(value => value !== 0)) yield { type: "usage", ...delta };
+      }
       if (event.type === "content_block_start") {
         currentBlockIndex = event.index;
         if (event.content_block.type === "tool_use") {
@@ -107,26 +127,8 @@ export class AnthropicProvider implements LLMProvider {
         if (toolId) {
           yield { type: "tool_call_end", toolCallId: toolId };
         }
-      } else if (event.type === "message_start") {
-        if (event.message?.usage) {
-          const u = event.message.usage as any;
-          yield {
-            type: "usage",
-            inputTokens: u.input_tokens ?? 0,
-            outputTokens: 0,
-            cacheReadTokens: u.cache_read_input_tokens ?? 0,
-            cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
-          };
-        }
-      } else if (event.type === "message_delta") {
-        const outputTokens = (event as any).usage?.output_tokens ?? 0;
-        if (outputTokens > 0) {
-          yield { type: "usage", inputTokens: 0, outputTokens };
-        }
-        yield {
-          type: "message_end",
-          stopReason: event.delta.stop_reason ?? "end_turn",
-        };
+      } else if (event.type === "message_delta" && event.delta.stop_reason) {
+        yield { type: "message_end", stopReason: event.delta.stop_reason };
       }
     }
   }

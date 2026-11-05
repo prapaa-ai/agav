@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import type { ToolDefinition, ToolResult } from "../tools/types.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { ToolRegistry } from "../tools/registry.js";
-import type { AgentEvent, ConfirmResult } from "../agent/loop.js";
+import type { AgentEvent, ConfirmResult, ConfirmToolFn } from "../agent/loop.js";
 import type { PermissionMode, EffortLevel, AgavConfig } from "../config/config.js";
 import { getSkill } from "./loader.js";
 import { executeSkill } from "./executor.js";
@@ -21,13 +22,14 @@ interface SkillToolDeps {
   };
   /** Full parent config for deriving the org selection/permission policy. */
   getProviderConfig?: () => AgavConfig;
-  confirmTool?: (toolName: string, input: Record<string, unknown>) => Promise<ConfirmResult>;
+  confirmTool?: (...args: [...Parameters<ConfirmToolFn>, signal?: AbortSignal]) => Promise<ConfirmResult>;
   onTokenUsage?: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   getSignal: () => AbortSignal | undefined;
-  createProgressTracker?: (title: string, task: string) => (event: AgentEvent) => void;
+  createProgressTracker?: (title: string, task: string, id: string) => (event: AgentEvent) => void;
 }
 
-export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
+export function createSkillTool(deps: SkillToolDeps): ToolDefinition & { cancelSkill(id: string): void } {
+  const controllers = new Map<string, AbortController>();
   return {
     schema: {
       name: "activate_skill",
@@ -63,6 +65,11 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
         return { output: `Skill "${name}" is user-only — it can only be invoked via /${skill.slug}.`, isError: true };
       }
 
+      const id = `skill-${randomUUID()}`;
+      const controller = new AbortController();
+      const parentSignal = context?.signal ?? deps.getSignal();
+      const signal = parentSignal ? AbortSignal.any([parentSignal, controller.signal]) : controller.signal;
+      controllers.set(id, controller);
       try {
         const config = deps.getConfig();
         const providerConfig = deps.getProviderConfig?.();
@@ -85,10 +92,11 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
             orgManagedProvider: providerConfig.orgManagedProvider,
             orgAllowedProviders: providerConfig.orgAllowedProviders,
           } : undefined,
-          confirmTool: deps.confirmTool,
+          confirmTool: deps.confirmTool ? (...[toolName, input, diffLines, mcpServerName, warning]: Parameters<ConfirmToolFn>) =>
+            deps.confirmTool!(toolName, input, diffLines, mcpServerName, warning, signal) : undefined,
           onTokenUsage: deps.onTokenUsage,
-          signal: context?.signal ?? deps.getSignal(),
-          onEvent: deps.createProgressTracker?.(`Skill: ${skill.name}`, args || skill.description),
+          signal,
+          onEvent: deps.createProgressTracker?.(`Skill: ${skill.name}`, args || skill.description, id),
         });
         return { output: result.output, isError: false };
       } catch (err) {
@@ -96,7 +104,13 @@ export function createSkillTool(deps: SkillToolDeps): ToolDefinition {
           output: `Skill "${name}" failed: ${err instanceof Error ? err.message : String(err)}`,
           isError: true,
         };
+      } finally {
+        controllers.delete(id);
       }
+    },
+
+    cancelSkill(id: string) {
+      controllers.get(id)?.abort();
     },
   };
 }

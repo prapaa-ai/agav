@@ -414,6 +414,7 @@ export class VertexAIProvider implements LLMProvider {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let lastUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
     const parseLine = function* (line: string): Generator<StreamEvent> {
       if (!line.startsWith("data:")) return;
@@ -421,19 +422,27 @@ export class VertexAIProvider implements LLMProvider {
       if (!payload || payload === "[DONE]") return;
       let event: any;
       try { event = JSON.parse(payload); } catch { return; }
+      // Claude usage is cumulative and later events can update any token category.
+      const usage = event.type === "message_start" ? event.message?.usage
+        : event.type === "message_delta" ? event.usage : undefined;
+      if (usage) {
+        const next = {
+          inputTokens: usage.input_tokens ?? lastUsage.inputTokens,
+          outputTokens: usage.output_tokens ?? lastUsage.outputTokens,
+          cacheReadTokens: usage.cache_read_input_tokens ?? lastUsage.cacheReadTokens,
+          cacheWriteTokens: usage.cache_creation_input_tokens ?? lastUsage.cacheWriteTokens,
+        };
+        const delta = {
+          inputTokens: next.inputTokens - lastUsage.inputTokens,
+          outputTokens: next.outputTokens - lastUsage.outputTokens,
+          cacheReadTokens: next.cacheReadTokens - lastUsage.cacheReadTokens,
+          cacheWriteTokens: next.cacheWriteTokens - lastUsage.cacheWriteTokens,
+        };
+        lastUsage = next;
+        if (Object.values(delta).some(value => value !== 0)) yield { type: "usage", ...delta };
+      }
       if (event.type === "error") {
         yield { type: "error", error: new Error(event.error?.message ?? JSON.stringify(event.error ?? event)) };
-      } else if (event.type === "message_start") {
-        const usage = event.message?.usage;
-        if (usage) {
-          yield {
-            type: "usage",
-            inputTokens: usage.input_tokens ?? 0,
-            outputTokens: 0,
-            cacheReadTokens: usage.cache_read_input_tokens ?? 0,
-            cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
-          };
-        }
       } else if (event.type === "content_block_start") {
         if (event.content_block?.type === "tool_use") {
           blockToolIds.set(event.index, event.content_block.id);
@@ -458,10 +467,8 @@ export class VertexAIProvider implements LLMProvider {
           yield { type: "tool_call_end", toolCallId };
           blockToolIds.delete(event.index);
         }
-      } else if (event.type === "message_delta") {
-        const outputTokens = event.usage?.output_tokens ?? 0;
-        if (outputTokens > 0) yield { type: "usage", inputTokens: 0, outputTokens };
-        yield { type: "message_end", stopReason: event.delta?.stop_reason ?? "end_turn" };
+      } else if (event.type === "message_delta" && event.delta?.stop_reason) {
+        yield { type: "message_end", stopReason: event.delta.stop_reason };
       }
     };
 
