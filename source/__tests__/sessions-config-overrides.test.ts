@@ -67,6 +67,19 @@ it.each([
 	const { SessionRuntimeStore } = await import("../sessions/store.js");
 	expect(await readFile(join(new SessionRuntimeStore().directory(record.id), "runtime.json"), "utf8")).not.toContain("session-account");
 });
+it.each([
+	{ saved: "allow", selected: "deny" },
+	{ saved: "deny", selected: "allow" },
+] as const)("restores dedicated network $selected over saved $saved in the worker", async ({ saved, selected }) => {
+	const { record, run } = await setup([], { sandboxNetwork: saved }, { sandboxNetwork: selected });
+	expect(record.sandboxNetwork).toBe(selected);
+	const sandbox = await import("../utils/sandbox.js");
+	sandbox.setSandboxNetwork(saved);
+	await expect(run(record.id, record.generation)).rejects.toThrow("provider captured");
+	expect(mocks.provider).toHaveBeenCalledWith(expect.objectContaining({ sandboxNetwork: selected }));
+	expect(sandbox.getSandboxNetwork()).toBe(selected);
+});
+
 it("reapplies fresh organization policy above the transferred overlay", async () => {
 	const { record, run } = await setup(["permissionMode=auto-accept"]);
 	mocks.org = { config: { permissionMode: "deny-writes" } };

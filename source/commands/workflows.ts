@@ -12,7 +12,7 @@ import {
 } from "../workflows/background.js";
 import { formatRunSummary, formatRunTree, resolveRunId } from "../workflows/format.js";
 import { getSharedCoordinator } from "../background-jobs-integration.js";
-import { isSandboxRequired } from "../utils/sandbox.js";
+import { getSandboxNetwork, isSandboxRequired } from "../utils/sandbox.js";
 import { openResourceManager } from "./resource-manager.js";
 
 const USAGE = `Usage: /workflows [<action>]   (no action opens the Workflows TUI: Workflows · Runs · Inbox)
@@ -76,7 +76,8 @@ export const workflowsCommand: SlashCommand = {
       // Every run-id operand accepts a unique prefix (≥4 chars) or the full UUID (U4).
       if (target && action !== "validate" && action !== "run") target = await resolveRunId(store, target);
       const sandboxRequired = context.config.sandboxRequired === true || isSandboxRequired();
-      const launchDeps = async () => ({ coordinator: await getSharedCoordinator(), cliPath: await cliEntryPath(), maxConcurrentWorkflowRuns: context.config.maxConcurrentWorkflowRuns, registry, sandboxRequired });
+      const sandboxNetwork = getSandboxNetwork();
+      const launchDeps = async () => ({ coordinator: await getSharedCoordinator(), cliPath: await cliEntryPath(), maxConcurrentWorkflowRuns: context.config.maxConcurrentWorkflowRuns, registry, sandboxRequired, sandboxNetwork });
       const warnings: string[] = [];
       const warn = (text: string): void => { warnings.push(`warning: ${text}`); };
       if (action === "validate") { await loadDefinition((await resolveWorkflow(target, process.cwd())).path, registry); return message("Workflow valid."); }

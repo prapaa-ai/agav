@@ -98,4 +98,42 @@ describe("config: sandboxRequired / backgroundAutomation", () => {
     expect(written.template.sandboxRequired).toMatchObject({ type: "boolean", eg: false });
     expect(written.template.backgroundAutomation).toMatchObject({ type: "string", enum: ["on", "paused"] });
   });
+
+  it("defaults sandboxNetwork=deny", async () => {
+    mockConfigs(undefined, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("deny");
+  });
+
+  it("honors sandboxNetwork=allow from the global config", async () => {
+    mockConfigs({ sandboxNetwork: "allow" }, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("allow");
+  });
+
+  it("ignores project config attempting to allow network egress", async () => {
+    mockConfigs({ sandboxNetwork: "deny" }, { sandboxNetwork: "allow" });
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("deny");
+  });
+
+  it("ignores project config setting sandboxNetwork even without a global value", async () => {
+    mockConfigs(undefined, { sandboxNetwork: "allow" });
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("deny");
+  });
+
+  it("falls back to deny for invalid sandboxNetwork values", async () => {
+    mockConfigs({ sandboxNetwork: "yes" }, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("deny");
+  });
+
+  it("documents sandboxNetwork in the project config template", async () => {
+    mockConfigs(undefined, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    await loadConfig();
+    const written = JSON.parse(String(writeFile.mock.calls[0]?.[1]));
+    expect(written.template.sandboxNetwork).toMatchObject({ type: "string", enum: ["deny", "allow"] });
+  });
 });

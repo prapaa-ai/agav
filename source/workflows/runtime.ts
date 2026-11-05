@@ -1,3 +1,4 @@
+import { setSandboxNetwork } from "../utils/sandbox.js";
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import type { AgavConfig, PermissionMode } from "../config/config.js";
@@ -246,10 +247,18 @@ export async function executeRun(store: WorkflowStore, id: string, registry: Too
     const run = await store.read(id, registry);
     if (await realpath(process.cwd()) !== run.cwd) throw new Error(`Resume must use the original working directory: ${run.cwd}`);
     if (["passed", "failed", "cancelled", "timed_out"].includes(run.status)) return run;
+    // Resolve and persist under the execution lock, before dispatching tools or agents. A stored deny is sticky.
+    // Detached runners pass the restored launch policy; foreground callers pass their effective invocation config.
+    const sandboxNetwork = run.sandboxNetwork === "deny" || sessionConfig.sandboxNetwork !== "allow" ? "deny" : "allow";
+    if (run.sandboxNetwork !== sandboxNetwork) {
+      run.sandboxNetwork = sandboxNetwork;
+      await store.save(run);
+    }
+    setSandboxNetwork(sandboxNetwork);
     const policies = run.definition.policies ?? {};
     const stopOnFailure = policies.stopOnFailure !== false;
     // policies.permissionMode can only narrow the session's (or the run consent's) mode, never widen it.
-    const config: AgavConfig = { ...sessionConfig, permissionMode: narrowPermissionMode(sessionConfig.permissionMode, policies.permissionMode) };
+    const config: AgavConfig = { ...sessionConfig, sandboxNetwork, permissionMode: narrowPermissionMode(sessionConfig.permissionMode, policies.permissionMode) };
     const jobDeps = narrowJobDeps(sessionJobDeps, policies.permissionMode);
     await store.hydrateOutputs(run); // Executors interpolate real outputs, never artifact references.
     // Tool nodes are never replayed. A running job node is instead reattached below via its durable requestId.

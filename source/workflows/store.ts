@@ -135,6 +135,8 @@ export interface WorkflowRun {
    * absent in older checkpoints (no persisted requirement).
    */
   sandboxRequired?: boolean;
+  /** Effective launch policy, restored by detached runners; deny is never weakened on relaunch. Legacy runs use current config. */
+  sandboxNetwork?: "deny" | "allow";
   /** Linkage to the supervised runner job (`requestId = wf-run-<runId>-<attempt>`). */
   runner?: RunnerLink;
   /** Absolute run deadline from `policies.maxRuntimeSeconds`, fixed at the first execution so resume honors it. */
@@ -308,6 +310,7 @@ export class WorkflowStore {
     if ((run.consent !== undefined && (!isWorkflowConsent(run.consent) || run.consent.definitionHash !== run.workflowHash || run.consent.cwd !== run.cwd)) ||
         (run.runner !== undefined && !validRunner(run.runner, run.id)) ||
         (run.sandboxRequired !== undefined && typeof run.sandboxRequired !== "boolean") ||
+        (run.sandboxNetwork !== undefined && run.sandboxNetwork !== "deny" && run.sandboxNetwork !== "allow") ||
         (run.deadlineAt !== undefined && (typeof run.deadlineAt !== "string" || Number.isNaN(Date.parse(run.deadlineAt)) || run.definition.policies?.maxRuntimeSeconds === undefined))) throw new Error("Invalid workflow checkpoint.");
     if (run.workflowHash !== definitionHash(run.definition) || !RUN_STATUSES.has(run.status) || !Array.isArray(run.nodes) || run.nodes.length !== run.definition.nodes.length || run.nodes.some((node, i) => !node || node.id !== run.definition.nodes[i]!.id || !NODE_STATUSES.has(node.status) || (isArtifactRef(node.output) && !validArtifactRef(node.output, node.id)))) throw new Error("Corrupt workflow checkpoint; refusing execution.");
     if (run.executionCount !== undefined && (typeof run.executionCount !== "number" || !Number.isInteger(run.executionCount) || run.executionCount < 0)) throw new Error("Invalid workflow checkpoint.");
