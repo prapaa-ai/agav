@@ -399,7 +399,7 @@ describe("real sandbox enforcement (per-OS)", () => {
       const cargoBin = join(env.home, ".cargo", "bin");
       mkdirSync(cargoBin, { recursive: true });
       const executable = join(cargoBin, "agav-fixture");
-      writeFileSync(executable, "#!/bin/sh\nprintf TOOLCHAIN_OK\\n", { mode: 0o755 });
+      writeFileSync(executable, "#!/bin/sh\nprintf TOOLCHAIN_OK\n", { mode: 0o755 });
       const writes = [".config", ".cargo", ".npm", ".cache"].map(dir => join(env.home, dir, `sandbox-${scope}`));
       for (const secret of secrets) {
         writeFileSync(secret, SEED);
