@@ -251,7 +251,7 @@ describe("VertexAIProvider", () => {
       { type: "tool_call_start", toolCallId: "tool_1", toolName: "lookup" },
       { type: "tool_call_delta", toolCallId: "tool_1", argsJson: '{"q":"x"}' },
       { type: "tool_call_end", toolCallId: "tool_1" },
-      { type: "usage", inputTokens: 0, outputTokens: 7 },
+      { type: "usage", inputTokens: 0, outputTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0 },
       { type: "message_end", stopReason: "tool_use" },
     ]);
     expect(fetchMock.mock.calls[1]?.[0]).toBe(

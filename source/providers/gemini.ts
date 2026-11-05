@@ -152,8 +152,8 @@ export class GeminiProvider implements LLMProvider {
     const turnCallIds: string[] = [];
     // Gemini repeats usageMetadata on every SSE chunk and the counts are
     // cumulative, not deltas. Consumers add each usage event to a running
-    // total, so emitting one per chunk multiplies the turn by the chunk count.
-    // Keep only the latest and emit it once the stream is drained.
+    // total. Emit the difference immediately so cancellation or a read failure
+    // cannot discard usage already received from the server.
     let lastUsage: Extract<StreamEvent, { type: "usage" }> | null = null;
     let lastRawUsage: unknown = null;
 
@@ -185,14 +185,22 @@ export class GeminiProvider implements LLMProvider {
 
         if (chunk.usageMetadata) {
           lastRawUsage = chunk.usageMetadata;
-          lastUsage = {
-            type: "usage",
+          const nextUsage = {
+            type: "usage" as const,
             inputTokens: chunk.usageMetadata.promptTokenCount ?? 0,
             // Gemini bills thinking tokens as output, separately from candidates.
             outputTokens: (chunk.usageMetadata.candidatesTokenCount ?? 0)
               + (chunk.usageMetadata.thoughtsTokenCount ?? 0),
             cacheReadTokens: chunk.usageMetadata.cachedContentTokenCount ?? 0,
           };
+          const delta = {
+            inputTokens: nextUsage.inputTokens - (lastUsage?.inputTokens ?? 0),
+            outputTokens: nextUsage.outputTokens - (lastUsage?.outputTokens ?? 0),
+            cacheReadTokens: nextUsage.cacheReadTokens - (lastUsage?.cacheReadTokens ?? 0),
+          };
+          const changed = !lastUsage || Object.values(delta).some(value => value !== 0);
+          lastUsage = nextUsage;
+          if (changed) yield { type: "usage", ...delta };
         }
 
         const candidate = chunk.candidates?.[0];
@@ -227,13 +235,6 @@ export class GeminiProvider implements LLMProvider {
         }
       }
     }
-
-    // Emitted after message_end rather than before it: the final chunk may
-    // carry a finishReason with no parts, in which case the loop above skips
-    // it, so the end of the stream is the only reliable point. The agent loop
-    // treats message_end as bookkeeping and keeps draining, so ordering here
-    // does not lose the event.
-    if (lastUsage) yield lastUsage;
 
     if (DEBUG_PATH) {
       debugLog({ req: requestId, usage: lastRawUsage });
