@@ -106,7 +106,7 @@ describe("real SDK SSE transport (installed Anthropic / OpenAI SDKs)", () => {
       { type: "tool_call_delta", toolCallId: "call_file", argsJson: '{"path":' },
       { type: "tool_call_delta", toolCallId: "call_file", argsJson: '"a.ts"}' },
       { type: "tool_call_end", toolCallId: "call_file" },
-      { type: "usage", inputTokens: 0, outputTokens: 8 },
+      { type: "usage", inputTokens: 0, outputTokens: 8, cacheReadTokens: 0, cacheWriteTokens: 0 },
       { type: "message_end", stopReason: "tool_use" },
     ]);
     const req = request();
