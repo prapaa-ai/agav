@@ -420,6 +420,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
                 cacheReadTokens: event.cacheReadTokens ?? 0,
                 cacheWriteTokens: event.cacheWriteTokens ?? 0,
               });
+              broadcast();
               break;
 
             case "error":

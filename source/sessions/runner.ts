@@ -7,8 +7,10 @@ import { clampPermissionMode } from "../config/org-config.js";
 import { isProviderName, orgPolicyError } from "../config/startup.js";
 import type { LLMProvider } from "../providers/types.js";
 import { createProvider } from "../providers/registry.js";
-import { saveSessionRuntime } from "../config/history.js";
+import { saveSessionRuntime, type SessionTokenUsage } from "../config/history.js";
 import { ConversationState } from "../agent/conversation.js";
+import { makeAgentProgressTracker } from "../agent/subagent-progress.js";
+import type { SubagentProgress } from "../agent/subagent-types.js";
 import { runAgentLoop, type AgentEvent, type ConfirmToolFn } from "../agent/loop.js";
 import { createToolRegistry } from "../tools/registry-factory.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -54,6 +56,7 @@ export interface SessionToolContext {
   backgroundPermissionMode: AgavConfig["permissionMode"];
   registerSubagentCancellation?: (cancel: (id: string) => void) => void;
   onSubagentProgress?: (states: import("../agent/subagent-types.js").SubagentProgress[]) => void;
+  onTokenUsage?: (usage: SessionTokenUsage) => void;
 }
 
 /** Capture policy/settings at the execution boundary; never persist provider credentials. */
@@ -114,6 +117,12 @@ export function sessionExecutionConfig(record: SessionRuntimeRecord, local: Agav
 export async function prepareSessionTools(ctx: SessionToolContext): Promise<() => Promise<void>> {
   const { registry, config, provider, broker, signal, iterationsBudget, confirmTool, backgroundPermissionMode } = ctx;
   const mcp = new MCPManager();
+  let closed = false;
+  let subagentStates: SubagentProgress[] = [];
+  let skillStates: SubagentProgress[] = [];
+  const publishProgress = () => {
+    if (!closed) ctx.onSubagentProgress?.([...subagentStates, ...skillStates]);
+  };
   try {
     for (const tool of await loadPlugins()) registry.register(tool);
     await loadSkills();
@@ -124,16 +133,35 @@ export async function prepareSessionTools(ctx: SessionToolContext): Promise<() =
       getProviderConfig: () => config,
       confirmationQueue: { enqueue: (request, childSignal) => broker.confirm(request, childSignal ?? signal),
         rejectBySubagentId: id => broker.rejectBySubagentId(id) },
-      onProgressUpdate: states => ctx.onSubagentProgress?.(states), onTokenUsage: () => {}, getSignal: () => signal,
+      onProgressUpdate: states => {
+        subagentStates = states;
+        publishProgress();
+      }, onTokenUsage: usage => ctx.onTokenUsage?.(usage), getSignal: () => signal,
     });
     registry.registerBuiltin(subagent);
-    ctx.registerSubagentCancellation?.(id => subagent.cancelSubagent(id));
-    registry.registerBuiltin(createSkillTool({
+    const skill = createSkillTool({
       provider, parentRegistry: registry,
       getConfig: () => ({ model: config.model, systemPrompt: config.systemPrompt ?? "", permissionMode: config.permissionMode, backgroundPermissionMode,
         effort: config.effort, iterationsBudget, providerIdleTimeout: config.providerIdleTimeout }),
-      getProviderConfig: () => config, confirmTool, getSignal: () => signal,
-    }));
+      getProviderConfig: () => config,
+      confirmTool: (toolName, input, diffLines, mcpServerName, warning, childSignal) =>
+        broker.confirm({ toolName, input, diffLines, mcpServerName, warning }, childSignal ?? signal),
+      getSignal: () => signal,
+      onTokenUsage: usage => ctx.onTokenUsage?.(usage),
+      createProgressTracker: (title, task, id) => makeAgentProgressTracker(
+        id, title, task, updater => {
+          if (closed) return;
+          // Subagent broadcasts replace their own rows, never concurrent skills.
+          skillStates = updater(skillStates);
+          publishProgress();
+        },
+      ),
+    });
+    registry.registerBuiltin(skill);
+    ctx.registerSubagentCancellation?.(id => {
+      subagent.cancelSubagent(id);
+      skill.cancelSkill(id);
+    });
     for (const agent of await loadAgents()) {
       if (agent.manifest.enabled !== false) registry.register(agentToTool(agent, {
         provider, config, permissionMode: config.permissionMode, backgroundPermissionMode, confirmTool, getSignal: () => signal, getIterationsBudget: () => iterationsBudget,
@@ -148,8 +176,9 @@ export async function prepareSessionTools(ctx: SessionToolContext): Promise<() =
     }));
     for (const tool of mcp.getToolDefinitions()) registry.register(tool);
     registry.register(mcp.getResourceToolDefinition());
-    return async () => { mcp.stopAll(); };
+    return async () => { closed = true; await mcp.stopAll(); };
   } catch (error) {
+    closed = true;
     await mcp.stopAll();
     throw error;
   }
@@ -205,6 +234,18 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
     const scheduleProgress = () => {
       if (!snapshotTimer) snapshotTimer = setTimeout(() => { void flushProgress(); }, 100);
     };
+    // Parent and delegated loops report deltas into one total. Publish child-only
+    // updates even while the parent is blocked waiting for a tool to finish.
+    const addTokenUsage = (delta: Extract<AgentEvent, { type: "usage" }> | SessionTokenUsage) => {
+      if (!acceptingProgress) return;
+      const usage = live.tokenUsage!;
+      live.tokenUsage = { inputTokens: usage.inputTokens + delta.inputTokens,
+        outputTokens: usage.outputTokens + delta.outputTokens,
+        cacheReadTokens: usage.cacheReadTokens + (delta.cacheReadTokens ?? 0),
+        cacheWriteTokens: usage.cacheWriteTokens + (delta.cacheWriteTokens ?? 0) };
+      pendingSnapshot.tokenUsage = live.tokenUsage;
+      scheduleProgress();
+    };
     const pollCancellation = async (): Promise<void> => {
       try {
         const current = await deps.store.read(id);
@@ -239,6 +280,7 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
         registry, config, provider: deps.provider, broker, signal: controller.signal, iterationsBudget, confirmTool,
         backgroundPermissionMode: clampPermissionMode(initial.backgroundPermissionMode, config.orgPermissionFloor),
         registerSubagentCancellation: cancel => { cancelChild = cancel; },
+        onTokenUsage: addTokenUsage,
         onSubagentProgress: states => {
           if (!acceptingProgress) return;
           // Coalesce child deltas too; capture mutable callback state immediately.
@@ -298,13 +340,7 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
             live.toolCalls = event.type === "turn_complete" ? []
               : live.toolCalls?.filter(call => call.status === "running");
           }
-          if (event.type === "usage") {
-            const usage = live.tokenUsage!;
-            live.tokenUsage = { inputTokens: usage.inputTokens + event.inputTokens,
-              outputTokens: usage.outputTokens + event.outputTokens,
-              cacheReadTokens: usage.cacheReadTokens + (event.cacheReadTokens ?? 0),
-              cacheWriteTokens: usage.cacheWriteTokens + (event.cacheWriteTokens ?? 0) };
-          }
+          if (event.type === "usage") addTokenUsage(event);
           pendingSnapshot = { ...pendingSnapshot, ...live };
         }
         const boundary = ["assistant_message_complete", "tool_result", "compacted", "turn_complete", "error"].includes(event.type);
