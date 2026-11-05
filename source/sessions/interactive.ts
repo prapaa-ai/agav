@@ -10,6 +10,7 @@ import { hashLaunchSpecForConsent } from "../background-jobs/authorization/spec-
 import { createSessionExecution } from "./runner.js";
 import { failSessionWorkerBeforeAdmission, launchSessionWorker, sessionWorkerStartRequest } from "./launch.js";
 import { SessionRuntimeStore } from "./store.js";
+import { sessionConfigOverrideEnvironment } from "./config-overrides.js";
 
 /** Values use the supervisor's private channel, never persisted launch descriptors. */
 export function sessionWorkerEnvironmentNames(): string[] {
@@ -29,26 +30,31 @@ export async function startInteractiveSessionWorker(config: AgavConfig, conversa
   // Enablement selects worker ownership; submitting the turn authorizes only its exact
   // process owner. Arbitrary background commands and worker tools retain separate consent.
   options.signal.throwIfAborted();
-  const { loadConfig } = await import("../config/config.js");
+  const { loadConfig, getSessionConfigOverridePaths } = await import("../config/config.js");
   const persisted = await loadConfig();
   const credentialKey = { anthropic: "anthropicApiKey", openai: "openaiApiKey", openrouter: "openrouterApiKey",
     nvidia: "nvidiaApiKey", deepseek: "deepseekApiKey", gemini: "geminiApiKey", ollama: "ollamaApiKey",
     "vertex-ai": "vertexAICredentialsPath" }[config.provider] as keyof AgavConfig;
-  if (config[credentialKey] !== persisted[credentialKey]) {
+  // Registered -c keys are transferred privately using their effective values,
+  // including a higher-precedence dedicated flag. Other transient keys still fail closed.
+  const transfersCredential = getSessionConfigOverridePaths().some(path => path[0] === credentialKey);
+  if (!transfersCredential && config[credentialKey] !== persisted[credentialKey]) {
     throw new Error("Background execution cannot reload this transient credential override. Configure the credential in the environment or saved config before starting the session.");
   }
   const store = new SessionRuntimeStore();
   const record = await createSessionExecution(store, config, { conversation, ...options });
+  let inheritedEnv: Record<string, string>;
   let coordinator: Awaited<ReturnType<typeof getSharedCoordinator>>;
   let cliPath: string;
   let names: string[];
   let expectedHash: string;
   try {
+    inheritedEnv = sessionConfigOverrideEnvironment(config, record);
     // Publish ownership before admission: a lost response must never permit a second local loop.
     await options.onCreated?.(record);
     options.signal.throwIfAborted();
     cliPath = await realpath(resolve(process.argv[1] ?? "")).catch(() => resolve(process.argv[1] ?? ""));
-    names = sessionWorkerEnvironmentNames();
+    names = [...sessionWorkerEnvironmentNames(), ...Object.keys(inheritedEnv)];
     coordinator = await getSharedCoordinator();
     const request = sessionWorkerStartRequest(record, cliPath, names);
     const adapter = await getPlatformAdapter();
@@ -65,7 +71,7 @@ export async function startInteractiveSessionWorker(config: AgavConfig, conversa
     // isolation/limits/generation. No reusable auto-accept or headless-action grant is installed.
     // Keep restrictive caller and org policy intact, even for launching the internal owner.
     session: { permissionMode: clampPermissionMode(config.permissionMode, config.orgPermissionFloor) === "deny-writes" ? "deny-writes" : "ask",
-      headlessApprovedActions: [], signal: options.signal,
+      headlessApprovedActions: [], signal: options.signal, inheritedEnv,
       confirmBackgroundAction: async (action, spec) => action === "start" && !options.signal.aborted &&
         hashLaunchSpecForConsent(spec) === expectedHash },
   });

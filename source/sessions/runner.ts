@@ -26,6 +26,7 @@ import { applySandboxRequiredPolicy } from "../utils/sandbox-startup.js";
 import { createExclusive } from "../background-jobs/storage/atomic-file.js";
 import { SessionApprovalBroker } from "./approvals.js";
 import { SessionRuntimeStore, type SessionRuntimeRecord } from "./store.js";
+import { restoreSessionConfigOverrides } from "./config-overrides.js";
 
 /** A worker owns one live continuation. Exiting a presentation client never aborts this handle. */
 export interface SessionExecutionHandle {
@@ -367,6 +368,7 @@ export async function runSessionRunner(id: string | undefined, expectedGeneratio
   process.chdir(record.cwd);
   let handle: SessionExecutionHandle;
   try {
+    restoreSessionConfigOverrides(record);
     const local = await loadConfig();
     if (local.backgroundJobsEnabled !== true) throw new Error("Detached sessions require backgroundJobsEnabled=true.");
     const config = sessionExecutionConfig(record, local);
