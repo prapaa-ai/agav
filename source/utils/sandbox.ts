@@ -1,5 +1,6 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { isWithinRoot } from "./path-guard.js";
 
 const activeCommands = new Set<() => void>();
 let exitCleanupInstalled = false;
@@ -274,6 +275,70 @@ function executeProcess(
   }
 }
 
+/** Write the Seatbelt profile to a temp file; caller must call cleanup(). */
+function createSeatbeltProfile(): { path: string; cleanup: () => void } {
+  const path = join(tmpdir(), `agav-sandbox-${process.pid}-${randomUUID()}.sb`);
+  writeFileSync(path, SEATBELT_PROFILE);
+  return { path, cleanup: () => { try { unlinkSync(path); } catch {} } };
+}
+
+/** `sandbox-exec` argv that runs `inner` (file + its args) under the profile. */
+function seatbeltArgv(profilePath: string, cwd: string, inner: string[]): { file: string; args: string[] } {
+  const home = process.env.HOME ?? "/tmp";
+  return {
+    file: "sandbox-exec",
+    args: [
+      "-f", profilePath,
+      "-D", `HOME=${home}`,
+      "-D", `CWD=${cwd}`,
+      "-D", `HOME_CACHE=${home}/.cache`,
+      "-D", `HOME_CONFIG=${home}/.config`,
+      "-D", `HOME_LOCAL=${home}/.local`,
+      "-D", `HOME_NPM=${home}/.npm`,
+      "-D", `HOME_CARGO=${home}/.cargo`,
+      "-D", `HOME_SSH=${home}/.ssh`,
+      "-D", `HOME_AWS=${home}/.aws`,
+      "-D", `HOME_GPG=${home}/.gnupg`,
+      ...inner,
+    ],
+  };
+}
+
+/** `bwrap` argv that runs `inner` (file + its args) under the workspace policy. */
+function bubblewrapArgv(cwd: string, inner: string[]): { file: string; args: string[] } {
+  const home = process.env.HOME ?? "/tmp";
+  const scratch = ["/tmp", ...[".cache", ".config", ".npm", ".cargo"].map(dir => home + "/" + dir)];
+  const scratchMounts = (paths: string[]) => paths.flatMap(path => [
+    "--tmpfs", path,
+    // Restore only installed Cargo executables, never registry credentials.
+    ...(path === home + "/.cargo" ? ["--ro-bind-try", path + "/bin", path + "/bin"] : []),
+  ]);
+  return {
+    file: "bwrap",
+    args: [
+      "--ro-bind", "/", "/",
+      // Restore nested checkouts after their enclosing scratch mount. Masks
+      // inside (or equal to) the workspace must instead follow its bind, so a
+      // HOME workspace cannot expose host config/credentials or persist caches.
+      ...scratchMounts(scratch.filter(path => !isWithinRoot(cwd, path))),
+      "--bind", cwd, cwd,
+      ...scratchMounts(scratch.filter(path => isWithinRoot(cwd, path))),
+      "--dev", "/dev",
+      "--proc", "/proc",
+      // ~/.local and ~/.rustup remain visible through the root read-only bind.
+      // Credential masks must win even when the workspace contains (or is
+      // nested within) one of these directories. Such nested workspaces stay
+      // hidden; do not restore them after these mounts.
+      "--tmpfs", home + "/.ssh",
+      "--tmpfs", home + "/.aws",
+      "--tmpfs", home + "/.gnupg",
+      "--die-with-parent",
+      "--chdir", cwd,
+      ...inner,
+    ],
+  };
+}
+
 function runSeatbelt(
   command: string,
   cwd: string,
@@ -282,31 +347,17 @@ function runSeatbelt(
   onOutput?: OutputCallback,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
-  const home = process.env.HOME ?? "/tmp";
-  const profilePath = join(tmpdir(), `agav-sandbox-${process.pid}-${randomUUID()}.sb`);
-  writeFileSync(profilePath, SEATBELT_PROFILE);
+  const profile = createSeatbeltProfile();
+  const { file, args } = seatbeltArgv(profile.path, cwd, ["/bin/sh", "-c", command]);
 
   return new Promise((resolve) => {
     executeProcess(
-      "sandbox-exec",
-      [
-        "-f", profilePath,
-        "-D", `HOME=${home}`,
-        "-D", `CWD=${cwd}`,
-        "-D", `HOME_CACHE=${home}/.cache`,
-        "-D", `HOME_CONFIG=${home}/.config`,
-        "-D", `HOME_LOCAL=${home}/.local`,
-        "-D", `HOME_NPM=${home}/.npm`,
-        "-D", `HOME_CARGO=${home}/.cargo`,
-        "-D", `HOME_SSH=${home}/.ssh`,
-        "-D", `HOME_AWS=${home}/.aws`,
-        "-D", `HOME_GPG=${home}/.gnupg`,
-        "/bin/sh", "-c", command,
-      ],
+      file,
+      args,
       { timeout, maxBuffer, cwd, env: filterEnv() },
       onOutput,
       (error, stdout, stderr) => {
-        try { unlinkSync(profilePath); } catch {}
+        profile.cleanup();
         resolve({ stdout, stderr, error });
       },
       signal,
@@ -322,35 +373,11 @@ function runBubblewrap(
   onOutput?: OutputCallback,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
-  const home = process.env.HOME ?? "/tmp";
+  const { file, args } = bubblewrapArgv(cwd, ["/bin/sh", "-c", command]);
   return new Promise((resolve) => {
     executeProcess(
-      "bwrap",
-      [
-        "--ro-bind", "/", "/",
-        "--bind", cwd, cwd,
-        "--tmpfs", "/tmp",
-        "--dev", "/dev",
-        "--proc", "/proc",
-        // Empty, writable tmpfs over the credential directories hides their
-        // contents from the sandbox while still letting a tool that probes them
-        // succeed against an empty dir.
-        "--tmpfs", home + "/.ssh",
-        "--tmpfs", home + "/.aws",
-        "--tmpfs", home + "/.gnupg",
-        // The rest of $HOME is read-only via the root ro-bind, which breaks
-        // tooling that must write to its cache/config dirs (npm, pip, cargo,
-        // git). Give each a writable scratch tmpfs so those commands work
-        // without exposing or persisting anything on the host.
-        "--tmpfs", home + "/.cache",
-        "--tmpfs", home + "/.config",
-        "--tmpfs", home + "/.local",
-        "--tmpfs", home + "/.npm",
-        "--tmpfs", home + "/.cargo",
-        "--die-with-parent",
-        "--chdir", cwd,
-        "/bin/sh", "-c", command,
-      ],
+      file,
+      args,
       { timeout, maxBuffer, env: filterEnv() },
       onOutput,
       (error, stdout, stderr) => {
@@ -599,5 +626,54 @@ export function requireSandbox(forceBackend?: SandboxBackend): void {
       "Install sandbox-exec (macOS) or bubblewrap (Linux), use --sandbox docker, " +
       "or remove the sandboxRequired setting to run without a sandbox.",
     );
+  }
+}
+
+export interface SandboxedCommand {
+  /** Executable to spawn (the sandbox wrapper, or the original command when unsandboxed). */
+  file: string;
+  /** Arguments for `file`; the original `cmd`/`args` are nested inside the wrapper. */
+  args: string[];
+  /** Credential-filtered environment matching the shell sandbox. */
+  env: Record<string, string>;
+  /** Backend actually applied. */
+  backend: SandboxBackend;
+  /** Releases any temp resources (e.g. the Seatbelt profile); always safe to call. */
+  cleanup: () => void;
+}
+
+/**
+ * Wrap an explicit `cmd` + `args` argv so it runs under the auto-detected OS
+ * sandbox, without going through a shell. Returns the executable, arguments,
+ * credential-filtered env, and a cleanup handle. Unlike `runInSandbox`, this
+ * preserves the caller's `execFile` error object (code/signal/exit code), which
+ * callers such as `run_tests` need to classify runner-startup failures.
+ *
+ * Only the auto-detectable backends are wrapped: `seatbelt`, `bubblewrap`, and
+ * `none` (no wrapping). The `docker` backend is not applied here because it is
+ * never the auto-detected default and expects a shell-string workload.
+ */
+export function buildSandboxedCommand(opts: {
+  cmd: string;
+  args: string[];
+  cwd: string;
+}): SandboxedCommand {
+  const backend = detectSandboxBackend();
+  const env = filterEnv();
+  const inner = [opts.cmd, ...opts.args];
+
+  switch (backend) {
+    case "seatbelt": {
+      const profile = createSeatbeltProfile();
+      const { file, args } = seatbeltArgv(profile.path, opts.cwd, inner);
+      return { file, args, env, backend, cleanup: profile.cleanup };
+    }
+    case "bubblewrap": {
+      const { file, args } = bubblewrapArgv(opts.cwd, inner);
+      return { file, args, env, backend, cleanup: () => {} };
+    }
+    default:
+      // "none" (unavailable/unsupported) and "docker": run the argv directly.
+      return { file: opts.cmd, args: opts.args, env, backend: "none", cleanup: () => {} };
   }
 }

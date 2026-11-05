@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
+import { buildSandboxedCommand, isSandboxRequired, requireSandbox } from "../utils/sandbox.js";
 
 interface TestFailure {
   test: string;
@@ -312,9 +313,26 @@ export const testRunnerTool: ToolDefinition = {
 
     const { cmd, args } = getCommand(framework, testPath);
 
+    // Test runners execute arbitrary repository code (config files, fixtures,
+    // build scripts), so they must run under the same OS sandbox and credential
+    // filtering as run_command. Refuse to run unsandboxed when sandboxRequired
+    // is set, mirroring the shell tool.
+    if (isSandboxRequired()) {
+      try {
+        requireSandbox();
+      } catch (cause) {
+        return { output: `Tests refused: ${cause instanceof Error ? cause.message : String(cause)}`, isError: true };
+      }
+    }
+
+    // Wrap the argv under the detected sandbox. Missing inner executables have
+    // wrapper diagnostics rather than execFile's ENOENT; classify those below.
+    const sandboxed = buildSandboxedCommand({ cmd, args, cwd });
+
     const output = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; diagnostic?: string; errorCode?: string }>((resolve) => {
       try {
-        execFile(cmd, args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd, signal: context?.signal }, (err, stdout, stderr) => {
+        execFile(sandboxed.file, sandboxed.args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd, env: sandboxed.env, signal: context?.signal }, (err, stdout, stderr) => {
+          sandboxed.cleanup();
           resolve({
             stdout: stdout ?? "",
             stderr: stderr ?? "",
@@ -324,6 +342,7 @@ export const testRunnerTool: ToolDefinition = {
           });
         });
       } catch (err) {
+        sandboxed.cleanup();
         resolve({ stdout: "", stderr: "", exitCode: null, diagnostic: err instanceof Error ? err.message : String(err) });
       }
     });
@@ -332,7 +351,16 @@ export const testRunnerTool: ToolDefinition = {
     const results = parseOutput(framework, combined.replace(/\u001b\[[0-9;]*m/g, ""));
     const isError = output.exitCode !== 0 || !!output.diagnostic || results.failed > 0 || results.errors > 0 || results.failures.length > 0;
     const noTestEvidence = results.passed === 0 && results.failed === 0 && results.errors === 0 && results.failures.length === 0;
-    const runnerUnavailable = isError && noTestEvidence && (output.errorCode === "ENOENT"
+    // Match only the selected wrapper's complete execvp diagnostic for this
+    // runner, with no workload output. A numeric exit alone could be a real
+    // test failure; cancellation and additional diagnostics stay unclassified.
+    const missingRunnerDiagnostic = sandboxed.backend === "seatbelt"
+      ? `sandbox-exec: execvp() of '${cmd}' failed: No such file or directory`
+      : sandboxed.backend === "bubblewrap" ? `bwrap: execvp ${cmd}: No such file or directory` : undefined;
+    const wrappedRunnerUnavailable = missingRunnerDiagnostic !== undefined
+      && output.exitCode !== null && output.exitCode !== 0 && !output.stdout.trim()
+      && output.stderr.trim() === missingRunnerDiagnostic;
+    const runnerUnavailable = isError && noTestEvidence && (output.errorCode === "ENOENT" || wrappedRunnerUnavailable
       || (framework === "pytest" && output.exitCode === 1 && !output.stdout.trim()
         && /^(?:[^\r\n]*[/\\])?python(?:\d+(?:\.\d+)*)?(?:\.exe)?: No module named (?:pytest|'pytest'|"pytest")$/.test(output.stderr.trim())));
     const status = isError ? "failed" : results.passed > 0 ? "passed" : "inconclusive";
