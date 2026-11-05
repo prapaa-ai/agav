@@ -1065,7 +1065,9 @@ export async function main() {
   // session receives the saved mode, with CLI overrides and org policy applied.
   if (resumeSelection) {
     resumePermissionMode = resolveResumePermissionMode(config, {
-      cliPermissionMode: flags.autoAccept || flags.denyWrites ? config.permissionMode : undefined,
+      cliPermissionMode: flags.autoAccept || flags.denyWrites
+        || configOverrides?.some((o) => o.path.length === 1 && o.path[0] === "permissionMode")
+        ? config.permissionMode : undefined,
       savedPermissionMode: resumePermissionMode,
     });
   }

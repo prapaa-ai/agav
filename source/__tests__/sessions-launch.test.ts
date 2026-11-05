@@ -120,6 +120,30 @@ describe("launchSessionWorker", () => {
     expect(await readFile(join(store.directory(record.id), "runtime.json"), "utf8")).not.toContain("credential-not-metadata");
   });
 
+  it("accepts selected own host values without publishing them in process env or launch metadata", async () => {
+    vi.stubEnv("AGAV_SESSION_HOST_VALUE", undefined);
+    vi.stubEnv("AGAV_SESSION_HOST_EMPTY", undefined);
+    session.inheritedEnv = Object.freeze({ AGAV_SESSION_HOST_VALUE: "private-host-override", AGAV_SESSION_HOST_EMPTY: "" });
+    const coordinator = fakeCoordinator();
+    const beforeEnv = { ...process.env };
+    const result = await launchSessionWorker(record, { ...deps(coordinator), envNames: ["AGAV_SESSION_HOST_VALUE", "AGAV_SESSION_HOST_EMPTY"] });
+    expect(result.status).toBe("started");
+    expect(coordinator.start.mock.calls[0]![1]).toBe(session);
+    expect(coordinator.start.mock.calls[0]![0].envInherit).toEqual(["AGAV_SESSION_HOST_VALUE", "AGAV_SESSION_HOST_EMPTY"]);
+    expect(JSON.stringify(coordinator.start.mock.calls[0]![0])).not.toContain("private-host-override");
+    expect(await readFile(join(store.directory(record.id), "runtime.json"), "utf8")).not.toContain("private-host-override");
+    expect(process.env).toEqual(beforeEnv);
+  });
+
+  it("does not count prototype host values as selected environment values", async () => {
+    vi.stubEnv("AGAV_SESSION_HOST_VALUE", undefined);
+    session.inheritedEnv = Object.create({ AGAV_SESSION_HOST_VALUE: "prototype-secret" });
+    const coordinator = fakeCoordinator();
+    await expect(launchSessionWorker(record, { ...deps(coordinator), envNames: ["AGAV_SESSION_HOST_VALUE"] }))
+      .rejects.toThrow("Session worker was not launched: missing selected environment variable(s): AGAV_SESSION_HOST_VALUE");
+    expect(coordinator.start).not.toHaveBeenCalled();
+  });
+
   it("deduplicates a repeated launch using the durable generation, even with a stale caller record", async () => {
     const coordinator = fakeCoordinator();
     const first = await launchSessionWorker(record, deps(coordinator));

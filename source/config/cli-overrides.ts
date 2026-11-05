@@ -227,3 +227,8 @@ export function applyConfigOverrides(config: AgavConfig, overrides: readonly Con
 export function describeConfigOverrides(overrides: readonly ConfigOverride[]): string {
   return overrides.map((o) => o.path.join(".")).join(", ");
 }
+
+/** Only user-settable keys may cross the private session-worker boundary. */
+export function isSessionConfigOverrideKey(key: string): boolean {
+  return Object.hasOwn(KEY_SPECS, key) && !BLOCKED_KEY_SET.has(key);
+}
