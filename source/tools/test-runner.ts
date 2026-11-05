@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
+import { buildSandboxedCommand, isSandboxRequired, requireSandbox } from "../utils/sandbox.js";
 
 interface TestFailure {
   test: string;
@@ -312,9 +313,27 @@ export const testRunnerTool: ToolDefinition = {
 
     const { cmd, args } = getCommand(framework, testPath);
 
+    // Test runners execute arbitrary repository code (config files, fixtures,
+    // build scripts), so they must run under the same OS sandbox and credential
+    // filtering as run_command. Refuse to run unsandboxed when sandboxRequired
+    // is set, mirroring the shell tool.
+    if (isSandboxRequired()) {
+      try {
+        requireSandbox();
+      } catch (cause) {
+        return { output: `Tests refused: ${cause instanceof Error ? cause.message : String(cause)}`, isError: true };
+      }
+    }
+
+    // Wrap the argv under the detected sandbox. When a backend is active, a
+    // missing runner surfaces as a nonzero wrapper exit rather than ENOENT, so
+    // runner_unavailable classification only applies on the unsandboxed path.
+    const sandboxed = buildSandboxedCommand({ cmd, args, cwd });
+
     const output = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; diagnostic?: string; errorCode?: string }>((resolve) => {
       try {
-        execFile(cmd, args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd, signal: context?.signal }, (err, stdout, stderr) => {
+        execFile(sandboxed.file, sandboxed.args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd, env: sandboxed.env, signal: context?.signal }, (err, stdout, stderr) => {
+          sandboxed.cleanup();
           resolve({
             stdout: stdout ?? "",
             stderr: stderr ?? "",
@@ -324,6 +343,7 @@ export const testRunnerTool: ToolDefinition = {
           });
         });
       } catch (err) {
+        sandboxed.cleanup();
         resolve({ stdout: "", stderr: "", exitCode: null, diagnostic: err instanceof Error ? err.message : String(err) });
       }
     });
