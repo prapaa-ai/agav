@@ -695,9 +695,10 @@ export async function main() {
                          saved mode.
     --sandbox-required   Refuse run_command calls that would run without an OS-level sandbox
     --sandbox-network <deny|allow>
-                         Network policy for sandboxed commands. Default deny (no outbound
-                         network; loopback stays reachable). Aliases: --sandbox-no-network,
-                         --sandbox-allow-network
+                         Default deny blocks direct external networking. macOS permits host
+                         loopback/Unix sockets; Linux permits loopback only within the same
+                         invocation, not host-local services. Use allow for host networking.
+                         Aliases: --sandbox-no-network, --sandbox-allow-network
     --help, -h           Show this help
     --version, -v        Show version
     --trajectory <path> Export run/print transcript, token usage, and timing as JSON
@@ -777,6 +778,7 @@ export async function main() {
     if (flags.autoAccept) config.permissionMode = clampPermissionMode("auto-accept", config.orgPermissionFloor);
     if (flags.denyWrites) config.permissionMode = "deny-writes";
     if (flags.sandboxRequired) config.sandboxRequired = true;
+    if (flags.sandboxNetwork) config.sandboxNetwork = flags.sandboxNetwork;
     process.exit(await runWorkflowsCli([...(flags._ as string[])], { config }));
     return;
   }

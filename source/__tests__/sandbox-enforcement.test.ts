@@ -21,16 +21,17 @@
  *    (.github/workflows/sandbox-enforcement.yml) fails the run if the backend it
  *    is responsible for could not apply, so a skip on the owning runner is turned
  *    into a hard failure there — a silently-disabled sandbox cannot hide.
- *  - Guarantees that a backend does NOT provide are documented, not asserted:
- *    seatbelt/bubblewrap here do not sandbox the network, so the network test is
- *    Docker-only (which configures --network=none).
+ *  - Native network tests use local TCP/Unix listeners, never external internet.
+ *    Both execution APIs get deny/allow controls. Linux host loopback is NOT
+ *    shared in deny mode; macOS loopback/Unix sockets are trusted channels.
  */
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir, platform } from "node:os";
+import { tmpdir, platform, networkInterfaces } from "node:os";
+import { createServer, type ListenOptions, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, type TestContext } from "vitest";
-import { runInSandbox, detectSandboxBackend, type SandboxBackend } from "../utils/sandbox.js";
+import { runInSandbox, buildSandboxedCommand, detectSandboxBackend, getSandboxNetwork, setSandboxNetwork, type SandboxNetwork, type SandboxBackend } from "../utils/sandbox.js";
 
 const RUN = { timeout: 20_000, maxBuffer: 1 << 20 };
 const SEED = "agav-secret-do-not-leak";
@@ -155,6 +156,198 @@ function seedHome(rawRoot: string): { home: string; workdir: string; secret: str
   };
 }
 
+type NativeBackend = "seatbelt" | "bubblewrap";
+type NetworkPath = "runInSandbox" | "buildSandboxedCommand";
+const NETWORK_PATHS: NetworkPath[] = ["runInSandbox", "buildSandboxedCommand"];
+const NETWORK_REPLY = "agav-network-control";
+const CONNECTED = `START\nCONNECTED\nRESPONSE:${NETWORK_REPLY}\n`;
+
+/** Async execution keeps the parent listener's event loop serving the control. */
+function execProbe(file: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv) {
+  return new Promise<{ stdout: string; stderr: string; error: Error | null }>(resolve => {
+    execFile(file, args, { cwd, env, ...RUN }, (error, stdout, stderr) => resolve({ error, stdout, stderr }));
+  });
+}
+
+function quoteArg(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+async function networkProbe(backend: NativeBackend, path: NetworkPath, policy: SandboxNetwork, script: string, cwd: string) {
+  const previous = getSandboxNetwork();
+  setSandboxNetwork(policy);
+  try {
+    if (path === "runInSandbox") {
+      return await sandboxed(backend, `${quoteArg(process.execPath)} -e ${quoteArg(script)}`, cwd);
+    }
+    const built = buildSandboxedCommand({ cmd: process.execPath, args: ["-e", script], cwd });
+    try {
+      // Auto-detection must not silently turn this control into an unsandboxed run.
+      expect(built.backend).toBe(backend);
+      return await execProbe(built.file, built.args, cwd, built.env);
+    } finally {
+      built.cleanup();
+    }
+  } finally {
+    setSandboxNetwork(previous);
+  }
+}
+
+/** No DNS, curl/python installation, fixed port, sleep, or remote service needed. */
+function clientScript(address: { host: string; port: number } | { path: string }): string {
+  return `
+    const net = require('node:net');
+    console.log('START');
+    const socket = net.connect(${JSON.stringify(address)});
+    const timer = setTimeout(() => { console.error('probe timed out'); process.exit(2); }, 3000);
+    let reply = '';
+    socket.setEncoding('utf8');
+    socket.on('connect', () => console.log('CONNECTED'));
+    socket.on('data', chunk => { reply += chunk; });
+    socket.on('end', () => { clearTimeout(timer); console.log('RESPONSE:' + reply); });
+    socket.on('error', error => { clearTimeout(timer); console.log('BLOCKED:' + error.code); });
+  `;
+}
+
+async function withListener(options: ListenOptions, test: (port: number) => Promise<void>): Promise<void> {
+  const sockets = new Set<Socket>();
+  const server = createServer(socket => {
+    sockets.add(socket);
+    socket.on("error", () => {}); // A denied/terminated probe may close early.
+    socket.on("close", () => sockets.delete(socket));
+    socket.end(NETWORK_REPLY);
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options, () => { server.removeListener("error", reject); resolve(); });
+    });
+    const address = server.address();
+    await test(typeof address === "object" && address ? address.port : 0);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}
+
+/** Discover a real local IPv4 address deterministically, not an assumed eth0/en0. */
+function nonLoopbackAddress(): string {
+  const interfaces = networkInterfaces();
+  for (const name of Object.keys(interfaces).sort()) {
+    const addresses = (interfaces[name] ?? [])
+      .filter(address => address.family === "IPv4" && !address.internal && !address.address.startsWith("127."))
+      .map(address => address.address).sort();
+    if (addresses[0]) return addresses[0];
+  }
+  // Native CI promises execution of EVERY owning-backend test. Do not silently
+  // skip coverage if its network fixture is absent; diagnose the runner instead.
+  throw new Error(`Native network enforcement needs a non-loopback IPv4 interface; found ${JSON.stringify(interfaces)}`);
+}
+
+function expectConnected(result: Awaited<ReturnType<typeof execProbe>>): void {
+  expect(result.error, result.stderr).toBeNull();
+  expect(result.stdout).toBe(CONNECTED);
+}
+
+function sameInvocationScript(): string {
+  return `
+    const net = require('node:net');
+    const { spawn } = require('node:child_process');
+    const timer = setTimeout(() => process.exit(2), 5000);
+    const server = net.createServer(socket => socket.end(${JSON.stringify(NETWORK_REPLY)}));
+    server.on('error', error => { console.error(error); process.exit(3); });
+    server.listen(0, '127.0.0.1', () => {
+      const script = ${JSON.stringify(clientScript({ host: "127.0.0.1", port: 0 }))}
+        .replace('"port":0', '"port":' + server.address().port);
+      const child = spawn(process.execPath, ['-e', script], { stdio: 'inherit' });
+      child.on('error', error => { console.error(error); process.exit(4); });
+      child.on('exit', code => server.close(() => { clearTimeout(timer); process.exit(code ?? 5); }));
+    });
+  `;
+}
+
+/** Register inside the existing owning suite so CI's no-skips check covers it. */
+function nativeNetworkTests(backend: NativeBackend, fixture: (ctx: TestContext) => ReturnType<typeof seedHome>): void {
+  for (const path of NETWORK_PATHS) {
+    it(`blocks direct non-loopback TCP with host and allow controls (${path})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      const host = nonLoopbackAddress();
+      await withListener({ host, port: 0 }, async port => {
+        const script = clientScript({ host, port });
+        expectConnected(await execProbe(process.execPath, ["-e", script], workdir));
+        expectConnected(await networkProbe(backend, path, "allow", script, workdir));
+        const denied = await networkProbe(backend, path, "deny", script, workdir);
+        // A launch error, hung client, missing executable, or unexpected response
+        // must not pass for a network denial. START proves the workload ran.
+        expect(denied.error, denied.stderr).toBeNull();
+        expect(denied.stdout).toMatch(/^START\nBLOCKED:(EPERM|EACCES|ENETUNREACH|EHOSTUNREACH)\n$/);
+        // Verify deny did not merely race a disappearing listener.
+        expectConnected(await networkProbe(backend, path, "allow", script, workdir));
+      });
+    }, 30_000);
+
+    it(`tests host loopback in deny and allow modes (${path})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      await withListener({ host: "127.0.0.1", port: 0 }, async port => {
+        const script = clientScript({ host: "127.0.0.1", port });
+        expectConnected(await execProbe(process.execPath, ["-e", script], workdir));
+        expectConnected(await networkProbe(backend, path, "allow", script, workdir));
+        const denied = await networkProbe(backend, path, "deny", script, workdir);
+        if (backend === "seatbelt") {
+          expectConnected(denied);
+        } else {
+          expect(denied.error, denied.stderr).toBeNull();
+          // The same numeric endpoint is absent in the fresh namespace.
+          expect(denied.stdout).toBe("START\nBLOCKED:ECONNREFUSED\n");
+        }
+        expectConnected(await networkProbe(backend, path, "allow", script, workdir));
+      });
+    }, 30_000);
+
+    if (backend === "seatbelt") {
+      it(`keeps host Unix sockets as trusted channels in deny and allow modes (${path})`, async ctx => {
+        const { workdir } = fixture(ctx);
+        // Keep the pathname below sockaddr_un's macOS length limit.
+        const root = mkdtempSync("/tmp/agav-net-");
+        const socketPath = join(root, "socket");
+        try {
+          await withListener({ path: socketPath }, async () => {
+            const script = clientScript({ path: socketPath });
+            expectConnected(await execProbe(process.execPath, ["-e", script], workdir));
+            for (const policy of ["deny", "allow"] as const) {
+              expectConnected(await networkProbe(backend, path, policy, script, workdir));
+            }
+          });
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      }, 30_000);
+    } else {
+      it(`allows loopback services within the same invocation in deny and allow modes (${path})`, async ctx => {
+        const { workdir } = fixture(ctx);
+        // A child client proves distinct processes in this invocation share lo.
+        // Readiness comes from listen(), not sleep or a racy reserved port.
+        const script = sameInvocationScript();
+        expectConnected(await execProbe(process.execPath, ["-e", script], workdir));
+        for (const policy of ["deny", "allow"] as const) {
+          expectConnected(await networkProbe(backend, path, policy, script, workdir));
+        }
+      }, 30_000);
+    }
+  }
+}
+
+// Exercise generated clients even where nested OS sandbox application is denied.
+// These controls inherit the enclosing sandbox; they do not request a bypass.
+describe.runIf(platform() !== "win32")("network enforcement fixtures", () => {
+  it("serves host loopback and same-invocation child-client controls", async () => {
+    await withListener({ host: "127.0.0.1", port: 0 }, async port => {
+      expectConnected(await execProbe(process.execPath, ["-e", clientScript({ host: "127.0.0.1", port })], process.cwd()));
+    });
+    expectConnected(await execProbe(process.execPath, ["-e", sameInvocationScript()], process.cwd()));
+  });
+});
+
 describe("real sandbox enforcement (per-OS)", () => {
   // -------------------------------------------------------------------------
   // macOS Seatbelt
@@ -172,6 +365,8 @@ describe("real sandbox enforcement (per-OS)", () => {
       active = await backendApplies("seatbelt", env.workdir);
     });
     afterAll(() => { env?.restore(); try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } });
+
+    nativeNetworkTests("seatbelt", ctx => { guard(ctx); return env; });
 
     it("detects seatbelt as the default backend on macOS", (ctx) => {
       guard(ctx);
@@ -293,6 +488,8 @@ describe("real sandbox enforcement (per-OS)", () => {
       try { if (root) rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
       try { rmSync(base, { recursive: true, force: true }); } catch { /* best effort */ }
     });
+
+    nativeNetworkTests("bubblewrap", guard);
 
     it("detects bubblewrap as the default backend when bwrap is present", (ctx) => {
       guard(ctx);
@@ -489,7 +686,7 @@ describe("real sandbox enforcement (per-OS)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Docker: the only backend that sandboxes the network (--network=none).
+  // Docker: networking is always isolated (--network=none), regardless of policy.
   // Runs wherever a Docker daemon is reachable; otherwise a visible skip.
   // -------------------------------------------------------------------------
   describe.runIf(platform() !== "win32")("Docker network + process isolation", () => {

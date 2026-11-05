@@ -23,7 +23,7 @@ import { loadAgents } from "../agents/loader.js";
 import { agentToTool } from "../agents/registry-factory.js";
 import { stopAllA2AAgents } from "../agents/a2a-client.js";
 import { setPlanScope } from "../agent/planner.js";
-import { isSandboxRequired, setSandboxRequired, setSandboxNetwork, detectSandboxBackend } from "../utils/sandbox.js";
+import { isSandboxRequired, setSandboxRequired, setSandboxNetwork, getSandboxNetwork, detectSandboxBackend } from "../utils/sandbox.js";
 import { applySandboxRequiredPolicy } from "../utils/sandbox-startup.js";
 import { createExclusive } from "../background-jobs/storage/atomic-file.js";
 import { SessionApprovalBroker } from "./approvals.js";
@@ -72,6 +72,7 @@ export async function createSessionExecution(store: SessionRuntimeStore, config:
     permissionMode: clampPermissionMode(input.permissionMode ?? config.permissionMode, config.orgPermissionFloor),
     backgroundPermissionMode: clampPermissionMode(config.permissionMode, config.orgPermissionFloor),
     permissionFloor: config.orgPermissionFloor, sandboxRequired: config.sandboxRequired === true || isSandboxRequired(),
+    sandboxNetwork: config.sandboxNetwork === undefined ? getSandboxNetwork() : config.sandboxNetwork,
     allowedTools: config.allowedTools, hooks: config.hooks,
     messages: input.conversation.getMessages(), compacted: input.conversation.wasCompacted,
     iterationsBudget: { ...(input.iterationsBudget ?? { remaining: config.maxIterations, total: config.maxIterations }) },
@@ -107,6 +108,7 @@ export function sessionExecutionConfig(record: SessionRuntimeRecord, local: Agav
     allowedTools: record.allowedTools, hooks: record.hooks,
     permissionMode: clampPermissionMode(record.permissionMode, permissionFloor), orgPermissionFloor: permissionFloor,
     sandboxRequired: record.sandboxRequired || local.sandboxRequired === true || isSandboxRequired(),
+    sandboxNetwork: record.sandboxNetwork ?? (local.sandboxNetwork === "allow" ? "allow" : "deny"),
   };
   const error = orgPolicyError(config);
   if (error) throw new Error(`Session cannot execute: ${error}`);

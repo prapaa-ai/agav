@@ -23,6 +23,8 @@ export interface SessionRuntimeRecord {
   backgroundPermissionMode: PermissionMode;
   permissionFloor?: PermissionMode;
   sandboxRequired: boolean;
+  /** Absent only in legacy records; restore from trusted local config, never worker globals. */
+  sandboxNetwork?: AgavConfig["sandboxNetwork"];
   effort?: EffortLevel;
   maxTokens?: number;
   /** Non-secret provider routing selected by the ongoing session. Headers/credentials are reloaded. */
@@ -62,6 +64,7 @@ function validate(record: SessionRuntimeRecord, id: string): void {
   assertSessionRuntimeId(record.generation);
   if (typeof record.cwd !== "string" || !isAbsolute(record.cwd) || typeof record.model !== "string" || typeof record.provider !== "string" ||
       !MODES.has(record.permissionMode) || !MODES.has(record.backgroundPermissionMode) || (record.permissionFloor !== undefined && !MODES.has(record.permissionFloor)) ||
+      (record.sandboxNetwork !== undefined && record.sandboxNetwork !== "deny" && record.sandboxNetwork !== "allow") ||
       typeof record.sandboxRequired !== "boolean" || !STATUSES.has(record.status) || !Array.isArray(record.messages) ||
       typeof record.createdAt !== "string" || !Number.isFinite(Date.parse(record.createdAt)) ||
       typeof record.updatedAt !== "string" || !Number.isFinite(Date.parse(record.updatedAt))) throw new Error(`Corrupt session runtime: ${id}`);

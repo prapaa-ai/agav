@@ -45,6 +45,26 @@ describe("session shell capability schema", () => {
     expect(overrides(await shellSchema())).toEqual([backend, "docker"]);
   });
 
+  it.each(["darwin", "linux"] as const)("describes the actual deny boundary on %s", async os => {
+    vi.mocked(platform).mockReturnValue(os);
+    installed([os === "darwin" ? "sandbox-exec" : "bwrap"]);
+    const { setSandboxNetwork } = await import("../utils/sandbox.js");
+    setSandboxNetwork("deny");
+    const description = (await shellSchema()).description;
+    expect(description).toContain("Direct non-loopback networking is blocked");
+    expect(description).toContain("trusted channels");
+    expect(description).toContain("local relays");
+    if (os === "linux") {
+      expect(description).toContain("same invocation");
+      expect(description).toContain("not host services or other invocations");
+    } else {
+      expect(description).toContain("macOS host loopback and Unix sockets");
+      expect(description).toContain("not an absolute egress guarantee");
+    }
+    setSandboxNetwork("allow");
+    expect((await shellSchema()).description).not.toContain("networking is blocked");
+  });
+
   it("allows none only for the explicit user opt-out and keeps schemas isolated", async () => {
     installed(["bwrap"]);
     const original = await shellSchema();

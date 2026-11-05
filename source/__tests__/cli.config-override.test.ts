@@ -14,6 +14,11 @@ vi.mock("../config/config.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../config/config.js")>(),
   loadConfig: vi.fn(),
 }));
+vi.mock("../cli/workflows-cli.js", () => ({ runWorkflowsCli: vi.fn(async () => 0) }));
+vi.mock("../sessions/history.js", () => ({
+  listResumableSessions: (...args: Parameters<typeof listSessions>) => listSessions(...args),
+  loadResumableSession: (...args: Parameters<typeof loadSession>) => loadSession(...args),
+}));
 vi.mock("../config/keybindings.js", () => ({ loadKeybindings: vi.fn(async () => ({})) }));
 vi.mock("../config/theme.js", () => ({ loadTheme: vi.fn() }));
 vi.mock("../config/history.js", () => ({ listSessions: vi.fn(async () => []), loadSession: vi.fn() }));
@@ -399,5 +404,21 @@ describe("-c/--config production CLI behavior", () => {
     expect(config.permissionMode).toBe("ask");
     expect(config.orgManagedProvider).toBe("openai");
     expect(config.orgPermissionFloor).toBe("ask");
+  });
+});
+
+describe("sandbox network CLI policy", () => {
+  it.each([
+    ["--sandbox-network=deny", "deny"], ["--sandbox-network=allow", "allow"],
+    ["--sandbox-no-network", "deny"], ["--sandbox-allow-network", "allow"],
+  ])("forwards %s before early workflow dispatch", async (flag, policy) => {
+    const { runWorkflowsCli } = await import("../cli/workflows-cli.js");
+    config.sandboxNetwork = policy === "deny" ? "allow" : "deny";
+    process.argv = ["node", "agav", flag, "workflows", "run", "demo"];
+    await expect(main()).rejects.toThrow(exitError);
+    expect(runWorkflowsCli).toHaveBeenCalledWith(["run", "demo"], expect.objectContaining({ config: expect.objectContaining({ sandboxNetwork: policy }) }));
+  });
+  it.each(["deny", "allow"])("accepts separated --sandbox-network %s", policy => {
+    expect(parseArgs(["--sandbox-network", policy]).sandboxNetwork).toBe(policy);
   });
 });

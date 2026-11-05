@@ -40,8 +40,10 @@ export type SandboxBackend = "seatbelt" | "bubblewrap" | "docker" | "none";
 
 /**
  * Network policy for sandboxed commands.
- * - "deny": sandboxed commands have no outbound network (default). Loopback
- *   stays reachable so local tooling (dev servers, language servers) works.
+ * - "deny" (default): blocks direct non-loopback networking. On Linux, a fresh
+ *   network namespace exposes only loopback services in the same invocation,
+ *   not host services or services in another invocation. On macOS, host loopback
+ *   and Unix sockets remain trusted channels; local relays can forward traffic.
  * - "allow": sandboxed commands inherit host networking, as before.
  * Only enforced on the OS backends (seatbelt, bubblewrap). The Docker backend
  * already runs with --network=none, and "none" cannot confine networking.
@@ -51,8 +53,8 @@ export type SandboxNetwork = "deny" | "allow";
 let detectedBackend: SandboxBackend | null = null;
 
 // Process-wide default for sandboxed command networking. "deny" closes the
-// largest remaining exfiltration gap: a compromised or prompt-injected command
-// can no longer POST readable project files (source, .env) to an external host.
+// direct network exfiltration path. This is not an absolute egress guarantee:
+// allowed local channels (including reachable Unix sockets) may expose relays.
 let sandboxNetwork: SandboxNetwork = "deny";
 
 /** Set at startup from config / CLI flag. Not read from model arguments. */
@@ -182,7 +184,8 @@ const SEATBELT_PROFILE_BASE = `
 // Network isolation (last-match-wins): deny all network, then re-allow
 // loopback so local dev servers / language servers still work, plus Unix-domain
 // sockets so tooling that talks to local daemons over a socket file (not TCP)
-// keeps working. Uses only the Seatbelt filters accepted across macOS versions.
+// keeps working. These are trusted channels, not protection against local relays.
+// Uses only the Seatbelt filters accepted across macOS versions.
 const SEATBELT_NETWORK_DENY = `
 (deny network*)
 (allow network* (local ip "localhost:*"))
@@ -357,8 +360,9 @@ function bubblewrapArgv(cwd: string, inner: string[], network: SandboxNetwork): 
     file: "bwrap",
     args: [
       // A private network namespace with no route out. bwrap brings up the
-      // loopback interface, so local-only tooling (dev servers, language
-      // servers) keeps working while external egress is impossible.
+      // loopback interface for services started within this same invocation.
+      // Host loopback and other invocations are unreachable; no forwarding
+      // is provided. Reachable filesystem Unix sockets are not isolated by this.
       ...(network === "deny" ? ["--unshare-net"] : []),
       "--ro-bind", "/", "/",
       // Restore nested checkouts after their enclosing scratch mount. Masks

@@ -89,7 +89,8 @@ export async function runWorkflowsCli(argv: string[], options: WorkflowCliOption
     const getCoordinator = options.getCoordinator ?? getSharedCoordinator;
     // Effective requirement of THIS invocation (config, which `--sandbox-required` sets, or an already-set process policy); it goes to every launch, never from a later global read.
     const sandboxRequired = config.sandboxRequired === true || isSandboxRequired();
-    const launchDeps = async () => ({ coordinator: await getCoordinator(), cliPath: options.cliPath ?? await cliEntryPath(), maxConcurrentWorkflowRuns: config.maxConcurrentWorkflowRuns, registry, sandboxRequired });
+    const sandboxNetwork: "allow" | "deny" = config.sandboxNetwork === "allow" ? "allow" : "deny";
+    const launchDeps = async () => ({ coordinator: await getCoordinator(), cliPath: options.cliPath ?? await cliEntryPath(), maxConcurrentWorkflowRuns: config.maxConcurrentWorkflowRuns, registry, sandboxRequired, sandboxNetwork });
     // Every run-id operand accepts a unique prefix (≥4 chars) or the full UUID (U4).
     if (target !== undefined && command !== "validate" && command !== "run") target = await resolveRunId(store, target);
 
@@ -120,7 +121,7 @@ export async function runWorkflowsCli(argv: string[], options: WorkflowCliOption
       return result.won ? 0 : 1;
     }
     applySandboxRequiredPolicy({ flagSet: sandboxRequired, configValue: config.sandboxRequired, detectBackend: detectSandboxBackend, setRequired: setSandboxRequired, warn: message => { process.stderr.write(message); } });
-    setSandboxNetwork(config.sandboxNetwork === "allow" ? "allow" : "deny");
+    setSandboxNetwork(sandboxNetwork);
     if (command === "cancel") {
       // The run's own consent covers stopping its runner and job nodes; without it nothing is pre-approved.
       const run = await cancelRun(store, target!, registry, undefined, cancelJobDeps(await store.read(target!, registry), getCoordinator, sandboxRequired, config.permissionMode));
