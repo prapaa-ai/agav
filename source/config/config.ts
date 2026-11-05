@@ -554,6 +554,11 @@ export function setSessionConfigOverrides(overrides: SessionConfigOverrides | un
   sessionConfigOverrides = overrides;
 }
 
+/** Snapshot the selected paths without exposing the mutable session overlay. */
+export function getSessionConfigOverridePaths(): string[][] {
+  return sessionConfigOverrides?.entries.map(({ path }) => [...path]) ?? [];
+}
+
 /**
  * Read-only global config (defaults + ~/.agav/config.json) for unattended
  * entry points. Never touches the cwd or creates files, and skips env/API-key
