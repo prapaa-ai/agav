@@ -16,7 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { tmpdir, platform } from "node:os";
 import { join } from "node:path";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, rmSync, mkdtempSync } from "node:fs";
 
 import {
   requireSandbox,
@@ -142,7 +142,10 @@ describe("a backend that fails to launch/apply does NOT fall back to unsandboxed
     const backend = missingBackend();
     const marker = join(tmpdir(), `agav-failapply-tool-${process.pid}.txt`);
     if (existsSync(marker)) rmSync(marker, { force: true });
+    const originalCwd = process.cwd();
+    const cwd = mkdtempSync(join(tmpdir(), "agav-failapply-work-"));
     try {
+      process.chdir(cwd);
       const result = await shellTool.execute({ command: `printf x > ${JSON.stringify(marker)}`, sandbox: backend });
       // requireSandbox permits the selected (installed-by-name) backend, so
       // execution proceeds and FAILS at apply/launch — it is reported as an
@@ -151,6 +154,8 @@ describe("a backend that fails to launch/apply does NOT fall back to unsandboxed
       expect(result.isError).toBe(true);
       expect(existsSync(marker)).toBe(false);
     } finally {
+      process.chdir(originalCwd);
+      rmSync(cwd, { recursive: true, force: true });
       if (existsSync(marker)) rmSync(marker, { force: true });
     }
   });

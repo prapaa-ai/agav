@@ -14,6 +14,8 @@ on:
     branches: [main, beta]
     paths:
       - "source/utils/sandbox.ts"
+      - "source/utils/sandbox-workspace.ts"
+      - "source/utils/sandbox-protected-paths.ts"
       - "source/utils/sandbox-startup.ts"
       - "source/tools/shell.ts"
       - "source/tools/background-job.ts"
