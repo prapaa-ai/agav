@@ -25,7 +25,8 @@ vi.mock("node:fs", () => ({
   createWriteStream: vi.fn(),
   readFileSync: vi.fn(),
 }));
-vi.mock("node:path", () => ({
+vi.mock("node:path", async original => ({
+  ...await original<typeof import("node:path")>(),
   join: vi.fn((...parts: string[]) => parts.join("/")),
 }));
 
@@ -545,6 +546,13 @@ describe("utils/sandbox", () => {
       expect(joined).toContain("--tmpfs /home/tester/.config");
       expect(joined).toContain("--tmpfs /home/tester/.npm");
       expect(joined).toContain("--tmpfs /home/tester/.cargo");
+      // Installed Python/uv runtimes and user executables remain visible via
+      // the root read-only bind; Cargo shims are restored over its scratch home.
+      expect(joined).not.toContain("--tmpfs /home/tester/.local");
+      expect(joined).not.toContain("--tmpfs /home/tester/.rustup");
+      expect(joined).toContain("--ro-bind-try /home/tester/.cargo/bin /home/tester/.cargo/bin");
+      expect(args.indexOf("--ro-bind-try")).toBeGreaterThan(args.indexOf("/home/tester/.cargo"));
+      expect(joined).not.toContain("--bind /home/tester /home/tester");
       // Credential dirs are still masked with tmpfs.
       expect(joined).toContain("--tmpfs /home/tester/.ssh");
       expect(joined).toContain("--tmpfs /home/tester/.gnupg");
@@ -554,6 +562,58 @@ describe("utils/sandbox", () => {
     } finally {
       if (prevHome === undefined) delete process.env.HOME;
       else process.env.HOME = prevHome;
+    }
+  });
+  it.each([
+    "/tmp/project",
+    "/home/tester/.cache/project",
+    "/home/tester/.config/project",
+    "/home/tester/.cargo/project",
+    "/home/tester/.cargo/bin/project",
+    "/home/tester/.ssh/project",
+  ])("bubblewrap restores workspace %s after scratch mounts but before credential masks", async (cwd) => {
+    vi.resetModules();
+    vi.stubEnv("HOME", "/home/tester");
+    try {
+      const sandbox = await import("../utils/sandbox.js");
+      await sandbox.runInSandbox({ command: "echo test", cwd, timeout: 1000, maxBuffer: 1024, forceBackend: "bubblewrap" });
+      const args = vi.mocked(spawn).mock.calls.find(call => call[0] === "bwrap")![1] as string[];
+      const workspace = args.indexOf("--bind");
+      expect(args.slice(workspace, workspace + 3)).toEqual(["--bind", cwd, cwd]);
+      for (const scratch of ["/tmp", "/home/tester/.cache", "/home/tester/.config", "/home/tester/.npm", "/home/tester/.cargo"]) {
+        expect(args.indexOf(scratch)).toBeLessThan(workspace);
+      }
+      expect(args.indexOf("--ro-bind-try")).toBeLessThan(workspace);
+      for (const credential of [".ssh", ".aws", ".gnupg"]) {
+        expect(args.indexOf(`/home/tester/${credential}`)).toBeGreaterThan(workspace);
+      }
+      expect(args.indexOf("--chdir")).toBeGreaterThan(workspace);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(["/home/tester", "/home", "/", "/home/tester/", "/home/tester/project/..", "/home/tester/.cargo", "/home/tester/.config"])("keeps scratch masks effective when workspace %s contains them", async (cwd) => {
+    vi.resetModules();
+    vi.stubEnv("HOME", "/home/tester");
+    try {
+      const { isWithinRoot } = await import("../utils/path-guard.js");
+      const sandbox = await import("../utils/sandbox.js");
+      await sandbox.runInSandbox({ command: "echo test", cwd, timeout: 1000, maxBuffer: 1024, forceBackend: "bubblewrap" });
+      const args = vi.mocked(spawn).mock.calls.find(call => call[0] === "bwrap")![1] as string[];
+      const workspace = args.indexOf("--bind");
+      for (const dir of [".cache", ".config", ".npm", ".cargo"]) {
+        const path = `/home/tester/${dir}`;
+        if (isWithinRoot(cwd, path)) {
+          const mask = args.findIndex((arg, index) => arg === "--tmpfs" && args[index + 1] === path);
+          expect(mask).toBeGreaterThan(workspace + 2);
+        }
+      }
+      const cargoMask = args.findIndex((arg, index) => arg === "--tmpfs" && args[index + 1] === "/home/tester/.cargo");
+      expect(args.indexOf("--ro-bind-try")).toBeGreaterThan(cargoMask);
+      expect(args.lastIndexOf("/home/tester/.ssh")).toBeGreaterThan(workspace + 2);
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 });
