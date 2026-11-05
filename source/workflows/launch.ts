@@ -30,7 +30,7 @@ export async function assertBackgroundRunsAvailable(coordinator: RunnerCoordinat
 
 /** A launch that cannot proceed from this context for lack of the selected environment, and has no queue to wait in (state untouched). */
 export class LaunchEnvironmentError extends Error {
-  constructor(readonly runId: string, readonly reason: string) { super(`Workflow run ${runId} was not launched: ${reason}. It was not started (only a stricter sandboxRequired is recorded); resume it from a context that has them.`); this.name = "LaunchEnvironmentError"; }
+  constructor(readonly runId: string, readonly reason: string) { super(`Workflow run ${runId} was not launched: ${reason}. It was not started (only stricter sandbox policies are recorded); resume it from a context that has them.`); this.name = "LaunchEnvironmentError"; }
 }
 
 export interface LaunchDeps {
@@ -50,6 +50,8 @@ export interface LaunchDeps {
   exitingRunId?: string;
   /** The caller's effective sandboxRequired; it can only strengthen the run's persisted requirement (never read from process state: a runner admitting another run must not leak its own). */
   sandboxRequired?: boolean;
+  /** Effective caller policy: capture when absent, tighten allow to deny, never read another runner's process state. */
+  sandboxNetwork?: "deny" | "allow";
   /**
    * Environment capability of the process doing the launching. The coordinator resolves a run's selected `envInherit`
    * names from ITS process environment, so a restricted context (e.g. a finishing runner, which only holds its own run's
@@ -135,11 +137,19 @@ export async function updateRun(store: WorkflowStore, id: string, registry: Tool
  * relaunch enforces it. Fails closed: if it cannot be persisted (lock held, disk error) the error propagates rather
  * than reporting an attach that silently dropped the requirement. Never weakens; a run already strict is untouched.
  */
+function needsPolicyUpdate(run: WorkflowRun, deps: LaunchDeps): boolean {
+  return (deps.sandboxRequired === true && run.sandboxRequired !== true) ||
+    (deps.sandboxNetwork !== undefined && run.sandboxNetwork !== "deny" && run.sandboxNetwork !== deps.sandboxNetwork);
+}
+function applyLaunchPolicy(run: WorkflowRun, deps: LaunchDeps): void {
+  if (deps.sandboxRequired === true) run.sandboxRequired = true;
+  if (deps.sandboxNetwork !== undefined && run.sandboxNetwork !== "deny") run.sandboxNetwork = deps.sandboxNetwork;
+}
 async function strengthenRequirement(store: WorkflowStore, run: WorkflowRun, deps: LaunchDeps, registry: ToolRegistry): Promise<WorkflowRun> {
-  if (deps.sandboxRequired !== true || run.sandboxRequired === true) return run;
+  if (!needsPolicyUpdate(run, deps)) return run;
   return updateRun(store, run.id, registry, current => {
-    if (TERMINAL_RUN.has(current.status) || current.sandboxRequired === true) return false;
-    current.sandboxRequired = true;
+    if (TERMINAL_RUN.has(current.status) || !needsPolicyUpdate(current, deps)) return false;
+    applyLaunchPolicy(current, deps);
   });
 }
 
@@ -178,13 +188,13 @@ export async function launchRun(store: WorkflowStore, runId: string, deps: Launc
         // A concurrent writer may have moved the run on since the snapshot: never touch its status/runner then, but
         // still persist the stricter requirement (a terminal run is left alone), so the early exit cannot drop it.
         if (current.status !== "pending") {
-          if (deps.sandboxRequired !== true || current.sandboxRequired === true || TERMINAL_RUN.has(current.status)) return false;
-          current.sandboxRequired = true;
+          if (!needsPolicyUpdate(current, deps) || TERMINAL_RUN.has(current.status)) return false;
+          applyLaunchPolicy(current, deps);
           return;
         }
         current.runner ??= { attempt: 1, requestId: runnerRequestId(runId, 1), relaunches: 0 };
         current.status = "queued";
-        if (deps.sandboxRequired === true) current.sandboxRequired = true;
+        applyLaunchPolicy(current, deps);
       });
       // Settled or already being run/cancelled by another writer: nothing to defer (the requirement is persisted above).
       if (TERMINAL_RUN.has(run.status) || run.status === "running" || run.status === "cancelling") return { status: "attached", run };
@@ -212,7 +222,7 @@ export async function launchRun(store: WorkflowStore, runId: string, deps: Launc
     if (current.runner.jobId === undefined) delete current.runner.jobId;
     current.status = "queued";
     // Persist the stricter requirement so the detached runner enforces it on this and every later attempt; never weakened.
-    if (deps.sandboxRequired === true) current.sandboxRequired = true;
+    applyLaunchPolicy(current, deps);
   });
   if (TERMINAL_RUN.has(run.status)) return { status: "attached", run };
   if (previous !== "queued") await appendEvent(store, runId, { type: "run_status", status: "queued", ...(full ? { reason: "workflow runner pool full" } : {}) });

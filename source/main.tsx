@@ -51,7 +51,8 @@ const KNOWN_FLAGS = [
   "--effort", "--auto-accept", "-y", "--stream", "--output-schema", "--deny-writes",
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
   "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--trajectory",
-  "--name", "--search","--provider-idle-timeout","--sandbox-required","--config", "-c"
+  "--name", "--search","--provider-idle-timeout","--sandbox-required",
+  "--sandbox-allow-network","--sandbox-no-network","--config", "-c"
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -213,6 +214,17 @@ export function parseArgs(argv: string[]) {
       flags.denyWrites = true;
     } else if (arg === "--sandbox-required") {
       flags.sandboxRequired = true;
+    } else if (arg === "--sandbox-allow-network") {
+      flags.sandboxNetwork = "allow";
+    } else if (arg === "--sandbox-no-network") {
+      flags.sandboxNetwork = "deny";
+    } else if (arg === "--sandbox-network" || arg.startsWith("--sandbox-network=")) {
+      const val = arg.includes("=") ? arg.slice("--sandbox-network=".length) : argv[++i];
+      if (val !== "deny" && val !== "allow") {
+        process.stderr.write(`error: --sandbox-network must be 'deny' or 'allow'\n`);
+        process.exit(1);
+      }
+      flags.sandboxNetwork = val;
     } else if (arg === "--resume" || arg === "-r") {
       flags.resume = argv[i + 1] && !argv[i + 1]!.startsWith("-") ? argv[++i]! : true;
     } else if (arg === "--ollama-host") {
@@ -682,6 +694,11 @@ export async function main() {
                          with /permission. Resuming without -y/--deny-writes keeps the
                          saved mode.
     --sandbox-required   Refuse run_command calls that would run without an OS-level sandbox
+    --sandbox-network <deny|allow>
+                         Default deny blocks direct off-host networking. macOS permits host-local
+                         TCP/IP and Unix sockets; Linux permits loopback only within the same
+                         invocation, not host-local services. Use allow for host networking.
+                         Aliases: --sandbox-no-network, --sandbox-allow-network
     --help, -h           Show this help
     --version, -v        Show version
     --trajectory <path> Export run/print transcript, token usage, and timing as JSON
@@ -761,6 +778,7 @@ export async function main() {
     if (flags.autoAccept) config.permissionMode = clampPermissionMode("auto-accept", config.orgPermissionFloor);
     if (flags.denyWrites) config.permissionMode = "deny-writes";
     if (flags.sandboxRequired) config.sandboxRequired = true;
+    if (flags.sandboxNetwork) config.sandboxNetwork = flags.sandboxNetwork;
     process.exit(await runWorkflowsCli([...(flags._ as string[])], { config }));
     return;
   }
@@ -970,8 +988,11 @@ export async function main() {
   if (flags.sandboxRequired) {
     config.sandboxRequired = true;
   }
+  if (flags.sandboxNetwork) {
+    config.sandboxNetwork = flags.sandboxNetwork;
+  }
   {
-    const { setSandboxRequired, detectSandboxBackend } = await import("./utils/sandbox.js");
+    const { setSandboxRequired, setSandboxNetwork, detectSandboxBackend } = await import("./utils/sandbox.js");
     const { applySandboxRequiredPolicy } = await import("./utils/sandbox-startup.js");
     // D1: warn, don't refuse to start; run_command enforces per invocation.
     applySandboxRequiredPolicy({
@@ -981,6 +1002,7 @@ export async function main() {
       setRequired: setSandboxRequired,
       warn: (message) => { process.stderr.write(message); },
     });
+    setSandboxNetwork(config.sandboxNetwork === "allow" ? "allow" : "deny");
   }
 
   loadTheme(config.theme);

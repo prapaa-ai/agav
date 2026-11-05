@@ -38,7 +38,33 @@ import { tmpdir, userInfo } from "node:os";
 
 export type SandboxBackend = "seatbelt" | "bubblewrap" | "docker" | "none";
 
+/**
+ * Network policy for sandboxed commands.
+ * - "deny" (default): blocks direct off-host networking. On Linux, a fresh
+ *   network namespace exposes only loopback services in the same invocation,
+ *   not host services or services in another invocation. On macOS, host-local TCP/IP
+ *   and Unix sockets remain trusted channels; local relays can forward traffic.
+ * - "allow": sandboxed commands inherit host networking, as before.
+ * Only enforced on the OS backends (seatbelt, bubblewrap). The Docker backend
+ * already runs with --network=none, and "none" cannot confine networking.
+ */
+export type SandboxNetwork = "deny" | "allow";
+
 let detectedBackend: SandboxBackend | null = null;
+
+// Process-wide default for sandboxed command networking. "deny" closes the
+// direct network exfiltration path. This is not an absolute egress guarantee:
+// allowed local channels (including reachable Unix sockets) may expose relays.
+let sandboxNetwork: SandboxNetwork = "deny";
+
+/** Set at startup from config / CLI flag. Not read from model arguments. */
+export function setSandboxNetwork(policy: SandboxNetwork): void {
+  sandboxNetwork = policy === "allow" ? "allow" : "deny";
+}
+
+export function getSandboxNetwork(): SandboxNetwork {
+  return sandboxNetwork;
+}
 
 function canExec(cmd: string): boolean {
   try {
@@ -132,7 +158,7 @@ function filterEnv(): Record<string, string> {
 // must write to — otherwise those commands fail with "Operation not permitted".
 // The credential-directory denies are listed last so a broad allow can never
 // re-expose ~/.ssh, ~/.aws, or ~/.gnupg.
-const SEATBELT_PROFILE = `
+const SEATBELT_PROFILE_BASE = `
 (version 1)
 (allow default)
 (deny file-write* (subpath "/System"))
@@ -154,6 +180,26 @@ const SEATBELT_PROFILE = `
 (deny file-read* (subpath (param "HOME_GPG")))
 (deny process-exec (subpath "/System/Library/CoreServices"))
 `;
+
+// Network isolation (last-match-wins): deny all network, then re-allow
+// host-local TCP/IP so local dev servers / language servers work, plus Unix-domain
+// sockets so tooling that talks to local daemons over a socket file (not TCP)
+// keeps working. These are trusted channels, not protection against local relays.
+// Seatbelt localhost includes the host's non-loopback interface addresses too.
+// Uses only the Seatbelt filters accepted across macOS versions.
+const SEATBELT_NETWORK_DENY = `
+(deny network*)
+; Scope each exception to the operation's endpoint. A local-address rule on
+; network* also grants outbound operations, defeating the remote restriction.
+(allow network-inbound network-bind (local ip "localhost:*"))
+(allow network-outbound (remote ip "localhost:*"))
+(allow network-outbound (remote unix-socket))
+(allow network-inbound (local unix-socket))
+`;
+
+function seatbeltProfile(network: SandboxNetwork): string {
+  return network === "deny" ? SEATBELT_PROFILE_BASE + SEATBELT_NETWORK_DENY : SEATBELT_PROFILE_BASE;
+}
 
 type OutputCallback = (chunk: Buffer, stream: "stdout" | "stderr") => void;
 
@@ -276,9 +322,9 @@ function executeProcess(
 }
 
 /** Write the Seatbelt profile to a temp file; caller must call cleanup(). */
-function createSeatbeltProfile(): { path: string; cleanup: () => void } {
+function createSeatbeltProfile(network: SandboxNetwork): { path: string; cleanup: () => void } {
   const path = join(tmpdir(), `agav-sandbox-${process.pid}-${randomUUID()}.sb`);
-  writeFileSync(path, SEATBELT_PROFILE);
+  writeFileSync(path, seatbeltProfile(network));
   return { path, cleanup: () => { try { unlinkSync(path); } catch {} } };
 }
 
@@ -305,7 +351,7 @@ function seatbeltArgv(profilePath: string, cwd: string, inner: string[]): { file
 }
 
 /** `bwrap` argv that runs `inner` (file + its args) under the workspace policy. */
-function bubblewrapArgv(cwd: string, inner: string[]): { file: string; args: string[] } {
+function bubblewrapArgv(cwd: string, inner: string[], network: SandboxNetwork): { file: string; args: string[] } {
   const home = process.env.HOME ?? "/tmp";
   const scratch = ["/tmp", ...[".cache", ".config", ".npm", ".cargo"].map(dir => home + "/" + dir)];
   const scratchMounts = (paths: string[]) => paths.flatMap(path => [
@@ -316,6 +362,11 @@ function bubblewrapArgv(cwd: string, inner: string[]): { file: string; args: str
   return {
     file: "bwrap",
     args: [
+      // A private network namespace with no route out. bwrap brings up the
+      // loopback interface for services started within this same invocation.
+      // Host loopback and other invocations are unreachable; no forwarding
+      // is provided. Reachable filesystem Unix sockets are not isolated by this.
+      ...(network === "deny" ? ["--unshare-net"] : []),
       "--ro-bind", "/", "/",
       // Restore nested checkouts after their enclosing scratch mount. Masks
       // inside (or equal to) the workspace must instead follow its bind, so a
@@ -347,7 +398,7 @@ function runSeatbelt(
   onOutput?: OutputCallback,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
-  const profile = createSeatbeltProfile();
+  const profile = createSeatbeltProfile(sandboxNetwork);
   const { file, args } = seatbeltArgv(profile.path, cwd, ["/bin/sh", "-c", command]);
 
   return new Promise((resolve) => {
@@ -373,7 +424,7 @@ function runBubblewrap(
   onOutput?: OutputCallback,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
-  const { file, args } = bubblewrapArgv(cwd, ["/bin/sh", "-c", command]);
+  const { file, args } = bubblewrapArgv(cwd, ["/bin/sh", "-c", command], sandboxNetwork);
   return new Promise((resolve) => {
     executeProcess(
       file,
@@ -664,12 +715,12 @@ export function buildSandboxedCommand(opts: {
 
   switch (backend) {
     case "seatbelt": {
-      const profile = createSeatbeltProfile();
+      const profile = createSeatbeltProfile(sandboxNetwork);
       const { file, args } = seatbeltArgv(profile.path, opts.cwd, inner);
       return { file, args, env, backend, cleanup: profile.cleanup };
     }
     case "bubblewrap": {
-      const { file, args } = bubblewrapArgv(opts.cwd, inner);
+      const { file, args } = bubblewrapArgv(opts.cwd, inner, sandboxNetwork);
       return { file, args, env, backend, cleanup: () => {} };
     }
     default:

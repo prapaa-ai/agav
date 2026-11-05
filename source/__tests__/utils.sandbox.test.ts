@@ -616,4 +616,89 @@ describe("utils/sandbox", () => {
       vi.unstubAllEnvs();
     }
   });
+
+  describe("network isolation (Stage A)", () => {
+    it("defaults to deny and round-trips the policy", async () => {
+      vi.resetModules();
+      const sandbox = await import("../utils/sandbox.js");
+      expect(sandbox.getSandboxNetwork()).toBe("deny");
+      sandbox.setSandboxNetwork("allow");
+      expect(sandbox.getSandboxNetwork()).toBe("allow");
+      sandbox.setSandboxNetwork("deny");
+      expect(sandbox.getSandboxNetwork()).toBe("deny");
+      // Unknown values fall back to the safe default.
+      sandbox.setSandboxNetwork("bogus" as any);
+      expect(sandbox.getSandboxNetwork()).toBe("deny");
+    });
+
+    it("seatbelt profile denies network with loopback carve-out when deny", async () => {
+      vi.resetModules();
+      const cp = await import("node:child_process");
+      const fs = await import("node:fs");
+      const sandbox = await import("../utils/sandbox.js");
+      sandbox.setSandboxNetwork("deny");
+      vi.mocked(cp.execFile).mockImplementation((...args: any[]) => { args.at(-1)(null, "ok", ""); return {} as any; });
+
+      await sandbox.runInSandbox({ command: "echo test", cwd: "/tmp/project", timeout: 1000, maxBuffer: 1024, forceBackend: "seatbelt" });
+
+      const profile = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
+      expect(profile).toContain("(deny network*)");
+      expect(profile).toContain('(allow network-outbound (remote ip "localhost:*"))');
+      expect(profile).toContain('(allow network-inbound network-bind (local ip "localhost:*"))');
+      // A local-address exception must never grant outbound access. Incoming
+      // connections and binds use the local endpoint; connects use the remote.
+      expect(profile).not.toContain('(allow network* (local ip');
+      expect(profile).not.toContain('(allow network* (remote ip');
+      expect(profile.indexOf("(deny network*)"))
+        .toBeLessThan(profile.indexOf('(allow network-outbound (remote ip "localhost:*"))'));
+    });
+
+    it("seatbelt profile omits network rules when allow", async () => {
+      vi.resetModules();
+      const cp = await import("node:child_process");
+      const fs = await import("node:fs");
+      const sandbox = await import("../utils/sandbox.js");
+      sandbox.setSandboxNetwork("allow");
+      vi.mocked(cp.execFile).mockImplementation((...args: any[]) => { args.at(-1)(null, "ok", ""); return {} as any; });
+
+      await sandbox.runInSandbox({ command: "echo test", cwd: "/tmp/project", timeout: 1000, maxBuffer: 1024, forceBackend: "seatbelt" });
+
+      const profile = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
+      expect(profile).not.toContain("(deny network*)");
+    });
+
+    it("bubblewrap unshares the network namespace when deny, shares it when allow", async () => {
+      vi.resetModules();
+      const cp = await import("node:child_process");
+      const sandbox = await import("../utils/sandbox.js");
+      vi.mocked(cp.execFile).mockImplementation((...args: any[]) => { args.at(-1)(null, "ok", ""); return {} as any; });
+
+      sandbox.setSandboxNetwork("deny");
+      await sandbox.runInSandbox({ command: "echo test", cwd: "/home/tester/project", timeout: 1000, maxBuffer: 1024, forceBackend: "bubblewrap" });
+      const denyArgs = vi.mocked(spawn).mock.calls.find(call => call[0] === "bwrap")![1] as string[];
+      expect(denyArgs).toContain("--unshare-net");
+
+      vi.mocked(spawn).mockClear();
+      sandbox.setSandboxNetwork("allow");
+      await sandbox.runInSandbox({ command: "echo test", cwd: "/home/tester/project", timeout: 1000, maxBuffer: 1024, forceBackend: "bubblewrap" });
+      const allowArgs = vi.mocked(spawn).mock.calls.find(call => call[0] === "bwrap")![1] as string[];
+      expect(allowArgs).not.toContain("--unshare-net");
+    });
+
+    it("buildSandboxedCommand (run_tests path) applies the network policy", async () => {
+      vi.resetModules();
+      const cp = await import("node:child_process");
+      cp; // backend detection: execFileSync throws => backend "none" in this suite
+      const sandbox = await import("../utils/sandbox.js");
+      vi.mocked(execFileSyncMock).mockImplementation((...args: any[]) => {
+        if (args[0] === "/bin/sh" && args[1]?.[1]?.includes("bwrap")) return Buffer.from("/usr/bin/bwrap\n");
+        throw new Error("not found");
+      });
+      sandbox.setSandboxNetwork("deny");
+      const built = sandbox.buildSandboxedCommand({ cmd: "npx", args: ["vitest", "run"], cwd: "/home/tester/project" });
+      expect(built.backend).toBe("bubblewrap");
+      expect(built.args).toContain("--unshare-net");
+      built.cleanup();
+    });
+  });
 });
