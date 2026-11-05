@@ -139,22 +139,29 @@ export async function prepareSessionTools(ctx: SessionToolContext): Promise<() =
       }, onTokenUsage: usage => ctx.onTokenUsage?.(usage), getSignal: () => signal,
     });
     registry.registerBuiltin(subagent);
-    ctx.registerSubagentCancellation?.(id => subagent.cancelSubagent(id));
-    registry.registerBuiltin(createSkillTool({
+    const skill = createSkillTool({
       provider, parentRegistry: registry,
       getConfig: () => ({ model: config.model, systemPrompt: config.systemPrompt ?? "", permissionMode: config.permissionMode, backgroundPermissionMode,
         effort: config.effort, iterationsBudget, providerIdleTimeout: config.providerIdleTimeout }),
-      getProviderConfig: () => config, confirmTool, getSignal: () => signal,
+      getProviderConfig: () => config,
+      confirmTool: (toolName, input, diffLines, mcpServerName, warning, childSignal) =>
+        broker.confirm({ toolName, input, diffLines, mcpServerName, warning }, childSignal ?? signal),
+      getSignal: () => signal,
       onTokenUsage: usage => ctx.onTokenUsage?.(usage),
-      createProgressTracker: (title, task) => makeAgentProgressTracker(
-        `skill-${randomUUID()}`, title, task, updater => {
+      createProgressTracker: (title, task, id) => makeAgentProgressTracker(
+        id, title, task, updater => {
           if (closed) return;
           // Subagent broadcasts replace their own rows, never concurrent skills.
           skillStates = updater(skillStates);
           publishProgress();
         },
       ),
-    }));
+    });
+    registry.registerBuiltin(skill);
+    ctx.registerSubagentCancellation?.(id => {
+      subagent.cancelSubagent(id);
+      skill.cancelSkill(id);
+    });
     for (const agent of await loadAgents()) {
       if (agent.manifest.enabled !== false) registry.register(agentToTool(agent, {
         provider, config, permissionMode: config.permissionMode, backgroundPermissionMode, confirmTool, getSignal: () => signal, getIterationsBudget: () => iterationsBudget,

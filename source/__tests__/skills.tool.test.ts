@@ -48,8 +48,12 @@ describe("skills/tool", () => {
     expect(args).toBe("exact args");
     expect(deps.contextMessages).toBe(messages);
     expect(deps.iterationsBudget).toBe(budget);
-    expect(deps.confirmTool).toBe(confirmTool);
-    expect(deps.signal).toBe(controller.signal);
+    const diff = [{ type: "add" as const, text: "new content" }];
+    await (deps.confirmTool as import("../agent/loop.js").ConfirmToolFn)("write_file", { path: "fixture" }, diff, "server", "outside workspace");
+    expect(confirmTool).toHaveBeenCalledWith("write_file", { path: "fixture" }, diff, "server", "outside workspace", deps.signal);
+    expect(deps.signal?.aborted).toBe(false);
+    controller.abort();
+    expect(deps.signal?.aborted).toBe(true);
     expect(deps.systemPrompt).toBe("stable context");
     expect(deps.permissionMode).toBe("deny-writes");
   });
@@ -94,7 +98,7 @@ describe("skills/tool", () => {
 
     const result = await tool.execute({ name: "Nested Skill", arguments: "use this" });
 
-    expect(createProgressTracker).toHaveBeenCalledWith("Skill: Nested Skill", "use this");
+    expect(createProgressTracker).toHaveBeenCalledWith("Skill: Nested Skill", "use this", expect.stringMatching(/^skill-/));
     expect(vi.mocked(executeSkill).mock.calls[0]![2].onEvent).toBe(onEvent);
     expect(result).toEqual({ output: "nested output", isError: false });
     expect(onTokenUsage).toHaveBeenCalledTimes(1);

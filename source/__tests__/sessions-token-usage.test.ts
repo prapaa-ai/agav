@@ -9,6 +9,8 @@ import { ConversationState } from "../agent/conversation.js";
 import type { AgentEvent } from "../agent/loop.js";
 import type { LLMProvider, StreamEvent } from "../providers/types.js";
 import { loadResumableSession } from "../sessions/history.js";
+import { listPendingApprovals } from "../sessions/approvals.js";
+import { requestSessionSubagentCancellation } from "../sessions/client.js";
 import { createSessionExecution, prepareSessionTools, startSessionExecution, type SessionExecutionHandle } from "../sessions/runner.js";
 import { SessionRuntimeStore } from "../sessions/store.js";
 import type { SkillDefinition } from "../skills/types.js";
@@ -87,27 +89,30 @@ function sum(...usages: SessionTokenUsage[]): SessionTokenUsage {
 		cacheWriteTokens: total.cacheWriteTokens + usage.cacheWriteTokens,
 	}), { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
 }
-function toolEvents(kind: Kind): StreamEvent[] {
+function toolEvents(kind: Kind, toolCallId: string = kind, args = "fixture"): StreamEvent[] {
 	const input = kind === "subagent"
 		? { title: "Inspect fixture", task: "Inspect the fixture" }
-		: { name: skill.name, arguments: "fixture" };
+		: { name: skill.name, arguments: args };
 	return [
-		{ type: "tool_call_start", toolName: kind, toolCallId: kind },
-		{ type: "tool_call_delta", toolCallId: kind, argsJson: JSON.stringify(input) },
-		{ type: "tool_call_end", toolCallId: kind },
+		{ type: "tool_call_start", toolName: kind, toolCallId },
+		{ type: "tool_call_delta", toolCallId, argsJson: JSON.stringify(input) },
+		{ type: "tool_call_end", toolCallId },
 	];
 }
-async function start(provider: LLMProvider) {
+async function start(provider: LLMProvider, options: { config?: Partial<AgavConfig>; registry?: ToolRegistry } = {}) {
+	const sessionConfig = { ...config, ...options.config };
+	let signal: AbortSignal | undefined;
 	const conversation = new ConversationState();
 	conversation.addUserMessage("Inspect the fixture");
-	const record = await createSessionExecution(store, config, { conversation });
+	const record = await createSessionExecution(store, sessionConfig, { conversation });
 	const events: AgentEvent[] = [];
 	const handle = startSessionExecution(record.id, {
-		store, config, provider, registry: new ToolRegistry(), prepareTools: prepareSessionTools,
+		store, config: sessionConfig, provider, registry: options.registry ?? new ToolRegistry(),
+		prepareTools: async context => { signal = context.signal; return prepareSessionTools(context); },
 		onEvent: event => { events.push(event); },
 	});
 	handles.push(handle);
-	return { record, handle, events };
+	return { record, handle, events, get signal() { return signal; } };
 }
 async function expectLive(id: string, tokenUsage: SessionTokenUsage) {
 	// A separate reader must see usage while the provider is still blocked;
@@ -249,4 +254,124 @@ describe("durable delegated token accounting", () => {
 		parentFinish.release();
 		await expectFinal(handle, sum(parentFirst, childFirst, otherChild, parentLast));
 	});
+
+	it("cancels only the selected skill progress ID among concurrent skills and a subagent", async () => {
+		const childFinish = gate();
+		const parentFinish = gate();
+		const signals = new Map<string, AbortSignal | undefined>();
+		let parentTurn = 0;
+		const provider: LLMProvider = { name: "mock", async *stream(params): AsyncGenerator<StreamEvent> {
+			const child = params.systemPrompt?.includes('You are executing the "Usage fixture" skill')
+				? JSON.stringify(params.messages.at(-1)?.content).includes("cancel-target") ? "cancel-target" : "sibling-skill"
+				: params.systemPrompt?.includes("You are a subagent working") ? "subagent" : undefined;
+			if (child) {
+				signals.set(child, params.signal);
+				yield { type: "usage", ...(child === "cancel-target" ? childFirst : child === "sibling-skill" ? childLast : otherChild) };
+				await waitForGate(childFinish.promise, params.signal);
+				yield { type: "text_delta", text: `${child} done` };
+				yield { type: "message_end", stopReason: "end_turn" };
+			} else if (parentTurn++ === 0) {
+				yield { type: "usage", ...parentFirst };
+				yield* toolEvents("activate_skill", "target-call", "cancel-target");
+				yield* toolEvents("activate_skill", "sibling-call", "sibling-skill");
+				yield* toolEvents("subagent");
+				yield { type: "message_end", stopReason: "tool_calls" };
+			} else {
+				await waitForGate(parentFinish.promise, params.signal);
+				yield { type: "usage", ...parentLast };
+				yield { type: "text_delta", text: "siblings completed after targeted cancellation" };
+				yield { type: "message_end", stopReason: "end_turn" };
+			}
+		} };
+		const execution = await start(provider);
+		const { record, handle, events } = execution;
+		const liveUsage = sum(parentFirst, childFirst, childLast, otherChild);
+		await expectLive(record.id, liveUsage);
+		await vi.waitFor(async () => {
+			const states = (await store.read(record.id))!.subagentStates!;
+			expect(states).toHaveLength(3);
+			expect(states.every(state => state.status === "running")).toBe(true);
+		}, { timeout: 3000, interval: 20 });
+		const states = (await store.read(record.id))!.subagentStates!;
+		const target = states.find(state => state.task === "cancel-target")!;
+		expect(target).toBeDefined();
+		expect(new Set(states.map(state => state.id)).size).toBe(3);
+		expect(signals.size).toBe(3);
+		await requestSessionSubagentCancellation(record.id, record.generation, target.id, new SessionRuntimeStore());
+		await vi.waitFor(() => expect(signals.get("cancel-target")?.aborted).toBe(true), { timeout: 3000, interval: 20 });
+		expect(signals.get("sibling-skill")?.aborted).toBe(false);
+		expect(signals.get("subagent")?.aborted).toBe(false);
+		expect(execution.signal?.aborted).toBe(false);
+		expect(parentTurn).toBe(1);
+		await vi.waitFor(async () => {
+			const current = (await store.read(record.id))!.subagentStates!;
+			expect(current.find(state => state.id === target.id)).toMatchObject({ status: "error" });
+			expect(current.filter(state => state.id !== target.id).map(state => state.status)).toEqual(["running", "running"]);
+		}, { timeout: 3000, interval: 20 });
+		await expectLive(record.id, liveUsage);
+		childFinish.release();
+		await vi.waitFor(() => expect(parentTurn).toBe(2));
+		expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", toolCallId: "target-call",
+			toolName: "activate_skill", isError: true, output: expect.stringMatching(/abort|cancel/i) }));
+		for (const toolCallId of ["sibling-call", "subagent"]) {
+			expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", toolCallId, isError: false }));
+		}
+		expect(execution.signal?.aborted).toBe(false);
+		parentFinish.release();
+		await expectFinal(handle, sum(liveUsage, parentLast));
+	});
+
+	it("cancels a skill waiting for broker approval without aborting its parent or executing the destructive tool", async () => {
+		const parentFinish = gate();
+		const execute = vi.fn(async () => ({ output: "fixture written", isError: false }));
+		const registry = new ToolRegistry();
+		registry.register({ schema: { name: "usage_write", description: "Write a fixture",
+			inputSchema: { type: "object", properties: { path: { type: "string" } } } }, execute });
+		let parentTurn = 0;
+		let childTurns = 0;
+		const provider: LLMProvider = { name: "mock", async *stream(params): AsyncGenerator<StreamEvent> {
+			if (params.systemPrompt?.includes('You are executing the "Usage fixture" skill')) {
+				childTurns++;
+				yield { type: "usage", ...childFirst };
+				yield { type: "tool_call_start", toolName: "usage_write", toolCallId: "write-call" };
+				yield { type: "tool_call_delta", toolCallId: "write-call", argsJson: '{"path":"fixture.txt"}' };
+				yield { type: "tool_call_end", toolCallId: "write-call" };
+				yield { type: "message_end", stopReason: "tool_calls" };
+			} else if (parentTurn++ === 0) {
+				yield { type: "usage", ...parentFirst };
+				yield* toolEvents("activate_skill");
+				yield { type: "message_end", stopReason: "tool_calls" };
+			} else {
+				await waitForGate(parentFinish.promise, params.signal);
+				yield { type: "usage", ...parentLast };
+				yield { type: "text_delta", text: "skill cancelled; parent continues" };
+				yield { type: "message_end", stopReason: "end_turn" };
+			}
+		} };
+		const execution = await start(provider, { registry, config: { permissionMode: "ask" } });
+		const { record, handle, events } = execution;
+		await vi.waitFor(async () => {
+			expect(await listPendingApprovals(store, record.id)).toEqual([
+				expect.objectContaining({ toolName: "usage_write", input: { path: "fixture.txt" } }),
+			]);
+			expect(await store.read(record.id)).toMatchObject({ status: "needs-approval",
+				tokenUsage: sum(parentFirst, childFirst), subagentStates: [expect.objectContaining({ title: `Skill: ${skill.name}` })] });
+		}, { timeout: 3000, interval: 20 });
+		const target = (await store.read(record.id))!.subagentStates![0]!;
+		expect(execute).not.toHaveBeenCalled();
+		await requestSessionSubagentCancellation(record.id, record.generation, target.id, new SessionRuntimeStore());
+		await vi.waitFor(() => expect(parentTurn).toBe(2), { timeout: 3000, interval: 20 });
+		// Check while the parent is still running: terminal-session filtering must
+		// not hide an orphaned pending approval.
+		await expectLive(record.id, sum(parentFirst, childFirst));
+		expect(await listPendingApprovals(new SessionRuntimeStore(), record.id)).toEqual([]);
+		expect(execution.signal?.aborted).toBe(false);
+		expect(execute).not.toHaveBeenCalled();
+		expect(childTurns).toBe(1);
+		expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", toolName: "activate_skill",
+			isError: true, output: expect.stringMatching(/abort|cancel/i) }));
+		parentFinish.release();
+		await expectFinal(handle, sum(parentFirst, childFirst, parentLast));
+	});
+
 });
