@@ -25,7 +25,8 @@ vi.mock("node:fs", () => ({
   createWriteStream: vi.fn(),
   readFileSync: vi.fn(),
 }));
-vi.mock("node:path", () => ({
+vi.mock("node:path", async original => ({
+  ...await original<typeof import("node:path")>(),
   join: vi.fn((...parts: string[]) => parts.join("/")),
 }));
 
@@ -569,7 +570,6 @@ describe("utils/sandbox", () => {
     "/home/tester/.config/project",
     "/home/tester/.cargo/project",
     "/home/tester/.cargo/bin/project",
-    "/home/tester",
     "/home/tester/.ssh/project",
   ])("bubblewrap restores workspace %s after scratch mounts but before credential masks", async (cwd) => {
     vi.resetModules();
@@ -593,4 +593,27 @@ describe("utils/sandbox", () => {
     }
   });
 
+  it.each(["/home/tester", "/home", "/", "/home/tester/", "/home/tester/project/..", "/home/tester/.cargo", "/home/tester/.config"])("keeps scratch masks effective when workspace %s contains them", async (cwd) => {
+    vi.resetModules();
+    vi.stubEnv("HOME", "/home/tester");
+    try {
+      const { isWithinRoot } = await import("../utils/path-guard.js");
+      const sandbox = await import("../utils/sandbox.js");
+      await sandbox.runInSandbox({ command: "echo test", cwd, timeout: 1000, maxBuffer: 1024, forceBackend: "bubblewrap" });
+      const args = vi.mocked(spawn).mock.calls.find(call => call[0] === "bwrap")![1] as string[];
+      const workspace = args.indexOf("--bind");
+      for (const dir of [".cache", ".config", ".npm", ".cargo"]) {
+        const path = `/home/tester/${dir}`;
+        if (isWithinRoot(cwd, path)) {
+          const mask = args.findIndex((arg, index) => arg === "--tmpfs" && args[index + 1] === path);
+          expect(mask).toBeGreaterThan(workspace + 2);
+        }
+      }
+      const cargoMask = args.findIndex((arg, index) => arg === "--tmpfs" && args[index + 1] === "/home/tester/.cargo");
+      expect(args.indexOf("--ro-bind-try")).toBeGreaterThan(cargoMask);
+      expect(args.lastIndexOf("/home/tester/.ssh")).toBeGreaterThan(workspace + 2);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

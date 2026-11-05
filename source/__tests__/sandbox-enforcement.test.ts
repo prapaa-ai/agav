@@ -386,6 +386,43 @@ describe("real sandbox enforcement (per-OS)", () => {
       }
     });
 
+    it.for(["home", "parent"])("keeps config and Cargo credentials masked for a %s workspace", async (scope, ctx) => {
+      const env = guard(ctx);
+      const cwd = scope === "home" ? env.home : join(env.home, "..");
+      const secrets = [
+        join(env.home, ".config", "gh", "hosts.yml"),
+        join(env.home, ".cargo", "credentials.toml"),
+        join(env.home, ".npm", "private-cache"),
+        join(env.home, ".cache", "private-cache"),
+      ];
+      mkdirSync(join(env.home, ".config", "gh"), { recursive: true });
+      const cargoBin = join(env.home, ".cargo", "bin");
+      mkdirSync(cargoBin, { recursive: true });
+      const executable = join(cargoBin, "agav-fixture");
+      writeFileSync(executable, "#!/bin/sh\nprintf TOOLCHAIN_OK\\n", { mode: 0o755 });
+      const writes = [".config", ".cargo", ".npm", ".cache"].map(dir => join(env.home, dir, `sandbox-${scope}`));
+      for (const secret of secrets) {
+        writeFileSync(secret, SEED);
+        expect(execFileSync("cat", [secret], { encoding: "utf8" })).toBe(SEED);
+      }
+      for (const target of writes) {
+        writeFileSync(target, "host-control");
+        expect(readFileSync(target, "utf8")).toBe("host-control");
+        rmSync(target);
+      }
+      expect(execFileSync(executable, [], { encoding: "utf8" })).toBe("TOOLCHAIN_OK");
+      const command = [
+        ...secrets.map(secret => `test ! -e ${JSON.stringify(secret)}`),
+        ...writes.map(target => `printf scratch > ${JSON.stringify(target)}`),
+        JSON.stringify(executable),
+      ].join(" && ");
+      const result = await sandboxed("bubblewrap", command, cwd);
+      expect(result.error).toBeNull();
+      expect(result.stdout).toBe("TOOLCHAIN_OK");
+      for (const target of writes) expect(existsSync(target)).toBe(false);
+      for (const secret of secrets) expect(readFileSync(secret, "utf8")).toBe(SEED);
+    });
+
     it.for([".ssh", ".aws", ".gnupg"])("keeps %s masked when the workspace is HOME or inside credentials", async (dir, ctx) => {
       const env = guard(ctx);
       const work = join(env.home, dir, "checkout");
