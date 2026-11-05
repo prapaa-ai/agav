@@ -162,7 +162,7 @@ export function expandHome(path: string): string {
 export const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
-    enum: ["openai", "openrouter", "nvidia", "ollama", "anthropic", "gemini", "vertex-ai"],
+    enum: ["openai", "openrouter", "nvidia", "deepseek", "ollama", "anthropic", "gemini", "vertex-ai"],
     type: "string",
     eg: "openai",
   },
@@ -542,6 +542,18 @@ function sanitizeConfig(merged: AgavConfig): void {
   }
 }
 
+/** Session-only `-c` overlays: applied by every loadConfig(), never persisted. */
+export interface SessionConfigOverrides {
+  readonly entries: readonly { path: string[]; value: unknown }[];
+  apply(config: AgavConfig): void;
+}
+
+let sessionConfigOverrides: SessionConfigOverrides | undefined;
+
+export function setSessionConfigOverrides(overrides: SessionConfigOverrides | undefined): void {
+  sessionConfigOverrides = overrides;
+}
+
 /**
  * Read-only global config (defaults + ~/.agav/config.json) for unattended
  * entry points. Never touches the cwd or creates files, and skips env/API-key
@@ -682,6 +694,15 @@ export async function loadConfig(): Promise<AgavConfig> {
     projectConfig.ollamaApiKey, globalConfig.ollamaApiKey, DEFAULT_CONFIG.ollamaApiKey,
   );
 
+  // `-c` session overlay: above files/env, below the org tail that re-asserts next.
+  if (sessionConfigOverrides) {
+    sessionConfigOverrides.apply(merged);
+  }
+
+  if (merged.vertexAICredentialsPath) {
+    merged.vertexAICredentialsPath = expandHome(merged.vertexAICredentialsPath);
+  }
+
   // Organization policy applies last so it overrides global, project, and env
   // sources alike. An admin's managed config is a non-overridable floor; the
   // user can tighten (e.g. a stricter permissionMode) but never loosen it.
@@ -744,13 +765,42 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   await withConfigLock(async () => {
     const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
     const out: Record<string, unknown> = { ...safe };
-    if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
-    if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
-    if (openrouterApiKey) out.openrouterApiKey = encrypt(openrouterApiKey);
-    if (nvidiaApiKey) out.nvidiaApiKey = encrypt(nvidiaApiKey);
-    if (deepseekApiKey) out.deepseekApiKey = encrypt(deepseekApiKey);
-    if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
-    if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
+
+    // Session `-c` values must never reach disk: restore each overridden path's
+    // stored value (and drop it entirely when the path is absent on disk), so a
+    // save never bakes a transient override into config.json.
+    const overridden = new Set<string>();
+    if (sessionConfigOverrides) {
+      const existing = await readStoredConfig();
+      for (const { path } of sessionConfigOverrides.entries) {
+        overridden.add(path[0]!);
+        let storedValue: unknown = existing;
+        for (const segment of path) {
+          storedValue = storedValue && typeof storedValue === "object"
+            ? (storedValue as Record<string, unknown>)[segment]
+            : undefined;
+        }
+        let target: Record<string, unknown> | undefined = out;
+        for (const segment of path.slice(0, -1)) {
+          const next: unknown = target?.[segment];
+          target = next && typeof next === "object" ? next as Record<string, unknown> : undefined;
+        }
+        if (!target) continue;
+        const leaf = path[path.length - 1]!;
+        if (storedValue === undefined) delete target[leaf];
+        else target[leaf] = storedValue;
+      }
+    }
+
+    // A session-supplied credential was already restored above (or dropped);
+    // never encrypt it over the stored value.
+    if (anthropicApiKey && !overridden.has("anthropicApiKey")) out.anthropicApiKey = encrypt(anthropicApiKey);
+    if (openaiApiKey && !overridden.has("openaiApiKey")) out.openaiApiKey = encrypt(openaiApiKey);
+    if (openrouterApiKey && !overridden.has("openrouterApiKey")) out.openrouterApiKey = encrypt(openrouterApiKey);
+    if (nvidiaApiKey && !overridden.has("nvidiaApiKey")) out.nvidiaApiKey = encrypt(nvidiaApiKey);
+    if (deepseekApiKey && !overridden.has("deepseekApiKey")) out.deepseekApiKey = encrypt(deepseekApiKey);
+    if (geminiApiKey && !overridden.has("geminiApiKey")) out.geminiApiKey = encrypt(geminiApiKey);
+    if (ollamaApiKey && !overridden.has("ollamaApiKey")) out.ollamaApiKey = encrypt(ollamaApiKey);
     await writeConfigAtomic(out);
   });
 }
