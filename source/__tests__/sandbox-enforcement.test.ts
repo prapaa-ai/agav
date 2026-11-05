@@ -21,14 +21,16 @@
  *    (.github/workflows/sandbox-enforcement.yml) fails the run if the backend it
  *    is responsible for could not apply, so a skip on the owning runner is turned
  *    into a hard failure there — a silently-disabled sandbox cannot hide.
- *  - Native network tests use local TCP/Unix listeners, never external internet.
- *    Both execution APIs get deny/allow controls. Linux host loopback is NOT
- *    shared in deny mode; macOS loopback/Unix sockets are trusted channels.
+ *  - Same-host TCP/Unix tests are separate from real off-host egress tests.
+ *    Off-host tests connect (without sending data) to 1.1.1.1:443 by default;
+ *    AGAV_TEST_EGRESS_HOST/PORT can select another reachable off-host IPv4
+ *    endpoint. Unreachable host/allow controls FAIL, never count as isolation.
+ *    Linux host loopback is NOT shared; macOS host-local/Unix access is trusted.
  */
 import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, platform, networkInterfaces } from "node:os";
-import { createServer, type ListenOptions, type Socket } from "node:net";
+import { createServer, isIPv4, type ListenOptions, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, type TestContext } from "vitest";
 import { runInSandbox, buildSandboxedCommand, detectSandboxBackend, getSandboxNetwork, setSandboxNetwork, type SandboxNetwork, type SandboxBackend } from "../utils/sandbox.js";
@@ -266,10 +268,35 @@ function sameInvocationScript(): string {
   `;
 }
 
+/** Real off-host destination: numeric IPv4 avoids DNS/proxy policy ambiguity. */
+function egressTarget(host = process.env.AGAV_TEST_EGRESS_HOST ?? "1.1.1.1", rawPort = process.env.AGAV_TEST_EGRESS_PORT ?? "443") {
+  const local = Object.values(networkInterfaces()).flatMap(addresses => addresses ?? []).map(address => address.address);
+  if (!isIPv4(host) || host.startsWith("127.") || host === "0.0.0.0" || local.includes(host)) {
+    throw new Error("AGAV_TEST_EGRESS_HOST must be an off-host IPv4 address, not loopback or a local interface.");
+  }
+  const port = Number(rawPort);
+  if (!/^\d+$/.test(rawPort) || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("AGAV_TEST_EGRESS_PORT must be an integer from 1 to 65535.");
+  }
+  return { host, port };
+}
+
+/** TCP handshake only: no application data, credentials, or project files sent. */
+function connectOnlyScript(address: { host: string; port: number }): string {
+  return `
+    const net = require('node:net');
+    console.log('START');
+    const socket = net.connect(${JSON.stringify(address)});
+    const timer = setTimeout(() => { console.error('egress control timed out'); socket.destroy(); process.exitCode = 2; }, 5000);
+    socket.on('connect', () => { clearTimeout(timer); console.log('CONNECTED'); socket.destroy(); });
+    socket.on('error', error => { clearTimeout(timer); console.log('BLOCKED:' + error.code); });
+  `;
+}
+
 /** Register inside the existing owning suite so CI's no-skips check covers it. */
 function nativeNetworkTests(backend: NativeBackend, fixture: (ctx: TestContext) => ReturnType<typeof seedHome>): void {
   for (const path of NETWORK_PATHS) {
-    it(`blocks direct non-loopback TCP with host and allow controls (${path})`, async ctx => {
+    it(`checks same-host non-loopback TCP in deny and allow modes (${path})`, async ctx => {
       const { workdir } = fixture(ctx);
       const host = nonLoopbackAddress();
       await withListener({ host, port: 0 }, async port => {
@@ -277,13 +304,35 @@ function nativeNetworkTests(backend: NativeBackend, fixture: (ctx: TestContext) 
         expectConnected(await execProbe(process.execPath, ["-e", script], workdir));
         expectConnected(await networkProbe(backend, path, "allow", script, workdir));
         const denied = await networkProbe(backend, path, "deny", script, workdir);
-        // A launch error, hung client, missing executable, or unexpected response
-        // must not pass for a network denial. START proves the workload ran.
-        expect(denied.error, denied.stderr).toBeNull();
-        expect(denied.stdout).toMatch(/^START\nBLOCKED:(EPERM|EACCES|ENETUNREACH|EHOSTUNREACH)\n$/);
+        // Seatbelt's localhost filter includes the host's own non-loopback
+        // interface. This fixture is NOT evidence of off-host egress denial.
+        if (backend === "seatbelt") {
+          expectConnected(denied);
+        } else {
+          expect(denied.error, denied.stderr).toBeNull();
+          expect(denied.stdout).toMatch(/^START\nBLOCKED:(EPERM|EACCES|ENETUNREACH|EHOSTUNREACH)\n$/);
+        }
         // Verify deny did not merely race a disappearing listener.
         expectConnected(await networkProbe(backend, path, "allow", script, workdir));
       });
+    }, 30_000);
+
+    it(`blocks off-host TCP with successful host and allow controls (${path})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      const target = egressTarget();
+      const script = connectOnlyScript(target);
+      const connected = (result: Awaited<ReturnType<typeof execProbe>>) => {
+        const diagnostic = `Off-host positive control ${target.host}:${target.port} must connect; choose a reachable AGAV_TEST_EGRESS_HOST/PORT if blocked by your network. ${result.stderr}`;
+        expect(result.error, diagnostic).toBeNull();
+        expect(result.stdout, diagnostic).toBe("START\nCONNECTED\n");
+      };
+      connected(await execProbe(process.execPath, ["-e", script], workdir));
+      connected(await networkProbe(backend, path, "allow", script, workdir));
+      const denied = await networkProbe(backend, path, "deny", script, workdir);
+      expect(denied.error, denied.stderr).toBeNull();
+      // Refusals, timeouts, DNS failures, and launch errors cannot prove denial.
+      expect(denied.stdout).toMatch(/^START\nBLOCKED:(EPERM|EACCES|ENETUNREACH|EHOSTUNREACH)\n$/);
+      connected(await networkProbe(backend, path, "allow", script, workdir));
     }, 30_000);
 
     it(`tests host loopback in deny and allow modes (${path})`, async ctx => {
@@ -340,6 +389,22 @@ function nativeNetworkTests(backend: NativeBackend, fixture: (ctx: TestContext) 
 // Exercise generated clients even where nested OS sandbox application is denied.
 // These controls inherit the enclosing sandbox; they do not request a bypass.
 describe.runIf(platform() !== "win32")("network enforcement fixtures", () => {
+  it("validates off-host targets and ports without contacting them", () => {
+    expect(egressTarget("1.1.1.1", "443")).toEqual({ host: "1.1.1.1", port: 443 });
+    for (const host of ["127.0.0.1", "127.2.3.4", "0.0.0.0", "localhost", "::1", ...Object.values(networkInterfaces()).flatMap(addresses => addresses ?? []).map(address => address.address)]) {
+      expect(() => egressTarget(host, "443")).toThrow(/off-host IPv4/);
+    }
+    for (const port of ["", "0", "65536", "3.5", "-1", "443oops"]) expect(() => egressTarget("1.1.1.1", port)).toThrow(/PORT/);
+  });
+
+  it("connect-only client finishes without waiting for an application reply", async () => {
+    await withListener({ host: "127.0.0.1", port: 0 }, async port => {
+      const result = await execProbe(process.execPath, ["-e", connectOnlyScript({ host: "127.0.0.1", port })], process.cwd());
+      expect(result.error, result.stderr).toBeNull();
+      expect(result.stdout).toBe("START\nCONNECTED\n");
+    });
+  });
+
   it("serves host loopback and same-invocation child-client controls", async () => {
     await withListener({ host: "127.0.0.1", port: 0 }, async port => {
       expectConnected(await execProbe(process.execPath, ["-e", clientScript({ host: "127.0.0.1", port })], process.cwd()));

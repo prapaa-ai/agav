@@ -695,8 +695,8 @@ export async function main() {
                          saved mode.
     --sandbox-required   Refuse run_command calls that would run without an OS-level sandbox
     --sandbox-network <deny|allow>
-                         Default deny blocks direct external networking. macOS permits host
-                         loopback/Unix sockets; Linux permits loopback only within the same
+                         Default deny blocks direct off-host networking. macOS permits host-local
+                         TCP/IP and Unix sockets; Linux permits loopback only within the same
                          invocation, not host-local services. Use allow for host networking.
                          Aliases: --sandbox-no-network, --sandbox-allow-network
     --help, -h           Show this help

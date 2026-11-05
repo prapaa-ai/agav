@@ -51,14 +51,14 @@ describe("session shell capability schema", () => {
     const { setSandboxNetwork } = await import("../utils/sandbox.js");
     setSandboxNetwork("deny");
     const description = (await shellSchema()).description;
-    expect(description).toContain("Direct non-loopback networking is blocked");
+    expect(description).toContain("Direct off-host networking is blocked");
     expect(description).toContain("trusted channels");
     expect(description).toContain("local relays");
     if (os === "linux") {
       expect(description).toContain("same invocation");
       expect(description).toContain("not host services or other invocations");
     } else {
-      expect(description).toContain("macOS host loopback and Unix sockets");
+      expect(description).toContain("macOS host-local TCP/IP and Unix sockets");
       expect(description).toContain("not an absolute egress guarantee");
     }
     setSandboxNetwork("allow");

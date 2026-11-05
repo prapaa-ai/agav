@@ -93,8 +93,8 @@ export interface AgavConfig {
  sandboxRequired?: boolean;
  /**
   * Network policy for sandboxed shell commands. "deny" (default) blocks direct
-  * non-loopback networking. Linux loopback reaches only services in the same
-  * invocation, not host services. macOS host loopback and Unix sockets are
+  * off-host networking. Linux loopback reaches only services in the same
+  * invocation, not host services. macOS host-local TCP/IP and Unix sockets are
   * trusted channels, not an absolute guarantee against local relays. "allow"
   * restores host networking. Only honored on the OS backends (seatbelt,
   * bubblewrap). Global-only (listed in PROJECT_CONFIG_DENY) so a repository
@@ -249,7 +249,7 @@ export const PROJECT_CONFIG_TEMPLATE = {
     eg: false,
   },
   sandboxNetwork: {
-    description: "Network policy for sandboxed shell commands: 'deny' (default, block direct non-loopback networking) or 'allow' (restore host networking). Linux uses a fresh network namespace: loopback reaches only services in the same invocation, not host services or other invocations. macOS host loopback and Unix sockets remain trusted channels, not an absolute guarantee against local relays. Applies to Seatbelt/Bubblewrap; Docker keeps network=none and unsandboxed commands are not confined. Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    description: "Network policy for sandboxed shell commands: 'deny' (default, block direct off-host networking) or 'allow' (restore host networking). Linux uses a fresh network namespace: loopback reaches only services in the same invocation, not host services or other invocations. macOS host-local TCP/IP and Unix sockets remain trusted channels, not an absolute guarantee against local relays. Applies to Seatbelt/Bubblewrap; Docker keeps network=none and unsandboxed commands are not confined. Only honored from the global config (~/.agav/config.json); ignored in project config.",
     enum: ["deny", "allow"],
     type: "string",
     eg: "deny",

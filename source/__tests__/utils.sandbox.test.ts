@@ -643,10 +643,14 @@ describe("utils/sandbox", () => {
 
       const profile = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
       expect(profile).toContain("(deny network*)");
-      expect(profile).toContain('(allow network* (remote ip "localhost:*"))');
-      // Deny must precede the loopback allow so last-match-wins re-enables it.
+      expect(profile).toContain('(allow network-outbound (remote ip "localhost:*"))');
+      expect(profile).toContain('(allow network-inbound network-bind (local ip "localhost:*"))');
+      // A local-address exception must never grant outbound access. Incoming
+      // connections and binds use the local endpoint; connects use the remote.
+      expect(profile).not.toContain('(allow network* (local ip');
+      expect(profile).not.toContain('(allow network* (remote ip');
       expect(profile.indexOf("(deny network*)"))
-        .toBeLessThan(profile.indexOf('(allow network* (remote ip "localhost:*"))'));
+        .toBeLessThan(profile.indexOf('(allow network-outbound (remote ip "localhost:*"))'));
     });
 
     it("seatbelt profile omits network rules when allow", async () => {

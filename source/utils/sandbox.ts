@@ -40,9 +40,9 @@ export type SandboxBackend = "seatbelt" | "bubblewrap" | "docker" | "none";
 
 /**
  * Network policy for sandboxed commands.
- * - "deny" (default): blocks direct non-loopback networking. On Linux, a fresh
+ * - "deny" (default): blocks direct off-host networking. On Linux, a fresh
  *   network namespace exposes only loopback services in the same invocation,
- *   not host services or services in another invocation. On macOS, host loopback
+ *   not host services or services in another invocation. On macOS, host-local TCP/IP
  *   and Unix sockets remain trusted channels; local relays can forward traffic.
  * - "allow": sandboxed commands inherit host networking, as before.
  * Only enforced on the OS backends (seatbelt, bubblewrap). The Docker backend
@@ -182,14 +182,17 @@ const SEATBELT_PROFILE_BASE = `
 `;
 
 // Network isolation (last-match-wins): deny all network, then re-allow
-// loopback so local dev servers / language servers still work, plus Unix-domain
+// host-local TCP/IP so local dev servers / language servers work, plus Unix-domain
 // sockets so tooling that talks to local daemons over a socket file (not TCP)
 // keeps working. These are trusted channels, not protection against local relays.
+// Seatbelt localhost includes the host's non-loopback interface addresses too.
 // Uses only the Seatbelt filters accepted across macOS versions.
 const SEATBELT_NETWORK_DENY = `
 (deny network*)
-(allow network* (local ip "localhost:*"))
-(allow network* (remote ip "localhost:*"))
+; Scope each exception to the operation's endpoint. A local-address rule on
+; network* also grants outbound operations, defeating the remote restriction.
+(allow network-inbound network-bind (local ip "localhost:*"))
+(allow network-outbound (remote ip "localhost:*"))
 (allow network-outbound (remote unix-socket))
 (allow network-inbound (local unix-socket))
 `;
