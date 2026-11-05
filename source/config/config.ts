@@ -92,6 +92,14 @@ export interface AgavConfig {
   */
  sandboxRequired?: boolean;
  /**
+  * Network policy for sandboxed shell commands. "deny" (default) gives
+  * sandboxed commands no outbound network (loopback stays reachable); "allow"
+  * restores host networking. Only honored on the OS backends (seatbelt,
+  * bubblewrap). Global-only (listed in PROJECT_CONFIG_DENY) so a repository
+  * cannot re-enable egress for commands run against it.
+ */
+ sandboxNetwork?: "deny" | "allow";
+ /**
   * Master switch for headless background automation (`agav job tick` /
   * daemon). "paused" makes tick/daemon exit early. Defaults to "on".
   * Global-only (listed in PROJECT_CONFIG_DENY).
@@ -238,6 +246,12 @@ export const PROJECT_CONFIG_TEMPLATE = {
     type: "boolean",
     eg: false,
   },
+  sandboxNetwork: {
+    description: "Network policy for sandboxed shell commands: 'deny' (default, no outbound network; loopback stays reachable) or 'allow' (restore host networking). Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    enum: ["deny", "allow"],
+    type: "string",
+    eg: "deny",
+  },
   backgroundAutomation: {
     description: "Pause or resume headless background automation (agav job tick / daemon). Only honored from the global config (~/.agav/config.json); ignored in project config.",
     enum: ["on", "paused"],
@@ -359,6 +373,7 @@ const DEFAULT_CONFIG: AgavConfig = {
   maxIterations: 800,
   errorRetries: 5,
   sandboxRequired: false,
+  sandboxNetwork: "deny",
   backgroundAutomation: "on",
   maxConcurrentWorkflowRuns: 2,
 };
@@ -432,9 +447,11 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "deepseekApiKey",
   "geminiApiKey",
   "permissionMode",
-  // A repository must not be able to disable sandbox enforcement or
-  // re-enable/pause headless automation (decisions D1, D8).
+  // A repository must not be able to disable sandbox enforcement, re-enable
+  // network egress for sandboxed commands, or re-enable/pause headless
+  // automation (decisions D1, D8).
   "sandboxRequired",
+  "sandboxNetwork",
   "backgroundAutomation",
   // Workflows are an opt-in automation surface; a repository must not enable them.
   "workflowsEnabled",
@@ -533,6 +550,9 @@ function sanitizeConfig(merged: AgavConfig): void {
   }
   if (typeof merged.sandboxRequired !== "boolean") {
     merged.sandboxRequired = DEFAULT_CONFIG.sandboxRequired;
+  }
+  if (merged.sandboxNetwork !== "deny" && merged.sandboxNetwork !== "allow") {
+    merged.sandboxNetwork = DEFAULT_CONFIG.sandboxNetwork;
   }
   if (!Number.isInteger(merged.maxConcurrentWorkflowRuns) || merged.maxConcurrentWorkflowRuns! < 1) {
     merged.maxConcurrentWorkflowRuns = DEFAULT_CONFIG.maxConcurrentWorkflowRuns;

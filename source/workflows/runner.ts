@@ -3,7 +3,7 @@ import { loadConfig, type AgavConfig, type PermissionMode } from "../config/conf
 import { createBuiltinToolRegistry } from "../tools/registry-factory.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { applySandboxRequiredPolicy } from "../utils/sandbox-startup.js";
-import { detectSandboxBackend, isSandboxRequired, setSandboxRequired } from "../utils/sandbox.js";
+import { detectSandboxBackend, isSandboxRequired, setSandboxRequired, setSandboxNetwork } from "../utils/sandbox.js";
 import { WORKFLOW_TOOLS } from "./definition.js";
 import { clampConsent, consentCoversJob, consentSession, effectivePermissionMode, type WorkflowConsent } from "./grant.js";
 import { createBackgroundHost } from "./hosts.js";
@@ -130,6 +130,7 @@ export async function runWorkflowRunner(runId: string | undefined): Promise<numb
   const config = await loadConfig();
   if (config.backgroundJobsEnabled !== true || config.workflowsEnabled !== true) throw new Error("Workflows require backgroundJobsEnabled=true AND workflowsEnabled=true.");
   applySandboxRequiredPolicy({ flagSet: false, configValue: config.sandboxRequired, detectBackend: detectSandboxBackend, setRequired: setSandboxRequired, warn: message => { process.stderr.write(message); } });
+  setSandboxNetwork(config.sandboxNetwork === "allow" ? "allow" : "deny");
   const { getSharedCoordinator } = await import("../background-jobs-integration.js");
   const { cliEntryPath } = await import("./background.js");
   const handle = startRunner(runId, {

@@ -23,7 +23,7 @@ import { loadAgents } from "../agents/loader.js";
 import { agentToTool } from "../agents/registry-factory.js";
 import { stopAllA2AAgents } from "../agents/a2a-client.js";
 import { setPlanScope } from "../agent/planner.js";
-import { isSandboxRequired, setSandboxRequired, detectSandboxBackend } from "../utils/sandbox.js";
+import { isSandboxRequired, setSandboxRequired, setSandboxNetwork, detectSandboxBackend } from "../utils/sandbox.js";
 import { applySandboxRequiredPolicy } from "../utils/sandbox-startup.js";
 import { createExclusive } from "../background-jobs/storage/atomic-file.js";
 import { SessionApprovalBroker } from "./approvals.js";
@@ -410,6 +410,7 @@ export async function runSessionRunner(id: string | undefined, expectedGeneratio
     const config = sessionExecutionConfig(record, local);
     applySandboxRequiredPolicy({ flagSet: record.sandboxRequired, configValue: config.sandboxRequired,
       detectBackend: detectSandboxBackend, setRequired: setSandboxRequired, warn: message => process.stderr.write(message) });
+    setSandboxNetwork(config.sandboxNetwork === "allow" ? "allow" : "deny");
     handle = startSessionExecution(id, { store, config, provider: createProvider(config), expectedGeneration });
   } catch (error) {
     await store.update(id, record.generation, current => {

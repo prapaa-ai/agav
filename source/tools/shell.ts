@@ -5,6 +5,7 @@ import {
   runInSandbox,
   detectSandboxBackend,
   getAvailableSandboxOverrides,
+  getSandboxNetwork,
   isDestructiveCommand,
   isSandboxRequired,
   requireSandbox,
@@ -224,6 +225,9 @@ export function createShellTool(): ToolDefinition {
     + (overrides.includes("none")
       ? "Explicit unsandboxed overrides are enabled by the user."
       : "Do not request sandbox: none; explicit bypass is not authorized.")
+    + ((backend === "seatbelt" || backend === "bubblewrap") && getSandboxNetwork() === "deny"
+      ? " Network access is disabled for sandboxed commands (loopback only); commands that need the internet will fail until the user allows networking."
+      : "")
     + (overrides.includes("docker") ? " Docker overrides require a running Docker daemon." : "");
   return { ...shellTool, schema };
 }
