@@ -212,6 +212,23 @@ describe("request queuing", () => {
     } finally { boundary.busy = false; ui.instance.unmount(); }
   });
 
+  it("runs metadata and snapshot commands mid-turn but queues the memory manager", async () => {
+    boundary.busy = true;
+    boundary.submit.mockReset();
+    const ui = await mount();
+    try {
+      // Empty /name displays usage without needing session persistence in this fixture.
+      await boundary.handleSubmit!("/name");
+      await vi.waitFor(() => expect(ui.output()).toContain("Usage: /name <session name>"));
+      await boundary.handleSubmit!("/copy");
+      await vi.waitFor(() => expect(ui.output()).toContain("Nothing to copy"));
+      expect(ui.output()).not.toContain("Queued 1");
+      await boundary.handleSubmit!("/memory");
+      await vi.waitFor(() => expect(ui.output()).toContain("Queued 1"));
+      expect(boundary.submit).not.toHaveBeenCalled();
+    } finally { boundary.busy = false; ui.instance.unmount(); }
+  });
+
   it("queues rapid submissions while the first prompt is still preparing", async () => {
     boundary.busy = false;
     let resolve!: (accepted: boolean) => void;
