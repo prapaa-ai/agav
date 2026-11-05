@@ -9,6 +9,8 @@ import type { LLMProvider } from "../providers/types.js";
 import { createProvider } from "../providers/registry.js";
 import { saveSessionRuntime, type SessionTokenUsage } from "../config/history.js";
 import { ConversationState } from "../agent/conversation.js";
+import { makeAgentProgressTracker } from "../agent/subagent-progress.js";
+import type { SubagentProgress } from "../agent/subagent-types.js";
 import { runAgentLoop, type AgentEvent, type ConfirmToolFn } from "../agent/loop.js";
 import { createToolRegistry } from "../tools/registry-factory.js";
 import type { ToolRegistry } from "../tools/registry.js";
@@ -115,6 +117,12 @@ export function sessionExecutionConfig(record: SessionRuntimeRecord, local: Agav
 export async function prepareSessionTools(ctx: SessionToolContext): Promise<() => Promise<void>> {
   const { registry, config, provider, broker, signal, iterationsBudget, confirmTool, backgroundPermissionMode } = ctx;
   const mcp = new MCPManager();
+  let closed = false;
+  let subagentStates: SubagentProgress[] = [];
+  let skillStates: SubagentProgress[] = [];
+  const publishProgress = () => {
+    if (!closed) ctx.onSubagentProgress?.([...subagentStates, ...skillStates]);
+  };
   try {
     for (const tool of await loadPlugins()) registry.register(tool);
     await loadSkills();
@@ -125,7 +133,10 @@ export async function prepareSessionTools(ctx: SessionToolContext): Promise<() =
       getProviderConfig: () => config,
       confirmationQueue: { enqueue: (request, childSignal) => broker.confirm(request, childSignal ?? signal),
         rejectBySubagentId: id => broker.rejectBySubagentId(id) },
-      onProgressUpdate: states => ctx.onSubagentProgress?.(states), onTokenUsage: usage => ctx.onTokenUsage?.(usage), getSignal: () => signal,
+      onProgressUpdate: states => {
+        subagentStates = states;
+        publishProgress();
+      }, onTokenUsage: usage => ctx.onTokenUsage?.(usage), getSignal: () => signal,
     });
     registry.registerBuiltin(subagent);
     ctx.registerSubagentCancellation?.(id => subagent.cancelSubagent(id));
@@ -135,6 +146,14 @@ export async function prepareSessionTools(ctx: SessionToolContext): Promise<() =
         effort: config.effort, iterationsBudget, providerIdleTimeout: config.providerIdleTimeout }),
       getProviderConfig: () => config, confirmTool, getSignal: () => signal,
       onTokenUsage: usage => ctx.onTokenUsage?.(usage),
+      createProgressTracker: (title, task) => makeAgentProgressTracker(
+        `skill-${randomUUID()}`, title, task, updater => {
+          if (closed) return;
+          // Subagent broadcasts replace their own rows, never concurrent skills.
+          skillStates = updater(skillStates);
+          publishProgress();
+        },
+      ),
     }));
     for (const agent of await loadAgents()) {
       if (agent.manifest.enabled !== false) registry.register(agentToTool(agent, {
@@ -150,8 +169,9 @@ export async function prepareSessionTools(ctx: SessionToolContext): Promise<() =
     }));
     for (const tool of mcp.getToolDefinitions()) registry.register(tool);
     registry.register(mcp.getResourceToolDefinition());
-    return async () => { mcp.stopAll(); };
+    return async () => { closed = true; await mcp.stopAll(); };
   } catch (error) {
+    closed = true;
     await mcp.stopAll();
     throw error;
   }
