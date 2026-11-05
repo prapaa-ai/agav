@@ -327,12 +327,23 @@ export const testRunnerTool: ToolDefinition = {
 
     // Wrap the argv under the detected sandbox. Missing inner executables have
     // wrapper diagnostics rather than execFile's ENOENT; classify those below.
-    const sandboxed = buildSandboxedCommand({ cmd, args, cwd });
+    let sandboxed: ReturnType<typeof buildSandboxedCommand>;
+    try { sandboxed = buildSandboxedCommand({ cmd, args, cwd }); }
+    catch (cause) {
+      return { output: `Tests refused: ${cause instanceof Error ? cause.message : String(cause)}`, isError: true };
+    }
 
     const output = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; diagnostic?: string; errorCode?: string }>((resolve) => {
       try {
         execFile(sandboxed.file, sandboxed.args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd, env: sandboxed.env, signal: context?.signal }, (err, stdout, stderr) => {
-          sandboxed.cleanup();
+          try {
+            if (!err && !context?.signal?.aborted) sandboxed.publish?.();
+          } catch (cause) {
+            err = Object.assign(cause instanceof Error ? cause : new Error(String(cause)), { cmd });
+          } finally {
+            try { sandboxed.cleanup(); }
+            catch (cause) { err ??= Object.assign(cause instanceof Error ? cause : new Error(String(cause)), { cmd }); }
+          }
           resolve({
             stdout: stdout ?? "",
             stderr: stderr ?? "",
@@ -342,8 +353,10 @@ export const testRunnerTool: ToolDefinition = {
           });
         });
       } catch (err) {
-        sandboxed.cleanup();
-        resolve({ stdout: "", stderr: "", exitCode: null, diagnostic: err instanceof Error ? err.message : String(err) });
+        let diagnostic = err instanceof Error ? err.message : String(err);
+        try { sandboxed.cleanup(); }
+        catch (cause) { diagnostic += `; cleanup failed: ${cause instanceof Error ? cause.message : String(cause)}`; }
+        resolve({ stdout: "", stderr: "", exitCode: null, diagnostic });
       }
     });
 
