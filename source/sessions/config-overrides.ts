@@ -6,12 +6,21 @@ import type { SessionRuntimeRecord } from "./store.js";
 export const SESSION_CONFIG_OVERRIDES_ENV = "AGAV_SESSION_CONFIG_OVERRIDES";
 
 export function sessionConfigOverrideEnvironment(config: AgavConfig, record: Pick<SessionRuntimeRecord, "id" | "generation">): Record<string, string> {
-	const keys = [...new Set(getSessionConfigOverridePaths().map(path => path[0]!))];
+	// The runtime record already carries the expanded prompt and restores it before
+	// execution. Duplicating project instructions here can exceed exec's env limits.
+	const keys = [...new Set(getSessionConfigOverridePaths().map(path => path[0]!))].filter(key => key !== "systemPrompt");
 	if (!keys.length) return {};
 	// Capture effective values, not the original CLI values: dedicated flags and
 	// runtime changes must win. Whole keys also preserve indexed/nested edits.
 	const entries = keys.map(key => ({ path: [key], value: config[key as keyof AgavConfig] }));
-	return { [SESSION_CONFIG_OVERRIDES_ENV]: JSON.stringify({ id: record.id, generation: record.generation, entries }) };
+	const env = { [SESSION_CONFIG_OVERRIDES_ENV]: JSON.stringify({ id: record.id, generation: record.generation, entries }) };
+	// Bound this payload's contribution, including the supervisor's outer JSON
+	// escaping. A conservative cross-platform budget leaves room for other env
+	// values; this is not a guarantee for arbitrarily large inherited environments.
+	if (Buffer.byteLength(JSON.stringify(env), "utf8") > 16 * 1024) {
+		throw new Error("Session config overrides exceed the private launch environment budget; reduce the override values.");
+	}
+	return env;
 }
 
 /** Consume before config loading; tools/subprocesses must not inherit the secret payload. */

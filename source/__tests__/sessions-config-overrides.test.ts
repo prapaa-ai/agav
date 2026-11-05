@@ -90,6 +90,37 @@ it("does not transfer or accept unrelated transient credential changes", async (
 	expect(mocks.start).not.toHaveBeenCalled();
 });
 
+it.each([false, true])("keeps large expanded prompts out of the launch environment (other overrides: %s)", async otherOverrides => {
+	const systemPrompt = "Be concise.\n" + "project instructions\n".repeat(55_000);
+	const { record, run } = await setup(["systemPrompt=Be concise.", ...(otherOverrides ? ["anthropicApiKey=session-account"] : [])], {}, { systemPrompt });
+	const [, policy] = mocks.start.mock.calls[0]!;
+	const inheritedEnv = policy.inheritedEnv;
+	expect(JSON.stringify(inheritedEnv)).not.toContain("project instructions");
+	if (!otherOverrides) expect(inheritedEnv).toEqual({});
+	// Exercise the supervisor's outer JSON envelope across a real process boundary.
+	const { stdout, stderr } = await promisify(execFile)(process.execPath, ["-e", 'process.stdout.write("ok")'], {
+		env: { AGAV_BG_INHERITED_ENV: JSON.stringify(inheritedEnv), ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
+		timeout: 10_000,
+	});
+	expect(stdout).toBe("ok"); expect(stderr).toBe("");
+	await expect(run(record.id, record.generation)).rejects.toThrow("provider captured");
+	expect(mocks.provider).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt,
+		anthropicApiKey: otherOverrides ? "session-account" : "stored-account" }));
+});
+
+it.each(["x".repeat(20_000), "\\\"".repeat(5_000), "界".repeat(6_000)])("rejects oversized remaining overrides before admission without exposing values %#", async secret => {
+	await expect(setup(["openaiHeaders.x-private=" + secret])).rejects.toMatchObject({
+		admission: "not-admitted", message: "Session config overrides exceed the private launch environment budget; reduce the override values.",
+		record: { status: "failed" },
+	});
+	expect(mocks.start).not.toHaveBeenCalled();
+	const { SessionRuntimeStore } = await import("../sessions/store.js");
+	const records = await new SessionRuntimeStore().list();
+	expect(records).toHaveLength(1);
+	expect(JSON.stringify(records)).not.toContain(secret);
+	expect(process.env[channel]).toBeUndefined();
+});
+
 it("transfers session config across a real process boundary without sharing module state", async () => {
 	const { record } = await setup(["anthropicApiKey=session-account", "backgroundJobsEnabled=true", "errorRetries=0"], { backgroundJobsEnabled: false });
 	const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--import", import.meta.resolve("tsx"),
