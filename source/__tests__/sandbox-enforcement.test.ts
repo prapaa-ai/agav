@@ -293,6 +293,131 @@ function connectOnlyScript(address: { host: string; port: number }): string {
   `;
 }
 
+/** Security assertions cover persistence, not just whether a private write succeeded. */
+function nativeWorkspaceTests(backend: NativeBackend, fixture: (ctx: TestContext) => ReturnType<typeof seedHome>): void {
+  for (const execution of NETWORK_PATHS) {
+    it(`protects existing and absent workspace config (${execution})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      const cwd = mkdtempSync(join(workdir, "protected-"));
+      const run = async (script: string) => {
+        if (execution === "runInSandbox") return sandboxed(backend, `${quoteArg(process.execPath)} -e ${quoteArg(script)}`, cwd);
+        const built = buildSandboxedCommand({ cmd: process.execPath, args: ["-e", script], cwd });
+        try {
+          const result = await execProbe(built.file, built.args, cwd, built.env);
+          if (!result.error) {
+            try { built.publish?.(); } catch (error) { result.error = error as Error; }
+          }
+          return result;
+        } finally { built.cleanup(); }
+      };
+      try {
+        const control = await run("require('fs').writeFileSync('ordinary.txt','published')");
+        expect(control.error, control.stderr).toBeNull();
+        expect(readFileSync(join(cwd, "ordinary.txt"), "utf8")).toBe("published");
+        for (const name of [".envrc", ".agav/agents/entry.js", ".git/config", ".git/hooks/pre-commit"]) {
+          const script = `const fs=require('fs'); fs.mkdirSync(require('path').dirname(${JSON.stringify(name)}),{recursive:true});fs.writeFileSync(${JSON.stringify(name)},'injected')`;
+          const blocked = await run(script);
+          expect(blocked.error).not.toBeNull();
+          expect(existsSync(join(cwd, name))).toBe(false);
+        }
+        // Existing protected content must remain unchanged as well as absent names.
+        for (const name of [".agav/config.json", ".vscode/settings.json", ".idea/tasks.xml"]) {
+          mkdirSync(join(cwd, name.split("/")[0]!), { recursive: true });
+          writeFileSync(join(cwd, name), "original");
+          const blocked = await run(`require('fs').writeFileSync(${JSON.stringify(name)},'changed')`);
+          expect(blocked.error).not.toBeNull();
+          expect(readFileSync(join(cwd, name), "utf8")).toBe("original");
+        }
+        writeFileSync(join(cwd, "target"), "original");
+        symlinkSync("target", join(cwd, ".envrc"));
+        for (const name of [".envrc", "target"]) {
+          const blocked = await run(`require('fs').writeFileSync(${JSON.stringify(name)},'changed')`);
+          expect(blocked.error).not.toBeNull();
+          expect(readFileSync(join(cwd, "target"), "utf8")).toBe("original");
+        }
+        for (const script of [
+          "require('fs').unlinkSync('.envrc')",
+          "require('fs').renameSync('target','moved-target')",
+          "const fs=require('fs'); fs.writeFileSync('replacement','bad'); fs.renameSync('replacement','target')",
+        ]) {
+          const blocked = await run(script);
+          expect(blocked.error).not.toBeNull();
+          expect(readFileSync(join(cwd, "target"), "utf8")).toBe("original");
+          expect(existsSync(join(cwd, ".envrc"))).toBe(true);
+        }
+        rmSync(join(cwd, ".envrc"));
+        symlinkSync("missing/target", join(cwd, ".envrc"));
+        const dangling = await run("const fs=require('fs'); fs.mkdirSync('missing',{recursive:true}); fs.writeFileSync('missing/target','bad')");
+        expect(dangling.error).not.toBeNull();
+        expect(existsSync(join(cwd, "missing/target"))).toBe(false);
+
+      } finally { rmSync(cwd, { recursive: true, force: true }); }
+    }, 30_000);
+
+    it(`preserves Git staging with external metadata and blocks config writes (${execution})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      const base = mkdtempSync(join(workdir, "git-staging-"));
+      const cwd = join(base, "checkout");
+      const metadata = join(base, "metadata");
+      mkdirSync(cwd);
+      const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0" };
+      const git = (args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", env });
+      const run = async (script: string) => {
+        if (execution === "runInSandbox") return sandboxed(backend, `${quoteArg(process.execPath)} -e ${quoteArg(script)}`, cwd);
+        const built = buildSandboxedCommand({ cmd: process.execPath, args: ["-e", script], cwd });
+        try {
+          const result = await execProbe(built.file, built.args, cwd, built.env);
+          if (!result.error) { try { built.publish?.(); } catch (error) { result.error = error as Error; } }
+          return result;
+        } finally { built.cleanup(); }
+      };
+      try {
+        git(["init", "--quiet", "--template=", "--separate-git-dir", metadata]);
+        const originalConfig = readFileSync(join(metadata, "config"), "utf8");
+        // A separate gitdir is the layout used by submodule gitfiles. No commit
+        // is necessary to exercise real index/object creation and publication.
+        for (const shared of [false, true]) {
+          if (shared) {
+            const perWorktree = join(metadata, "worktrees", "linked");
+            mkdirSync(perWorktree, { recursive: true });
+            writeFileSync(join(perWorktree, "HEAD"), "ref: refs/heads/linked\n");
+            writeFileSync(join(perWorktree, "commondir"), "../..\n");
+            writeFileSync(join(perWorktree, "gitdir"), join(cwd, ".git") + "\n");
+            writeFileSync(join(cwd, ".git"), `gitdir: ${perWorktree}\n`);
+          }
+          const result = await run(`
+            const fs=require('fs'), cp=require('child_process');
+            const env={...process.env,GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_COUNT:'0'};
+            fs.writeFileSync('ordinary.txt',${JSON.stringify("staged-" )} + ${shared});
+            cp.execFileSync('git',['status','--porcelain'],{env});
+            cp.execFileSync('git',['add','ordinary.txt'],{env});
+            console.log('GIT_OK');
+          `);
+          expect(result.error, result.stderr).toBeNull();
+          expect(result.stdout).toBe("GIT_OK\n");
+          expect(git(["show", ":ordinary.txt"])).toBe(`staged-${shared}`);
+          const blocked = await run(`require('fs').writeFileSync(${JSON.stringify(join(metadata, "config"))},'[core]\\n hooksPath = bad\\n')`);
+          expect(blocked.error).not.toBeNull();
+          expect(readFileSync(join(metadata, "config"), "utf8")).toBe(originalConfig);
+        }
+      } finally { rmSync(base, { recursive: true, force: true }); }
+    }, 30_000);
+
+    it(`starts harmless commands with a Git worktree pointer (${execution})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      const cwd = mkdtempSync(join(workdir, "gitfile-"));
+      try {
+        const metadata = join(workdir, "metadata");
+        mkdirSync(metadata, { recursive: true });
+        writeFileSync(join(cwd, ".git"), `gitdir: ${metadata}\n`);
+        const result = await networkProbe(backend, execution, "deny", "console.log('WORKTREE_OK')", cwd);
+        expect(result.error, result.stderr).toBeNull();
+        expect(result.stdout).toBe("WORKTREE_OK\n");
+      } finally { rmSync(cwd, { recursive: true, force: true }); }
+    });
+  }
+}
+
 /** Register inside the existing owning suite so CI's no-skips check covers it. */
 function nativeNetworkTests(backend: NativeBackend, fixture: (ctx: TestContext) => ReturnType<typeof seedHome>): void {
   for (const path of NETWORK_PATHS) {
@@ -432,6 +557,7 @@ describe("real sandbox enforcement (per-OS)", () => {
     afterAll(() => { env?.restore(); try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } });
 
     nativeNetworkTests("seatbelt", ctx => { guard(ctx); return env; });
+    nativeWorkspaceTests("seatbelt", ctx => { guard(ctx); return env; });
 
     it("detects seatbelt as the default backend on macOS", (ctx) => {
       guard(ctx);
@@ -555,6 +681,7 @@ describe("real sandbox enforcement (per-OS)", () => {
     });
 
     nativeNetworkTests("bubblewrap", guard);
+    nativeWorkspaceTests("bubblewrap", guard);
 
     it("detects bubblewrap as the default backend when bwrap is present", (ctx) => {
       guard(ctx);

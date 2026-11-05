@@ -29,8 +29,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { spawn, execFile } from "node:child_process";
-import { dirname } from "node:path";
-import { platform } from "node:os";
+import { dirname, join } from "node:path";
+import { platform, tmpdir } from "node:os";
 import { shellTool } from "../tools/shell.js";
 import { runInSandbox } from "../utils/sandbox.js";
 
@@ -446,7 +446,9 @@ describe("sandbox streaming option", () => {
       setImmediate(() => child.emit("close", 0, null));
       return child;
     }) as typeof spawn);
-    const result = await runInSandbox({ command: "echo hi", cwd: process.cwd(), timeout: 1000, maxBuffer: 1, forceBackend: backend, onOutput: () => {} });
+    const cwd = mkdtempSync(join(tmpdir(), "agav-shell-argv-"));
+    directories.add(cwd);
+    const result = await runInSandbox({ command: "echo hi", cwd, timeout: 1000, maxBuffer: 1, forceBackend: backend, onOutput: () => {} });
     expect(result.error).toBeNull();
     const [file, args, options] = vi.mocked(spawn).mock.calls[0]!;
     expect(file).toBe(backend === "seatbelt" ? "sandbox-exec" : "bwrap");

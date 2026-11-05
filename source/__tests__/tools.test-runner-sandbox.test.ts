@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFile, execFileSync } from "node:child_process";
 import { unlinkSync, writeFileSync } from "node:fs";
 
+const workspace = vi.hoisted(() => ({ path: "/tmp/isolated/workspace", publish: vi.fn(), cleanup: vi.fn() }));
+vi.mock("../utils/sandbox-workspace.js", () => ({ prepareSandboxWorkspace: () => workspace }));
 vi.mock("node:child_process", () => ({ execFile: vi.fn(), execFileSync: vi.fn() }));
 vi.mock("node:fs", async original => ({
   ...await original<typeof import("node:fs")>(), writeFileSync: vi.fn(), unlinkSync: vi.fn(),
@@ -112,4 +114,45 @@ it("refuses execution when sandboxRequired has no backend", async () => {
   expect(result.isError).toBe(true);
   expect(result.output).toContain("Sandbox required");
   expect(execFile).not.toHaveBeenCalled();
+});
+
+it("reports publication rejection and cleans up without crediting passing tests", async () => {
+  const tool = await runner("bubblewrap");
+  output(" Tests  2 passed (2)");
+  workspace.publish.mockImplementationOnce(() => { throw new Error("protected path changed"); });
+  const result = await tool.execute({ framework: "vitest" });
+  expect(result.isError).toBe(true);
+  expect(result.verification?.status).toBe("failed");
+  expect(result.output).toContain("protected path changed");
+  expect(workspace.cleanup).toHaveBeenCalledOnce();
+});
+it("publishes only successful test invocations", async () => {
+  const tool = await runner("bubblewrap");
+  output(" Tests  1 failed (1)", "", Object.assign(new Error("tests failed"), { code: 1 }));
+  await tool.execute({ framework: "vitest" });
+  expect(workspace.publish).not.toHaveBeenCalled();
+  expect(workspace.cleanup).toHaveBeenCalledOnce();
+  output(" Tests  2 passed (2)");
+  await tool.execute({ framework: "vitest" });
+  expect(workspace.publish).toHaveBeenCalledOnce();
+});
+
+it("does not publish after cancellation even if the child reports success", async () => {
+  const tool = await runner("bubblewrap");
+  output(" Tests  2 passed (2)");
+  const controller = new AbortController();
+  controller.abort();
+  await tool.execute({ framework: "vitest" }, { signal: controller.signal });
+  expect(workspace.publish).not.toHaveBeenCalled();
+  expect(workspace.cleanup).toHaveBeenCalledOnce();
+});
+
+it("reports cleanup errors after a synchronous launcher failure", async () => {
+  const tool = await runner("bubblewrap");
+  vi.mocked(execFile).mockImplementation(() => { throw new Error("launcher failed"); });
+  workspace.cleanup.mockImplementationOnce(() => { throw new Error("cleanup failed"); });
+  const result = await tool.execute({ framework: "vitest" });
+  expect(result.isError).toBe(true);
+  expect(result.output).toContain("launcher failed");
+  expect(result.output).toContain("cleanup failed");
 });

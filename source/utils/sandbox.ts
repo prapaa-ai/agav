@@ -1,6 +1,8 @@
+import { prepareSandboxWorkspace } from "./sandbox-workspace.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isWithinRoot } from "./path-guard.js";
+import { discoverSandboxProtectedPaths, resolveSandboxPath, type SandboxPathPolicy } from "./sandbox-protected-paths.js";
 
 const activeCommands = new Set<() => void>();
 let exitCleanupInstalled = false;
@@ -152,19 +154,25 @@ function filterEnv(): Record<string, string> {
   return env;
 }
 
-// Rules use last-match-wins semantics. The blanket $HOME write deny protects
-// the user's home, then targeted allows restore the well-known cache/config
-// directories that ordinary tooling (npm, pip, git, language version managers)
-// must write to — otherwise those commands fail with "Operation not permitted".
-// The credential-directory denies are listed last so a broad allow can never
-// re-expose ~/.ssh, ~/.aws, or ~/.gnupg.
+// Writes are denied by default; targeted allows restore /dev (git/tools open
+// /dev/null read-write), the workspace, temp dirs, and the well-known
+// cache/config directories that ordinary tooling (npm, pip, git, language
+// version managers) must write to. Reads stay broadly allowed (allow default)
+// except the credential directories. Under a (deny file-write*) base, a later
+// (deny …) for a workspace subpath wins over the workspace allow, which lets us
+// carve read-only holes for sensitive config (verified on macOS; this does NOT
+// work under a plain (allow default) base). Paths are passed as resolved
+// (realpath) params so the /var→/private/var firmlink does not defeat matching.
 const SEATBELT_PROFILE_BASE = `
 (version 1)
 (allow default)
-(deny file-write* (subpath "/System"))
-(deny file-write* (subpath "/usr"))
-(deny file-write* (subpath "/Library"))
-(deny file-write* (subpath "/Applications"))
+(deny file-write*)
+(allow file-write* (subpath "/dev"))
+(allow file-write* (subpath (param "TMPDIR")))
+(allow file-write* (subpath "/tmp"))
+(allow file-write* (subpath "/private/tmp"))
+; HOME may be nested in temporary storage. Re-establish its boundary before
+; restoring the explicit workspace and tooling-cache exceptions.
 (deny file-write* (subpath (param "HOME")))
 (allow file-write* (subpath (param "CWD")))
 (allow file-write* (subpath (param "HOME_CACHE")))
@@ -180,6 +188,20 @@ const SEATBELT_PROFILE_BASE = `
 (deny file-read* (subpath (param "HOME_GPG")))
 (deny process-exec (subpath "/System/Library/CoreServices"))
 `;
+
+// Deny-write rules for the workspace-protected paths, parameterized so the
+// resolved CWD never needs escaping in the profile. Appended after the
+// workspace allow; under the (deny file-write*) base these denies win.
+// Directories use `subpath`; files use `literal` (a subpath filter does not
+// match a regular file, which would silently leave it writable).
+function seatbeltWorkspaceProtection(policy: SandboxPathPolicy): string {
+  return policy.protectedPaths.flatMap(({ kind }, i) => [
+    `(deny ${kind === "ancestor" ? "file-write-unlink" : "file-write*"} (literal (param "PROTECTED_${i}")))`,
+    // Protect both the directory subtree and its original name, even when it
+    // is currently a symlink, a regular file, or does not exist yet.
+    ...(kind === "directory" ? [`(deny file-write* (subpath (param "PROTECTED_${i}")))`] : []),
+  ]).join("\n") + "\n";
+}
 
 // Network isolation (last-match-wins): deny all network, then re-allow
 // host-local TCP/IP so local dev servers / language servers work, plus Unix-domain
@@ -197,8 +219,14 @@ const SEATBELT_NETWORK_DENY = `
 (allow network-inbound (local unix-socket))
 `;
 
-function seatbeltProfile(network: SandboxNetwork): string {
-  return network === "deny" ? SEATBELT_PROFILE_BASE + SEATBELT_NETWORK_DENY : SEATBELT_PROFILE_BASE;
+function seatbeltProfile(network: SandboxNetwork, policy: SandboxPathPolicy): string {
+  const gitAllows = policy.gitWritablePaths.map(({ kind }, i) =>
+    `(allow file-write* (${kind === "directory" ? "subpath" : "literal"} (param "GIT_WRITE_${i}")))`,
+  ).join("\n") + "\n";
+  // Git allowances precede credential denies, so pointers cannot re-enable them.
+  const base = SEATBELT_PROFILE_BASE.replace('(deny file-write* (subpath (param "HOME_SSH")))',
+    gitAllows + '(deny file-write* (subpath (param "HOME_SSH")))') + seatbeltWorkspaceProtection(policy);
+  return network === "deny" ? base + SEATBELT_NETWORK_DENY : base;
 }
 
 type OutputCallback = (chunk: Buffer, stream: "stdout" | "stderr") => void;
@@ -322,21 +350,36 @@ function executeProcess(
 }
 
 /** Write the Seatbelt profile to a temp file; caller must call cleanup(). */
-function createSeatbeltProfile(network: SandboxNetwork): { path: string; cleanup: () => void } {
+function createSeatbeltProfile(network: SandboxNetwork, cwd: string): { path: string; policy: SandboxPathPolicy; cleanup: () => void } {
+  const policy = discoverSandboxProtectedPaths(cwd);
   const path = join(tmpdir(), `agav-sandbox-${process.pid}-${randomUUID()}.sb`);
-  writeFileSync(path, seatbeltProfile(network));
-  return { path, cleanup: () => { try { unlinkSync(path); } catch {} } };
+  try { writeFileSync(path, seatbeltProfile(network, policy), { flag: "wx", mode: 0o600 }); }
+  catch (error) {
+    // Never remove someone else's file on an exclusive-create collision.
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") { try { unlinkSync(path); } catch {} }
+    throw error;
+  }
+  return { path, policy, cleanup: () => { try { unlinkSync(path); } catch {} } };
+}
+
+function resolvePath(p: string): string {
+  return resolveSandboxPath(p).path;
 }
 
 /** `sandbox-exec` argv that runs `inner` (file + its args) under the profile. */
-function seatbeltArgv(profilePath: string, cwd: string, inner: string[]): { file: string; args: string[] } {
-  const home = process.env.HOME ?? "/tmp";
+function seatbeltArgv(profilePath: string, cwd: string, inner: string[], policy: SandboxPathPolicy): { file: string; args: string[] } {
+  const home = resolvePath(process.env.HOME ?? "/tmp");
+  const resolvedCwd = resolvePath(cwd);
+  const tmp = resolvePath((process.env.TMPDIR ?? "/tmp").replace(/\/+$/, "") || "/tmp");
+  const protectedParams = policy.protectedPaths.flatMap(({ path }, i) => ["-D", `PROTECTED_${i}=${path}`]);
+  const gitParams = policy.gitWritablePaths.flatMap(({ path }, i) => ["-D", `GIT_WRITE_${i}=${path}`]);
   return {
     file: "sandbox-exec",
     args: [
       "-f", profilePath,
       "-D", `HOME=${home}`,
-      "-D", `CWD=${cwd}`,
+      "-D", `CWD=${resolvedCwd}`,
+      "-D", `TMPDIR=${tmp}`,
       "-D", `HOME_CACHE=${home}/.cache`,
       "-D", `HOME_CONFIG=${home}/.config`,
       "-D", `HOME_LOCAL=${home}/.local`,
@@ -345,13 +388,15 @@ function seatbeltArgv(profilePath: string, cwd: string, inner: string[]): { file
       "-D", `HOME_SSH=${home}/.ssh`,
       "-D", `HOME_AWS=${home}/.aws`,
       "-D", `HOME_GPG=${home}/.gnupg`,
+      ...protectedParams,
+      ...gitParams,
       ...inner,
     ],
   };
 }
 
 /** `bwrap` argv that runs `inner` (file + its args) under the workspace policy. */
-function bubblewrapArgv(cwd: string, inner: string[], network: SandboxNetwork): { file: string; args: string[] } {
+function bubblewrapArgv(cwd: string, inner: string[], network: SandboxNetwork, workspace: string, metadata: Array<{ source: string; target: string }> = []): { file: string; args: string[] } {
   const home = process.env.HOME ?? "/tmp";
   const scratch = ["/tmp", ...[".cache", ".config", ".npm", ".cargo"].map(dir => home + "/" + dir)];
   const scratchMounts = (paths: string[]) => paths.flatMap(path => [
@@ -367,13 +412,21 @@ function bubblewrapArgv(cwd: string, inner: string[], network: SandboxNetwork): 
       // Host loopback and other invocations are unreachable; no forwarding
       // is provided. Reachable filesystem Unix sockets are not isolated by this.
       ...(network === "deny" ? ["--unshare-net"] : []),
+      "--unshare-pid",
       "--ro-bind", "/", "/",
       // Restore nested checkouts after their enclosing scratch mount. Masks
       // inside (or equal to) the workspace must instead follow its bind, so a
       // HOME workspace cannot expose host config/credentials or persist caches.
       ...scratchMounts(scratch.filter(path => !isWithinRoot(cwd, path))),
-      "--bind", cwd, cwd,
+      "--bind", workspace, cwd,
       ...scratchMounts(scratch.filter(path => isWithinRoot(cwd, path))),
+      // External gitdir/commondir snapshots are mounted at their original
+      // paths so gitfiles need no rewriting. Never bind host metadata writable.
+      ...metadata.flatMap(({ source, target }) => ["--bind", source, target]),
+      ...metadata.flatMap(({ source }) => ["--tmpfs", join(source, "..")]),
+      // Only the snapshot is writable. Hide its original pathname (and its
+      // private parent) even when TMPDIR is outside the usual /tmp scratch.
+      "--tmpfs", join(workspace, ".."),
       "--dev", "/dev",
       "--proc", "/proc",
       // ~/.local and ~/.rustup remain visible through the root read-only bind.
@@ -398,11 +451,14 @@ function runSeatbelt(
   onOutput?: OutputCallback,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
-  const profile = createSeatbeltProfile(sandboxNetwork);
-  const { file, args } = seatbeltArgv(profile.path, cwd, ["/bin/sh", "-c", command]);
+  const profile = createSeatbeltProfile(sandboxNetwork, cwd);
+  let wrapped: { file: string; args: string[] };
+  try { wrapped = seatbeltArgv(profile.path, cwd, ["/bin/sh", "-c", command], profile.policy); }
+  catch (error) { profile.cleanup(); throw error; }
+  const { file, args } = wrapped;
 
   return new Promise((resolve) => {
-    executeProcess(
+    try { executeProcess(
       file,
       args,
       { timeout, maxBuffer, cwd, env: filterEnv() },
@@ -412,7 +468,10 @@ function runSeatbelt(
         resolve({ stdout, stderr, error });
       },
       signal,
-    );
+    ); } catch (cause) {
+      profile.cleanup();
+      resolve({ stdout: "", stderr: "", error: cause instanceof Error ? cause : new Error(String(cause)) });
+    }
   });
 }
 
@@ -424,18 +483,26 @@ function runBubblewrap(
   onOutput?: OutputCallback,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
-  const { file, args } = bubblewrapArgv(cwd, ["/bin/sh", "-c", command], sandboxNetwork);
+  let workspace: ReturnType<typeof prepareSandboxWorkspace>;
+  try { workspace = prepareSandboxWorkspace(cwd, true); }
+  catch (cause) { return Promise.resolve({ stdout: "", stderr: "", error: cause instanceof Error ? cause : new Error(String(cause)) }); }
+  const { file, args } = bubblewrapArgv(cwd, ["/bin/sh", "-c", command], sandboxNetwork, workspace.path, workspace.mounts);
   return new Promise((resolve) => {
-    executeProcess(
-      file,
-      args,
-      { timeout, maxBuffer, env: filterEnv() },
-      onOutput,
-      (error, stdout, stderr) => {
-        resolve({ stdout, stderr, error });
-      },
-      signal,
-    );
+    const finish = (error: Error | null, stdout: string, stderr: string) => {
+      try {
+        // The private PID namespace tears down descendants before bwrap exits.
+        // Failed/cancelled commands publish nothing; never retry on the host.
+        if (!error && !signal?.aborted) workspace.publish();
+      } catch (cause) { error = cause instanceof Error ? cause : new Error(String(cause)); }
+      finally {
+        try { workspace.cleanup(); }
+        catch (cause) { error ??= cause instanceof Error ? cause : new Error(String(cause)); }
+      }
+      resolve({ stdout, stderr, error });
+    };
+    try {
+      executeProcess(file, args, { timeout, maxBuffer, env: filterEnv() }, onOutput, finish, signal);
+    } catch (cause) { finish(cause instanceof Error ? cause : new Error(String(cause)), "", ""); }
   });
 }
 
@@ -691,6 +758,8 @@ export interface SandboxedCommand {
   backend: SandboxBackend;
   /** Releases any temp resources (e.g. the Seatbelt profile); always safe to call. */
   cleanup: () => void;
+  /** Publish validated isolated changes after successful process completion, before cleanup. */
+  publish?: () => void;
 }
 
 /**
@@ -715,13 +784,19 @@ export function buildSandboxedCommand(opts: {
 
   switch (backend) {
     case "seatbelt": {
-      const profile = createSeatbeltProfile(sandboxNetwork);
-      const { file, args } = seatbeltArgv(profile.path, opts.cwd, inner);
+      const profile = createSeatbeltProfile(sandboxNetwork, opts.cwd);
+      let wrapped: { file: string; args: string[] };
+      try { wrapped = seatbeltArgv(profile.path, opts.cwd, inner, profile.policy); }
+      catch (error) { profile.cleanup(); throw error; }
+      const { file, args } = wrapped;
       return { file, args, env, backend, cleanup: profile.cleanup };
     }
     case "bubblewrap": {
-      const { file, args } = bubblewrapArgv(opts.cwd, inner, sandboxNetwork);
-      return { file, args, env, backend, cleanup: () => {} };
+      const workspace = prepareSandboxWorkspace(opts.cwd, true);
+      try {
+        const { file, args } = bubblewrapArgv(opts.cwd, inner, sandboxNetwork, workspace.path, workspace.mounts);
+        return { file, args, env, backend, publish: workspace.publish, cleanup: workspace.cleanup };
+      } catch (cause) { workspace.cleanup(); throw cause; }
     }
     default:
       // "none" (unavailable/unsupported) and "docker": run the argv directly.
