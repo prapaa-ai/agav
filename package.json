@@ -39,7 +39,7 @@
     "fflate": "^0.8.3",
     "indent-string": "^5.0.0",
     "marked": "^15.0.12",
-    "marked-terminal": "^7.3.0",
+    "marked-terminal": "^8.0.0",
     "ollama": "^0.6.4",
     "openai": "^7.47.0",
     "pdfjs-dist": "^6.4.299",
