@@ -158,7 +158,9 @@ export class OpenAIProvider implements LLMProvider {
   private async *streamChat(params: StreamParams): AsyncIterable<StreamEvent> {
     const hasFunctionTools = Boolean(params.tools?.length);
     const normalizedModel = params.model.toLowerCase();
-    let nativeEffort = params.effort
+    // Luna only accepts Chat Completions function tools with reasoning disabled.
+    const lunaToolMode = this.name === "openai" && hasFunctionTools && /^gpt-6-luna(?:-|$)/.test(normalizedModel);
+    let nativeEffort: ReturnType<typeof mapOpenAIEffort> | "none" | undefined = params.effort
       && supportsNativeEffort(this.name, params.model)
       && (!hasFunctionTools || (
         supportsOpenAIChatToolEffort(params.model)
@@ -169,6 +171,8 @@ export class OpenAIProvider implements LLMProvider {
     let systemPrompt = nativeEffort
       ? params.systemPrompt
       : applyEffortPrompt(params.systemPrompt, params.effort ?? "medium");
+
+    if (lunaToolMode) nativeEffort = "none";
 
     const createStream = (effort: typeof nativeEffort, prompt: string | undefined) =>
       this.client.chat.completions.create({
@@ -186,7 +190,7 @@ export class OpenAIProvider implements LLMProvider {
       stream = await createStream(nativeEffort, systemPrompt);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const unsupportedCombination = nativeEffort
+      const unsupportedCombination = !lunaToolMode && nativeEffort
         && hasFunctionTools
         && /function tools with reasoning_effort are not supported/i.test(message);
       if (!unsupportedCombination) throw error;

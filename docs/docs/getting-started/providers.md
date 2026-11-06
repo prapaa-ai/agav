@@ -234,19 +234,18 @@ Agav sizes the context window per model. Set `AGAV_OLLAMA_NUM_CTX` to override t
 
 ## `/fast` and `/deep` models
 
-Every provider except Ollama has a preset for `/fast` (lightweight, quick answers) and `/deep` (most capable, complex reasoning):
+Every provider has a preset for `/fast` (lightweight, quick answers) and `/deep` (most capable, complex reasoning):
 
 | Provider | `/fast` | `/deep` |
 | --- | --- | --- |
-| Anthropic | `claude-haiku-4-5-20251001` | `claude-sonnet-4-20250514` |
-| OpenAI | `gpt-4o-mini` | `gpt-4o` |
-| OpenRouter | `~google/gemini-flash-latest` | `~anthropic/claude-sonnet-latest` |
-| NVIDIA NIM | `nvidia/nemotron-3.5-lightning-30b-a3b` | `nvidia/nemotron-3.5-lightning-30b-a3b` |
-| DeepSeek | `deepseek-v4-flash` | `deepseek-v4-pro` |
-| Gemini | `gemini-3.5-flash-lite` | `gemini-3.5-pro` |
-| Vertex AI | `vertex/gemini-3.5-flash-lite` | `vertex/gemini-3.5-pro` |
-
-Ollama has no preset — `/fast` and `/deep` fall back to the OpenAI defaults, which won't work on a local Ollama instance. Use `/model` to switch models manually instead.
+| Anthropic | `claude-haiku-5-5` | `claude-opus-5-5` |
+| OpenAI | `gpt-6-luna` | `gpt-6.1-sol` |
+| OpenRouter | `nvidia/nemotron-3.5-lightning:free` | `anthropic/claude-fable-5.1` |
+| NVIDIA NIM | `nvidia/nemotron-3.5-bolt-e4b` | `nvidia/nemotron-3-ultra-550b-a55b` |
+| DeepSeek | `deepseek-flash` | `deepseek-v4-pro` |
+| Gemini | `gemini-3.8-flash` | `gemini-3.1-pro-preview` |
+| Vertex AI | `vertex/gemini-3.8-flash` | `vertex/claude-opus-5-5` |
+| Ollama | `gemma4:e4b` | `qwen3.8:27b` |
 
 ## Make it stick
 

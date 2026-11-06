@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   LLMProvider,
   StreamEvent,
@@ -528,6 +529,7 @@ export async function* runAgentLoop(
     }
 
     let textAccum = "";
+    const assistantContent: ContentBlock[] = [];
     const toolCalls = new Map<
       string,
       { name: string; argsJson: string; providerMetadata?: Record<string, unknown> }
@@ -571,15 +573,15 @@ export async function* runAgentLoop(
       // Seeded skill dispatches are synthetic tool calls with no provider stream; the idle timer only arms when a real stream starts.
       if (!seededCall) {
         resetIdleTimer();
-        for await (const event of provider.stream({
-          model,
-          messages: conversation.getMessages(),
-          tools: toolRegistry.getSchemas(),
-          systemPrompt,
-          effort,
-          maxTokens,
-          signal: attemptController.signal,
-        })) {
+        const request = {
+          model, messages: conversation.getMessages(), tools: toolRegistry.getSchemas(),
+          systemPrompt, effort, maxTokens, signal: attemptController.signal,
+        };
+        const prefix = provider.getThinkingPrefix?.(request) ?? createHash("sha256")
+          .update(JSON.stringify([provider.name, model, systemPrompt ?? "", request.tools, effort])).digest("hex");
+        conversation.prepareThinkingPrefix?.(prefix);
+        request.messages = conversation.getMessages();
+        for await (const event of provider.stream(request)) {
           resetIdleTimer();
 
           if (attemptController.signal.aborted) {
@@ -595,7 +597,14 @@ export async function* runAgentLoop(
           switch (event.type) {
             case "text_delta":
               textAccum += event.text;
+              const lastBlock = assistantContent.at(-1);
+              if (lastBlock?.type === "text") lastBlock.text = (lastBlock.text ?? "") + event.text;
+              else assistantContent.push({ type: "text", text: event.text });
               yield { type: "streaming_text", text: event.text };
+              break;
+
+            case "thinking_block":
+              assistantContent.push(event.block);
               break;
 
             case "thinking_delta":
@@ -603,6 +612,7 @@ export async function* runAgentLoop(
               break;
 
             case "tool_call_start":
+              assistantContent.push({ type: "tool_use", toolCallId: event.toolCallId });
               toolCalls.set(event.toolCallId, {
                 name: event.toolName,
                 argsJson: "",
@@ -705,10 +715,6 @@ export async function* runAgentLoop(
     }
 
     // Build assistant message content blocks
-    const assistantContent: ContentBlock[] = [];
-    if (textAccum) {
-      assistantContent.push({ type: "text", text: textAccum });
-    }
     const parsedInputs = new Map<string, Record<string, unknown>>();
     for (const [id, call] of toolCalls) {
       let input: Record<string, unknown> = {};
@@ -718,13 +724,16 @@ export async function* runAgentLoop(
         input = { raw: call.argsJson };
       }
       parsedInputs.set(id, input);
-      assistantContent.push({
+      const toolBlock = assistantContent.find(block => block.type === "tool_use" && block.toolCallId === id);
+      const content: ContentBlock = {
         type: "tool_use",
         toolCallId: id,
         toolName: call.name,
         toolInput: input,
         ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
-      });
+      };
+      if (toolBlock) Object.assign(toolBlock, content);
+      else assistantContent.push(content);
     }
     conversation.addAssistantMessage(assistantContent);
 

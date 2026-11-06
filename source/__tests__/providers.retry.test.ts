@@ -13,6 +13,11 @@ function createMockProvider(overrides: Partial<LLMProvider> = {}): LLMProvider {
 }
 
 describe("RetryProvider capability forwarding", () => {
+  it("forwards signed prefix identity with the inner adapter receiver", () => {
+    const inner = createMockProvider({ getThinkingPrefix(params) { return `${this.name}:${params.model}`; } });
+    expect(new RetryProvider(inner).getThinkingPrefix?.({ model: "claude", messages: [] })).toBe("mock-provider:claude");
+    expect(new RetryProvider(createMockProvider()).getThinkingPrefix).toBeUndefined();
+  });
   it("forwards getContextWindow when implemented by inner provider", async () => {
     const inner = createMockProvider({
       name: "openrouter",
