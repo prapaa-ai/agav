@@ -1818,12 +1818,18 @@ describe("session picker start-new-session key", () => {
     await tick();
     expect(allOutput(stdout)).toContain("Ctrl+N new");
     stdin.send("zzz");
+    const focusedFrame = stripAnsi(stdout.chunks.at(-1)!);
     stdin.send("\x1b");
     await wait(60); // Esc disambiguation
-    expect(allOutput(stdout)).toContain("No sessions match");
-    expect(allOutput(stdout)).toContain("n new session");
+    const blurredFrame = stripAnsi(stdout.chunks.at(-1)!);
     stdin.send("q");
     expect(await promise).toBeNull();
+    expect(focusedFrame).toContain("No sessions match");
+    expect(focusedFrame).toContain("Ctrl+N new session");
+    expect(focusedFrame).not.toContain("n new session");
+    expect(blurredFrame).toContain("No sessions match");
+    expect(blurredFrame).toContain("n new session");
+    expect(blurredFrame).not.toContain("Ctrl+N new session");
   });
 
   it("types n into the focused search query; Ctrl+N still starts a new session", async () => {

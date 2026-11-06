@@ -488,7 +488,7 @@ export async function pickSession(
     if (items.length === 0) {
       lines.push("");
       lines.push("\x1b[2m  No sessions match the current filters.\x1b[0m");
-      lines.push("\x1b[2m  Backspace to clear text · Tab/S/A to change facets · n new session.\x1b[0m");
+      lines.push(`\x1b[2m  Backspace to clear text · Tab/S/A to change facets · ${searchActive ? "Ctrl+N" : "n"} new session.\x1b[0m`);
     }
 
     if (items.length > pageSize) {
