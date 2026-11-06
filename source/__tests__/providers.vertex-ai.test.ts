@@ -1,3 +1,4 @@
+import { claudeThinkingEvents, thinkingBlocks } from "./helpers/claude-thinking.js";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,6 +27,41 @@ describe("VertexAIProvider", () => {
   });
   afterAll(async () => rm(testDir, { recursive: true, force: true }));
   beforeEach(() => vi.restoreAllMocks());
+
+  it("preserves signed and redacted Claude thinking in a tool continuation", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "token", expires_in: 3600 })))
+      .mockResolvedValueOnce(new Response(claudeThinkingEvents.map(e => `data: ${JSON.stringify(e)}\n\n`).join("")))
+      .mockResolvedValueOnce(new Response('data: {"type":"message_stop"}\n\n'));
+    const provider = new VertexAIProvider(credentialsPath);
+    const events = [];
+    for await (const event of provider.stream({ model: "vertex/claude-opus-5-5", messages: [] })) events.push(event);
+    const blocks = events.filter((e: any) => e.type === "thinking_block").map((e: any) => e.block);
+    expect(blocks).toHaveLength(2);
+    for await (const _ of provider.stream({ model: "vertex/claude-opus-5-5", messages: [
+      { role: "assistant", content: [...blocks, { type: "tool_use", toolCallId: "c", toolName: "lookup", toolInput: {} }] },
+      { role: "user", content: [{ type: "tool_result", toolCallId: "c", toolResult: "ok" }] },
+    ] })) { /* drain */ }
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)).messages[0].content.slice(0, 2)).toEqual(thinkingBlocks);
+  });
+
+  it.each([
+    ["global", "aiplatform.googleapis.com"],
+    ["us", "aiplatform.us.rep.googleapis.com"],
+    ["eu", "aiplatform.eu.rep.googleapis.com"],
+    ["us-east5", "us-east5-aiplatform.googleapis.com"],
+  ])("targets the Claude host for location %s", async (location, host) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "token", expires_in: 3600 })))
+      .mockResolvedValueOnce(new Response('data: {"type":"message_stop"}\n\n'));
+    const provider = new VertexAIProvider(credentialsPath, location);
+    for await (const _ of provider.stream({
+      model: "vertex/claude-opus-5-5", messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+    })) { /* drain */ }
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      `https://${host}/v1/projects/test-project/locations/${location}/publishers/anthropic/models/claude-opus-5-5:streamRawPredict`,
+    );
+  });
 
   it("reports every missing required service-account key", async () => {
     const incompleteCredentialsPath = join(testDir, "incomplete-service-account.json");

@@ -25,6 +25,20 @@ const create = (id: string) => store.create({ id, cwd: root, model: "live", prov
   messages: [{ role: "user", content: [{ type: "text", text: "Live question" }] }] });
 
 describe("resumable history", () => {
+  it("reloads signed and redacted thinking without losing opaque replay state", async () => {
+    const runtime = await create("thinking-history");
+    const blocks = [
+      { type: "thinking" as const, thinking: "thought", signature: "opaque-signature" },
+      { type: "redacted_thinking" as const, data: "opaque-data" },
+      { type: "tool_use" as const, toolCallId: "c", toolName: "lookup", toolInput: {} },
+    ];
+    await store.update(runtime.id, runtime.generation, current => {
+      current.messages.push({ role: "assistant", content: blocks });
+      current.messages.push({ role: "user", content: [{ type: "tool_result", toolCallId: "c", toolResult: "ok" }] });
+    });
+    expect((await loadResumableSession(runtime.id))?.messages[1]?.content).toEqual(blocks);
+  });
+
   it("preserves legacy listing/loading when no runtime exists", async () => {
     expect(await listResumableSessions()).toEqual([saved]);
     expect(await loadResumableSession(saved.id)).toEqual(saved);

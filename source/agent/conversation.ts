@@ -9,6 +9,7 @@ import {
 
 export class ConversationState {
   private messages: Message[] = [];
+  private thinkingPrefix?: string;
   private transcript?: Message[];
   private transcriptCopies = new WeakMap<Message, Message>();
 
@@ -196,7 +197,10 @@ export class ConversationState {
   }
 
   addAssistantMessage(content: ContentBlock[]): void {
-    this.appendMessage({ role: "assistant", content });
+    this.appendMessage({ role: "assistant", content,
+      ...(this.thinkingPrefix && content.some(block => block.type === "thinking" || block.type === "redacted_thinking")
+        ? { thinkingPrefix: this.thinkingPrefix } : {}),
+    });
     this.invalidateTokenCache();
   }
 
@@ -210,6 +214,7 @@ export class ConversationState {
   }
 
   clear(): void {
+    this.thinkingPrefix = undefined;
     this.systemPrompt = undefined;
     this.messages = [];
     if (this.transcript) this.transcript = [];
@@ -242,6 +247,7 @@ export class ConversationState {
   }
 
   setMessages(messages: Message[], compacted?: boolean): void {
+    this.thinkingPrefix = undefined;
     this.systemPrompt = undefined;
     this.messages = this.sanitizeMessages([...messages]);
     if (this.transcript) {
@@ -297,6 +303,61 @@ export class ConversationState {
     return split;
   }
 
+  /** Claude signatures bind to the original prefix, system prompt, and tools. */
+  private withoutThinking(messages: Message[]): Message[] {
+    return messages.map((msg) => ({
+      ...msg,
+      content: msg.content.filter((block) => block.type !== "thinking" && block.type !== "redacted_thinking"),
+    })).filter((msg) => msg.content.length > 0);
+  }
+
+  /** Only an assistant response surviving thinking stripping without tool calls
+   * closes a tool round. Thinking-only responses and user steers/results
+   * (even a new invocation after cancellation) do not.
+   */
+  private activeToolRoundStart(): number | undefined {
+    let start: number | undefined;
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const message = this.messages[i]!;
+      if (message.role !== "assistant") continue;
+      if (!message.content.some(block => block.type !== "thinking" && block.type !== "redacted_thinking")) continue;
+      if (!message.content.some(block => block.type === "tool_use")) break;
+      start = i;
+    }
+    return start;
+  }
+
+  /** Reconcile signed replay before each request, including after session reload.
+   * Missing provenance is not proof that a legacy signature matches this prefix.
+   */
+  prepareThinkingPrefix(prefix: string): void {
+    const invalid = this.messages.some(message => message.content.some(block =>
+      block.type === "thinking" || block.type === "redacted_thinking") && message.thinkingPrefix !== prefix);
+    if (invalid) {
+      const active = this.activeToolRoundStart();
+      // Removing stale thinking alone from an active tool round is invalid too.
+      // Restart that round as historical text, keeping results without asking
+      // the provider to resume tool calls signed under a different prefix.
+      this.messages = this.withoutThinking(this.messages.map((message, index) => {
+        if (active === undefined || index < active) return message;
+        return { ...message, content: message.content.flatMap((block): ContentBlock[] => {
+          if (block.type === "tool_use") return [{ type: "text", text:
+            `[Previous tool call ${block.toolCallId}: ${block.toolName}] ${JSON.stringify(block.toolInput ?? {})}` }];
+          if (block.type === "tool_result") return [{ type: "text", text:
+            `[Previous tool result ${block.toolCallId}${block.isError ? " (error)" : ""}] ${block.toolResult ?? ""}` },
+            ...(block.toolResultContent ?? [])];
+          return [block];
+        }) };
+      }));
+      if (active !== undefined) {
+        this.messages.push({ role: "user", internal: true, content: [{ type: "text", text:
+          "[Request prefix changed. The previous tool round is now historical context, not pending tool calls. Continue using the recorded results; do not repeat completed actions.]" }] });
+      }
+      this.invalidateTokenCache();
+    }
+    this.thinkingPrefix = prefix;
+  }
+
   private trimToolResults(targetTokens: number, preserveRecent: number): number {
     let freed = 0;
     const trimBoundary = Math.max(0, this.messages.length - preserveRecent);
@@ -319,7 +380,11 @@ export class ConversationState {
 
       if (currentTokens <= targetTokens) break;
     }
-    if (freed > 0) this.invalidateTokenCache();
+    if (freed > 0) {
+      // Even trim-only compaction changes the prefix of later thinking blocks.
+      this.messages = this.withoutThinking(this.messages);
+      this.invalidateTokenCache();
+    }
     return freed;
   }
 
@@ -327,6 +392,13 @@ export class ConversationState {
     force = false,
     summarize?: (messages: Message[]) => Promise<string>,
   ): Promise<{ compacted: boolean; droppedCount: number; summary?: string }> {
+    const active = this.activeToolRoundStart();
+    if (active !== undefined && this.messages.slice(active).some(message => message.content.some(block =>
+      block.type === "thinking" || block.type === "redacted_thinking"))) {
+      // This includes trim-only and forced overflow recovery: rewriting ANY
+      // prefix invalidates the thinking still required by the continuation.
+      return { compacted: false, droppedCount: 0 };
+    }
     const limits = getContextLimits(this.model, this.contextWindow);
     const currentTokens = this.tokenCount;
 
@@ -375,7 +447,8 @@ export class ConversationState {
 
     if (summarize) {
       try {
-        summaryText = await summarize(droppedMessages);
+        // Summarization uses a different system prompt and no tools.
+        summaryText = await summarize(this.withoutThinking(droppedMessages));
       } catch {
         summaryText = placeholder;
       }
@@ -395,7 +468,7 @@ export class ConversationState {
       internal: true,
     };
 
-    this.messages = this.sanitizeMessages([summary, ...this.messages.slice(keepFrom)]);
+    this.messages = this.sanitizeMessages([summary, ...this.withoutThinking(this.messages.slice(keepFrom))]);
     this._compacted = true;
     this._lastCompactionSummary = summaryText;
     this.invalidateTokenCache();

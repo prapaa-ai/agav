@@ -1,3 +1,4 @@
+import { ClaudeThinkingBlocks, claudeThinkingPrefix, toClaudeThinkingBlock } from "./claude-thinking.js";
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   LLMProvider,
@@ -40,6 +41,10 @@ export class AnthropicProvider implements LLMProvider {
     }
   }
 
+  getThinkingPrefix(params: StreamParams): string {
+    return claudeThinkingPrefix(this.name, params.model, params);
+  }
+
   // Translate Anthropic's streaming event model into the provider-agnostic event stream used by the app.
   async *stream(params: StreamParams): AsyncIterable<StreamEvent> {
     const nativeEffort = params.effort && supportsNativeEffort(this.name, params.model)
@@ -72,12 +77,14 @@ export class AnthropicProvider implements LLMProvider {
 
     // Track which content block index maps to which tool call ID
     const blockToolIds = new Map<number, string>();
-    let currentBlockIndex = -1;
+    const thinkingBlocks = new ClaudeThinkingBlocks();
     let lastUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
     yield { type: "message_start" };
 
     for await (const event of stream) {
+      const thinkingBlock = thinkingBlocks.accept(event);
+      if (thinkingBlock) yield thinkingBlock;
       // Both message_start and message_delta carry cumulative, possibly partial usage.
       const usage = event.type === "message_start" ? event.message.usage
         : event.type === "message_delta" ? event.usage : undefined;
@@ -98,7 +105,6 @@ export class AnthropicProvider implements LLMProvider {
         if (Object.values(delta).some(value => value !== 0)) yield { type: "usage", ...delta };
       }
       if (event.type === "content_block_start") {
-        currentBlockIndex = event.index;
         if (event.content_block.type === "tool_use") {
           blockToolIds.set(event.index, event.content_block.id);
           yield {
@@ -161,7 +167,8 @@ export class AnthropicProvider implements LLMProvider {
     const cacheIndex = messages.length - 2;
     return messages.map((msg, msgIndex) => {
       const content = msg.content.map((block) => this.toContentBlock(block));
-      if (msgIndex === cacheIndex && content.length > 0) {
+      if (msgIndex === cacheIndex && content.length > 0
+        && !["thinking", "redacted_thinking"].includes(content[content.length - 1]!.type)) {
         const last = content[content.length - 1]!;
         content[content.length - 1] = {
           ...last,
@@ -175,6 +182,8 @@ export class AnthropicProvider implements LLMProvider {
   private toContentBlock(
     block: ContentBlock,
   ): Anthropic.Messages.ContentBlockParam {
+    const thinking = toClaudeThinkingBlock(block);
+    if (thinking) return thinking;
     if (block.type === "text") {
       return { type: "text", text: block.text! };
     }

@@ -289,3 +289,33 @@ it.each([
     await checkView();
   } finally { vi.useRealTimers(); }
 });
+
+it("persists signed prefix provenance through saved history and worker checkpoints", async () => {
+  const { ConversationState } = await import("../agent/conversation.js");
+  const conversation = new ConversationState(true);
+  conversation.addUserMessage("task");
+  conversation.prepareThinkingPrefix("original-prefix");
+  conversation.addAssistantMessage([
+    { type: "thinking", thinking: "opaque", signature: "signed" },
+    { type: "redacted_thinking", data: "encrypted" },
+    { type: "tool_use", toolCallId: "c", toolName: "read_file", toolInput: {} },
+  ]);
+  conversation.addToolResults([{ type: "tool_result", toolCallId: "c", toolResult: "completed action" }]);
+  const original = structuredClone(conversation.getMessages());
+  const id = await saveSession(original, "claude-opus-5-5", "anthropic");
+  const saved = await loadSession(id);
+  expect(saved?.messages).toEqual(original);
+  const runtime = await store.create({ cwd: root, model: "claude-opus-5-5", provider: "anthropic",
+    permissionMode: "ask", sandboxRequired: false, messages: saved!.messages });
+  await saveSessionRuntime(runtime);
+  const checkpoint = await loadSession(runtime.id);
+  expect(checkpoint?.messages).toEqual(original);
+  const restored = new ConversationState(true);
+  restored.setMessages(checkpoint!.messages);
+  restored.prepareThinkingPrefix("original-prefix");
+  expect(restored.getMessages()).toEqual(original);
+  restored.prepareThinkingPrefix("refreshed-instructions-or-tools");
+  expect(restored.getMessages().flatMap(m => m.content).every(b => b.type === "text")).toBe(true);
+  expect(JSON.stringify(restored.getMessages())).toContain("completed action");
+  expect(restored.getTranscript()).toEqual(original);
+});
