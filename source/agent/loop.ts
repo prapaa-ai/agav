@@ -528,6 +528,7 @@ export async function* runAgentLoop(
     }
 
     let textAccum = "";
+    const assistantContent: ContentBlock[] = [];
     const toolCalls = new Map<
       string,
       { name: string; argsJson: string; providerMetadata?: Record<string, unknown> }
@@ -595,7 +596,14 @@ export async function* runAgentLoop(
           switch (event.type) {
             case "text_delta":
               textAccum += event.text;
+              const lastBlock = assistantContent.at(-1);
+              if (lastBlock?.type === "text") lastBlock.text = (lastBlock.text ?? "") + event.text;
+              else assistantContent.push({ type: "text", text: event.text });
               yield { type: "streaming_text", text: event.text };
+              break;
+
+            case "thinking_block":
+              assistantContent.push(event.block);
               break;
 
             case "thinking_delta":
@@ -603,6 +611,7 @@ export async function* runAgentLoop(
               break;
 
             case "tool_call_start":
+              assistantContent.push({ type: "tool_use", toolCallId: event.toolCallId });
               toolCalls.set(event.toolCallId, {
                 name: event.toolName,
                 argsJson: "",
@@ -705,10 +714,6 @@ export async function* runAgentLoop(
     }
 
     // Build assistant message content blocks
-    const assistantContent: ContentBlock[] = [];
-    if (textAccum) {
-      assistantContent.push({ type: "text", text: textAccum });
-    }
     const parsedInputs = new Map<string, Record<string, unknown>>();
     for (const [id, call] of toolCalls) {
       let input: Record<string, unknown> = {};
@@ -718,13 +723,16 @@ export async function* runAgentLoop(
         input = { raw: call.argsJson };
       }
       parsedInputs.set(id, input);
-      assistantContent.push({
+      const toolBlock = assistantContent.find(block => block.type === "tool_use" && block.toolCallId === id);
+      const content: ContentBlock = {
         type: "tool_use",
         toolCallId: id,
         toolName: call.name,
         toolInput: input,
         ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
-      });
+      };
+      if (toolBlock) Object.assign(toolBlock, content);
+      else assistantContent.push(content);
     }
     conversation.addAssistantMessage(assistantContent);
 

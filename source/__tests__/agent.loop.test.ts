@@ -254,6 +254,31 @@ describe("runAgentLoop", () => {
     expect(provider.stream).toHaveBeenCalledTimes(1);
   });
 
+  it("persists ordered thinking blocks through a tool continuation and JSON history", async () => {
+    const signed = { type: "thinking" as const, thinking: "thought", signature: "signed" };
+    const redacted = { type: "redacted_thinking" as const, data: "encrypted" };
+    const provider = new MockProvider([
+      [
+        { type: "thinking_block", block: signed },
+        { type: "text_delta", text: "Checking" },
+        { type: "thinking_block", block: redacted },
+        { type: "tool_call_start", toolCallId: "c", toolName: "lookup" },
+        { type: "tool_call_delta", toolCallId: "c", argsJson: "{}" },
+        { type: "tool_call_end", toolCallId: "c" },
+      ],
+      [{ type: "text_delta", text: "done" }],
+    ]);
+    const conversation = new ConversationState(true);
+    conversation.addUserMessage("lookup");
+    const tools = new ToolRegistry();
+    tools.register(createTool("lookup", async () => ({ output: "ok", isError: false })));
+    const events = await collectEvents(runAgentLoop({ provider, conversation, toolRegistry: tools, model: "m", iterationsBudget: { remaining: 5, total: 5 } }));
+    const expected = [signed, { type: "text", text: "Checking" }, redacted, { type: "tool_use", toolCallId: "c", toolName: "lookup", toolInput: {} }];
+    expect(provider.stream.mock.calls[1]?.[0].messages[1]?.content).toEqual(expected);
+    expect(JSON.parse(JSON.stringify(conversation.getTranscript()))[1].content).toEqual(expected);
+    expect(events.some(e => e.type === "streaming_text" && e.text.includes("signed"))).toBe(false);
+  });
+
   it("persists provider metadata returned with a tool call", async () => {
     const provider = new MockProvider([
       [

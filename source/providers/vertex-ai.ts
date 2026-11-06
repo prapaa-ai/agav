@@ -1,3 +1,4 @@
+import { ClaudeThinkingBlocks, toClaudeThinkingBlock } from "./claude-thinking.js";
 import { createSign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { applyEffortPrompt, mapAnthropicEffort, mapOpenAIEffort, supportsNativeEffort } from "./effort.js";
@@ -411,6 +412,7 @@ export class VertexAIProvider implements LLMProvider {
 
     yield { type: "message_start" };
     const blockToolIds = new Map<number, string>();
+    const thinkingBlocks = new ClaudeThinkingBlocks();
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -422,6 +424,8 @@ export class VertexAIProvider implements LLMProvider {
       if (!payload || payload === "[DONE]") return;
       let event: any;
       try { event = JSON.parse(payload); } catch { return; }
+      const thinkingBlock = thinkingBlocks.accept(event);
+      if (thinkingBlock) yield thinkingBlock;
       // Claude usage is cumulative and later events can update any token category.
       const usage = event.type === "message_start" ? event.message?.usage
         : event.type === "message_delta" ? event.usage : undefined;
@@ -508,7 +512,8 @@ export class VertexAIProvider implements LLMProvider {
     const cacheIndex = messages.length - 2;
     return messages.map((message, msgIndex) => {
       const content = message.content.map((block) => this.toClaudeContentBlock(block));
-      if (msgIndex === cacheIndex && content.length > 0) {
+      if (msgIndex === cacheIndex && content.length > 0
+        && !["thinking", "redacted_thinking"].includes(String(content[content.length - 1]!.type))) {
         content[content.length - 1] = {
           ...content[content.length - 1],
           cache_control: { type: "ephemeral" },
@@ -519,6 +524,8 @@ export class VertexAIProvider implements LLMProvider {
   }
 
   private toClaudeContentBlock(block: ContentBlock): Record<string, unknown> {
+    const thinking = toClaudeThinkingBlock(block);
+    if (thinking) return thinking;
     if (block.type === "text") return { type: "text", text: block.text ?? "" };
     if (block.type === "tool_use") {
       return { type: "tool_use", id: block.toolCallId, name: block.toolName, input: block.toolInput ?? {} };

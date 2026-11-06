@@ -7,7 +7,11 @@ export interface InvocationReason {
 }
 
 export interface ContentBlock {
-  type: "text" | "tool_use" | "tool_result" | "image";
+  type: "text" | "tool_use" | "tool_result" | "image" | "thinking" | "redacted_thinking";
+  /** Claude thinking is opaque replay state, not user-visible text. */
+  thinking?: string;
+  signature?: string;
+  data?: string;
   text?: string;
   toolCallId?: string;
   toolName?: string;
@@ -38,6 +42,7 @@ export interface Message {
 }
 
 export type StreamEvent =
+  | { type: "thinking_block"; block: ContentBlock }
   | { type: "thinking_delta"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_call_start"; toolCallId: string; toolName: string }
