@@ -1,9 +1,11 @@
 /**
  * Slash commands that are safe to run while a turn is still in flight
  * (streaming or executing a tool call). Every other command is deferred
- * until the agent is idle. `exit` is included so users can quit mid-turn
- * instead of waiting for the CLI to become idle; the exit handler aborts
- * the active turn before tearing down.
+ * until the agent is idle, including commands that open interactive managers
+ * or change execution settings, conversation state, or workspace files.
+ * This is a command-level policy: read-only arguments of deferred commands
+ * still wait for idle. `exit` aborts the active turn before tearing down;
+ * `detach` intentionally leaves a worker-owned turn running.
  */
 export const MID_TURN_SAFE_COMMANDS = new Set([
   "help",
@@ -13,7 +15,14 @@ export const MID_TURN_SAFE_COMMANDS = new Set([
   "steer",
   "context",
   "status",
-  "memory",
+  // Metadata, committed snapshots, and text-only inspection (no UI takeover).
+  "name",
+  "copy",
+  "export",
+  "open",
+  "debug",
+  "changelog",
+  // These shortcuts never open the interactive /memory manager.
   "remember",
   "forget",
 ])

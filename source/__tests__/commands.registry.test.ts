@@ -93,7 +93,9 @@ describe("commands/registry mid-turn safety", () => {
     expect(isCommandAllowedMidTurn("steer")).toBe(true);
     expect(isCommandAllowedMidTurn("help")).toBe(true);
     expect(isCommandAllowedMidTurn("loop")).toBe(true);
-    expect(isCommandAllowedMidTurn("memory")).toBe(true);
+    for (const name of ["name", "copy", "export", "open", "debug", "changelog"]) {
+      expect(isCommandAllowedMidTurn(name), name).toBe(true);
+    }
     expect(isCommandAllowedMidTurn("remember")).toBe(true);
     expect(isCommandAllowedMidTurn("forget")).toBe(true);
     expect(isCommandAllowedMidTurn("context")).toBe(true);
@@ -106,8 +108,19 @@ describe("commands/registry mid-turn safety", () => {
   });
 
   it("defers other commands until the agent is idle", () => {
-    expect(isCommandAllowedMidTurn("model")).toBe(false);
-    expect(isCommandAllowedMidTurn("clear")).toBe(false);
+    const deferred = [
+      "agent", "agents", "branch", "clear", "compact", "customize", "deep",
+      "effort", "fast", "history", "job", "login", "logout", "mcp", "memory",
+      "model", "new", "permission", "plan", "resume", "schedule", "search",
+      "search-history", "skills", "undo", "voice", "watch", "workflows",
+    ];
+    const registry = new CommandRegistry();
+    expect(registry.list().map(command => command.name).sort()).toEqual(
+      [...MID_TURN_SAFE_COMMANDS, ...deferred].sort(),
+    );
+    for (const name of deferred) {
+      expect(isCommandAllowedMidTurn(name), name).toBe(false);
+    }
     expect(isCommandAllowedMidTurn("unknown-command")).toBe(false);
     expect(isCommandAllowedMidTurn("")).toBe(false);
   });
