@@ -110,6 +110,7 @@ export async function requestSessionSteer(id: string, generation: string, direct
   store = new SessionRuntimeStore()): Promise<void> {
   if (typeof directive !== "string" || !directive.trim()) throw new Error("Steering directive must not be empty.");
   if (subagentId !== undefined && (!subagentId || subagentId === "main")) throw new Error("Invalid child steering target.");
+  if (subagentId?.startsWith("skill-")) throw new Error("Steering is not supported for skill executions.");
   const target = subagentId ?? "main";
   await store.update(id, generation, record => {
     if (!active(record) || record.cancelRequested) throw new Error("Session is inactive; cannot steer.");

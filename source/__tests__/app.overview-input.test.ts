@@ -39,7 +39,7 @@ async function mount(title = "subagent", contextWindowPending = false) {
   const steer = vi.fn(async (directive: string, subagentId?: string) => {
     if (subagentId === undefined) queueSteer(directive);
   });
-  vi.mocked(useAgent).mockReturnValue({
+  const agentState = {
     messages: [], streamingText: "", thinkingText: "", isLoading: true,
     toolCalls: [], error: null, pendingConfirmation: null,
     pendingContextWindowRequest: contextWindowPending ? { model: "unknown" } : null,
@@ -48,7 +48,8 @@ async function mount(title = "subagent", contextWindowPending = false) {
     loadedPlugins: [], mcpServers: [], mcpPromptCommands: [], skillCommands: [], agentCommands: [],
     subagentStates: [progress(title), progress("second")], activePlan: null,
     steer, conversation: {}, addDisplayMessage: vi.fn(), isGenerationPaused: true, interveneWhilePaused,
-  } as unknown as ReturnType<typeof useAgent>);
+  } as unknown as ReturnType<typeof useAgent>;
+  vi.mocked(useAgent).mockReturnValue(agentState);
   const stdout = new EventEmitter() as NodeJS.WriteStream;
   Object.assign(stdout, { isTTY: true, columns: 100, rows: 30, write: () => true });
   const stdin = new EventEmitter() as NodeJS.ReadStream;
@@ -67,8 +68,13 @@ async function mount(title = "subagent", contextWindowPending = false) {
     stdin.emit("data", Buffer.from(text));
     await settle();
   };
+  const updateProgress = async (subagentStates: SubagentProgress[]) => {
+    vi.mocked(useAgent).mockReturnValue({ ...agentState, subagentStates });
+    instance.rerender(h(App, { config, keybindings: DEFAULT_KEYBINDINGS }));
+    await settle();
+  };
   await settle();
-  return { instance, key, stdin, settle, steer, interveneWhilePaused, resolveContextWindowRequest };
+  return { instance, key, stdin, settle, steer, interveneWhilePaused, resolveContextWindowRequest, updateProgress };
 }
 const details = () => display.mock.calls.filter(([props]) => props.mode === "detail");
 
@@ -147,6 +153,27 @@ describe("overview input routing", () => {
       await ui.key("\r");
       expect(ui.steer).toHaveBeenLastCalledWith("main directive", undefined);
       expect(getActiveSteers()).toEqual(["main directive"]);
+    } finally { ui.instance.unmount(); }
+  });
+
+  it.each([false, true])("steers main when the inspected child disappears (remaining child: %s)", async (remainingChild) => {
+    const ui = await mount();
+    try {
+      await ui.key("\r");
+      expect(details().at(-1)?.[0].progress.id).toBe("subagent");
+      display.mockClear();
+      await ui.updateProgress(remainingChild ? [progress("second")] : []);
+      expect(details()).toEqual([]);
+      await ui.key("/steer main directive");
+      await ui.key("\r");
+      expect(ui.steer).toHaveBeenCalledExactlyOnceWith("main directive", undefined);
+      expect(getActiveSteers()).toEqual(["main directive"]);
+      expect(ui.interveneWhilePaused).not.toHaveBeenCalled();
+      // Reusing the ID must not reopen an inspector that disappeared.
+      await ui.updateProgress([progress("subagent"), progress("second")]);
+      expect(details()).toEqual([]);
+      await ui.key("\r");
+      expect(details().at(-1)?.[0].progress.id).toBe("subagent");
     } finally { ui.instance.unmount(); }
   });
 

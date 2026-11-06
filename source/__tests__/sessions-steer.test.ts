@@ -87,6 +87,8 @@ describe("durable steering admission and consumption", () => {
     await expect(requestSessionSteer("missing", record.generation, "bad", undefined, store)).rejects.toThrow(/missing|stale/i);
     await expect(requestSessionSteer(record.id, "stale", "bad", undefined, store)).rejects.toThrow(/stale/i);
     await expect(requestSessionSteer(record.id, record.generation, "bad", "missing", store)).rejects.toThrow(/missing/i);
+    await store.update(record.id, record.generation, current => { current.subagentStates = [child("skill-running")]; });
+    await expect(requestSessionSteer(record.id, record.generation, "bad", "skill-running", store)).rejects.toThrow(/not supported/i);
     await store.update(record.id, record.generation, current => {
       current.subagentStates = [child()]; current.cancelledSubagents = ["child-1"];
     });

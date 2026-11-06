@@ -36,7 +36,7 @@ export interface SubagentToolDeps {
   confirmationQueue: Pick<ConfirmationQueue, "enqueue" | "rejectBySubagentId">;
   onProgressUpdate: (subagents: SubagentProgress[]) => void;
   /** Drain worker-delivered directives for this child at loop safe points. */
-  drainSteers?: (id: string) => Promise<string[]>;
+  drainSteers?: (id: string, final?: boolean) => Promise<string[]>;
   onSteerApplied?: (id: string, title: string, directives: string[]) => void;
   onTokenUsage: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   getSignal: () => AbortSignal | undefined;
@@ -326,7 +326,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           iterationsBudget: config.iterationsBudget,
           providerIdleTimeout: config.providerIdleTimeout,
           drainSteers: deps.drainSteers
-            ? async () => [...await deps.drainSteers!(id), ...steerQueue.drain()]
+            ? async (final) => [...await deps.drainSteers!(id, final), ...steerQueue.drain()]
             : steerQueue.drain,
         });
 
