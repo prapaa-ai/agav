@@ -49,6 +49,8 @@ export interface SessionRuntimeRecord {
   ownerPid?: number;
   cancelRequested?: boolean;
   cancelledSubagents?: string[];
+  /** Persisted before coordinator start; until a job is attached, this intent must never be started again. */
+  admissionPending?: true;
   error?: string;
 }
 export type CreateSessionRuntime = Omit<SessionRuntimeRecord, "version" | "id" | "generation" | "status" | "createdAt" | "updatedAt" | "messages" | "backgroundPermissionMode"> &
