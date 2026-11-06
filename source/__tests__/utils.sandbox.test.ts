@@ -648,17 +648,38 @@ describe("utils/sandbox", () => {
   });
 
   describe("network isolation (Stage A)", () => {
-    it("defaults to deny and round-trips the policy", async () => {
+    it("defaults to allow and round-trips the policy", async () => {
       vi.resetModules();
       const sandbox = await import("../utils/sandbox.js");
-      expect(sandbox.getSandboxNetwork()).toBe("deny");
+      expect(sandbox.getSandboxNetwork()).toBe("allow");
       sandbox.setSandboxNetwork("allow");
       expect(sandbox.getSandboxNetwork()).toBe("allow");
       sandbox.setSandboxNetwork("deny");
       expect(sandbox.getSandboxNetwork()).toBe("deny");
-      // Unknown values fall back to the safe default.
+      // Unknown values fail closed rather than granting host networking.
+      sandbox.setSandboxNetwork("allow");
       sandbox.setSandboxNetwork("bogus" as any);
       expect(sandbox.getSandboxNetwork()).toBe("deny");
+    });
+
+    it("shares host networking on seatbelt and bubblewrap when no policy is set", async () => {
+      vi.resetModules();
+      const cp = await import("node:child_process");
+      const fs = await import("node:fs");
+      const sandbox = await import("../utils/sandbox.js");
+      vi.mocked(cp.execFile).mockImplementation((...args: any[]) => { args.at(-1)(null, "ok", ""); return {} as any; });
+
+      await sandbox.runInSandbox({ command: "echo test", cwd: "/tmp/project", timeout: 1000, maxBuffer: 1024, forceBackend: "seatbelt" });
+      const profile = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
+      expect(profile).not.toContain("(deny network*)");
+      // Filesystem protections are unaffected by the network default.
+      expect(profile).toContain("(deny file-write*)");
+      expect(profile).toContain('(deny file-read* (subpath (param "HOME_SSH")))');
+
+      await sandbox.runInSandbox({ command: "echo test", cwd: "/home/tester/project", timeout: 1000, maxBuffer: 1024, forceBackend: "bubblewrap" });
+      const args = vi.mocked(spawn).mock.calls.find(call => call[0] === "bwrap")![1] as string[];
+      expect(args).not.toContain("--unshare-net");
+      expect(args).toContain("--unshare-pid");
     });
 
     it("seatbelt profile denies network with loopback carve-out when deny", async () => {
@@ -724,6 +745,10 @@ describe("utils/sandbox", () => {
         if (args[0] === "/bin/sh" && args[1]?.[1]?.includes("bwrap")) return Buffer.from("/usr/bin/bwrap\n");
         throw new Error("not found");
       });
+      const implicit = sandbox.buildSandboxedCommand({ cmd: "npx", args: ["vitest", "run"], cwd: "/home/tester/project" });
+      expect(implicit.backend).toBe("bubblewrap");
+      expect(implicit.args).not.toContain("--unshare-net");
+      implicit.cleanup();
       sandbox.setSandboxNetwork("deny");
       const built = sandbox.buildSandboxedCommand({ cmd: "npx", args: ["vitest", "run"], cwd: "/home/tester/project" });
       expect(built.backend).toBe("bubblewrap");

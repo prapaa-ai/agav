@@ -108,7 +108,7 @@ export function sessionExecutionConfig(record: SessionRuntimeRecord, local: Agav
     allowedTools: record.allowedTools, hooks: record.hooks,
     permissionMode: clampPermissionMode(record.permissionMode, permissionFloor), orgPermissionFloor: permissionFloor,
     sandboxRequired: record.sandboxRequired || local.sandboxRequired === true || isSandboxRequired(),
-    sandboxNetwork: record.sandboxNetwork ?? (local.sandboxNetwork === "allow" ? "allow" : "deny"),
+    sandboxNetwork: record.sandboxNetwork ?? (local.sandboxNetwork === "deny" ? "deny" : "allow"),
   };
   const error = orgPolicyError(config);
   if (error) throw new Error(`Session cannot execute: ${error}`);
@@ -412,7 +412,7 @@ export async function runSessionRunner(id: string | undefined, expectedGeneratio
     const config = sessionExecutionConfig(record, local);
     applySandboxRequiredPolicy({ flagSet: record.sandboxRequired, configValue: config.sandboxRequired,
       detectBackend: detectSandboxBackend, setRequired: setSandboxRequired, warn: message => process.stderr.write(message) });
-    setSandboxNetwork(config.sandboxNetwork === "allow" ? "allow" : "deny");
+    setSandboxNetwork(config.sandboxNetwork === "deny" ? "deny" : "allow");
     handle = startSessionExecution(id, { store, config, provider: createProvider(config), expectedGeneration });
   } catch (error) {
     await store.update(id, record.generation, current => {

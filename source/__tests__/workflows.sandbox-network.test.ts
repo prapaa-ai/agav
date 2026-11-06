@@ -101,7 +101,8 @@ describe("detached runner network restoration", () => {
 		["deny", "allow", "deny"],
 		["allow", "deny", "allow"],
 		[undefined, "allow", "allow"],
-		[undefined, undefined, "deny"],
+		[undefined, undefined, "allow"],
+		[undefined, "deny", "deny"],
 	] as const)("stored %s with disk %s executes under %s", async (stored, disk, expected) => {
 		const run = await consented(stored ? { sandboxNetwork: stored } : {});
 		setSandboxNetwork(expected === "allow" ? "deny" : "allow");

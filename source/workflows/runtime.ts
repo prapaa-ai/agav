@@ -249,7 +249,7 @@ export async function executeRun(store: WorkflowStore, id: string, registry: Too
     if (["passed", "failed", "cancelled", "timed_out"].includes(run.status)) return run;
     // Resolve and persist under the execution lock, before dispatching tools or agents. A stored deny is sticky.
     // Detached runners pass the restored launch policy; foreground callers pass their effective invocation config.
-    const sandboxNetwork = run.sandboxNetwork === "deny" || sessionConfig.sandboxNetwork !== "allow" ? "deny" : "allow";
+    const sandboxNetwork = run.sandboxNetwork === "deny" || sessionConfig.sandboxNetwork === "deny" ? "deny" : "allow";
     if (run.sandboxNetwork !== sandboxNetwork) {
       run.sandboxNetwork = sandboxNetwork;
       await store.save(run);
