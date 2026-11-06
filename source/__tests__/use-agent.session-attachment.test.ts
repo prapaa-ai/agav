@@ -27,6 +27,13 @@ vi.mock("../agent/planner.js", () => ({
   adoptPlanScope: vi.fn(), prunePlans: async () => {}, formatPlanForPrompt: () => "", ensurePlanFile: async () => {},
 }));
 
+const requestSessionSteer = vi.hoisted(() => vi.fn(async (_id: string, _generation: string, _directive: string, _subagentId?: string) => {}));
+vi.mock("../sessions/client.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../sessions/client.js")>(),
+  requestSessionSteer,
+}));
+
+import { clearSteers, createSteerQueue, drainSteers } from "../commands/steer.js";
 import { useAgent } from "../hooks/use-agent.js";
 import render from "../ink/render.js";
 import { SessionRuntimeStore } from "../sessions/store.js";
@@ -56,6 +63,8 @@ async function until(predicate: () => boolean | Promise<boolean>, flush: () => P
 
 beforeEach(async () => {
   vi.useRealTimers();
+  requestSessionSteer.mockReset().mockResolvedValue(undefined);
+  clearSteers();
   root = await mkdtemp(join(tmpdir(), "agav-use-agent-attachment-"));
   store = new SessionRuntimeStore();
 });
@@ -111,6 +120,44 @@ async function mount(initial?: SessionRecord) {
 }
 
 describe("useAgent durable session attachment", () => {
+  it("routes foreground directives to the main queue or only the named child", async () => {
+    const child = createSteerQueue("steer-child");
+    try {
+      const ui = await mount();
+      await ui.agent().steer("main directive");
+      await ui.agent().steer("child directive", "steer-child");
+      expect(drainSteers()).toEqual(["main directive"]);
+      expect(child.drain()).toEqual(["child directive"]);
+      expect(requestSessionSteer).not.toHaveBeenCalled();
+      await expect(ui.agent().steer("stale directive", "missing-child")).rejects.toThrow("not active");
+      expect(drainSteers()).toEqual([]);
+    } finally { child.dispose(); }
+  });
+
+  it.each([undefined, "sa-1"])("captures worker ownership before asynchronous steering delivery (%s)", async subagentId => {
+    const worker = await runtime();
+    const next = await runtime();
+    const ui = await mount(worker.session);
+    await ui.until(() => !!ui.agent().pendingConfirmation);
+    const pending = ui.agent().steer("worker directive", subagentId);
+    ui.agent().loadSession(next.session);
+    await pending;
+    expect(requestSessionSteer).toHaveBeenCalledExactlyOnceWith(
+      worker.record.id, worker.record.generation, "worker directive", subagentId,
+    );
+    expect(drainSteers()).toEqual([]);
+    expect(ui.stream).not.toHaveBeenCalled();
+  });
+
+  it("propagates worker steering failures without falling back to the foreground queue", async () => {
+    const worker = await runtime();
+    const ui = await mount(worker.session);
+    await ui.until(() => !!ui.agent().pendingConfirmation);
+    requestSessionSteer.mockRejectedValueOnce(new Error("worker stopped"));
+    await expect(ui.agent().steer("rejected directive")).rejects.toThrow("worker stopped");
+    expect(drainSteers()).toEqual([]);
+  });
+
   for (const entry of ["loadSession", "CLI resumeRuntime"] as const) {
     it.each(["yes", "no"] as const)(`${entry} displays durable consent and forwards %s to the waiting worker`, async choice => {
       const worker = await runtime();

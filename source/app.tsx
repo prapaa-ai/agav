@@ -307,6 +307,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     detachSession,
     canDetach,
     isWorkerAttached,
+    steer,
     cancelSubagent,
     clearMessages,
     confirmTool,
@@ -1418,6 +1419,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             exit,
             isLoading,
             isWorkerAttached: () => isWorkerAttached,
+            steer: (directive) => steer(directive, focusedSubagentId ?? undefined),
+            steerTargetId: focusedSubagentId ?? undefined,
             getMCPAuthenticationRequired,
             authenticateMCPServer,
             logoutMCPServer,
@@ -1612,7 +1615,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
+    [steer, focusedSubagentId, detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.
