@@ -35,12 +35,16 @@ export async function failSessionWorkerBeforeAdmission(store: SessionRuntimeStor
     if (latest.status === "starting" && !latest.jobId && !latest.ownerPid) {
       latest.status = "failed";
       latest.error = message;
+      delete latest.admissionPending;
     }
   });
   return new SessionWorkerLaunchError(message, saved.status === "failed" ? "not-admitted" : "unknown", saved, cause);
 }
 
-const UNCERTAIN_ADMISSION = "Session worker admission is uncertain; ownership retained.";
+/** Legacy records stored the admission barrier in `error`; still honor (and clear) it. */
+const LEGACY_UNCERTAIN_ADMISSION = "Session worker admission is uncertain; ownership retained.";
+const admissionPending = (record: SessionRuntimeRecord): boolean =>
+  record.admissionPending === true || record.error === LEGACY_UNCERTAIN_ADMISSION;
 
 /** Length-prefix the id so two valid id/generation pairs cannot alias. */
 export function sessionWorkerRequestId(record: Pick<SessionRuntimeRecord, "id" | "generation">): string {
@@ -65,7 +69,7 @@ export function sessionWorkerStartRequest(record: SessionRuntimeRecord, cliPath:
 export async function launchSessionWorker(record: SessionRuntimeRecord, deps: SessionWorkerLaunchDeps): Promise<SessionWorkerLaunchResult> {
   const current = await deps.store.read(record.id);
   if (!current || current.generation !== record.generation) throw new Error(`Missing or stale session runtime generation: ${record.id}`);
-  let crossedAdmission = current.error === UNCERTAIN_ADMISSION || !!current.jobId || current.status !== "starting";
+  let crossedAdmission = admissionPending(current) || !!current.jobId || current.status !== "starting";
   const requestId = sessionWorkerRequestId(current);
   const lookup = async (): Promise<JobSummary | undefined> => {
     const found = await deps.coordinator.findByRequestId!.call(deps.coordinator, requestId);
@@ -77,7 +81,8 @@ export async function launchSessionWorker(record: SessionRuntimeRecord, deps: Se
     // Preserve status/approval changes made by a fast-starting worker, and fence stale generations.
     return deps.store.update(current.id, current.generation, latest => {
       latest.jobId = job.jobId;
-      if (latest.error === UNCERTAIN_ADMISSION) delete latest.error;
+      delete latest.admissionPending;
+      if (latest.error === LEGACY_UNCERTAIN_ADMISSION) delete latest.error;
       if (isTerminalLifecycle(job.state) && ["starting", "running", "needs-approval"].includes(latest.status)) {
         latest.status = "interrupted";
         latest.error = `Session worker ended (${job.state}) before recording completion.`;
@@ -103,11 +108,11 @@ export async function launchSessionWorker(record: SessionRuntimeRecord, deps: Se
     // Persist an ownership barrier BEFORE start. A crash or an empty subsequent lookup is not
     // evidence of non-admission. A later call may attach a job, but may not start this intent again.
     await deps.store.update(current.id, current.generation, latest => {
-      if (latest.jobId || latest.status !== "starting" || latest.error === UNCERTAIN_ADMISSION) {
+      if (latest.jobId || latest.status !== "starting" || admissionPending(latest)) {
         crossedAdmission = true;
         throw new Error(`Session ${latest.id} changed ownership during launch; refusing to replay this execution.`);
       }
-      latest.error = UNCERTAIN_ADMISSION;
+      latest.admissionPending = true;
     });
     crossedAdmission = true;
     let job: JobSummary;
