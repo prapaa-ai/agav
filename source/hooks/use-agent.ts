@@ -877,7 +877,7 @@ export function useAgent(
   const renameSession = useCallback((name: string) => {
     const attached = attachmentRef.current;
     if (attached.attached) {
-      const record = attached.snapshot?.record;
+      const record = attached.target;
       if (!record) {
         setError("Session is still attaching; retry the rename once it is loaded.");
         return;
@@ -893,8 +893,11 @@ export function useAgent(
     }
     sessionNameRef.current = name;
     setSessionName(name);
+    // Worker preparation has not published its permanent id yet. Keep the name
+    // in memory until onCreated can persist metadata against that id.
+    if (config.backgroundJobsEnabled === true && submitPendingRef.current) return;
     saveNow();
-  }, [saveNow]);
+  }, [saveNow, config.backgroundJobsEnabled]);
 
   /** Release a finished execution, not the conversation identity. */
   const leaveFinishedAttachment = useCallback(() => {
@@ -1198,7 +1201,7 @@ export function useAgent(
                 previousGeneration: previousExecutionRef.current,
                 permissionMode: getEffectivePermissionMode(), iterationsBudget,
                 signal: abortController.signal,
-                onCreated: created => {
+                onCreated: async created => {
                   abortController.signal.throwIfAborted();
                   if (requestEpoch !== requestEpochRef.current || sessionRevision !== sessionRevisionRef.current) {
                     throw new Error("Session selection changed before worker admission.");
@@ -1212,6 +1215,11 @@ export function useAgent(
                   attachment.attach(created.id, created.generation);
                   attachmentRef.current = { ...attachmentRef.current, attached: true, live: true,
                     target: { id: created.id, generation: created.generation }, snapshot: null };
+                  const name = sessionNameRef.current;
+                  if (name !== undefined) {
+                    const { renameSession } = await import("../config/history.js");
+                    await renameSession(created.id, name);
+                  }
                 },
               });
               if (abortRef.current !== abortController || requestEpoch !== requestEpochRef.current ||

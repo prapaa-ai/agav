@@ -39,6 +39,7 @@ import { refreshStableContext } from "../utils/system-prompt.js";
 import { useAgent } from "../hooks/use-agent.js";
 import render from "../ink/render.js";
 import { SessionRuntimeStore } from "../sessions/store.js";
+import * as history from "../config/history.js";
 
 const config: AgavConfig = { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000,
   maxIterations: 4, errorRetries: 1, permissionMode: "ask", backgroundJobsEnabled: true };
@@ -98,6 +99,108 @@ async function mount(overrides: Partial<AgavConfig> = {}) {
 }
 
 describe("useAgent review launch boundaries", () => {
+  it.each(["preparation", "created before publication"] as const)("renames the worker's established id during %s without saving a duplicate", async phase => {
+    let release!: () => void;
+    const launchGate = new Promise<void>(resolve => { release = resolve; });
+    let waiting = false;
+    let created!: import("../sessions/store.js").SessionRuntimeRecord;
+    if (phase === "preparation") {
+      vi.mocked(refreshStableContext).mockImplementationOnce(async () => {
+        waiting = true;
+        await launchGate;
+        return "";
+      });
+    }
+    vi.mocked(startInteractiveSessionWorker).mockImplementationOnce(async (workerConfig, conversation, options) => {
+      created = await createSessionExecution(store, workerConfig, { conversation, ...options });
+      if (phase === "created before publication") {
+        waiting = true;
+        await launchGate;
+      }
+      await options.onCreated?.(created);
+      return store.update(created.id, created.generation, record => {
+        record.jobId = "durable-worker-job";
+        record.status = "running";
+      });
+    });
+    const save = vi.spyOn(history, "saveSession");
+    const ui = await mount();
+    try {
+      expect(await ui.agent().submit("Worker transcript")).toBe(true);
+      await ui.until(() => waiting);
+      ui.agent().renameSession("Name during launch");
+      await ui.until(() => ui.agent().sessionName === "Name during launch");
+      expect(save).not.toHaveBeenCalled();
+      release();
+      await ui.until(async () => !!created && (await store.read(created.id))?.name === "Name during launch");
+      expect(ui.agent().sessionId).toBe(created.id);
+      expect(await store.list()).toHaveLength(1);
+      expect((await store.read(created.id))?.messages).toEqual(created.messages);
+      expect(save).not.toHaveBeenCalled();
+      expect(ui.stream).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await ui.until(() => ui.agent().canDetach);
+    }
+  });
+
+  it.each(["failure", "cancel"] as const)("keeps a rename for the next launch after preparation %s", async outcome => {
+    let release!: () => void;
+    const preparation = new Promise<void>(resolve => { release = resolve; });
+    let waiting = false;
+    vi.mocked(refreshStableContext).mockImplementationOnce(async () => {
+      waiting = true;
+      await preparation;
+      if (outcome === "failure") throw new Error("preparation failed");
+      return "";
+    });
+    const save = vi.spyOn(history, "saveSession");
+    const ui = await mount();
+    try {
+      expect(await ui.agent().submit("First attempt")).toBe(true);
+      await ui.until(() => waiting);
+      ui.agent().renameSession("Preserved name");
+      if (outcome === "cancel") await ui.agent().cancel();
+      release();
+      await ui.until(() => !ui.agent().isLoading);
+      expect(ui.agent().sessionName).toBe("Preserved name");
+      expect(ui.agent().sessionId).toBeUndefined();
+      expect(save).not.toHaveBeenCalled();
+      expect(startInteractiveSessionWorker).not.toHaveBeenCalled();
+      expect(await ui.agent().submit("Retry")).toBe(true);
+      await ui.until(() => ui.agent().canDetach);
+      const record = await store.read(ui.agent().sessionId!);
+      expect(record?.name).toBe("Preserved name");
+      expect(await store.list()).toHaveLength(1);
+    } finally { release(); }
+  });
+
+  it("renames by the published target before its first attachment snapshot", async () => {
+    let release!: () => void;
+    const admission = new Promise<void>(resolve => { release = resolve; });
+    const subscribe = vi.spyOn(client, "subscribeSession").mockReturnValue(() => {});
+    vi.mocked(startInteractiveSessionWorker).mockImplementationOnce(async (workerConfig, conversation, options) => {
+      const record = await createSessionExecution(store, workerConfig, { conversation, ...options });
+      await options.onCreated?.(record);
+      await admission;
+      return record;
+    });
+    const ui = await mount();
+    try {
+      expect(await ui.agent().submit("Start work")).toBe(true);
+      await ui.until(() => !!ui.agent().sessionId && subscribe.mock.calls.length === 1);
+      const id = ui.agent().sessionId!;
+      ui.agent().renameSession("Published name");
+      await ui.until(async () => (await store.read(id))?.name === "Published name");
+      expect(ui.agent().sessionName).toBe("Published name");
+      expect(ui.agent().error).toBeNull();
+      expect(await store.list()).toHaveLength(1);
+    } finally {
+      release();
+      await vi.mocked(startInteractiveSessionWorker).mock.results[0]?.value;
+    }
+  });
+
   it("releases the cancelled launch latch after onCreated and a delayed successful response", async () => {
     let release!: () => void;
     const admission = new Promise<void>(resolve => { release = resolve; });
