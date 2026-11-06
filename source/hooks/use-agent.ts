@@ -237,6 +237,7 @@ export function useAgent(
   const sessionIdRef = useRef<string | null>(resumeSessionId ?? null);
   const [sessionId, setSessionId] = useState<string | undefined>(resumeSessionId);
   const sessionNameRef = useRef<string | undefined>(resumeSessionName);
+  const pendingSessionNameRef = useRef<string | undefined>(resumeSessionId ? undefined : resumeSessionName);
   const [sessionName, setSessionName] = useState<string | undefined>(resumeSessionName);
   const [transcriptRevision, setTranscriptRevision] = useState(0);
   const [mcpServers, setMcpServers] = useState<string[]>([]);
@@ -635,6 +636,7 @@ export function useAgent(
     sessionIdRef.current = null;
     previousExecutionRef.current = undefined;
     setSessionId(undefined);
+    pendingSessionNameRef.current = undefined;
     sessionNameRef.current = undefined;
     setSessionName(undefined);
     sessionPermissionModeRef.current = undefined;
@@ -833,6 +835,7 @@ export function useAgent(
     sessionIdRef.current = session.id;
     previousExecutionRef.current = session.runtime?.generation;
     setSessionId(session.id);
+    pendingSessionNameRef.current = undefined;
     sessionNameRef.current = session.name;
     setSessionName(session.name);
     // Restore the session's saved permission mode (clamped to the current org
@@ -865,6 +868,7 @@ export function useAgent(
     sessionIdRef.current = id;
     previousExecutionRef.current = undefined;
     setSessionId(id);
+    pendingSessionNameRef.current = undefined;
     sessionNameRef.current = name;
     setSessionName(name);
     setPlanScope(id);
@@ -876,8 +880,9 @@ export function useAgent(
 
   const renameSession = useCallback((name: string) => {
     const attached = attachmentRef.current;
-    if (attached.attached) {
-      const record = attached.target;
+    const preparingWorker = config.backgroundJobsEnabled === true && submitPendingRef.current;
+    if (attached.attached || (preparingWorker && sessionIdRef.current)) {
+      const record = attached.attached ? attached.target : { id: sessionIdRef.current! };
       if (!record) {
         setError("Session is still attaching; retry the rename once it is loaded.");
         return;
@@ -895,7 +900,10 @@ export function useAgent(
     setSessionName(name);
     // Worker preparation has not published its permanent id yet. Keep the name
     // in memory until onCreated can persist metadata against that id.
-    if (config.backgroundJobsEnabled === true && submitPendingRef.current) return;
+    if (preparingWorker) {
+      pendingSessionNameRef.current = name;
+      return;
+    }
     saveNow();
   }, [saveNow, config.backgroundJobsEnabled]);
 
@@ -1215,10 +1223,15 @@ export function useAgent(
                   attachment.attach(created.id, created.generation);
                   attachmentRef.current = { ...attachmentRef.current, attached: true, live: true,
                     target: { id: created.id, generation: created.generation }, snapshot: null };
-                  const name = sessionNameRef.current;
+                  const { renameSession, loadSession } = await import("../config/history.js");
+                  // Only replay an explicit rename made before the first permanent id.
+                  // When migrating saved history, inherit persisted metadata, not this
+                  // client's cached name (another client may have renamed the session).
+                  const pendingName = pendingSessionNameRef.current;
+                  const name = pendingName ?? (created.name === undefined ? (await loadSession(created.id))?.name : undefined);
                   if (name !== undefined) {
-                    const { renameSession } = await import("../config/history.js");
                     await renameSession(created.id, name);
+                    if (pendingSessionNameRef.current === pendingName) pendingSessionNameRef.current = undefined;
                   }
                 },
               });
