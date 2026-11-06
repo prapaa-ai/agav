@@ -14,7 +14,7 @@ import { ConversationState } from "../agent/conversation.js";
 import { runAgentLoop } from "../agent/loop.js";
 import { ToolRegistry as ToolRegistryClass } from "./registry.js";
 import { createWorktree, removeWorktree, applyWorktreeChanges, type WorkerWorktree } from "../utils/worktree.js";
-import { createSteerQueue, formatSteersForPrompt } from "../commands/steer.js";
+import { createSteerQueue } from "../commands/steer.js";
 
 const MAX_CONCURRENT = 5;
 export interface SubagentToolDeps {
@@ -35,6 +35,8 @@ export interface SubagentToolDeps {
   getProviderConfig?: () => AgavConfig;
   confirmationQueue: Pick<ConfirmationQueue, "enqueue" | "rejectBySubagentId">;
   onProgressUpdate: (subagents: SubagentProgress[]) => void;
+  /** Drain worker-delivered directives for this child at loop safe points. */
+  drainSteers?: (id: string) => Promise<string[]>;
   onSteerApplied?: (id: string, title: string, directives: string[]) => void;
   onTokenUsage: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   getSignal: () => AbortSignal | undefined;
@@ -227,14 +229,12 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       conversation.setContextWindow(contextWindow);
       conversation.addUserMessage(task);
 
-      const steers = formatSteersForPrompt();
-      const steerQueue = createSteerQueue();
+      const steerQueue = createSteerQueue(id);
       const subagentSystemPrompt = [
         config.systemPrompt,
         "",
         "You are a subagent working on a specific task. Complete it thoroughly and report your results. " +
         "Do not ask questions — work with the information provided. Be concise in your final response.",
-        steers ? "\n" + steers : "",
       ]
         .filter(Boolean)
         .join("\n");
@@ -325,7 +325,9 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           effort: config.effort,
           iterationsBudget: config.iterationsBudget,
           providerIdleTimeout: config.providerIdleTimeout,
-          drainSteers: steerQueue.drain,
+          drainSteers: deps.drainSteers
+            ? async () => [...await deps.drainSteers!(id), ...steerQueue.drain()]
+            : steerQueue.drain,
         });
 
         const MAX_RECENT_ACTIONS = 10;
