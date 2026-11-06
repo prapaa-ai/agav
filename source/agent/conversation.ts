@@ -297,6 +297,14 @@ export class ConversationState {
     return split;
   }
 
+  /** Claude signatures bind to the original prefix, system prompt, and tools. */
+  private withoutThinking(messages: Message[]): Message[] {
+    return messages.map((msg) => ({
+      ...msg,
+      content: msg.content.filter((block) => block.type !== "thinking" && block.type !== "redacted_thinking"),
+    })).filter((msg) => msg.content.length > 0);
+  }
+
   private trimToolResults(targetTokens: number, preserveRecent: number): number {
     let freed = 0;
     const trimBoundary = Math.max(0, this.messages.length - preserveRecent);
@@ -319,7 +327,11 @@ export class ConversationState {
 
       if (currentTokens <= targetTokens) break;
     }
-    if (freed > 0) this.invalidateTokenCache();
+    if (freed > 0) {
+      // Even trim-only compaction changes the prefix of later thinking blocks.
+      this.messages = this.withoutThinking(this.messages);
+      this.invalidateTokenCache();
+    }
     return freed;
   }
 
@@ -375,7 +387,8 @@ export class ConversationState {
 
     if (summarize) {
       try {
-        summaryText = await summarize(droppedMessages);
+        // Summarization uses a different system prompt and no tools.
+        summaryText = await summarize(this.withoutThinking(droppedMessages));
       } catch {
         summaryText = placeholder;
       }
@@ -395,7 +408,7 @@ export class ConversationState {
       internal: true,
     };
 
-    this.messages = this.sanitizeMessages([summary, ...this.messages.slice(keepFrom)]);
+    this.messages = this.sanitizeMessages([summary, ...this.withoutThinking(this.messages.slice(keepFrom))]);
     this._compacted = true;
     this._lastCompactionSummary = summaryText;
     this.invalidateTokenCache();

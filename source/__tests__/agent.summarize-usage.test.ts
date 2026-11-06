@@ -1,7 +1,8 @@
+import { thinkingBlocks } from "./helpers/claude-thinking.js";
 import { describe, expect, it, vi } from "vitest";
 import { runAgentLoop, type AgentEvent } from "../agent/loop.js";
 import { ConversationState } from "../agent/conversation.js";
-import type { LLMProvider, StreamEvent, StreamParams } from "../providers/types.js";
+import type { ContentBlock, LLMProvider, StreamEvent, StreamParams } from "../providers/types.js";
 import { ToolRegistry } from "../tools/registry.js";
 
 // Providers can report input/cache usage at message start and output usage at
@@ -18,16 +19,18 @@ describe("summarizer split usage accounting", () => {
     if (path === "automatic") conversation.setContextWindow(1000);
     for (let i = 0; i < 10; i++) {
       if (i % 2 === 0) conversation.addUserMessage("context ".repeat(100));
-      else conversation.addAssistantMessage([{ type: "text", text: "response ".repeat(100) }]);
+      else conversation.addAssistantMessage([...thinkingBlocks as ContentBlock[], { type: "text", text: "response ".repeat(100) }]);
     }
 
     let normalRequests = 0;
     let summaryRequests = 0;
+    const summaryMessages: StreamParams["messages"][] = [];
     const provider: LLMProvider = {
       name: "mock",
       stream: vi.fn((params: StreamParams) => (async function* (): AsyncGenerator<StreamEvent> {
         if (params.systemPrompt?.startsWith("Summarize this conversation")) {
           summaryRequests++;
+          summaryMessages.push(structuredClone(params.messages));
           yield { type: "usage", inputTokens: 100, outputTokens: 0, cacheReadTokens: 7 };
           yield { type: "text_delta", text: "summary" };
           yield { type: "usage", inputTokens: 0, outputTokens: 9, cacheWriteTokens: 3 };
@@ -51,6 +54,8 @@ describe("summarizer split usage accounting", () => {
     })) events.push(event);
 
     expect(summaryRequests).toBe(1);
+    expect(summaryMessages.flat(2).flatMap(m => m.content).some(b => b.type === "thinking" || b.type === "redacted_thinking")).toBe(false);
+    expect(conversation.getMessages().flatMap(m => m.content).some(b => b.type === "thinking" || b.type === "redacted_thinking")).toBe(false);
     expect(normalRequests).toBe(path === "automatic" ? 1 : 2);
     expect(events.filter(event => event.type === "compacted")).toHaveLength(1);
     expect(events.filter(event => event.type === "usage")).toEqual([

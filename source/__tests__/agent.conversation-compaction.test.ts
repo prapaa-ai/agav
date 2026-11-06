@@ -1,3 +1,4 @@
+import { thinkingBlocks } from "./helpers/claude-thinking.js";
 import { describe, expect, it } from "vitest";
 
 import { ConversationState } from "../agent/conversation.js";
@@ -28,6 +29,64 @@ function textBlocks(messages: Message[]): string[] {
 }
 
 describe("conversation compaction", () => {
+  it.each(["summary", "failure", "placeholder"])("strips invalidated thinking during %s compaction without altering the transcript", async (mode) => {
+    const convo = new ConversationState(true);
+    convo.setModel("test");
+    for (let i = 0; i < 10; i++) {
+      convo.addUserMessage(`question ${i} `.repeat(200));
+      convo.addAssistantMessage([
+        ...thinkingBlocks as ContentBlock[],
+        { type: "tool_use", toolCallId: `c${i}`, toolName: "read_file", toolInput: {} },
+      ]);
+      convo.addToolResults([{ type: "tool_result", toolCallId: `c${i}`, toolResult: "ok" }]);
+    }
+    // A thinking-only message must be removed rather than sent as empty content.
+    convo.addAssistantMessage(thinkingBlocks as ContentBlock[]);
+    const transcript = convo.getTranscript();
+    expect(convo.getMessages().some(m => m.content.some(b => b.type === "thinking"))).toBe(true);
+    let summaryCalls = 0;
+    let summarized: Message[] = [];
+    const result = await convo.compactIfNeeded(true, mode === "placeholder" ? undefined : async (messages) => {
+      summaryCalls++;
+      summarized = messages;
+      if (mode === "failure") throw new Error("summary failed");
+      return "summary";
+    });
+    expect(result.compacted).toBe(true);
+    expect(summaryCalls).toBe(mode === "placeholder" ? 0 : 1);
+    if (mode !== "placeholder") expect(summarized.length).toBeGreaterThan(0);
+    expect(summarized.every(m => m.content.length > 0)).toBe(true);
+    expect(summarized.flatMap(m => m.content).some(b => b.type === "thinking" || b.type === "redacted_thinking")).toBe(false);
+    expect(convo.getMessages().every(m => m.content.length > 0)).toBe(true);
+    expect(convo.getMessages().flatMap(m => m.content).some(b => b.type === "thinking" || b.type === "redacted_thinking")).toBe(false);
+    expect(convo.getTranscript()).toEqual(transcript);
+  });
+
+  it("invalidates thinking even when trimming tool results avoids full compaction", async () => {
+    const convo = new ConversationState();
+    convo.setModel("test");
+    convo.setContextWindow(10000);
+    convo.addUserMessage("hello");
+    convo.addAssistantMessage([{ type: "tool_use", toolCallId: "c", toolName: "read_file", toolInput: {} }]);
+    convo.addToolResults([{ type: "tool_result", toolCallId: "c", toolResult: "large ".repeat(10000) }]);
+    for (let i = 0; i < 5; i++) {
+      convo.addAssistantMessage([...thinkingBlocks as ContentBlock[], { type: "text", text: "answer" }]);
+      convo.addUserMessage("continue");
+    }
+    expect((await convo.compactIfNeeded()).compacted).toBe(false);
+    expect(convo.getMessages()[2]?.content[0]?.toolResult).toContain("...(trimmed)");
+    expect(convo.getMessages().flatMap(m => m.content).some(b => b.type === "thinking" || b.type === "redacted_thinking")).toBe(false);
+  });
+
+  it("preserves thinking when context is unchanged", async () => {
+    const convo = new ConversationState();
+    convo.addUserMessage("hello");
+    convo.addAssistantMessage([...thinkingBlocks as ContentBlock[], { type: "text", text: "answer" }]);
+    const original = structuredClone(convo.getMessages());
+    expect((await convo.compactIfNeeded()).compacted).toBe(false);
+    expect(convo.getMessages()).toEqual(original);
+  });
+
   // A blank summary used to be stored verbatim, and every later request failed
   // with "text content blocks must be non-empty" until the session was cleared.
   it("falls back to a placeholder when the summarizer returns nothing", async () => {
