@@ -28,7 +28,11 @@ vi.mock("../config/history.js", () => ({
 }));
 
 import type { SessionRecord } from "../config/history.js";
-import { pickSession } from "../utils/session-picker.js";
+import { pickSession, START_NEW_SESSION, type PickSessionResult } from "../utils/session-picker.js";
+
+// Resumed session id, or the non-session outcome ("new" / null) itself.
+const pickedId = (result: PickSessionResult) =>
+  result !== null && typeof result === "object" ? result.id : result;
 
 type FakeStdout = NodeJS.WriteStream & { chunks: string[] };
 type FakeStdin = NodeJS.ReadStream & { send: (s: string) => void };
@@ -448,7 +452,7 @@ describe("session picker rename view", () => {
       expect(allOutput(stdout)).toContain("Resume Session");
       expect(renameSession).not.toHaveBeenCalled();
       stdin.send("\n");
-      expect((await promise)?.id).toBe("aaaaaaaa1111");
+      expect(pickedId(await promise)).toBe("aaaaaaaa1111");
       expect(renameSession).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -516,7 +520,7 @@ describe("session picker rename view", () => {
       // No stale Esc timer may cancel the list after returning from rename.
       await vi.advanceTimersByTimeAsync(50);
       stdin.send("\n");
-      expect((await promise)?.id).toBe("aaaaaaaa1111");
+      expect(pickedId(await promise)).toBe("aaaaaaaa1111");
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       stdin.send("\x1b");
@@ -990,7 +994,7 @@ describe("session picker pagination", () => {
 
     stdin.send("\r");
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[30]!.id);
+    expect(pickedId(picked)).toBe(sessions[30]!.id);
   });
 
   it("reports how many sessions remain above and below the viewport", async () => {
@@ -1065,7 +1069,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[3]!.id);
+    expect(pickedId(picked)).toBe(sessions[3]!.id);
   });
 
   it("renders within the terminal height without a trailing newline", async () => {
@@ -1096,7 +1100,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[4]!.id);
+    expect(pickedId(picked)).toBe(sessions[4]!.id);
   });
 
   it("processes a batched chunk mixing wheel up and down", async () => {
@@ -1110,7 +1114,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[3]!.id);
+    expect(pickedId(picked)).toBe(sessions[3]!.id);
   });
 
   it("wheel up moves the selection backward and clamps at the top", async () => {
@@ -1124,7 +1128,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[0]!.id);
+    expect(pickedId(picked)).toBe(sessions[0]!.id);
   });
 
   it("clicking a session row selects that session", async () => {
@@ -1139,7 +1143,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[2]!.id);
+    expect(pickedId(picked)).toBe(sessions[2]!.id);
   });
 
   it("maps the first session row (terminal row 8) to index 0", async () => {
@@ -1154,7 +1158,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[0]!.id);
+    expect(pickedId(picked)).toBe(sessions[0]!.id);
   });
 
   it("maps the second session row (terminal row 9) to index 1", async () => {
@@ -1167,7 +1171,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[1]!.id);
+    expect(pickedId(picked)).toBe(sessions[1]!.id);
   });
 
   it("reassembles a report split right after the bare Esc byte", async () => {
@@ -1183,7 +1187,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[1]!.id);
+    expect(pickedId(picked)).toBe(sessions[1]!.id);
   });
 
   it("reassembles a report split after the CSI introducer", async () => {
@@ -1197,7 +1201,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[1]!.id);
+    expect(pickedId(picked)).toBe(sessions[1]!.id);
   });
 
   it("preserves a recognized mouse report across a delayed tail", async () => {
@@ -1215,7 +1219,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[1]!.id); // scrolled down one, not renamed
+    expect(pickedId(picked)).toBe(sessions[1]!.id); // scrolled down one, not renamed
     expect(renameSession).not.toHaveBeenCalled();
   });
 
@@ -1231,7 +1235,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[1]!.id);
+    expect(pickedId(picked)).toBe(sessions[1]!.id);
   });
 
   it("reassembles a report split immediately after the introducer", async () => {
@@ -1246,7 +1250,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[2]!.id);
+    expect(pickedId(picked)).toBe(sessions[2]!.id);
   });
 
   it("processes a click followed by Enter in the same chunk", async () => {
@@ -1258,7 +1262,7 @@ describe("session picker mouse support", () => {
     stdin.send(click(10) + "\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[2]!.id);
+    expect(pickedId(picked)).toBe(sessions[2]!.id);
   });
 
   it("still treats a lone Esc as cancel (not a pending mouse report)", async () => {
@@ -1283,7 +1287,7 @@ describe("session picker mouse support", () => {
 
     const picked = await promise;
     // Selection stays on the first session.
-    expect(picked?.id).toBe(sessions[0]!.id);
+    expect(pickedId(picked)).toBe(sessions[0]!.id);
   });
 
   it("clicking inside the search box activates it; clicking a row deactivates it", async () => {
@@ -1299,7 +1303,7 @@ describe("session picker mouse support", () => {
     stdin.send(click(10)); // row 10 → index 2
     await tick();
     stdin.send("\r");
-    expect((await promise)?.id).toBe(sessions[2]!.id);
+    expect(pickedId(await promise)).toBe(sessions[2]!.id);
   });
 
   it("a mouse release event does not re-fire the selection", async () => {
@@ -1313,7 +1317,7 @@ describe("session picker mouse support", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[2]!.id);
+    expect(pickedId(picked)).toBe(sessions[2]!.id);
   });
 });
 
@@ -1379,7 +1383,7 @@ describe("session picker narrow terminal", () => {
     stdin.send("\r");
 
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[2]!.id);
+    expect(pickedId(picked)).toBe(sessions[2]!.id);
   });
 
   it("keeps the selection visible after the terminal shrinks", async () => {
@@ -1415,7 +1419,7 @@ describe("session picker narrow terminal", () => {
 
     stdin.send("\r");
     const picked = await promise;
-    expect(picked?.id).toBe(sessions[10]!.id);
+    expect(pickedId(picked)).toBe(sessions[10]!.id);
   });
 });
 
@@ -1487,7 +1491,7 @@ describe("session picker filtering, sorting and facets", () => {
     stdin.send("\r"); // Enter commits the search and blurs the bar (no resume)
     await tick();
     stdin.send("\r"); // now Enter resumes the only match
-    expect((await promise)?.id).toBe("bbbbbbbb2222");
+    expect(pickedId(await promise)).toBe("bbbbbbbb2222");
   });
 
   it("plain letters do NOT filter until the search bar is focused (no d-conflict)", async () => {
@@ -1519,7 +1523,7 @@ describe("session picker filtering, sorting and facets", () => {
     await tick();
     // Enter now resumes the first session again (list restored).
     stdin.send("\r");
-    expect((await promise)?.id).toBe("aaaaaaaa1111");
+    expect(pickedId(await promise)).toBe("aaaaaaaa1111");
   });
 
   it("Tab cycles the project scope and narrows the list (req 2)", async () => {
@@ -1544,7 +1548,7 @@ describe("session picker filtering, sorting and facets", () => {
     expect(allOutput(stdout)).toContain("[s] Sort: created");
     // Created-desc: Alpha (Jan 3) is newest by creation → first → resumes it.
     stdin.send("\r");
-    expect((await promise)?.id).toBe("aaaaaaaa1111");
+    expect(pickedId(await promise)).toBe("aaaaaaaa1111");
   });
 
   it("'a' cycles the status facet to running-only then approval-only (reqs 4 & 5)", async () => {
@@ -1561,7 +1565,7 @@ describe("session picker filtering, sorting and facets", () => {
     expect(out).toContain("[a] Status: needs-approval");
     expect(out).toContain("1 of 3");
     stdin.send("\r");
-    expect((await promise)?.id).toBe("cccccccc3333");
+    expect(pickedId(await promise)).toBe("cccccccc3333");
   });
 
   it("shows the approval CTA banner whenever any session needs approval (req 4)", async () => {
@@ -1619,7 +1623,7 @@ describe("session picker filtering, sorting and facets", () => {
     stdin.send("\r"); // blur
     await tick();
     stdin.send("\r"); // resume the only match
-    expect((await promise)?.id).toBe("id00000007");
+    expect(pickedId(await promise)).toBe("id00000007");
   });
 });
 
@@ -1635,7 +1639,7 @@ describe("resume picker review regressions", () => {
     stdin.send("\r");
     const result = await promise;
     expect(frame).toContain("1 of 2");
-    expect(result?.id).toBe(sessions[1]!.id);
+    expect(pickedId(result)).toBe(sessions[1]!.id);
   });
 
   it("decodes split UTF-8 and backspaces a whole search grapheme", async () => {
@@ -1651,7 +1655,7 @@ describe("resume picker review regressions", () => {
     const result = await promise;
     expect(frame).toContain("café");
     expect(frame).toContain("1 of 2");
-    expect(result?.id).toBe(sessions[1]!.id);
+    expect(pickedId(result)).toBe(sessions[1]!.id);
   });
 
   it.each([false, true])("commits a search without resuming on CRLF (split=%s)", async split => {
@@ -1667,7 +1671,7 @@ describe("resume picker review regressions", () => {
     if (!resolved) stdin.send("\n"); // independent Enter must still resume
     const result = await promise;
     expect(resumedEarly).toBe(false);
-    expect(result?.id).toBe("bbbbbbbb2222");
+    expect(pickedId(result)).toBe("bbbbbbbb2222");
   });
 
   it("processes a pasted query followed by Enter in one chunk", async () => {
@@ -1676,7 +1680,7 @@ describe("resume picker review regressions", () => {
     stdin.send("Second\r\n");
     const frame = stripAnsi(stdout.chunks.at(-1)!);
     stdin.send("\r");
-    expect((await promise)?.id).toBe("bbbbbbbb2222");
+    expect(pickedId(await promise)).toBe("bbbbbbbb2222");
     expect(frame).toContain("1 of 2");
   });
 
@@ -1687,7 +1691,7 @@ describe("resume picker review regressions", () => {
     const rows = frame.split("\n");
     stdin.send("\x1b[<0;10;9M");
     stdin.send("\r");
-    expect((await promise)?.id).toBe(sessions[1]!.id);
+    expect(pickedId(await promise)).toBe(sessions[1]!.id);
     for (const row of rows) expect(stringWidth(row)).toBeLessThan(stdout.columns);
     expect(stringWidth(rows[7]!)).toBe(stdout.columns - 1);
     expect(rows[7]).toContain("\x1b[7m");
@@ -1700,7 +1704,7 @@ describe("resume picker review regressions", () => {
     stdin.send("d");
     await tick();
     stdin.send("\r");
-    expect((await promise)?.id).toBe(sessions[index === 3 ? 2 : 3]!.id);
+    expect(pickedId(await promise)).toBe(sessions[index === 3 ? 2 : 3]!.id);
   });
 });
 
@@ -1743,7 +1747,7 @@ it.each([0, 3, 18])("keeps focused row %i fixed when toggling sort in either dir
   expect(afterCreated).toBe(before);
   expect(afterUpdated).toBe(before);
   expect(createdRow).toContain(`Sort session ${29 - index}`);
-  expect(result?.id).toBe(`sort-${index}`);
+  expect(pickedId(result)).toBe(`sort-${index}`);
 });
 
 it.each([100, 1000, 10000])("preserves rendering and selection with %i sessions", async count => {
@@ -1756,7 +1760,7 @@ it.each([100, 1000, 10000])("preserves rendering and selection with %i sessions"
   }));
   const date = vi.spyOn(Date, "now").mockReturnValue(Date.UTC(2026, 0, 1));
   const start = performance.now();
-  let result: SessionRecord | null;
+  let result: PickSessionResult;
   try {
     const promise = pickSession(sessions);
     for (let i = 0; i < 10; i++) stdin.send("j");
@@ -1774,7 +1778,7 @@ it.each([100, 1000, 10000])("preserves rendering and selection with %i sessions"
   if (process.env.AGAV_PICKER_BENCH) {
     const { createHash } = await import("node:crypto");
     const hash = createHash("sha256").update(stdout.chunks.join("")).digest("hex");
-    console.error(JSON.stringify({ count, elapsed, hash, selected: result!.id }));
+    console.error(JSON.stringify({ count, elapsed, hash, selected: pickedId(result) }));
   }
 });
 
@@ -1791,7 +1795,98 @@ it("parses each sort key once and preserves stable ties and invalid-date fallbac
     calls = parse.mock.calls.length;
   } finally { parse.mockRestore(); }
   stdin.send("\n");
-  expect((await promise)?.id).toBe("key-2");
+  expect(pickedId(await promise)).toBe("key-2");
   // One parse per input plus visible-row ages, rather than two per comparison.
   expect(calls!).toBeLessThanOrEqual(sessions.length + stdout.rows);
+});
+
+describe("session picker start-new-session key", () => {
+  it.each(["n", "N", "\x0e"])("resolves START_NEW_SESSION for %j in list mode", async (key) => {
+    const promise = pickSession(makeSessions());
+    await tick();
+    stdin.send(key);
+    expect(await promise).toBe(START_NEW_SESSION);
+    expect(deleteSession).not.toHaveBeenCalled();
+    expect(renameSession).not.toHaveBeenCalled();
+  });
+
+  it("advertises the key in the list, search and no-match hints", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+    expect(allOutput(stdout)).toContain("n new · q quit");
+    stdin.send("/");
+    await tick();
+    expect(allOutput(stdout)).toContain("Ctrl+N new");
+    stdin.send("zzz");
+    stdin.send("\x1b");
+    await wait(60); // Esc disambiguation
+    expect(allOutput(stdout)).toContain("No sessions match");
+    expect(allOutput(stdout)).toContain("n new session");
+    stdin.send("q");
+    expect(await promise).toBeNull();
+  });
+
+  it("types n into the focused search query; Ctrl+N still starts a new session", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+    stdin.send("/");
+    stdin.send("n");
+    await tick();
+    // "n" became filter text, so the picker is still open with the query shown.
+    const out = allOutput(stdout);
+    expect(out).toContain("Resume Session");
+    expect(out).toMatch(/│ n/);
+    stdin.send("\x0e");
+    expect(await promise).toBe(START_NEW_SESSION);
+  });
+
+  it("starts a new session when the filters match nothing", async () => {
+    const promise = pickSession(makeSessions());
+    await tick();
+    stdin.send("/");
+    stdin.send("zzz");
+    stdin.send("\r");
+    await wait(60); // let the split-CRLF window lapse
+    stdin.send("\r"); // Enter with no matches is a no-op
+    await tick();
+    expect(allOutput(stdout)).toContain("No sessions match");
+    stdin.send("n");
+    expect(await promise).toBe(START_NEW_SESSION);
+  });
+
+  it("keeps the 80-column list hint on one row", async () => {
+    stdout.columns = 80;
+    const promise = pickSession(makeSessions());
+    await tick();
+    const hint = allOutput(stdout).split("\n").find((line) => line.includes("Enter resume"));
+    expect(hint).toBeDefined();
+    expect(hint).toContain("q quit");
+    expect(stringWidth(hint!)).toBeLessThan(80);
+    stdin.send("q");
+    expect(await promise).toBeNull();
+  });
+
+  it("leaves Enter, q and Esc unchanged", async () => {
+    let promise = pickSession(makeSessions());
+    await tick();
+    stdin.send("j");
+    stdin.send("\n");
+    expect(pickedId(await promise)).toBe("bbbbbbbb2222");
+
+    promise = pickSession(makeSessions());
+    await tick();
+    stdin.send("q");
+    expect(await promise).toBeNull();
+
+    promise = pickSession(makeSessions());
+    await tick();
+    stdin.send("\x1b");
+    await wait(60);
+    expect(await promise).toBeNull();
+  });
+
+  it("does not open for an empty session list (callers report no sessions)", async () => {
+    expect(await pickSession([])).toBeNull();
+    expect(stdout.chunks).toHaveLength(0);
+  });
 });

@@ -13,10 +13,17 @@ export interface PickSessionOptions {
   mouseRecoveryMs?: number;
 }
 
+/**
+ * Picker outcome for "start a new session instead of resuming one" (n / Ctrl+N).
+ * Distinct from a resumed session (a SessionRecord) and from cancel (null).
+ */
+export const START_NEW_SESSION = "new" as const;
+export type PickSessionResult = SessionRecord | typeof START_NEW_SESSION | null;
+
 export async function pickSession(
   sessions: SessionRecord[],
   options: PickSessionOptions = {},
-): Promise<SessionRecord | null> {
+): Promise<PickSessionResult> {
   if (sessions.length === 0) return null;
 
   // Keep the full list navigable. Older builds capped this to the 20 most
@@ -381,8 +388,8 @@ export async function pickSession(
     lines.push(operationError
       ? `  \x1b[31m${operationError}\x1b[0m`
       : searchActive
-        ? `\x1b[2m  type to filter · Backspace delete · Enter/Esc done\x1b[0m`
-        : `\x1b[2m  ↑↓/scroll/click · Enter resume · / search · ${editHint} · q quit\x1b[0m`);
+        ? `\x1b[2m  type to filter · Backspace delete · Enter/Esc done · Ctrl+N new\x1b[0m`
+        : `\x1b[2m  ↑↓/scroll/click · Enter resume · / search · ${editHint} · n new · q quit\x1b[0m`);
 
     // Header line 7 (conditional): the approval CTA banner. Shown whenever ANY
     // session needs approval, regardless of the active filters, so pending
@@ -481,7 +488,7 @@ export async function pickSession(
     if (items.length === 0) {
       lines.push("");
       lines.push("\x1b[2m  No sessions match the current filters.\x1b[0m");
-      lines.push("\x1b[2m  Backspace to clear text · Tab/S/A to change facets.\x1b[0m");
+      lines.push("\x1b[2m  Backspace to clear text · Tab/S/A to change facets · n new session.\x1b[0m");
     }
 
     if (items.length > pageSize) {
@@ -1121,6 +1128,15 @@ export async function pickSession(
         process.exit(0);
       }
 
+      // Ctrl+N starts a new session in either mode — including while a query is
+      // being typed or the filters match nothing — since a control byte can
+      // never be part of the search text.
+      if (key === "\x0e") {
+        cleanup();
+        resolve(START_NEW_SESSION);
+        return true;
+      }
+
       // ── Search bar focused ──────────────────────────────────────────────
       // While the inline search bar has focus, keystrokes edit the query rather
       // than acting as list shortcuts. Only navigation (arrows) and submit/blur
@@ -1163,6 +1179,15 @@ export async function pickSession(
       if (key === "\x1b" || key === "q") {
         cleanup();
         resolve(null);
+        return true;
+      }
+
+      // "n"/"N" starts a new session instead of resuming one. A bare letter is
+      // safe here: typing only edits the query while the search bar is focused
+      // (where Ctrl+N above is the equivalent).
+      if (key === "n" || key === "N") {
+        cleanup();
+        resolve(START_NEW_SESSION);
         return true;
       }
 

@@ -2,7 +2,8 @@ import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import { listSessions, type SessionRecord } from "../config/history.js";
 import { listResumableSessions, loadResumableSession } from "../sessions/history.js";
 import { isProviderName } from "../config/startup.js";
-import { pickSession } from "../utils/session-picker.js";
+import { pickSession, START_NEW_SESSION } from "../utils/session-picker.js";
+import { clearCommand } from "./clear.js";
 import { openResourceManager } from "./resource-manager.js";
 
 export const historyCommand: SlashCommand = {
@@ -83,6 +84,10 @@ export const resumeCommand: SlashCommand = {
 
     if (!session) {
       return { type: "message", text: "Cancelled." };
+    }
+    // "Start new" from the picker behaves exactly like /new.
+    if (session === START_NEW_SESSION) {
+      return clearCommand.execute("", context);
     }
 
     const loaded = await loadResumableSession(session.id);

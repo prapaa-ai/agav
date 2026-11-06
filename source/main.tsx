@@ -1027,24 +1027,28 @@ export async function main() {
     }
 
     if (flags.resume === true) {
-      const { pickSession } = await import("./utils/session-picker.js");
+      const { pickSession, START_NEW_SESSION } = await import("./utils/session-picker.js");
       const picked = await pickSession(sessions);
       if (!picked) {
         process.exit(0);
       }
-      const session = await loadResumableSession(picked.id);
-      if (!session) {
-        console.error("\n  Failed to load session.\n");
-        process.exit(1);
+      // "Start new" leaves every resume* value unset, so startup continues
+      // exactly as if --resume had not been passed.
+      if (picked !== START_NEW_SESSION) {
+        const session = await loadResumableSession(picked.id);
+        if (!session) {
+          console.error("\n  Failed to load session.\n");
+          process.exit(1);
+        }
+        resumeMessages = session.messages;
+        resumeSessionId = session.id;
+        resumeTokenUsage = session.tokenUsage;
+        resumeCompacted = session.compacted;
+        resumeSessionName = session.name;
+        resumeRuntime = session.runtime;
+        resumePermissionMode = session.permissionMode;
+        resumeSelection = session;
       }
-      resumeMessages = session.messages;
-      resumeSessionId = session.id;
-      resumeTokenUsage = session.tokenUsage;
-      resumeCompacted = session.compacted;
-      resumeSessionName = session.name;
-      resumeRuntime = session.runtime;
-      resumePermissionMode = session.permissionMode;
-      resumeSelection = session;
     } else {
       // ID prefix given — find matching session
       const prefix = String(flags.resume);

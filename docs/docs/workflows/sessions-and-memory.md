@@ -27,7 +27,7 @@ Ordinary `/exit` or Ctrl+C requests durable, generation-bound cancellation of a 
 
 > **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\`.
 
-`agav --resume` opens a picker listing all saved sessions, with the total count shown in the header. You can move the selection with `↑/↓`, `j/k`, or the mouse wheel, or click a row to select it. Press `Enter` to resume the selected session, `D` to delete saved or terminal sessions (not active workers), `M` or `R` to rename active or terminal sessions, and `Esc` or `q` to cancel. In the rename view, type the new name and press `Enter` to save, or press `Esc` to cancel and return to the list without renaming.
+`agav --resume` opens a picker listing all saved sessions, with the total count shown in the header. You can move the selection with `↑/↓`, `j/k`, or the mouse wheel, or click a row to select it. Press `Enter` to resume the selected session, `D` to delete saved or terminal sessions (not active workers), `M` or `R` to rename active or terminal sessions, `N` to start a new session instead of resuming one (`Ctrl+N` also works while typing in the search bar), and `Esc` or `q` to cancel. In the rename view, type the new name and press `Enter` to save, or press `Esc` to cancel and return to the list without renaming.
 
 Note: resuming a session created with `--max-turns` keeps the session's own history but the turn cap is reapplied to each new prompt.
 
