@@ -42,7 +42,7 @@ import { createSkillTool } from "../skills/tool.js";
 import { makeAgentProgressTracker } from "../agent/subagent-progress.js";
 import { createSkillSlashCommand } from "../skills/commands.js";
 import { maybeRunBackgroundImprovement } from "../skills/improvement.js";
-import { drainSteers } from "../commands/steer.js";
+import { drainSteers, queueSteer, queueSubagentSteer } from "../commands/steer.js";
 import { useSessionAttachment } from "./use-session-attachment.js";
 import type { PendingSessionApproval } from "../sessions/approvals.js";
 
@@ -157,6 +157,7 @@ interface UseAgentReturn {
   detachSession: () => Promise<string>;
   canDetach: boolean;
   isWorkerAttached: boolean;
+  steer: (directive: string, subagentId?: string) => Promise<void>;
   cancelSubagent: (id: string) => void;
   clearMessages: () => void;
   /** `expected` is the prompt the caller rendered; the answer is dropped if a different prompt is displayed by now. */
@@ -605,6 +606,19 @@ export function useAgent(
     abortRef.current?.abort();
     pausePromiseRef.current?.resolve();
     confirmationQueueRef.current.clear();
+  }, []);
+
+  const steer = useCallback(async (directive: string, subagentId?: string): Promise<void> => {
+    const { live, target } = attachmentRef.current;
+    if (live && target) {
+      const { id, generation } = target;
+      const { requestSessionSteer } = await import("../sessions/client.js");
+      await requestSessionSteer(id, generation, directive, subagentId);
+    } else if (subagentId !== undefined) {
+      queueSubagentSteer(subagentId, directive);
+    } else {
+      queueSteer(directive);
+    }
   }, []);
 
   /** Cancel a single subagent by its ID while leaving others running. */
@@ -1877,6 +1891,7 @@ export function useAgent(
       // Do not clear attachment before exit: save/cancel must continue treating the worker as owner.
       return snapshot.record.id;
     },
+    steer,
     cancelSubagent,
     clearMessages,
     confirmTool,
