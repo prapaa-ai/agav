@@ -58,7 +58,47 @@ describe("session launch failure ownership", () => {
     const result = await launchSessionWorker(record, deps);
     expect(result).toMatchObject({ status: "attached", record: { status: "starting", jobId: "job" } });
     expect(result.record.error).toBeUndefined();
+    expect(result.record.admissionPending).toBeUndefined();
     expect(deps.coordinator.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the in-flight admission barrier out of the user-visible error field", async () => {
+    let during: SessionRuntimeRecord | undefined;
+    vi.mocked(deps.coordinator.start).mockImplementation(async request => {
+      during = await store.read(record.id);
+      return { requestId: request.requestId, jobId: "job", state: "running", stopState: "none" } as JobSummary;
+    });
+    const result = await launchSessionWorker(record, deps);
+    expect(during).toMatchObject({ status: "starting", admissionPending: true });
+    expect(during?.error).toBeUndefined();
+    expect(result.record.admissionPending).toBeUndefined();
+    expect(result.record.error).toBeUndefined();
+  });
+
+  it("retains unknown ownership with admissionPending after an ambiguous start failure", async () => {
+    await rejected();
+    const saved = await store.read(record.id);
+    expect(saved).toMatchObject({ status: "starting", admissionPending: true });
+    expect(saved?.error).toBeUndefined();
+  });
+
+  it("honors and clears a legacy admission barrier stored in error", async () => {
+    const legacy = "Session worker admission is uncertain; ownership retained.";
+    await store.update(record.id, record.generation, latest => { latest.error = legacy; });
+    expect(await rejected()).toMatchObject({ admission: "unknown", record: { status: "starting", error: legacy } });
+    expect(deps.coordinator.start).not.toHaveBeenCalled();
+    vi.mocked(deps.coordinator.findByRequestId!).mockImplementation(async requestId => ({ requestId, jobId: "job", state: "running", stopState: "none" }) as JobSummary);
+    const result = await launchSessionWorker(record, deps);
+    expect(result).toMatchObject({ status: "attached", record: { jobId: "job" } });
+    expect(result.record.error).toBeUndefined();
+  });
+
+  it("clears the barrier when a definite preadmission rejection terminalizes the record", async () => {
+    vi.mocked(deps.coordinator.start).mockRejectedValueOnce(new BackgroundJobError("capacity-exceeded", "full"));
+    await rejected();
+    const saved = await store.read(record.id);
+    expect(saved).toMatchObject({ status: "failed", error: "full" });
+    expect(saved?.admissionPending).toBeUndefined();
   });
 
   it("never terminalizes an existing owner when persisting its job fails", async () => {
