@@ -176,6 +176,37 @@ describe("useAgent review launch boundaries", () => {
     } finally { release(); }
   });
 
+  it.each(["failure", "cancel"] as const)("supersedes a pending rename while idle after preparation %s", async outcome => {
+    let release!: () => void;
+    const preparation = new Promise<void>(resolve => { release = resolve; });
+    let waiting = false;
+    vi.mocked(refreshStableContext).mockImplementationOnce(async () => {
+      waiting = true;
+      await preparation;
+      if (outcome === "failure") throw new Error("preparation failed");
+      return "";
+    });
+    const ui = await mount();
+    try {
+      expect(await ui.agent().submit("First attempt")).toBe(true);
+      await ui.until(() => waiting);
+      ui.agent().renameSession("Old");
+      if (outcome === "cancel") await ui.agent().cancel();
+      release();
+      await ui.until(() => !ui.agent().isLoading);
+      ui.agent().renameSession("New");
+      await ui.until(async () => !!ui.agent().sessionId &&
+        (await history.loadSession(ui.agent().sessionId!))?.name === "New");
+      const id = ui.agent().sessionId!;
+      expect(await ui.agent().submit("Retry")).toBe(true);
+      await ui.until(() => ui.agent().canDetach);
+      expect(ui.agent().sessionId).toBe(id);
+      expect((await store.read(id))?.name).toBe("New");
+      expect((await history.loadSession(id))?.name).toBe("New");
+      expect(await store.list()).toHaveLength(1);
+    } finally { release(); }
+  });
+
   it.each(["initial name", "pending rename"] as const)("does not replay a consumed %s over an external rename on followup", async naming => {
     let release!: () => void;
     const preparation = new Promise<void>(resolve => { release = resolve; });

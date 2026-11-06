@@ -887,6 +887,7 @@ export function useAgent(
         setError("Session is still attaching; retry the rename once it is loaded.");
         return;
       }
+      pendingSessionNameRef.current = undefined;
       void import("../config/history.js").then(({ renameSession }) =>
         renameSession(record.id, name),
       ).then(() => {
@@ -904,6 +905,8 @@ export function useAgent(
       pendingSessionNameRef.current = name;
       return;
     }
+    // An idle rename supersedes any name retained after a failed first launch.
+    pendingSessionNameRef.current = undefined;
     saveNow();
   }, [saveNow, config.backgroundJobsEnabled]);
 
