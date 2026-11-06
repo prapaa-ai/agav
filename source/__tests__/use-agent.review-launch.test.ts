@@ -39,6 +39,8 @@ import { refreshStableContext } from "../utils/system-prompt.js";
 import { useAgent } from "../hooks/use-agent.js";
 import render from "../ink/render.js";
 import { SessionRuntimeStore } from "../sessions/store.js";
+import * as history from "../config/history.js";
+import { loadResumableSession } from "../sessions/history.js";
 
 const config: AgavConfig = { provider: "anthropic", model: "mock", effort: "low", maxTokens: 1000,
   maxIterations: 4, errorRetries: 1, permissionMode: "ask", backgroundJobsEnabled: true };
@@ -77,7 +79,7 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 });
 
-async function mount(overrides: Partial<AgavConfig> = {}) {
+async function mount(overrides: Partial<AgavConfig> = {}, initialSessionName?: string) {
   const stream = vi.fn<LLMProvider["stream"]>(async function* () { yield { type: "text_delta", text: "local response" }; });
   const provider: LLMProvider = { name: "mock", stream };
   const stdout = new EventEmitter() as NodeJS.WriteStream;
@@ -86,7 +88,7 @@ async function mount(overrides: Partial<AgavConfig> = {}) {
   Object.assign(stdin, { isTTY: true, setRawMode: () => stdin, resume: () => stdin, pause: () => stdin, read: () => null });
   let agent!: ReturnType<typeof useAgent>;
   function App() {
-    agent = useAgent(provider, { ...config, ...overrides });
+    agent = useAgent(provider, { ...config, ...overrides }, undefined, undefined, undefined, undefined, initialSessionName);
     return null;
   }
   const instance = render(createElement(App), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
@@ -98,6 +100,259 @@ async function mount(overrides: Partial<AgavConfig> = {}) {
 }
 
 describe("useAgent review launch boundaries", () => {
+  it.each(["preparation", "created before publication"] as const)("renames the worker's established id during %s without saving a duplicate", async phase => {
+    let release!: () => void;
+    const launchGate = new Promise<void>(resolve => { release = resolve; });
+    let waiting = false;
+    let created!: import("../sessions/store.js").SessionRuntimeRecord;
+    if (phase === "preparation") {
+      vi.mocked(refreshStableContext).mockImplementationOnce(async () => {
+        waiting = true;
+        await launchGate;
+        return "";
+      });
+    }
+    vi.mocked(startInteractiveSessionWorker).mockImplementationOnce(async (workerConfig, conversation, options) => {
+      created = await createSessionExecution(store, workerConfig, { conversation, ...options });
+      if (phase === "created before publication") {
+        waiting = true;
+        await launchGate;
+      }
+      await options.onCreated?.(created);
+      return store.update(created.id, created.generation, record => {
+        record.jobId = "durable-worker-job";
+        record.status = "running";
+      });
+    });
+    const save = vi.spyOn(history, "saveSession");
+    const ui = await mount();
+    try {
+      expect(await ui.agent().submit("Worker transcript")).toBe(true);
+      await ui.until(() => waiting);
+      ui.agent().renameSession("Name during launch");
+      await ui.until(() => ui.agent().sessionName === "Name during launch");
+      expect(save).not.toHaveBeenCalled();
+      release();
+      await ui.until(async () => !!created && (await store.read(created.id))?.name === "Name during launch");
+      expect(ui.agent().sessionId).toBe(created.id);
+      expect(await store.list()).toHaveLength(1);
+      expect((await store.read(created.id))?.messages).toEqual(created.messages);
+      expect(save).not.toHaveBeenCalled();
+      expect(ui.stream).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await ui.until(() => ui.agent().canDetach);
+    }
+  });
+
+  it.each(["failure", "cancel"] as const)("keeps a rename for the next launch after preparation %s", async outcome => {
+    let release!: () => void;
+    const preparation = new Promise<void>(resolve => { release = resolve; });
+    let waiting = false;
+    vi.mocked(refreshStableContext).mockImplementationOnce(async () => {
+      waiting = true;
+      await preparation;
+      if (outcome === "failure") throw new Error("preparation failed");
+      return "";
+    });
+    const save = vi.spyOn(history, "saveSession");
+    const ui = await mount();
+    try {
+      expect(await ui.agent().submit("First attempt")).toBe(true);
+      await ui.until(() => waiting);
+      ui.agent().renameSession("Preserved name");
+      if (outcome === "cancel") await ui.agent().cancel();
+      release();
+      await ui.until(() => !ui.agent().isLoading);
+      expect(ui.agent().sessionName).toBe("Preserved name");
+      expect(ui.agent().sessionId).toBeUndefined();
+      expect(save).not.toHaveBeenCalled();
+      expect(startInteractiveSessionWorker).not.toHaveBeenCalled();
+      expect(await ui.agent().submit("Retry")).toBe(true);
+      await ui.until(() => ui.agent().canDetach);
+      const record = await store.read(ui.agent().sessionId!);
+      expect(record?.name).toBe("Preserved name");
+      expect(await store.list()).toHaveLength(1);
+    } finally { release(); }
+  });
+
+  it.each(["failure", "cancel"] as const)("supersedes a pending rename while idle after preparation %s", async outcome => {
+    let release!: () => void;
+    const preparation = new Promise<void>(resolve => { release = resolve; });
+    let waiting = false;
+    vi.mocked(refreshStableContext).mockImplementationOnce(async () => {
+      waiting = true;
+      await preparation;
+      if (outcome === "failure") throw new Error("preparation failed");
+      return "";
+    });
+    const ui = await mount();
+    try {
+      expect(await ui.agent().submit("First attempt")).toBe(true);
+      await ui.until(() => waiting);
+      ui.agent().renameSession("Old");
+      if (outcome === "cancel") await ui.agent().cancel();
+      release();
+      await ui.until(() => !ui.agent().isLoading);
+      ui.agent().renameSession("New");
+      await ui.until(async () => !!ui.agent().sessionId &&
+        (await history.loadSession(ui.agent().sessionId!))?.name === "New");
+      const id = ui.agent().sessionId!;
+      expect(await ui.agent().submit("Retry")).toBe(true);
+      await ui.until(() => ui.agent().canDetach);
+      expect(ui.agent().sessionId).toBe(id);
+      expect((await store.read(id))?.name).toBe("New");
+      expect((await history.loadSession(id))?.name).toBe("New");
+      expect(await store.list()).toHaveLength(1);
+    } finally { release(); }
+  });
+
+  it.each(["initial name", "pending rename"] as const)("does not replay a consumed %s over an external rename on followup", async naming => {
+    let release!: () => void;
+    const preparation = new Promise<void>(resolve => { release = resolve; });
+    let waiting = false;
+    vi.mocked(refreshStableContext).mockImplementationOnce(async () => {
+      waiting = true;
+      await preparation;
+      return "";
+    });
+    const rename = vi.spyOn(history, "renameSession");
+    const ui = await mount({}, naming === "initial name" ? "Original" : undefined);
+    try {
+      expect(await ui.agent().submit("First turn")).toBe(true);
+      await ui.until(() => waiting);
+      if (naming === "pending rename") ui.agent().renameSession("Original");
+      release();
+      await ui.until(() => ui.agent().canDetach);
+      const id = ui.agent().sessionId!;
+      const first = (await store.read(id))!;
+      expect(first.name).toBe("Original");
+      await store.update(id, first.generation, current => { current.status = "completed"; });
+      await ui.until(() => !ui.agent().isLoading);
+
+      // A different client updates durable metadata after this client has cached Original.
+      expect((await history.renameSession(id, "Updated"))?.name).toBe("Updated");
+      rename.mockClear();
+      expect(await ui.agent().submit("Followup from the original client")).toBe(true);
+      await ui.until(() => ui.agent().canDetach);
+      expect(startInteractiveSessionWorker).toHaveBeenCalledTimes(2);
+      expect(ui.agent().sessionId).toBe(id);
+      expect((await store.read(id))?.name).toBe("Updated");
+      expect(rename).not.toHaveBeenCalled();
+      expect(await store.list()).toHaveLength(1);
+    } finally { release(); }
+  });
+
+  it.each([
+    ["finished runtime", "failure"], ["finished runtime", "cancel"],
+    ["saved history", "failure"], ["saved history", "cancel"],
+  ] as const)("persists a %s rename immediately during preparation before %s", async (kind, outcome) => {
+    const ui = await mount();
+    let id: string;
+    if (kind === "finished runtime") {
+      expect(await ui.agent().submit("Established conversation")).toBe(true);
+      await ui.until(() => ui.agent().canDetach);
+      id = ui.agent().sessionId!;
+      const record = (await store.read(id))!;
+      await store.update(id, record.generation, current => { current.status = "completed"; });
+      await ui.until(() => !ui.agent().isLoading);
+    } else {
+      id = await history.saveSession([{ role: "user", content: [{ type: "text", text: "Saved conversation" }] }], "mock", "anthropic", undefined, undefined, undefined, "Original");
+      ui.agent().loadSession((await history.loadSession(id))!);
+      await ui.until(() => ui.agent().sessionId === id);
+    }
+    const launches = vi.mocked(startInteractiveSessionWorker).mock.calls.length;
+    let release!: () => void;
+    const preparation = new Promise<void>(resolve => { release = resolve; });
+    let waiting = false;
+    vi.mocked(refreshStableContext).mockImplementationOnce(async () => {
+      waiting = true;
+      await preparation;
+      if (outcome === "failure") throw new Error("preparation failed");
+      return "";
+    });
+    try {
+      expect(await ui.agent().submit("Followup that never reaches onCreated")).toBe(true);
+      await ui.until(() => waiting);
+      ui.agent().renameSession("Persisted during preparation");
+      // Assert durability while preparation is still blocked, not after admission.
+      await ui.until(async () => (await loadResumableSession(id))?.name === "Persisted during preparation");
+      if (kind === "finished runtime") expect((await store.read(id))?.name).toBe("Persisted during preparation");
+      expect(startInteractiveSessionWorker).toHaveBeenCalledTimes(launches);
+      if (outcome === "cancel") await ui.agent().cancel();
+      release();
+      await ui.until(() => !ui.agent().isLoading);
+      expect(startInteractiveSessionWorker).toHaveBeenCalledTimes(launches);
+      ui.agent().clearMessages();
+      await ui.until(() => ui.agent().sessionId === undefined);
+      expect((await loadResumableSession(id))?.name).toBe("Persisted during preparation");
+      ui.agent().loadSession((await loadResumableSession(id))!);
+      await ui.until(() => ui.agent().sessionName === "Persisted during preparation");
+      expect((await loadResumableSession(id))?.name).toBe("Persisted during preparation");
+    } finally {
+      if (ui.agent().isLoading && !ui.agent().canDetach) await ui.agent().cancel();
+      release();
+      await ui.until(() => !ui.agent().isLoading);
+    }
+  });
+
+  it.each(["new", "load", "activate"] as const)("clears a fresh session's pending rename across %s", async selection => {
+    const savedId = await history.saveSession([{ role: "user", content: [{ type: "text", text: "Other conversation" }] }], "mock", "anthropic", undefined, undefined, undefined, "Other name");
+    const saved = (await history.loadSession(savedId))!;
+    let release!: () => void;
+    const preparation = new Promise<void>(resolve => { release = resolve; });
+    let waiting = false;
+    vi.mocked(refreshStableContext).mockImplementationOnce(async () => {
+      waiting = true;
+      await preparation;
+      return "";
+    });
+    const ui = await mount();
+    try {
+      expect(await ui.agent().submit("Abandoned fresh conversation")).toBe(true);
+      await ui.until(() => waiting);
+      ui.agent().renameSession("Abandoned pending name");
+      if (selection === "new") ui.agent().clearMessages();
+      else if (selection === "load") ui.agent().loadSession(saved);
+      else ui.agent().activateSession(saved.id, saved.name);
+      release();
+      await ui.until(() => !ui.agent().isLoading);
+      expect(startInteractiveSessionWorker).not.toHaveBeenCalled();
+      expect(await ui.agent().submit("Selected conversation")).toBe(true);
+      await ui.until(() => ui.agent().canDetach);
+      const record = (await store.read(ui.agent().sessionId!))!;
+      expect(record.name).toBe(selection === "new" ? undefined : "Other name");
+      if (selection !== "new") expect(record.id).toBe(savedId);
+      expect(await store.list()).toHaveLength(1);
+    } finally { release(); }
+  });
+
+  it("renames by the published target before its first attachment snapshot", async () => {
+    let release!: () => void;
+    const admission = new Promise<void>(resolve => { release = resolve; });
+    const subscribe = vi.spyOn(client, "subscribeSession").mockReturnValue(() => {});
+    vi.mocked(startInteractiveSessionWorker).mockImplementationOnce(async (workerConfig, conversation, options) => {
+      const record = await createSessionExecution(store, workerConfig, { conversation, ...options });
+      await options.onCreated?.(record);
+      await admission;
+      return record;
+    });
+    const ui = await mount();
+    try {
+      expect(await ui.agent().submit("Start work")).toBe(true);
+      await ui.until(() => !!ui.agent().sessionId && subscribe.mock.calls.length === 1);
+      const id = ui.agent().sessionId!;
+      ui.agent().renameSession("Published name");
+      await ui.until(async () => (await store.read(id))?.name === "Published name");
+      expect(ui.agent().sessionName).toBe("Published name");
+      expect(ui.agent().error).toBeNull();
+      expect(await store.list()).toHaveLength(1);
+    } finally {
+      release();
+      await vi.mocked(startInteractiveSessionWorker).mock.results[0]?.value;
+    }
+  });
+
   it("releases the cancelled launch latch after onCreated and a delayed successful response", async () => {
     let release!: () => void;
     const admission = new Promise<void>(resolve => { release = resolve; });

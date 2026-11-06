@@ -8,9 +8,20 @@ order: 3
 
 Type `/` in an interactive session to autocomplete commands. Run `/help` to see the commands loaded in the current session, or `/help <command>` for detailed usage. Skills and MCP servers can add commands at runtime, so they are not listed individually here.
 
-Most slash commands run when Agav is idle. These commands can also run while Agav is streaming, executing tools, or otherwise doing in-flight work: `/help`, `/exit`, `/detach`, `/loop`, `/steer`, `/context`, `/status`, `/memory`, `/remember`, and `/forget`.
+## Dispatch while busy
 
-Other commands, such as `/model` and `/clear`, are not dispatched while a turn is busy. Their text stays in the prompt; submit it again once Agav is idle, or press **Esc** to cancel the turn first. They are not queued for automatic execution. While generation is paused, input that is not an allowed mid-turn command is treated as new direction for the turn, so wait until idle to run other slash commands. Mid-turn command dispatch also requires no pending attachments.
+Built-in commands are grouped by when they dispatch while Agav is streaming, executing tools, or otherwise doing in-flight work:
+
+| Behavior | Commands |
+| --- | --- |
+| Immediate | `/help`, `/exit`, `/detach`, `/loop`, `/steer`, `/context`, `/status`, `/name`, `/copy`, `/export`, `/open`, `/debug`, `/changelog`, `/remember`, `/forget` |
+| Deferred until idle | `/clear`, `/new`, `/model`, `/effort`, `/permission`, `/resume`, `/history`, `/search`, `/search-history`, `/watch`, `/branch`, `/compact`, `/memory`, `/fast`, `/deep`, `/undo`, `/plan`, `/schedule`, `/job`, `/workflows`, `/skills`, `/agents`, `/agent`, `/mcp`, `/customize`, `/login`, `/logout` |
+| Rejected while busy (never queued) | `/voice` |
+| Immediate app handlers (outside the registry) | `/ps <question>`, `/queue`, `/queue retry` |
+
+Deferral is **command-level, not argument-aware**: every form of a deferred command, including read-only subcommands or help arguments, waits until idle. For example, `/memory list` and `/memory path` defer just like `/memory add`; `/remember` and `/forget` remain immediate. Deferred commands enter the FIFO request queue for automatic execution when idle, even if generation is paused; they are not treated as direction for the paused turn. Use `/queue` to manage queued requests.
+
+Ordinary immediate slash dispatch requires **no pending attachments**. With attachments, the command follows normal request serialization instead. `/voice` requires an idle prompt without attachments and rejects busy submissions rather than opening the microphone later.
 
 `/exit` works mid-turn: it cancels a foreground in-process turn, requests durable, generation-bound cancellation of a worker-owned turn, and stops the repeating `/loop` before closing the terminal UI. Worker cancellation is asynchronous and does not undo side effects. Only `/detach` or the configured detach shortcut intentionally exits while leaving the worker running. See [Detached sessions](/features/detached-sessions). For a foreground in-process turn, use **Esc** to cancel without leaving Agav instead. **Ctrl+C** exits unless an Agav text selection is active, in which case it copies the selection.
 
