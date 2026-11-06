@@ -45,6 +45,24 @@ describe("VertexAIProvider", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body)).messages[0].content.slice(0, 2)).toEqual(thinkingBlocks);
   });
 
+  it.each([
+    ["global", "aiplatform.googleapis.com"],
+    ["us", "aiplatform.us.rep.googleapis.com"],
+    ["eu", "aiplatform.eu.rep.googleapis.com"],
+    ["us-east5", "us-east5-aiplatform.googleapis.com"],
+  ])("targets the Claude host for location %s", async (location, host) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "token", expires_in: 3600 })))
+      .mockResolvedValueOnce(new Response('data: {"type":"message_stop"}\n\n'));
+    const provider = new VertexAIProvider(credentialsPath, location);
+    for await (const _ of provider.stream({
+      model: "vertex/claude-opus-5-5", messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+    })) { /* drain */ }
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      `https://${host}/v1/projects/test-project/locations/${location}/publishers/anthropic/models/claude-opus-5-5:streamRawPredict`,
+    );
+  });
+
   it("reports every missing required service-account key", async () => {
     const incompleteCredentialsPath = join(testDir, "incomplete-service-account.json");
     await writeFile(incompleteCredentialsPath, JSON.stringify({ type: "service_account", project_id: "" }));

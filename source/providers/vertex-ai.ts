@@ -151,10 +151,13 @@ export class VertexAIAuth {
 }
 
 /**
- * The multi-region "global" endpoint lives on the bare host; every other
- * location is served from its own regional host.
+ * Global uses the bare host; US/EU use regional endpoint (rep) hosts.
+ * Individual regions retain their location-prefixed hosts.
  */
 function vertexHost(location: string): string {
+  if (location === "us" || location === "eu") {
+    return `https://aiplatform.${location}.rep.googleapis.com`;
+  }
   return location === DEFAULT_VERTEX_LOCATION
     ? "https://aiplatform.googleapis.com"
     : `https://${encodeURIComponent(location)}-aiplatform.googleapis.com`;
