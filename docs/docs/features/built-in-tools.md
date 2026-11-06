@@ -173,8 +173,8 @@ Each sandbox backend has different isolation properties:
 
 | Backend | Filesystem writes | Network | Credential dirs |
 | --- | --- | --- | --- |
-| Seatbelt (macOS) | System directories and home writes denied, with working-directory and standard cache/config carve-outs | Allowed | `~/.ssh`, `~/.aws`, `~/.gnupg` reads denied |
-| Bubblewrap (Linux) | Read-only root; writable working directory and scratch tmpfs for `/tmp` and standard caches/config | Allowed | `~/.ssh`, `~/.aws`, `~/.gnupg` masked |
+| Seatbelt (macOS) | System directories and home writes denied, with working-directory and standard cache/config carve-outs | Allowed by default; [opt-in deny](/reference/security#network-policy) | `~/.ssh`, `~/.aws`, `~/.gnupg` reads denied |
+| Bubblewrap (Linux) | Read-only root; writable working directory and scratch tmpfs for `/tmp` and standard caches/config | Allowed by default; [opt-in deny](/reference/security#network-policy) | `~/.ssh`, `~/.aws`, `~/.gnupg` masked |
 | Docker | Mounted working directory only | Denied (`--network=none`) | Not mounted |
 
 When no backend is available, automatic execution runs unsandboxed with secret-like environment variables (`KEY`, `TOKEN`, `SECRET`, …) filtered out. Only starting Agav with the user opt-out `AGAV_NO_SANDBOX=1` permits a model-requested `sandbox: "none"` override; command approval and auto-accept do not enable bypass. Invalid overrides are rejected, and sandbox launch failures are not retried unsandboxed. The footer describes the shell default; tool output identifies a different execution backend when an override is used. Review [security](/reference/security) before using auto-accept mode.

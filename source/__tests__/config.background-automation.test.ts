@@ -99,8 +99,14 @@ describe("config: sandboxRequired / backgroundAutomation", () => {
     expect(written.template.backgroundAutomation).toMatchObject({ type: "string", enum: ["on", "paused"] });
   });
 
-  it("defaults sandboxNetwork=deny", async () => {
+  it("defaults sandboxNetwork=allow", async () => {
     mockConfigs(undefined, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("allow");
+  });
+
+  it("honors sandboxNetwork=deny from the global config", async () => {
+    mockConfigs({ sandboxNetwork: "deny" }, undefined);
     const { loadConfig } = await import("../config/config.js");
     expect((await loadConfig()).sandboxNetwork).toBe("deny");
   });
@@ -117,13 +123,19 @@ describe("config: sandboxRequired / backgroundAutomation", () => {
     expect((await loadConfig()).sandboxNetwork).toBe("deny");
   });
 
-  it("ignores project config setting sandboxNetwork even without a global value", async () => {
-    mockConfigs(undefined, { sandboxNetwork: "allow" });
+  it("ignores project config attempting to deny network egress over the global policy", async () => {
+    mockConfigs({ sandboxNetwork: "allow" }, { sandboxNetwork: "deny" });
     const { loadConfig } = await import("../config/config.js");
-    expect((await loadConfig()).sandboxNetwork).toBe("deny");
+    expect((await loadConfig()).sandboxNetwork).toBe("allow");
   });
 
-  it("falls back to deny for invalid sandboxNetwork values", async () => {
+  it("ignores project config setting sandboxNetwork even without a global value", async () => {
+    mockConfigs(undefined, { sandboxNetwork: "deny" });
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("allow");
+  });
+
+  it("fails closed to deny for invalid sandboxNetwork values", async () => {
     mockConfigs({ sandboxNetwork: "yes" }, undefined);
     const { loadConfig } = await import("../config/config.js");
     expect((await loadConfig()).sandboxNetwork).toBe("deny");

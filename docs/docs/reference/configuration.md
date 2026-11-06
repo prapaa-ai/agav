@@ -89,6 +89,7 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | `providerIdleTimeout` | Idle timeout in milliseconds waiting for provider stream activity (positive safe integer 1–2147483647). When unset, `null`, or `"disabled"`, Agav adds no timer and retains provider SDK defaults. Can be overridden at startup with `--provider-idle-timeout`. |
 | `permissionMode` | `ask`, `auto-accept`, or `deny-writes` |
 | `sandboxRequired` | When `true`, refuse to start if no OS-level sandbox (Seatbelt, Bubblewrap, or Docker) is available |
+| `sandboxNetwork` | Network policy for Seatbelt and Bubblewrap shell commands: `allow` (default) or `deny` to block direct off-host networking. Global config only; invalid values are treated as `deny`. See [Network policy](/reference/security#network-policy). |
 | `allowedTools` | Tool names or scoped patterns that can run without confirmation |
 | `search` | When `true`, enable the `web_search` tool (off by default). Also settable per session with `--search`. See [Built-in tools](/features/built-in-tools). |
 | `systemPrompt` | Additional project instructions |

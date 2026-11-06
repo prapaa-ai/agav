@@ -249,10 +249,10 @@ export const PROJECT_CONFIG_TEMPLATE = {
     eg: false,
   },
   sandboxNetwork: {
-    description: "Network policy for sandboxed shell commands: 'deny' (default, block direct off-host networking) or 'allow' (restore host networking). Linux uses a fresh network namespace: loopback reaches only services in the same invocation, not host services or other invocations. macOS host-local TCP/IP and Unix sockets remain trusted channels, not an absolute guarantee against local relays. Applies to Seatbelt/Bubblewrap; Docker keeps network=none and unsandboxed commands are not confined. Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    description: "Network policy for sandboxed shell commands: 'allow' (default, host networking) or 'deny' (block direct off-host networking). Linux uses a fresh network namespace: loopback reaches only services in the same invocation, not host services or other invocations. macOS host-local TCP/IP and Unix sockets remain trusted channels, not an absolute guarantee against local relays. Applies to Seatbelt/Bubblewrap; Docker keeps network=none and unsandboxed commands are not confined. Only honored from the global config (~/.agav/config.json); ignored in project config.",
     enum: ["deny", "allow"],
     type: "string",
-    eg: "deny",
+    eg: "allow",
   },
   backgroundAutomation: {
     description: "Pause or resume headless background automation (agav job tick / daemon). Only honored from the global config (~/.agav/config.json); ignored in project config.",
@@ -375,7 +375,7 @@ const DEFAULT_CONFIG: AgavConfig = {
   maxIterations: 800,
   errorRetries: 5,
   sandboxRequired: false,
-  sandboxNetwork: "deny",
+  sandboxNetwork: "allow",
   backgroundAutomation: "on",
   maxConcurrentWorkflowRuns: 2,
 };
@@ -554,7 +554,9 @@ function sanitizeConfig(merged: AgavConfig): void {
     merged.sandboxRequired = DEFAULT_CONFIG.sandboxRequired;
   }
   if (merged.sandboxNetwork !== "deny" && merged.sandboxNetwork !== "allow") {
-    merged.sandboxNetwork = DEFAULT_CONFIG.sandboxNetwork;
+    // An omitted policy uses the default (allow); a present but malformed value
+    // (for example a "Deny" or "block" typo) fails closed rather than granting host networking.
+    merged.sandboxNetwork = "deny";
   }
   if (!Number.isInteger(merged.maxConcurrentWorkflowRuns) || merged.maxConcurrentWorkflowRuns! < 1) {
     merged.maxConcurrentWorkflowRuns = DEFAULT_CONFIG.maxConcurrentWorkflowRuns;

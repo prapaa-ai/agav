@@ -42,11 +42,11 @@ export type SandboxBackend = "seatbelt" | "bubblewrap" | "docker" | "none";
 
 /**
  * Network policy for sandboxed commands.
- * - "deny" (default): blocks direct off-host networking. On Linux, a fresh
+ * - "allow" (default): sandboxed commands inherit host networking.
+ * - "deny" (explicit opt-in): blocks direct off-host networking. On Linux, a fresh
  *   network namespace exposes only loopback services in the same invocation,
  *   not host services or services in another invocation. On macOS, host-local TCP/IP
  *   and Unix sockets remain trusted channels; local relays can forward traffic.
- * - "allow": sandboxed commands inherit host networking, as before.
  * Only enforced on the OS backends (seatbelt, bubblewrap). The Docker backend
  * already runs with --network=none, and "none" cannot confine networking.
  */
@@ -54,10 +54,11 @@ export type SandboxNetwork = "deny" | "allow";
 
 let detectedBackend: SandboxBackend | null = null;
 
-// Process-wide default for sandboxed command networking. "deny" closes the
-// direct network exfiltration path. This is not an absolute egress guarantee:
-// allowed local channels (including reachable Unix sockets) may expose relays.
-let sandboxNetwork: SandboxNetwork = "deny";
+// Process-wide default for sandboxed command networking. "allow" is the default;
+// an explicit "deny" closes the direct network exfiltration path. Deny is not an
+// absolute egress guarantee: allowed local channels (including reachable Unix
+// sockets) may expose relays.
+let sandboxNetwork: SandboxNetwork = "allow";
 
 /** Set at startup from config / CLI flag. Not read from model arguments. */
 export function setSandboxNetwork(policy: SandboxNetwork): void {

@@ -233,7 +233,7 @@ function effectiveSandboxRequired(deps: WorkflowResourceDeps): boolean {
 }
 
 async function launchDeps(deps: WorkflowResourceDeps): Promise<LaunchDeps & { registry: ToolRegistry }> {
-  return { coordinator: await deps.getCoordinator(), cliPath: await deps.cliPath(), maxConcurrentWorkflowRuns: deps.config.maxConcurrentWorkflowRuns, registry: deps.registry, sandboxRequired: effectiveSandboxRequired(deps), sandboxNetwork: deps.config.sandboxNetwork === "allow" ? "allow" : "deny" };
+  return { coordinator: await deps.getCoordinator(), cliPath: await deps.cliPath(), maxConcurrentWorkflowRuns: deps.config.maxConcurrentWorkflowRuns, registry: deps.registry, sandboxRequired: effectiveSandboxRequired(deps), sandboxNetwork: deps.config.sandboxNetwork === "deny" ? "deny" : "allow" };
 }
 
 /** Validates inputs and checks the host before the consent prompt; nothing is persisted. */
