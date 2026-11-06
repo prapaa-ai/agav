@@ -40,6 +40,8 @@ describe("conversation compaction", () => {
       ]);
       convo.addToolResults([{ type: "tool_result", toolCallId: `c${i}`, toolResult: "ok" }]);
     }
+    // Close the signed tool round with content that survives thinking stripping.
+    convo.addAssistantMessage([{ type: "text", text: "done" }]);
     // A thinking-only message must be removed rather than sent as empty content.
     convo.addAssistantMessage(thinkingBlocks as ContentBlock[]);
     const transcript = convo.getTranscript();

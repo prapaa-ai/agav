@@ -311,14 +311,16 @@ export class ConversationState {
     })).filter((msg) => msg.content.length > 0);
   }
 
-  /** Only an assistant response without tool calls closes a tool round.
-   * User steers/results (even a new invocation after cancellation) do not.
+  /** Only an assistant response surviving thinking stripping without tool calls
+   * closes a tool round. Thinking-only responses and user steers/results
+   * (even a new invocation after cancellation) do not.
    */
   private activeToolRoundStart(): number | undefined {
     let start: number | undefined;
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const message = this.messages[i]!;
       if (message.role !== "assistant") continue;
+      if (!message.content.some(block => block.type !== "thinking" && block.type !== "redacted_thinking")) continue;
       if (!message.content.some(block => block.type === "tool_use")) break;
       start = i;
     }
