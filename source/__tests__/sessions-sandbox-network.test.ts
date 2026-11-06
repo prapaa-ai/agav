@@ -44,7 +44,7 @@ it.each(["allow", "deny"] as const)("captures global %s only when the parent con
 it.each([
 	{ local: "allow", expected: "allow" },
 	{ local: "deny", expected: "deny" },
-	{ local: undefined, expected: "deny" },
+	{ local: undefined, expected: "allow" },
 ] as const)("restores a legacy record from local $local, not the global policy", async ({ local, expected }) => {
 	const record = await create("deny");
 	delete record.sandboxNetwork;

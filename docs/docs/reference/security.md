@@ -67,7 +67,7 @@ The Seatbelt profile uses **allow-default** with targeted restrictions; it is no
 
 - **Reads** — allowed across the filesystem, except `~/.ssh`, `~/.aws`, and `~/.gnupg`
 - **Writes** — system directories (`/System`, `/usr`, `/Library`, `/Applications`) and `$HOME` are denied, with a working-directory carve-out; other locations, including the system temp directory, remain writable subject to ordinary OS permissions. `$HOME` is denied by default, with write carve-outs for the standard cache/config directories that ordinary tooling needs — `~/.cache`, `~/.config`, `~/.local`, `~/.npm`, and `~/.cargo` — so `npm`, `pip`, `cargo`, and `git` work inside the sandbox. Writes to `~/.ssh`, `~/.aws`, and `~/.gnupg` are explicitly denied so no broad allow can re-expose them.
-- **Network** — allowed; do not rely on Seatbelt to prevent network access or exfiltration
+- **Network** — allowed by default. With an explicit deny policy (see [Network policy](#network-policy)), direct off-host networking is blocked; host-local TCP/IP and Unix sockets remain trusted channels, so local relays can still forward traffic
 - **Process execution** — allowed, except `/System/Library/CoreServices`
 - **IPC** — Mach lookup, sysctl reads, and POSIX shared memory are allowed for basic process operation
 
@@ -75,7 +75,7 @@ The Seatbelt profile uses **allow-default** with targeted restrictions; it is no
 
 - **Filesystem** — root is mounted read-only (`--ro-bind / /`); the working directory is writable and `/tmp` is a scratch `tmpfs`. Because the read-only root also covers `$HOME`, each standard cache/config directory — `~/.cache`, `~/.config`, `~/.local`, `~/.npm`, and `~/.cargo` — is given a writable scratch `tmpfs` so `npm`, `pip`, `cargo`, and `git` work. These tmpfs mounts are throwaway: nothing persists to or leaks from the host.
 - **Credentials** — `~/.ssh`, `~/.aws`, and `~/.gnupg` are replaced with empty tmpfs mounts, hiding their contents
-- **Network** — allowed; Agav does not pass `--unshare-net`
+- **Network** — allowed by default. With an explicit deny policy (see [Network policy](#network-policy)), Agav passes `--unshare-net`: loopback reaches only services started within the same command, not host services or other commands
 - **Lifecycle** — child processes are killed when Agav exits (`--die-with-parent`)
 
 ### Docker
@@ -135,6 +135,21 @@ Enforcement happens per `run_command` call against the *effective* backend: the 
 Agav still starts when no sandbox backend is available, but prints a startup warning that `run_command` calls will be refused.
 
 Project config (`.agav/config.json`) can't set or override `sandboxRequired`, so a repository can't turn it off. The setting covers only `run_command`. Skill shell blocks and background-job commands don't go through it, so they aren't covered.
+
+### Network policy
+
+By default, `run_command` and `run_tests` commands under Seatbelt and Bubblewrap can use the network. To block direct off-host networking, opt in with either of the following:
+
+- `--sandbox-network deny` (alias `--sandbox-no-network`) for one invocation
+- `"sandboxNetwork": "deny"` in `~/.agav/config.json` for every session
+
+```json
+{ "sandboxNetwork": "deny" }
+```
+
+`--sandbox-network allow` (alias `--sandbox-allow-network`) restores networking for one invocation when the global config denies it. Agav never rewrites this setting, so an existing explicit value stays in effect. A present but invalid value is treated as `deny`.
+
+Project config (`.agav/config.json`) can't set `sandboxNetwork`. A session or workflow run records the policy in effect when it starts and keeps it when resumed or run by a detached worker. Workflow runs never relax a recorded `deny`. Docker always uses `--network=none`, and commands without a sandbox are not network-confined.
 
 ## File tool path boundaries
 

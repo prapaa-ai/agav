@@ -74,6 +74,7 @@ agav -P -c provider=ollama "summarize this repo"
 | `--auto-accept`, `-y` | Skip normal tool confirmations |
 | `--openai-api` | OpenAI API mode: `responses` (default) or `chat`. Use `chat` for OpenAI-compatible endpoints that don't support the Responses API. |
 | `--deny-writes` | Block write operations |
+| `--sandbox-network <deny\|allow>` | Network policy for Seatbelt and Bubblewrap shell commands; default `allow`. Aliases: `--sandbox-no-network`, `--sandbox-allow-network`. See [Network policy](/reference/security#network-policy). |
 | `--version`, `-v` | Print the version |
 | `--help`, `-h` | Print help |
 
