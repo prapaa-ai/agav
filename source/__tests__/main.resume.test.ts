@@ -16,7 +16,7 @@ vi.mock("../utils/git.js", () => ({ getGitContext: async () => null }));
 vi.mock("../utils/terminal-keyboard.js", () => ({ detectKittyKeyboard: async () => false }));
 vi.mock("../config/launch-state.js", () => ({ consumeChangelogDisplay: async () => false }));
 vi.mock("../config/org-config.js", async original => ({ ...await original<typeof import("../config/org-config.js")>(), loadOrgPolicy: vi.fn(async () => ({})) }));
-vi.mock("../utils/session-picker.js", () => ({ pickSession: vi.fn() }));
+vi.mock("../utils/session-picker.js", () => ({ pickSession: vi.fn(), START_NEW_SESSION: "new" }));
 const argv = process.argv;
 const exited = new Error("exited");
 beforeEach(() => {
@@ -88,5 +88,28 @@ describe.each(["ID", "picker"])("resume permission overrides via %s", selection 
     expect(render).toHaveBeenCalledOnce();
     expect(vi.mocked(render).mock.calls[0]![0]).toHaveProperty("props.resumePermissionMode", expected);
     expect(vi.mocked(render).mock.calls[0]![0]).toHaveProperty("props.config.permissionMode", launch);
+  });
+});
+
+describe("resume picker start-new-session outcome", () => {
+  it("--resume continues startup as a fresh session without loading one", async () => {
+    vi.mocked(listResumableSessions).mockResolvedValue([record("existing")]);
+    vi.mocked(pickSession).mockResolvedValue("new");
+    process.argv.push("--resume");
+    await main().catch((error) => { if (error !== exited) throw error; });
+    expect(loadResumableSession).not.toHaveBeenCalled();
+    expect(console.error).not.toHaveBeenCalledWith(expect.stringContaining("Failed to load session"));
+    expect(process.exit).not.toHaveBeenCalledWith(1);
+    expect(render).toHaveBeenCalledOnce();
+    expect(vi.mocked(render).mock.calls[0]![0]).toHaveProperty("props.resumeSessionId", undefined);
+  });
+
+  it("--resume still exits cleanly when the picker is cancelled", async () => {
+    vi.mocked(listResumableSessions).mockResolvedValue([record("existing")]);
+    vi.mocked(pickSession).mockResolvedValue(null);
+    process.argv.push("--resume");
+    await expect(main()).rejects.toBe(exited);
+    expect(process.exit).toHaveBeenCalledWith(0);
+    expect(render).not.toHaveBeenCalled();
   });
 });
