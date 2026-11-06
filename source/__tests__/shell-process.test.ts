@@ -3,7 +3,7 @@ import { executeSkill } from "../skills/executor.js";
 
 vi.mock("../skills/improvement.js", () => ({ recordSkillTrace: vi.fn(async () => {}) }));
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInSandbox } from "../utils/sandbox.js";
@@ -22,11 +22,33 @@ const run = (command: string, timeout = 200, signal?: AbortSignal) => runInSandb
 
 async function waitForFile(path: string): Promise<string> {
   for (let i = 0; i < 100; i++) {
-    try { return await readFile(path, "utf8"); } catch {}
+    try {
+      // Shell redirection creates the file before printf/echo writes its marker.
+      const contents = await readFile(path, "utf8");
+      if (contents.length > 0) return contents;
+    } catch {}
     await new Promise(resolve => setTimeout(resolve, 10));
   }
   throw new Error(`Child did not start: ${path}`);
 }
+
+describe("waitForFile", () => {
+  it("waits for marker contents after the file is created", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agav-marker-test-"));
+    const marker = join(dir, "marker");
+    let writer: ReturnType<typeof setTimeout> | undefined;
+    let write: Promise<void> | undefined;
+    try {
+      await writeFile(marker, "");
+      writer = setTimeout(() => { write = writeFile(marker, "survived"); }, 50);
+      expect(await waitForFile(marker)).toBe("survived");
+    } finally {
+      clearTimeout(writer);
+      await write;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 // The abort rejects as soon as the group leader's stdio closes, but the kernel
 // reaps sibling/descendant group members (the exec'd sleep) a moment later.

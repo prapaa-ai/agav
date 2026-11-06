@@ -46,8 +46,10 @@ A session also remembers its permission mode. If you changed the mode mid-sessio
 
 `sanitize` and `json` work in either order; `--sanitize` is an alias for `sanitize`.
 Use `/help export` or `/export --help` for usage. Unknown options produce an error
-without creating a file. While Agav is working, export waits in the existing
-command queue until the agent is idle.
+without creating a file. `/export` can run while Agav is working (with no pending
+attachments). It exports a snapshot of the committed, retained conversation at
+dispatch time, excluding in-flight streaming output and tool results not yet
+committed. It does not wait for the active turn to finish.
 
 Files are saved in the working directory as `agav-export-<timestamp>.md` or `.json`.
 Sanitized filenames include `-sanitized`. Existing files are never overwritten;
