@@ -46,6 +46,10 @@ export const deepCommand: SlashCommand = {
   usage: "Usage: /deep\n\nSwitches to the most capable model for the current provider.\nUse for complex reasoning, large refactors, or architecture decisions.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
     const model = DEEP_MODELS[context.config.provider] ?? DEEP_MODELS.openai!
+    const location = context.config.vertexAILocation || "global"
+    if (context.config.provider === "vertex-ai" && !["global", "us", "eu"].includes(location)) {
+      return { type: "message", text: `Cannot select ${model} with vertexAILocation "${location}". Opus 5.5 requires a global or multi-region endpoint. Set vertexAILocation to "global", "us", or "eu", or select a regional model with /model. Your location has not been changed.` }
+    }
     const error = context.setModel(model)
     if (error) return { type: "message", text: error }
     return { type: "message", text: `Switched to deep model: ${model}` }

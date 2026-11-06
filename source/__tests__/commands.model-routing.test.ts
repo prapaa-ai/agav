@@ -96,3 +96,22 @@ describe("commands/model-routing", () => {
     expect((result as { text: string }).text).toContain("Switched to deep model");
   });
 });
+
+describe("Vertex deep location compatibility", () => {
+  it("rejects a regional switch without changing model or location", async () => {
+    const context = createContext("vertex-ai");
+    context.config.vertexAILocation = "us-east5";
+    const result = await deepCommand.execute("", context);
+    expect(context.setModel).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ type: "message", text: expect.stringContaining("vertexAILocation") });
+    expect((result as { text: string }).text).toContain("global");
+    expect(context.config.vertexAILocation).toBe("us-east5");
+  });
+  it.each([undefined, "global", "us", "eu"])("accepts location %s", async (location) => {
+    const context = createContext("vertex-ai");
+    context.config.vertexAILocation = location;
+    await deepCommand.execute("", context);
+    expect(context.setModel).toHaveBeenCalledWith("vertex/claude-opus-5-5");
+    expect(context.config.vertexAILocation).toBe(location);
+  });
+});
