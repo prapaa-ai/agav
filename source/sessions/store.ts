@@ -11,6 +11,13 @@ import { BackgroundJobError } from "../background-jobs/types.js";
 import { withJobLock } from "../background-jobs/storage/single-writer-lock.js";
 
 export type SessionRuntimeStatus = "starting" | "running" | "needs-approval" | "completed" | "failed" | "interrupted" | "cancelled";
+export interface SessionSteer {
+  id: string;
+  target: string;
+  directive: string;
+  status: "pending" | "consumed" | "rejected";
+  error?: string;
+}
 /** Only selected runtime settings belong here, never a Config object containing credentials. */
 export interface SessionRuntimeRecord {
   version: 1;
@@ -49,6 +56,9 @@ export interface SessionRuntimeRecord {
   ownerPid?: number;
   cancelRequested?: boolean;
   cancelledSubagents?: string[];
+  /** Generation-scoped durable steering inbox; target "main" is never a child broadcast. */
+  steers?: SessionSteer[];
+  closedSteerTargets?: string[];
   /** Persisted before coordinator start; until a job is attached, this intent must never be started again. */
   admissionPending?: true;
   error?: string;
@@ -148,6 +158,17 @@ export class SessionRuntimeStore {
     await this.lock(record.id, async () => {
       const current = await this.read(record.id);
       if (!current || current.generation !== record.generation) throw new Error(`Missing or stale session runtime generation: ${record.id}`);
+      // Settlement and cancellation must leave no silently stranded accepted directives.
+      for (const steer of record.steers ?? []) {
+        if (steer.status !== "pending") continue;
+        const child = record.subagentStates?.find(child => child.id === steer.target);
+        if (!["starting", "running", "needs-approval"].includes(record.status) || record.cancelRequested ||
+            record.closedSteerTargets?.includes(steer.target) || record.cancelledSubagents?.includes(steer.target) ||
+            (steer.target !== "main" && child?.status !== "running")) {
+          steer.status = "rejected";
+          steer.error = "Steering recipient is no longer active.";
+        }
+      }
       record.updatedAt = new Date().toISOString();
       await writeAtomic(this.path(record.id), JSON.stringify(record, null, 2) + "\n");
     });
