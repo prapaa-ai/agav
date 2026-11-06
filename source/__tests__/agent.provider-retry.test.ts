@@ -82,6 +82,8 @@ describe("RetryProvider through the real agent loop", () => {
   it.each<StreamEvent>([
     { type: "text_delta", text: "partial" },
     { type: "thinking_delta", text: "partial thought" },
+    { type: "thinking_block", block: { type: "thinking", thinking: "", signature: "signed" } },
+    { type: "thinking_block", block: { type: "redacted_thinking", data: "encrypted" } },
     { type: "tool_call_start", toolCallId: "partial", toolName: "read_file" },
     { type: "tool_call_delta", toolCallId: "partial", argsJson: "{" },
     { type: "tool_call_end", toolCallId: "partial" },

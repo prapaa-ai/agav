@@ -78,12 +78,12 @@ export class RetryProvider implements LLMProvider {
       try {
         params.signal?.throwIfAborted();
         for await (const event of this.inner.stream(params)) {
-          // Replaying visible output or a partial tool call cannot be rolled back
+          // Replaying committed thinking, visible output, or a partial tool call cannot be rolled back
           // safely, especially when stdout is streamed in headless mode.
           if ((event.type === "text_delta" || event.type === "thinking_delta") && event.text.length > 0
             || event.type === "tool_call_start" || event.type === "tool_call_delta"
             || event.type === "tool_call_end" || event.type === "message_end"
-            || event.type === "error") {
+            || event.type === "thinking_block" || event.type === "error") {
             emittedContent = true;
           }
           yield event;
