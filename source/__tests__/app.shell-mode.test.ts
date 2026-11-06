@@ -84,6 +84,28 @@ describe.skipIf(process.platform === "win32")("App shell execution (real subproc
     }
   });
 
+  it("runs safe slash commands while a direct shell command is in flight", async () => {
+    boundary.busy = false;
+    boundary.submit.mockReset().mockResolvedValue(false);
+    const ui = await mount();
+    let pending: Promise<void> | undefined;
+    try {
+      pending = boundary.handleSubmit!("!sleep 10");
+      await vi.waitFor(() => expect(ui.output()).toContain("Shell · $"));
+      await boundary.handleSubmit!("/copy");
+      await vi.waitFor(() => expect(ui.output()).toContain("Nothing to copy"));
+      expect(ui.output()).not.toContain("Queued 1");
+      expect(boundary.submit).not.toHaveBeenCalled();
+      // A non-immediate command still waits for shell execution to finish.
+      await boundary.handleSubmit!("/memory");
+      await vi.waitFor(() => expect(ui.output()).toContain("Queued 1"));
+    } finally {
+      ui.stdin.emit("data", Buffer.from("\x1b"));
+      await pending;
+      ui.instance.unmount();
+    }
+  });
+
   it("retains command failure and output in the separate result", async () => {
     boundary.submit.mockReset().mockResolvedValue(true);
     const ui = await mount();

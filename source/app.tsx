@@ -1262,7 +1262,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       try {
         // ! prefix — run directly, show raw output, then ask the agent to analyze it.
         // Do not execute a command whose follow-up would be rejected by a busy turn.
-        if (shellAbortRef.current) return;
+        // Safe slash commands bypass serialization even during direct shell work.
+        if (shellAbortRef.current && !immediateCommand) return;
         if (trimmed.startsWith("!")) {
           const cmd = trimmed.slice(1).trim();
           if (!cmd || isLoading || pendingConfirmation) return;
