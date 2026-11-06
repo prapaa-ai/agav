@@ -28,6 +28,8 @@ export interface ContentBlock {
 }
 
 export interface Message {
+  /** Durable identity of the request prefix that produced Claude thinking. */
+  thinkingPrefix?: string;
   role: Role;
   content: ContentBlock[];
   displayText?: string;
@@ -74,6 +76,8 @@ export interface StreamParams {
 export interface LLMProvider {
   readonly name: string;
   stream(params: StreamParams): AsyncIterable<StreamEvent>;
+  /** Adapter-specific effective system/tools/model identity for signed replay. */
+  getThinkingPrefix?(params: StreamParams): string;
   /**
    * Real context window this provider will enforce for the model, when it can
    * be discovered at runtime. Optional: providers whose window is implied by

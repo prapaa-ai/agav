@@ -55,6 +55,7 @@ export class RetryProvider implements LLMProvider {
    * `provider.getContextWindow` on this wrapper, so dropping the method here
    * would silently disable context-window discovery for wrapped providers.
    */
+  readonly getThinkingPrefix?: LLMProvider["getThinkingPrefix"];
   readonly getContextWindow?: LLMProvider["getContextWindow"];
   readonly isContextWindowConfirmedMissing?: LLMProvider["isContextWindowConfirmedMissing"];
 
@@ -62,6 +63,9 @@ export class RetryProvider implements LLMProvider {
     this.inner = inner;
     this.name = inner.name;
     this.maxRetries = maxRetries;
+    if (inner.getThinkingPrefix) {
+      this.getThinkingPrefix = inner.getThinkingPrefix.bind(inner);
+    }
     if (inner.getContextWindow) {
       this.getContextWindow = inner.getContextWindow.bind(inner);
     }

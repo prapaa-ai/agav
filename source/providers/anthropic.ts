@@ -1,4 +1,4 @@
-import { ClaudeThinkingBlocks, toClaudeThinkingBlock } from "./claude-thinking.js";
+import { ClaudeThinkingBlocks, claudeThinkingPrefix, toClaudeThinkingBlock } from "./claude-thinking.js";
 import Anthropic from "@anthropic-ai/sdk";
 import type {
   LLMProvider,
@@ -39,6 +39,10 @@ export class AnthropicProvider implements LLMProvider {
       this.contextWindows.delete(model);
       return undefined;
     }
+  }
+
+  getThinkingPrefix(params: StreamParams): string {
+    return claudeThinkingPrefix(this.name, params.model, params);
   }
 
   // Translate Anthropic's streaming event model into the provider-agnostic event stream used by the app.

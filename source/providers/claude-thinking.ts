@@ -1,4 +1,6 @@
-import type { ContentBlock, StreamEvent } from "./types.js";
+import { createHash } from "node:crypto";
+import { applyEffortPrompt, supportsNativeEffort } from "./effort.js";
+import type { ContentBlock, StreamEvent, StreamParams } from "./types.js";
 
 /** Assemble complete, signed Claude blocks before storing them for replay. */
 export class ClaudeThinkingBlocks {
@@ -32,4 +34,16 @@ export function toClaudeThinkingBlock(block: ContentBlock) {
   if (block.type === "thinking") return { type: "thinking" as const, thinking: block.thinking ?? "", signature: block.signature ?? "" };
   if (block.type === "redacted_thinking") return { type: "redacted_thinking" as const, data: block.data ?? "" };
   return undefined;
+}
+
+/** Hash the effective wire prefix, not credentials or the provider instance.
+ * Stable across worker/session reloads; adapter/endpoint switches are not.
+ */
+export function claudeThinkingPrefix(adapter: string, model: string, params: StreamParams): string {
+  const system = params.effort && supportsNativeEffort("anthropic", model)
+    ? params.systemPrompt : applyEffortPrompt(params.systemPrompt, params.effort ?? "medium");
+  return createHash("sha256").update(JSON.stringify([
+    adapter, model, system ?? "",
+    params.tools?.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema })) ?? [],
+  ])).digest("hex");
 }

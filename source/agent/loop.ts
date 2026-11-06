@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   LLMProvider,
   StreamEvent,
@@ -572,15 +573,15 @@ export async function* runAgentLoop(
       // Seeded skill dispatches are synthetic tool calls with no provider stream; the idle timer only arms when a real stream starts.
       if (!seededCall) {
         resetIdleTimer();
-        for await (const event of provider.stream({
-          model,
-          messages: conversation.getMessages(),
-          tools: toolRegistry.getSchemas(),
-          systemPrompt,
-          effort,
-          maxTokens,
-          signal: attemptController.signal,
-        })) {
+        const request = {
+          model, messages: conversation.getMessages(), tools: toolRegistry.getSchemas(),
+          systemPrompt, effort, maxTokens, signal: attemptController.signal,
+        };
+        const prefix = provider.getThinkingPrefix?.(request) ?? createHash("sha256")
+          .update(JSON.stringify([provider.name, model, systemPrompt ?? "", request.tools, effort])).digest("hex");
+        conversation.prepareThinkingPrefix?.(prefix);
+        request.messages = conversation.getMessages();
+        for await (const event of provider.stream(request)) {
           resetIdleTimer();
 
           if (attemptController.signal.aborted) {

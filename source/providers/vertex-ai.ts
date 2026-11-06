@@ -1,4 +1,4 @@
-import { ClaudeThinkingBlocks, toClaudeThinkingBlock } from "./claude-thinking.js";
+import { ClaudeThinkingBlocks, claudeThinkingPrefix, toClaudeThinkingBlock } from "./claude-thinking.js";
 import { createSign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { applyEffortPrompt, mapAnthropicEffort, mapOpenAIEffort, supportsNativeEffort } from "./effort.js";
@@ -222,6 +222,10 @@ export class VertexAIProvider implements LLMProvider {
   constructor(credentialsPath: string, location?: string) {
     this.auth = new VertexAIAuth(credentialsPath);
     this.location = location || DEFAULT_VERTEX_LOCATION;
+  }
+
+  getThinkingPrefix(params: StreamParams): string {
+    return claudeThinkingPrefix(`${this.name}:${this.location}`, vertexClaudeModelName(params.model), params);
   }
 
   async *stream(params: StreamParams): AsyncIterable<StreamEvent> {
