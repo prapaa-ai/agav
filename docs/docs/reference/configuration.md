@@ -90,6 +90,7 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | `permissionMode` | `ask`, `auto-accept`, or `deny-writes` |
 | `sandboxRequired` | When `true`, refuse to start if no OS-level sandbox (Seatbelt, Bubblewrap, or Docker) is available |
 | `sandboxNetwork` | Network policy for Seatbelt and Bubblewrap shell commands: `allow` (default) or `deny` to block direct off-host networking. Global config only; invalid values are treated as `deny`. See [Network policy](/reference/security#network-policy). |
+| `windowsSandbox` | Windows only. When `true`, run shell commands under Agav's restricted-token sandbox, which confines writes to the workspace and a sandbox temp directory. Doesn't confine reads or networking; commands are refused while `sandboxNetwork` is `deny`. Default `false`; global config only. See [Opt-in restricted-token sandbox](/reference/security#opt-in-restricted-token-sandbox). |
 | `allowedTools` | Tool names or scoped patterns that can run without confirmation |
 | `search` | When `true`, enable the `web_search` tool (off by default). Also settable per session with `--search`. See [Built-in tools](/features/built-in-tools). |
 | `systemPrompt` | Additional project instructions |

@@ -3,6 +3,17 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isWithinRoot } from "./path-guard.js";
 import { discoverSandboxProtectedPaths, resolveSandboxPath, type SandboxPathPolicy } from "./sandbox-protected-paths.js";
+import {
+  isWindowsSandboxEnabled,
+  isWindowsSandboxHelperAvailable,
+  prepareWindowsSandboxRun,
+  windowsArgvInvocation,
+  windowsShellInvocation,
+  WINDOWS_SANDBOX_NETWORK_DENY_MESSAGE,
+  WINDOWS_SANDBOX_UNAVAILABLE_MESSAGE,
+} from "./windows-sandbox.js";
+
+export { setWindowsSandboxEnabled, isWindowsSandboxEnabled } from "./windows-sandbox.js";
 
 const activeCommands = new Set<() => void>();
 let exitCleanupInstalled = false;
@@ -38,7 +49,9 @@ import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, userInfo } from "node:os";
 
-export type SandboxBackend = "seatbelt" | "bubblewrap" | "docker" | "none";
+export type SandboxBackend = "seatbelt" | "bubblewrap" | "docker" | "windows" | "none";
+
+const SANDBOX_BACKENDS: readonly SandboxBackend[] = ["seatbelt", "bubblewrap", "docker", "windows", "none"];
 
 /**
  * Network policy for sandboxed commands.
@@ -88,6 +101,8 @@ export function getAvailableSandboxOverrides(): SandboxBackend[] {
     if (platform() !== "win32") {
       if (canExec("sandbox-exec")) installedBackends.push("seatbelt");
       if (canExec("bwrap")) installedBackends.push("bubblewrap");
+    } else if (isWindowsSandboxHelperAvailable()) {
+      installedBackends.push("windows");
     }
     let dockerInstalled = false;
     if (platform() === "win32") {
@@ -117,9 +132,11 @@ export function detectSandboxBackend(): SandboxBackend {
   // there just spawns two doomed child processes, adding to the child-process
   // count that triggers Bun's non-deterministic JSC heap-corruption segfault
   // on Windows (oven-sh/bun#23177, oven-sh/bun#30745).
+  // The opt-in restricted-token backend is chosen only when the user enabled
+  // `windowsSandbox` and a helper exists. The check never spawns a process and
+  // is not cached, so the startup setting always applies.
   if (platform() === "win32") {
-    detectedBackend = "none";
-    return detectedBackend;
+    return isWindowsSandboxEnabled() && isWindowsSandboxHelperAvailable() ? "windows" : "none";
   }
 
   // Check what's actually available at runtime
@@ -139,6 +156,7 @@ export function getSandboxName(): string {
     seatbelt: "macOS Seatbelt",
     bubblewrap: "Linux Bubblewrap",
     docker: "Docker",
+    windows: "Windows restricted token",
     none: "none (unsandboxed)",
   };
   return names[detectSandboxBackend()];
@@ -628,6 +646,36 @@ function runUnsandboxed(
   });
 }
 
+function runWindows(
+  command: string,
+  cwd: string,
+  timeout: number,
+  maxBuffer: number,
+  onOutput?: OutputCallback,
+  signal?: AbortSignal,
+): Promise<{ stdout: string; stderr: string; error: Error | null }> {
+  // Every refusal returns an error without launching anything; this backend
+  // never falls back to unsandboxed execution.
+  const refuse = (cause: unknown) => Promise.resolve({
+    stdout: "", stderr: "", error: cause instanceof Error ? cause : new Error(String(cause)),
+  });
+  if (platform() !== "win32") return refuse("The Windows sandbox backend is only available on Windows.");
+  if (sandboxNetwork === "deny") return refuse(WINDOWS_SANDBOX_NETWORK_DENY_MESSAGE);
+  if (!isWindowsSandboxHelperAvailable()) return refuse(WINDOWS_SANDBOX_UNAVAILABLE_MESSAGE);
+  let prepared: ReturnType<typeof prepareWindowsSandboxRun>;
+  try { prepared = prepareWindowsSandboxRun({ cwd, invocation: windowsShellInvocation(command), env: filterEnv() }); }
+  catch (cause) { return refuse(cause); }
+  return new Promise((resolve) => {
+    try {
+      executeProcess(prepared.file, prepared.args, { timeout, maxBuffer, cwd, env: prepared.env }, onOutput,
+        (error, stdout, stderr) => { prepared.cleanup(); resolve({ stdout, stderr, error }); }, signal);
+    } catch (cause) {
+      prepared.cleanup();
+      resolve({ stdout: "", stderr: "", error: cause instanceof Error ? cause : new Error(String(cause)) });
+    }
+  });
+}
+
 const DESTRUCTIVE_PATTERNS = [
   /\brm\s+-rf\s+[/~]/,
   /\brm\s+-rf\s+\.\s*$/,
@@ -678,9 +726,8 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
   backend: SandboxBackend;
 }> {
   // Runtime validation is required: tool inputs are not constrained by TS types.
-  if (opts.forceBackend !== undefined &&
-      !["seatbelt", "bubblewrap", "docker", "none"].includes(opts.forceBackend)) {
-    throw new Error("Invalid sandbox backend. Use seatbelt, bubblewrap, docker, or none.");
+  if (opts.forceBackend !== undefined && !SANDBOX_BACKENDS.includes(opts.forceBackend)) {
+    throw new Error("Invalid sandbox backend. Use seatbelt, bubblewrap, docker, windows, or none.");
   }
   if (opts.forceBackend === "none" && !opts.allowUnsandboxed && process.env["AGAV_NO_SANDBOX"] !== "1") {
     throw new Error("Sandbox bypass denied. Only the user can enable unsandboxed overrides by starting Agav with AGAV_NO_SANDBOX=1. Omit sandbox to use the default backend.");
@@ -701,6 +748,9 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
       break;
     case "docker":
       result = await runDocker(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
+      break;
+    case "windows":
+      result = await runWindows(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
       break;
     case "none":
       result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal, opts.allowUnsandboxed && opts.forceBackend === "none" && opts.inheritEnv);
@@ -742,8 +792,8 @@ export function requireSandbox(forceBackend?: SandboxBackend): void {
   if (backend === "none") {
     throw new Error(
       "Sandbox required but no sandbox backend is available. " +
-      "Install sandbox-exec (macOS) or bubblewrap (Linux), use --sandbox docker, " +
-      "or remove the sandboxRequired setting to run without a sandbox.",
+      "Install sandbox-exec (macOS) or bubblewrap (Linux), enable windowsSandbox (Windows), " +
+      "use --sandbox docker, or remove the sandboxRequired setting to run without a sandbox.",
     );
   }
 }
@@ -770,8 +820,8 @@ export interface SandboxedCommand {
  * preserves the caller's `execFile` error object (code/signal/exit code), which
  * callers such as `run_tests` need to classify runner-startup failures.
  *
- * Only the auto-detectable backends are wrapped: `seatbelt`, `bubblewrap`, and
- * `none` (no wrapping). The `docker` backend is not applied here because it is
+ * Only the auto-detectable backends are wrapped: `seatbelt`, `bubblewrap`,
+ * `windows` (opt-in), and `none` (no wrapping). The `docker` backend is not applied here because it is
  * never the auto-detected default and expects a shell-string workload.
  */
 export function buildSandboxedCommand(opts: {
@@ -798,6 +848,12 @@ export function buildSandboxedCommand(opts: {
         const { file, args } = bubblewrapArgv(opts.cwd, inner, sandboxNetwork, workspace.path, workspace.mounts);
         return { file, args, env, backend, publish: workspace.publish, cleanup: workspace.cleanup };
       } catch (cause) { workspace.cleanup(); throw cause; }
+    }
+    case "windows": {
+      // Fail closed: never run the argv unsandboxed when the backend cannot apply.
+      if (sandboxNetwork === "deny") throw new Error(WINDOWS_SANDBOX_NETWORK_DENY_MESSAGE);
+      const prepared = prepareWindowsSandboxRun({ cwd: opts.cwd, invocation: windowsArgvInvocation(inner), env });
+      return { file: prepared.file, args: prepared.args, env: prepared.env, backend, cleanup: prepared.cleanup };
     }
     default:
       // "none" (unavailable/unsupported) and "docker": run the argv directly.

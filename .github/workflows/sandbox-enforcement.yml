@@ -17,6 +17,13 @@ on:
       - "source/utils/sandbox-workspace.ts"
       - "source/utils/sandbox-protected-paths.ts"
       - "source/utils/sandbox-startup.ts"
+      - "source/utils/windows-sandbox.ts"
+      - "source/utils/windows-sandbox-bundle.ts"
+      - "source/__tests__/windows-sandbox.test.ts"
+      - "source/__tests__/windows-sandbox-enforcement.test.ts"
+      - "native/sandbox-win/**"
+      - "scripts/build-windows-sandbox-helper.mjs"
+      - "scripts/embed-windows-sandbox-helper.mjs"
       - "source/tools/shell.ts"
       - "source/tools/background-job.ts"
       - "source/__tests__/sandbox-enforcement.test.ts"
@@ -109,6 +116,40 @@ jobs:
           source/__tests__/background-job-consent-boundary.test.ts
           --reporter=verbose
           --reporter=json --outputFile=enforcement-report.json
+      # The opt-in Windows restricted-token backend: build the native helper and
+      # run its real enforcement suite in a separate step, so the helper override
+      # does not change the default-backend assertions above. The suite self-skips
+      # without the helper, so the next step requires that it actually executed.
+      - name: Build Windows sandbox helper (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          node scripts/build-windows-sandbox-helper.mjs "$RUNNER_TEMP/agav-sandbox"
+          echo "AGAV_WINDOWS_SANDBOX_HELPER=$RUNNER_TEMP/agav-sandbox/agav-sandbox-win32-x64.exe" >> "$GITHUB_ENV"
+      - name: Run Windows restricted-token sandbox enforcement (Windows)
+        if: runner.os == 'Windows'
+        run: >-
+          npx vitest run
+          source/__tests__/windows-sandbox-enforcement.test.ts
+          --reporter=verbose
+          --reporter=json --outputFile=windows-sandbox-report.json
+      - name: Assert the Windows sandbox suite actually executed (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          node -e '
+            const report = JSON.parse(require("fs").readFileSync("windows-sandbox-report.json", "utf8"));
+            const suite = "Windows restricted-token sandbox";
+            const tests = (report.testResults || []).flatMap(f => f.assertionResults || [])
+              .filter(a => (a.ancestorTitles || []).includes(suite));
+            const ran = tests.filter(a => a.status === "passed").length;
+            const skipped = tests.filter(a => a.status === "skipped" || a.status === "pending").length;
+            console.log(`${suite}: ${ran} executed, ${skipped} skipped, ${tests.length} total`);
+            if (tests.length === 0 || ran === 0 || skipped > 0) {
+              console.error(`::error::Required suite "${suite}" did not fully execute on this runner.`);
+              process.exit(1);
+            }
+          '
       # A green test run is NOT enough: the per-OS assertions self-skip when the
       # backend cannot apply, so a runner where the sandbox silently failed would
       # still pass. Assert that THIS runner's owning backend suite actually
