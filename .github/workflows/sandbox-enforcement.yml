@@ -137,6 +137,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          # shellcheck disable=SC2016 # the ${...} inside node -e are JS template
+          # literals, deliberately single-quoted so the shell does not expand them.
           node -e '
             const report = JSON.parse(require("fs").readFileSync("windows-sandbox-report.json", "utf8"));
             const suite = "Windows restricted-token sandbox";
