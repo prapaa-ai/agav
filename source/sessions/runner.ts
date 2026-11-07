@@ -11,7 +11,7 @@ import { saveSessionRuntime, type SessionTokenUsage } from "../config/history.js
 import { ConversationState } from "../agent/conversation.js";
 import { makeAgentProgressTracker } from "../agent/subagent-progress.js";
 import type { SubagentProgress } from "../agent/subagent-types.js";
-import { runAgentLoop, type AgentEvent, type ConfirmToolFn } from "../agent/loop.js";
+import { runAgentLoop, type AgentEvent, type ConfirmToolFn, type SteerDrainOptions } from "../agent/loop.js";
 import { createToolRegistry } from "../tools/registry-factory.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { createSubagentTool } from "../tools/subagent.js";
@@ -58,7 +58,7 @@ export interface SessionToolContext {
   registerSubagentCancellation?: (cancel: (id: string) => void) => void;
   onSubagentProgress?: (states: import("../agent/subagent-types.js").SubagentProgress[]) => void;
   onTokenUsage?: (usage: SessionTokenUsage) => void;
-  drainSteers?: (id: string, final?: boolean) => Promise<string[]>;
+  drainSteers?: (id: string, options?: SteerDrainOptions) => Promise<string[]>;
 }
 
 /** Capture policy/settings at the execution boundary; never persist provider credentials. */
@@ -285,10 +285,10 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
         backgroundPermissionMode: clampPermissionMode(initial.backgroundPermissionMode, config.orgPermissionFloor),
         registerSubagentCancellation: cancel => { cancelChild = cancel; },
         onTokenUsage: addTokenUsage,
-        drainSteers: async (childId, final) => {
+        drainSteers: async (childId, options) => {
           // Publish newly started children before accepting steering for them.
           await flushProgress();
-          return drainSessionSteers(id, initial.generation, childId, final, deps.store);
+          return drainSessionSteers(id, initial.generation, childId, options, deps.store);
         },
         onSubagentProgress: states => {
           if (!acceptingProgress) return;
@@ -309,7 +309,7 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
         // This is an interactive session with a durable approval channel, not unattended headless consent.
         headless: false, confirmTool, allowedTools: config.allowedTools, hooks: config.hooks,
         iterationsBudget, signal: controller.signal, providerIdleTimeout: config.providerIdleTimeout,
-        drainSteers: (final?: boolean) => drainSessionSteers(id, initial.generation, undefined, final, deps.store),
+        drainSteers: (options?: SteerDrainOptions) => drainSessionSteers(id, initial.generation, undefined, options, deps.store),
       })) {
         eventLines += JSON.stringify({
           sequence: ++sequence, generation: initial.generation, at: new Date().toISOString(),
