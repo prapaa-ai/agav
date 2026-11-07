@@ -75,8 +75,9 @@ describe("shared continuation reservations for durable child steering", () => {
         return collect(runAgentLoop({ provider, conversation, toolRegistry: registry, model: "mock", systemPrompt: childId,
           permissionMode: "auto-accept", iterationsBudget: budget,
           drainSteers: async options => {
-            // Startup drains are real but have no directives yet. Hold both
-            // later drains before durable consumption, not after the race.
+            // Startup drains are real but have no directives yet. Hold the
+            // reservation winner before durable consumption; a waiter may
+            // only reach its drain once the winner spends the last slot.
             if (snapshots.get(childId)!.length === 1) {
               boundaryDrains.push({ childId, options: { ...options } });
               await drainGate.promise;
@@ -93,6 +94,12 @@ describe("shared continuation reservations for durable child steering", () => {
         }
         expect((await store.read(record.id))!.steers!.map(steer => steer.status)).toEqual(["pending", "pending"]);
         responseGate.release();
+        await vi.waitFor(() => expect(boundaryDrains.some(drain => drain.options.canContinue)).toBe(true));
+        expect(budget.remaining).toBe(0);
+        expect((await store.read(record.id))!.steers!.map(steer => steer.status)).toEqual(["pending", "pending"]);
+        // Do not await both drains while holding the winner: the loser waits
+        // for that reservation to be spent before reporting exhaustion.
+        drainGate.release();
         await vi.waitFor(() => expect(boundaryDrains).toHaveLength(2));
       } finally {
         responseGate.release();
@@ -128,6 +135,119 @@ describe("shared continuation reservations for durable child steering", () => {
       }
     },
   );
+
+  describe.each(["text-only final", "post-tool boundary"] as const)("waiting at the %s", boundary => {
+    it.each([false, true])("waits for an empty final drain to release its slot (cancelled: %s)", async cancelled => {
+      const responseGates = childIds.map(() => gate());
+      const emptyDrainEntered = gate();
+      const emptyDrainGate = gate();
+      const waiterAtBoundary = gate();
+      const waiterSettled = gate();
+      const controller = new AbortController();
+      const budget = { remaining: 3, total: 3 };
+      const snapshots = childIds.map(() => [] as Message[][]);
+      const events = childIds.map(() => [] as AgentEvent[]);
+      const boundaryDrains: SteerDrainOptions[] = [];
+      let settled = false;
+      const registry = new ToolRegistry();
+      const execute = vi.fn(async () => ({ output: "inspected", isError: false }));
+      registry.register({ schema: { name: "inspect", description: "Inspect", inputSchema: { type: "object", properties: {} } }, execute });
+      const provider: LLMProvider = { name: "mock", async *stream(params): AsyncGenerator<StreamEvent> {
+        const index = childIds.indexOf(params.systemPrompt!);
+        const calls = snapshots[index]!;
+        calls.push(structuredClone(params.messages));
+        if (calls.length === 1) {
+          await responseGates[index]!.promise;
+          if (index === 1 && boundary === "post-tool boundary") {
+            yield { type: "tool_call_start", toolCallId: "inspect-call", toolName: "inspect" };
+            yield { type: "tool_call_delta", toolCallId: "inspect-call", argsJson: "{}" };
+            yield { type: "message_end", stopReason: "tool_calls" };
+            return;
+          }
+        }
+        yield { type: "text_delta", text: "done" };
+        yield { type: "message_end", stopReason: "end_turn" };
+      } };
+      const running = childIds.map((childId, index) => {
+        const conversation = new ConversationState();
+        conversation.addUserMessage("Inspect");
+        const loop = runAgentLoop({ provider, conversation, toolRegistry: registry, model: "mock", systemPrompt: childId,
+          permissionMode: "auto-accept", iterationsBudget: budget, signal: index === 1 ? controller.signal : undefined,
+          drainSteers: async options => {
+            if (snapshots[index]!.length === 1) {
+              if (index === 0) {
+                expect(options).toMatchObject({ final: true, canContinue: true });
+                emptyDrainEntered.release();
+                await emptyDrainGate.promise;
+              } else boundaryDrains.push({ ...options });
+            }
+            return durableDrain(childId, options);
+          },
+        });
+        return (async () => {
+          for await (const event of loop) {
+            events[index]!.push(event);
+            if (index === 1 && (boundary === "post-tool boundary"
+              ? event.type === "tool_result" : event.type === "assistant_message_complete")) waiterAtBoundary.release();
+          }
+        })().finally(() => {
+          if (index === 1) {
+            settled = true;
+            waiterSettled.release();
+          }
+        });
+      });
+      try {
+        await vi.waitFor(() => expect(snapshots.map(calls => calls.length)).toEqual([1, 1]));
+        expect(budget.remaining).toBe(1);
+        await requestSessionSteer(record.id, record.generation, "DIRECTIVE_WAITER", "child-2", new SessionRuntimeStore(root));
+        responseGates[0]!.release();
+        await emptyDrainEntered.promise;
+        expect(budget.remaining).toBe(0);
+        responseGates[1]!.release();
+        await waiterAtBoundary.promise;
+        // Let the waiter advance past the yielded boundary. An eager exhausted
+        // drain would settle here, while a reservation wait remains suspended.
+        await Promise.race([waiterSettled.promise, new Promise(resolve => setTimeout(resolve, 100))]);
+        expect(settled).toBe(false);
+        expect(boundaryDrains).toEqual([]);
+        expect(events[1]!.some(event => event.type === "error" || event.type === "turn_complete")).toBe(false);
+        expect((await store.read(record.id))!.steers!.map(steer => steer.status)).toEqual(["pending"]);
+        if (cancelled) {
+          controller.abort();
+          await vi.waitFor(() => expect(settled).toBe(true));
+          // Cancellation must not need the reservation owner to unblock first.
+          expect(events[1]!.at(-1)).toEqual({ type: "error", error: new Error("Aborted") });
+          expect(boundaryDrains).toEqual([]);
+          expect(budget.remaining).toBe(0);
+          expect((await store.read(record.id))!.steers!.map(steer => steer.status)).toEqual(["pending"]);
+        }
+      } finally {
+        for (const responseGate of responseGates) responseGate.release();
+        emptyDrainGate.release();
+        await Promise.all(running);
+      }
+      expect(events[0]!.at(-1)).toEqual({ type: "turn_complete" });
+      expect(events[0]!.some(event => event.type === "steer_applied")).toBe(false);
+      if (cancelled) {
+        expect(snapshots.map(calls => calls.length)).toEqual([1, 1]);
+        expect(budget.remaining).toBe(1);
+        expect(events[1]!.some(event => event.type === "steer_applied")).toBe(false);
+      } else {
+        expect(boundaryDrains).toEqual([expect.objectContaining({ canContinue: true })]);
+        expect(snapshots.map(calls => calls.length)).toEqual([1, 2]);
+        expect(texts(snapshots[1]![1]!)).toContain(STEER_DIRECTIVE_PREFIX + "DIRECTIVE_WAITER");
+        expect(snapshots.reduce((total, calls) => total + calls.length, 0)).toBe(3);
+        expect(budget.remaining).toBe(0);
+        expect((await store.read(record.id))!.steers!.map(steer => steer.status)).toEqual(["consumed"]);
+        expect(events[1]!.filter(event => event.type === "steer_applied")).toEqual([
+          { type: "steer_applied", directives: ["DIRECTIVE_WAITER"] },
+        ]);
+        expect(events[1]!.at(-1)).toEqual({ type: "turn_complete" });
+      }
+      if (boundary === "post-tool boundary") expect(execute).toHaveBeenCalledTimes(1);
+    });
+  });
 
   it.each(["empty final drain", "throwing drain", "cancelled drain"] as const)(
     "releases an unused continuation reservation after %s", async outcome => {
