@@ -1,4 +1,5 @@
-import type { ConfirmResult } from "../agent/loop.js";
+import { randomUUID } from "node:crypto";
+import type { ConfirmResult, SteerDrainOptions } from "../agent/loop.js";
 import { isTerminalLifecycle, type CoordinatorClient, type JobSummary, type SessionPolicySnapshot } from "../background-jobs/types.js";
 import { decideSessionApproval, listPendingApprovals, type PendingSessionApproval } from "./approvals.js";
 import { sessionWorkerRequestId } from "./launch.js";
@@ -102,4 +103,47 @@ export async function requestSessionSubagentCancellation(id: string, generation:
       record.cancelledSubagents = [...new Set([...(record.cancelledSubagents ?? []), subagentId])];
     }
   });
+}
+
+/** Durable acceptance only: the owning worker consumes at its next exact safe point. */
+export async function requestSessionSteer(id: string, generation: string, directive: string, subagentId?: string,
+  store = new SessionRuntimeStore()): Promise<void> {
+  if (typeof directive !== "string" || !directive.trim()) throw new Error("Steering directive must not be empty.");
+  if (subagentId !== undefined && (!subagentId || subagentId === "main")) throw new Error("Invalid child steering target.");
+  if (subagentId?.startsWith("skill-")) throw new Error("Steering is not supported for skill executions.");
+  const target = subagentId ?? "main";
+  await store.update(id, generation, record => {
+    if (!active(record) || record.cancelRequested) throw new Error("Session is inactive; cannot steer.");
+    if (record.closedSteerTargets?.includes(target)) throw new Error("Steering recipient has completed; admission is closed.");
+    if (subagentId !== undefined && (record.cancelledSubagents?.includes(subagentId) ||
+        !record.subagentStates?.some(child => child.id === subagentId && child.status === "running"))) {
+      throw new Error("Child steering recipient is missing, cancelled or inactive.");
+    }
+    (record.steers ??= []).push({ id: randomUUID(), target, directive: directive.trim(), status: "pending" });
+  });
+}
+
+/** Atomically consume one recipient, closing final admission only when no continuation remains. */
+export async function drainSessionSteers(id: string, generation: string, subagentId?: string, options: SteerDrainOptions = {},
+  store = new SessionRuntimeStore()): Promise<string[]> {
+  const directives: string[] = [];
+  const target = subagentId ?? "main";
+  await store.update(id, generation, record => {
+    const available = active(record) && !record.cancelRequested && !record.closedSteerTargets?.includes(target) &&
+      !record.cancelledSubagents?.includes(target) &&
+      (subagentId === undefined || record.subagentStates?.some(child => child.id === subagentId && child.status === "running"));
+    const canConsume = available && options.canContinue !== false;
+    for (const steer of record.steers ?? []) {
+      if (steer.target !== target || steer.status !== "pending") continue;
+      steer.status = canConsume ? "consumed" : "rejected";
+      if (canConsume) directives.push(steer.directive);
+      else steer.error = available && options.canContinue === false
+        ? "Steering recipient iteration budget is exhausted."
+        : "Steering recipient is no longer active.";
+    }
+    if (options.final && (options.canContinue === false || (!directives.length && !options.hasLocalSteers))) {
+      record.closedSteerTargets = [...new Set([...(record.closedSteerTargets ?? []), target])];
+    }
+  });
+  return directives;
 }

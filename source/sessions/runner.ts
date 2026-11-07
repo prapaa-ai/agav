@@ -11,7 +11,7 @@ import { saveSessionRuntime, type SessionTokenUsage } from "../config/history.js
 import { ConversationState } from "../agent/conversation.js";
 import { makeAgentProgressTracker } from "../agent/subagent-progress.js";
 import type { SubagentProgress } from "../agent/subagent-types.js";
-import { runAgentLoop, type AgentEvent, type ConfirmToolFn } from "../agent/loop.js";
+import { runAgentLoop, type AgentEvent, type ConfirmToolFn, type SteerDrainOptions } from "../agent/loop.js";
 import { createToolRegistry } from "../tools/registry-factory.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { createSubagentTool } from "../tools/subagent.js";
@@ -28,6 +28,7 @@ import { applySandboxRequiredPolicy } from "../utils/sandbox-startup.js";
 import { createExclusive } from "../background-jobs/storage/atomic-file.js";
 import { SessionApprovalBroker } from "./approvals.js";
 import { SessionRuntimeStore, type SessionRuntimeRecord } from "./store.js";
+import { drainSessionSteers } from "./client.js";
 import { restoreSessionConfigOverrides } from "./config-overrides.js";
 
 /** A worker owns one live continuation. Exiting a presentation client never aborts this handle. */
@@ -57,6 +58,7 @@ export interface SessionToolContext {
   registerSubagentCancellation?: (cancel: (id: string) => void) => void;
   onSubagentProgress?: (states: import("../agent/subagent-types.js").SubagentProgress[]) => void;
   onTokenUsage?: (usage: SessionTokenUsage) => void;
+  drainSteers?: (id: string, options?: SteerDrainOptions) => Promise<string[]>;
 }
 
 /** Capture policy/settings at the execution boundary; never persist provider credentials. */
@@ -129,7 +131,7 @@ export async function prepareSessionTools(ctx: SessionToolContext): Promise<() =
     for (const tool of await loadPlugins()) registry.register(tool);
     await loadSkills();
     const subagent = createSubagentTool({
-      provider, parentToolRegistry: registry,
+      provider, parentToolRegistry: registry, drainSteers: ctx.drainSteers,
       getConfig: () => ({ model: config.model, systemPrompt: config.systemPrompt ?? "", permissionMode: config.permissionMode, backgroundPermissionMode,
         effort: config.effort, orgPermissionFloor: config.orgPermissionFloor, iterationsBudget, providerIdleTimeout: config.providerIdleTimeout }),
       getProviderConfig: () => config,
@@ -283,6 +285,11 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
         backgroundPermissionMode: clampPermissionMode(initial.backgroundPermissionMode, config.orgPermissionFloor),
         registerSubagentCancellation: cancel => { cancelChild = cancel; },
         onTokenUsage: addTokenUsage,
+        drainSteers: async (childId, options) => {
+          // Publish newly started children before accepting steering for them.
+          await flushProgress();
+          return drainSessionSteers(id, initial.generation, childId, options, deps.store);
+        },
         onSubagentProgress: states => {
           if (!acceptingProgress) return;
           // Coalesce child deltas too; capture mutable callback state immediately.
@@ -302,6 +309,7 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
         // This is an interactive session with a durable approval channel, not unattended headless consent.
         headless: false, confirmTool, allowedTools: config.allowedTools, hooks: config.hooks,
         iterationsBudget, signal: controller.signal, providerIdleTimeout: config.providerIdleTimeout,
+        drainSteers: (options?: SteerDrainOptions) => drainSessionSteers(id, initial.generation, undefined, options, deps.store),
       })) {
         eventLines += JSON.stringify({
           sequence: ++sequence, generation: initial.generation, at: new Date().toISOString(),

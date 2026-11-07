@@ -17,6 +17,17 @@ import {
   repeatedFailurePrompt,
 } from "./internal-prompts.js";
 
+/** A final drain keeps admission open only when steering can trigger another inference. */
+export interface SteerDrainOptions {
+  final?: boolean;
+  canContinue?: boolean;
+  hasLocalSteers?: boolean;
+}
+
+// Shared by loops using the same allowance; reservations are not spent until
+// provider dispatch. Waiters must distinguish refundable slots from exhaustion.
+const budgetReservations = new WeakMap<object, { count: number; waiters: Set<() => void> }>();
+
 export type AgentEvent =
   | { type: "retry"; message: string }
   | { type: "planning"; plan: string }
@@ -212,11 +223,11 @@ interface LoopParams {
   hooks?: import("../config/config.js").AgavHooks;
   /**
    * Drains /steer directives queued mid-turn. The main conversation drains
-   * its queue; subagents supply independent broadcast queues so no child
+   * its queue; subagents supply independent recipient queues so no child
    * consumes another recipient's directives. When unset, the loop receives
    * no mid-turn steers.
    */
-  drainSteers?: () => string[];
+  drainSteers?: (options?: SteerDrainOptions) => string[] | Promise<string[]>;
   iterationsBudget?: { remaining: number, total: number }
   /** Explicit skill dispatch shares the normal tool permission/history path. */
   initialToolCall?: { name: "activate_skill"; input: Record<string, unknown> };
@@ -370,10 +381,12 @@ export async function* runAgentLoop(
   const failureStreaks = new Map<string, { errorSig: string; count: number; redirected: boolean }>();
   // After this many consecutive identical failures, inject one redirect.
   const REPEATED_FAILURE_THRESHOLD = 3;
-  // Mid-turn /steer directives — see LoopParams.drainSteers. Undefined for
-  // subagent/skill/agent loops, which never receive them.
+  // Recipient-specific directives are collected only at protocol-safe boundaries.
   const drainSteers = params.drainSteers;
-  const collectSteers = () => (drainSteers ? drainSteers() : []);
+  const collectSteers = async (options: SteerDrainOptions = {}) => {
+    const directives = drainSteers ? await drainSteers(options) : [];
+    return options.canContinue === false ? [] : directives;
+  };
 
   let pendingSummarizeUsage: Record<string, number> | null = null;
 
@@ -500,17 +513,80 @@ export async function* runAgentLoop(
     conversation.setContextWindow(resolved);
   }
   conversation.setSystemPrompt?.(systemPrompt ?? "");
-  const maxIterations = Math.min(iterationsBudget.total, iterationsBudget.remaining);
+  let reservations = budgetReservations.get(iterationsBudget);
+  if (!reservations) {
+    reservations = { count: 0, waiters: new Set() };
+    budgetReservations.set(iterationsBudget, reservations);
+  }
+  const sharedReservations = reservations;
+  const maxIterations = Math.min(iterationsBudget.total, iterationsBudget.remaining + sharedReservations.count);
+  const settleReservation = () => {
+    sharedReservations.count--;
+    for (const wake of sharedReservations.waiters) wake();
+  };
   const initialToolCall = params.initialToolCall;
-  for (let iteration = initialToolCall ? -1 : 0; iteration < maxIterations && iterationsBudget.remaining > 0; iteration++) {
+  // Own the next iteration before a durable drain can consume steering. Keep
+  // ownership across awaits/yields, then spend it at the next provider request.
+  let continuationReserved = false;
+  const releaseContinuation = () => {
+    if (continuationReserved) {
+      iterationsBudget.remaining++;
+      continuationReserved = false;
+      settleReservation();
+    }
+  };
+  // Check and acquire synchronously; only a genuinely contended acquisition
+  // yields. On waking, retry acquisition rather than trusting stale availability.
+  const acquireIteration = (reserve: boolean): boolean | Promise<boolean> => {
+    if (signal?.aborted) return false;
+    if (iterationsBudget.remaining > 0) {
+      iterationsBudget.remaining--;
+      if (reserve) {
+        continuationReserved = true;
+        sharedReservations.count++;
+      }
+      return true;
+    }
+    if (!sharedReservations.count) return false;
+    return new Promise<void>(resolve => {
+      const wake = () => {
+        sharedReservations.waiters.delete(wake);
+        signal?.removeEventListener("abort", wake);
+        resolve();
+      };
+      sharedReservations.waiters.add(wake);
+      signal?.addEventListener("abort", wake, { once: true });
+    }).then(() => acquireIteration(reserve));
+  };
+  const reserveContinuation = (iteration: number) =>
+    iteration + 1 < maxIterations ? acquireIteration(true) : false;
+  try {
+  for (let iteration = initialToolCall ? -1 : 0; iteration < maxIterations; iteration++) {
     const seededCall = iteration === -1 ? initialToolCall : undefined;
-    if (seededCall && signal?.aborted) {
+    if (signal?.aborted) {
       yield { type: "error", error: new Error("Aborted") };
       return;
     }
-    // A deterministic dispatch is not a model request and spends no iteration.
-    if (!seededCall) {
-      iterationsBudget.remaining--
+    // Reserve the shared request budget before an asynchronous steering drain
+    // lets another delegated loop claim the same remaining iteration.
+    if (!seededCall && !continuationReserved) {
+      const acquired = acquireIteration(false);
+      if (!(typeof acquired === "boolean" ? acquired : await acquired)) break;
+    }
+    // Deliver already accepted startup directives before constructing the first
+    // task request. Seeded tool dispatches drain after their paired results.
+    if (iteration === 0 && !initialToolCall) {
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
+      const startupSteers = await collectSteers();
+      for (const steer of startupSteers) conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
+      if (startupSteers.length) yield { type: "steer_applied", directives: startupSteers };
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
     }
     // Auto-compact if conversation is getting long
     const { compacted, droppedCount } = await conversation.compactIfNeeded(false, summarize);
@@ -581,6 +657,10 @@ export async function* runAgentLoop(
           .update(JSON.stringify([provider.name, model, systemPrompt ?? "", request.tools, effort])).digest("hex");
         conversation.prepareThinkingPrefix?.(prefix);
         request.messages = conversation.getMessages();
+        if (continuationReserved) {
+          continuationReserved = false;
+          settleReservation();
+        }
         for await (const event of provider.stream(request)) {
           resetIdleTimer();
 
@@ -757,11 +837,15 @@ export async function* runAgentLoop(
         yield { type: "error", error: new Error("Aborted") };
         return;
       }
-      // A directive queued after the final tool round would otherwise sit in the
-      // queue forever — this is the loop's last exit before max-iterations.
-      // Deliver it as a fresh user turn so it still reaches the model (and the
-      // next submit() call starts a new loop on top of it).
-      const lateSteers = collectSteers();
+      // Late directives must reach another inference, not a discarded child
+      // conversation. The drain atomically retains or closes admission.
+      const canContinue = await reserveContinuation(iteration);
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
+      const lateSteers = await collectSteers({ final: true, canContinue });
+      if (!lateSteers.length) releaseContinuation();
       for (const steer of lateSteers) {
         conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
       }
@@ -772,6 +856,7 @@ export async function* runAgentLoop(
         yield { type: "error", error: new Error("Aborted") };
         return;
       }
+      if (lateSteers.length > 0) continue;
       yield { type: "turn_complete" };
       return;
     }
@@ -1047,7 +1132,12 @@ export async function* runAgentLoop(
     // never splits an assistant tool_use from its tool_result (which providers
     // reject). Draining before the next provider call means the model sees the
     // directive within the same turn.
-    const steers = collectSteers();
+    const canContinue = await reserveContinuation(iteration);
+    if (signal?.aborted) {
+      yield { type: "error", error: new Error("Aborted") };
+      return;
+    }
+    const steers = await collectSteers({ canContinue, final: !canContinue });
     for (const steer of steers) {
       conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
     }
@@ -1091,14 +1181,9 @@ export async function* runAgentLoop(
     return;
   }
 
-  // Deliver any /steer directives queued during the final iteration, then stop.
-  const finalSteers = collectSteers();
-  for (const steer of finalSteers) {
-    conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
-  }
-  if (finalSteers.length > 0) {
-    yield { type: "steer_applied", directives: finalSteers };
-  }
+  // No inference remains: reject pending durable directives without acknowledging
+  // them as delivered or appending them to a soon-to-be-discarded conversation.
+  await collectSteers({ final: true, canContinue: false });
   // Exhaustion is incomplete work, not an assistant answer or successful turn.
   // Reuse the error path so every loop consumer terminates with error status.
   yield {
@@ -1106,4 +1191,8 @@ export async function* runAgentLoop(
     reason: "iterations_exhausted",
     error: new Error("Agent reached maximum iterations"),
   };
+  } finally {
+    // Includes empty final drains, cancellation, drain failures and iterator return.
+    releaseContinuation();
+  }
 }
