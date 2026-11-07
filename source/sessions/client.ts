@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ConfirmResult } from "../agent/loop.js";
+import type { ConfirmResult, SteerDrainOptions } from "../agent/loop.js";
 import { isTerminalLifecycle, type CoordinatorClient, type JobSummary, type SessionPolicySnapshot } from "../background-jobs/types.js";
 import { decideSessionApproval, listPendingApprovals, type PendingSessionApproval } from "./approvals.js";
 import { sessionWorkerRequestId } from "./launch.js";
@@ -123,21 +123,27 @@ export async function requestSessionSteer(id: string, generation: string, direct
   });
 }
 
-/** Atomically consume just one recipient and, on its final safe point, close admission. */
-export async function drainSessionSteers(id: string, generation: string, subagentId?: string, final = false,
+/** Atomically consume one recipient, closing final admission only when no continuation remains. */
+export async function drainSessionSteers(id: string, generation: string, subagentId?: string, options: SteerDrainOptions = {},
   store = new SessionRuntimeStore()): Promise<string[]> {
   const directives: string[] = [];
   const target = subagentId ?? "main";
   await store.update(id, generation, record => {
     const available = active(record) && !record.cancelRequested && !record.closedSteerTargets?.includes(target) &&
-      !record.cancelledSubagents?.includes(target);
+      !record.cancelledSubagents?.includes(target) &&
+      (subagentId === undefined || record.subagentStates?.some(child => child.id === subagentId && child.status === "running"));
+    const canConsume = available && options.canContinue !== false;
     for (const steer of record.steers ?? []) {
       if (steer.target !== target || steer.status !== "pending") continue;
-      steer.status = available ? "consumed" : "rejected";
-      if (available) directives.push(steer.directive);
-      else steer.error = "Steering recipient is no longer active.";
+      steer.status = canConsume ? "consumed" : "rejected";
+      if (canConsume) directives.push(steer.directive);
+      else steer.error = available && options.canContinue === false
+        ? "Steering recipient iteration budget is exhausted."
+        : "Steering recipient is no longer active.";
     }
-    if (final) record.closedSteerTargets = [...new Set([...(record.closedSteerTargets ?? []), target])];
+    if (options.final && (options.canContinue === false || (!directives.length && !options.hasLocalSteers))) {
+      record.closedSteerTargets = [...new Set([...(record.closedSteerTargets ?? []), target])];
+    }
   });
   return directives;
 }
