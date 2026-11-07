@@ -72,6 +72,10 @@ export interface CommandContext {
   isLoading?: boolean
   /** Read live worker ownership; process-local steering cannot reach an attached worker. */
   isWorkerAttached?: () => boolean
+  /** Deliver a directive to the main agent or the captured inspector target. */
+  steer?: (directive: string) => Promise<void>
+  /** The inspected subagent captured for this command invocation. */
+  steerTargetId?: string
   getMCPAuthenticationRequired?: () => string[]
   logoutMCPServer?: (name: string) => Promise<void>
   authenticateMCPServer?: (name: string) => Promise<void>

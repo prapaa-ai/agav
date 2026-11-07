@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import render from "../ink/render.js";
 import App from "../app.js";
 import { DEFAULT_KEYBINDINGS } from "../config/keybindings.js";
-import { clearSteers, drainSteers, getActiveSteers } from "../commands/steer.js";
+import { clearSteers, drainSteers, getActiveSteers, queueSteer, queueSubagentSteer } from "../commands/steer.js";
 import type { DisplayMessage } from "../components/message-list.js";
 import type { AgavConfig } from "../config/config.js";
 import type { Plan } from "../agent/planner.js";
@@ -49,6 +49,10 @@ vi.mock("../hooks/use-agent.js", () => ({ useAgent: vi.fn(() => {
     mcpPromptCommands: [], skillCommands: [], agentCommands: [],
     tokenUsage: { inputTokens: 0, outputTokens: 0 }, conversation: {},
     addDisplayMessage: boundary.append, refreshPlan: boundary.refreshPlan,
+    steer: async (directive: string, subagentId?: string) => {
+      if (subagentId !== undefined) queueSubagentSteer(subagentId, directive);
+      else queueSteer(directive);
+    },
   };
 }) }));
 

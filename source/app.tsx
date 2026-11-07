@@ -307,6 +307,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     detachSession,
     canDetach,
     isWorkerAttached,
+    steer,
     cancelSubagent,
     clearMessages,
     confirmTool,
@@ -893,6 +894,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [config.backgroundJobsEnabled, config.workflowsEnabled]);
 
   const hasSubagents = isLoading && subagentStates.length > 0;
+  const focusedSubagent = isLoading && focusedSubagentId
+    ? subagentStates.find((s) => s.id === focusedSubagentId)
+    : undefined;
 
   // Drop the detail view when the plan it was showing is cleared or finished,
   // so a later plan does not reopen it without being asked.
@@ -901,11 +905,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [activePlan]);
 
   useEffect(() => {
-    if (!isLoading) {
-      setFocusedSubagentId(null);
-      setSelectedSubagentIdx(0);
-    }
-  }, [focusedSubagentId, isLoading]);
+    if (focusedSubagentId && !focusedSubagent) setFocusedSubagentId(null);
+    if (!isLoading) setSelectedSubagentIdx(0);
+  }, [focusedSubagentId, focusedSubagent, isLoading]);
 
   // Clamp the selection index when subagents finish and the list shrinks.
   useEffect(() => {
@@ -1418,6 +1420,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             exit,
             isLoading,
             isWorkerAttached: () => isWorkerAttached,
+            steer: (directive) => steer(directive, focusedSubagent?.id),
+            steerTargetId: focusedSubagent?.id,
             getMCPAuthenticationRequired,
             authenticateMCPServer,
             logoutMCPServer,
@@ -1612,7 +1616,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
+    [steer, focusedSubagent, detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.
@@ -1856,10 +1860,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         )}
 
         {isLoading && (() => {
-          const focusedSubagent = focusedSubagentId
-            ? subagentStates.find((s) => s.id === focusedSubagentId)
-            : null;
-
           if (focusedSubagent) {
             return (
               <Box flexDirection="column" marginBottom={1}>
