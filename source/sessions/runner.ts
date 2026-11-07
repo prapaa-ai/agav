@@ -23,7 +23,7 @@ import { loadAgents } from "../agents/loader.js";
 import { agentToTool } from "../agents/registry-factory.js";
 import { stopAllA2AAgents } from "../agents/a2a-client.js";
 import { setPlanScope } from "../agent/planner.js";
-import { isSandboxRequired, setSandboxRequired, setSandboxNetwork, getSandboxNetwork, detectSandboxBackend } from "../utils/sandbox.js";
+import { isSandboxRequired, setSandboxRequired, setSandboxNetwork, getSandboxNetwork, detectSandboxBackend, setWindowsSandboxEnabled } from "../utils/sandbox.js";
 import { applySandboxRequiredPolicy } from "../utils/sandbox-startup.js";
 import { createExclusive } from "../background-jobs/storage/atomic-file.js";
 import { SessionApprovalBroker } from "./approvals.js";
@@ -410,6 +410,8 @@ export async function runSessionRunner(id: string | undefined, expectedGeneratio
     const local = await loadConfig();
     if (local.backgroundJobsEnabled !== true) throw new Error("Detached sessions require backgroundJobsEnabled=true.");
     const config = sessionExecutionConfig(record, local);
+    // Before the sandboxRequired check, so detection sees the opt-in backend.
+    setWindowsSandboxEnabled(config.windowsSandbox === true);
     applySandboxRequiredPolicy({ flagSet: record.sandboxRequired, configValue: config.sandboxRequired,
       detectBackend: detectSandboxBackend, setRequired: setSandboxRequired, warn: message => process.stderr.write(message) });
     setSandboxNetwork(config.sandboxNetwork === "deny" ? "deny" : "allow");

@@ -52,7 +52,7 @@ const KNOWN_FLAGS = [
   "--resume", "-r", "--ollama-host", "--ollama-port", "--ollama-endpoint",
   "--cwd", "--ollama-api-key", "--print", "-P", "--permission", "--openai-api", "--max-turns", "--trajectory",
   "--name", "--search","--provider-idle-timeout","--sandbox-required",
-  "--sandbox-allow-network","--sandbox-no-network","--config", "-c"
+  "--sandbox-allow-network","--sandbox-no-network","--revoke-windows-sandbox","--config", "-c"
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -214,6 +214,8 @@ export function parseArgs(argv: string[]) {
       flags.denyWrites = true;
     } else if (arg === "--sandbox-required") {
       flags.sandboxRequired = true;
+    } else if (arg === "--revoke-windows-sandbox") {
+      flags.revokeWindowsSandbox = true;
     } else if (arg === "--sandbox-allow-network") {
       flags.sandboxNetwork = "allow";
     } else if (arg === "--sandbox-no-network") {
@@ -699,6 +701,9 @@ export async function main() {
                          macOS permits host-local TCP/IP and Unix sockets; Linux permits loopback
                          only within the same invocation, not host-local services.
                          Aliases: --sandbox-no-network, --sandbox-allow-network
+    --revoke-windows-sandbox
+                         Windows: remove the permission entries the opt-in
+                         windowsSandbox backend added to workspaces, then exit
     --help, -h           Show this help
     --version, -v        Show version
     --trajectory <path> Export run/print transcript, token usage, and timing as JSON
@@ -747,6 +752,25 @@ export async function main() {
     const { VERSION } = await import("./version.js");
     console.log(VERSION);
     process.exit(0);
+  }
+
+  // Remove the ACEs the opt-in Windows sandbox recorded. No provider or TUI needed.
+  if (flags.revokeWindowsSandbox) {
+    if (process.platform !== "win32") {
+      process.stderr.write("error: --revoke-windows-sandbox is only available on Windows\n");
+      process.exit(1);
+    }
+    const { revokeWindowsSandboxGrants } = await import("./utils/windows-sandbox.js");
+    try {
+      const { revoked, failed } = revokeWindowsSandboxGrants();
+      for (const path of revoked) console.log(`Revoked: ${path}`);
+      for (const { path, error } of failed) process.stderr.write(`Failed: ${path}: ${error}\n`);
+      if (revoked.length === 0 && failed.length === 0) console.log("No Windows sandbox permission entries are recorded.");
+      process.exit(failed.length > 0 ? 1 : 0);
+    } catch (error) {
+      process.stderr.write(`error: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
+    }
   }
 
   // Force update: agav update
@@ -992,8 +1016,10 @@ export async function main() {
     config.sandboxNetwork = flags.sandboxNetwork;
   }
   {
-    const { setSandboxRequired, setSandboxNetwork, detectSandboxBackend } = await import("./utils/sandbox.js");
+    const { setSandboxRequired, setSandboxNetwork, setWindowsSandboxEnabled, detectSandboxBackend } = await import("./utils/sandbox.js");
     const { applySandboxRequiredPolicy } = await import("./utils/sandbox-startup.js");
+    // Before the sandboxRequired check, so detection sees the opt-in backend.
+    setWindowsSandboxEnabled(config.windowsSandbox === true);
     // D1: warn, don't refuse to start; run_command enforces per invocation.
     applySandboxRequiredPolicy({
       flagSet: flags.sandboxRequired === true,
