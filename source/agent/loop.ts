@@ -511,15 +511,31 @@ export async function* runAgentLoop(
   conversation.setSystemPrompt?.(systemPrompt ?? "");
   const maxIterations = Math.min(iterationsBudget.total, iterationsBudget.remaining);
   const initialToolCall = params.initialToolCall;
-  for (let iteration = initialToolCall ? -1 : 0; iteration < maxIterations && iterationsBudget.remaining > 0; iteration++) {
+  // Own the next iteration before a durable drain can consume steering. Keep
+  // ownership across awaits/yields, then spend it at the next provider request.
+  let continuationReserved = false;
+  const releaseContinuation = () => {
+    if (continuationReserved) {
+      iterationsBudget.remaining++;
+      continuationReserved = false;
+    }
+  };
+  const reserveContinuation = (iteration: number) => {
+    if (iteration + 1 >= maxIterations || iterationsBudget.remaining <= 0) return false;
+    iterationsBudget.remaining--;
+    continuationReserved = true;
+    return true;
+  };
+  try {
+  for (let iteration = initialToolCall ? -1 : 0; iteration < maxIterations && (continuationReserved || iterationsBudget.remaining > 0); iteration++) {
     const seededCall = iteration === -1 ? initialToolCall : undefined;
-    if (seededCall && signal?.aborted) {
+    if ((seededCall || continuationReserved) && signal?.aborted) {
       yield { type: "error", error: new Error("Aborted") };
       return;
     }
     // Reserve the shared request budget before an asynchronous steering drain
     // lets another delegated loop claim the same remaining iteration.
-    if (!seededCall) iterationsBudget.remaining--;
+    if (!seededCall && !continuationReserved) iterationsBudget.remaining--;
     // Deliver already accepted startup directives before constructing the first
     // task request. Seeded tool dispatches drain after their paired results.
     if (iteration === 0 && !initialToolCall) {
@@ -604,6 +620,7 @@ export async function* runAgentLoop(
           .update(JSON.stringify([provider.name, model, systemPrompt ?? "", request.tools, effort])).digest("hex");
         conversation.prepareThinkingPrefix?.(prefix);
         request.messages = conversation.getMessages();
+        continuationReserved = false;
         for await (const event of provider.stream(request)) {
           resetIdleTimer();
 
@@ -782,8 +799,9 @@ export async function* runAgentLoop(
       }
       // Late directives must reach another inference, not a discarded child
       // conversation. The drain atomically retains or closes admission.
-      const canContinue = iterationsBudget.remaining > 0 && iteration + 1 < maxIterations;
+      const canContinue = reserveContinuation(iteration);
       const lateSteers = await collectSteers({ final: true, canContinue });
+      if (!lateSteers.length) releaseContinuation();
       for (const steer of lateSteers) {
         conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
       }
@@ -1070,7 +1088,7 @@ export async function* runAgentLoop(
     // never splits an assistant tool_use from its tool_result (which providers
     // reject). Draining before the next provider call means the model sees the
     // directive within the same turn.
-    const canContinue = iterationsBudget.remaining > 0 && iteration + 1 < maxIterations;
+    const canContinue = reserveContinuation(iteration);
     const steers = await collectSteers({ canContinue, final: !canContinue });
     for (const steer of steers) {
       conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
@@ -1125,4 +1143,8 @@ export async function* runAgentLoop(
     reason: "iterations_exhausted",
     error: new Error("Agent reached maximum iterations"),
   };
+  } finally {
+    // Includes empty final drains, cancellation, drain failures and iterator return.
+    releaseContinuation();
+  }
 }
