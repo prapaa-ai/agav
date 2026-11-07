@@ -100,7 +100,7 @@ describe("shared continuation reservations for durable child steering", () => {
         // Do not await both drains while holding the winner: the loser waits
         // for that reservation to be spent before reporting exhaustion.
         drainGate.release();
-        await vi.waitFor(() => expect(boundaryDrains).toHaveLength(2));
+        await vi.waitFor(() => expect(new Set(boundaryDrains.map(drain => drain.childId)).size).toBe(2));
       } finally {
         responseGate.release();
         drainGate.release();
