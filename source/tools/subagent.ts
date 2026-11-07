@@ -11,7 +11,7 @@ import { isProviderName, orgPolicyError } from "../config/startup.js";
 import { createProvider } from "../providers/registry.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
 import { ConversationState } from "../agent/conversation.js";
-import { runAgentLoop } from "../agent/loop.js";
+import { runAgentLoop, type SteerDrainOptions } from "../agent/loop.js";
 import { ToolRegistry as ToolRegistryClass } from "./registry.js";
 import { createWorktree, removeWorktree, applyWorktreeChanges, type WorkerWorktree } from "../utils/worktree.js";
 import { createSteerQueue } from "../commands/steer.js";
@@ -36,7 +36,7 @@ export interface SubagentToolDeps {
   confirmationQueue: Pick<ConfirmationQueue, "enqueue" | "rejectBySubagentId">;
   onProgressUpdate: (subagents: SubagentProgress[]) => void;
   /** Drain worker-delivered directives for this child at loop safe points. */
-  drainSteers?: (id: string, final?: boolean) => Promise<string[]>;
+  drainSteers?: (id: string, options?: SteerDrainOptions) => Promise<string[]>;
   onSteerApplied?: (id: string, title: string, directives: string[]) => void;
   onTokenUsage: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   getSignal: () => AbortSignal | undefined;
@@ -325,9 +325,15 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           effort: config.effort,
           iterationsBudget: config.iterationsBudget,
           providerIdleTimeout: config.providerIdleTimeout,
-          drainSteers: deps.drainSteers
-            ? async (final) => [...await deps.drainSteers!(id, final), ...steerQueue.drain()]
-            : steerQueue.drain,
+          drainSteers: async (options = {}) => {
+            const localSteers = steerQueue.drain();
+            const externalSteers = await deps.drainSteers?.(id, {
+              ...options, hasLocalSteers: localSteers.length > 0,
+            }) ?? [];
+            const directives = options.canContinue === false ? [] : [...externalSteers, ...localSteers];
+            if (options.final && !directives.length) steerQueue.dispose();
+            return directives;
+          },
         });
 
         const MAX_RECENT_ACTIONS = 10;

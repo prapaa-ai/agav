@@ -56,19 +56,22 @@ describe("durable steering admission and consumption", () => {
     await requestSessionSteer(record.id, record.generation, "main only", undefined, observer());
     await store.update(record.id, record.generation, current => { current.subagentStates = [child(), child("child-2")]; });
     await requestSessionSteer(record.id, record.generation, "child only", "child-1", observer());
-    expect(await drainSessionSteers(record.id, record.generation, "child-2", false, observer())).toEqual([]);
-    expect(await drainSessionSteers(record.id, record.generation, undefined, false, observer())).toEqual(["main only"]);
-    expect(await drainSessionSteers(record.id, record.generation, undefined, false, observer())).toEqual([]);
-    expect(await drainSessionSteers(record.id, record.generation, "child-1", false, observer())).toEqual(["child only"]);
+    expect(await drainSessionSteers(record.id, record.generation, "child-2", {}, observer())).toEqual([]);
+    expect(await drainSessionSteers(record.id, record.generation, undefined, {}, observer())).toEqual(["main only"]);
+    expect(await drainSessionSteers(record.id, record.generation, undefined, {}, observer())).toEqual([]);
+    expect(await drainSessionSteers(record.id, record.generation, "child-1", {}, observer())).toEqual(["child only"]);
   });
 
   it("atomically closes only the final-drained recipient, rejecting completion-racing requests", async () => {
     await store.update(record.id, record.generation, current => { current.subagentStates = [child()]; });
     await requestSessionSteer(record.id, record.generation, "last", undefined, observer());
-    expect(await drainSessionSteers(record.id, record.generation, undefined, true, observer())).toEqual(["last"]);
+    expect(await drainSessionSteers(record.id, record.generation, undefined, { final: true, canContinue: true }, observer())).toEqual(["last"]);
+    expect((await store.read(record.id))?.closedSteerTargets ?? []).not.toContain("main");
+    expect(await drainSessionSteers(record.id, record.generation, undefined, { final: true, canContinue: true }, observer())).toEqual([]);
     await expect(requestSessionSteer(record.id, record.generation, "too late", undefined, observer())).rejects.toThrow(/closed|completed/);
     await requestSessionSteer(record.id, record.generation, "child last", "child-1", observer());
-    expect(await drainSessionSteers(record.id, record.generation, "child-1", true, observer())).toEqual(["child last"]);
+    expect(await drainSessionSteers(record.id, record.generation, "child-1", { final: true, canContinue: true }, observer())).toEqual(["child last"]);
+    expect(await drainSessionSteers(record.id, record.generation, "child-1", { final: true, canContinue: true }, observer())).toEqual([]);
     await expect(requestSessionSteer(record.id, record.generation, "too late", "child-1", observer())).rejects.toThrow(/closed|completed/);
     expect((await store.read(record.id))?.closedSteerTargets).toEqual(["main", "child-1"]);
   });
@@ -76,7 +79,7 @@ describe("durable steering admission and consumption", () => {
   it("serializes concurrent admission with final drain without stranding an accepted request", async () => {
     const [admission, drained] = await Promise.allSettled([
       requestSessionSteer(record.id, record.generation, "racing", undefined, observer()),
-      drainSessionSteers(record.id, record.generation, undefined, true, observer()),
+      drainSessionSteers(record.id, record.generation, undefined, { final: true, canContinue: true }, observer()),
     ]);
     expect(drained.status).toBe("fulfilled");
     if (admission.status === "fulfilled") expect(drained).toEqual({ status: "fulfilled", value: ["racing"] });
@@ -150,7 +153,7 @@ describe("gated worker steering", () => {
       expect(applied).toHaveBeenCalledExactlyOnceWith([directive]);
       expect(result.steers).toEqual([expect.objectContaining({ target: "main", directive, status: "consumed" })]);
       expect(texts(result.messages).split(directive)).toHaveLength(2);
-      expect(await drainSessionSteers(record.id, record.generation, undefined, false, observer())).toEqual([]);
+      expect(await drainSessionSteers(record.id, record.generation, undefined, {}, observer())).toEqual([]);
     });
 
   async function lateChildStream(total: number, captureAcknowledgement = false) {
@@ -221,7 +224,7 @@ describe("gated worker steering", () => {
         expect(childTexts[1]!.split(directive)).toHaveLength(2);
         expect(result.status, result.error).toBe("completed");
       }
-      expect(await drainSessionSteers(record.id, record.generation, childId, false, observer())).toEqual([]);
+      expect(await drainSessionSteers(record.id, record.generation, childId, {}, observer())).toEqual([]);
     });
 
   it("does not acknowledge a late child directive when its shared budget is exhausted", async () => {
