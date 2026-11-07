@@ -10,6 +10,7 @@ import { SessionRuntimeStore, type SessionRuntimeRecord } from "../sessions/stor
 import { drainSessionSteers, requestSessionSteer } from "../sessions/client.js";
 import { createSessionExecution, prepareSessionTools, startSessionExecution, type SessionExecutionHandle } from "../sessions/runner.js";
 import { ToolRegistry } from "../tools/registry.js";
+import { createSubagentTool } from "../tools/subagent.js";
 
 const config: AgavConfig = { provider: "anthropic", model: "mock", effort: "low", maxTokens: 128,
   maxIterations: 6, errorRetries: 0, permissionMode: "auto-accept", systemPrompt: "fixture" };
@@ -114,6 +115,123 @@ describe("durable steering admission and consumption", () => {
 });
 
 describe("gated worker steering", () => {
+  it.each(["text-only", "first-tool-response"] as const)(
+    "delivers starting-session steering before the first %s request", async response => {
+      const directive = "STARTUP_DIRECTIVE";
+      const snapshots: string[] = [];
+      const applied = vi.fn();
+      const toolSawDirective = vi.fn();
+      const registry = new ToolRegistry();
+      registry.register({ schema: { name: "inspect_startup", description: "Inspect startup", inputSchema: { type: "object", properties: {} } },
+        execute: async () => {
+          toolSawDirective(snapshots[0]?.includes(directive));
+          return { output: "inspected", isError: false };
+        } });
+      const provider: LLMProvider = { name: "fixture", async *stream(params) {
+        snapshots.push(texts(structuredClone(params.messages)));
+        if (snapshots.length === 1 && response === "first-tool-response") yield* toolTurn("inspect_startup");
+        else { yield { type: "text_delta", text: "done" }; yield { type: "message_end", stopReason: "end_turn" }; }
+      } };
+      await requestSessionSteer(record.id, record.generation, directive, undefined, observer());
+      expect((await store.read(record.id))?.status).toBe("starting");
+      const handle = startSessionExecution(record.id, { store, config, provider, registry,
+        onEvent: event => { if (event.type === "steer_applied") applied(event.directives); } });
+      handles.push(handle);
+      const result = await handle.done;
+      expect(result.status, result.error).toBe("completed");
+      expect(snapshots[0]).toContain(directive);
+      if (response === "first-tool-response") {
+        expect(toolSawDirective).toHaveBeenCalledExactlyOnceWith(true);
+        expect(snapshots).toHaveLength(2);
+      } else {
+        expect(toolSawDirective).not.toHaveBeenCalled();
+        expect(snapshots).toHaveLength(1);
+      }
+      expect(applied).toHaveBeenCalledExactlyOnceWith([directive]);
+      expect(result.steers).toEqual([expect.objectContaining({ target: "main", directive, status: "consumed" })]);
+      expect(texts(result.messages).split(directive)).toHaveLength(2);
+      expect(await drainSessionSteers(record.id, record.generation, undefined, false, observer())).toEqual([]);
+    });
+
+  async function lateChildStream(total: number, captureAcknowledgement = false) {
+    const blocked = gate();
+    const parentTexts: string[] = [];
+    const childTexts: string[] = [];
+    const applied = vi.fn();
+    let entered = false;
+    let calls = 0;
+    const directive = "LATE_CHILD_DIRECTIVE";
+    await store.update(record.id, record.generation, current => {
+      current.iterationsBudget = { remaining: total, total };
+    });
+    const provider: LLMProvider = { name: "fixture", async *stream(params) {
+      const call = calls++;
+      const isChild = params.systemPrompt?.includes("You are a subagent working on a specific task.") ?? false;
+      (isChild ? childTexts : parentTexts).push(texts(structuredClone(params.messages)));
+      if (call === 0) yield* toolTurn("subagent", { title: "Child", task: "Inspect the task" });
+      else {
+        yield { type: "text_delta", text: "done" };
+        if (isChild && childTexts.length === 1) { entered = true; await blocked.promise; }
+        yield { type: "message_end", stopReason: "end_turn" };
+      }
+    } };
+    const handle = startSessionExecution(record.id, { store, config, provider, prepareTools: async ctx => {
+      const cleanup = await prepareSessionTools(ctx);
+      if (captureAcknowledgement) {
+        // Keep the real worker's durable drain and shared budget, but expose the
+        // child's delivery acknowledgement (not forwarded as a parent event).
+        ctx.registry.registerBuiltin(createSubagentTool({
+          provider, parentToolRegistry: ctx.registry, drainSteers: ctx.drainSteers,
+          getConfig: () => ({ ...config, systemPrompt: config.systemPrompt ?? "", iterationsBudget: ctx.iterationsBudget }),
+          confirmationQueue: { enqueue: async () => "yes", rejectBySubagentId: () => {} },
+          onProgressUpdate: states => ctx.onSubagentProgress?.(states),
+          onSteerApplied: applied, onTokenUsage: () => {}, getSignal: () => ctx.signal,
+        }));
+      }
+      return cleanup;
+    } });
+    handles.push(handle);
+    let childId = "";
+    try {
+      await vi.waitFor(() => expect(entered).toBe(true));
+      await vi.waitFor(async () => {
+        childId = (await observer().read(record.id))?.subagentStates?.find(item => item.status === "running")?.id ?? "";
+        expect(childId).not.toBe("");
+      });
+      await requestSessionSteer(record.id, record.generation, directive, childId, observer());
+      expect((await observer().read(record.id))?.steers).toEqual([
+        expect.objectContaining({ target: childId, directive, status: "pending" }),
+      ]);
+    } finally { blocked.release(); }
+    return { result: await handle.done, childTexts, parentTexts, applied, childId, directive };
+  }
+
+  it.each([{ total: 4, available: true }, { total: 2, available: false }])(
+    "handles late child final-stream steering with total budget $total through real session tools", async ({ total, available }) => {
+      // The parent delegation and first child request each spend one iteration.
+      const { result, childTexts, parentTexts, childId, directive } = await lateChildStream(total);
+      expect(childTexts[0]).not.toContain(directive);
+      expect(parentTexts.every(text => !text.includes(directive))).toBe(true);
+      expect(result.steers).toEqual([expect.objectContaining({
+        target: childId, directive, status: available ? "consumed" : "rejected",
+      })]);
+      expect(childTexts).toHaveLength(available ? 2 : 1);
+      if (available) {
+        expect(childTexts[1]).toContain(directive);
+        expect(childTexts[1]!.split(directive)).toHaveLength(2);
+        expect(result.status, result.error).toBe("completed");
+      }
+      expect(await drainSessionSteers(record.id, record.generation, childId, false, observer())).toEqual([]);
+    });
+
+  it("does not acknowledge a late child directive when its shared budget is exhausted", async () => {
+    const { result, childTexts, applied, childId, directive } = await lateChildStream(2, true);
+    expect(childTexts).toHaveLength(1);
+    expect(childTexts[0]).not.toContain(directive);
+    expect(applied).not.toHaveBeenCalled();
+    expect(result.steers).toEqual([expect.objectContaining({ target: childId, directive, status: "rejected" })]);
+  });
+
   it("delivers durable main-only steering at the next worker safe point", async () => {
     const blocked = gate();
     const entered = gate();
