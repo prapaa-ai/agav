@@ -10,8 +10,8 @@ import type { LLMProvider, StreamEvent, StreamParams } from "../providers/types.
 // via the security override that forces patched transitive deps). The SDKs do
 // not export "./package.json", so these cannot be read at runtime — update them
 // in lockstep whenever the openai/@anthropic-ai/sdk versions change.
-const openaiVersion = "7.47.0";
-const anthropicVersion = "1.3.0";
+const openaiVersion = "7.53.0";
+const anthropicVersion = "1.6.0";
 
 // Only the transport is replaced: the installed SDK request builders, SSE
 // decoders and (for messages.stream) MessageStream accumulator all run for real.
