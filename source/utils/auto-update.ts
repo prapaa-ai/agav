@@ -700,6 +700,13 @@ export async function getChangelog(): Promise<string> {
     }
   };
   const scanToken = (token: import("marked").Token, sourceOffset?: number): void => {
+    // Link reference definitions never render, so their URLs and titles cannot
+    // open a comment or form a section boundary. Older marked omitted them from
+    // the token stream entirely; newer marked emits `def` tokens whose raw text
+    // includes the delimiters — skip them to preserve the original behavior.
+    if (token.type === "def") {
+      return;
+    }
     // Only scan content in its lexer context: HTML is raw, while Markdown
     // containers already have parsed children (not their link titles/URLs).
     if (token.type === "code" || token.type === "codespan" || token.type === "escape" || token.type === "image") {

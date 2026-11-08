@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { createElement as h } from "react";
-import ts from "typescript";
+import { transformSync } from "esbuild";
 import { Box, Text } from "../ink/index.js";
 import { visualLen } from "../utils/wrap-text.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -91,8 +91,10 @@ describe("compact startup banner", () => {
     const branch = source.split('if (message.role === "banner") {')[1]!.split('\n  if (message.role === "user"')[0]!;
     const preview = branch.replace(/process\.platform [!=]== "win32" \? \[/, "true ? [");
     expect(preview).not.toBe(branch);
-    const { outputText } = ts.transpileModule(`function Preview() {${preview}`, {
-      compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
+    const { code: outputText } = transformSync(`function Preview() {${preview}`, {
+      loader: "tsx",
+      jsx: "transform",
+      target: "es2022",
     });
     const element = new Function("React", "Box", "Text", "visualLen", "VERSION", "columns", `${outputText}; return Preview();`)(
       { createElement: h }, Box, Text, visualLen, VERSION, columns,
