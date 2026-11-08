@@ -381,6 +381,15 @@ jobs:
           HELPER="$VOICE_ASSETS/agav-voice-$VOICE_TARGET"
           if [[ "$VOICE_TARGET" == win32-* ]]; then HELPER="$HELPER.exe"; fi
           node scripts/embed-voice-helper.mjs "$VOICE_TARGET" "$HELPER" source/voice/bundled-runtime.ts
+      # The opt-in Windows restricted-token sandbox helper ships only in Windows
+      # binaries; other targets keep the null stub and pay no size cost.
+      - name: Build and embed Windows sandbox helper
+        if: startsWith(matrix.target, 'windows')
+        run: |
+          SANDBOX_ASSETS=$(mktemp -d "${RUNNER_TEMP}/sandbox-assets.XXXXXX")
+          trap 'rm -rf "$SANDBOX_ASSETS"' EXIT
+          node scripts/build-windows-sandbox-helper.mjs "$SANDBOX_ASSETS"
+          node scripts/embed-windows-sandbox-helper.mjs "$SANDBOX_ASSETS/agav-sandbox-win32-x64.exe" source/utils/windows-sandbox-bundle.ts
       - name: Build binary
         run: |
           mkdir -p dist
