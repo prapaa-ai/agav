@@ -54,6 +54,7 @@ Agav auto-detects the best available OS-level sandbox at startup:
 | Linux | Bubblewrap | `bwrap` with read-only root and credential masking |
 | Docker | Container | `--network=none`, memory and CPU limits |
 | Windows | Env-var shaping | Strips proxy vars, sets `AGAV_SANDBOX_ACTIVE=1` |
+| Windows (opt-in) | Restricted token | `windowsSandbox: true`: write-restricted token, workspace ACL grants, Job Object |
 
 If no backend is available (including on Windows), automatic shell execution remains unsandboxed. Set `AGAV_NO_SANDBOX=1` before starting Agav to intentionally disable sandbox detection and permit `run_command` overrides of `sandbox: "none"`. Without that user opt-out, model-requested `none` overrides are rejected, including through skills and subagents. Tool approval, “always”, and auto-accept do not authorize sandbox bypass. Invalid backend values are rejected, and failure to launch a selected sandbox does not retry the command unsandboxed.
 
@@ -91,6 +92,24 @@ Windows has no kernel-level sandbox. As a best-effort mitigation, Agav:
 
 - Sets `AGAV_SANDBOX_ACTIVE=1` so well-behaved child tools can self-restrict
 - Strips `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (and lowercase variants) to reduce network reach
+
+#### Opt-in restricted-token sandbox
+
+Set `"windowsSandbox": true` in `~/.agav/config.json` to run shell commands (`run_command` and `run_tests`) under Agav's native helper instead. Project config can't set it. It is also available as the `windows` backend override when the helper is present.
+
+- **Writes** — commands run under a write-restricted Windows token. A write succeeds only where Agav granted its sandbox identity access: the working directory and a dedicated sandbox temp directory. `TEMP`, `TMP`, and the npm, pip, and Yarn caches point at that temp directory. Writes elsewhere in your profile and on the system are denied.
+- **Protected configuration** — inside the workspace, Git hooks and configuration, `.agav`, `.vscode`, `.idea`, and shell startup files (`.bashrc`, `.zshrc`, `.profile`, `.zprofile`, `.bash_profile`, `.envrc`) are denied. Ordinary Git operations still work.
+- **Lifecycle** — commands run in a Job Object, so descendants are terminated when the command exits, times out, or is cancelled. Detached background servers do not survive the command.
+- **Permission changes** — the grants and denials are entries Agav adds to the permissions of your workspace and the sandbox temp directory. The first command in a large workspace can take longer while Windows applies them. Agav records every location it changes; run `agav --revoke-windows-sandbox` to remove its entries.
+
+Limits:
+
+- **Reads and networking are not confined.** Commands are refused, not run, while `sandboxNetwork` is `deny`; use the Docker override when you need network isolation.
+- Locations that already grant write access to `Everyone` stay writable.
+- Protected paths that don't exist yet can't carry a denial, so a command could create one of them.
+- In linked Git worktrees whose metadata lives outside the workspace, Git commands that write metadata fail.
+
+If the helper is unavailable or can't start, the command fails; it never falls back to running unsandboxed.
 
 ### Background jobs
 

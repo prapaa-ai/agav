@@ -102,6 +102,14 @@ export interface AgavConfig {
  */
  sandboxNetwork?: "deny" | "allow";
  /**
+  * Opt in to the Windows restricted-token sandbox as the default backend on
+  * Windows. It confines writes to the workspace and a sandbox temp directory
+  * by adding ACEs (recorded; revoke with `agav --revoke-windows-sandbox`). It
+  * does not confine reads or networking. Defaults to false. Global-only
+  * (listed in PROJECT_CONFIG_DENY).
+ */
+ windowsSandbox?: boolean;
+ /**
   * Master switch for headless background automation (`agav job tick` /
   * daemon). "paused" makes tick/daemon exit early. Defaults to "on".
   * Global-only (listed in PROJECT_CONFIG_DENY).
@@ -254,6 +262,11 @@ export const PROJECT_CONFIG_TEMPLATE = {
     type: "string",
     eg: "allow",
   },
+  windowsSandbox: {
+    description: "Windows only: run shell commands under Agav's restricted-token sandbox by default. Confines file writes to the workspace and a sandbox temp directory by adding permission entries (recorded; remove with agav --revoke-windows-sandbox). Does not confine reads or networking; commands are refused while sandboxNetwork is 'deny'. Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    type: "boolean",
+    eg: false,
+  },
   backgroundAutomation: {
     description: "Pause or resume headless background automation (agav job tick / daemon). Only honored from the global config (~/.agav/config.json); ignored in project config.",
     enum: ["on", "paused"],
@@ -376,6 +389,7 @@ const DEFAULT_CONFIG: AgavConfig = {
   errorRetries: 5,
   sandboxRequired: false,
   sandboxNetwork: "allow",
+  windowsSandbox: false,
   backgroundAutomation: "on",
   maxConcurrentWorkflowRuns: 2,
 };
@@ -454,6 +468,8 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   // automation (decisions D1, D8).
   "sandboxRequired",
   "sandboxNetwork",
+  // A repository must not choose the sandbox backend or trigger permission changes.
+  "windowsSandbox",
   "backgroundAutomation",
   // Workflows are an opt-in automation surface; a repository must not enable them.
   "workflowsEnabled",
@@ -557,6 +573,9 @@ function sanitizeConfig(merged: AgavConfig): void {
     // An omitted policy uses the default (allow); a present but malformed value
     // (for example a "Deny" or "block" typo) fails closed rather than granting host networking.
     merged.sandboxNetwork = "deny";
+  }
+  if (typeof merged.windowsSandbox !== "boolean") {
+    merged.windowsSandbox = DEFAULT_CONFIG.windowsSandbox;
   }
   if (!Number.isInteger(merged.maxConcurrentWorkflowRuns) || merged.maxConcurrentWorkflowRuns! < 1) {
     merged.maxConcurrentWorkflowRuns = DEFAULT_CONFIG.maxConcurrentWorkflowRuns;

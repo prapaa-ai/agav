@@ -148,4 +148,26 @@ describe("config: sandboxRequired / backgroundAutomation", () => {
     const written = JSON.parse(String(writeFile.mock.calls[0]?.[1]));
     expect(written.template.sandboxNetwork).toMatchObject({ type: "string", enum: ["deny", "allow"] });
   });
+
+  it("defaults windowsSandbox=false and honors it from the global config", async () => {
+    mockConfigs(undefined, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).windowsSandbox).toBe(false);
+    vi.resetModules();
+    mockConfigs({ windowsSandbox: true }, undefined);
+    const fresh = await import("../config/config.js");
+    expect((await fresh.loadConfig()).windowsSandbox).toBe(true);
+  });
+
+  it("ignores project config setting windowsSandbox", async () => {
+    mockConfigs(undefined, { windowsSandbox: true });
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).windowsSandbox).toBe(false);
+  });
+
+  it("falls back to false for invalid windowsSandbox values", async () => {
+    mockConfigs({ windowsSandbox: "yes" }, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).windowsSandbox).toBe(false);
+  });
 });

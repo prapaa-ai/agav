@@ -15,7 +15,7 @@ import {
 import { formatRunSummary, formatRunTree, resolveRunId, statusGlyph } from "../workflows/format.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { applySandboxRequiredPolicy } from "../utils/sandbox-startup.js";
-import { detectSandboxBackend, isSandboxRequired, setSandboxRequired, setSandboxNetwork } from "../utils/sandbox.js";
+import { detectSandboxBackend, isSandboxRequired, setSandboxRequired, setSandboxNetwork, setWindowsSandboxEnabled } from "../utils/sandbox.js";
 import { getSharedCoordinator } from "../background-jobs-integration.js";
 
 const USAGE = `Usage
@@ -120,6 +120,7 @@ export async function runWorkflowsCli(argv: string[], options: WorkflowCliOption
       write(decisionSummary(result) + "\n");
       return result.won ? 0 : 1;
     }
+    setWindowsSandboxEnabled(config.windowsSandbox === true);
     applySandboxRequiredPolicy({ flagSet: sandboxRequired, configValue: config.sandboxRequired, detectBackend: detectSandboxBackend, setRequired: setSandboxRequired, warn: message => { process.stderr.write(message); } });
     setSandboxNetwork(sandboxNetwork);
     if (command === "cancel") {
