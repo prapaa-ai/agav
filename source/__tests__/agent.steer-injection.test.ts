@@ -122,7 +122,7 @@ describe("mid-turn steer delivery", () => {
     expect(drainSteers()).toEqual([]);
   });
 
-  it("flushes a steer queued during the final response instead of dropping it", async () => {
+  it("runs another inference for a steer queued during the final response", async () => {
     let releaseGate!: () => void;
     const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
 
@@ -169,10 +169,9 @@ describe("mid-turn steer delivery", () => {
     const applied = events.find((e) => e.type === "steer_applied") as Extract<AgentEvent, { type: "steer_applied" }> | undefined;
     expect(applied?.directives).toEqual(["wrap up early"]);
 
-    const tail = conversation.getMessages().at(-1)!;
-    expect(tail.role).toBe("user");
-    expect(tail.internal).toBe(true);
-    expect(userTexts([tail])[0]).toContain("wrap up early");
+    expect(provider.calls).toHaveLength(3);
+    expect(userTexts(provider.calls[2]!.messages)).toContain(STEER_DIRECTIVE_PREFIX + "wrap up early");
+    expect(conversation.getMessages().at(-1)!.role).toBe("assistant");
 
     expect(events.some((e) => e.type === "turn_complete")).toBe(true);
     expect(drainSteers()).toEqual([]);

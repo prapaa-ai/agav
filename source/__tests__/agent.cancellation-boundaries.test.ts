@@ -30,7 +30,7 @@ describe("agent cancellation boundaries", () => {
       const controller = new AbortController();
       const conversation = new ConversationState();
       conversation.addUserMessage("answer");
-      const drainSteers = vi.fn(() => abortAt === "steer event" ? ["pending directive"] : []);
+      const drainSteers = vi.fn(() => abortAt === "steer event" ? ["pending directive"] : []).mockReturnValueOnce([]);
       const provider: LLMProvider = {
         name: "mock",
         stream: vi.fn(async function* (): AsyncGenerator<StreamEvent> {
@@ -48,7 +48,8 @@ describe("agent cancellation boundaries", () => {
       });
       expectAborted(events);
       expect(provider.stream).toHaveBeenCalledTimes(1);
-      if (abortAt !== "steer event") expect(drainSteers).not.toHaveBeenCalled();
+      expect(drainSteers).toHaveBeenCalledTimes(abortAt === "steer event" ? 2 : 1);
+      expect(drainSteers).toHaveBeenNthCalledWith(1, {});
     },
   );
 
@@ -82,7 +83,7 @@ describe("agent cancellation boundaries", () => {
           yield { type: "message_end", stopReason: "tool_calls" };
         }),
       };
-      const drainSteers = vi.fn(() => ["pending directive"]);
+      const drainSteers = vi.fn(() => ["pending directive"]).mockReturnValueOnce([]);
       const events = await collect(runAgentLoop({
         provider, conversation, toolRegistry: registry, model: "mock", permissionMode: "auto-accept",
         hooks: { afterEdit: "echo $path" }, iterationsBudget: { remaining: 2, total: 2 },
@@ -92,7 +93,7 @@ describe("agent cancellation boundaries", () => {
       });
       expectAborted(events);
       expect(provider.stream).toHaveBeenCalledTimes(1);
-      expect(drainSteers).not.toHaveBeenCalled();
+      expect(drainSteers).toHaveBeenCalledExactlyOnceWith({});
       expect(runHook).toHaveBeenCalledTimes(abortAt === "execution" ? 0 : 1);
       if (abortAt !== "execution") {
         expect(runHook).toHaveBeenCalledWith("echo $path", { path: "one" }, controller.signal);

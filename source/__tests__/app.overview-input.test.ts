@@ -6,7 +6,7 @@ import { Text } from "../ink/index.js";
 import App from "../app.js";
 import { useAgent } from "../hooks/use-agent.js";
 import { DEFAULT_KEYBINDINGS } from "../config/keybindings.js";
-import { clearSteers, getActiveSteers } from "../commands/steer.js";
+import { clearSteers, getActiveSteers, queueSteer } from "../commands/steer.js";
 import type { AgavConfig } from "../config/config.js";
 import type { SubagentProgress } from "../agent/subagent-types.js";
 
@@ -36,7 +36,10 @@ const progress = (id: string): SubagentProgress => ({
 async function mount(title = "subagent", contextWindowPending = false) {
   const resolveContextWindowRequest = vi.fn();
   const interveneWhilePaused = vi.fn().mockResolvedValue(true);
-  vi.mocked(useAgent).mockReturnValue({
+  const steer = vi.fn(async (directive: string, subagentId?: string) => {
+    if (subagentId === undefined) queueSteer(directive);
+  });
+  const agentState = {
     messages: [], streamingText: "", thinkingText: "", isLoading: true,
     toolCalls: [], error: null, pendingConfirmation: null,
     pendingContextWindowRequest: contextWindowPending ? { model: "unknown" } : null,
@@ -44,8 +47,9 @@ async function mount(title = "subagent", contextWindowPending = false) {
     tokenUsage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
     loadedPlugins: [], mcpServers: [], mcpPromptCommands: [], skillCommands: [], agentCommands: [],
     subagentStates: [progress(title), progress("second")], activePlan: null,
-    conversation: {}, addDisplayMessage: vi.fn(), isGenerationPaused: true, interveneWhilePaused,
-  } as unknown as ReturnType<typeof useAgent>);
+    steer, conversation: {}, addDisplayMessage: vi.fn(), isGenerationPaused: true, interveneWhilePaused,
+  } as unknown as ReturnType<typeof useAgent>;
+  vi.mocked(useAgent).mockReturnValue(agentState);
   const stdout = new EventEmitter() as NodeJS.WriteStream;
   Object.assign(stdout, { isTTY: true, columns: 100, rows: 30, write: () => true });
   const stdin = new EventEmitter() as NodeJS.ReadStream;
@@ -64,8 +68,13 @@ async function mount(title = "subagent", contextWindowPending = false) {
     stdin.emit("data", Buffer.from(text));
     await settle();
   };
+  const updateProgress = async (subagentStates: SubagentProgress[]) => {
+    vi.mocked(useAgent).mockReturnValue({ ...agentState, subagentStates });
+    instance.rerender(h(App, { config, keybindings: DEFAULT_KEYBINDINGS }));
+    await settle();
+  };
   await settle();
-  return { instance, key, stdin, settle, interveneWhilePaused, resolveContextWindowRequest };
+  return { instance, key, stdin, settle, steer, interveneWhilePaused, resolveContextWindowRequest, updateProgress };
 }
 const details = () => display.mock.calls.filter(([props]) => props.mode === "detail");
 
@@ -126,6 +135,46 @@ describe("overview input routing", () => {
       expect(getActiveSteers()).toEqual(["check edge cases"]);
       expect(details()).toEqual([]);
     } finally { instance.unmount(); }
+  });
+
+  it("steers only the inspected child and keeps the inspector focused", async () => {
+    const ui = await mount();
+    try {
+      await ui.key("\r");
+      expect(details().at(-1)?.[0].progress.id).toBe("subagent");
+      await ui.key("/steer inspect edge cases");
+      await ui.key("\r");
+      expect(ui.steer).toHaveBeenCalledExactlyOnceWith("inspect edge cases", "subagent");
+      expect(getActiveSteers()).toEqual([]);
+      expect(details().at(-1)?.[0].progress.id).toBe("subagent");
+      expect(ui.interveneWhilePaused).not.toHaveBeenCalled();
+      await ui.key("\t");
+      await ui.key("/steer main directive");
+      await ui.key("\r");
+      expect(ui.steer).toHaveBeenLastCalledWith("main directive", undefined);
+      expect(getActiveSteers()).toEqual(["main directive"]);
+    } finally { ui.instance.unmount(); }
+  });
+
+  it.each([false, true])("steers main when the inspected child disappears (remaining child: %s)", async (remainingChild) => {
+    const ui = await mount();
+    try {
+      await ui.key("\r");
+      expect(details().at(-1)?.[0].progress.id).toBe("subagent");
+      display.mockClear();
+      await ui.updateProgress(remainingChild ? [progress("second")] : []);
+      expect(details()).toEqual([]);
+      await ui.key("/steer main directive");
+      await ui.key("\r");
+      expect(ui.steer).toHaveBeenCalledExactlyOnceWith("main directive", undefined);
+      expect(getActiveSteers()).toEqual(["main directive"]);
+      expect(ui.interveneWhilePaused).not.toHaveBeenCalled();
+      // Reusing the ID must not reopen an inspector that disappeared.
+      await ui.updateProgress([progress("subagent"), progress("second")]);
+      expect(details()).toEqual([]);
+      await ui.key("\r");
+      expect(details().at(-1)?.[0].progress.id).toBe("subagent");
+    } finally { ui.instance.unmount(); }
   });
 
   it("keeps completion arrows and Enter out of the overview", async () => {

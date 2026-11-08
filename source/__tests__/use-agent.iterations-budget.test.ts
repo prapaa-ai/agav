@@ -5,7 +5,7 @@ import render from "../ink/render.js";
 import { useAgent } from "../hooks/use-agent.js";
 import type { LLMProvider } from "../providers/types.js";
 import type { Plan } from "../agent/planner.js";
-import { clearSteers, drainSteers, queueSteer } from "../commands/steer.js";
+import { clearSteers, drainSteers } from "../commands/steer.js";
 
 const boundary = vi.hoisted(() => ({
   plan: null as Plan | null,
@@ -104,7 +104,8 @@ describe("useAgent per-submission iteration budget", () => {
     try {
       await vi.waitFor(() => expect(entered).toHaveBeenCalledTimes(1));
       ui.agent().addDisplayMessage({ id: "submission", role: "system", content: "Steer submitted" });
-      queueSteer("focus on boundaries");
+      await vi.waitFor(() => expect(ui.agent().subagentStates).toHaveLength(1));
+      await ui.agent().steer("focus on boundaries", ui.agent().subagentStates[0]!.id);
       release();
       await child;
       await vi.waitFor(() => expect(ui.agent().messages.some(message => message.content === 'Delivered 1 steer to subagent "Inspect parser".')).toBe(true));
@@ -113,7 +114,7 @@ describe("useAgent per-submission iteration budget", () => {
       expect(ui.agent().messages.map(message => message.content)).toEqual([
         "Steer submitted", 'Delivered 1 steer to subagent "Inspect parser".', "Later progress",
       ]);
-      expect(drainSteers()).toEqual(["focus on boundaries"]);
+      expect(drainSteers()).toEqual([]);
     } finally { release(); await child; clearSteers(); ui.instance.unmount(); }
   });
 
