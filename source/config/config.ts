@@ -1,5 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
 import { decrypt, encrypt, isEncrypted } from "../utils/encrypt.js";
@@ -87,7 +87,7 @@ export interface AgavConfig {
   maxConcurrentWorkflowRuns?: number;
   /**
    * When true, `run_command` refuses to run if the effective sandbox backend
-   * is "none". Defaults to false. Global-only: project config cannot set it
+   * is "none". Defaults to true on Windows, false elsewhere. Global-only: project config cannot set it
    * (listed in PROJECT_CONFIG_DENY) so a repository cannot disable it.
   */
  sandboxRequired?: boolean;
@@ -102,10 +102,10 @@ export interface AgavConfig {
  */
  sandboxNetwork?: "deny" | "allow";
  /**
-  * Opt in to the Windows restricted-token sandbox as the default backend on
+  * Use the Windows restricted-token sandbox as the default backend on
   * Windows. It confines writes to the workspace and a sandbox temp directory
   * by adding ACEs (recorded; revoke with `agav --revoke-windows-sandbox`). It
-  * does not confine reads or networking. Defaults to false. Global-only
+  * does not confine reads or networking. Defaults to true on Windows, false elsewhere. Global-only
   * (listed in PROJECT_CONFIG_DENY).
  */
  windowsSandbox?: boolean;
@@ -252,7 +252,7 @@ export const PROJECT_CONFIG_TEMPLATE = {
     eg: 2,
   },
   sandboxRequired: {
-    description: "Refuse to run shell commands when no sandbox backend is available. Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    description: "Refuse to run shell commands when no sandbox backend is available. Defaults to true on Windows, false elsewhere. Only honored from the global config (~/.agav/config.json); ignored in project config.",
     type: "boolean",
     eg: false,
   },
@@ -263,7 +263,7 @@ export const PROJECT_CONFIG_TEMPLATE = {
     eg: "allow",
   },
   windowsSandbox: {
-    description: "Windows only: run shell commands under Agav's restricted-token sandbox by default. Confines file writes to the workspace and a sandbox temp directory by adding permission entries (recorded; remove with agav --revoke-windows-sandbox). Does not confine reads or networking; commands are refused while sandboxNetwork is 'deny'. Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    description: "Windows only: run shell commands under Agav's restricted-token sandbox by default (enabled by default on Windows). Confines file writes to the workspace and a sandbox temp directory by adding permission entries (recorded; remove with agav --revoke-windows-sandbox). Does not confine reads or networking; commands are refused while sandboxNetwork is 'deny'. Only honored from the global config (~/.agav/config.json); ignored in project config.",
     type: "boolean",
     eg: false,
   },
@@ -387,9 +387,9 @@ const DEFAULT_CONFIG: AgavConfig = {
   maxTokens: 16384,
   maxIterations: 800,
   errorRetries: 5,
-  sandboxRequired: false,
+  sandboxRequired: platform() === "win32",
   sandboxNetwork: "allow",
-  windowsSandbox: false,
+  windowsSandbox: platform() === "win32",
   backgroundAutomation: "on",
   maxConcurrentWorkflowRuns: 2,
 };
