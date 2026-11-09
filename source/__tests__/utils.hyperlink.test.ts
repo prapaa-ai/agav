@@ -31,4 +31,24 @@ describe("utils/hyperlink", () => {
     const linked = terminalLink("hello", "https://example.com") + " and more";
     expect(stripTerminalLinks(linked)).toBe("hello and more");
   });
+
+  it("strips a link whose visible text contains other escapes, keeping them", () => {
+    const bold = "\x1b[1mbold\x1b[22m";
+    expect(stripTerminalLinks(terminalLink(bold, "https://example.com"))).toBe(bold);
+  });
+
+  it("strips a link directly adjacent to other escape sequences", () => {
+    const input = "\x1b[31m" + terminalLink("a", "https://a.example") + "\x1b[0m" + terminalLink("b", "https://b.example");
+    expect(stripTerminalLinks(input)).toBe("\x1b[31ma\x1b[0mb");
+  });
+
+  it("strips links that use BEL terminators or carry params", () => {
+    const input = "\x1b]8;id=x;https://example.com\x07text\x1b]8;;\x07 end";
+    expect(stripTerminalLinks(input)).toBe("text end");
+  });
+
+  it("leaves text without links unchanged", () => {
+    const input = "plain \x1b[1mstyled\x1b[0m text";
+    expect(stripTerminalLinks(input)).toBe(input);
+  });
 });

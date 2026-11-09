@@ -17,6 +17,14 @@ export function fileLink(text: string, filePath: string): string {
   return terminalLink(text, pathToFileURL(filePath).href);
 }
 
+/**
+ * One OSC 8 hyperlink: `ESC ] 8 ; params ; URI ST  text  ESC ] 8 ; ; ST`, where
+ * ST is `ESC \` or BEL. The visible text is matched lazily up to the closing
+ * sequence, so it may contain other escapes (e.g. SGR styling), which are kept;
+ * only the link wrapper is removed. Links don't nest, so the first closer wins.
+ */
+const OSC8_LINK = /\x1b\]8;[^;\x1b\x07]*;[^\x1b\x07]*(?:\x1b\\|\x07)([\s\S]*?)\x1b\]8;;(?:\x1b\\|\x07)/g;
+
 export function stripTerminalLinks(text: string): string {
-  return text.replace(/\x1b\]8;;[^\x1b]*\x1b\\([^\x1b]*)\x1b\]8;;\x1b\\/g, "$1");
+  return text.replace(OSC8_LINK, "$1");
 }
