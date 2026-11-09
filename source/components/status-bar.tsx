@@ -16,6 +16,7 @@ import {
 /** Props for the status bar footer. */
 interface Props {
   copyNotice?: ClipboardNotice | null;
+  queuedCommandNotice?: string | null;
   model: string;
   provider: string;
   effort: string;
@@ -98,6 +99,7 @@ export function buildStatusBarText(segments: StatusBarSegments, layout?: StatusB
 /** Renders model, token, and hint status information. */
 export default function StatusBar({
   copyNotice,
+  queuedCommandNotice,
   model,
   provider,
   effort,
@@ -202,6 +204,8 @@ export default function StatusBar({
         <Text color={copyNotice === "Copied to clipboard" ? "green" : "cyan"}>
           {copyNotice === "Copied to clipboard" ? "✓ " : ""}{copyNotice}
         </Text>
+      ) : queuedCommandNotice ? (
+        <Text color="yellow" wrap="truncate-end">{queuedCommandNotice}</Text>
       ) : hintEnabled ? (
         <Text dimColor italic>
           {"💡 "}{displayHint}
