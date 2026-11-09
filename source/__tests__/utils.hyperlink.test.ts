@@ -51,4 +51,39 @@ describe("utils/hyperlink", () => {
     const input = "plain \x1b[1mstyled\x1b[0m text";
     expect(stripTerminalLinks(input)).toBe(input);
   });
+
+  it.each([
+    ["ESC \\", "\x1b\\"],
+    ["BEL", "\x07"],
+  ])("does not pair a leading reset with a later link (%s terminator)", (_name, st) => {
+    const reset = `\x1b]8;;${st}`;
+    const link = `\x1b]8;;https://a.example${st}a\x1b]8;;${st}`;
+    expect(stripTerminalLinks(reset + "plain " + link)).toBe("plain a");
+  });
+
+  it("strips consecutive resets followed by a complete link", () => {
+    const reset = "\x1b]8;;\x1b\\";
+    expect(stripTerminalLinks(reset + reset + "\x1b]8;;\x07" + terminalLink("a", "https://a.example"))).toBe("a");
+  });
+
+  it("strips openers that have no closing reset", () => {
+    const open = "\x1b]8;;https://a.example\x1b\\";
+    expect(stripTerminalLinks(open + "x" + open + "y")).toBe("xy");
+  });
+
+  it("leaves an incomplete final control in place", () => {
+    const input = terminalLink("a", "https://a.example") + " \x1b]8;;https://b.example";
+    expect(stripTerminalLinks(input)).toBe("a \x1b]8;;https://b.example");
+  });
+
+  // Regression guard for the quadratic rescan on unclosed openers. The bound is
+  // deliberately generous (a linear scan takes a few ms); the old pattern took
+  // over a second on this input.
+  it("handles ~1 MB of unclosed openers in linear time", { timeout: 10_000 }, () => {
+    const open = "\x1b]8;;https://a.example\x1b\\";
+    const input = (open + "x").repeat(40_000);
+    const started = performance.now();
+    expect(stripTerminalLinks(input)).toBe("x".repeat(40_000));
+    expect(performance.now() - started).toBeLessThan(500);
+  });
 });
