@@ -261,6 +261,15 @@ const SAFE_TOOLS = new Set(["read_file", "grep_search", "find_files", "list_dire
 /** Tools that perform file mutations — always blocked in deny-writes mode. */
 const WRITE_TOOLS = new Set(["edit_file", "write_file", "edit_notebook"]);
 
+/** HTTP methods that only read; any other fetch_url method mutates server state. */
+const SAFE_FETCH_METHODS = new Set(["GET", "HEAD"]);
+
+/** True when a fetch_url call uses a state-changing method (POST/PUT/DELETE/PATCH). */
+function isMutatingFetch(input: Record<string, unknown>): boolean {
+  const method = String(input.method ?? "GET").trim().toUpperCase();
+  return !SAFE_FETCH_METHODS.has(method);
+}
+
 function isAllowed(
   toolName: string,
   input: Record<string, unknown>,
@@ -890,6 +899,10 @@ export async function* runAgentLoop(
         isDestructive = true;
       } else if (toolDestructiveFlag === false && SAFE_TOOLS.has(call.name)) {
         isDestructive = false;
+      } else if (call.name === "fetch_url") {
+        // Reads (GET/HEAD) are auto-approved like other SAFE_TOOLS; mutating
+        // methods make authenticated, state-changing calls and must prompt.
+        isDestructive = isMutatingFetch(input);
       } else {
         isDestructive = call.name === "run_command" && isDestructiveCommand(String(input.command ?? ""));
       }
