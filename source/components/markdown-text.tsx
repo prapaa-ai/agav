@@ -471,7 +471,27 @@ export function renderMarkdown(text: string): string {
   if (cached !== undefined) return cached;
 
   try {
-    const result = getMarked().parse(renderMathInMarkdown(stripUnsupportedFenceLanguages(text)));
+    // Hide ASCII punctuation in converted math until *all* Markdown passes
+    // finish, including the legacy emphasis cleanup below. Each placeholder
+    // has the same terminal width as its character, so table sizing stays exact.
+    // Choose characters absent from the input to avoid corrupting literal PUA.
+    const mathCharacters = new Map<string, string>();
+    const placeholders = new Map<string, string>();
+    let nextPlaceholder = 0xe000;
+    const protectMath = (rendered: string) => rendered.replace(/[!-/:-@\[-`{-~]/g, (character) => {
+      let placeholder = placeholders.get(character);
+      if (placeholder === undefined) {
+        while (text.includes(String.fromCodePoint(nextPlaceholder))) nextPlaceholder++;
+        // The private-use area is finite; fall back to the original Markdown
+        // through renderMarkdown's catch rather than choose an unsafe marker.
+        if (nextPlaceholder > 0xf8ff) throw new Error("Math placeholder space exhausted");
+        placeholder = String.fromCodePoint(nextPlaceholder++);
+        placeholders.set(character, placeholder);
+        mathCharacters.set(placeholder, character);
+      }
+      return placeholder;
+    });
+    const result = getMarked().parse(renderMathInMarkdown(stripUnsupportedFenceLanguages(text), protectMath));
     if (typeof result !== "string") return text;
     let cleaned = result.replace(/\n+$/, "");
     cleaned = cleaned.replace(/^(\s*)\* /gm, "$1• ");
@@ -490,7 +510,7 @@ export function renderMarkdown(text: string): string {
         .replace(/\*([^*]+)\*/g, (_match, em) => chalk.italic(em))
         .replace(/`([^`]+)`/g, (_match, code) => chalk.bold.yellow(code));
     });
-    const output = lines.join("\n");
+    const output = lines.join("\n").replace(/[\uE000-\uF8FF]/g, (character) => mathCharacters.get(character) ?? character);
     // Only cache if the text is short enough to benefit from caching.
     // Streaming text changes every token, so caching long strings wastes
     // memory on entries that will never be re-read.

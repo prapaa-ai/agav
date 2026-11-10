@@ -98,6 +98,7 @@ function toScript(text: string, plain: string, unicode: string): string | null {
 class MathParser {
   private remaining: string;
   private depth = 0;
+  private fractionBase = false;
 
   constructor(source: string) {
     this.remaining = source.trim();
@@ -114,6 +115,7 @@ class MathParser {
     if (this.depth >= 64) return null;
     this.depth++;
     let out = "";
+    let hasFraction = false;
     while (this.remaining.length > 0) {
       if (this.remaining[0] === "}") {
         if (topLevel) {
@@ -122,22 +124,31 @@ class MathParser {
         }
         this.remaining = this.remaining.slice(1);
         this.depth--;
+        this.fractionBase = hasFraction;
         return out;
       }
-      const atom = this.atom();
+      let atom = this.atom();
       if (atom === null) {
         this.depth--;
         return null;
       }
+      hasFraction ||= this.fractionBase;
+      // Keep a fraction atomic when scripts follow, including through braces
+      // and transparent font wrappers. Standalone fractions keep their layout.
+      if (this.fractionBase && /^\s*[_^]/.test(this.remaining)) {
+        atom = `(${atom})`;
+      }
       out += atom;
     }
     this.depth--;
+    this.fractionBase = hasFraction;
     // A group that never saw its closing brace is malformed.
     return topLevel ? out : null;
   }
 
   /** Parse a single `{...}` group, command, script, or literal character. */
   private atom(): string | null {
+    this.fractionBase = false;
     const ch = this.remaining[0]!;
     if (ch === "{") {
       this.remaining = this.remaining.slice(1);
@@ -161,6 +172,7 @@ class MathParser {
   /** Parse a `^`/`_` script and map its argument to Unicode, or fail. */
   private script(kind: "^" | "_"): string | null {
     const arg = this.compactArgument();
+    this.fractionBase = false;
     if (arg === null) return null;
     const [plain, unicode] = kind === "^"
       ? [SUPERSCRIPT_PLAIN, SUPERSCRIPT_UNICODE]
@@ -175,6 +187,7 @@ class MathParser {
    * `\command`, or a single character.
    */
   private compactArgument(): string | null {
+    this.fractionBase = false;
     this.remaining = this.remaining.replace(/^\s+/, "");
     if (this.remaining.length === 0) return null;
     const ch = this.remaining[0]!;
@@ -214,7 +227,7 @@ class MathParser {
       const ch = this.remaining[0];
       if (ch === undefined) return null;
       this.remaining = this.remaining.slice(1);
-      if (ch in SPACING) return SPACING[ch]!;
+      if (Object.hasOwn(SPACING, ch)) return SPACING[ch]!;
       if (ch === "{" || ch === "}" || ch === "%" || ch === "$" || ch === "#" || ch === "&" || ch === "_") {
         return ch;
       }
@@ -231,12 +244,14 @@ class MathParser {
         const numerator = this.compactArgument();
         const denominator = this.compactArgument();
         if (numerator === null || denominator === null) return null;
+        this.fractionBase = true;
         return `(${numerator})/(${denominator})`;
       }
       case "sqrt": {
         this.remaining = this.remaining.replace(/^\s+/, "");
         if (this.remaining[0] === "[") return null; // nth-root unsupported
         const radicand = this.compactArgument();
+        this.fractionBase = false;
         if (radicand === null) return null;
         return `√(${radicand})`;
       }
@@ -257,7 +272,7 @@ class MathParser {
       case "mathbb": {
         const arg = this.compactArgument();
         if (arg === null) return null;
-        return BLACKBOARD[arg] ?? null;
+        return Object.hasOwn(BLACKBOARD, arg) ? BLACKBOARD[arg]! : null;
       }
       case "hat":
       case "widehat":
@@ -292,15 +307,15 @@ class MathParser {
           const dm = this.remaining.match(/^[a-zA-Z]+/);
           if (!dm) return null;
           this.remaining = this.remaining.slice(dm[0].length);
-          return DELIMITERS[dm[0]] ?? null;
+          return Object.hasOwn(DELIMITERS, dm[0]) ? DELIMITERS[dm[0]]! : null;
         }
         return null;
       }
       default: {
-        if (name in SPACING) return SPACING[name]!;
+        if (Object.hasOwn(SPACING, name)) return SPACING[name]!;
         if (FUNCTIONS.has(name)) return name;
-        if (name in SYMBOLS) return SYMBOLS[name]!;
-        if (name in DELIMITERS) return DELIMITERS[name]!;
+        if (Object.hasOwn(SYMBOLS, name)) return SYMBOLS[name]!;
+        if (Object.hasOwn(DELIMITERS, name)) return DELIMITERS[name]!;
         return null;
       }
     }
@@ -331,11 +346,25 @@ function isEscaped(text: string, index: number): boolean {
  */
 function protectedRanges(text: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
-  // Fenced code blocks (``` or ~~~).
-  const fence = /^([ \t]*)([`~]{3,})[^\n]*\n([\s\S]*?)(?:^\1\2[`~]*[ \t]*$|\z)/gm;
-  for (let m = fence.exec(text); m; m = fence.exec(text)) {
-    ranges.push([m.index, m.index + m[0].length]);
+  // A closer must use the same character and at least the opening run's
+  // length. Unclosed fences extend through EOF (including streaming output).
+  let openFence: { start: number; run: string } | undefined;
+  const lines = /[^\n]+(?:\n|$)|\n/g;
+  for (let line = lines.exec(text); line; line = lines.exec(text)) {
+    const match = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)/.exec(line[0]);
+    if (!match) continue;
+    const run = match[1]!;
+    const info = match[2]!;
+    if (openFence) {
+      if (run[0] === openFence.run[0] && run.length >= openFence.run.length && /^[ \t]*$/.test(info)) {
+        ranges.push([openFence.start, line.index + line[0].length]);
+        openFence = undefined;
+      }
+    } else if (run[0] !== "`" || !info.includes("`")) {
+      openFence = { start: line.index, run };
+    }
   }
+  if (openFence) ranges.push([openFence.start, text.length]);
   // Inline code spans: runs of backticks balanced by the same count.
   const inline = /(`+)(?:[^`]|(?!\1)`)*?\1/g;
   for (let m = inline.exec(text); m; m = inline.exec(text)) {
@@ -367,9 +396,13 @@ const DELIMS: Array<{ open: string; close: string; display: boolean }> = [
 /**
  * Replace LaTeX math spans in `text` with their Unicode rendering, leaving code,
  * links, and unsupported formulas untouched. This runs *before* markdown parsing
- * so the dollar delimiters never reach `marked`.
+ * so the dollar delimiters never reach `marked`. The optional callback protects
+ * converted text from subsequent Markdown interpretation.
  */
-export function renderMathInMarkdown(text: string): string {
+export function renderMathInMarkdown(
+  text: string,
+  protect: (rendered: string) => string = (rendered) => rendered,
+): string {
   if (!text.includes("$") && !text.includes("\\(") && !text.includes("\\[")) {
     return text;
   }
@@ -463,7 +496,7 @@ export function renderMathInMarkdown(text: string): string {
       continue;
     }
 
-    out += rendered;
+    out += protect(rendered);
     i = closeAt + delim.close.length;
   }
 
