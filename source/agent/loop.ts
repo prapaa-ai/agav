@@ -8,6 +8,7 @@ import type {
 import type { ConversationState } from "./conversation.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { clampPermissionMode } from "../config/org-config.js";
+import { isMutatingFetchCall } from "../utils/http-method.js";
 import {
   MAX_STEPS_PROMPT,
   NEEDS_VERIFY_PROMPT,
@@ -871,9 +872,10 @@ export async function* runAgentLoop(
     for (const [id, call] of toolCalls) {
       if (signal?.aborted) break;
       const input = parsedInputs.get(id) ?? { raw: call.argsJson };
-      // Hard block: if an explicit allowlist is set, reject tools not on it
+      const mutatingFetch = isMutatingFetchCall(call.name, input);
+      // Hard block: mutating fetches cannot inherit the read-only SAFE exemption.
       if (params.allowedTools && params.allowedTools.length > 0
-        && !SAFE_TOOLS.has(call.name)
+        && (!SAFE_TOOLS.has(call.name) || mutatingFetch)
         && !isAllowed(call.name, input, params.allowedTools)) {
         toolResults.push({ type: "tool_result", toolCallId: id, toolResult: `Tool '${call.name}' is not permitted in this mode.`, isError: true });
         yield { type: "tool_result", toolName: call.name, output: `Tool '${call.name}' is not permitted in this mode.`, isError: true };
@@ -886,7 +888,7 @@ export async function* runAgentLoop(
       // Only trust destructive:false from builtin tools (SAFE_TOOLS).
       // Non-builtin tools (agents, MCP) cannot lower their own destructive status.
       let isDestructive: boolean;
-      if (toolDestructiveFlag === true) {
+      if (mutatingFetch || toolDestructiveFlag === true) {
         isDestructive = true;
       } else if (toolDestructiveFlag === false && SAFE_TOOLS.has(call.name)) {
         isDestructive = false;
@@ -897,14 +899,14 @@ export async function* runAgentLoop(
       const gate = params.toolGate;
       // Under a strict gate the allowlist only restricts (checked above); it never pre-approves a call.
       const approvalRules = gate ? undefined : params.allowedTools;
-      const destructiveApproved = isDestructive
+      const destructiveApproved = isDestructive && !mutatingFetch
         && isAllowed(call.name, input, approvalRules, { requirePattern: true });
       const denyWrites = permissionMode === "deny-writes";
       const trustedSafe = toolDestructiveFlag === false && SAFE_TOOLS.has(call.name);
       const backgroundManaged = !gate && call.name === "run_background_job";
       const needsConfirm = !backgroundManaged && ((isDestructive && !destructiveApproved)
         || (gate
-          ? !gate.safeTools.has(call.name) && permissionMode !== "auto-accept"
+          ? !gate.safeTools.has(call.name) && call.name !== "fetch_url" && permissionMode !== "auto-accept"
           : !SAFE_TOOLS.has(call.name)
             && !trustedSafe
             && permissionMode !== "auto-accept"
@@ -954,10 +956,12 @@ export async function* runAgentLoop(
         yield { type: "tool_confirmation_request", toolName: call.name, toolCallId: id, input, diffLines: previewDiff, ...(warning ? { warning } : {}) };
         // Yielding also hands control to the UI, which may cancel the turn.
         if (signal?.aborted) break;
-        const choice = warning
+        let choice = warning
           ? await confirmTool(call.name, input, previewDiff, tool?.mcpServerName, warning)
           : await confirmTool(call.name, input, previewDiff, tool?.mcpServerName);
         if (signal?.aborted) break;
+        // A blanket queue/session approval is not consent for this HTTP mutation.
+        if (mutatingFetch && choice === "always") choice = "no";
         if (choice === "always") {
           // Clamp to the org floor: interactive "Always" must not loosen a
           // managed permission policy below deny-writes/ask.
