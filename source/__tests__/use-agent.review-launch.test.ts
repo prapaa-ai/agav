@@ -344,6 +344,7 @@ describe("useAgent review launch boundaries", () => {
       const id = ui.agent().sessionId!;
       ui.agent().renameSession("Published name");
       await ui.until(async () => (await store.read(id))?.name === "Published name");
+      await ui.until(() => ui.agent().sessionName === "Published name");
       expect(ui.agent().sessionName).toBe("Published name");
       expect(ui.agent().error).toBeNull();
       expect(await store.list()).toHaveLength(1);
