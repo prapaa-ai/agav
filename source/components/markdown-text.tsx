@@ -4,6 +4,7 @@ import { Marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 import chalk from "chalk";
 import stringWidth from "string-width";
+import { renderMathInMarkdown } from "./markdown-math.js";
 
 /** Usable width for rendered markdown, read fresh so terminal resizes are honoured. */
 function currentWidth(): number {
@@ -470,7 +471,7 @@ export function renderMarkdown(text: string): string {
   if (cached !== undefined) return cached;
 
   try {
-    const result = getMarked().parse(stripUnsupportedFenceLanguages(text));
+    const result = getMarked().parse(renderMathInMarkdown(stripUnsupportedFenceLanguages(text)));
     if (typeof result !== "string") return text;
     let cleaned = result.replace(/\n+$/, "");
     cleaned = cleaned.replace(/^(\s*)\* /gm, "$1• ");
