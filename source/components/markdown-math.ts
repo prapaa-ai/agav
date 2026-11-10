@@ -56,6 +56,7 @@ const SYMBOLS: Record<string, string> = {
 const DELIMITERS: Record<string, string> = {
   langle: "⟨", rangle: "⟩", lbrace: "{", rbrace: "}", lbrack: "[", rbrack: "]",
   lfloor: "⌊", rfloor: "⌋", lceil: "⌈", rceil: "⌉", vert: "|", Vert: "‖",
+  lvert: "|", rvert: "|", lVert: "‖", rVert: "‖",
 };
 
 /** `\mathbb{R}` → blackboard-bold letter. */
@@ -472,7 +473,8 @@ export function renderMathInMarkdown(
       i++;
       continue;
     }
-    // Guard the common price/currency false positive: `$5` / `$ABC$`.
+    // A closer cannot follow whitespace or precede an alphanumeric character.
+    // This keeps prices like `$5 and $10` literal while allowing closed `$3$`.
     if (delim.open === "$") {
       const next = text[closeAt + delim.close.length];
       if (next && /[A-Za-z0-9]/.test(next)) {
@@ -480,7 +482,7 @@ export function renderMathInMarkdown(
         i++;
         continue;
       }
-      if (/^\d+(\.\d+)?$/.test(formula.trim())) {
+      if (/\s$/.test(formula)) {
         out += text[i];
         i++;
         continue;
