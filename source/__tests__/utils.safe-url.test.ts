@@ -36,6 +36,40 @@ describe("isForbiddenAddress", () => {
     },
   );
 
+  it.each([
+    "fec0::", "fec0::1", "feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+    "64:ff9b:1::", "64:ff9b:1::808:808", "64:ff9b:1:ffff:ffff:ffff:ffff:ffff",
+    "64:ff9b:1:a00::808:808",
+    "64:ff9b::10.0.0.1", "0064:ff9b:0000:0000:0000:0000:a9fe:a9fe",
+    "168.63.129.16", "::ffff:168.63.129.16", "64:ff9b::a83f:8110",
+  ])("rejects site-local, local NAT64, and platform endpoints %s", (address) => {
+    expect(isForbiddenAddress(address)).toBe(true);
+  });
+
+  it.each([
+    "168.63.129.15", "168.63.129.17",
+    "64:ff9b::1.0.0.0", "64:ff9b::8.8.8.8", "64:ff9b::dfff:ffff",
+    "0064:ff9b:0000:0000:0000:0000:0808:0808",
+  ])("allows public addresses and well-known NAT64 targets %s", (address) => {
+    expect(isForbiddenAddress(address)).toBe(false);
+  });
+
+  it.each([
+    "64:ff9b:0:0:0:1:7f00:1", "64:ff9b:0:0:1:0:7f00:1",
+    "64:ff9b:0:1::7f00:1", "64:ff9b:2::7f00:1",
+    "64:ff9b:0:ffff:ffff:ffff:ffff:ffff", "64:ff9b:2::",
+    "64:ff9a::7f00:1", "64:ff9c::7f00:1",
+  ])("does not extract IPv4 outside the well-known NAT64 /96 or local-use /48: %s", (address) => {
+    expect(isForbiddenAddress(address)).toBe(false);
+  });
+
+  it("keeps link-local and site-local boundaries distinct from other IPv6 space", () => {
+    expect(isForbiddenAddress("fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff")).toBe(false);
+    expect(isForbiddenAddress("fe80::")).toBe(true);
+    expect(isForbiddenAddress("febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff")).toBe(true);
+    expect(isForbiddenAddress("2001:4860:4860::8888")).toBe(false);
+  });
+
   it("fails closed on unparseable input", () => {
     expect(isForbiddenAddress("not-an-ip")).toBe(true);
     expect(isForbiddenAddress("999.999.999.999")).toBe(true);
@@ -62,6 +96,32 @@ describe("assertSafeUrl", () => {
     await reject("http://169.254.169.254/latest/meta-data/");
     await reject("http://[::1]/");
     await reject("http://[fd00:ec2::254]/");
+  });
+
+  it.each([
+    { address: "fec0::1", family: 6 as const },
+    { address: "64:ff9b:1::808:808", family: 6 as const },
+    { address: "168.63.129.16", family: 4 as const },
+  ])("rejects internal endpoint $address both literally and in mixed DNS results", async ({ address, family }) => {
+    const host = family === 6 ? `[${address}]` : address;
+    await expect(assertSafeUrl(`https://${host}/`, {
+      resolve: async () => { throw new Error("should not resolve literals"); },
+    })).rejects.toThrow(/private\/reserved address/);
+    await expect(assertSafeUrl("https://mixed.example/", {
+      resolve: resolveTo({ address: "93.184.216.34", family: 4 }, { address, family }),
+    })).rejects.toThrow(/private\/reserved address/);
+  });
+
+  it("pins public NAT64 literals and DNS records", async () => {
+    const address = "64:ff9b::808:808";
+    const literal = await assertSafeUrl(`https://[${address}]/`, {
+      resolve: async () => { throw new Error("should not resolve literals"); },
+    });
+    const resolved = await assertSafeUrl("https://nat64.example/", {
+      resolve: resolveTo({ address, family: 6 }),
+    });
+    expect(literal).toMatchObject({ address, family: 6 });
+    expect(resolved).toMatchObject({ address, family: 6 });
   });
 
   it("pins to a validated public literal address", async () => {

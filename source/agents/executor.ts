@@ -14,6 +14,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { decrypt } from "../utils/encrypt.js";
+import { isMutatingFetchCall } from "../utils/http-method.js";
 
 // AgavHooks type - defined locally since it's not exported from hooks.js
 interface AgavHooks {
@@ -189,7 +190,11 @@ export async function executeNativeAgent(
       maxTokens: deps.config.maxTokens,
       signal: deps.signal,
       confirmTool: deps.confirmTool ?? (childPermissionMode === "auto-accept" &&
-        (deps.backgroundPermissionMode ?? childPermissionMode) === "auto-accept" ? async () => "yes" : undefined),
+        (deps.backgroundPermissionMode ?? childPermissionMode) === "auto-accept"
+        // Full-access retains ordinary native-tool behavior, but cannot stand
+        // in for a real authorization callback for state-changing HTTP calls.
+        ? async (name, input) => isMutatingFetchCall(name, input) ? "no" : "yes"
+        : undefined),
       permissionMode: childPermissionMode,
       backgroundPermissionMode: deps.backgroundPermissionMode === undefined ? undefined
         : clampPermissionMode(deps.backgroundPermissionMode, deps.config.orgPermissionFloor),

@@ -1,5 +1,7 @@
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { pipeline } from "node:stream";
+import { createGunzip, createInflate, createBrotliDecompress } from "node:zlib";
 import { assertSafeUrl, pinnedLookup, UnsafeUrlError } from "../utils/safe-url.js";
 import { tempOutputManager, type TemporaryOutput } from "../utils/temp-output.js";
 import type { ToolDefinition, ToolResult } from "./types.js";
@@ -10,6 +12,10 @@ const SPILL_THRESHOLD = 38_000;
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const BODY_HEADERS = new Set([
+  "content-length", "content-type", "content-encoding", "content-language", "content-location", "transfer-encoding",
+]);
 
 /** Methods that only read; everything else mutates and must be confirmed. */
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
@@ -146,13 +152,43 @@ export function setFetchTransport(transport: Transport | undefined): void {
 }
 
 /** Convert a Node IncomingMessage into the small transport response contract. */
-function fromIncoming(message: IncomingMessage): TransportResponse {
+function fromIncoming(message: IncomingMessage, method: string): TransportResponse {
+  const status = message.statusCode ?? 0;
+  const encoding = message.headers["content-encoding"]?.trim().toLowerCase();
+  // HEAD and bodyless statuses can describe an encoded representation without
+  // sending any compressed bytes (which would otherwise fail decompression).
+  const hasBody = method !== "HEAD" && status !== 204 && status !== 205 && status !== 304;
+  const decoder = !hasBody ? undefined
+    : encoding === "gzip" ? createGunzip()
+    : encoding === "deflate" ? createInflate()
+    : encoding === "br" ? createBrotliDecompress() : undefined;
+  if (decoder) {
+    // Unlike pipe(), pipeline forwards source failures and tears down both
+    // streams on decoder failure/cancellation. The iterator reports the error;
+    // the callback observes completion without an unhandled rejected promise.
+    pipeline(message, decoder, () => {});
+  }
   return {
-    status: message.statusCode ?? 0,
+    status,
     statusText: message.statusMessage ?? "",
-    body: message,
-    cancel: () => { message.destroy(); },
+    body: decoder ?? message,
+    cancel: () => { decoder?.destroy(); message.destroy(); },
   };
+}
+
+/** Bound DNS validation by the same deadline as every HTTP hop and body read. */
+async function validateUrl(input: string, signal: AbortSignal): Promise<Awaited<ReturnType<typeof assertSafeUrl>>> {
+  signal.throwIfAborted();
+  let abort!: () => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+  try {
+    return await Promise.race([assertSafeUrl(input), aborted]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
 }
 
 /** Headers minus credential headers, used when a redirect crosses origins. */
@@ -179,13 +215,14 @@ async function nodeTransport(initialUrl: string, request: TransportRequest): Pro
   let body = request.body;
 
   for (let hop = 0; ; hop++) {
-    const target = await assertSafeUrl(currentUrl);
+    const target = await validateUrl(currentUrl, request.signal);
+    request.signal.throwIfAborted();
     const response = await sendOnce(target.url, target, { method, headers, body, signal: request.signal });
 
     const status = response.statusCode ?? 0;
     const location = response.headers.location;
-    const redirect = status >= 300 && status < 400 && typeof location === "string" && location.length > 0;
-    if (!redirect) return fromIncoming(response);
+    const redirect = REDIRECT_STATUSES.has(status) && typeof location === "string" && location.length > 0;
+    if (!redirect) return fromIncoming(response, method);
 
     response.destroy(); // Drain the redirect body; we only need the Location.
     if (hop >= MAX_REDIRECTS) {
@@ -201,10 +238,12 @@ async function nodeTransport(initialUrl: string, request: TransportRequest): Pro
     // Strip credentials when the redirect leaves the original origin so an
     // open redirect cannot forward Authorization/Cookie to a third party.
     if (!sameOrigin(nextUrl, target.url)) headers = stripCredentials(headers);
-    // 303, and 301/302 by convention, downgrade the method to GET and drop the body.
-    if (status === 303 || ((status === 301 || status === 302) && method !== "HEAD")) {
+    // Fetch rewrites only POST for 301/302, and non-GET/HEAD for 303.
+    if ((status === 303 && method !== "GET" && method !== "HEAD") ||
+      ((status === 301 || status === 302) && method === "POST")) {
       method = "GET";
       body = undefined;
+      headers = Object.fromEntries(Object.entries(headers).filter(([name]) => !BODY_HEADERS.has(name.toLowerCase())));
     }
     currentUrl = nextUrl.toString();
   }

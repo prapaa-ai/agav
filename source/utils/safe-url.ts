@@ -78,6 +78,7 @@ function isForbiddenIpv4(address: string): boolean {
   if (a === 10) return true; // 10.0.0.0/8 private
   if (a === 127) return true; // loopback
   if (a === 169 && b === 254) return true; // link-local + cloud metadata (169.254.169.254)
+  if (a === 168 && b === 63 && octets[2] === 129 && octets[3] === 16) return true; // Azure WireServer platform endpoint
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 private
   if (a === 192 && b === 168) return true; // 192.168.0.0/16 private
   if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 carrier-grade NAT
@@ -126,13 +127,15 @@ function isForbiddenIpv6(address: string): boolean {
   if (hextets.every((h) => h === 0)) return true; // :: unspecified
   if (hextets.slice(0, 7).every((h) => h === 0) && hextets[7] === 1) return true; // ::1 loopback
   if ((h0! & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((h0! & 0xffc0) === 0xfec0) return true; // fec0::/10 deprecated site-local
+  if (h0 === 0x0064 && h1 === 0xff9b && hextets[2] === 1) return true; // 64:ff9b:1::/48 local-use NAT64
   if ((h0! & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local (ULA)
   if (h0 === 0xfd00 && h1 === 0x0ec2) return true; // fd00:ec2::254 AWS IPv6 metadata prefix
   // IPv4-mapped / IPv4-compatible / NAT64 (::ffff:a.b.c.d, 64:ff9b::a.b.c.d):
   // validate the embedded IPv4 against the IPv4 rules.
   if (
     (hextets.slice(0, 5).every((h) => h === 0) && (hextets[5] === 0 || hextets[5] === 0xffff)) ||
-    (h0 === 0x0064 && h1 === 0xff9b)
+    (h0 === 0x0064 && h1 === 0xff9b && hextets.slice(2, 6).every((h) => h === 0)) // 64:ff9b::/96 only
   ) {
     const a = (hextets[6]! >> 8) & 0xff;
     const b = hextets[6]! & 0xff;
