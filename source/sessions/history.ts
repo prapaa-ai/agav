@@ -9,9 +9,9 @@ import { readSessionSnapshot, readSessionListingSnapshot } from "./client.js";
  * Runtime transcripts are authoritative, including empty, not-yet-saved conversations.
  *
  * `read` selects the snapshot strategy: load-time resumes use the full
- * {@link readSessionSnapshot} (coordinator-reconciled), while the resume picker
- * passes {@link readSessionListingSnapshot} to skip the per-session coordinator
- * poll that otherwise makes listing scale poorly with active sessions.
+ * {@link readSessionSnapshot}, while the resume picker passes
+ * {@link readSessionListingSnapshot}, which records a worker the supervisor has
+ * already recorded as ended but never polls live, and locks only to write.
  */
 async function runtimeSession(
   store: SessionRuntimeStore,
