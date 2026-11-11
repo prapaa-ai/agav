@@ -67,6 +67,24 @@ const END_SYNC = "\x1b[?2026l";
 // wraps pasted content between these two sequences.
 const PASTE_START = "\x1b[200~";
 const PASTE_END = "\x1b[201~";
+// The same markers with the leading ESC stripped. A split or upstream-mangled
+// read can deliver the CSI body without its introducer (the same way mouse
+// reports lose their ESC — see matchOrphanedCSI). We still recognize these so a
+// paste frame opens/closes correctly instead of the `[200~`/`[201~` body
+// leaking into the prompt as literal text.
+const PASTE_START_BODY = "[200~";
+const PASTE_END_BODY = "[201~";
+
+// A paste-start marker should be followed by its paste-end marker almost
+// immediately — even a large paste streams its remaining chunks within a few
+// hundred milliseconds. If the end marker never arrives within this window, the
+// terminal has dropped it: some PTYs (notably the buggy node-pty bundled by
+// Cursor/VS Code, which truncates pastes over ~1 KiB and never sends ESC[201~)
+// open the bracketed-paste frame and never close it. Without a fallback the TUI
+// buffers every subsequent keystroke into the never-ending paste and appears
+// frozen. When this fires we flush whatever we buffered as a completed paste so
+// input delivery recovers instead of hanging forever.
+const PASTE_INCOMPLETE_FLUSH_MS = 1000;
 
 // After this many milliseconds of stdin silence, the next chunk triggers a
 // terminal-mode re-assert. Laptop sleep/wake, lid close, Space switch, display
@@ -293,6 +311,10 @@ export default class Ink {
 	// Buffer holding an in-progress paste whose start marker arrived without its
 	// matching end marker (paste spanning multiple chunks).
 	private pasteBuffer: string | undefined;
+	// Fires if a paste-end marker never arrives for an open paste frame, so a
+	// terminal that drops ESC[201~ (see PASTE_INCOMPLETE_FLUSH_MS) cannot wedge
+	// the TUI in paste mode forever.
+	private pasteFlushTimer: NodeJS.Timeout | undefined;
 	// Buffer holding the prefix of a mouse report that was split across reads.
 	// Prepended to the next stdin chunk so the sequence can be matched whole.
 	private mouseBuffer: string | undefined;
@@ -749,18 +771,51 @@ export default class Ink {
 				: Buffer.from(data).toString("utf8");
 
 		// If we're mid-paste (start marker seen in a previous chunk), keep
-		// buffering until the end marker arrives.
+		// buffering until the end marker arrives. Only the full ESC[201~ is
+		// honored here: inside an open frame the buffered bytes are arbitrary
+		// pasted text that may legitimately contain the literal `[201~`, and ESC
+		// never appears in such text, so requiring the ESC avoids truncating a
+		// paste on its own content.
 		if (this.pasteBuffer !== undefined) {
-			const endIndex = chunk.indexOf(PASTE_END);
-			if (endIndex === -1) {
+			// Search the combined buffer+chunk so an end marker split across the
+			// read boundary is still found. This is the common case on PTYs that
+			// cap a read at ~1 KiB (e.g. Cursor/VS Code's node-pty): the paste's
+			// body fills the first read and `ESC[201~` is cut mid-sequence —
+			// `ESC[2` trailing one read, `01~` leading the next — so searching
+			// only the new chunk would never match and the frame would hang open.
+			// Carry the last few bytes of the buffered paste in front of the new
+			// chunk so a terminator split across the read boundary (`ESC[2`
+			// trailing the buffer, `01~` leading the chunk) is still matched —
+			// without re-scanning the whole (possibly huge) buffer each read,
+			// which would be O(n²) over a large paste. `carry` is at most the
+			// terminator length minus one.
+			const carry = this.pasteBuffer.slice(
+				Math.max(0, this.pasteBuffer.length - (PASTE_END.length - 1)),
+			);
+			const search = carry + chunk;
+			const searchIndex = search.indexOf(PASTE_END);
+
+			if (searchIndex === -1) {
 				this.pasteBuffer += chunk;
+				// More paste data is still flowing — restart the watchdog so a
+				// legitimately large paste isn't cut short mid-stream.
+				this.armPasteFlushTimer();
 				return;
 			}
 
-			const text = this.pasteBuffer + chunk.slice(0, endIndex);
-			this.pasteBuffer = undefined;
-			this.internalEventEmitter.emit("paste", text);
-			chunk = chunk.slice(endIndex + PASTE_END.length);
+			// Translate the match position in `carry + chunk` back to an offset
+			// within `chunk`; a negative offset means the terminator began in the
+			// carried-over bytes (i.e. straddled the boundary).
+			const endInChunk = searchIndex - carry.length;
+			const bodyFromChunk = endInChunk > 0 ? chunk.slice(0, endInChunk) : "";
+			// Drop any bytes the carry contributed to the terminator from the
+			// buffered text so they don't end up in the paste body.
+			const bufferedBody =
+				endInChunk < 0
+					? this.pasteBuffer.slice(0, this.pasteBuffer.length + endInChunk)
+					: this.pasteBuffer;
+			this.completePaste(bufferedBody + bodyFromChunk);
+			chunk = chunk.slice(endInChunk + PASTE_END.length);
 		}
 
 		// If we buffered a partial mouse sequence from the previous read,
@@ -833,22 +888,47 @@ export default class Ink {
 		};
 
 		while (chunk.length > 0) {
-			if (chunk.startsWith(PASTE_START)) {
+			// Open a paste frame on the start marker in either its full ESC[200~
+			// or ESC-stripped [200~ form (a split/mangled read can drop the ESC,
+			// the same way mouse reports lose theirs).
+			const startLen = chunk.startsWith(PASTE_START)
+				? PASTE_START.length
+				: chunk.startsWith(PASTE_START_BODY)
+					? PASTE_START_BODY.length
+					: 0;
+			if (startLen > 0) {
 				if (!flushInput()) return;
 
-				const rest = chunk.slice(PASTE_START.length);
+				const rest = chunk.slice(startLen);
 				const endIndex = rest.indexOf(PASTE_END);
 
 				if (endIndex === -1) {
-					// End marker not in this chunk — buffer until it arrives.
+					// End marker not in this chunk — buffer until it arrives,
+					// arming a watchdog in case the terminal never sends it.
 					this.pasteBuffer = rest;
+					this.armPasteFlushTimer();
 					chunk = "";
 					break;
 				}
 
 				const text = rest.slice(0, endIndex);
-				this.internalEventEmitter.emit("paste", text);
+				this.completePaste(text);
 				chunk = rest.slice(endIndex + PASTE_END.length);
+				continue;
+			}
+
+			// A stray paste-end marker with no frame open — the matching start
+			// was dropped upstream (so its body already leaked as input) or this
+			// is a duplicate terminator. Either way it is never real input, so
+			// discard it rather than letting `[201~` surface in the prompt.
+			if (chunk.startsWith(PASTE_END)) {
+				if (!flushInput()) return;
+				chunk = chunk.slice(PASTE_END.length);
+				continue;
+			}
+			if (chunk.startsWith(PASTE_END_BODY)) {
+				if (!flushInput()) return;
+				chunk = chunk.slice(PASTE_END_BODY.length);
 				continue;
 			}
 
@@ -914,11 +994,61 @@ export default class Ink {
 				continue;
 			}
 
-			pendingInput += chunk[0];
-			chunk = chunk.slice(1);
+			// Consume the run of ordinary bytes up to the next thing that needs
+			// inline handling, in a single slice rather than one byte per
+			// iteration. That boundary is the next ESC (every escape sequence —
+			// bracketed paste, mouse reports, trailing ESC — begins with one) or
+			// the next ESC-stripped paste marker body `[200~`/`[201~`, whose ESC
+			// a split/mangled read may have dropped. Scanning in bulk is
+			// equivalent to the byte loop and keeps the drain linear on large
+			// plain-text chunks (e.g. a file pasted into a terminal without
+			// bracketed paste mode), while still stopping so a bare `[201~`
+			// terminator doesn't leak into the prompt as literal text.
+			const nextEsc = chunk.indexOf("\x1b", 1);
+			let runEnd = nextEsc === -1 ? chunk.length : nextEsc;
+			for (let bracket = chunk.indexOf("[", 1); bracket !== -1 && bracket < runEnd; bracket = chunk.indexOf("[", bracket + 1)) {
+				const tail = chunk.slice(bracket);
+				if (tail.startsWith(PASTE_START_BODY) || tail.startsWith(PASTE_END_BODY)) {
+					runEnd = bracket;
+					break;
+				}
+			}
+			pendingInput += chunk.slice(0, runEnd);
+			chunk = chunk.slice(runEnd);
 		}
 
 		flushInput();
+	};
+
+	/**
+	 * Emit a completed paste and tear down the never-closed-frame watchdog.
+	 * Used both when the end marker arrives normally and when the watchdog
+	 * recovers an orphaned paste frame.
+	 */
+	private readonly completePaste = (text: string): void => {
+		this.pasteBuffer = undefined;
+		clearTimeout(this.pasteFlushTimer);
+		this.pasteFlushTimer = undefined;
+		this.internalEventEmitter.emit("paste", text);
+	};
+
+	/**
+	 * (Re)arm the watchdog that flushes an open paste frame whose end marker
+	 * never arrives. Restarted on every chunk of an in-progress paste so a
+	 * large but well-formed paste streaming over many reads is never cut short;
+	 * only a true stall (no further bytes, no ESC[201~) trips it.
+	 */
+	private readonly armPasteFlushTimer = (): void => {
+		clearTimeout(this.pasteFlushTimer);
+		this.pasteFlushTimer = setTimeout(() => {
+			const buffered = this.pasteBuffer;
+			if (buffered === undefined) {
+				return;
+			}
+			// Flush whatever we have as a completed paste so buffered keystrokes
+			// stop piling up and input delivery resumes.
+			this.completePaste(buffered);
+		}, PASTE_INCOMPLETE_FLUSH_MS);
 	};
 
 	/** Hit-test the point pulled back to the nearest cell inside the frame. */
@@ -1513,6 +1643,7 @@ export default class Ink {
 		this.isUnmounted = true;
 		this.stopSelectionScroll();
 		clearTimeout(this.escapeTimer);
+		clearTimeout(this.pasteFlushTimer);
 		this.throttledOnRender.cancel();
 
 		const {stdout, stdin} = this.options;
