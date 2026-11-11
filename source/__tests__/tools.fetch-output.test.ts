@@ -18,26 +18,32 @@ vi.mock("node:fs", async (importOriginal) => {
 
 import { mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
-import { fetchUrlTool } from "../tools/fetch-url.js";
+import { fetchUrlTool, sameOrigin, setFetchTransport, stripCredentials, type Transport } from "../tools/fetch-url.js";
 
 const directories = new Set<string>();
 const encoder = new TextEncoder();
 const execute = () => fetchUrlTool.execute({ url: "https://example.com/private" });
 
+/**
+ * Install a fake transport that streams the given chunks. Exercises the capture
+ * path without real network access; the SSRF guard is tested directly against
+ * `assertSafeUrl` in utils.safe-url.test.ts.
+ */
 function respond(chunks: Uint8Array[], status = 200, statusText = "OK") {
   const cancel = vi.fn();
-  let index = 0;
-  const stream = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (index < chunks.length) controller.enqueue(chunks[index++]!);
-      else controller.close();
-    },
-    cancel,
+  let cancelled = false;
+  async function* body(): AsyncGenerator<Uint8Array> {
+    for (const chunk of chunks) {
+      if (cancelled) return;
+      yield chunk;
+    }
+  }
+  const transport = vi.fn<Transport>().mockResolvedValue({
+    status, statusText, body: body(),
+    cancel: () => { cancelled = true; cancel(); },
   });
-  const response = new Response(stream, { status, statusText });
-  const text = vi.spyOn(response, "text");
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
-  return { response, text, cancel };
+  setFetchTransport(transport);
+  return { transport, cancel };
 }
 
 function savedPath(output: string): string {
@@ -53,21 +59,22 @@ afterEach(() => {
   }
   for (const directory of directories) rmSync(directory, { recursive: true, force: true });
   directories.clear();
+  setFetchTransport(undefined);
   vi.restoreAllMocks();
   vi.resetAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("bounded streamed HTTP response", () => {
-  it("keeps small output unchanged and never calls Response.text", async () => {
-    const { text } = respond([encoder.encode("hello"), encoder.encode(" world")]);
+  it("keeps small output unchanged and streams without spilling", async () => {
+    respond([encoder.encode("hello"), encoder.encode(" world")]);
     expect(await execute()).toEqual({ output: "HTTP 200 OK\nhello world", isError: false });
-    expect(text).not.toHaveBeenCalled();
     expect(mkdtempSync).not.toHaveBeenCalled();
   });
 
   it("handles an empty response body", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204, statusText: "No Content" })));
+    const transport = vi.fn<Transport>().mockResolvedValue({ status: 204, statusText: "No Content", cancel: () => {} });
+    setFetchTransport(transport);
     expect(await execute()).toEqual({ output: "HTTP 204 No Content\n", isError: false });
   });
 
@@ -76,15 +83,15 @@ describe("bounded streamed HTTP response", () => {
     expect(await execute()).toEqual({ output: "HTTP 404 Not Found\nnot found", isError: true });
   });
 
-  it("passes method, headers, body, and timeout without retrying", async () => {
-    respond([encoder.encode("created")], 201, "Created");
+  it("passes method, body, and timeout with the default User-Agent", async () => {
+    const { transport } = respond([encoder.encode("created")], 201, "Created");
     const result = await fetchUrlTool.execute({
       url: "https://example.com/private", method: "POST",
       headers: { Authorization: "Bearer secret", "User-Agent": "custom" }, body: "payload",
     });
     expect(result.isError).toBe(false);
-    expect(fetch).toHaveBeenCalledOnce();
-    expect(fetch).toHaveBeenCalledWith("https://example.com/private", {
+    expect(transport).toHaveBeenCalledOnce();
+    expect(transport).toHaveBeenCalledWith("https://example.com/private", {
       method: "POST", headers: { Authorization: "Bearer secret", "User-Agent": "custom" },
       body: "payload", signal: expect.any(AbortSignal),
     });
@@ -205,20 +212,50 @@ describe("bounded streamed HTTP response", () => {
   });
 
   it("reports network and streamed read failures without losing captured HTTP status", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    setFetchTransport(vi.fn<Transport>().mockRejectedValue(new Error("offline")));
     expect(await execute()).toEqual({ output: "Fetch failed: offline", isError: true });
-    let count = 0;
-    const stream = new ReadableStream<Uint8Array>({
-      pull(controller) {
-        if (count++ === 0) controller.enqueue(encoder.encode("partial body"));
-        else controller.error(new Error("connection reset"));
-      },
-    });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(stream, { status: 200, statusText: "OK" })));
+    const cancel = vi.fn();
+    async function* body(): AsyncGenerator<Uint8Array> {
+      yield encoder.encode("partial body");
+      throw new Error("connection reset");
+    }
+    setFetchTransport(vi.fn<Transport>().mockResolvedValue({ status: 200, statusText: "OK", body: body(), cancel }));
     const result = await execute();
     expect(result.isError).toBe(true);
     expect(result.output).toContain("HTTP 200 OK\npartial body");
     expect(result.output).toContain("response read failed: connection reset");
     expect(result.output).toContain("capture is partial");
+  });
+
+  it("rejects non-http(s) schemes without any network access", async () => {
+    setFetchTransport(undefined); // Exercise the real guarded transport.
+    const result = await fetchUrlTool.execute({ url: "file:///etc/passwd" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Refusing to fetch non-http(s) URL");
+  });
+
+  it("rejects loopback and metadata literal addresses without any network access", async () => {
+    setFetchTransport(undefined);
+    for (const url of ["http://127.0.0.1/", "http://169.254.169.254/latest/meta-data/", "http://[::1]/"]) {
+      const result = await fetchUrlTool.execute({ url });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("Refusing to connect to private/reserved address");
+    }
+  });
+});
+
+describe("redirect credential safety helpers", () => {
+  it("strips Authorization/Cookie/Proxy-Authorization case-insensitively", () => {
+    expect(stripCredentials({
+      "User-Agent": "Agav-CLI/0.1", authorization: "Bearer secret",
+      Cookie: "sid=abc", "Proxy-Authorization": "x", "X-Custom": "keep",
+    })).toEqual({ "User-Agent": "Agav-CLI/0.1", "X-Custom": "keep" });
+  });
+
+  it("treats differing scheme or host as a different origin", () => {
+    expect(sameOrigin(new URL("https://a.example/x"), new URL("https://a.example/y"))).toBe(true);
+    expect(sameOrigin(new URL("https://a.example/"), new URL("http://a.example/"))).toBe(false);
+    expect(sameOrigin(new URL("https://a.example/"), new URL("https://b.example/"))).toBe(false);
+    expect(sameOrigin(new URL("https://a.example:8443/"), new URL("https://a.example/"))).toBe(false);
   });
 });
