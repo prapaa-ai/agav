@@ -162,9 +162,9 @@ A practical pattern is to branch before a risky refactor, compare the result wit
 | Command | Intent |
 | --- | --- |
 | `/compact` | Summarize older conversation context now to make room for continued work. |
-| `/context` | Show a token breakdown for system prompt, tools, skills, MCP, and messages. |
+| `/context` | Show the estimated current context-window occupancy: system prompt, tools, skills, MCP, and messages. |
 
-Agav automatically compacts long histories and preserves a summary of important decisions, paths, bugs, and preferences. Run `/compact` to force compaction. Use `/context` for a real context-window breakdown. When a compaction summary exists, press `Ctrl+O` in the UI to show or hide it.
+Agav automatically compacts long histories and preserves a summary of important decisions, paths, bugs, and preferences. Run `/compact` to force compaction. Use `/context` to see what the context window currently holds. Its Used and Free rows are an estimate of current occupancy, not cumulative token usage. The session totals it also lists add up every request in the session, so they can exceed the context window. While a turn is running, `/context` is a snapshot of committed messages and excludes the output still being generated. When a compaction summary exists, press `Ctrl+O` in the UI to show or hide it.
 
 ## Project memory
 
