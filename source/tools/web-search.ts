@@ -1,5 +1,8 @@
 import type { ToolDefinition, ToolResult } from "./types.js";
 
+/** Same bound as fetch_url; covers both the request and reading the body. */
+export const SEARCH_TIMEOUT_MS = 30_000;
+
 export const webSearchTool: ToolDefinition = {
   schema: {
     name: "web_search",
@@ -26,6 +29,7 @@ export const webSearchTool: ToolDefinition = {
         headers: {
           "User-Agent": "Agav-CLI/0.1",
         },
+        signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
       });
 
       if (!res.ok) {
@@ -46,6 +50,9 @@ export const webSearchTool: ToolDefinition = {
 
       return { output: formatted, isError: false };
     } catch (err) {
+      if (err instanceof Error && err.name === "TimeoutError") {
+        return { output: `Search timed out after ${SEARCH_TIMEOUT_MS / 1000}s.`, isError: true };
+      }
       return {
         output: `Search failed: ${err instanceof Error ? err.message : String(err)}`,
         isError: true,
