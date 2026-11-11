@@ -61,6 +61,8 @@ const Host = () => {
   return h(Text, null, "ready");
 };
 
+const sleep = (ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
 const reset = () => {
   pastes = [];
   typed = "";
@@ -76,7 +78,7 @@ describe("bracketed paste with dropped or mangled markers", () => {
     });
     await settle(instance);
 
-    // A paste frame that opens but — like Cursor's truncating PTY — never closes.
+    // A paste frame that opens but whose end marker is lost upstream.
     const body = "a".repeat(1500);
     stdin.emit("data", PASTE_START + body);
 
@@ -86,15 +88,123 @@ describe("bracketed paste with dropped or mangled markers", () => {
     expect(pastes).toEqual([]);
 
     // After the watchdog window the buffered content is flushed as a paste.
-    await new Promise((resolve) => { setTimeout(resolve, 1200); });
+    await sleep(1200);
     await settle(instance);
     expect(pastes).toEqual([body]);
 
-    // Input delivery has recovered: a subsequent keystroke is delivered as
-    // input instead of being swallowed by the stuck paste frame.
+    // The frame stays in recovery for one more silent window, then closes:
+    // input delivery has recovered and a keystroke is typed normally instead
+    // of being swallowed by the stuck paste frame.
+    await sleep(1100);
     stdin.emit("data", "x");
     await settle(instance);
     expect(typed).toBe("x");
+    expect(pastes).toEqual([body]);
+
+    instance.unmount();
+  });
+
+  it("keeps late bytes of a stalled paste as paste text, never as typed Enter", async () => {
+    reset();
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // A valid paste whose reads stall past the watchdog (slow SSH/tmux link).
+    stdin.emit("data", PASTE_START + "line1\r");
+    await sleep(1200);
+    await settle(instance);
+    expect(pastes).toEqual(["line1\r"]);
+
+    // The rest arrives late. It must be delivered as paste text — replaying
+    // its newline as typed input would submit the prompt.
+    stdin.emit("data", "line2\r" + PASTE_END);
+    await settle(instance);
+    expect(pastes).toEqual(["line1\r", "line2\r"]);
+    expect(typed).toBe("");
+
+    // The late terminator closed the frame; typing works immediately.
+    stdin.emit("data", "x");
+    await settle(instance);
+    expect(typed).toBe("x");
+
+    instance.unmount();
+  });
+
+  it("accepts an ESC-stripped terminator only for a recovered frame", async () => {
+    reset();
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // Healthy frame: a literal `[201~` is pasted content, not a terminator.
+    stdin.emit("data", PASTE_START + "docs say [201~ ends it");
+    stdin.emit("data", " really" + PASTE_END);
+    await settle(instance);
+    expect(pastes).toEqual(["docs say [201~ ends it really"]);
+
+    // Recovered frame: a late terminator that lost its ESC closes it cleanly
+    // instead of leaking `[201~` into the paste or the prompt.
+    reset();
+    stdin.emit("data", PASTE_START + "head");
+    await sleep(1200);
+    stdin.emit("data", "tail[201~x");
+    await settle(instance);
+    expect(pastes).toEqual(["head", "tail"]);
+    expect(typed).toBe("x");
+
+    instance.unmount();
+  });
+
+  it("holds back a partial end marker when the watchdog fires", async () => {
+    reset();
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    // The read boundary cut ESC[201~ after `ESC[2` and the rest is delayed
+    // past the watchdog window.
+    stdin.emit("data", PASTE_START + "body\x1b[2");
+    await sleep(1200);
+    await settle(instance);
+    expect(pastes).toEqual(["body"]);
+
+    stdin.emit("data", "01~x");
+    await settle(instance);
+    expect(pastes).toEqual(["body"]);
+    expect(typed).toBe("x");
+
+    instance.unmount();
+  });
+
+  it("does not deliver a paste while the terminal is suspended", async () => {
+    reset();
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    stdin.emit("data", PASTE_START + "pending");
+    const resume = instance.suspendTerminal();
+    await sleep(1200);
+    expect(pastes).toEqual([]);
+
+    // On resume the watchdog is re-armed and recovers the frame.
+    resume();
+    await sleep(1200);
+    await settle(instance);
+    expect(pastes).toEqual(["pending"]);
 
     instance.unmount();
   });
@@ -171,7 +281,7 @@ describe("bracketed paste with dropped or mangled markers", () => {
     instance.unmount();
   });
 
-  it("discards a stray end marker (full and ESC-stripped) instead of leaking it", async () => {
+  it("discards a stray full end marker instead of leaking it", async () => {
     reset();
     const stdout = makeStdout();
     const stdin = makeStdin();
@@ -187,16 +297,16 @@ describe("bracketed paste with dropped or mangled markers", () => {
     expect(typed).toBe("");
     expect(pastes).toEqual([]);
 
-    // The same marker with its leading ESC stripped.
-    stdin.emit("data", "[201~");
+    // Also mid-chunk, after typed text.
+    stdin.emit("data", "ab\x1b[201~cd");
     await settle(instance);
-    expect(typed).toBe("");
+    expect(typed).toBe("abcd");
     expect(pastes).toEqual([]);
 
     instance.unmount();
   });
 
-  it("recovers the reported case: body leaked as input then a bare [201~ tail", async () => {
+  it("leaves literal [200~ / [201~ text alone outside a paste frame", async () => {
     reset();
     const stdout = makeStdout();
     const stdin = makeStdin();
@@ -205,18 +315,20 @@ describe("bracketed paste with dropped or mangled markers", () => {
     });
     await settle(instance);
 
-    // Upstream dropped the ESC[200~ start, so the body arrives as plain input
-    // and ends with a bare (ESC-stripped) `[201~` terminator. The text must be
-    // delivered as input, but the terminator must be stripped, not inserted.
-    const body = "  >>> eval step 67000: val_loss 3.1151 ppl 22.54";
-    stdin.emit("data", body + "[201~");
+    // Without ESC these are ordinary typeable text (e.g. pasted into a
+    // terminal without bracketed paste). They must neither open a phantom
+    // paste frame that swallows later keystrokes nor be silently deleted.
+    stdin.emit("data", "see [200~ and [201~ here");
     await settle(instance);
-    expect(typed).toBe(body);
+    stdin.emit("data", "z");
+    await settle(instance);
+    expect(typed).toBe("see [200~ and [201~ herez");
+    expect(pastes).toEqual([]);
 
     instance.unmount();
   });
 
-  it("opens a frame from an ESC-stripped start marker", async () => {
+  it("still drops orphaned mouse-report fragments after typed text", async () => {
     reset();
     const stdout = makeStdout();
     const stdin = makeStdin();
@@ -225,13 +337,31 @@ describe("bracketed paste with dropped or mangled markers", () => {
     });
     await settle(instance);
 
-    // Start marker arrives without its ESC; the body should still be captured
-    // as a paste (closed here by a proper ESC[201~).
-    const body = "pasted via mangled start";
-    stdin.emit("data", "[200~" + body + PASTE_END);
+    // A headless SGR report and a split SGR tail, each following a typed
+    // character in the same read, are residue — not input.
+    stdin.emit("data", "a[<65;44;18M");
     await settle(instance);
-    expect(pastes).toEqual([body]);
-    expect(typed).toBe("");
+    stdin.emit("data", "q;44;18M");
+    await settle(instance);
+    expect(typed).toBe("aq");
+
+    instance.unmount();
+  });
+
+  it("reassembles a paste-start marker split across reads", async () => {
+    reset();
+    const stdout = makeStdout();
+    const stdin = makeStdin();
+    const instance = render(h(Host), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    await settle(instance);
+
+    stdin.emit("data", "hi\x1b[20");
+    stdin.emit("data", "0~body" + PASTE_END);
+    await settle(instance);
+    expect(typed).toBe("hi");
+    expect(pastes).toEqual(["body"]);
 
     instance.unmount();
   });
