@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -17,6 +17,9 @@ function textOf(result: Awaited<ReturnType<typeof undoCommand.execute>>): string
 }
 
 describe("commands/undo", () => {
+  /** Directories created by these tests, removed after each one. */
+  const tempDirs: string[] = [];
+
   beforeEach(async () => {
     while (await performUndo()) {
       // drain shared module state
@@ -24,13 +27,25 @@ describe("commands/undo", () => {
   });
 
   afterEach(async () => {
-    while (await performUndo()) {
-      // drain shared module state
+    try {
+      while (await performUndo()) {
+        // drain shared module state
+      }
+    } finally {
+      // Drain first: undoing writes inside a deleted directory would fail.
+      await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
     }
   });
 
+  /** Creates a temporary directory that `afterEach` removes. */
+  async function tempDir(prefix: string): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), prefix));
+    tempDirs.push(dir);
+    return dir;
+  }
+
   async function trackedFile(): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), "agav-undo-command-"));
+    const dir = await tempDir("agav-undo-command-");
     const file = join(dir, "note.txt");
     await writeFile(file, "before", "utf8");
     await pushUndo(file, "file-write");
