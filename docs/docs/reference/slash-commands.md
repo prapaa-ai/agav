@@ -107,7 +107,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | Command | Purpose |
 | --- | --- |
 | `/debug` | Show conversation, plan, sandbox, token, plugin, MCP, undo, and memory state. |
-| `/changelog` | Show release notes from the latest update. Agav also shows the changelog automatically once on the first launch after an update. |
+| `/changelog [on\|off]` | Show release notes from the latest update. Agav also shows the changelog automatically once on the first launch after an update. `/changelog off` stops that automatic display and `/changelog on` restores it; the choice persists across sessions. Bare `/changelog` shows the notes either way. |
 | `/exit` | Save the current session and exit Agav. |
 
 MCP prompts appear as additional slash commands supplied by their connected server. Project skills and user-installed skills likewise add commands after Agav restarts; use `/help` or type `/` to see what is available in the current session.
