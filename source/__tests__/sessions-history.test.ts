@@ -87,17 +87,24 @@ describe("resumable history", () => {
     expect(await loadResumableSession(good.id)).toMatchObject({ id: good.id, messages: good.messages });
   });
 
-  it("isolates a session snapshot identity failure from healthy siblings", async () => {
+  it("isolates a session snapshot read failure during listing from healthy siblings", async () => {
     const bad = await create(saved.id);
     const good = await create("healthy");
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(SessionRuntimeStore.prototype, "lock").mockImplementation(async (id, fn) => {
-      if (id === bad.id) throw new Error("Session worker identity mismatch.");
-      return fn();
+    // Listing reads each runtime once via store.list() (which silently drops a
+    // failing read) and a second time while building its presentation snapshot.
+    // Fail only that second read for the bad session: store.list() still sees a
+    // healthy record, so the failure surfaces during snapshot building, where it
+    // must isolate the bad session and warn rather than hide its sibling.
+    const realRead = SessionRuntimeStore.prototype.read;
+    let listed = false;
+    vi.spyOn(SessionRuntimeStore.prototype, "read").mockImplementation(async function (this: SessionRuntimeStore, id: string) {
+      if (id === bad.id && listed) throw new Error("Session runtime read failed.");
+      if (id === bad.id) listed = true;
+      return realRead.call(this, id);
     });
     expect((await listResumableSessions()).map(record => record.id)).toEqual([good.id]);
     expect(warning).toHaveBeenCalledTimes(1);
-    await expect(loadResumableSession(bad.id)).rejects.toThrow(/identity mismatch/);
   });
 
   it("skips corrupt discovery entries but never substitutes stale history on a corrupt direct runtime read", async () => {

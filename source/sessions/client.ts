@@ -48,6 +48,25 @@ export async function readSessionSnapshot(id: string, store = new SessionRuntime
   });
 }
 
+/**
+ * Listing-only snapshot: reads the runtime record and its outstanding approvals
+ * WITHOUT taking the per-session lock and WITHOUT the coordinator poll that
+ * {@link readSessionSnapshot} performs for active sessions. The resume picker
+ * only needs a read-only status snapshot to draw the list; supervisor
+ * reconciliation (and any write) of a selected session happens later at load
+ * time under the lock.
+ *
+ * The lock and the coordinator poll are what made `--resume`/`/resume` lag:
+ * acquiring the single-writer lock per session can trigger stale-lock recovery,
+ * which spawns `ps` to probe the owner process, and the coordinator poll adds a
+ * supervisor round-trip (plus a lazy startup reconcile) for every active
+ * session. Reads are consistent enough for presentation without either.
+ */
+export async function readSessionListingSnapshot(id: string, store = new SessionRuntimeStore()): Promise<SessionSnapshot> {
+  const record = await requireRecord(id, store);
+  return { record, approvals: await listPendingApprovals(store, id) };
+}
+
 /** Presentation-only polling: disconnecting never cancels execution or answers consent. */
 export function subscribeSession(id: string, callbacks: {
   onSnapshot(snapshot: SessionSnapshot): void;
