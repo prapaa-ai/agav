@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as config from "../config/config.js";
@@ -7,8 +7,13 @@ import { listSessions, loadSession, type SessionRecord } from "../config/history
 import { SessionRuntimeStore } from "../sessions/store.js";
 import { SessionApprovalBroker } from "../sessions/approvals.js";
 import { listResumableSessions, loadResumableSession } from "../sessions/history.js";
+import { sessionWorkerRequestId } from "../sessions/launch.js";
+import { inputHash } from "../workflows/decisions.js";
+import type { JobSummary } from "../background-jobs/types.js";
 
 vi.mock("../config/history.js", () => ({ listSessions: vi.fn(), loadSession: vi.fn() }));
+const coordinator = vi.hoisted(() => ({ get: vi.fn(), poll: vi.fn(), job: vi.fn() }));
+vi.mock("../background-jobs-integration.js", () => ({ getSharedCoordinator: coordinator.get }));
 let root: string;
 let store: SessionRuntimeStore;
 const saved: SessionRecord = { id: "shared", title: "Saved name", name: "Saved name", createdAt: "2024-01-01T00:00:00Z",
@@ -19,10 +24,17 @@ beforeEach(async () => {
   store = new SessionRuntimeStore();
   vi.mocked(listSessions).mockResolvedValue([saved]);
   vi.mocked(loadSession).mockImplementation(async id => id === saved.id ? saved : null);
+  coordinator.poll.mockReset().mockRejectedValue(new Error("not found"));
+  coordinator.job.mockReset().mockResolvedValue(undefined);
+  coordinator.get.mockReset().mockResolvedValue({ poll: coordinator.poll, stop: vi.fn(), repositories: { jobs: { get: coordinator.job } } });
 });
 afterEach(async () => { vi.restoreAllMocks(); await rm(root, { recursive: true, force: true }); });
 const create = (id: string) => store.create({ id, cwd: root, model: "live", provider: "openai", permissionMode: "ask", sandboxRequired: false,
   messages: [{ role: "user", content: [{ type: "text", text: "Live question" }] }] });
+const createWorker = (id: string) => store.create({ id, cwd: root, model: "live", provider: "openai", permissionMode: "ask", sandboxRequired: false,
+  jobId: `job-${id}`, messages: [{ role: "user", content: [{ type: "text", text: "Worker question" }] }] });
+const workerJob = (record: { id: string; generation: string }, state: JobSummary["state"]): JobSummary =>
+  ({ jobId: `job-${record.id}`, requestId: sessionWorkerRequestId(record), state, stopState: "none" });
 
 describe("resumable history", () => {
   it("reloads signed and redacted thinking without losing opaque replay state", async () => {
@@ -87,17 +99,78 @@ describe("resumable history", () => {
     expect(await loadResumableSession(good.id)).toMatchObject({ id: good.id, messages: good.messages });
   });
 
-  it("isolates a session snapshot identity failure from healthy siblings", async () => {
+  it("isolates a session snapshot read failure during listing from healthy siblings", async () => {
     const bad = await create(saved.id);
     const good = await create("healthy");
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(SessionRuntimeStore.prototype, "lock").mockImplementation(async (id, fn) => {
-      if (id === bad.id) throw new Error("Session worker identity mismatch.");
-      return fn();
+    // Listing reads each runtime once via store.list() (which silently drops a
+    // failing read) and a second time while building its presentation snapshot.
+    // Fail only that second read for the bad session: store.list() still sees a
+    // healthy record, so the failure surfaces during snapshot building, where it
+    // must isolate the bad session and warn rather than hide its sibling.
+    const realRead = SessionRuntimeStore.prototype.read;
+    let listed = false;
+    vi.spyOn(SessionRuntimeStore.prototype, "read").mockImplementation(async function (this: SessionRuntimeStore, id: string) {
+      if (id === bad.id && listed) throw new Error("Session runtime read failed.");
+      if (id === bad.id) listed = true;
+      return realRead.call(this, id);
     });
     expect((await listResumableSessions()).map(record => record.id)).toEqual([good.id]);
     expect(warning).toHaveBeenCalledTimes(1);
+  });
+
+  it("isolates a session worker identity mismatch from healthy siblings", async () => {
+    const bad = await createWorker(saved.id);
+    const good = await create("healthy");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    coordinator.job.mockResolvedValue({ ...workerJob(bad, "running"), requestId: "another-request" });
+    coordinator.poll.mockResolvedValue({ ...workerJob(bad, "running"), requestId: "another-request" });
+    expect((await listResumableSessions()).map(record => record.id)).toEqual([good.id]);
+    expect(warning).toHaveBeenCalledTimes(1);
     await expect(loadResumableSession(bad.id)).rejects.toThrow(/identity mismatch/);
+  });
+
+  it("records a confirmed-ended worker while listing and never offers its stale consent", async () => {
+    const runtime = await createWorker("ended");
+    await store.update(runtime.id, runtime.generation, current => { current.status = "needs-approval"; });
+    const input = { path: "example" };
+    await mkdir(join(store.directory(runtime.id), "approvals"));
+    await writeFile(join(store.directory(runtime.id), "approvals", "approval-1.json"), JSON.stringify({ version: 1, approvalId: "approval-1",
+      sessionId: runtime.id, generation: runtime.generation, inputHash: inputHash(input), createdAt: new Date().toISOString(), toolName: "write_file", input }));
+    coordinator.job.mockResolvedValue(workerJob(runtime, "failed"));
+    const listed = (await listResumableSessions()).find(record => record.id === runtime.id);
+    expect(listed?.runtime).toMatchObject({ status: "interrupted", pendingCount: 0 });
+    expect(await store.read(runtime.id)).toMatchObject({ status: "interrupted",
+      error: "Session worker ended (failed) before recording completion." });
+  });
+
+  it("lists without locking or polling, reading only active workers' recorded job state", async () => {
+    const finished = await create("finished");
+    await store.update(finished.id, finished.generation, current => { current.status = "completed"; });
+    await create("unlaunched");
+    const live = await createWorker("live");
+    coordinator.job.mockResolvedValue(workerJob(live, "running"));
+    const lock = vi.spyOn(SessionRuntimeStore.prototype, "lock");
+    const listed = await listResumableSessions();
+    expect(lock).not.toHaveBeenCalled();
+    expect(coordinator.poll).not.toHaveBeenCalled();
+    expect(coordinator.job.mock.calls).toEqual([[`job-${live.id}`]]);
+    expect(listed.find(record => record.id === live.id)?.runtime).toMatchObject({ status: "starting" });
+    expect(listed.find(record => record.id === finished.id)?.runtime).toMatchObject({ status: "completed" });
+  });
+
+  it("keeps the observed status when the worker's end is not recorded or unreadable, reconciling at load", async () => {
+    const unrecorded = await createWorker("unrecorded");
+    const unreadable = await createWorker("unreadable");
+    coordinator.job.mockImplementation(async (jobId: string) => {
+      if (jobId === `job-${unreadable.id}`) throw new Error("corrupt job record");
+      return undefined;
+    });
+    coordinator.poll.mockImplementation(async () => workerJob(unrecorded, "failed"));
+    const listed = await listResumableSessions();
+    expect(listed.find(record => record.id === unrecorded.id)?.runtime).toMatchObject({ status: "starting" });
+    expect(listed.find(record => record.id === unreadable.id)?.runtime).toMatchObject({ status: "starting" });
+    expect(await loadResumableSession(unrecorded.id)).toMatchObject({ runtime: { status: "interrupted" } });
   });
 
   it("skips corrupt discovery entries but never substitutes stale history on a corrupt direct runtime read", async () => {
