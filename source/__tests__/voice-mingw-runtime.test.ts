@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-// Real CMake configure/build steps can exceed Vitest's 5s default on shared CI runners.
-const nativeBuildTestTimeoutMs = 30_000;
+// Real CMake configure/build/probe steps exceeded 30s under full-suite CI load.
+// Allow native toolchain startup headroom without relaxing the global test timeout.
+const nativeBuildTestTimeoutMs = 120_000;
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
