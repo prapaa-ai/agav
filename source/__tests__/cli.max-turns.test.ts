@@ -56,7 +56,7 @@ describe("--max-turns production CLI", () => {
   it.each(["0", "-5", "foo"])("rejects %s through main, before entering an agent", async (raw) => {
     await invoke(["--max-turns", raw]);
     expect(process.exit).toHaveBeenCalledWith(1);
-    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("--max-turns must be a positive safe integer"));
+    expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("--max-turns must be a plain positive integer (digits only"));
     expect(loadConfig).not.toHaveBeenCalled();
     expect(createProvider).not.toHaveBeenCalled();
     expect(render).not.toHaveBeenCalled();
