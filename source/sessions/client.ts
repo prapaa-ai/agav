@@ -23,29 +23,67 @@ async function requireRecord(id: string, store: SessionRuntimeStore): Promise<Se
   return record;
 }
 
+/**
+ * The supervisor's last recorded state for a job, read without reconciling it: no supervisor IPC
+ * (whose reconnect retries alone cost ~200ms when a worker is gone) and no OS process probe.
+ */
+async function recordedJob(jobId: string): Promise<JobSummary | undefined> {
+  const { getSharedCoordinator } = await import("../background-jobs-integration.js");
+  const record = await (await getSharedCoordinator()).repositories.jobs.get(jobId);
+  return record && { jobId: record.jobId, requestId: record.requestId, state: record.state, stopState: record.stopState };
+}
+
+/** Supervisor evidence for an active worker. Missing or uncertain evidence is not termination. */
+async function observeWorker(observed: SessionRuntimeRecord,
+  evidence: (jobId: string) => Promise<JobSummary | undefined> = async jobId => (await coordinator()).poll(jobId)): Promise<JobSummary | undefined> {
+  if (!active(observed) || !observed.jobId) return undefined;
+  let job: JobSummary | undefined;
+  try { job = await evidence(observed.jobId); }
+  catch { /* Offline coordinators and absent jobs cannot prove that a worker stopped. */ }
+  if (job && (job.jobId !== observed.jobId || job.requestId !== sessionWorkerRequestId(observed))) {
+    throw new Error("Session worker identity mismatch.");
+  }
+  return job;
+}
+
+/** Caller holds the session lock. Records a confirmed-ended worker, then reads its consent. */
+async function settleSnapshot(id: string, store: SessionRuntimeStore, observed: SessionRuntimeRecord,
+  job: JobSummary | undefined): Promise<SessionSnapshot> {
+  let record = await requireRecord(id, store);
+  // The worker can finish or ownership can change while the coordinator is responding.
+  if (job && isTerminalLifecycle(job.state) && record.generation === observed.generation &&
+      record.jobId === observed.jobId && active(record)) {
+    record = await store.update(id, observed.generation, latest => {
+      latest.status = "interrupted";
+      latest.error = `Session worker ended (${job.state}) before recording completion.`;
+    });
+  }
+  return { record, approvals: await listPendingApprovals(store, id) };
+}
+
 /** Observe an existing execution only. Missing or uncertain supervisor evidence is not termination. */
 export async function readSessionSnapshot(id: string, store = new SessionRuntimeStore()): Promise<SessionSnapshot> {
   const observed = await requireRecord(id, store);
-  let job: JobSummary | undefined;
-  if (active(observed) && observed.jobId) {
-    try { job = await (await coordinator()).poll(observed.jobId); }
-    catch { /* Offline coordinators and absent jobs cannot prove that a worker stopped. */ }
-    if (job && (job.jobId !== observed.jobId || job.requestId !== sessionWorkerRequestId(observed))) {
-      throw new Error("Session worker identity mismatch.");
-    }
-  }
-  return store.lock(id, async () => {
-    let record = await requireRecord(id, store);
-    // The worker can finish or ownership can change while the coordinator is responding.
-    if (job && isTerminalLifecycle(job.state) && record.generation === observed.generation &&
-        record.jobId === observed.jobId && active(record)) {
-      record = await store.update(id, observed.generation, latest => {
-        latest.status = "interrupted";
-        latest.error = `Session worker ended (${job!.state}) before recording completion.`;
-      });
-    }
-    return { record, approvals: await listPendingApprovals(store, id) };
-  });
+  const job = await observeWorker(observed);
+  return store.lock(id, () => settleSnapshot(id, store, observed, job));
+}
+
+/**
+ * Listing snapshot for the resume picker. Same outcome as {@link readSessionSnapshot} for a worker
+ * the supervisor has recorded as ended: the session is recorded as interrupted and its stale consent
+ * hidden. Without its fixed per-session costs:
+ *
+ * - Evidence is the supervisor's recorded job state, never a live poll (no IPC, no process probe).
+ *   A worker whose end is not recorded yet keeps its observed status, as with an offline
+ *   coordinator; the selected session is still fully reconciled at load time.
+ * - The lock is taken only when there is something to write. Runtime writes are atomic, so every
+ *   other session is read lock-free, and a recorded end persists, so it is never paid twice.
+ */
+export async function readSessionListingSnapshot(id: string, store = new SessionRuntimeStore()): Promise<SessionSnapshot> {
+  const observed = await requireRecord(id, store);
+  const job = await observeWorker(observed, recordedJob);
+  if (job && isTerminalLifecycle(job.state)) return store.lock(id, () => settleSnapshot(id, store, observed, job));
+  return { record: observed, approvals: await listPendingApprovals(store, id) };
 }
 
 /** Presentation-only polling: disconnecting never cancels execution or answers consent. */
