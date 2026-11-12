@@ -33,7 +33,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/clear`, `/new` | Start a clean chat without deleting saved sessions. |
 | `/model [name]` | Open the model picker or switch to a specific model; Agav switches provider when needed. |
 | `/effort [minimal\|low\|medium\|high\|max]` | Show or set reasoning effort. |
-| `/fast`, `/deep` | Switch to the current provider's fast or most capable model shortcut. |
+| `/fast`, `/deep` | Switch to the current provider's fast or most capable model shortcut. Vertex AI `/deep` requires location `global`, `us`, or `eu`; regional locations are rejected without changing the model or location. |
 | `/compact` | Summarize older conversation content to free context-window space. |
 | `/context` | Show the estimated current context-window occupancy: a breakdown for the system prompt, tools, MCP tools, skills, and messages, with Used and Free totals. While a turn is running, it excludes in-flight output. Session totals are cumulative across requests and can exceed the context window. |
 | `/status` | Show session, model, permissions, working directory, and token usage at a glance. |
@@ -56,12 +56,12 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/plan list` | List every plan saved for the current project. |
 | `/plan <n> <status>` | Set step `<n>` to `pending`, `in_progress`, `done`, or `failed`. |
 | `/plan clear` | Delete this session's plan. Use `no plan` in a prompt to skip automatic planning. |
-| `/steer <directive>` | Add durable direction for later turns. Use `/steer list`, `/steer remove <number>`, or `/steer clear` to manage directives. |
+| `/steer <directive>` | Redirect the main agent, or only the inspected subagent, at its next safe step in the same turn. Works while worker-attached, including after resume. Main directives are not inherited by children. Bare `/steer`, `list`, `remove <number>`, and `clear` manage foreground main directives only, not worker attachments or child inspectors. See [steering](/workflows/planning-and-steering#steering). |
 | `/loop` | Show the active loop. `/loop <interval> <prompt>` repeats an agent prompt; intervals support `s`, `m`, and `h`. `/loop <prompt>` defaults to ten minutes, and `/loop stop` cancels it. |
 | `/schedule` | List saved tasks. Use `/schedule add "<five-field cron>" <prompt>`, then `enable`, `disable`, or `remove <id>` to manage them. |
 | `/job` | Open the background-jobs manager (requires `backgroundJobsEnabled`). Subcommands: `list`, `poll <id>`, `log <id> [--stderr] [--tail N]`, `stop <id>`, `schedule list\|create\|revoke`, and `capabilities`. See [Background jobs](/features/background-jobs). |
 | `/watch <path\|glob> <command>` | Run a shell command after matching files change. `/watch stop` cancels it; glob patterns are supported. |
-| `/undo`, `/undo list` | Revert the most recent tracked file change or inspect the current in-memory undo stack. |
+| `/undo`, `/undo list` | Revert the most recent tracked file change or inspect the current in-memory undo stack. Unknown arguments show usage without changing files or consuming an undo entry. |
 
 ## Memory and skills
 

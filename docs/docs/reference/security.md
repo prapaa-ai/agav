@@ -32,13 +32,15 @@ Sensitive configuration fields are blocked from project-level `.agav/config.json
 
 ### deny-writes mode
 
-In `deny-writes` mode, `edit_file`, `write_file`, and `edit_notebook`, and tools classified as destructive, are blocked even when allowlisted. A `run_command` not classified as destructive can execute when allowlisted. This is not a universal read-only boundary: command classification is heuristic, and `fetch_url` is treated as safe even for POST, PUT, PATCH, and DELETE. Do not rely on this mode alone to prevent external side effects.
+In `deny-writes` mode, `edit_file`, `write_file`, and `edit_notebook`, and tools classified as destructive, are blocked even when allowlisted. A `run_command` not classified as destructive can execute when allowlisted. `fetch_url` mutations (POST, PUT, PATCH, and DELETE) are also blocked. This is not a universal read-only boundary: command classification is heuristic, and even a remote GET can have server-side effects. Do not rely on this mode alone to prevent external side effects.
 
 ### Safe tools
 
-These tools are treated as safe by the permission gate and normally do not require confirmation. This designation does not mean they have no side effects (`save_memory` and `update_plan` write Agav state, and `fetch_url` can mutate remote services):
+These tools are treated as safe by the permission gate and normally do not require confirmation. This designation does not mean they have no side effects (`save_memory` and `update_plan` write Agav state):
 
-`read_file`, `grep_search`, `find_files`, `list_directory`, `web_search`, `lsp_query`, `read_notebook`, `fetch_url`, `overview`, `activate_skill`, `save_memory`, `update_plan`
+`read_file`, `grep_search`, `find_files`, `list_directory`, `web_search`, `lsp_query`, `read_notebook`, `fetch_url` (GET/HEAD only), `overview`, `activate_skill`, `save_memory`, `update_plan`
+
+`fetch_url` mutations require explicit approval for each call, even under `auto-accept` or an `allowedTools` entry. Blanket “always” approval does not authorize them; without a confirmation handler they are refused. See [HTTP request safety](#http-request-safety).
 
 ### External tool trust
 
@@ -50,34 +52,35 @@ Agav auto-detects the best available OS-level sandbox at startup:
 
 | Platform | Backend | Mechanism |
 | --- | --- | --- |
-| macOS | Seatbelt | `sandbox-exec` with an allow-default profile and targeted restrictions |
-| Linux | Bubblewrap | `bwrap` with read-only root and credential masking |
+| macOS | Seatbelt | `sandbox-exec` with deny-default writes and explicit allowances |
+| Linux | Bubblewrap | `bwrap` with read-only root, a private workspace snapshot, and credential masking |
 | Docker | Container | `--network=none`, memory and CPU limits |
-| Windows | Env-var shaping | Strips proxy vars, sets `AGAV_SANDBOX_ACTIVE=1` |
-| Windows (opt-in) | Restricted token | `windowsSandbox: true`: write-restricted token, workspace ACL grants, Job Object |
+| Windows | Restricted token | Enabled by default: native helper, workspace ACL grants, Job Object |
 
-If no backend is available (including on Windows), automatic shell execution remains unsandboxed. Set `AGAV_NO_SANDBOX=1` before starting Agav to intentionally disable sandbox detection and permit `run_command` overrides of `sandbox: "none"`. Without that user opt-out, model-requested `none` overrides are rejected, including through skills and subagents. Tool approval, “always”, and auto-accept do not authorize sandbox bypass. Invalid backend values are rejected, and failure to launch a selected sandbox does not retry the command unsandboxed.
+If no backend is available, `run_command` and `run_tests` are refused when `sandboxRequired` is enabled; otherwise automatic execution is unsandboxed. `sandboxRequired` and `windowsSandbox` both default to `true` on Windows and `false` elsewhere. Set `AGAV_NO_SANDBOX=1` before starting Agav to intentionally disable sandbox detection and permit `run_command` overrides of `sandbox: "none"`. Without that user opt-out, model-requested `none` overrides are rejected, including through skills and subagents. Tool approval, “always”, and auto-accept do not authorize sandbox bypass. Invalid backend values are rejected, and failure to launch a selected sandbox does not retry the command unsandboxed.
 
 The footer shows the **shell default**, not proof of isolation for every tool or command. `run_command` reports the execution backend when it differs from that default. Direct user `!` shell commands intentionally remain unsandboxed with an inherited environment; this does not grant the model the same privilege. These shell policies do not provide OS isolation for native file tools.
 
-The Seatbelt and Bubblewrap sections below describe **shell `run_command` execution**. Agent `.mjs` tool processes use separate profiles: their Seatbelt profile is deny-default, blocks network, and allows writes only in the working directory and temp; their Bubblewrap runner uses `--unshare-net`, binds host `/tmp`, and masks existing credential and `.config` directories. Do not assume shell and agent-tool network policies are identical. Bundled agents are trusted and run unsandboxed; global and project agent tools use the available agent sandbox backend.
+The Seatbelt and Bubblewrap sections below describe **`run_command` and `run_tests` execution**. Agent `.mjs` tool processes use separate profiles: their Seatbelt profile is deny-default, blocks network, and allows writes only in the working directory and temp; their Bubblewrap runner uses `--unshare-net`, binds host `/tmp`, and masks existing credential and `.config` directories. Do not assume shell and agent-tool network policies are identical. Bundled agents are trusted and run unsandboxed; global and project agent tools use the available agent sandbox backend.
 
 ### Seatbelt (macOS)
 
-The Seatbelt profile uses **allow-default** with targeted restrictions; it is not a deny-all capability boundary:
+The Seatbelt profile denies **all filesystem writes by default**, then restores explicit allowances. Other operations remain broadly allowed subject to the restrictions below; it is not a deny-all capability boundary:
 
 - **Reads** — allowed across the filesystem, except `~/.ssh`, `~/.aws`, and `~/.gnupg`
-- **Writes** — system directories (`/System`, `/usr`, `/Library`, `/Applications`) and `$HOME` are denied, with a working-directory carve-out; other locations, including the system temp directory, remain writable subject to ordinary OS permissions. `$HOME` is denied by default, with write carve-outs for the standard cache/config directories that ordinary tooling needs — `~/.cache`, `~/.config`, `~/.local`, `~/.npm`, and `~/.cargo` — so `npm`, `pip`, `cargo`, and `git` work inside the sandbox. Writes to `~/.ssh`, `~/.aws`, and `~/.gnupg` are explicitly denied so no broad allow can re-expose them.
+- **Writes** — allowed only in the working directory, temporary directories, `/dev`, selected Git state paths, and tooling directories (`~/.cache`, `~/.config`, `~/.local`, `~/.npm`, `~/.cargo`). Credential directories remain denied.
+- **Protected configuration** — Git config, hooks, and worktree pointers, workspace `.agav`, `.vscode`, `.idea`, and shell startup paths are protected, including names that do not exist yet. Ordinary Git state remains writable.
 - **Network** — allowed by default. With an explicit deny policy (see [Network policy](#network-policy)), direct off-host networking is blocked; host-local TCP/IP and Unix sockets remain trusted channels, so local relays can still forward traffic
 - **Process execution** — allowed, except `/System/Library/CoreServices`
 - **IPC** — Mach lookup, sysctl reads, and POSIX shared memory are allowed for basic process operation
 
 ### Bubblewrap (Linux)
 
-- **Filesystem** — root is mounted read-only (`--ro-bind / /`); the working directory is writable and `/tmp` is a scratch `tmpfs`. Because the read-only root also covers `$HOME`, each standard cache/config directory — `~/.cache`, `~/.config`, `~/.local`, `~/.npm`, and `~/.cargo` — is given a writable scratch `tmpfs` so `npm`, `pip`, `cargo`, and `git` work. These tmpfs mounts are throwaway: nothing persists to or leaks from the host.
+- **Filesystem** — root is mounted read-only (`--ro-bind / /`); commands write to a private workspace snapshot, not the live checkout. Changes are validated and published only after a successful, uncancelled command. Publication rejects changes to the protected configuration paths listed above, including previously absent paths.
+- **Tooling** — `/tmp`, `~/.cache`, `~/.config`, `~/.npm`, and `~/.cargo` use throwaway scratch mounts. Installed tools under `~/.local` and `~/.rustup` remain visible read-only; `~/.cargo/bin` is restored read-only over the Cargo scratch mount.
 - **Credentials** — `~/.ssh`, `~/.aws`, and `~/.gnupg` are replaced with empty tmpfs mounts, hiding their contents
 - **Network** — allowed by default. With an explicit deny policy (see [Network policy](#network-policy)), Agav passes `--unshare-net`: loopback reaches only services started within the same command, not host services or other commands
-- **Lifecycle** — child processes are killed when Agav exits (`--die-with-parent`)
+- **Lifecycle** — a private PID namespace (`--unshare-pid`) and `--die-with-parent` prevent background descendants from surviving the invocation.
 
 ### Docker
 
@@ -88,14 +91,9 @@ The Seatbelt profile uses **allow-default** with targeted restrictions; it is no
 
 ### Windows
 
-Windows has no kernel-level sandbox. As a best-effort mitigation, Agav:
+#### Restricted-token sandbox
 
-- Sets `AGAV_SANDBOX_ACTIVE=1` so well-behaved child tools can self-restrict
-- Strips `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` (and lowercase variants) to reduce network reach
-
-#### Opt-in restricted-token sandbox
-
-Set `"windowsSandbox": true` in `~/.agav/config.json` to run shell commands (`run_command` and `run_tests`) under Agav's native helper instead. Project config can't set it. It is also available as the `windows` backend override when the helper is present.
+On Windows, `windowsSandbox` and `sandboxRequired` both default to `true`, so `run_command` and `run_tests` use Agav's native restricted-token helper. A missing helper blocks these executions, not Agav startup. Project config cannot change either setting. `run_command` can also request the `windows` backend override when the helper is present.
 
 - **Writes** — commands run under a write-restricted Windows token. A write succeeds only where Agav granted its sandbox identity access: the working directory and a dedicated sandbox temp directory. `TEMP`, `TMP`, and the npm, pip, and Yarn caches point at that temp directory. Writes elsewhere in your profile and on the system are denied.
 - **Protected configuration** — inside the workspace, Git hooks and configuration, `.agav`, `.vscode`, `.idea`, and shell startup files (`.bashrc`, `.zshrc`, `.profile`, `.zprofile`, `.bash_profile`, `.envrc`) are denied. Ordinary Git operations still work.
@@ -104,7 +102,7 @@ Set `"windowsSandbox": true` in `~/.agav/config.json` to run shell commands (`ru
 
 Limits:
 
-- **Reads and networking are not confined.** Commands are refused, not run, while `sandboxNetwork` is `deny`; use the Docker override when you need network isolation.
+- **Reads and networking are not confined.** Commands are refused, not run, while `sandboxNetwork` is `deny`; use `run_command` with the Docker override when you need network isolation (`run_tests` has no Docker override).
 - Locations that already grant write access to `Everyone` stay writable.
 - Protected paths that don't exist yet can't carry a denial, so a command could create one of them.
 - In linked Git worktrees whose metadata lives outside the workspace, Git commands that write metadata fail.
@@ -119,9 +117,9 @@ With `backgroundJobsEnabled`, the `run_background_job` tool starts commands that
 
 **Esc** cancels an interactive turn while keeping Agav open; **Ctrl+C** exits unless it copies an active Agav selection. For worker-owned turns, ordinary cancellation and exit request durable, generation-bound cancellation, not synchronous termination. Only `/detach` or the configured detach chord intentionally exits while leaving the worker running; session switches and presentation unmounts do not cancel. See [Keybindings](/reference/keybindings#cancel-versus-exit).
 
-Native, Seatbelt, and Bubblewrap shell commands use process-group cleanup on failure, cancellation, timeout, and orderly exit; Windows uses tree termination. Successful background commands are preserved on ordinary successful completion. Cleanup is best-effort, cannot undo edits or external actions, and cannot guarantee termination of descendants that detach from the owned group.
+Native and Seatbelt shell commands use process-group cleanup on failure, cancellation, timeout, and orderly exit; successful background children can survive ordinary completion. Cleanup is best-effort and cannot guarantee termination of descendants that detach from the owned group. Bubblewrap uses a private PID namespace, and the Windows sandbox uses a Job Object, so their background descendants do not survive an invocation. Cleanup cannot undo external actions.
 
-Agent/test subprocesses receive cancellation signals without the shell runner's descendant-tree guarantees. Cancelling an MCP request stops the local wait, not necessarily server-side execution, and does not kill its shared server. Docker cancellation targets the local CLI, not guaranteed container/daemon cleanup. Check remote jobs, containers, and services separately after interruption.
+Agent subprocesses and Seatbelt/unsandboxed test runners receive cancellation signals without the shell runner's process-group cleanup guarantees. Bubblewrap and Windows sandboxed test runs retain their backend lifecycle isolation. Cancelling an MCP request stops the local wait, not necessarily server-side execution, and does not kill its shared server. Docker cancellation targets the local CLI, not guaranteed container/daemon cleanup. Check remote jobs, containers, and services separately after interruption.
 
 Tool-activated skills receive the parent turn signal, but focused skill entries have no individual cancel handler. Manual-only slash-command skills receive no turn signal. Skill shell blocks execute outside the restricted tool registry but use the default shell sandbox, filtered environment, process-group cleanup, and the skill's cancellation signal when supplied. `fetch_url` uses its own 30-second timeout instead of the turn signal once a request starts. See [Skills](/features/skills#shell-blocks) before trusting executable skill instructions.
 
@@ -143,17 +141,15 @@ Across **all** sandbox backends (including unsandboxed), environment variables w
 
 ### Requiring a sandbox
 
-Set `sandboxRequired: true` in `~/.agav/config.json` or `.agav/config.json` to make Agav refuse to start if no OS-level sandbox backend is available. This is recommended for CI, automation, and shared environments. On Windows, `~/.agav/` resolves to `%USERPROFILE%\.agav\`.
+Set `sandboxRequired: true` in **global** `~/.agav/config.json`, or use `--sandbox-required`, to refuse `run_command` and `run_tests` executions without an OS-level sandbox. It defaults to `true` on Windows and `false` elsewhere. Agav still starts if no backend is available, with a warning; this is an execution-time restriction, not a startup refusal.
 
 ```json
 { "sandboxRequired": true }
 ```
 
-Enforcement happens per `run_command` call against the *effective* backend: the requested `sandbox` override when one is given, otherwise the auto-detected backend. A call is refused, without executing, when that backend is `none`. This includes an explicit `sandbox: "none"` override, even with `AGAV_NO_SANDBOX=1`. An installed override such as `sandbox: "docker"` still runs.
+For `run_command`, enforcement checks the *effective* backend: the requested `sandbox` override when given, otherwise the auto-detected backend. `none` is refused even with `AGAV_NO_SANDBOX=1`; an installed override such as `sandbox: "docker"` can still run. `run_tests` uses the auto-detected backend and has no Docker override. Neither tool retries a failed sandbox launch unsandboxed.
 
-Agav still starts when no sandbox backend is available, but prints a startup warning that `run_command` calls will be refused.
-
-Project config (`.agav/config.json`) can't set or override `sandboxRequired`, so a repository can't turn it off. The setting covers only `run_command`. Skill shell blocks and background-job commands don't go through it, so they aren't covered.
+Project config cannot set or override `sandboxRequired`. It is not a universal sandbox requirement for every integration: skill shell blocks use the default sandbox but do not pass through this gate, and background-job commands remain outside the sandbox. Workflow job nodes separately refuse fresh starts when the requirement is enabled.
 
 ### Network policy
 
@@ -169,6 +165,12 @@ By default, `run_command` and `run_tests` commands under Seatbelt and Bubblewrap
 `--sandbox-network allow` (alias `--sandbox-allow-network`) restores networking for one invocation when the global config denies it. Agav never rewrites this setting, so an existing explicit value stays in effect. A present but invalid value is treated as `deny`.
 
 Project config (`.agav/config.json`) can't set `sandboxNetwork`. A session or workflow run records the policy in effect when it starts and keeps it when resumed or run by a detached worker. Workflow runs never relax a recorded `deny`. Docker always uses `--network=none`, and commands without a sandbox are not network-confined.
+
+## HTTP request safety
+
+`fetch_url` accepts only HTTP(S) URLs. It blocks loopback, private, reserved, and metadata destinations, rejecting a hostname if **any** DNS result is forbidden. Connections are pinned to a validated address to prevent DNS rebinding. Each redirect is revalidated (at most five redirects); cross-origin redirects strip `Authorization`, `Cookie`, and `Proxy-Authorization` headers.
+
+These checks apply independently of the shell sandbox. They do not make an approved request harmless or prevent side effects at a public service.
 
 ## File tool path boundaries
 

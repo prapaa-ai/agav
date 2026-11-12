@@ -20,7 +20,7 @@ Merge this setting into `~/.agav/config.json`, then start Agav:
 
 `backgroundJobsEnabled` defaults to `false` and is the only flag needed to enable worker-owned ordinary interactive turns and detaching. Enable it **before submitting the task**; `/detach` does not migrate an already-running in-process turn into a worker. See [Configuration](/reference/configuration) for config precedence and Windows paths.
 
-With `backgroundJobsEnabled: true`, ordinary interactive prompts start execution in a supervised worker after initial preparation, even while you are still watching the terminal. Detaching disconnects that presentation; it does not restart the task or run a second copy. Initial context and plan preparation happen before worker ownership is established. **Ctrl+D** works as soon as the worker is ready, even before the hint appears. The detach hint appears in bold cyan after 30 seconds if the turn is still working and worker-owned. Once visible, it disappears two seconds after your first keypress or mouse movement and stays hidden for the rest of that turn; the detach shortcut remains available.
+With `backgroundJobsEnabled: true`, ordinary interactive prompts start execution in a supervised worker after initial preparation, even while you are still watching the terminal. Detaching disconnects that presentation; it does not restart the task or run a second copy. Initial context and plan preparation happen before worker ownership is established. **Ctrl+D** works as soon as the worker is ready. When `backgroundJobsEnabled` is enabled, randomized status-bar tips can include a detach hint using your configured shortcut; you do not need to wait for that hint.
 
 ## Detach and return
 
@@ -57,9 +57,9 @@ The resume picker includes live runtimes as well as saved conversations, even be
 | `interrupted` | Execution ended without recording normal completion. |
 | `cancelled` | A terminal cancellation state, if present. |
 
-Select with **↑/↓**, **j/k**, the mouse wheel, or a click; press **Enter** to resume. **M** or **R** renames both active and terminal sessions. Enter saves the new name; Esc cancels renaming. **D** deletes saved conversations and terminal runtimes only; deletion is unavailable for `starting`, `running`, and `needs-approval` sessions. Deleting history is not a way to stop a worker.
+Select with **↑/↓**, **j/k**, the mouse wheel, or a click; press **Enter** to resume. **M** or **R** renames both active and terminal sessions. Enter saves the new name; Esc cancels renaming. **D** deletes saved conversations and terminal runtimes only; deletion is unavailable for `starting`, `running`, and `needs-approval` sessions. Deleting history is not a way to stop a worker. Press `/` or click the search bar to filter by session name, **Tab** to cycle project scope, **s** to toggle updated/created sorting, and **a** to cycle all/running/needs-approval filters. The running filter includes workers waiting for approval. An approval banner highlights sessions needing a decision. While search is focused, **Enter** or **Esc** leaves search editing without resuming or closing the picker.
 
-The worker checkpoints conversation progress and token usage, making recorded messages and usage visible when you resume, including through saved history. The UI observes those checkpoints rather than writing over the worker’s transcript.
+The worker checkpoints conversation progress and token usage, making recorded messages and usage visible when you resume, including through saved history. Live and saved session totals include subagent and skill usage. The UI observes those checkpoints rather than writing over the worker’s transcript.
 
 Successive ordinary turns keep the same session ID. A new turn has a new internal execution generation; you do not need to track that value or change the resume command. While the current worker is active, wait for completion or answer its approval rather than trying to start a competing turn in the same conversation.
 
@@ -75,14 +75,16 @@ Detaching does **not** change the permission mode, widen tool access, or bypass 
 
 - **Local, not cloud execution.** The worker runs as a local process under your OS account. Closing the Agav UI is supported; laptop sleep, logout, reboot, power loss, process cleanup, or losing provider/network access are not guarantees of continued execution. Suspension can pause work and disrupt connections.
 - **Supervisor isolation is not tool isolation.** The background-job supervisor launches the session worker outside the shell sandbox (`isolation: none`). Inside the worker, tool execution still enforces its permission and sandbox requirements, including required-sandbox policy. Detaching is not a sandbox bypass. A shell command explicitly launched through `run_background_job` is a separate, unsandboxed background job.
-- **Credentials must be reloadable.** Workers reload trusted configuration and selected provider environment variables; they do not persist a secret-bearing config snapshot. A transient CLI credential override that differs from the reloadable credential is refused. Configure credentials in the provider environment variable or global config before starting. Stored endpoint choices cannot silently redirect current credentials after routing policy changes.
+- **Credentials and overrides use a private launch path.** Workers reload trusted configuration and selected provider environment variables. Registered `-c`/`--config` overrides also propagate through a private launch environment, using effective values so dedicated flags still take precedence. The override payload is not stored in command arguments or durable runtime metadata and is consumed before tools launch; organization policy still applies. Unregistered transient credential changes that differ from reloadable credentials remain refused. Stored endpoint choices cannot silently redirect current credentials after routing policy changes.
 - **Durable state is not a replay engine.** Runtime state, events, and approvals live under `~/.agav/session-runtimes`, with supervisor state under `~/.agav/background-jobs`. A dead worker cannot resume its JavaScript promises. Agav does not automatically replay uncertain tool calls or restart that execution when you reopen the session.
 
 ## Supported paths and limitations
 
 Detaching is for **worker-owned ordinary interactive turns**. It is unavailable while disabled, before worker preparation finishes, or after the turn is terminal. Direct slash-command skill invocations and direct named/service-agent submissions use different execution paths and are not made detachable by this flag. This differs from a normal prompt whose model delegates to a skill, subagent, or service agent inside its worker.
 
-**Steering and pause are not supported for live worker-owned turns**, including while attached before detaching or after resuming. `/steer` rejects these turns rather than queuing a directive that the worker cannot receive. Foreground in-process turns retain their steering and pause controls. To change a worker's direction, wait for completion and submit a follow-up prompt, or request cancellation and inspect its effects before starting another turn.
+**Steering is supported while attached to a live worker, including after resuming.** Use `/steer <directive>` to redirect the main agent at its next safe step within the same turn. In a live subagent inspector, it targets only that child; main-agent directives are not inherited by children. Worker delivery uses a durable inbox bound to the current execution and recipient, unlike the foreground in-memory directive list. Bare `/steer`, `list`, `remove`, and `clear` are unavailable while worker-attached or in a subagent inspector. See [Planning and Steering](/workflows/planning-and-steering#steering).
+
+**Pause remains unsupported for worker-owned turns.** Foreground in-process turns retain pause controls. Steering does not interrupt an already-running tool or undo its effects.
 
 Use the documented `--resume` and `/resume` entry points to observe and answer a session. There is no separate public session `attach`, `approve`, `list`, or `stop` command to substitute for this flow. To interrupt a worker, resume it and use the ordinary interrupt controls described below.
 
@@ -100,7 +102,7 @@ If launch admission is uncertain (for example, a response was lost), Agav retain
 
 **Do:**
 
-- Enable `backgroundJobsEnabled: true` and set reloadable credentials before the task starts.
+- Enable `backgroundJobsEnabled: true` and configure credentials before the task starts.
 - Detach once the worker is ready, save the exact resume command, and check the picker for pending approvals.
 - Review each approval and inspect the workspace before asking for follow-up work after an interruption.
 - Keep the machine awake, connected, and running if you need uninterrupted local execution.
@@ -117,10 +119,10 @@ If launch admission is uncertain (for example, a response was lost), Agav retain
 | Symptom | What to check |
 | --- | --- |
 | Detach is disabled | Set `backgroundJobsEnabled: true` in global config, restart Agav, and start a new ordinary task. It cannot retrofit the current in-process execution. |
-| “The current task is not owned by a background worker yet” | Wait for worker preparation to finish; the delayed hint is not required. If detaching remains unavailable, check whether you invoked a skill or service agent directly. |
+| “The current task is not owned by a background worker yet” | Wait for worker preparation to finish; a status-bar hint is not required. If detaching remains unavailable, check whether you invoked a skill or service agent directly. |
 | “This session is no longer running” | The turn may have finished while you were detaching. Use `/resume` or `agav --resume` to inspect its terminal state. |
 | Session appears stuck | Look for `needs-approval` and its pending count. Resume and explicitly approve or deny the displayed request. |
-| “Background execution cannot reload this transient credential override” | Move the credential to the matching provider environment variable or global config, then start a new task. |
+| “Background execution cannot reload this transient credential override” | Use the matching provider environment variable, global config, or a registered `-c` credential override, then start a new task. Unregistered transient credential changes cannot be transferred. |
 | Worker failed or was interrupted | Resume to inspect the transcript/error and check the actual files or external effects before submitting follow-up instructions. Reopening observes recorded state; it does not resurrect a dead worker. |
 | “Session execution changed” or a stale approval error | Select the session again in `/resume` to refresh its current execution and approval. Do not edit state files to force an old decision. |
 
