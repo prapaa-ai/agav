@@ -42,7 +42,6 @@ Because the key fields are removed from project config, a value like `openaiApiK
   "errorRetries": 5,
   "providerIdleTimeout": 60000,
   "permissionMode": "ask",
-  "sandboxRequired": false,
   "allowedTools": ["read_file", "run_command:npm run *"],
   "systemPrompt": "Follow the conventions documented in this repository.",
   "hooks": {
@@ -88,9 +87,9 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | `errorRetries` | Transient provider retries; must be zero or greater |
 | `providerIdleTimeout` | Idle timeout in milliseconds waiting for provider stream activity (positive safe integer 1–2147483647). When unset, `null`, or `"disabled"`, Agav adds no timer and retains provider SDK defaults. Can be overridden at startup with `--provider-idle-timeout`. |
 | `permissionMode` | `ask`, `auto-accept`, or `deny-writes` |
-| `sandboxRequired` | When `true`, refuse to start if no OS-level sandbox (Seatbelt, Bubblewrap, or Docker) is available |
-| `sandboxNetwork` | Network policy for Seatbelt and Bubblewrap shell commands: `allow` (default) or `deny` to block direct off-host networking. Global config only; invalid values are treated as `deny`. See [Network policy](/reference/security#network-policy). |
-| `windowsSandbox` | Windows only. When `true`, run shell commands under Agav's restricted-token sandbox, which confines writes to the workspace and a sandbox temp directory. Doesn't confine reads or networking; commands are refused while `sandboxNetwork` is `deny`. Default `false`; global config only. See [Opt-in restricted-token sandbox](/reference/security#opt-in-restricted-token-sandbox). |
+| `sandboxRequired` | Refuse `run_command` and `run_tests` executions without an OS-level sandbox; does not prevent startup. Default `true` on Windows, `false` elsewhere. Global config only. See [Requiring a sandbox](/reference/security#requiring-a-sandbox). |
+| `sandboxNetwork` | Network policy for Seatbelt and Bubblewrap `run_command` and `run_tests` executions: `allow` (default) or `deny` to block direct off-host networking. Global config only; invalid values are treated as `deny`. See [Network policy](/reference/security#network-policy). |
+| `windowsSandbox` | Run shell/test commands under Agav's Windows restricted-token helper, confining writes to the workspace and a sandbox temp directory. Reads and networking are not confined; execution is refused under `sandboxNetwork: "deny"`. Default `true` on Windows, `false` elsewhere; global config only. A missing helper blocks execution with the default `sandboxRequired: true`, not startup. See [Restricted-token sandbox](/reference/security#restricted-token-sandbox). |
 | `allowedTools` | Tool names or scoped patterns that can run without confirmation |
 | `search` | When `true`, enable the `web_search` tool (off by default). Also settable per session with `--search`. See [Built-in tools](/features/built-in-tools). |
 | `systemPrompt` | Additional project instructions |
@@ -151,6 +150,7 @@ To prevent a malicious repository from redirecting API requests or escalating pe
 - **Endpoint overrides:** `openaiBaseURL`, `openaiHeaders`, `ollamaEndpoint`, `ollamaHost`, `ollamaPort`
 - **API keys:** `anthropicApiKey`, `openaiApiKey`, `openrouterApiKey`, `nvidiaApiKey`, `deepseekApiKey`, `geminiApiKey`, `ollamaApiKey`
 - **Permission escalation:** `permissionMode`
+- **Sandbox policy:** `sandboxRequired`, `sandboxNetwork`, `windowsSandbox`
 - **Unattended automation:** `backgroundAutomation`
 
 These fields are stripped from `./.agav/config.json` before it is merged, so a value placed there is **silently ignored** rather than applied — Agav does not warn about it. This ensures that cloning an untrusted repository cannot silently redirect your credentials to a third-party server or bypass tool confirmations. Set these fields in global config, via environment variables, or with `-c` instead.

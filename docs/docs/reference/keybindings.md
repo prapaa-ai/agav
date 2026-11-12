@@ -36,7 +36,7 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Cut prompt text | `Ctrl+X` |
 | Open the request queue when requests are queued; otherwise exit while idle with an empty prompt | `Ctrl+Q` |
 
-For worker-owned turns, **Ctrl+D** closes the UI without cancelling or answering pending consent. Enable `backgroundJobsEnabled: true` in global config before starting the task. The shortcut works as soon as the worker is ready; it does not require the bold cyan detach hint, which appears after 30 seconds if the turn is still working and worker-owned. The hint disappears two seconds after your first keypress or mouse movement while it is visible, without disabling the shortcut. Return with `agav --resume <session-id>` or `/resume`. Ctrl+X cuts prompt text; Ctrl+Q manages the queue/idle exit. Neither is detach. See [Detached sessions](/features/detached-sessions) for requirements and cancellation semantics.
+For worker-owned turns, **Ctrl+D** closes the UI without cancelling or answering pending consent. Enable `backgroundJobsEnabled: true` in global config before starting the task. The shortcut works as soon as the worker is ready. With `backgroundJobsEnabled` enabled, randomized status-bar tips can show a detach hint using your configured chord; the shortcut does not depend on the hint being visible. Return with `agav --resume <session-id>` or `/resume`. Ctrl+X cuts prompt text; Ctrl+Q manages the queue/idle exit. Neither is detach. See [Detached sessions](/features/detached-sessions) for requirements and cancellation semantics.
 
 ## Cancel versus exit
 
@@ -73,9 +73,11 @@ Names are case-insensitive. `esc`, `return`, and `cmd` normalize to `escape`, `e
 
 ## Pause and intervene mid-turn
 
-While the agent is streaming or running tools, press **Ctrl+B** (or **Alt+P**) to pause generation, and press it again to resume. Pausing does not cancel the turn — it holds the loop so you can read what has happened so far.
+For foreground in-process turns, while the agent is streaming or running tools, press **Ctrl+B** (or **Alt+P**) to pause generation, and press it again to resume. Pausing does not cancel the turn — it holds the loop so you can read what has happened so far.
 
 While paused you can also **redirect the task**: type a message and press Enter. Agav cancels the paused request, waits for its pending state to clear, and starts a new request with your direction in the same conversation. This is distinct from **Esc**, which cancels the current turn while keeping Agav open, and **Ctrl+C**, which exits when no Agav text selection is active.
+
+**Worker-owned turns do not support pause**, including after resume. Use `/steer <directive>` to redirect an attached worker at its next safe step instead; see [Planning and Steering](/workflows/planning-and-steering#steering).
 
 The default binding is `["ctrl+b", "meta+p"]`; override it like any other action, for example:
 

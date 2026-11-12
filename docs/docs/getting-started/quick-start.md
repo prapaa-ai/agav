@@ -63,6 +63,8 @@ If Agav activates a skill or delegates work to subagents, their live progress ap
 
 Markdown links in terminal replies display as `label (URL)`, with a bare URL shown only once. Long URLs wrap with the terminal width, and detected URL fragments remain clickable across wrapped lines. Click the visible URL to open it in a browser where one is available. On a remote or headless terminal, copy the URL into your local browser if opening it is unavailable; see [Troubleshooting](/reference/troubleshooting).
 
+Terminal replies also render a supported subset of LaTeX math as Unicode: for example, `$E = mc^2$` becomes `E = mc²`. Inline `$...$` and `\(...\)`, and display `$$...$$` and `\[...\]`, support common Greek letters, operators, fractions, roots, and superscripts/subscripts. This is not full LaTeX typesetting: unsupported formulas remain literal, and code spans, code blocks, and link destinations are left unchanged.
+
 ## 5. Make one controlled change
 
 Exit Agav, then restart without `--deny-writes`:
