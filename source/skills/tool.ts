@@ -5,6 +5,8 @@ import type { AgentEvent, ConfirmResult } from "../agent/loop.js";
 import type { PermissionMode, EffortLevel, AgavConfig } from "../config/config.js";
 import { getSkill } from "./loader.js";
 import { executeSkill } from "./executor.js";
+> **Note:** `fetch_url` blocks requests to loopback, private, link-local, and cloud-metadata addresses (SSRF protection), including after redirects. `GET` and `HEAD` requests are auto-approved; `POST`, `PUT`, `DELETE`, and `PATCH` prompt for confirmation.
+
 
 interface SkillToolDeps {
   provider: LLMProvider;
