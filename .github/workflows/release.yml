@@ -486,7 +486,7 @@ jobs:
       # The detached .sha256/.sig files are not attested — they are not the
       # artifact, and the checksum is redundant with the attested digest.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/agav-${{ matrix.target }}${{ matrix.ext }}
