@@ -205,7 +205,7 @@ The consent (definition hash, cwd, permission mode, capabilities, env names) is 
 
 Consent for a tool name never covers an agent's sub-tool calls.
 
-The run is created only after consent. Its runner is launched as a supervised background job (`wf-run-<runId>-<attempt>`) that runs `agav --internal-workflow-runner <runId>`. At most `maxConcurrentWorkflowRuns` runners (default 2, separate from the background-job pool) execute at once; further runs wait as `queued` and are admitted first-in, first-out. Non-Windows hosts without the native process helper refuse to launch. Windows uses the background-jobs fallback with a warning: runners and job nodes run unsandboxed, with no guaranteed Job Object ownership or descendant cleanup.
+The run is created only after consent. Its runner is launched as a supervised background job (`wf-run-<runId>-<attempt>`) that runs `agav --internal-workflow-runner <runId>`. At most `maxConcurrentWorkflowRuns` runners (default 2, separate from the background-job pool) execute at once; further runs wait as `queued` and are admitted first-in, first-out. Non-Windows hosts without the native process helper refuse to launch. Windows uses the background-jobs fallback with a warning: runners and job nodes run outside the shell sandbox, with no guaranteed Job Object ownership or descendant cleanup. The native restricted-token helper applies to shell/test tool calls, not to these background processes.
 
 ### Run and node states
 
@@ -247,7 +247,8 @@ Agent sub-tool calls are confirmed as follows:
 
 - Read-only tools are approved.
 - Destructive commands, `deny-writes` and an `allowedTools` restriction refuse the call.
-- `auto-accept` approves the call.
+- `fetch_url` mutations require explicit approval even with `auto-accept` or a tool allowlist; without a confirmation handler they are refused.
+- `auto-accept` approves other permitted calls.
 - Otherwise an `agent_tool_consent` decision is filed and awaited **in-process**, because the agent's conversation cannot be parked.
 
 ## Commands
@@ -332,7 +333,7 @@ The runner uses the consent's permission mode, narrowed by `policies.permissionM
 - Approval nodes and inbox decisions wait forever: there is no decision timeout or expiry. `maxRuntimeSeconds` still applies while the runner is live.
 - An agent sub-tool consent is awaited in-process by the live runner. The agent's conversation is not checkpointed while it waits.
 - `policies.maxConcurrency` is stored but ignored: nodes execute one at a time in dependency order.
-- Windows background runs use an unsandboxed fallback; no native Job Object helper is bundled, so process-tree ownership and descendant cleanup are not guaranteed. Docker is the only supported Windows sandbox override for explicit `run_command` calls (`sandbox: docker`), not for runners or job nodes. Consent and `sandboxRequired` remain enforced: fresh job starts refuse under `sandboxRequired`, and unsandboxed `run_command` calls refuse.
+- Windows background runners and job nodes remain outside the sandbox, without guaranteed process-tree ownership or descendant cleanup. The native Windows restricted-token helper protects `run_command` and `run_tests`, not these background processes; Docker is also available as a `run_command` override. `windowsSandbox` and `sandboxRequired` default to `true` on Windows. Consent and `sandboxRequired` remain enforced: fresh job-node starts and unsandboxed shell/test calls are refused when the requirement is enabled.
 - Interrupted tool nodes are never replayed automatically. Decide their `uncertain_tool` decision after you have inspected any external effects.
 - Terminal runs cannot be resumed or rewound. Use re-run (TUI `R`) or a new `run`.
 

@@ -14,12 +14,13 @@ import {
   createSteerQueue,
   drainSteers,
   queueSteer,
+  queueSubagentSteer,
   steerCommand,
 } from "../commands/steer.js";
 import type { CommandContext } from "../commands/types.js";
 import type { LLMProvider, Message, StreamEvent, StreamParams } from "../providers/types.js";
 import { ToolRegistry } from "../tools/registry.js";
-import { createSubagentTool } from "../tools/subagent.js";
+import { createSubagentTool, type SubagentToolDeps } from "../tools/subagent.js";
 import type { ToolDefinition } from "../tools/types.js";
 
 function deferred() {
@@ -35,7 +36,10 @@ function userTexts(messages: Message[]): string[] {
 }
 
 /** Each child gets its own gate and provider history, even with a shared provider. */
-function harness(onSteerApplied = vi.fn<(id: string, title: string, directives: string[]) => void>()) {
+function harness(
+  onSteerApplied = vi.fn<(id: string, title: string, directives: string[]) => void>(),
+  drainExternalSteers?: SubagentToolDeps["drainSteers"],
+) {
   const gates = new Map<string, { entered: ReturnType<typeof deferred>; release: ReturnType<typeof deferred> }>();
   const calls = new Map<string, StreamParams[]>();
   const acknowledgementsAtRequest = new Map<string, number[]>();
@@ -73,7 +77,7 @@ function harness(onSteerApplied = vi.fn<(id: string, title: string, directives: 
       acknowledgements.push(onSteerApplied.mock.calls.filter((call) => call[1] === child).length);
       acknowledgementsAtRequest.set(child, acknowledgements);
       if (history.length <= 2) {
-        // A second tool round checks that a drained broadcast is not repeated.
+        // A second tool round checks that a drained directive is not repeated.
         const toolCallId = `${child}-${history.length}`;
         yield { type: "tool_call_start", toolCallId, toolName: "gate_tool" };
         yield { type: "tool_call_delta", toolCallId, argsJson: JSON.stringify({ child }) };
@@ -97,6 +101,7 @@ function harness(onSteerApplied = vi.fn<(id: string, title: string, directives: 
     onProgressUpdate: vi.fn(),
     onTokenUsage: vi.fn(),
     onSteerApplied,
+    drainSteers: drainExternalSteers,
     getSignal: () => undefined,
   });
 
@@ -123,14 +128,16 @@ afterEach(() => {
 });
 
 describe("subagent mid-turn steering with the real agent loop", () => {
-  it("broadcasts independently to parallel children before their next request and acknowledges each named child once", async () => {
+  it("delivers only to addressed parallel children before their next request and acknowledges each named child once", async () => {
     const h = harness();
     const a = h.start("Analyze logs");
     const b = h.start("Read config");
     await Promise.all([a.entered.promise, b.entered.promise]);
 
-    queueSteer("focus on the parser");
-    queueSteer("keep the report concise");
+    queueSteer("main only");
+    queueSubagentSteer("sa-1", "focus on the parser");
+    queueSubagentSteer("sa-1", "keep the report concise");
+    queueSubagentSteer("sa-2", "review config only");
     expect(h.onSteerApplied).not.toHaveBeenCalled();
     expect(h.calls.get("Analyze logs")).toHaveLength(1);
     expect(h.calls.get("Read config")).toHaveLength(1);
@@ -140,14 +147,14 @@ describe("subagent mid-turn steering with the real agent loop", () => {
     expect(h.onSteerApplied.mock.calls).toEqual([
       ["sa-1", "Analyze logs", ["focus on the parser", "keep the report concise"]],
     ]);
-    // Neither the first child's drain nor the main drain consumes child B's copy.
-    expect(drainSteers()).toEqual(["focus on the parser", "keep the report concise"]);
+    // Neither the first child nor the main drain consumes child B's directives.
+    expect(drainSteers()).toEqual(["main only"]);
     expect(drainSteers()).toEqual([]);
     b.release.resolve();
     expect(await b.finished).toEqual({ output: "Read config finished", isError: false });
     expect(h.onSteerApplied.mock.calls).toEqual([
       ["sa-1", "Analyze logs", ["focus on the parser", "keep the report concise"]],
-      ["sa-2", "Read config", ["focus on the parser", "keep the report concise"]],
+      ["sa-2", "Read config", ["review config only"]],
     ]);
 
     for (const child of ["Analyze logs", "Read config"]) {
@@ -157,10 +164,9 @@ describe("subagent mid-turn steering with the real agent loop", () => {
       expect(userTexts(requests[0]!.messages)).toEqual([child]);
       for (const request of requests.slice(1)) {
         expect(userTexts(request.messages).filter((text) => text.startsWith(STEER_DIRECTIVE_PREFIX)))
-          .toEqual([
-            STEER_DIRECTIVE_PREFIX + "focus on the parser",
-            STEER_DIRECTIVE_PREFIX + "keep the report concise",
-          ]);
+          .toEqual((child === "Analyze logs"
+            ? ["focus on the parser", "keep the report concise"]
+            : ["review config only"]).map((text) => STEER_DIRECTIVE_PREFIX + text));
       }
       // Steering must not split tool_use from its matching tool_result.
       const messages = requests[1]!.messages;
@@ -170,12 +176,12 @@ describe("subagent mid-turn steering with the real agent loop", () => {
         expect.objectContaining({ type: "tool_result", toolCallId: `${child}-1` }),
       ]);
       expect(messages[useIndex + 2]!.content[0]).toEqual({
-        type: "text", text: STEER_DIRECTIVE_PREFIX + "focus on the parser",
+        type: "text", text: STEER_DIRECTIVE_PREFIX + (child === "Analyze logs" ? "focus on the parser" : "review config only"),
       });
     }
   });
 
-  it("does not acknowledge completed or cancelled children, or replay their broadcasts to later children", async () => {
+  it("does not acknowledge completed or cancelled children, or replay their directives to later children", async () => {
     const h = harness();
     const completed = h.start("Analyze completed task");
     await completed.entered.promise;
@@ -184,12 +190,14 @@ describe("subagent mid-turn steering with the real agent loop", () => {
 
     const cancelled = h.start("Analyze cancelled task");
     await cancelled.entered.promise;
-    queueSteer("pending at cancellation");
+    queueSubagentSteer("sa-2", "pending at cancellation");
     h.tool.cancelSubagent("sa-2");
     cancelled.release.resolve();
     expect(await cancelled.finished).toEqual({ output: "Subagent cancelled.", isError: true });
     expect(h.calls.get("Analyze cancelled task")).toHaveLength(1);
 
+    expect(() => queueSubagentSteer("sa-1", "too late")).toThrow("not active");
+    expect(() => queueSubagentSteer("sa-2", "too late")).toThrow("not active");
     queueSteer("after both children stopped");
     const fresh = h.start("Analyze fresh task");
     await fresh.entered.promise;
@@ -199,10 +207,10 @@ describe("subagent mid-turn steering with the real agent loop", () => {
     for (const request of h.calls.get("Analyze fresh task")!) {
       expect(userTexts(request.messages)).toEqual(["Analyze fresh task"]);
     }
-    expect(drainSteers()).toEqual(["pending at cancellation", "after both children stopped"]);
+    expect(drainSteers()).toEqual(["after both children stopped"]);
   });
 
-  it("inherits active startup steers without acknowledging or draining historical queued broadcasts", async () => {
+  it("does not inherit active main steers or historical queued main directives", async () => {
     await steerCommand.execute("Use the project conventions", {} as CommandContext);
     queueSteer("historical broadcast only");
     const h = harness();
@@ -210,13 +218,13 @@ describe("subagent mid-turn steering with the real agent loop", () => {
     await child.entered.promise;
 
     const firstRequest = h.calls.get("Analyze startup context")![0]!;
-    expect(firstRequest.systemPrompt).toContain("Active steering directives");
-    expect(firstRequest.systemPrompt).toContain("Use the project conventions");
+    expect(firstRequest.systemPrompt).not.toContain("Active steering directives");
+    expect(firstRequest.systemPrompt).not.toContain("Use the project conventions");
     expect(firstRequest.systemPrompt).not.toContain("historical broadcast only");
     expect(userTexts(firstRequest.messages)).toEqual(["Analyze startup context"]);
     expect(h.onSteerApplied).not.toHaveBeenCalled();
 
-    queueSteer("new live direction");
+    queueSubagentSteer("sa-1", "new live direction");
     child.release.resolve();
     expect((await child.finished).isError).toBe(false);
     expect(h.onSteerApplied.mock.calls).toEqual([
@@ -226,79 +234,94 @@ describe("subagent mid-turn steering with the real agent loop", () => {
       "Analyze startup context", STEER_DIRECTIVE_PREFIX + "new live direction",
     ]);
     expect(drainSteers()).toEqual([
-      "Use the project conventions", "historical broadcast only", "new live direction",
+      "Use the project conventions", "historical broadcast only",
     ]);
   });
 
-  it("clearSteers cancels pending broadcasts in every child queue without disabling future delivery", async () => {
+  it("awaits worker child drains and combines them with only that child's local queue", async () => {
+    const queues = new Map<string, string[]>();
+    const drain = vi.fn(async (id: string) => {
+      await Promise.resolve();
+      return queues.get(id)?.splice(0) ?? [];
+    });
+    const h = harness(undefined, drain);
+    const a = h.start("Analyze worker logs");
+    const b = h.start("Read worker config");
+    await Promise.all([a.entered.promise, b.entered.promise]);
+    queues.set("sa-1", ["worker first child"]);
+    queues.set("sa-2", ["worker second child"]);
+    queueSubagentSteer("sa-1", "local first child");
+    queueSteer("main only");
+    a.release.resolve();
+    b.release.resolve();
+    expect((await a.finished).isError).toBe(false);
+    expect((await b.finished).isError).toBe(false);
+    expect(h.onSteerApplied.mock.calls).toEqual(expect.arrayContaining([
+      ["sa-1", "Analyze worker logs", ["worker first child", "local first child"]],
+      ["sa-2", "Read worker config", ["worker second child"]],
+    ]));
+    expect(h.onSteerApplied).toHaveBeenCalledTimes(2);
+    expect(h.acknowledgementsAtRequest.get("Analyze worker logs")).toEqual([0, 1, 1]);
+    expect(h.acknowledgementsAtRequest.get("Read worker config")).toEqual([0, 1, 1]);
+    expect(new Set(drain.mock.calls.map(([id]) => id))).toEqual(new Set(["sa-1", "sa-2"]));
+    expect(drainSteers()).toEqual(["main only"]);
+  });
+
+  it("clearing main steers leaves child deliveries intact", async () => {
     const h = harness();
     const a = h.start("Analyze first task");
     const b = h.start("Analyze second task");
     await Promise.all([a.entered.promise, b.entered.promise]);
-    queueSteer("discard this pending directive");
+    queueSteer("discard main directive");
+    queueSubagentSteer("sa-1", "first child only");
     clearSteers();
     expect(drainSteers()).toEqual([]);
-
     a.release.resolve();
-    expect((await a.finished).isError).toBe(false);
-    expect(h.onSteerApplied).not.toHaveBeenCalled();
-    queueSteer("replacement directive");
     b.release.resolve();
+    expect((await a.finished).isError).toBe(false);
     expect((await b.finished).isError).toBe(false);
-    expect(h.onSteerApplied.mock.calls).toEqual([
-      ["sa-2", "Analyze second task", ["replacement directive"]],
-    ]);
-    for (const requests of h.calls.values()) {
-      for (const request of requests) {
-        expect(userTexts(request.messages).join("\n")).not.toContain("discard this pending directive");
-      }
-    }
-    expect(drainSteers()).toEqual(["replacement directive"]);
+    expect(h.onSteerApplied.mock.calls).toEqual([["sa-1", "Analyze first task", ["first child only"]]]);
   });
 });
 
 describe("independent steer queue lifecycle", () => {
-  it("starts empty, drains independently in order, and unregisters on dispose", () => {
+  it("isolates main, named children and anonymous queues, and unregisters on dispose", () => {
     queueSteer("before registration");
-    const a = createSteerQueue();
-    const b = createSteerQueue();
+    const a = createSteerQueue("a");
+    const b = createSteerQueue("b");
+    const anonymous = createSteerQueue();
     try {
       expect(a.drain()).toEqual([]);
-      expect(b.drain()).toEqual([]);
-      queueSteer("one");
-      queueSteer("two");
+      queueSubagentSteer("a", "one");
+      queueSubagentSteer("a", "two");
+      queueSubagentSteer("b", "sibling only");
+      queueSteer("main only");
       expect(a.drain()).toEqual(["one", "two"]);
       expect(a.drain()).toEqual([]);
-      expect(b.drain()).toEqual(["one", "two"]);
-      expect(drainSteers()).toEqual(["before registration", "one", "two"]);
+      expect(b.drain()).toEqual(["sibling only"]);
+      expect(anonymous.drain()).toEqual([]);
+      expect(drainSteers()).toEqual(["before registration", "main only"]);
+      queueSubagentSteer("a", "discard on dispose");
       a.dispose();
       a.dispose();
-      queueSteer("after disposal");
       expect(a.drain()).toEqual([]);
-      expect(b.drain()).toEqual(["after disposal"]);
-      expect(drainSteers()).toEqual(["after disposal"]);
-    } finally {
-      a.dispose();
-      b.dispose();
-    }
+      expect(() => queueSubagentSteer("a", "too late")).toThrow("not active");
+      expect(() => queueSubagentSteer("missing", "unknown")).toThrow("not active");
+      queueSubagentSteer("b", "still active");
+      clearSteers();
+      expect(b.drain()).toEqual(["still active"]);
+    } finally { a.dispose(); b.dispose(); anonymous.dispose(); }
   });
 
-  it("clears undrained directives in all registered queues and keeps them subscribed", () => {
-    const a = createSteerQueue();
-    const b = createSteerQueue();
+  it("allows an ID to be registered again without an old disposer unregistering it", () => {
+    const old = createSteerQueue("reused");
+    old.dispose();
+    const fresh = createSteerQueue("reused");
     try {
-      queueSteer("cancelled broadcast");
-      clearSteers();
-      expect(a.drain()).toEqual([]);
-      expect(b.drain()).toEqual([]);
-      expect(drainSteers()).toEqual([]);
-      queueSteer("next broadcast");
-      expect(b.drain()).toEqual(["next broadcast"]);
-      expect(a.drain()).toEqual(["next broadcast"]);
-      expect(drainSteers()).toEqual(["next broadcast"]);
-    } finally {
-      a.dispose();
-      b.dispose();
-    }
+      old.dispose();
+      queueSubagentSteer("reused", "fresh only");
+      expect(fresh.drain()).toEqual(["fresh only"]);
+      expect(old.drain()).toEqual([]);
+    } finally { fresh.dispose(); }
   });
 });

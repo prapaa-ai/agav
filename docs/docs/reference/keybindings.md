@@ -11,7 +11,7 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Action | Default |
 | --- | --- |
 | Cancel current turn / focused subagent, or dismiss active UI | `Esc` |
-| Expand tool detail | `Ctrl+D` |
+| Expand tool detail | `Ctrl+K Ctrl+E` |
 | Plan detail panel | `Ctrl+G` |
 | Toggle thinking text | `Ctrl+T` |
 | Toggle compaction summary | `Ctrl+O` |
@@ -32,13 +32,17 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Command palette | `Ctrl+K Ctrl+P` |
 | Show keybindings | `Ctrl+K Ctrl+S` |
 | Clear screen | `Ctrl+L` |
-| Exit while idle with an empty prompt | `Ctrl+Q` |
+| Detach a worker-owned session, including at approval prompts (`detachSession`) | `Ctrl+D` |
+| Cut prompt text | `Ctrl+X` |
+| Open the request queue when requests are queued; otherwise exit while idle with an empty prompt | `Ctrl+Q` |
+
+For worker-owned turns, **Ctrl+D** closes the UI without cancelling or answering pending consent. Enable `backgroundJobsEnabled: true` in global config before starting the task. The shortcut works as soon as the worker is ready. With `backgroundJobsEnabled` enabled, randomized status-bar tips can show a detach hint using your configured chord; the shortcut does not depend on the hint being visible. Return with `agav --resume <session-id>` or `/resume`. Ctrl+X cuts prompt text; Ctrl+Q manages the queue/idle exit. Neither is detach. See [Detached sessions](/features/detached-sessions) for requirements and cancellation semantics.
 
 ## Cancel versus exit
 
-Press **Esc** to cancel the active turn and stay in Agav. In an actual `subagent` detail view it cancels only that worker; from the overview it cancels the whole turn. Skill and named-agent progress entries share that UI but have no individual focused-cancel handler: return to the overview with Tab before cancelling their parent turn. Manual-only slash-command skills receive no turn cancellation signal. An open picker or preview handles Esc locally. At a tool confirmation, Esc means **No** for that tool call, not cancel the whole turn.
+Press **Esc** to cancel the active turn and stay in Agav. For a worker-owned turn, this writes a durable, generation-bound cancellation request; it does not synchronously kill the worker or undo side effects. See [Detached sessions](/features/detached-sessions#detach-versus-cancellation). In an actual `subagent` detail view it cancels only that worker; from the overview it cancels the whole turn. Skill and named-agent progress entries share that UI but have no individual focused-cancel handler: return to the overview with Tab before cancelling their parent turn. Manual-only slash-command skills receive no turn cancellation signal. An open picker or preview handles Esc locally. At a tool confirmation, Esc means **No** for that tool call, not cancel the whole turn.
 
-Press **Ctrl+C** with no text selected in Agav to exit, whether idle or busy. If an Agav output selection is active, Ctrl+C copies it and keeps Agav open; clear the selection before pressing Ctrl+C to exit. **Cmd+C** on macOS and **Ctrl+Shift+C** where supported are copy shortcuts, not exit shortcuts. Terminal-native copy behavior takes precedence when your terminal intercepts a shortcut.
+Press **Ctrl+C** with no text selected in Agav to exit, whether idle or busy. Like `/exit`, this requests cancellation of a selected live worker, unlike `/detach` or the detach chord. Switching sessions or unmounting the presentation does not cancel it. If an Agav output selection is active, Ctrl+C copies it and keeps Agav open; clear the selection before pressing Ctrl+C to exit. **Cmd+C** on macOS and **Ctrl+Shift+C** where supported are copy shortcuts, not exit shortcuts. Terminal-native copy behavior takes precedence when your terminal intercepts a shortcut.
 
 The `cancel` action is configurable. Ctrl+C is also handled by the terminal UI before configurable actions, so rebinding `interrupt` does not turn Ctrl+C into a stay-in-session cancel shortcut. Use Esc for that.
 
@@ -59,6 +63,7 @@ Values can be a string or an array. Chords separate strokes with spaces:
 ```json
 {
   "newline": ["meta+enter"],
+  "detachSession": ["ctrl+d"],
   "openCommandPalette": ["ctrl+k ctrl+p"],
   "exit": ["ctrl+q", "ctrl+k ctrl+x"]
 }
@@ -68,9 +73,11 @@ Names are case-insensitive. `esc`, `return`, and `cmd` normalize to `escape`, `e
 
 ## Pause and intervene mid-turn
 
-While the agent is streaming or running tools, press **Ctrl+B** (or **Alt+P**) to pause generation, and press it again to resume. Pausing does not cancel the turn — it holds the loop so you can read what has happened so far.
+For foreground in-process turns, while the agent is streaming or running tools, press **Ctrl+B** (or **Alt+P**) to pause generation, and press it again to resume. Pausing does not cancel the turn — it holds the loop so you can read what has happened so far.
 
 While paused you can also **redirect the task**: type a message and press Enter. Agav cancels the paused request, waits for its pending state to clear, and starts a new request with your direction in the same conversation. This is distinct from **Esc**, which cancels the current turn while keeping Agav open, and **Ctrl+C**, which exits when no Agav text selection is active.
+
+**Worker-owned turns do not support pause**, including after resume. Use `/steer <directive>` to redirect an attached worker at its next safe step instead; see [Planning and Steering](/workflows/planning-and-steering#steering).
 
 The default binding is `["ctrl+b", "meta+p"]`; override it like any other action, for example:
 

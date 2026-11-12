@@ -10,24 +10,34 @@ let activeSteers: string[] = [];
  */
 let steerQueue: string[] = [];
 
-const childSteerQueues = new Set<string[]>();
+const childSteerQueues = new Map<string, string[]>();
 
-/** Independent delivery queue: children never consume the parent's directives. */
-export function createSteerQueue(): { drain: () => string[]; dispose: () => void } {
+/** Independent delivery queue, addressable only by this child's ID. */
+export function createSteerQueue(id?: string): { drain: () => string[]; dispose: () => void } {
   const queue: string[] = [];
-  childSteerQueues.add(queue);
+  if (id !== undefined) {
+    if (childSteerQueues.has(id)) throw new Error(`Subagent ${id} is already active.`);
+    childSteerQueues.set(id, queue);
+  }
   return {
     drain: () => queue.splice(0),
     dispose: () => {
-      childSteerQueues.delete(queue);
+      if (id !== undefined && childSteerQueues.get(id) === queue) childSteerQueues.delete(id);
       queue.length = 0;
     },
   };
 }
 
+/** Queue a directive for the main agent only. */
 export function queueSteer(directive: string): void {
   steerQueue.push(directive);
-  for (const queue of childSteerQueues) queue.push(directive);
+}
+
+/** Queue a directive for one live child, never the main agent or siblings. */
+export function queueSubagentSteer(id: string, directive: string): void {
+  const queue = childSteerQueues.get(id);
+  if (!queue) throw new Error(`Subagent ${id} is not active.`);
+  queue.push(directive);
 }
 
 /** Return queued mid-turn directives in arrival order and empty the queue. */
@@ -45,7 +55,6 @@ export function getActiveSteers(): string[] {
 export function clearSteers(): void {
   activeSteers = [];
   steerQueue = [];
-  for (const queue of childSteerQueues) queue.length = 0;
 }
 
 export function formatSteersForPrompt(): string {
@@ -60,9 +69,19 @@ export function formatSteersForPrompt(): string {
 export const steerCommand: SlashCommand = {
   name: "steer",
   description: "Add context or direction to guide the agent",
-  usage: "Usage: /steer <directive>\n\n  /steer be concise       Add a steering directive\n  /steer list             Show active steers\n  /steer remove <N>       Remove a specific steer\n  /steer clear            Remove all steers\n\nWorks while the agent is running — the directive is delivered to it before\nits next step. Steers also persist and are injected into every subsequent turn.",
+  argumentHint: "<directive>",
+  usage: "Usage: /steer <directive>\n\n  /steer be concise       Add a steering directive\n  /steer list             Show active steers\n  /steer remove <N>       Remove a specific steer\n  /steer clear            Remove all steers\n\nTargets the main agent, or only the inspected subagent while its inspector is open.\nWorks during foreground and background-worker turns, before the next safe step.\nMain-agent steers persist for subsequent main turns; they are not inherited by children.\nList/remove/clear management is unavailable in a worker or subagent inspector.",
   async execute(args: string, contextArg?: CommandContext): Promise<CommandResult> {
     const trimmed = args.trim();
+    const targetId = contextArg?.steerTargetId;
+    const workerAttached = contextArg?.isWorkerAttached?.();
+    const management = !trimmed || trimmed === "list" || trimmed === "clear" || trimmed.startsWith("remove ");
+    if (management && (targetId !== undefined || workerAttached)) {
+      return {
+        type: "message",
+        text: "Steer management (list/clear/remove) is not supported in a background worker or subagent inspector.",
+      };
+    }
 
     if (!trimmed || trimmed === "list") {
       if (activeSteers.length === 0) {
@@ -90,8 +109,24 @@ export const steerCommand: SlashCommand = {
       return { type: "message", text: `Removed steer: "${removed}"` };
     }
 
-    activeSteers.push(trimmed);
-    queueSteer(trimmed);
+    try {
+      if (contextArg?.steer) {
+        await contextArg.steer(trimmed);
+      } else if (workerAttached) {
+        return { type: "message", text: "Steering delivery is not available for this background worker." };
+      } else if (targetId !== undefined) {
+        queueSubagentSteer(targetId, trimmed);
+      } else {
+        queueSteer(trimmed);
+      }
+    } catch (error) {
+      return { type: "message", text: `Failed to steer: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    if (targetId === undefined) activeSteers.push(trimmed);
+
+    if (targetId !== undefined) {
+      return { type: "message", text: `Steer added for subagent ${targetId}: "${trimmed}"\nWill be delivered before it continues.` };
+    }
 
     const context = contextArg as CommandContext | undefined;
     if (context?.isLoading) {

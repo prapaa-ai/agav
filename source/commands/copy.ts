@@ -5,6 +5,7 @@ import { writeClipboard } from "../ink/termio/clipboard.js";
 export const copyCommand: SlashCommand = {
   name: "copy",
   description: "Copy an assistant response to the clipboard",
+  argumentHint: "[N]",
   usage: "Usage: /copy [N]\n\nCopies the most recent assistant response to the clipboard. Use an optional number N to copy the Nth-most-recent assistant response.",
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const messages = context.conversation.getMessages();

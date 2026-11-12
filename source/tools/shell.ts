@@ -5,6 +5,7 @@ import {
   runInSandbox,
   detectSandboxBackend,
   getAvailableSandboxOverrides,
+  getSandboxNetwork,
   isDestructiveCommand,
   isSandboxRequired,
   requireSandbox,
@@ -151,7 +152,7 @@ export const shellTool: ToolDefinition = {
         },
         sandbox: {
           type: "string",
-          enum: ["seatbelt", "bubblewrap", "docker", "none"],
+          enum: ["seatbelt", "bubblewrap", "docker", "windows", "none"],
           description: "Sandbox backend override. Omit for auto-detection. 'none' requires the user to start Agav with AGAV_NO_SANDBOX=1; tool confirmation does not enable bypass.",
         },
       },
@@ -224,6 +225,15 @@ export function createShellTool(): ToolDefinition {
     + (overrides.includes("none")
       ? "Explicit unsandboxed overrides are enabled by the user."
       : "Do not request sandbox: none; explicit bypass is not authorized.")
+    + ((backend === "seatbelt" || backend === "bubblewrap") && getSandboxNetwork() === "deny"
+      ? (backend === "bubblewrap"
+        ? " Direct off-host networking is blocked. Linux uses a fresh network namespace: only loopback services started within the same invocation are reachable, not host services or other invocations. Reachable Unix sockets remain trusted channels and may expose local relays. Commands needing host networking require the user to allow it."
+        : " Direct off-host networking is blocked. macOS host-local TCP/IP and Unix sockets remain allowed as trusted channels; local relays may forward traffic, so this is not an absolute egress guarantee. Commands needing direct internet access require the user to allow networking.")
+      : "")
+    + (backend === "windows"
+      ? " The Windows sandbox confines file writes to the workspace and a sandbox temp directory (TEMP/TMP); it does not confine reads or networking"
+        + (getSandboxNetwork() === "deny" ? ", so commands are refused while the user's network policy is deny." : ".")
+      : "")
     + (overrides.includes("docker") ? " Docker overrides require a running Docker daemon." : "");
   return { ...shellTool, schema };
 }

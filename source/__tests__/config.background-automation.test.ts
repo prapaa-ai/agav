@@ -6,6 +6,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * must not be able to set them (PROJECT_CONFIG_DENY).
  */
 
+vi.mock("node:os", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:os")>(),
+  platform: vi.fn(() => "darwin"),
+}));
+
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
@@ -23,7 +28,7 @@ const fs = await import("node:fs/promises");
 const readFile = vi.mocked(fs.readFile);
 const writeFile = vi.mocked(fs.writeFile);
 
-const { homedir } = await import("node:os");
+const { homedir, platform } = await import("node:os");
 const { join } = await import("node:path");
 
 // Both paths end in `.agav/config.json`, so match them exactly.
@@ -44,6 +49,7 @@ describe("config: sandboxRequired / backgroundAutomation", () => {
     vi.resetModules();
     readFile.mockReset();
     writeFile.mockReset();
+    vi.mocked(platform).mockReturnValue("darwin");
   });
 
   it("defaults sandboxRequired=false and backgroundAutomation=on", async () => {
@@ -52,6 +58,43 @@ describe("config: sandboxRequired / backgroundAutomation", () => {
     const config = await loadConfig();
     expect(config.sandboxRequired).toBe(false);
     expect(config.backgroundAutomation).toBe("on");
+  });
+
+  it("enables and requires the Windows sandbox without a CLI flag", async () => {
+    vi.mocked(platform).mockReturnValue("win32");
+    mockConfigs(undefined, { sandboxRequired: false, windowsSandbox: false });
+    const { loadConfig } = await import("../config/config.js");
+    const config = await loadConfig();
+    expect(config.sandboxRequired).toBe(true);
+    expect(config.windowsSandbox).toBe(true);
+
+    const { applySandboxRequiredPolicy } = await import("../utils/sandbox-startup.js");
+    const setRequired = vi.fn();
+    const warn = vi.fn();
+    expect(applySandboxRequiredPolicy({
+      flagSet: false, configValue: config.sandboxRequired,
+      detectBackend: () => "none", setRequired, warn,
+    })).toBe(true);
+    expect(setRequired).toHaveBeenCalledWith(true);
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
+  it("honors explicit global opt-outs on Windows", async () => {
+    vi.mocked(platform).mockReturnValue("win32");
+    mockConfigs({ sandboxRequired: false, windowsSandbox: false }, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    const config = await loadConfig();
+    expect(config.sandboxRequired).toBe(false);
+    expect(config.windowsSandbox).toBe(false);
+  });
+
+  it("restores Windows defaults for invalid sandbox settings", async () => {
+    vi.mocked(platform).mockReturnValue("win32");
+    mockConfigs({ sandboxRequired: "yes", windowsSandbox: "yes" }, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    const config = await loadConfig();
+    expect(config.sandboxRequired).toBe(true);
+    expect(config.windowsSandbox).toBe(true);
   });
 
   it("honors both keys from the global config", async () => {
@@ -97,5 +140,77 @@ describe("config: sandboxRequired / backgroundAutomation", () => {
     const written = JSON.parse(String(writeFile.mock.calls[0]?.[1]));
     expect(written.template.sandboxRequired).toMatchObject({ type: "boolean", eg: false });
     expect(written.template.backgroundAutomation).toMatchObject({ type: "string", enum: ["on", "paused"] });
+  });
+
+  it("defaults sandboxNetwork=allow", async () => {
+    mockConfigs(undefined, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("allow");
+  });
+
+  it("honors sandboxNetwork=deny from the global config", async () => {
+    mockConfigs({ sandboxNetwork: "deny" }, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("deny");
+  });
+
+  it("honors sandboxNetwork=allow from the global config", async () => {
+    mockConfigs({ sandboxNetwork: "allow" }, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("allow");
+  });
+
+  it("ignores project config attempting to allow network egress", async () => {
+    mockConfigs({ sandboxNetwork: "deny" }, { sandboxNetwork: "allow" });
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("deny");
+  });
+
+  it("ignores project config attempting to deny network egress over the global policy", async () => {
+    mockConfigs({ sandboxNetwork: "allow" }, { sandboxNetwork: "deny" });
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("allow");
+  });
+
+  it("ignores project config setting sandboxNetwork even without a global value", async () => {
+    mockConfigs(undefined, { sandboxNetwork: "deny" });
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("allow");
+  });
+
+  it("fails closed to deny for invalid sandboxNetwork values", async () => {
+    mockConfigs({ sandboxNetwork: "yes" }, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).sandboxNetwork).toBe("deny");
+  });
+
+  it("documents sandboxNetwork in the project config template", async () => {
+    mockConfigs(undefined, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    await loadConfig();
+    const written = JSON.parse(String(writeFile.mock.calls[0]?.[1]));
+    expect(written.template.sandboxNetwork).toMatchObject({ type: "string", enum: ["deny", "allow"] });
+  });
+
+  it("defaults windowsSandbox=false and honors it from the global config", async () => {
+    mockConfigs(undefined, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).windowsSandbox).toBe(false);
+    vi.resetModules();
+    mockConfigs({ windowsSandbox: true }, undefined);
+    const fresh = await import("../config/config.js");
+    expect((await fresh.loadConfig()).windowsSandbox).toBe(true);
+  });
+
+  it("ignores project config setting windowsSandbox", async () => {
+    mockConfigs(undefined, { windowsSandbox: true });
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).windowsSandbox).toBe(false);
+  });
+
+  it("falls back to false for invalid windowsSandbox values", async () => {
+    mockConfigs({ windowsSandbox: "yes" }, undefined);
+    const { loadConfig } = await import("../config/config.js");
+    expect((await loadConfig()).windowsSandbox).toBe(false);
   });
 });

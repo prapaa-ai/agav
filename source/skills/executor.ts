@@ -31,6 +31,8 @@ interface SkillExecDeps {
   model: string;
   systemPrompt: string;
   permissionMode: PermissionMode;
+  /** Original background consent mode, independent of generic Always. */
+  backgroundPermissionMode?: PermissionMode;
   effort: EffortLevel;
   iterationsBudget: { remaining: number, total: number };
   /**
@@ -47,6 +49,7 @@ interface SkillExecDeps {
   signal?: AbortSignal;
   contextMessages?: import("../providers/types.js").Message[];
   onEvent?: (event: AgentEvent) => void;
+  providerIdleTimeout?: number;
 }
 
 function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolRegistry {
@@ -71,14 +74,6 @@ function buildSkillRegistry(parent: ToolRegistry, skill: SkillDefinition): ToolR
     const optional = [...allowed].filter((name) => OPTIONAL_TOOL_NAMES.has(name) && !disallowed.has(name));
     for (const tool of createBuiltinToolRegistry(optional).list()) {
       if (!parent.list().some((entry) => entry.schema.name === tool.schema.name)) child.registerBuiltin(tool);
-    }
-  }
-  // Only explicitly listed optional built-ins can be added beyond the parent set.
-  // Preserve parent overrides and let disallowed-tools take precedence.
-  if (allowed) {
-    const optional = [...allowed].filter((name) => OPTIONAL_TOOL_NAMES.has(name) && !disallowed.has(name));
-    for (const tool of createBuiltinToolRegistry(optional).list()) {
-      if (!parent.list().some((entry) => entry.schema.name === tool.schema.name)) child.register(tool);
     }
   }
   return child;
@@ -247,8 +242,11 @@ export async function executeSkill(
       signal: deps.signal,
       confirmTool: deps.confirmTool,
       permissionMode: effectiveMode,
+      backgroundPermissionMode: deps.backgroundPermissionMode === undefined ? undefined
+        : clampPermissionMode(deps.backgroundPermissionMode, deps.policy?.orgPermissionFloor),
       permissionFloor: deps.policy?.orgPermissionFloor,
       iterationsBudget: deps.iterationsBudget,
+      providerIdleTimeout: deps.providerIdleTimeout,
     });
 
     // Account for each usage event immediately, including tokens spent before

@@ -65,8 +65,13 @@ const HINTS = [
 
 let lastIndex = -1;
 
-export function getRandomHint(keybindings: Keybindings = DEFAULT_KEYBINDINGS, enhancedKeyboard = false): string {
+export function getRandomHint(keybindings: Keybindings = DEFAULT_KEYBINDINGS, enhancedKeyboard = false, backgroundJobsEnabled = false): string {
   const dynamicHints = [
+    // Detaching a running turn to the background requires the background-jobs
+    // subsystem, so only advertise it when that is enabled.
+    ...(backgroundJobsEnabled
+      ? [`${formatKeybinding(keybindings, "detachSession")} detaches a running turn — the worker continues; resume with /resume`]
+      : []),
     // Terminals without an enhanced keyboard protocol cannot send Shift+Enter, so
     // hinting it there would send the user chasing a key that does nothing.
     `${formatUsableKeybinding(keybindings, "newline", enhancedKeyboard)} for multiline input`,

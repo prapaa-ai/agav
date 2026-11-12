@@ -55,6 +55,7 @@ export class RetryProvider implements LLMProvider {
    * `provider.getContextWindow` on this wrapper, so dropping the method here
    * would silently disable context-window discovery for wrapped providers.
    */
+  readonly getThinkingPrefix?: LLMProvider["getThinkingPrefix"];
   readonly getContextWindow?: LLMProvider["getContextWindow"];
   readonly isContextWindowConfirmedMissing?: LLMProvider["isContextWindowConfirmedMissing"];
 
@@ -62,6 +63,9 @@ export class RetryProvider implements LLMProvider {
     this.inner = inner;
     this.name = inner.name;
     this.maxRetries = maxRetries;
+    if (inner.getThinkingPrefix) {
+      this.getThinkingPrefix = inner.getThinkingPrefix.bind(inner);
+    }
     if (inner.getContextWindow) {
       this.getContextWindow = inner.getContextWindow.bind(inner);
     }
@@ -78,12 +82,12 @@ export class RetryProvider implements LLMProvider {
       try {
         params.signal?.throwIfAborted();
         for await (const event of this.inner.stream(params)) {
-          // Replaying visible output or a partial tool call cannot be rolled back
+          // Replaying committed thinking, visible output, or a partial tool call cannot be rolled back
           // safely, especially when stdout is streamed in headless mode.
           if ((event.type === "text_delta" || event.type === "thinking_delta") && event.text.length > 0
             || event.type === "tool_call_start" || event.type === "tool_call_delta"
             || event.type === "tool_call_end" || event.type === "message_end"
-            || event.type === "error") {
+            || event.type === "thinking_block" || event.type === "error") {
             emittedContent = true;
           }
           yield event;
@@ -97,6 +101,7 @@ export class RetryProvider implements LLMProvider {
           yield {
             type: "retry",
             message: `Request failed (${lastError.message}). Retrying in ${Math.ceil(delay / 1000)}s... (attempt ${attempt + 1}/${this.maxRetries})`,
+            delayMs: delay,
           };
           await delayWithSignal(delay, undefined, { signal: params.signal });
           continue;

@@ -1,3 +1,4 @@
+import { ClaudeThinkingBlocks, claudeThinkingPrefix, toClaudeThinkingBlock } from "./claude-thinking.js";
 import { createSign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { applyEffortPrompt, mapAnthropicEffort, mapOpenAIEffort, supportsNativeEffort } from "./effort.js";
@@ -150,10 +151,13 @@ export class VertexAIAuth {
 }
 
 /**
- * The multi-region "global" endpoint lives on the bare host; every other
- * location is served from its own regional host.
+ * Global uses the bare host; US/EU use regional endpoint (rep) hosts.
+ * Individual regions retain their location-prefixed hosts.
  */
 function vertexHost(location: string): string {
+  if (location === "us" || location === "eu") {
+    return `https://aiplatform.${location}.rep.googleapis.com`;
+  }
   return location === DEFAULT_VERTEX_LOCATION
     ? "https://aiplatform.googleapis.com"
     : `https://${encodeURIComponent(location)}-aiplatform.googleapis.com`;
@@ -218,6 +222,10 @@ export class VertexAIProvider implements LLMProvider {
   constructor(credentialsPath: string, location?: string) {
     this.auth = new VertexAIAuth(credentialsPath);
     this.location = location || DEFAULT_VERTEX_LOCATION;
+  }
+
+  getThinkingPrefix(params: StreamParams): string {
+    return claudeThinkingPrefix(`${this.name}:${this.location}`, vertexClaudeModelName(params.model), params);
   }
 
   async *stream(params: StreamParams): AsyncIterable<StreamEvent> {
@@ -411,9 +419,11 @@ export class VertexAIProvider implements LLMProvider {
 
     yield { type: "message_start" };
     const blockToolIds = new Map<number, string>();
+    const thinkingBlocks = new ClaudeThinkingBlocks();
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let lastUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 
     const parseLine = function* (line: string): Generator<StreamEvent> {
       if (!line.startsWith("data:")) return;
@@ -421,19 +431,29 @@ export class VertexAIProvider implements LLMProvider {
       if (!payload || payload === "[DONE]") return;
       let event: any;
       try { event = JSON.parse(payload); } catch { return; }
+      const thinkingBlock = thinkingBlocks.accept(event);
+      if (thinkingBlock) yield thinkingBlock;
+      // Claude usage is cumulative and later events can update any token category.
+      const usage = event.type === "message_start" ? event.message?.usage
+        : event.type === "message_delta" ? event.usage : undefined;
+      if (usage) {
+        const next = {
+          inputTokens: usage.input_tokens ?? lastUsage.inputTokens,
+          outputTokens: usage.output_tokens ?? lastUsage.outputTokens,
+          cacheReadTokens: usage.cache_read_input_tokens ?? lastUsage.cacheReadTokens,
+          cacheWriteTokens: usage.cache_creation_input_tokens ?? lastUsage.cacheWriteTokens,
+        };
+        const delta = {
+          inputTokens: next.inputTokens - lastUsage.inputTokens,
+          outputTokens: next.outputTokens - lastUsage.outputTokens,
+          cacheReadTokens: next.cacheReadTokens - lastUsage.cacheReadTokens,
+          cacheWriteTokens: next.cacheWriteTokens - lastUsage.cacheWriteTokens,
+        };
+        lastUsage = next;
+        if (Object.values(delta).some(value => value !== 0)) yield { type: "usage", ...delta };
+      }
       if (event.type === "error") {
         yield { type: "error", error: new Error(event.error?.message ?? JSON.stringify(event.error ?? event)) };
-      } else if (event.type === "message_start") {
-        const usage = event.message?.usage;
-        if (usage) {
-          yield {
-            type: "usage",
-            inputTokens: usage.input_tokens ?? 0,
-            outputTokens: 0,
-            cacheReadTokens: usage.cache_read_input_tokens ?? 0,
-            cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
-          };
-        }
       } else if (event.type === "content_block_start") {
         if (event.content_block?.type === "tool_use") {
           blockToolIds.set(event.index, event.content_block.id);
@@ -458,10 +478,8 @@ export class VertexAIProvider implements LLMProvider {
           yield { type: "tool_call_end", toolCallId };
           blockToolIds.delete(event.index);
         }
-      } else if (event.type === "message_delta") {
-        const outputTokens = event.usage?.output_tokens ?? 0;
-        if (outputTokens > 0) yield { type: "usage", inputTokens: 0, outputTokens };
-        yield { type: "message_end", stopReason: event.delta?.stop_reason ?? "end_turn" };
+      } else if (event.type === "message_delta" && event.delta?.stop_reason) {
+        yield { type: "message_end", stopReason: event.delta.stop_reason };
       }
     };
 
@@ -501,7 +519,8 @@ export class VertexAIProvider implements LLMProvider {
     const cacheIndex = messages.length - 2;
     return messages.map((message, msgIndex) => {
       const content = message.content.map((block) => this.toClaudeContentBlock(block));
-      if (msgIndex === cacheIndex && content.length > 0) {
+      if (msgIndex === cacheIndex && content.length > 0
+        && !["thinking", "redacted_thinking"].includes(String(content[content.length - 1]!.type))) {
         content[content.length - 1] = {
           ...content[content.length - 1],
           cache_control: { type: "ephemeral" },
@@ -512,6 +531,8 @@ export class VertexAIProvider implements LLMProvider {
   }
 
   private toClaudeContentBlock(block: ContentBlock): Record<string, unknown> {
+    const thinking = toClaudeThinkingBlock(block);
+    if (thinking) return thinking;
     if (block.type === "text") return { type: "text", text: block.text ?? "" };
     if (block.type === "tool_use") {
       return { type: "tool_use", id: block.toolCallId, name: block.toolName, input: block.toolInput ?? {} };

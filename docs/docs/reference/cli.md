@@ -23,7 +23,37 @@ agav update [version]        # Update the installed release
 - Print mode: a single prompt runs with the cap; when reached the agent summarizes its work and stops.
 - Run mode: the cap limits internal model/tool iterations for the task prompt.
 
+The value must contain decimal digits only and be between 1 and 9007199254740991; signs, fractions, scientific notation, and hexadecimal notation are rejected. Both `--max-turns 20` and `--max-turns=20` are accepted.
+
 The flag overrides `maxIterations` in configuration for the current session only. On resume, the session history is kept but the cap is reapplied to new prompts.
+
+### --config, -c
+
+`-c key=value` (long form `--config key=value`) overrides a single configuration value for the current session, layered on top of the config files and environment — tweak one setting for one run without editing `~/.agav/config.json`.
+
+```bash
+agav -c effort=low -c maxIterations=200
+agav -P -c provider=ollama "summarize this repo"
+```
+
+- Repeatable; when the same key is given twice, the later one wins.
+- Dotted paths set one nested value without touching its siblings: `-c theme.promptColor=blue`. Scalars take a whole value (`-c maxTokens.foo=1` is rejected) and arrays are edited by index (`-c statusBar.0.enabled=false`).
+- `true`/`false` and numbers are coerced; object and array values are JSON: `-c 'hooks={"afterEdit":"npm test"}'`.
+- Unknown keys, malformed entries, or invalid values fail fast with a clear error, including a "did you mean" hint for typos.
+- Dedicated flags still win on conflict (`-c effort=low --effort high` → `high`), and overrides are never written back to `config.json`.
+- `agav login`, `agav logout`, `agav job`, `agav mcp`, and `agav workflows` reject `-c` outright: they dispatch before any session exists, so an override would be silently dropped. Use `agav login --control-plane <url>` to point login at a control plane.
+- Organization-managed policy outranks `-c` on every field it enforces; enforcement keys such as `orgManagedProvider` or `orgPermissionFloor` are rejected outright.
+
+Registered overrides also propagate privately to interactive session workers, using their effective values after dedicated flags and organization policy are applied. See [Detached sessions](/features/detached-sessions#security-and-process-lifetime).
+
+### --provider-idle-timeout
+
+`--provider-idle-timeout <ms>` sets an idle timeout in milliseconds waiting for provider stream activity (positive safe integer from 1 to 2147483647, or `disabled`).
+
+- The idle timer starts when an LLM provider stream attempt begins (bounding time to the first event) and resets on each stream event (text, thinking, tool deltas, usage, retry).
+- The idle clock is stopped while tools, user confirmations, and retry backoffs run.
+- On expiry, the attempt is aborted, partial text is preserved in history without dispatching incomplete tool calls, and the session remains interactive and ready for subsequent prompts.
+- Overrides `providerIdleTimeout` in configuration for the current session. Pass `disabled` or `off` to disable the idle timer and retain provider SDK defaults.
 
 ## Options
 
@@ -41,22 +71,28 @@ The flag overrides `maxIterations` in configuration for the current session only
 | `--output-schema <json\|@file>` | Validate print-mode output against JSON Schema |
 | `--permission <json>` | JSON tool policy for `agav run` (distinct from the interactive [`/permission`](/reference/slash-commands) session mode) |
 | `--max-turns <number>` | Limit the number of agent iterations per prompt in interactive, print, and run modes |
+| `--config`, `-c key=value` | Override one config value for the session; repeatable ([details](#--config--c)) |
+| `--provider-idle-timeout <ms>` | Idle timeout in milliseconds waiting for provider stream activity (1–2147483647 or `disabled`) |
 | `--resume`, `-r [id]` | Open the session picker or resume by ID prefix |
 | `--name <title>` | Set the initial name for a new interactive session. Interactive mode only; rejected with `-P`/`run`. |
 | `--search` | Enable the web search tool for this session |
 | `--auto-accept`, `-y` | Skip normal tool confirmations |
 | `--openai-api` | OpenAI API mode: `responses` (default) or `chat`. Use `chat` for OpenAI-compatible endpoints that don't support the Responses API. |
 | `--deny-writes` | Block write operations |
+| `--sandbox-network <deny\|allow>` | Network policy for Seatbelt and Bubblewrap shell commands; default `allow`. Aliases: `--sandbox-no-network`, `--sandbox-allow-network`. See [Network policy](/reference/security#network-policy). |
+| `--sandbox-required` | Refuse `run_command` and `run_tests` execution without an OS-level sandbox; see [sandbox enforcement](/reference/security#requiring-a-sandbox). |
+| `--revoke-windows-sandbox` | Windows only: remove workspace/temp ACL entries recorded by the native sandbox helper; see [Windows sandbox](/reference/security#windows). |
 | `--version`, `-v` | Print the version |
 | `--help`, `-h` | Print help |
 
-Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, and max turns.
+Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, and max turns  and provider idle timeout. 
+`--config` accepts `--config key=value` and `--config=key=value`; `-c` takes its `key=value` argument as a single token.
 
 ## Startup provider and model selection
 
 When you start a plain `agav` session, the provider and model are resolved in this order:
 
-1. **Explicit flags** — `--provider` and `--model` always win. If you pass `--provider` without `--model`, Agav reuses the saved model only when it belongs to that provider, otherwise it falls back to the provider's default model.
+1. **Explicit flags** — `--provider` and `--model` always win. If you pass `--provider` without `--model`, Agav reuses the saved model only when it belongs to that provider, otherwise it falls back to the provider's default model. `-c provider=` and `-c model=` pin the same way against the "last used" rule; when both forms are given, the dedicated flag wins.
 2. **Resumed session** — with `--resume`, the session's own provider and model are used unless overridden by a flag.
 3. **Last used** — with no flags and no resume, Agav reuses the provider and model from your most recent session, so a new session opens with the same model you last worked in.
 4. **Config defaults** — if there is no prior session, the `provider`/`model` in `~/.agav/config.json` (or the built-in default) apply.
@@ -79,6 +115,9 @@ When you start a plain `agav` session, the provider and model are resolved in th
 | `OLLAMA_ENDPOINT` | Complete Ollama endpoint |
 | `OLLAMA_HOST` / `OLLAMA_PORT` | Ollama address components |
 | `OLLAMA_API_KEY` | Ollama bearer token |
+| `NO_COLOR` | Any defined value disables Agav's color helpers, taking precedence over `FORCE_COLOR`. |
+| `FORCE_COLOR` | Force colored output even without a TTY or with `TERM=dumb`. Empty, `0`, or `false` disables it (case-insensitive, surrounding whitespace ignored). |
+| `TERM=dumb` | Disable color unless `FORCE_COLOR` enables it. Without an override, color helpers use whether stderr is a TTY. |
 | `AGAV_PERMISSION` | JSON policy used by `agav run` |
 | `AGAV_NO_UPDATE=1` | Disable automatic update checks |
 | `AGAV_NO_SANDBOX=1` | Disable automatic shell sandbox selection |

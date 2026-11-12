@@ -16,6 +16,7 @@ export const MODE_HELP: Record<PermissionMode, string> = {
 export const permissionCommand: SlashCommand = {
   name: "permission",
   description: "Show or change the session permission mode (ask, auto-accept, deny-writes)",
+  argumentHint: "[ask|auto-accept|deny-writes]",
   usage:
     "Usage: /permission [mode]\n\n" +
     "  /permission              Open the permission mode picker\n" +

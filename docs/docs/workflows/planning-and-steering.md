@@ -34,12 +34,12 @@ Plans belong to the session that created them and survive restarts. Resume a ses
 
 | Command | Intent |
 | --- | --- |
-| `/steer <directive>` | Add `<directive>` as session-scoped direction for the active task. |
+| `/steer <directive>` | Redirect the main agent, or only the inspected subagent, at its next safe step. |
 | `/steer list` | Show the active steering directives. |
 | `/steer remove <number>` | Remove the directive at `<number>`. |
 | `/steer clear` | Remove every active steering directive. |
 
-Steers add session-scoped direction to the active task without rewriting the original request:
+Steers redirect the active task within the same turn without rewriting the original request. Foreground main-agent directives can also be managed for subsequent turns:
 
 ```text
 /steer preserve backward compatibility
@@ -48,7 +48,11 @@ Steers add session-scoped direction to the active task without rewriting the ori
 /steer clear
 ```
 
-Use steering when constraints change mid-task, a deadline narrows the scope, or a subagent also needs the updated direction. Steers are included in subsequent agent and subagent prompts until removed. They are in-memory only: they are not written to disk or resumed in a later CLI process. Running bare `/steer` behaves like `/steer list`. Running subagents receive new steering independently, with named delivery acknowledgements. `/steer` and `/plan` acknowledgements remain in transcript order, and the current plan updates in place.
+Use steering when constraints change mid-task or a deadline narrows the scope. It works during foreground turns and while attached to a live background worker, including after `/resume`. Delivery happens at the next safe step, not by interrupting a tool already executing.
+
+From the overview, `/steer` targets the main agent. Open a live subagent inspector to target only that child, then return with **Tab** to steer the main agent again. Main-agent directives are **not inherited by children**, and child directives do not go to the parent or siblings. Skill executions do not support steering.
+
+Foreground main-agent directives remain in memory for subsequent main-agent turns until removed; they are not restored as an active directive list in a later CLI process. Worker delivery instead uses a **durable, execution-bound inbox** for the selected recipient, not a saved list for future executions. In the foreground main view, bare `/steer` behaves like `/steer list`. Bare `/steer`, `list`, `remove`, and `clear` are unavailable while attached to a worker or in a subagent inspector. **Pause remains unsupported for worker-owned turns**; see [Detached sessions](/features/detached-sessions).
 
 ## Queued follow-up requests
 

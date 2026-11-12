@@ -7,7 +7,11 @@ export interface InvocationReason {
 }
 
 export interface ContentBlock {
-  type: "text" | "tool_use" | "tool_result" | "image";
+  type: "text" | "tool_use" | "tool_result" | "image" | "thinking" | "redacted_thinking";
+  /** Claude thinking is opaque replay state, not user-visible text. */
+  thinking?: string;
+  signature?: string;
+  data?: string;
   text?: string;
   toolCallId?: string;
   toolName?: string;
@@ -24,6 +28,8 @@ export interface ContentBlock {
 }
 
 export interface Message {
+  /** Durable identity of the request prefix that produced Claude thinking. */
+  thinkingPrefix?: string;
   role: Role;
   content: ContentBlock[];
   displayText?: string;
@@ -38,6 +44,7 @@ export interface Message {
 }
 
 export type StreamEvent =
+  | { type: "thinking_block"; block: ContentBlock }
   | { type: "thinking_delta"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_call_start"; toolCallId: string; toolName: string }
@@ -46,7 +53,7 @@ export type StreamEvent =
   | { type: "message_start" }
   | { type: "message_end"; stopReason: string }
   | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
-  | { type: "retry"; message: string }
+  | { type: "retry"; message: string; delayMs?: number }
   | { type: "error"; error: Error };
 
 export interface ToolSchema {
@@ -69,6 +76,8 @@ export interface StreamParams {
 export interface LLMProvider {
   readonly name: string;
   stream(params: StreamParams): AsyncIterable<StreamEvent>;
+  /** Adapter-specific effective system/tools/model identity for signed replay. */
+  getThinkingPrefix?(params: StreamParams): string;
   /**
    * Real context window this provider will enforce for the model, when it can
    * be discovered at runtime. Optional: providers whose window is implied by

@@ -254,6 +254,42 @@ use repository history. Beta notes do not require a reviewed file and never
 become the baseline for a stable draft. The reviewed v0.2.4 repair and its
 claim-to-diff audit are in `docs/releases/`.
 
+### Release contributor credits
+
+The release page ends with a **Contributors** thank-you section, after all
+installation instructions. Beta credits use the same commit range as beta notes,
+including authors and final `Co-authored-by` trailers, with duplicate identities
+and common bot accounts removed. GitHub noreply addresses produce `@username`
+mentions; other authors are credited by name without exposing email addresses.
+No GitHub username is guessed from a display name or ordinary email address.
+
+Stable releases also require `docs/releases/v<version>.contributors.json` before
+binary builds. Prepare a candidate list **before squashing the release**:
+
+```bash
+node scripts/release-notes.mjs prepare-contributors 0.2.5 > /tmp/agav-v0.2.5-contributors.json
+```
+
+Review this JSON array against the preserved beta/PR history and the changes
+actually shipping. A divergent stable baseline can include already-shipped
+contributors: remove people whose contributions are only historical, but retain
+returning contributors with new work. Resolve aliases and replace names with
+verified `@username` handles where known. Add any contributors not represented
+in commit metadata. Save the reviewed array (for example, `["@alice", "Bob"]`)
+to `docs/releases/v0.2.5.contributors.json` alongside the reviewed notes in the
+release PR. First stable releases need a manually prepared list. An empty array
+explicitly omits the section when there are no people to credit.
+
+```bash
+node scripts/release-notes.mjs validate 0.2.5
+node scripts/release-notes.mjs contributors 0.2.5
+```
+
+The latter only previews the section; it does not publish anything. Stable
+publication uses this reviewed list unchanged in membership rather than trying
+to reconstruct contributors from the promotion squash. Check the final
+Contributors section when verifying the published release.
+
 **Installing a beta version:**
 
 ```bash

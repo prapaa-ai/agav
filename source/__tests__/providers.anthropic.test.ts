@@ -1,3 +1,4 @@
+import { claudeThinkingEvents, thinkingBlocks } from "./helpers/claude-thinking.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Capture the argument object passed to client.messages.stream so we can assert
@@ -155,3 +156,25 @@ describe("AnthropicProvider effort mapping", () => {
   });
 });
 
+
+it("preserves complete signed and redacted thinking for tool continuations", async () => {
+  streamMock.mockImplementation(() => (async function* () { yield* claudeThinkingEvents; })());
+  const provider = new AnthropicProvider("key");
+  const events = [];
+  for await (const event of provider.stream({ model: "claude-opus-5-5", messages: [] })) events.push(event);
+  const blocks = events.filter((e: any) => e.type === "thinking_block").map((e: any) => e.block);
+  expect(blocks).toHaveLength(2);
+  await drain(provider, { messages: [
+    { role: "assistant", content: [...blocks, { type: "tool_use", toolCallId: "c", toolName: "lookup", toolInput: {} }] },
+    { role: "user", content: [{ type: "tool_result", toolCallId: "c", toolResult: "ok" }] },
+  ] });
+  expect(lastRequest().messages[0].content.slice(0, 2)).toEqual(thinkingBlocks);
+});
+
+it("does not annotate opaque thinking-only turns with cache control", async () => {
+  await drain(new AnthropicProvider("key"), { messages: [
+    { role: "assistant", content: thinkingBlocks },
+    { role: "user", content: [{ type: "text", text: "continue" }] },
+  ] });
+  expect(lastRequest().messages[0].content).toEqual(thinkingBlocks);
+});

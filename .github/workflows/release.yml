@@ -381,6 +381,15 @@ jobs:
           HELPER="$VOICE_ASSETS/agav-voice-$VOICE_TARGET"
           if [[ "$VOICE_TARGET" == win32-* ]]; then HELPER="$HELPER.exe"; fi
           node scripts/embed-voice-helper.mjs "$VOICE_TARGET" "$HELPER" source/voice/bundled-runtime.ts
+      # The opt-in Windows restricted-token sandbox helper ships only in Windows
+      # binaries; other targets keep the null stub and pay no size cost.
+      - name: Build and embed Windows sandbox helper
+        if: startsWith(matrix.target, 'windows')
+        run: |
+          SANDBOX_ASSETS=$(mktemp -d "${RUNNER_TEMP}/sandbox-assets.XXXXXX")
+          trap 'rm -rf "$SANDBOX_ASSETS"' EXIT
+          node scripts/build-windows-sandbox-helper.mjs "$SANDBOX_ASSETS"
+          node scripts/embed-windows-sandbox-helper.mjs "$SANDBOX_ASSETS/agav-sandbox-win32-x64.exe" source/utils/windows-sandbox-bundle.ts
       - name: Build binary
         run: |
           mkdir -p dist
@@ -575,6 +584,19 @@ jobs:
             printf '%s\n' "$NOTES"
             echo "$DELIMITER"
           } >> "$GITHUB_OUTPUT"
+      - name: Generate contributor credits
+        id: contributors
+        env:
+          CURRENT_TAG: v${{ needs.check-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          CONTRIBUTORS=$(node scripts/release-notes.mjs contributors "${CURRENT_TAG#v}")
+          DELIMITER="contributors_$(node -p 'require("crypto").randomUUID()')"
+          {
+            echo "contributors<<$DELIMITER"
+            printf '%s\n' "$CONTRIBUTORS"
+            echo "$DELIMITER"
+          } >> "$GITHUB_OUTPUT"
       # Reconcile the tag BEFORE publishing so the release points at the commit
       # being released now, not a stale commit from a prior failed attempt.
       # softprops/action-gh-release creates the tag if absent but will NOT move
@@ -758,6 +780,8 @@ jobs:
             ```
 
             </details>
+
+            ${{ steps.contributors.outputs.contributors }}
           generate_release_notes: false
           files: release/*
 

@@ -183,3 +183,29 @@ describe("OpenAIProvider effort mapping", () => {
   });
 });
 
+
+describe("Luna chat tools", () => {
+  it.each([undefined, "high", "minimal"])("requires none even with effort %s", async (effort) => {
+    mockChatStream([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]);
+    await collectEvents(new OpenAIProvider("key", "chat"), {
+      model: "gpt-6-luna", effort,
+      tools: [{ name: "lookup", description: "lookup", inputSchema: { type: "object" } }],
+    });
+    expect(createChatCompletion.mock.calls[0]?.[0].reasoning_effort).toBe("none");
+  });
+  it("does not force none without tools", async () => {
+    mockChatStream([]);
+    await collectEvents(new OpenAIProvider("key", "chat"), { model: "gpt-6-luna" });
+    expect(createChatCompletion.mock.calls[0]?.[0].reasoning_effort).toBeUndefined();
+  });
+});
+
+it("never retries Luna tools without the required none setting", async () => {
+  createChatCompletion.mockRejectedValueOnce(new Error("function tools with reasoning_effort are not supported"));
+  await expect(collectEvents(new OpenAIProvider("key", "chat"), {
+    model: "gpt-6-luna-2026-11-01",
+    tools: [{ name: "lookup", description: "lookup", inputSchema: { type: "object" } }],
+  })).rejects.toThrow("function tools");
+  expect(createChatCompletion).toHaveBeenCalledTimes(1);
+  expect(createChatCompletion.mock.calls[0]?.[0].reasoning_effort).toBe("none");
+});

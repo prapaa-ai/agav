@@ -15,6 +15,7 @@ function pct(n: number, total: number): string {
 export const contextCommand: SlashCommand = {
   name: "context",
   description: "Show context window usage",
+  autoSubmit: true,
   usage: "Usage: /context\n\nShows a breakdown of what's consuming your context window:\nsystem prompt, tools, MCP tools, skills, and conversation messages.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
     await resolveContextWindow(context);

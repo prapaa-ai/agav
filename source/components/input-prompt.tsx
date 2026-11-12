@@ -14,6 +14,10 @@ export interface CommandInfo {
   name: string;
   description: string;
   category?: "command" | "agent";
+  /** Dimmed inline placeholder shown after the command name (e.g. "<title>"). */
+  argumentHint?: string;
+  /** Run immediately when chosen from the dropdown, instead of waiting for args. */
+  autoSubmit?: boolean;
 }
 
 interface Props {
@@ -350,6 +354,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const draftRef = useRef<string | null>(null);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [fileSuggestions, setFileSuggestions] = useState<FileSuggestion[]>([]);
+  const detachResolverRef = useRef(new KeybindingResolver(keybindings, ["detachSession"]));
   const keyResolverRef = useRef(new KeybindingResolver(keybindings, PROMPT_ACTIONS));
   /** The box holding the text rows, for turning a click into a buffer offset. */
   const linesRef = useRef<DOMElement | null>(null);
@@ -518,14 +523,12 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         if (!match || match.index === undefined) return false;
         const start = match.index;
         const end = start + match[0].length;
-        const cur = liveRef.current.cursor;
-        // A caret sitting inside the tile being replaced (or anywhere after
-        // it) must shift by the length delta so it lands in the same
-        // *logical* spot in the expanded text rather than snapping to
-        // wherever the old offset now falls.
-        const delta = fullText.length - match[0].length;
-        const nextCursor = cur <= start ? cur : cur >= end ? cur + delta : end + delta;
-        applyEdit(val.slice(0, start) + fullText + val.slice(end), nextCursor);
+        // Expansion is an inspection gesture: open at the pasted block's
+        // beginning instead of following the old tile's caret to its tail.
+        // The render-time clamp anchors this viewport to the new caret row.
+        viewportStartRef.current = Infinity;
+        clearSelection();
+        applyEdit(val.slice(0, start) + fullText + val.slice(end), start);
         return true;
       });
     }
@@ -539,6 +542,26 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     : [];
   const hasCommandSuggestions = matchingCommands.length > 0;
   const hasFileSuggestions = Boolean(activeFileToken) && fileSuggestions.length > 0;
+
+  // Inline argument hint ("ghost" placeholder) shown on the composer line once a
+  // slash command is fully named and expects arguments — e.g. `/name <title>`.
+  // Kept off the hot path: the cheap `text[0] !== "/"` guard bails before any
+  // regex or array scan, so an ordinary prompt keystroke does zero extra work.
+  // Only a line that already looks like a bare slash command pays for the match.
+  const inlineArgumentHint: string | null = (() => {
+    if (text.charCodeAt(0) !== 47 /* "/" */) return null;
+    const exact = text.match(/^\/([a-zA-Z][\w-]*)(\s?)$/);
+    if (!exact) return null;
+    // While the dropdown is still filtering (no trailing space, several matches
+    // and the name isn't an exact single hit), defer to the dropdown's own hint
+    // so the line doesn't show a hint for a command the user may not pick.
+    const trailingSpace = exact[2] === " ";
+    if (!trailingSpace && matchingCommands.length > 1) return null;
+    const name = exact[1]!.toLowerCase();
+    const command = matchingCommands.find((c) => c.name.toLowerCase() === name)
+      ?? (trailingSpace ? commands.find((c) => c.name.toLowerCase() === name) : undefined);
+    return command?.argumentHint ?? null;
+  })();
 
   // Agent argument suggestions for `/agent <partial>`
   const agentArgMatch = text.match(/^\/agent\s+(\S*)$/i);
@@ -614,6 +637,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       const { input, key } = normalizeKeyEvent(rawInput, rawKey);
       if (ownsVoiceControls?.() && (key.escape || (key.ctrl && input === "c") ||
           (key.return && !key.shift && !key.ctrl && !key.meta && !key.super && !key.hyper))) return;
+      const detachMatch = detachResolverRef.current.feed(input, key);
+      if (detachMatch.pending || detachMatch.action) return;
       const match = keyResolverRef.current.feed(input, key);
       if (match.pending) return;
 
@@ -743,14 +768,26 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         if (key.tab) {
           const selected = matchingCommands[selectedSuggestion];
           if (selected) {
-            const completed = `/${selected.name} `;
-            applyEdit(completed, completed.length);
-            setSelectedSuggestion(0);
+            // Argument-less commands run on selection; the rest complete to
+            // `/name ` so the user can type arguments.
+            if (selected.autoSubmit) {
+              setSelectedSuggestion(0);
+              onSubmit(`/${selected.name}`);
+            } else {
+              const completed = `/${selected.name} `;
+              applyEdit(completed, completed.length);
+              setSelectedSuggestion(0);
+            }
           }
           return;
         }
         if (match.action === "submit") {
           const selected = matchingCommands[selectedSuggestion];
+          if (selected && selected.autoSubmit) {
+            setSelectedSuggestion(0);
+            onSubmit(`/${selected.name}`);
+            return;
+          }
           if (selected && partial !== selected.name) {
             const completed = `/${selected.name} `;
             applyEdit(completed, completed.length);
@@ -770,7 +807,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       if ((key.upArrow || key.downArrow)
         && (!match.action || match.action === "historyUp" || match.action === "historyDown")
         && historyIndexRef.current < 0
-        && !key.ctrl && !key.meta && !key.super && !key.shift && !suppressHistory) {
+        && !key.ctrl && !key.meta && !key.super && !key.shift) {
         const lines = wrapPrompt(value, usable);
         const row = caretRow(lines, cursorPos);
         if (lines.length > 1 && (!key.upArrow || row > 0)) {
@@ -1134,7 +1171,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           const after = wl.text.slice(selEnd);
           return (
             <Box key={i} {...rowHandlers}>
-              {renderPrefix(wl.isFirst)}
+              {renderPrefix(i === 0)}
               <Text>{before}</Text>
               <Text inverse color="cyan">{selected}</Text>
               <Text>{after}</Text>
@@ -1149,19 +1186,24 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
             ? graphemeAt(wl.text, col)
             : { grapheme: " ", length: 1 };
           const after = col < wl.text.length ? wl.text.slice(col + chLen) : "";
+          // Show the ghost argument hint only on the last visible line, past all
+          // typed text (the caret sits on the synthetic trailing space). The hint
+          // only triggers for a single short `/command ` line, so this is safe.
+          const showInlineHint = inlineArgumentHint && i === visibleLines.length - 1 && after.length === 0;
           return (
             <Box key={i} {...rowHandlers}>
-              {renderPrefix(wl.isFirst)}
+              {renderPrefix(i === 0)}
               <Text>{before}</Text>
               <Text inverse>{ch}</Text>
               <Text>{after}</Text>
+              {showInlineHint && <Text dimColor>{inlineArgumentHint}</Text>}
             </Box>
           );
         }
 
         return (
           <Box key={i} {...rowHandlers}>
-            {renderPrefix(wl.isFirst)}
+            {renderPrefix(i === 0)}
             <Text>{wl.text || " "}</Text>
           </Box>
         );
@@ -1188,6 +1230,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
                   </Text>
                   {isAgent && <Text dimColor color={isSelected ? "magenta" : undefined}>[agent] </Text>}
                   <Text dimColor={!isSelected} color={isSelected ? "white" : undefined}> {displayDesc}</Text>
+                  {isSelected && cmd.argumentHint && <Text dimColor>{"  "}{cmd.argumentHint}</Text>}
                 </Text>
               );
             })}

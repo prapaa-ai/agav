@@ -11,10 +11,10 @@ import { isProviderName, orgPolicyError } from "../config/startup.js";
 import { createProvider } from "../providers/registry.js";
 import type { ToolCallInfo } from "../components/tool-call-display.js";
 import { ConversationState } from "../agent/conversation.js";
-import { runAgentLoop } from "../agent/loop.js";
+import { runAgentLoop, type SteerDrainOptions } from "../agent/loop.js";
 import { ToolRegistry as ToolRegistryClass } from "./registry.js";
 import { createWorktree, removeWorktree, applyWorktreeChanges, type WorkerWorktree } from "../utils/worktree.js";
-import { createSteerQueue, formatSteersForPrompt } from "../commands/steer.js";
+import { createSteerQueue } from "../commands/steer.js";
 
 const MAX_CONCURRENT = 5;
 export interface SubagentToolDeps {
@@ -24,14 +24,19 @@ export interface SubagentToolDeps {
     model: string;
     systemPrompt: string;
     permissionMode: PermissionMode;
+    /** Original background consent mode, independent of generic Always. */
+    backgroundPermissionMode?: PermissionMode;
     effort: EffortLevel;
     iterationsBudget: { remaining: number, total: number };
     /** Org-managed permission floor; child "Always" cannot widen past it. */
     orgPermissionFloor?: PermissionMode;
+    providerIdleTimeout?: number;
   };
   getProviderConfig?: () => AgavConfig;
-  confirmationQueue: ConfirmationQueue;
+  confirmationQueue: Pick<ConfirmationQueue, "enqueue" | "rejectBySubagentId">;
   onProgressUpdate: (subagents: SubagentProgress[]) => void;
+  /** Drain worker-delivered directives for this child at loop safe points. */
+  drainSteers?: (id: string, options?: SteerDrainOptions) => Promise<string[]>;
   onSteerApplied?: (id: string, title: string, directives: string[]) => void;
   onTokenUsage: (usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => void;
   getSignal: () => AbortSignal | undefined;
@@ -224,14 +229,12 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
       conversation.setContextWindow(contextWindow);
       conversation.addUserMessage(task);
 
-      const steers = formatSteersForPrompt();
-      const steerQueue = createSteerQueue();
+      const steerQueue = createSteerQueue(id);
       const subagentSystemPrompt = [
         config.systemPrompt,
         "",
         "You are a subagent working on a specific task. Complete it thoroughly and report your results. " +
         "Do not ask questions — work with the information provided. Be concise in your final response.",
-        steers ? "\n" + steers : "",
       ]
         .filter(Boolean)
         .join("\n");
@@ -317,10 +320,20 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
           signal: childController.signal,
           confirmTool,
           permissionMode: config.permissionMode,
+          backgroundPermissionMode: config.backgroundPermissionMode,
           permissionFloor: config.orgPermissionFloor,
           effort: config.effort,
           iterationsBudget: config.iterationsBudget,
-          drainSteers: steerQueue.drain,
+          providerIdleTimeout: config.providerIdleTimeout,
+          drainSteers: async (options = {}) => {
+            const localSteers = steerQueue.drain();
+            const externalSteers = await deps.drainSteers?.(id, {
+              ...options, hasLocalSteers: localSteers.length > 0,
+            }) ?? [];
+            const directives = options.canContinue === false ? [] : [...externalSteers, ...localSteers];
+            if (options.final && !directives.length) steerQueue.dispose();
+            return directives;
+          },
         });
 
         const MAX_RECENT_ACTIONS = 10;
@@ -415,6 +428,7 @@ export function createSubagentTool(deps: SubagentToolDeps): ToolDefinition & { c
                 cacheReadTokens: event.cacheReadTokens ?? 0,
                 cacheWriteTokens: event.cacheWriteTokens ?? 0,
               });
+              broadcast();
               break;
 
             case "error":

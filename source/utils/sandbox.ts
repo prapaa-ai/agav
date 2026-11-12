@@ -1,5 +1,19 @@
+import { prepareSandboxWorkspace } from "./sandbox-workspace.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { isWithinRoot } from "./path-guard.js";
+import { discoverSandboxProtectedPaths, resolveSandboxPath, type SandboxPathPolicy } from "./sandbox-protected-paths.js";
+import {
+  isWindowsSandboxEnabled,
+  isWindowsSandboxHelperAvailable,
+  prepareWindowsSandboxRun,
+  windowsArgvInvocation,
+  windowsShellInvocation,
+  WINDOWS_SANDBOX_NETWORK_DENY_MESSAGE,
+  WINDOWS_SANDBOX_UNAVAILABLE_MESSAGE,
+} from "./windows-sandbox.js";
+
+export { setWindowsSandboxEnabled, isWindowsSandboxEnabled } from "./windows-sandbox.js";
 
 const activeCommands = new Set<() => void>();
 let exitCleanupInstalled = false;
@@ -35,9 +49,38 @@ import { writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, userInfo } from "node:os";
 
-export type SandboxBackend = "seatbelt" | "bubblewrap" | "docker" | "none";
+export type SandboxBackend = "seatbelt" | "bubblewrap" | "docker" | "windows" | "none";
+
+const SANDBOX_BACKENDS: readonly SandboxBackend[] = ["seatbelt", "bubblewrap", "docker", "windows", "none"];
+
+/**
+ * Network policy for sandboxed commands.
+ * - "allow" (default): sandboxed commands inherit host networking.
+ * - "deny" (explicit opt-in): blocks direct off-host networking. On Linux, a fresh
+ *   network namespace exposes only loopback services in the same invocation,
+ *   not host services or services in another invocation. On macOS, host-local TCP/IP
+ *   and Unix sockets remain trusted channels; local relays can forward traffic.
+ * Only enforced on the OS backends (seatbelt, bubblewrap). The Docker backend
+ * already runs with --network=none, and "none" cannot confine networking.
+ */
+export type SandboxNetwork = "deny" | "allow";
 
 let detectedBackend: SandboxBackend | null = null;
+
+// Process-wide default for sandboxed command networking. "allow" is the default;
+// an explicit "deny" closes the direct network exfiltration path. Deny is not an
+// absolute egress guarantee: allowed local channels (including reachable Unix
+// sockets) may expose relays.
+let sandboxNetwork: SandboxNetwork = "allow";
+
+/** Set at startup from config / CLI flag. Not read from model arguments. */
+export function setSandboxNetwork(policy: SandboxNetwork): void {
+  sandboxNetwork = policy === "allow" ? "allow" : "deny";
+}
+
+export function getSandboxNetwork(): SandboxNetwork {
+  return sandboxNetwork;
+}
 
 function canExec(cmd: string): boolean {
   try {
@@ -58,6 +101,8 @@ export function getAvailableSandboxOverrides(): SandboxBackend[] {
     if (platform() !== "win32") {
       if (canExec("sandbox-exec")) installedBackends.push("seatbelt");
       if (canExec("bwrap")) installedBackends.push("bubblewrap");
+    } else if (isWindowsSandboxHelperAvailable()) {
+      installedBackends.push("windows");
     }
     let dockerInstalled = false;
     if (platform() === "win32") {
@@ -87,9 +132,11 @@ export function detectSandboxBackend(): SandboxBackend {
   // there just spawns two doomed child processes, adding to the child-process
   // count that triggers Bun's non-deterministic JSC heap-corruption segfault
   // on Windows (oven-sh/bun#23177, oven-sh/bun#30745).
+  // The opt-in restricted-token backend is chosen only when the user enabled
+  // `windowsSandbox` and a helper exists. The check never spawns a process and
+  // is not cached, so the startup setting always applies.
   if (platform() === "win32") {
-    detectedBackend = "none";
-    return detectedBackend;
+    return isWindowsSandboxEnabled() && isWindowsSandboxHelperAvailable() ? "windows" : "none";
   }
 
   // Check what's actually available at runtime
@@ -109,6 +156,7 @@ export function getSandboxName(): string {
     seatbelt: "macOS Seatbelt",
     bubblewrap: "Linux Bubblewrap",
     docker: "Docker",
+    windows: "Windows restricted token",
     none: "none (unsandboxed)",
   };
   return names[detectSandboxBackend()];
@@ -125,19 +173,25 @@ function filterEnv(): Record<string, string> {
   return env;
 }
 
-// Rules use last-match-wins semantics. The blanket $HOME write deny protects
-// the user's home, then targeted allows restore the well-known cache/config
-// directories that ordinary tooling (npm, pip, git, language version managers)
-// must write to — otherwise those commands fail with "Operation not permitted".
-// The credential-directory denies are listed last so a broad allow can never
-// re-expose ~/.ssh, ~/.aws, or ~/.gnupg.
-const SEATBELT_PROFILE = `
+// Writes are denied by default; targeted allows restore /dev (git/tools open
+// /dev/null read-write), the workspace, temp dirs, and the well-known
+// cache/config directories that ordinary tooling (npm, pip, git, language
+// version managers) must write to. Reads stay broadly allowed (allow default)
+// except the credential directories. Under a (deny file-write*) base, a later
+// (deny …) for a workspace subpath wins over the workspace allow, which lets us
+// carve read-only holes for sensitive config (verified on macOS; this does NOT
+// work under a plain (allow default) base). Paths are passed as resolved
+// (realpath) params so the /var→/private/var firmlink does not defeat matching.
+const SEATBELT_PROFILE_BASE = `
 (version 1)
 (allow default)
-(deny file-write* (subpath "/System"))
-(deny file-write* (subpath "/usr"))
-(deny file-write* (subpath "/Library"))
-(deny file-write* (subpath "/Applications"))
+(deny file-write*)
+(allow file-write* (subpath "/dev"))
+(allow file-write* (subpath (param "TMPDIR")))
+(allow file-write* (subpath "/tmp"))
+(allow file-write* (subpath "/private/tmp"))
+; HOME may be nested in temporary storage. Re-establish its boundary before
+; restoring the explicit workspace and tooling-cache exceptions.
 (deny file-write* (subpath (param "HOME")))
 (allow file-write* (subpath (param "CWD")))
 (allow file-write* (subpath (param "HOME_CACHE")))
@@ -153,6 +207,46 @@ const SEATBELT_PROFILE = `
 (deny file-read* (subpath (param "HOME_GPG")))
 (deny process-exec (subpath "/System/Library/CoreServices"))
 `;
+
+// Deny-write rules for the workspace-protected paths, parameterized so the
+// resolved CWD never needs escaping in the profile. Appended after the
+// workspace allow; under the (deny file-write*) base these denies win.
+// Directories use `subpath`; files use `literal` (a subpath filter does not
+// match a regular file, which would silently leave it writable).
+function seatbeltWorkspaceProtection(policy: SandboxPathPolicy): string {
+  return policy.protectedPaths.flatMap(({ kind }, i) => [
+    `(deny ${kind === "ancestor" ? "file-write-unlink" : "file-write*"} (literal (param "PROTECTED_${i}")))`,
+    // Protect both the directory subtree and its original name, even when it
+    // is currently a symlink, a regular file, or does not exist yet.
+    ...(kind === "directory" ? [`(deny file-write* (subpath (param "PROTECTED_${i}")))`] : []),
+  ]).join("\n") + "\n";
+}
+
+// Network isolation (last-match-wins): deny all network, then re-allow
+// host-local TCP/IP so local dev servers / language servers work, plus Unix-domain
+// sockets so tooling that talks to local daemons over a socket file (not TCP)
+// keeps working. These are trusted channels, not protection against local relays.
+// Seatbelt localhost includes the host's non-loopback interface addresses too.
+// Uses only the Seatbelt filters accepted across macOS versions.
+const SEATBELT_NETWORK_DENY = `
+(deny network*)
+; Scope each exception to the operation's endpoint. A local-address rule on
+; network* also grants outbound operations, defeating the remote restriction.
+(allow network-inbound network-bind (local ip "localhost:*"))
+(allow network-outbound (remote ip "localhost:*"))
+(allow network-outbound (remote unix-socket))
+(allow network-inbound (local unix-socket))
+`;
+
+function seatbeltProfile(network: SandboxNetwork, policy: SandboxPathPolicy): string {
+  const gitAllows = policy.gitWritablePaths.map(({ kind }, i) =>
+    `(allow file-write* (${kind === "directory" ? "subpath" : "literal"} (param "GIT_WRITE_${i}")))`,
+  ).join("\n") + "\n";
+  // Git allowances precede credential denies, so pointers cannot re-enable them.
+  const base = SEATBELT_PROFILE_BASE.replace('(deny file-write* (subpath (param "HOME_SSH")))',
+    gitAllows + '(deny file-write* (subpath (param "HOME_SSH")))') + seatbeltWorkspaceProtection(policy);
+  return network === "deny" ? base + SEATBELT_NETWORK_DENY : base;
+}
 
 type OutputCallback = (chunk: Buffer, stream: "stdout" | "stderr") => void;
 
@@ -274,6 +368,100 @@ function executeProcess(
   }
 }
 
+/** Write the Seatbelt profile to a temp file; caller must call cleanup(). */
+function createSeatbeltProfile(network: SandboxNetwork, cwd: string): { path: string; policy: SandboxPathPolicy; cleanup: () => void } {
+  const policy = discoverSandboxProtectedPaths(cwd);
+  const path = join(tmpdir(), `agav-sandbox-${process.pid}-${randomUUID()}.sb`);
+  try { writeFileSync(path, seatbeltProfile(network, policy), { flag: "wx", mode: 0o600 }); }
+  catch (error) {
+    // Never remove someone else's file on an exclusive-create collision.
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") { try { unlinkSync(path); } catch {} }
+    throw error;
+  }
+  return { path, policy, cleanup: () => { try { unlinkSync(path); } catch {} } };
+}
+
+function resolvePath(p: string): string {
+  return resolveSandboxPath(p).path;
+}
+
+/** `sandbox-exec` argv that runs `inner` (file + its args) under the profile. */
+function seatbeltArgv(profilePath: string, cwd: string, inner: string[], policy: SandboxPathPolicy): { file: string; args: string[] } {
+  const home = resolvePath(process.env.HOME ?? "/tmp");
+  const resolvedCwd = resolvePath(cwd);
+  const tmp = resolvePath((process.env.TMPDIR ?? "/tmp").replace(/\/+$/, "") || "/tmp");
+  const protectedParams = policy.protectedPaths.flatMap(({ path }, i) => ["-D", `PROTECTED_${i}=${path}`]);
+  const gitParams = policy.gitWritablePaths.flatMap(({ path }, i) => ["-D", `GIT_WRITE_${i}=${path}`]);
+  return {
+    file: "sandbox-exec",
+    args: [
+      "-f", profilePath,
+      "-D", `HOME=${home}`,
+      "-D", `CWD=${resolvedCwd}`,
+      "-D", `TMPDIR=${tmp}`,
+      "-D", `HOME_CACHE=${home}/.cache`,
+      "-D", `HOME_CONFIG=${home}/.config`,
+      "-D", `HOME_LOCAL=${home}/.local`,
+      "-D", `HOME_NPM=${home}/.npm`,
+      "-D", `HOME_CARGO=${home}/.cargo`,
+      "-D", `HOME_SSH=${home}/.ssh`,
+      "-D", `HOME_AWS=${home}/.aws`,
+      "-D", `HOME_GPG=${home}/.gnupg`,
+      ...protectedParams,
+      ...gitParams,
+      ...inner,
+    ],
+  };
+}
+
+/** `bwrap` argv that runs `inner` (file + its args) under the workspace policy. */
+function bubblewrapArgv(cwd: string, inner: string[], network: SandboxNetwork, workspace: string, metadata: Array<{ source: string; target: string }> = []): { file: string; args: string[] } {
+  const home = process.env.HOME ?? "/tmp";
+  const scratch = ["/tmp", ...[".cache", ".config", ".npm", ".cargo"].map(dir => home + "/" + dir)];
+  const scratchMounts = (paths: string[]) => paths.flatMap(path => [
+    "--tmpfs", path,
+    // Restore only installed Cargo executables, never registry credentials.
+    ...(path === home + "/.cargo" ? ["--ro-bind-try", path + "/bin", path + "/bin"] : []),
+  ]);
+  return {
+    file: "bwrap",
+    args: [
+      // A private network namespace with no route out. bwrap brings up the
+      // loopback interface for services started within this same invocation.
+      // Host loopback and other invocations are unreachable; no forwarding
+      // is provided. Reachable filesystem Unix sockets are not isolated by this.
+      ...(network === "deny" ? ["--unshare-net"] : []),
+      "--unshare-pid",
+      "--ro-bind", "/", "/",
+      // Restore nested checkouts after their enclosing scratch mount. Masks
+      // inside (or equal to) the workspace must instead follow its bind, so a
+      // HOME workspace cannot expose host config/credentials or persist caches.
+      ...scratchMounts(scratch.filter(path => !isWithinRoot(cwd, path))),
+      "--bind", workspace, cwd,
+      ...scratchMounts(scratch.filter(path => isWithinRoot(cwd, path))),
+      // External gitdir/commondir snapshots are mounted at their original
+      // paths so gitfiles need no rewriting. Never bind host metadata writable.
+      ...metadata.flatMap(({ source, target }) => ["--bind", source, target]),
+      ...metadata.flatMap(({ source }) => ["--tmpfs", join(source, "..")]),
+      // Only the snapshot is writable. Hide its original pathname (and its
+      // private parent) even when TMPDIR is outside the usual /tmp scratch.
+      "--tmpfs", join(workspace, ".."),
+      "--dev", "/dev",
+      "--proc", "/proc",
+      // ~/.local and ~/.rustup remain visible through the root read-only bind.
+      // Credential masks must win even when the workspace contains (or is
+      // nested within) one of these directories. Such nested workspaces stay
+      // hidden; do not restore them after these mounts.
+      "--tmpfs", home + "/.ssh",
+      "--tmpfs", home + "/.aws",
+      "--tmpfs", home + "/.gnupg",
+      "--die-with-parent",
+      "--chdir", cwd,
+      ...inner,
+    ],
+  };
+}
+
 function runSeatbelt(
   command: string,
   cwd: string,
@@ -282,35 +470,27 @@ function runSeatbelt(
   onOutput?: OutputCallback,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
-  const home = process.env.HOME ?? "/tmp";
-  const profilePath = join(tmpdir(), `agav-sandbox-${process.pid}-${randomUUID()}.sb`);
-  writeFileSync(profilePath, SEATBELT_PROFILE);
+  const profile = createSeatbeltProfile(sandboxNetwork, cwd);
+  let wrapped: { file: string; args: string[] };
+  try { wrapped = seatbeltArgv(profile.path, cwd, ["/bin/sh", "-c", command], profile.policy); }
+  catch (error) { profile.cleanup(); throw error; }
+  const { file, args } = wrapped;
 
   return new Promise((resolve) => {
-    executeProcess(
-      "sandbox-exec",
-      [
-        "-f", profilePath,
-        "-D", `HOME=${home}`,
-        "-D", `CWD=${cwd}`,
-        "-D", `HOME_CACHE=${home}/.cache`,
-        "-D", `HOME_CONFIG=${home}/.config`,
-        "-D", `HOME_LOCAL=${home}/.local`,
-        "-D", `HOME_NPM=${home}/.npm`,
-        "-D", `HOME_CARGO=${home}/.cargo`,
-        "-D", `HOME_SSH=${home}/.ssh`,
-        "-D", `HOME_AWS=${home}/.aws`,
-        "-D", `HOME_GPG=${home}/.gnupg`,
-        "/bin/sh", "-c", command,
-      ],
+    try { executeProcess(
+      file,
+      args,
       { timeout, maxBuffer, cwd, env: filterEnv() },
       onOutput,
       (error, stdout, stderr) => {
-        try { unlinkSync(profilePath); } catch {}
+        profile.cleanup();
         resolve({ stdout, stderr, error });
       },
       signal,
-    );
+    ); } catch (cause) {
+      profile.cleanup();
+      resolve({ stdout: "", stderr: "", error: cause instanceof Error ? cause : new Error(String(cause)) });
+    }
   });
 }
 
@@ -322,42 +502,26 @@ function runBubblewrap(
   onOutput?: OutputCallback,
   signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; error: Error | null }> {
-  const home = process.env.HOME ?? "/tmp";
+  let workspace: ReturnType<typeof prepareSandboxWorkspace>;
+  try { workspace = prepareSandboxWorkspace(cwd, true); }
+  catch (cause) { return Promise.resolve({ stdout: "", stderr: "", error: cause instanceof Error ? cause : new Error(String(cause)) }); }
+  const { file, args } = bubblewrapArgv(cwd, ["/bin/sh", "-c", command], sandboxNetwork, workspace.path, workspace.mounts);
   return new Promise((resolve) => {
-    executeProcess(
-      "bwrap",
-      [
-        "--ro-bind", "/", "/",
-        "--bind", cwd, cwd,
-        "--tmpfs", "/tmp",
-        "--dev", "/dev",
-        "--proc", "/proc",
-        // Empty, writable tmpfs over the credential directories hides their
-        // contents from the sandbox while still letting a tool that probes them
-        // succeed against an empty dir.
-        "--tmpfs", home + "/.ssh",
-        "--tmpfs", home + "/.aws",
-        "--tmpfs", home + "/.gnupg",
-        // The rest of $HOME is read-only via the root ro-bind, which breaks
-        // tooling that must write to its cache/config dirs (npm, pip, cargo,
-        // git). Give each a writable scratch tmpfs so those commands work
-        // without exposing or persisting anything on the host.
-        "--tmpfs", home + "/.cache",
-        "--tmpfs", home + "/.config",
-        "--tmpfs", home + "/.local",
-        "--tmpfs", home + "/.npm",
-        "--tmpfs", home + "/.cargo",
-        "--die-with-parent",
-        "--chdir", cwd,
-        "/bin/sh", "-c", command,
-      ],
-      { timeout, maxBuffer, env: filterEnv() },
-      onOutput,
-      (error, stdout, stderr) => {
-        resolve({ stdout, stderr, error });
-      },
-      signal,
-    );
+    const finish = (error: Error | null, stdout: string, stderr: string) => {
+      try {
+        // The private PID namespace tears down descendants before bwrap exits.
+        // Failed/cancelled commands publish nothing; never retry on the host.
+        if (!error && !signal?.aborted) workspace.publish();
+      } catch (cause) { error = cause instanceof Error ? cause : new Error(String(cause)); }
+      finally {
+        try { workspace.cleanup(); }
+        catch (cause) { error ??= cause instanceof Error ? cause : new Error(String(cause)); }
+      }
+      resolve({ stdout, stderr, error });
+    };
+    try {
+      executeProcess(file, args, { timeout, maxBuffer, env: filterEnv() }, onOutput, finish, signal);
+    } catch (cause) { finish(cause instanceof Error ? cause : new Error(String(cause)), "", ""); }
   });
 }
 
@@ -482,6 +646,36 @@ function runUnsandboxed(
   });
 }
 
+function runWindows(
+  command: string,
+  cwd: string,
+  timeout: number,
+  maxBuffer: number,
+  onOutput?: OutputCallback,
+  signal?: AbortSignal,
+): Promise<{ stdout: string; stderr: string; error: Error | null }> {
+  // Every refusal returns an error without launching anything; this backend
+  // never falls back to unsandboxed execution.
+  const refuse = (cause: unknown) => Promise.resolve({
+    stdout: "", stderr: "", error: cause instanceof Error ? cause : new Error(String(cause)),
+  });
+  if (platform() !== "win32") return refuse("The Windows sandbox backend is only available on Windows.");
+  if (sandboxNetwork === "deny") return refuse(WINDOWS_SANDBOX_NETWORK_DENY_MESSAGE);
+  if (!isWindowsSandboxHelperAvailable()) return refuse(WINDOWS_SANDBOX_UNAVAILABLE_MESSAGE);
+  let prepared: ReturnType<typeof prepareWindowsSandboxRun>;
+  try { prepared = prepareWindowsSandboxRun({ cwd, invocation: windowsShellInvocation(command), env: filterEnv() }); }
+  catch (cause) { return refuse(cause); }
+  return new Promise((resolve) => {
+    try {
+      executeProcess(prepared.file, prepared.args, { timeout, maxBuffer, cwd, env: prepared.env }, onOutput,
+        (error, stdout, stderr) => { prepared.cleanup(); resolve({ stdout, stderr, error }); }, signal);
+    } catch (cause) {
+      prepared.cleanup();
+      resolve({ stdout: "", stderr: "", error: cause instanceof Error ? cause : new Error(String(cause)) });
+    }
+  });
+}
+
 const DESTRUCTIVE_PATTERNS = [
   /\brm\s+-rf\s+[/~]/,
   /\brm\s+-rf\s+\.\s*$/,
@@ -532,9 +726,8 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
   backend: SandboxBackend;
 }> {
   // Runtime validation is required: tool inputs are not constrained by TS types.
-  if (opts.forceBackend !== undefined &&
-      !["seatbelt", "bubblewrap", "docker", "none"].includes(opts.forceBackend)) {
-    throw new Error("Invalid sandbox backend. Use seatbelt, bubblewrap, docker, or none.");
+  if (opts.forceBackend !== undefined && !SANDBOX_BACKENDS.includes(opts.forceBackend)) {
+    throw new Error("Invalid sandbox backend. Use seatbelt, bubblewrap, docker, windows, or none.");
   }
   if (opts.forceBackend === "none" && !opts.allowUnsandboxed && process.env["AGAV_NO_SANDBOX"] !== "1") {
     throw new Error("Sandbox bypass denied. Only the user can enable unsandboxed overrides by starting Agav with AGAV_NO_SANDBOX=1. Omit sandbox to use the default backend.");
@@ -555,6 +748,9 @@ export async function runInSandbox(opts: SandboxOptions): Promise<{
       break;
     case "docker":
       result = await runDocker(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
+      break;
+    case "windows":
+      result = await runWindows(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal);
       break;
     case "none":
       result = await runUnsandboxed(opts.command, opts.cwd, opts.timeout, opts.maxBuffer, opts.onOutput, opts.signal, opts.allowUnsandboxed && opts.forceBackend === "none" && opts.inheritEnv);
@@ -596,8 +792,71 @@ export function requireSandbox(forceBackend?: SandboxBackend): void {
   if (backend === "none") {
     throw new Error(
       "Sandbox required but no sandbox backend is available. " +
-      "Install sandbox-exec (macOS) or bubblewrap (Linux), use --sandbox docker, " +
-      "or remove the sandboxRequired setting to run without a sandbox.",
+      "Install sandbox-exec (macOS) or bubblewrap (Linux), enable windowsSandbox (Windows), " +
+      "use --sandbox docker, or remove the sandboxRequired setting to run without a sandbox.",
     );
+  }
+}
+
+export interface SandboxedCommand {
+  /** Executable to spawn (the sandbox wrapper, or the original command when unsandboxed). */
+  file: string;
+  /** Arguments for `file`; the original `cmd`/`args` are nested inside the wrapper. */
+  args: string[];
+  /** Credential-filtered environment matching the shell sandbox. */
+  env: Record<string, string>;
+  /** Backend actually applied. */
+  backend: SandboxBackend;
+  /** Releases any temp resources (e.g. the Seatbelt profile); always safe to call. */
+  cleanup: () => void;
+  /** Publish validated isolated changes after successful process completion, before cleanup. */
+  publish?: () => void;
+}
+
+/**
+ * Wrap an explicit `cmd` + `args` argv so it runs under the auto-detected OS
+ * sandbox, without going through a shell. Returns the executable, arguments,
+ * credential-filtered env, and a cleanup handle. Unlike `runInSandbox`, this
+ * preserves the caller's `execFile` error object (code/signal/exit code), which
+ * callers such as `run_tests` need to classify runner-startup failures.
+ *
+ * Only the auto-detectable backends are wrapped: `seatbelt`, `bubblewrap`,
+ * `windows` (opt-in), and `none` (no wrapping). The `docker` backend is not applied here because it is
+ * never the auto-detected default and expects a shell-string workload.
+ */
+export function buildSandboxedCommand(opts: {
+  cmd: string;
+  args: string[];
+  cwd: string;
+}): SandboxedCommand {
+  const backend = detectSandboxBackend();
+  const env = filterEnv();
+  const inner = [opts.cmd, ...opts.args];
+
+  switch (backend) {
+    case "seatbelt": {
+      const profile = createSeatbeltProfile(sandboxNetwork, opts.cwd);
+      let wrapped: { file: string; args: string[] };
+      try { wrapped = seatbeltArgv(profile.path, opts.cwd, inner, profile.policy); }
+      catch (error) { profile.cleanup(); throw error; }
+      const { file, args } = wrapped;
+      return { file, args, env, backend, cleanup: profile.cleanup };
+    }
+    case "bubblewrap": {
+      const workspace = prepareSandboxWorkspace(opts.cwd, true);
+      try {
+        const { file, args } = bubblewrapArgv(opts.cwd, inner, sandboxNetwork, workspace.path, workspace.mounts);
+        return { file, args, env, backend, publish: workspace.publish, cleanup: workspace.cleanup };
+      } catch (cause) { workspace.cleanup(); throw cause; }
+    }
+    case "windows": {
+      // Fail closed: never run the argv unsandboxed when the backend cannot apply.
+      if (sandboxNetwork === "deny") throw new Error(WINDOWS_SANDBOX_NETWORK_DENY_MESSAGE);
+      const prepared = prepareWindowsSandboxRun({ cwd: opts.cwd, invocation: windowsArgvInvocation(inner), env });
+      return { file: prepared.file, args: prepared.args, env: prepared.env, backend, cleanup: prepared.cleanup };
+    }
+    default:
+      // "none" (unavailable/unsupported) and "docker": run the argv directly.
+      return { file: opts.cmd, args: opts.args, env, backend: "none", cleanup: () => {} };
   }
 }

@@ -101,6 +101,7 @@ export function getLoopStatus(): { active: true; prompt: string; interval: strin
 export const loopCommand: SlashCommand = {
   name: "loop",
   description: "Repeat a prompt on an interval",
+  argumentHint: "<interval> <prompt>",
   usage: "Usage: /loop <interval> <prompt>\n\n  /loop 5m check git status     Run every 5 minutes\n  /loop 30s run tests           Run every 30 seconds\n  /loop stop                    Stop the active loop\n\nIntervals: Ns (seconds), Nm (minutes). The prompt runs as a normal\nagent turn each interval.",
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const trimmed = args.trim();

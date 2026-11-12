@@ -14,6 +14,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { decrypt } from "../utils/encrypt.js";
+import { isMutatingFetchCall } from "../utils/http-method.js";
 
 // AgavHooks type - defined locally since it's not exported from hooks.js
 interface AgavHooks {
@@ -82,6 +83,8 @@ export async function executeNativeAgent(
     confirmTool?: (toolName: string, input: Record<string, unknown>, diff?: any[]) => Promise<import("../agent/loop.js").ConfirmResult>;
     /** Explicit mode for direct executions such as a full-access agent lock. */
     permissionMode?: PermissionMode;
+    /** Original background consent mode, independent of generic Always. */
+    backgroundPermissionMode?: PermissionMode;
     iterationsBudget?: { remaining: number, total: number }
     /** Strict gate (workflow nodes): `native-tools` only restricts, never pre-approves; see LoopParams.toolGate. */
     toolGate?: { safeTools: ReadonlySet<string> };
@@ -186,8 +189,15 @@ export async function executeNativeAgent(
       effort,
       maxTokens: deps.config.maxTokens,
       signal: deps.signal,
-      confirmTool: deps.confirmTool ?? (childPermissionMode === "auto-accept" ? async () => "yes" : undefined),
+      confirmTool: deps.confirmTool ?? (childPermissionMode === "auto-accept" &&
+        (deps.backgroundPermissionMode ?? childPermissionMode) === "auto-accept"
+        // Full-access retains ordinary native-tool behavior, but cannot stand
+        // in for a real authorization callback for state-changing HTTP calls.
+        ? async (name, input) => isMutatingFetchCall(name, input) ? "no" : "yes"
+        : undefined),
       permissionMode: childPermissionMode,
+      backgroundPermissionMode: deps.backgroundPermissionMode === undefined ? undefined
+        : clampPermissionMode(deps.backgroundPermissionMode, deps.config.orgPermissionFloor),
       // Carry the parent's floor so the child's interactive "Always" cannot
       // widen past the org-managed permission policy either.
       permissionFloor: deps.config.orgPermissionFloor,
@@ -195,6 +205,7 @@ export async function executeNativeAgent(
       allowedTools: nativeTools,
       ...(deps.toolGate ? { toolGate: deps.toolGate } : {}),
       hooks: deps.hooks,
+      providerIdleTimeout: deps.config.providerIdleTimeout,
     });
 
     for await (const event of loopGenerator) {

@@ -1,5 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
 import { decrypt, encrypt, isEncrypted } from "../utils/encrypt.js";
@@ -79,7 +79,7 @@ export interface AgavConfig {
   /** Customized footer layout (which segments show and their order). Reconciled
    * against the current catalog on use; see config/status-bar-layout.ts. */
   statusBar?: import("./status-bar-layout.js").StatusBarLayout;
-  /** Opt-in; when unset or false, `run_background_job` and `/job` refuse to do anything. */
+  /** Opt-in to background jobs and worker-owned interactive turns with `/detach`. */
   backgroundJobsEnabled?: boolean;
   /** Global-only opt-in to foreground JSON workflows; also requires backgroundJobsEnabled. */
   workflowsEnabled?: boolean;
@@ -87,10 +87,28 @@ export interface AgavConfig {
   maxConcurrentWorkflowRuns?: number;
   /**
    * When true, `run_command` refuses to run if the effective sandbox backend
-   * is "none". Defaults to false. Global-only: project config cannot set it
+   * is "none". Defaults to true on Windows, false elsewhere. Global-only: project config cannot set it
    * (listed in PROJECT_CONFIG_DENY) so a repository cannot disable it.
   */
  sandboxRequired?: boolean;
+ /**
+  * Network policy for sandboxed shell commands. "deny" (default) blocks direct
+  * off-host networking. Linux loopback reaches only services in the same
+  * invocation, not host services. macOS host-local TCP/IP and Unix sockets are
+  * trusted channels, not an absolute guarantee against local relays. "allow"
+  * restores host networking. Only honored on the OS backends (seatbelt,
+  * bubblewrap). Global-only (listed in PROJECT_CONFIG_DENY) so a repository
+  * cannot re-enable egress for commands run against it.
+ */
+ sandboxNetwork?: "deny" | "allow";
+ /**
+  * Use the Windows restricted-token sandbox as the default backend on
+  * Windows. It confines writes to the workspace and a sandbox temp directory
+  * by adding ACEs (recorded; revoke with `agav --revoke-windows-sandbox`). It
+  * does not confine reads or networking. Defaults to true on Windows, false elsewhere. Global-only
+  * (listed in PROJECT_CONFIG_DENY).
+ */
+ windowsSandbox?: boolean;
  /**
   * Master switch for headless background automation (`agav job tick` /
   * daemon). "paused" makes tick/daemon exit early. Defaults to "on".
@@ -98,6 +116,13 @@ export interface AgavConfig {
  */
   backgroundAutomation?: "on" | "paused";
   search?: boolean;
+  /**
+   * Idle timeout in milliseconds waiting for provider stream activity.
+   * Clock starts when an attempt begins and resets on stream activity.
+   * On expiry, the attempt is aborted. When unset or disabled, Agav adds
+   * no timer and existing SDK defaults stay unchanged.
+   */
+  providerIdleTimeout?: number;
   /**
    * Organization policy (org tier) fields. Populated only when an admin ships an
    * org config; see config/org-config.ts. These take precedence over global,
@@ -155,7 +180,7 @@ export function expandHome(path: string): string {
 export const PROJECT_CONFIG_TEMPLATE = {
   provider: {
     description: "LLM provider used for new sessions.",
-    enum: ["openai", "openrouter", "nvidia", "ollama", "anthropic", "gemini", "vertex-ai"],
+    enum: ["openai", "openrouter", "nvidia", "deepseek", "ollama", "anthropic", "gemini", "vertex-ai"],
     type: "string",
     eg: "openai",
   },
@@ -212,7 +237,7 @@ export const PROJECT_CONFIG_TEMPLATE = {
     eg: false,
   },
   backgroundJobsEnabled: {
-    description: "Opt in to the background-jobs subsystem, enabling the run_background_job tool and /job command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
+    description: "Opt in to the background-jobs subsystem, enabling worker-owned interactive turns with /detach, and the run_background_job tool and /job command for launching, polling, tailing logs for, waiting on and stopping long-running commands outside the normal shell timeout and sandbox.",
     type: "boolean",
     eg: false,
   },
@@ -227,7 +252,18 @@ export const PROJECT_CONFIG_TEMPLATE = {
     eg: 2,
   },
   sandboxRequired: {
-    description: "Refuse to run shell commands when no sandbox backend is available. Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    description: "Refuse to run shell commands when no sandbox backend is available. Defaults to true on Windows, false elsewhere. Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    type: "boolean",
+    eg: false,
+  },
+  sandboxNetwork: {
+    description: "Network policy for sandboxed shell commands: 'allow' (default, host networking) or 'deny' (block direct off-host networking). Linux uses a fresh network namespace: loopback reaches only services in the same invocation, not host services or other invocations. macOS host-local TCP/IP and Unix sockets remain trusted channels, not an absolute guarantee against local relays. Applies to Seatbelt/Bubblewrap; Docker keeps network=none and unsandboxed commands are not confined. Only honored from the global config (~/.agav/config.json); ignored in project config.",
+    enum: ["deny", "allow"],
+    type: "string",
+    eg: "allow",
+  },
+  windowsSandbox: {
+    description: "Windows only: run shell commands under Agav's restricted-token sandbox by default (enabled by default on Windows). Confines file writes to the workspace and a sandbox temp directory by adding permission entries (recorded; remove with agav --revoke-windows-sandbox). Does not confine reads or networking; commands are refused while sandboxNetwork is 'deny'. Only honored from the global config (~/.agav/config.json); ignored in project config.",
     type: "boolean",
     eg: false,
   },
@@ -331,6 +367,11 @@ export const PROJECT_CONFIG_TEMPLATE = {
       },
     },
   },
+  providerIdleTimeout: {
+    description: "Idle timeout in milliseconds waiting for provider stream activity ('disabled' or 'off' to unset). When unset or disabled, Agav adds no timer and existing SDK defaults stay unchanged.",
+    type: "number",
+    eg: 60000,
+  },
   search: {
     description: "Whether web search is enabled.",
     type: "boolean",
@@ -346,7 +387,9 @@ const DEFAULT_CONFIG: AgavConfig = {
   maxTokens: 16384,
   maxIterations: 800,
   errorRetries: 5,
-  sandboxRequired: false,
+  sandboxRequired: platform() === "win32",
+  sandboxNetwork: "allow",
+  windowsSandbox: platform() === "win32",
   backgroundAutomation: "on",
   maxConcurrentWorkflowRuns: 2,
 };
@@ -420,9 +463,13 @@ const PROJECT_CONFIG_DENY = new Set<string>([
   "deepseekApiKey",
   "geminiApiKey",
   "permissionMode",
-  // A repository must not be able to disable sandbox enforcement or
-  // re-enable/pause headless automation (decisions D1, D8).
+  // A repository must not be able to disable sandbox enforcement, re-enable
+  // network egress for sandboxed commands, or re-enable/pause headless
+  // automation (decisions D1, D8).
   "sandboxRequired",
+  "sandboxNetwork",
+  // A repository must not choose the sandbox backend or trigger permission changes.
+  "windowsSandbox",
   "backgroundAutomation",
   // Workflows are an opt-in automation surface; a repository must not enable them.
   "workflowsEnabled",
@@ -455,7 +502,48 @@ const PROJECT_CONFIG_DENY = new Set<string>([
 ]);
 
 /** Ignore invalid hand-edited values instead of passing unsupported effort levels to providers. */
+/**
+ * Validate provider-response idle timeout.
+ * Accepts a positive finite integer in milliseconds (1 to 2,147,483,647)
+ * or explicit disabled forms (null, undefined, "disabled", "off").
+ * Rejects invalid, non-finite, zero, negative, or out-of-range values with a clear error.
+ */
+export function validateProviderIdleTimeout(value: unknown): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed === "disabled" || trimmed === "off") {
+      return undefined;
+    }
+    if (/^[0-9]+$/.test(value.trim())) {
+      const num = Number(value.trim());
+      if (Number.isSafeInteger(num) && num > 0 && num <= 2147483647) {
+        return num;
+      }
+    }
+    throw new Error(
+      `Invalid providerIdleTimeout: "${String(value)}". providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
+    );
+  }
+  if (typeof value === "number") {
+    if (Number.isSafeInteger(value) && value > 0 && value <= 2147483647) {
+      return value;
+    }
+    throw new Error(
+      `Invalid providerIdleTimeout: ${value}. providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
+    );
+  }
+  throw new Error(
+    `Invalid providerIdleTimeout: "${String(value)}". providerIdleTimeout must be a positive integer in milliseconds (1–2147483647) or "disabled".`,
+  );
+}
+
 function sanitizeConfig(merged: AgavConfig): void {
+  if (merged.providerIdleTimeout !== undefined) {
+    merged.providerIdleTimeout = validateProviderIdleTimeout(merged.providerIdleTimeout);
+  }
   if (!isEffortLevel(merged.effort)) {
     merged.effort = DEFAULT_CONFIG.effort;
   }
@@ -481,12 +569,37 @@ function sanitizeConfig(merged: AgavConfig): void {
   if (typeof merged.sandboxRequired !== "boolean") {
     merged.sandboxRequired = DEFAULT_CONFIG.sandboxRequired;
   }
+  if (merged.sandboxNetwork !== "deny" && merged.sandboxNetwork !== "allow") {
+    // An omitted policy uses the default (allow); a present but malformed value
+    // (for example a "Deny" or "block" typo) fails closed rather than granting host networking.
+    merged.sandboxNetwork = "deny";
+  }
+  if (typeof merged.windowsSandbox !== "boolean") {
+    merged.windowsSandbox = DEFAULT_CONFIG.windowsSandbox;
+  }
   if (!Number.isInteger(merged.maxConcurrentWorkflowRuns) || merged.maxConcurrentWorkflowRuns! < 1) {
     merged.maxConcurrentWorkflowRuns = DEFAULT_CONFIG.maxConcurrentWorkflowRuns;
   }
   if (merged.backgroundAutomation !== "on" && merged.backgroundAutomation !== "paused") {
     merged.backgroundAutomation = DEFAULT_CONFIG.backgroundAutomation;
   }
+}
+
+/** Session-only `-c` overlays: applied by every loadConfig(), never persisted. */
+export interface SessionConfigOverrides {
+  readonly entries: readonly { path: string[]; value: unknown }[];
+  apply(config: AgavConfig): void;
+}
+
+let sessionConfigOverrides: SessionConfigOverrides | undefined;
+
+export function setSessionConfigOverrides(overrides: SessionConfigOverrides | undefined): void {
+  sessionConfigOverrides = overrides;
+}
+
+/** Snapshot the selected paths without exposing the mutable session overlay. */
+export function getSessionConfigOverridePaths(): string[][] {
+  return sessionConfigOverrides?.entries.map(({ path }) => [...path]) ?? [];
 }
 
 /**
@@ -629,6 +742,15 @@ export async function loadConfig(): Promise<AgavConfig> {
     projectConfig.ollamaApiKey, globalConfig.ollamaApiKey, DEFAULT_CONFIG.ollamaApiKey,
   );
 
+  // `-c` session overlay: above files/env, below the org tail that re-asserts next.
+  if (sessionConfigOverrides) {
+    sessionConfigOverrides.apply(merged);
+  }
+
+  if (merged.vertexAICredentialsPath) {
+    merged.vertexAICredentialsPath = expandHome(merged.vertexAICredentialsPath);
+  }
+
   // Organization policy applies last so it overrides global, project, and env
   // sources alike. An admin's managed config is a non-overridable floor; the
   // user can tighten (e.g. a stricter permissionMode) but never loosen it.
@@ -691,13 +813,42 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   await withConfigLock(async () => {
     const { anthropicApiKey, openaiApiKey, openrouterApiKey, nvidiaApiKey, deepseekApiKey, geminiApiKey, ollamaApiKey, ...safe } = config;
     const out: Record<string, unknown> = { ...safe };
-    if (anthropicApiKey) out.anthropicApiKey = encrypt(anthropicApiKey);
-    if (openaiApiKey) out.openaiApiKey = encrypt(openaiApiKey);
-    if (openrouterApiKey) out.openrouterApiKey = encrypt(openrouterApiKey);
-    if (nvidiaApiKey) out.nvidiaApiKey = encrypt(nvidiaApiKey);
-    if (deepseekApiKey) out.deepseekApiKey = encrypt(deepseekApiKey);
-    if (geminiApiKey) out.geminiApiKey = encrypt(geminiApiKey);
-    if (ollamaApiKey) out.ollamaApiKey = encrypt(ollamaApiKey);
+
+    // Session `-c` values must never reach disk: restore each overridden path's
+    // stored value (and drop it entirely when the path is absent on disk), so a
+    // save never bakes a transient override into config.json.
+    const overridden = new Set<string>();
+    if (sessionConfigOverrides) {
+      const existing = await readStoredConfig();
+      for (const { path } of sessionConfigOverrides.entries) {
+        overridden.add(path[0]!);
+        let storedValue: unknown = existing;
+        for (const segment of path) {
+          storedValue = storedValue && typeof storedValue === "object"
+            ? (storedValue as Record<string, unknown>)[segment]
+            : undefined;
+        }
+        let target: Record<string, unknown> | undefined = out;
+        for (const segment of path.slice(0, -1)) {
+          const next: unknown = target?.[segment];
+          target = next && typeof next === "object" ? next as Record<string, unknown> : undefined;
+        }
+        if (!target) continue;
+        const leaf = path[path.length - 1]!;
+        if (storedValue === undefined) delete target[leaf];
+        else target[leaf] = storedValue;
+      }
+    }
+
+    // A session-supplied credential was already restored above (or dropped);
+    // never encrypt it over the stored value.
+    if (anthropicApiKey && !overridden.has("anthropicApiKey")) out.anthropicApiKey = encrypt(anthropicApiKey);
+    if (openaiApiKey && !overridden.has("openaiApiKey")) out.openaiApiKey = encrypt(openaiApiKey);
+    if (openrouterApiKey && !overridden.has("openrouterApiKey")) out.openrouterApiKey = encrypt(openrouterApiKey);
+    if (nvidiaApiKey && !overridden.has("nvidiaApiKey")) out.nvidiaApiKey = encrypt(nvidiaApiKey);
+    if (deepseekApiKey && !overridden.has("deepseekApiKey")) out.deepseekApiKey = encrypt(deepseekApiKey);
+    if (geminiApiKey && !overridden.has("geminiApiKey")) out.geminiApiKey = encrypt(geminiApiKey);
+    if (ollamaApiKey && !overridden.has("ollamaApiKey")) out.ollamaApiKey = encrypt(ollamaApiKey);
     await writeConfigAtomic(out);
   });
 }

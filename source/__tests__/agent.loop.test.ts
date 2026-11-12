@@ -254,6 +254,31 @@ describe("runAgentLoop", () => {
     expect(provider.stream).toHaveBeenCalledTimes(1);
   });
 
+  it("persists ordered thinking blocks through a tool continuation and JSON history", async () => {
+    const signed = { type: "thinking" as const, thinking: "thought", signature: "signed" };
+    const redacted = { type: "redacted_thinking" as const, data: "encrypted" };
+    const provider = new MockProvider([
+      [
+        { type: "thinking_block", block: signed },
+        { type: "text_delta", text: "Checking" },
+        { type: "thinking_block", block: redacted },
+        { type: "tool_call_start", toolCallId: "c", toolName: "lookup" },
+        { type: "tool_call_delta", toolCallId: "c", argsJson: "{}" },
+        { type: "tool_call_end", toolCallId: "c" },
+      ],
+      [{ type: "text_delta", text: "done" }],
+    ]);
+    const conversation = new ConversationState(true);
+    conversation.addUserMessage("lookup");
+    const tools = new ToolRegistry();
+    tools.register(createTool("lookup", async () => ({ output: "ok", isError: false })));
+    const events = await collectEvents(runAgentLoop({ provider, conversation, toolRegistry: tools, model: "m", iterationsBudget: { remaining: 5, total: 5 } }));
+    const expected = [signed, { type: "text", text: "Checking" }, redacted, { type: "tool_use", toolCallId: "c", toolName: "lookup", toolInput: {} }];
+    expect(provider.stream.mock.calls[1]?.[0].messages[1]?.content).toEqual(expected);
+    expect(JSON.parse(JSON.stringify(conversation.getTranscript()))[1].content).toEqual(expected);
+    expect(events.some(e => e.type === "streaming_text" && e.text.includes("signed"))).toBe(false);
+  });
+
   it("persists provider metadata returned with a tool call", async () => {
     const provider = new MockProvider([
       [
@@ -742,6 +767,65 @@ describe("runAgentLoop", () => {
         output: "Write operations are denied (--deny-writes mode).",
         isError: true,
       });
+    });
+  });
+
+  describe("fetch_url method gating", () => {
+    const runFetch = async (
+      input: Record<string, unknown>,
+      params: { permissionMode?: "ask" | "auto-accept" | "deny-writes"; confirm?: boolean },
+    ) => {
+      const provider = new MockProvider([
+        [
+          { type: "tool_call_start", toolCallId: "f-1", toolName: "fetch_url" },
+          { type: "tool_call_delta", toolCallId: "f-1", argsJson: JSON.stringify(input) },
+          { type: "message_end", stopReason: "tool_use" },
+        ],
+        [{ type: "text_delta", text: "done" }, { type: "message_end", stopReason: "end_turn" }],
+      ]);
+      const conversation = new ConversationState();
+      conversation.setModel("gpt-4");
+      conversation.addUserMessage("fetch it");
+      const execute = vi.fn(async () => ({ output: "ok", isError: false }));
+      const toolRegistry = new ToolRegistry();
+      toolRegistry.register(createTool("fetch_url", execute));
+      const confirmTool = params.confirm === undefined ? undefined : vi.fn().mockResolvedValue(params.confirm ? "yes" : "no");
+      const events = await collectEvents(runAgentLoop({
+        provider, conversation, toolRegistry, model: "gpt-4",
+        iterationsBudget: { remaining: 5, total: 5 },
+        permissionMode: params.permissionMode, ...(confirmTool ? { confirmTool } : {}),
+      }));
+      return { execute, confirmTool, events };
+    };
+
+    it("auto-approves GET without a confirmation handler", async () => {
+      const { execute } = await runFetch({ url: "https://example.com/" }, {});
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("auto-approves HEAD without a confirmation handler", async () => {
+      const { execute } = await runFetch({ url: "https://example.com/", method: "HEAD" }, {});
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("prompts for POST and runs it when confirmed", async () => {
+      const { execute, confirmTool } = await runFetch({ url: "https://example.com/", method: "POST" }, { confirm: true });
+      expect(confirmTool).toHaveBeenCalledTimes(1);
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["POST", "PUT", "DELETE", "PATCH"])("blocks %s in headless mode", async (method) => {
+      const { execute, events } = await runFetch({ url: "https://example.com/", method }, {});
+      expect(execute).not.toHaveBeenCalled();
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "tool_result", toolName: "fetch_url", isError: true,
+        output: expect.stringContaining("requires confirmation"),
+      }));
+    });
+
+    it("still prompts for POST under --auto-accept", async () => {
+      const { execute } = await runFetch({ url: "https://example.com/", method: "POST" }, { permissionMode: "auto-accept" });
+      expect(execute).not.toHaveBeenCalled();
     });
   });
 

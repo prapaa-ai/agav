@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { clearSteers, formatSteersForPrompt, getActiveSteers, steerCommand } from "../commands/steer.js";
+import { clearSteers, createSteerQueue, drainSteers, formatSteersForPrompt, getActiveSteers, queueSubagentSteer, steerCommand } from "../commands/steer.js";
+import type { CommandContext } from "../commands/types.js";
 
 describe("commands/steer", () => {
   beforeEach(() => {
@@ -39,6 +40,76 @@ describe("commands/steer", () => {
     expect(removeResult).toEqual({ type: "message", text: 'Removed steer: "one"' });
     expect(clearResult).toEqual({ type: "message", text: "Cleared 1 steer(s)." });
     expect(emptyClearResult).toEqual({ type: "message", text: "No steers to clear." });
+  });
+
+  it.each(["worker", "inspector"])("routes %s directives through the callback without local delivery", async (mode) => {
+    const child = createSteerQueue("child");
+    try {
+      const steer = vi.fn(async () => {});
+      const context = { steer, isLoading: true, isWorkerAttached: () => mode === "worker",
+        steerTargetId: mode === "inspector" ? "child" : undefined } as unknown as CommandContext;
+      await steerCommand.execute("routed directive", context);
+      expect(steer).toHaveBeenCalledExactlyOnceWith("routed directive");
+      expect(getActiveSteers()).toEqual(mode === "worker" ? ["routed directive"] : []);
+      expect(drainSteers()).toEqual([]);
+      expect(child.drain()).toEqual([]);
+    } finally { child.dispose(); }
+  });
+
+  it.each(["list", "", "clear", "remove 1"])("reports management unsupported for worker/inspector: %s", async (args) => {
+    const child = createSteerQueue("child");
+    try {
+      await steerCommand.execute("main directive", {} as CommandContext);
+      queueSubagentSteer("child", "child directive");
+      for (const target of [undefined, "child"]) {
+        const steer = vi.fn(async () => {});
+        const context = { steer, steerTargetId: target, isWorkerAttached: () => target === undefined } as unknown as CommandContext;
+        expect(await steerCommand.execute(args, context)).toEqual({ type: "message",
+          text: "Steer management (list/clear/remove) is not supported in a background worker or subagent inspector." });
+        expect(steer).not.toHaveBeenCalled();
+      }
+      expect(getActiveSteers()).toEqual(["main directive"]);
+      expect(drainSteers()).toEqual(["main directive"]);
+      expect(child.drain()).toEqual(["child directive"]);
+    } finally { child.dispose(); }
+  });
+
+  it("awaits callback success before persisting a main directive and reports failures", async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    const result = steerCommand.execute("main directive", { steer: () => pending } as unknown as CommandContext);
+    expect(getActiveSteers()).toEqual([]);
+    finish();
+    await result;
+    expect(getActiveSteers()).toEqual(["main directive"]);
+    expect(drainSteers()).toEqual([]);
+    const failure = await steerCommand.execute("failed directive", { steer: async () => { throw new Error("inactive"); } } as unknown as CommandContext);
+    expect(failure).toEqual({ type: "message", text: "Failed to steer: inactive" });
+    expect(getActiveSteers()).toEqual(["main directive"]);
+  });
+
+  it("targets a local inspector child without adding a main steer", async () => {
+    const child = createSteerQueue("child");
+    try {
+      await steerCommand.execute("child directive", { steerTargetId: "child" } as unknown as CommandContext);
+      expect(child.drain()).toEqual(["child directive"]);
+      expect(getActiveSteers()).toEqual([]);
+      expect(drainSteers()).toEqual([]);
+    } finally { child.dispose(); }
+  });
+
+  it("checks current worker ownership and preserves foreground delivery after attachment ends", async () => {
+    let live = true;
+    const context = { isLoading: true, isWorkerAttached: () => live } as CommandContext;
+    await steerCommand.execute("rejected directive", context);
+    live = false;
+
+    await expect(steerCommand.execute("foreground directive", context)).resolves.toEqual({
+      type: "message",
+      text: 'Steer added: "foreground directive"\nWill be delivered to the running agent before it continues.',
+    });
+    expect(getActiveSteers()).toEqual(["foreground directive"]);
+    expect(drainSteers()).toEqual(["foreground directive"]);
   });
 
   it("validates remove indexes", async () => {

@@ -86,6 +86,11 @@ export type DOMElement = {
 	onImmediateRender?: () => void;
 	onStaticChange?: () => void;
 	internal_layoutListeners?: Set<LayoutListener>;
+	/** Private bridge used by global selection to scroll its owning viewport. */
+	internal_scroll?: {
+		content: DOMElement;
+		scrollBy: (lines: number) => boolean;
+	};
 
 	// Mouse support additions for the agav Ink fork.
 	onClick?: (event: MouseEventData) => void;

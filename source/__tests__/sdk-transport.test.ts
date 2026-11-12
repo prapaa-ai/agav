@@ -10,8 +10,8 @@ import type { LLMProvider, StreamEvent, StreamParams } from "../providers/types.
 // via the security override that forces patched transitive deps). The SDKs do
 // not export "./package.json", so these cannot be read at runtime — update them
 // in lockstep whenever the openai/@anthropic-ai/sdk versions change.
-const openaiVersion = "7.47.0";
-const anthropicVersion = "1.3.0";
+const openaiVersion = "7.53.0";
+const anthropicVersion = "1.6.0";
 
 // Only the transport is replaced: the installed SDK request builders, SSE
 // decoders and (for messages.stream) MessageStream accumulator all run for real.
@@ -106,7 +106,7 @@ describe("real SDK SSE transport (installed Anthropic / OpenAI SDKs)", () => {
       { type: "tool_call_delta", toolCallId: "call_file", argsJson: '{"path":' },
       { type: "tool_call_delta", toolCallId: "call_file", argsJson: '"a.ts"}' },
       { type: "tool_call_end", toolCallId: "call_file" },
-      { type: "usage", inputTokens: 0, outputTokens: 8 },
+      { type: "usage", inputTokens: 0, outputTokens: 8, cacheReadTokens: 0, cacheWriteTokens: 0 },
       { type: "message_end", stopReason: "tool_use" },
     ]);
     const req = request();

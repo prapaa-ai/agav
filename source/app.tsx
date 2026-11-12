@@ -78,6 +78,7 @@ interface Props {
   resumeTokenUsage?: import("./config/history.js").SessionTokenUsage;
   resumeCompacted?: boolean;
   resumeSessionName?: string;
+  resumeRuntime?: import("./config/history.js").SessionRecord["runtime"];
   resumePermissionMode?: AgavConfig["permissionMode"];
   repoBranch?: string;
   /** Whether the terminal negotiated an enhanced keyboard protocol (Shift+Enter is legible). */
@@ -86,6 +87,7 @@ interface Props {
   showChangelogOnLaunch?: boolean;
   /** Retained after unmount so the terminal host can await foreground settlement. */
   shutdownRef?: { current: (() => Promise<void>) | null };
+  detachedSessionRef?: { current: string | null };
 }
 
 const BANNER: DisplayMessage = {
@@ -104,7 +106,7 @@ interface QueuedRequest {
 let sysMessageId = 0;
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
-export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef }: Props) {
+export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode, resumeRuntime, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef, detachedSessionRef }: Props) {
 
   const [input, setInput] = useState("");
   const readPromptRef = useRef<(() => string) | null>(null);
@@ -268,7 +270,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const loginTUIResolveRef = useRef<((result: { cancelled: boolean; message?: string }) => void) | null>(null);
   const { exit: exitInk, suspendTerminalSync, resetDisplay } = useApp();
   const commandRegistryRef = useRef(new CommandRegistry());
-  const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS));
+  const detachResolverRef = useRef(new KeybindingResolver(keybindings, ["detachSession"]));
+  const keyResolverRef = useRef(new KeybindingResolver(keybindings, GLOBAL_ACTIONS.filter(action => action !== "detachSession")));
   /** Lets handleSubmit re-sync InputPrompt's caret after rewriting its buffer. */
 
   const {
@@ -301,6 +304,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     refreshAgentCommands,
     addDisplayMessage,
     cancel,
+    detachSession,
+    canDetach,
+    isWorkerAttached,
+    steer,
     cancelSubagent,
     clearMessages,
     confirmTool,
@@ -322,7 +329,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     togglePause,
     interveneWhilePaused,
     iterationsBudget
-  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode);
+  } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumeRuntime, resumePermissionMode);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
   const [copyNotice, setCopyNotice] = useState<ClipboardNotice | null>(null);
@@ -433,12 +440,25 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     voice.cancel();
     updateQueue([]);
     shellAbortRef.current?.abort();
-    cancel();
+    // Explicit detach leaves the worker alone. Ordinary exit/interrupt requests a
+    // generation-bound cancellation and waits for its durable publication before exit.
+    const cancellation = detachedSessionRef?.current ? undefined : cancel();
     stopActiveLoop();
-    exitInk();
-    // Keep Ink alive until the foreground executor has checkpointed settlement.
-    void settleWorkflow().then(() => exitInk());
+    void Promise.resolve(cancellation).then(settleWorkflow).then(() => exitInk());
   }, [cancel, exitInk, updateQueue, voice.cancel, settleWorkflow]);
+
+  React.useLayoutEffect(() => {
+    if (shutdownRef) shutdownRef.current = async () => {
+      if (!detachedSessionRef?.current) await cancel();
+      await settleWorkflow();
+    };
+  }, [shutdownRef, detachedSessionRef, cancel, settleWorkflow]);
+
+  const detachCurrentSession = useCallback(async () => {
+    const id = await detachSession();
+    if (detachedSessionRef) detachedSessionRef.current = id;
+    return id;
+  }, [detachSession, detachedSessionRef]);
 
   /**
    * Background-job support for workflow `job` nodes and job-aware `/workflows cancel`.
@@ -874,6 +894,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [config.backgroundJobsEnabled, config.workflowsEnabled]);
 
   const hasSubagents = isLoading && subagentStates.length > 0;
+  const focusedSubagent = isLoading && focusedSubagentId
+    ? subagentStates.find((s) => s.id === focusedSubagentId)
+    : undefined;
 
   // Drop the detail view when the plan it was showing is cleared or finished,
   // so a later plan does not reopen it without being asked.
@@ -882,11 +905,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [activePlan]);
 
   useEffect(() => {
-    if (!isLoading) {
-      setFocusedSubagentId(null);
-      setSelectedSubagentIdx(0);
-    }
-  }, [focusedSubagentId, isLoading]);
+    if (focusedSubagentId && !focusedSubagent) setFocusedSubagentId(null);
+    if (!isLoading) setSelectedSubagentIdx(0);
+  }, [focusedSubagentId, focusedSubagent, isLoading]);
 
   // Clamp the selection index when subagents finish and the list shrinks.
   useEffect(() => {
@@ -898,6 +919,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   /** Reserve a few global shortcuts for cancellation and tool/subagent inspection. */
   useInput((rawChar, rawKey) => {
     if (workflowsTUI) return; // The full-screen workflow view owns the keyboard.
+    // Resolve before confirmation/queue guards: detaching must never answer consent.
+    const normalized = normalizeKeyEvent(rawChar, rawKey);
+    const detachMatch = detachResolverRef.current.feed(normalized.input, normalized.key);
+    if (detachMatch.pending || detachMatch.action) {
+      if (detachMatch.action && canDetach) {
+        void detachCurrentSession().then(() => exit()).catch(error => showStatusLine(error instanceof Error ? error.message : String(error)));
+      }
+      return;
+    }
     if (voice.isActive()) {
       const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
       if (key.eventType === "release" || key.eventType === "repeat") return;
@@ -965,7 +995,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       shellAbortRef.current.abort();
       return;
     }
-    if (match.action === "togglePause" && isLoading && !pendingConfirmation) {
+    if (match.action === "togglePause" && isLoading && !isWorkerAttached && !pendingConfirmation) {
       togglePause();
       return;
     }
@@ -1234,7 +1264,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       try {
         // ! prefix — run directly, show raw output, then ask the agent to analyze it.
         // Do not execute a command whose follow-up would be rejected by a busy turn.
-        if (shellAbortRef.current) return;
+        // Safe slash commands bypass serialization even during direct shell work.
+        if (shellAbortRef.current && !immediateCommand) return;
         if (trimmed.startsWith("!")) {
           const cmd = trimmed.slice(1).trim();
           if (!cmd || isLoading || pendingConfirmation) return;
@@ -1283,7 +1314,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           && promptAttachments.length === 0
           && (!isLoading || isCommandAllowedMidTurn(commandName));
         if (!isSlashCommand && isLoading) {
-          if (isGenerationPaused && (trimmed || promptAttachments.length > 0)) {
+          if (!isWorkerAttached && isGenerationPaused && (trimmed || promptAttachments.length > 0)) {
             const extraBlocks: ContentBlock[] = promptAttachments.map((attachment) => ({ ...attachment.contentBlock }));
             const llmText = trimmed || "See attached content";
             const imageIds = promptAttachments.filter((a) => a.kind === "image").map((a) => a.id);
@@ -1315,6 +1346,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             provider: activeProvider ?? undefined,
             getModelSelectionVersion: () => modelSelectionVersion.current,
             getEffectivePermissionMode,
+            detachSession: detachCurrentSession,
             setModel: (model: string) => {
               // Enforce the org policy on interactive model changes (/model,
               // /fast, /deep): a managed pin or allowlist applies to every
@@ -1387,6 +1419,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             currentSessionId: sessionId,
             exit,
             isLoading,
+            isWorkerAttached: () => isWorkerAttached,
+            steer: (directive) => steer(directive, focusedSubagent?.id),
+            steerTargetId: focusedSubagent?.id,
             getMCPAuthenticationRequired,
             authenticateMCPServer,
             logoutMCPServer,
@@ -1581,7 +1616,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
+    [steer, focusedSubagent, detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.
@@ -1638,7 +1673,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     if (measured > 0 && measured !== footerHeight) setFooterHeight(measured);
   });
 
-  const documentHeight = Math.max(3, termRows - footerHeight);
+  const documentHeight = Math.max(3, termRows - 1 - footerHeight);
 
   // Scroll the document wherever the pointer happens to be. ScrollBox has its
   // own onWheel, but it only ever sees events that hit-test into it — with the
@@ -1649,7 +1684,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     docControls.current?.scrollBy(event.direction === "up" ? step : -step);
   }, [documentHeight]);
 
-  const statusHint = useMemo(() => getRandomHint(keybindings, enhancedKeyboard), [messages.length, keybindings, enhancedKeyboard]);
+  const statusHint = useMemo(() => getRandomHint(keybindings, enhancedKeyboard, config.backgroundJobsEnabled === true), [messages.length, keybindings, enhancedKeyboard, config.backgroundJobsEnabled]);
 
   // Workflows owns the entire frame, not the home footer. Keeping the document
   // mounted behind it leaves the banner and status bar visible above/below it.
@@ -1712,9 +1747,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }
 
   return (
-    // Pinned to the terminal height so the frame can never grow past the screen
-    // even while a measurement is still settling.
-    <Box flexDirection="column" height={termRows} onWheel={handleWheel}>
+    // Reserve the renderer's trailing newline so the oldest document row
+    // stays visible and selectable when scrolled all the way to the top.
+    <Box flexDirection="column" height={Math.max(1, termRows - 1)} onWheel={handleWheel}>
       {/*
         One scrolling document, not a stack of viewports. Everything the user
         reads lives in here at its natural height and moves together; giving
@@ -1825,10 +1860,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         )}
 
         {isLoading && (() => {
-          const focusedSubagent = focusedSubagentId
-            ? subagentStates.find((s) => s.id === focusedSubagentId)
-            : null;
-
           if (focusedSubagent) {
             return (
               <Box flexDirection="column" marginBottom={1}>
@@ -1917,10 +1948,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         {queueBlocked && queuedRequests.length > 0 && <Text color="yellow">Queue paused · /queue retry to retry</Text>}
         {!voice.phase && pendingConfirmation && (
           <ToolConfirm
+            detachAvailable={canDetach}
             toolName={pendingConfirmation.toolName}
             input={pendingConfirmation.input}
             diffLines={pendingConfirmation.diffLines}
             mcpServerName={pendingConfirmation.mcpServerName}
+            warning={pendingConfirmation.warning}
             onConfirm={(choice) => confirmTool(choice, keyStartConfirmationRef.current ?? pendingConfirmation ?? undefined)}
             subagentTask={pendingConfirmation.subagentTask}
             explicitApprovalOnly={pendingConfirmation.explicitApprovalOnly}
@@ -2068,11 +2101,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             suppressHistory={isLoading}
             commands={[
               { name: "queue", description: "Manage queued requests (retry to resume)" },
-              { name: "ps", description: "Side query while agent is working" },
+              { name: "ps", description: "Side query while agent is working", argumentHint: "<question>" },
               ...commandRegistryRef.current.list().map((c) => ({
                 name: c.name,
                 description: c.description,
                 category: c.description.startsWith("[agent]") ? "agent" as const : "command" as const,
+                argumentHint: c.argumentHint,
+                autoSubmit: c.autoSubmit,
               })),
             ]}
             keybindings={keybindings}

@@ -21,16 +21,19 @@
  *    (.github/workflows/sandbox-enforcement.yml) fails the run if the backend it
  *    is responsible for could not apply, so a skip on the owning runner is turned
  *    into a hard failure there — a silently-disabled sandbox cannot hide.
- *  - Guarantees that a backend does NOT provide are documented, not asserted:
- *    seatbelt/bubblewrap here do not sandbox the network, so the network test is
- *    Docker-only (which configures --network=none).
+ *  - Same-host TCP/Unix tests are separate from real off-host egress tests.
+ *    Off-host tests connect (without sending data) to 1.1.1.1:443 by default;
+ *    AGAV_TEST_EGRESS_HOST/PORT can select another reachable off-host IPv4
+ *    endpoint. Unreachable host/allow controls FAIL, never count as isolation.
+ *    Linux host loopback is NOT shared; macOS host-local/Unix access is trusted.
  */
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, existsSync, writeFileSync } from "node:fs";
-import { tmpdir, platform } from "node:os";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir, platform, networkInterfaces } from "node:os";
+import { createServer, isIPv4, type ListenOptions, type Socket } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, type TestContext } from "vitest";
-import { runInSandbox, detectSandboxBackend, type SandboxBackend } from "../utils/sandbox.js";
+import { runInSandbox, buildSandboxedCommand, detectSandboxBackend, getSandboxNetwork, setSandboxNetwork, type SandboxNetwork, type SandboxBackend } from "../utils/sandbox.js";
 
 const RUN = { timeout: 20_000, maxBuffer: 1 << 20 };
 const SEED = "agav-secret-do-not-leak";
@@ -155,6 +158,386 @@ function seedHome(rawRoot: string): { home: string; workdir: string; secret: str
   };
 }
 
+type NativeBackend = "seatbelt" | "bubblewrap";
+type NetworkPath = "runInSandbox" | "buildSandboxedCommand";
+const NETWORK_PATHS: NetworkPath[] = ["runInSandbox", "buildSandboxedCommand"];
+const NETWORK_REPLY = "agav-network-control";
+const CONNECTED = `START\nCONNECTED\nRESPONSE:${NETWORK_REPLY}\n`;
+
+/** Async execution keeps the parent listener's event loop serving the control. */
+function execProbe(file: string, args: string[], cwd: string, env?: NodeJS.ProcessEnv) {
+  return new Promise<{ stdout: string; stderr: string; error: Error | null }>(resolve => {
+    execFile(file, args, { cwd, env, ...RUN }, (error, stdout, stderr) => resolve({ error, stdout, stderr }));
+  });
+}
+
+function quoteArg(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+async function networkProbe(backend: NativeBackend, path: NetworkPath, policy: SandboxNetwork, script: string, cwd: string) {
+  const previous = getSandboxNetwork();
+  setSandboxNetwork(policy);
+  try {
+    if (path === "runInSandbox") {
+      return await sandboxed(backend, `${quoteArg(process.execPath)} -e ${quoteArg(script)}`, cwd);
+    }
+    const built = buildSandboxedCommand({ cmd: process.execPath, args: ["-e", script], cwd });
+    try {
+      // Auto-detection must not silently turn this control into an unsandboxed run.
+      expect(built.backend).toBe(backend);
+      return await execProbe(built.file, built.args, cwd, built.env);
+    } finally {
+      built.cleanup();
+    }
+  } finally {
+    setSandboxNetwork(previous);
+  }
+}
+
+/** No DNS, curl/python installation, fixed port, sleep, or remote service needed. */
+function clientScript(address: { host: string; port: number } | { path: string }): string {
+  return `
+    const net = require('node:net');
+    console.log('START');
+    const socket = net.connect(${JSON.stringify(address)});
+    const timer = setTimeout(() => { console.error('probe timed out'); process.exit(2); }, 3000);
+    let reply = '';
+    socket.setEncoding('utf8');
+    socket.on('connect', () => console.log('CONNECTED'));
+    socket.on('data', chunk => { reply += chunk; });
+    socket.on('end', () => { clearTimeout(timer); console.log('RESPONSE:' + reply); });
+    socket.on('error', error => { clearTimeout(timer); console.log('BLOCKED:' + error.code); });
+  `;
+}
+
+async function withListener(options: ListenOptions, test: (port: number) => Promise<void>): Promise<void> {
+  const sockets = new Set<Socket>();
+  const server = createServer(socket => {
+    sockets.add(socket);
+    socket.on("error", () => {}); // A denied/terminated probe may close early.
+    socket.on("close", () => sockets.delete(socket));
+    socket.end(NETWORK_REPLY);
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options, () => { server.removeListener("error", reject); resolve(); });
+    });
+    const address = server.address();
+    await test(typeof address === "object" && address ? address.port : 0);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+}
+
+/** Discover a real local IPv4 address deterministically, not an assumed eth0/en0. */
+function nonLoopbackAddress(): string {
+  const interfaces = networkInterfaces();
+  for (const name of Object.keys(interfaces).sort()) {
+    const addresses = (interfaces[name] ?? [])
+      .filter(address => address.family === "IPv4" && !address.internal && !address.address.startsWith("127."))
+      .map(address => address.address).sort();
+    if (addresses[0]) return addresses[0];
+  }
+  // Native CI promises execution of EVERY owning-backend test. Do not silently
+  // skip coverage if its network fixture is absent; diagnose the runner instead.
+  throw new Error(`Native network enforcement needs a non-loopback IPv4 interface; found ${JSON.stringify(interfaces)}`);
+}
+
+function expectConnected(result: Awaited<ReturnType<typeof execProbe>>): void {
+  expect(result.error, result.stderr).toBeNull();
+  expect(result.stdout).toBe(CONNECTED);
+}
+
+function sameInvocationScript(): string {
+  return `
+    const net = require('node:net');
+    const { spawn } = require('node:child_process');
+    const timer = setTimeout(() => process.exit(2), 5000);
+    const server = net.createServer(socket => socket.end(${JSON.stringify(NETWORK_REPLY)}));
+    server.on('error', error => { console.error(error); process.exit(3); });
+    server.listen(0, '127.0.0.1', () => {
+      const script = ${JSON.stringify(clientScript({ host: "127.0.0.1", port: 0 }))}
+        .replace('"port":0', '"port":' + server.address().port);
+      const child = spawn(process.execPath, ['-e', script], { stdio: 'inherit' });
+      child.on('error', error => { console.error(error); process.exit(4); });
+      child.on('exit', code => server.close(() => { clearTimeout(timer); process.exit(code ?? 5); }));
+    });
+  `;
+}
+
+/** Real off-host destination: numeric IPv4 avoids DNS/proxy policy ambiguity. */
+function egressTarget(host = process.env.AGAV_TEST_EGRESS_HOST ?? "1.1.1.1", rawPort = process.env.AGAV_TEST_EGRESS_PORT ?? "443") {
+  const local = Object.values(networkInterfaces()).flatMap(addresses => addresses ?? []).map(address => address.address);
+  if (!isIPv4(host) || host.startsWith("127.") || host === "0.0.0.0" || local.includes(host)) {
+    throw new Error("AGAV_TEST_EGRESS_HOST must be an off-host IPv4 address, not loopback or a local interface.");
+  }
+  const port = Number(rawPort);
+  if (!/^\d+$/.test(rawPort) || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("AGAV_TEST_EGRESS_PORT must be an integer from 1 to 65535.");
+  }
+  return { host, port };
+}
+
+/** TCP handshake only: no application data, credentials, or project files sent. */
+function connectOnlyScript(address: { host: string; port: number }): string {
+  return `
+    const net = require('node:net');
+    console.log('START');
+    const socket = net.connect(${JSON.stringify(address)});
+    const timer = setTimeout(() => { console.error('egress control timed out'); socket.destroy(); process.exitCode = 2; }, 5000);
+    socket.on('connect', () => { clearTimeout(timer); console.log('CONNECTED'); socket.destroy(); });
+    socket.on('error', error => { clearTimeout(timer); console.log('BLOCKED:' + error.code); });
+  `;
+}
+
+/** Security assertions cover persistence, not just whether a private write succeeded. */
+function nativeWorkspaceTests(backend: NativeBackend, fixture: (ctx: TestContext) => ReturnType<typeof seedHome>): void {
+  for (const execution of NETWORK_PATHS) {
+    it(`protects existing and absent workspace config (${execution})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      const cwd = mkdtempSync(join(workdir, "protected-"));
+      const run = async (script: string) => {
+        if (execution === "runInSandbox") return sandboxed(backend, `${quoteArg(process.execPath)} -e ${quoteArg(script)}`, cwd);
+        const built = buildSandboxedCommand({ cmd: process.execPath, args: ["-e", script], cwd });
+        try {
+          const result = await execProbe(built.file, built.args, cwd, built.env);
+          if (!result.error) {
+            try { built.publish?.(); } catch (error) { result.error = error as Error; }
+          }
+          return result;
+        } finally { built.cleanup(); }
+      };
+      try {
+        const control = await run("require('fs').writeFileSync('ordinary.txt','published')");
+        expect(control.error, control.stderr).toBeNull();
+        expect(readFileSync(join(cwd, "ordinary.txt"), "utf8")).toBe("published");
+        for (const name of [".envrc", ".agav/agents/entry.js", ".git/config", ".git/hooks/pre-commit"]) {
+          const script = `const fs=require('fs'); fs.mkdirSync(require('path').dirname(${JSON.stringify(name)}),{recursive:true});fs.writeFileSync(${JSON.stringify(name)},'injected')`;
+          const blocked = await run(script);
+          expect(blocked.error).not.toBeNull();
+          expect(existsSync(join(cwd, name))).toBe(false);
+        }
+        // Existing protected content must remain unchanged as well as absent names.
+        for (const name of [".agav/config.json", ".vscode/settings.json", ".idea/tasks.xml"]) {
+          mkdirSync(join(cwd, name.split("/")[0]!), { recursive: true });
+          writeFileSync(join(cwd, name), "original");
+          const blocked = await run(`require('fs').writeFileSync(${JSON.stringify(name)},'changed')`);
+          expect(blocked.error).not.toBeNull();
+          expect(readFileSync(join(cwd, name), "utf8")).toBe("original");
+        }
+        writeFileSync(join(cwd, "target"), "original");
+        symlinkSync("target", join(cwd, ".envrc"));
+        for (const name of [".envrc", "target"]) {
+          const blocked = await run(`require('fs').writeFileSync(${JSON.stringify(name)},'changed')`);
+          expect(blocked.error).not.toBeNull();
+          expect(readFileSync(join(cwd, "target"), "utf8")).toBe("original");
+        }
+        for (const script of [
+          "require('fs').unlinkSync('.envrc')",
+          "require('fs').renameSync('target','moved-target')",
+          "const fs=require('fs'); fs.writeFileSync('replacement','bad'); fs.renameSync('replacement','target')",
+        ]) {
+          const blocked = await run(script);
+          expect(blocked.error).not.toBeNull();
+          expect(readFileSync(join(cwd, "target"), "utf8")).toBe("original");
+          expect(existsSync(join(cwd, ".envrc"))).toBe(true);
+        }
+        rmSync(join(cwd, ".envrc"));
+        symlinkSync("missing/target", join(cwd, ".envrc"));
+        const dangling = await run("const fs=require('fs'); fs.mkdirSync('missing',{recursive:true}); fs.writeFileSync('missing/target','bad')");
+        expect(dangling.error).not.toBeNull();
+        expect(existsSync(join(cwd, "missing/target"))).toBe(false);
+
+      } finally { rmSync(cwd, { recursive: true, force: true }); }
+    }, 30_000);
+
+    it(`preserves Git staging with external metadata and blocks config writes (${execution})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      const base = mkdtempSync(join(workdir, "git-staging-"));
+      const cwd = join(base, "checkout");
+      const metadata = join(base, "metadata");
+      mkdirSync(cwd);
+      const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0" };
+      const git = (args: string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", env });
+      const run = async (script: string) => {
+        if (execution === "runInSandbox") return sandboxed(backend, `${quoteArg(process.execPath)} -e ${quoteArg(script)}`, cwd);
+        const built = buildSandboxedCommand({ cmd: process.execPath, args: ["-e", script], cwd });
+        try {
+          const result = await execProbe(built.file, built.args, cwd, built.env);
+          if (!result.error) { try { built.publish?.(); } catch (error) { result.error = error as Error; } }
+          return result;
+        } finally { built.cleanup(); }
+      };
+      try {
+        git(["init", "--quiet", "--template=", "--separate-git-dir", metadata]);
+        const originalConfig = readFileSync(join(metadata, "config"), "utf8");
+        // A separate gitdir is the layout used by submodule gitfiles. No commit
+        // is necessary to exercise real index/object creation and publication.
+        for (const shared of [false, true]) {
+          if (shared) {
+            const perWorktree = join(metadata, "worktrees", "linked");
+            mkdirSync(perWorktree, { recursive: true });
+            writeFileSync(join(perWorktree, "HEAD"), "ref: refs/heads/linked\n");
+            writeFileSync(join(perWorktree, "commondir"), "../..\n");
+            writeFileSync(join(perWorktree, "gitdir"), join(cwd, ".git") + "\n");
+            writeFileSync(join(cwd, ".git"), `gitdir: ${perWorktree}\n`);
+          }
+          const result = await run(`
+            const fs=require('fs'), cp=require('child_process');
+            const env={...process.env,GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_COUNT:'0'};
+            fs.writeFileSync('ordinary.txt',${JSON.stringify("staged-" )} + ${shared});
+            cp.execFileSync('git',['status','--porcelain'],{env});
+            cp.execFileSync('git',['add','ordinary.txt'],{env});
+            console.log('GIT_OK');
+          `);
+          expect(result.error, result.stderr).toBeNull();
+          expect(result.stdout).toBe("GIT_OK\n");
+          expect(git(["show", ":ordinary.txt"])).toBe(`staged-${shared}`);
+          const blocked = await run(`require('fs').writeFileSync(${JSON.stringify(join(metadata, "config"))},'[core]\\n hooksPath = bad\\n')`);
+          expect(blocked.error).not.toBeNull();
+          expect(readFileSync(join(metadata, "config"), "utf8")).toBe(originalConfig);
+        }
+      } finally { rmSync(base, { recursive: true, force: true }); }
+    }, 30_000);
+
+    it(`starts harmless commands with a Git worktree pointer (${execution})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      const cwd = mkdtempSync(join(workdir, "gitfile-"));
+      try {
+        const metadata = join(workdir, "metadata");
+        mkdirSync(metadata, { recursive: true });
+        writeFileSync(join(cwd, ".git"), `gitdir: ${metadata}\n`);
+        const result = await networkProbe(backend, execution, "deny", "console.log('WORKTREE_OK')", cwd);
+        expect(result.error, result.stderr).toBeNull();
+        expect(result.stdout).toBe("WORKTREE_OK\n");
+      } finally { rmSync(cwd, { recursive: true, force: true }); }
+    });
+  }
+}
+
+/** Register inside the existing owning suite so CI's no-skips check covers it. */
+function nativeNetworkTests(backend: NativeBackend, fixture: (ctx: TestContext) => ReturnType<typeof seedHome>): void {
+  for (const path of NETWORK_PATHS) {
+    it(`checks same-host non-loopback TCP in deny and allow modes (${path})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      const host = nonLoopbackAddress();
+      await withListener({ host, port: 0 }, async port => {
+        const script = clientScript({ host, port });
+        expectConnected(await execProbe(process.execPath, ["-e", script], workdir));
+        expectConnected(await networkProbe(backend, path, "allow", script, workdir));
+        const denied = await networkProbe(backend, path, "deny", script, workdir);
+        // Seatbelt's localhost filter includes the host's own non-loopback
+        // interface. This fixture is NOT evidence of off-host egress denial.
+        if (backend === "seatbelt") {
+          expectConnected(denied);
+        } else {
+          expect(denied.error, denied.stderr).toBeNull();
+          expect(denied.stdout).toMatch(/^START\nBLOCKED:(EPERM|EACCES|ENETUNREACH|EHOSTUNREACH)\n$/);
+        }
+        // Verify deny did not merely race a disappearing listener.
+        expectConnected(await networkProbe(backend, path, "allow", script, workdir));
+      });
+    }, 30_000);
+
+    it(`blocks off-host TCP with successful host and allow controls (${path})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      const target = egressTarget();
+      const script = connectOnlyScript(target);
+      const connected = (result: Awaited<ReturnType<typeof execProbe>>) => {
+        const diagnostic = `Off-host positive control ${target.host}:${target.port} must connect; choose a reachable AGAV_TEST_EGRESS_HOST/PORT if blocked by your network. ${result.stderr}`;
+        expect(result.error, diagnostic).toBeNull();
+        expect(result.stdout, diagnostic).toBe("START\nCONNECTED\n");
+      };
+      connected(await execProbe(process.execPath, ["-e", script], workdir));
+      connected(await networkProbe(backend, path, "allow", script, workdir));
+      const denied = await networkProbe(backend, path, "deny", script, workdir);
+      expect(denied.error, denied.stderr).toBeNull();
+      // Refusals, timeouts, DNS failures, and launch errors cannot prove denial.
+      expect(denied.stdout).toMatch(/^START\nBLOCKED:(EPERM|EACCES|ENETUNREACH|EHOSTUNREACH)\n$/);
+      connected(await networkProbe(backend, path, "allow", script, workdir));
+    }, 30_000);
+
+    it(`tests host loopback in deny and allow modes (${path})`, async ctx => {
+      const { workdir } = fixture(ctx);
+      await withListener({ host: "127.0.0.1", port: 0 }, async port => {
+        const script = clientScript({ host: "127.0.0.1", port });
+        expectConnected(await execProbe(process.execPath, ["-e", script], workdir));
+        expectConnected(await networkProbe(backend, path, "allow", script, workdir));
+        const denied = await networkProbe(backend, path, "deny", script, workdir);
+        if (backend === "seatbelt") {
+          expectConnected(denied);
+        } else {
+          expect(denied.error, denied.stderr).toBeNull();
+          // The same numeric endpoint is absent in the fresh namespace.
+          expect(denied.stdout).toBe("START\nBLOCKED:ECONNREFUSED\n");
+        }
+        expectConnected(await networkProbe(backend, path, "allow", script, workdir));
+      });
+    }, 30_000);
+
+    if (backend === "seatbelt") {
+      it(`keeps host Unix sockets as trusted channels in deny and allow modes (${path})`, async ctx => {
+        const { workdir } = fixture(ctx);
+        // Keep the pathname below sockaddr_un's macOS length limit.
+        const root = mkdtempSync("/tmp/agav-net-");
+        const socketPath = join(root, "socket");
+        try {
+          await withListener({ path: socketPath }, async () => {
+            const script = clientScript({ path: socketPath });
+            expectConnected(await execProbe(process.execPath, ["-e", script], workdir));
+            for (const policy of ["deny", "allow"] as const) {
+              expectConnected(await networkProbe(backend, path, policy, script, workdir));
+            }
+          });
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      }, 30_000);
+    } else {
+      it(`allows loopback services within the same invocation in deny and allow modes (${path})`, async ctx => {
+        const { workdir } = fixture(ctx);
+        // A child client proves distinct processes in this invocation share lo.
+        // Readiness comes from listen(), not sleep or a racy reserved port.
+        const script = sameInvocationScript();
+        expectConnected(await execProbe(process.execPath, ["-e", script], workdir));
+        for (const policy of ["deny", "allow"] as const) {
+          expectConnected(await networkProbe(backend, path, policy, script, workdir));
+        }
+      }, 30_000);
+    }
+  }
+}
+
+// Exercise generated clients even where nested OS sandbox application is denied.
+// These controls inherit the enclosing sandbox; they do not request a bypass.
+describe.runIf(platform() !== "win32")("network enforcement fixtures", () => {
+  it("validates off-host targets and ports without contacting them", () => {
+    expect(egressTarget("1.1.1.1", "443")).toEqual({ host: "1.1.1.1", port: 443 });
+    for (const host of ["127.0.0.1", "127.2.3.4", "0.0.0.0", "localhost", "::1", ...Object.values(networkInterfaces()).flatMap(addresses => addresses ?? []).map(address => address.address)]) {
+      expect(() => egressTarget(host, "443")).toThrow(/off-host IPv4/);
+    }
+    for (const port of ["", "0", "65536", "3.5", "-1", "443oops"]) expect(() => egressTarget("1.1.1.1", port)).toThrow(/PORT/);
+  });
+
+  it("connect-only client finishes without waiting for an application reply", async () => {
+    await withListener({ host: "127.0.0.1", port: 0 }, async port => {
+      const result = await execProbe(process.execPath, ["-e", connectOnlyScript({ host: "127.0.0.1", port })], process.cwd());
+      expect(result.error, result.stderr).toBeNull();
+      expect(result.stdout).toBe("START\nCONNECTED\n");
+    });
+  });
+
+  it("serves host loopback and same-invocation child-client controls", async () => {
+    await withListener({ host: "127.0.0.1", port: 0 }, async port => {
+      expectConnected(await execProbe(process.execPath, ["-e", clientScript({ host: "127.0.0.1", port })], process.cwd()));
+    });
+    expectConnected(await execProbe(process.execPath, ["-e", sameInvocationScript()], process.cwd()));
+  });
+});
+
 describe("real sandbox enforcement (per-OS)", () => {
   // -------------------------------------------------------------------------
   // macOS Seatbelt
@@ -172,6 +555,9 @@ describe("real sandbox enforcement (per-OS)", () => {
       active = await backendApplies("seatbelt", env.workdir);
     });
     afterAll(() => { env?.restore(); try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } });
+
+    nativeNetworkTests("seatbelt", ctx => { guard(ctx); return env; });
+    nativeWorkspaceTests("seatbelt", ctx => { guard(ctx); return env; });
 
     it("detects seatbelt as the default backend on macOS", (ctx) => {
       guard(ctx);
@@ -280,10 +666,9 @@ describe("real sandbox enforcement (per-OS)", () => {
       // (no-bwrap) Tests job never creates a stray dir under the checkout that a
       // clean-worktree check could trip.
       if (!backendInstalled("bubblewrap")) return;
-      // IMPORTANT: NOT under /tmp. production runBubblewrap applies `--tmpfs /tmp`
-      // AFTER `--bind {cwd} {cwd}`, so a workdir under /tmp would be masked by the
-      // empty tmpfs and host writes would vanish. Real users' CWDs are project
-      // dirs, never /tmp; mirror that by rooting the fixture under the checkout.
+      // Keep the fixture HOME outside /tmp so its installed toolchains remain
+      // visible through the root bind. A separate test exercises /tmp checkouts
+      // without binding the rest of the host's temporary files into the sandbox.
       mkdirSync(base, { recursive: true });
       root = mkdtempSync(join(base, "run-"));
       seeded = seedHome(root);
@@ -294,6 +679,9 @@ describe("real sandbox enforcement (per-OS)", () => {
       try { if (root) rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
       try { rmSync(base, { recursive: true, force: true }); } catch { /* best effort */ }
     });
+
+    nativeNetworkTests("bubblewrap", guard);
+    nativeWorkspaceTests("bubblewrap", guard);
 
     it("detects bubblewrap as the default backend when bwrap is present", (ctx) => {
       guard(ctx);
@@ -308,6 +696,138 @@ describe("real sandbox enforcement (per-OS)", () => {
       expect(r.stdout).toContain("WROTE");
       // The bind is read-write to the host, so the file is visible outside.
       expect(existsSync(marker)).toBe(true);
+    });
+
+    it("preserves a /tmp checkout while hiding neighboring host temporary files", async (ctx) => {
+      guard(ctx);
+      const temp = mkdtempSync("/tmp/agav-bw-workspace-");
+      const work = join(temp, "checkout");
+      mkdirSync(work);
+      const source = join(work, "source.txt");
+      const neighbor = join(temp, "outside.txt");
+      writeFileSync(source, "workspace-source");
+      writeFileSync(neighbor, SEED);
+      const command = `cat ${JSON.stringify(source)} && printf wrote > result.txt`;
+      try {
+        // Positive control: exact workload and neighboring file both work on host.
+        expect(execFileSync("/bin/sh", ["-c", command], { cwd: work, encoding: "utf8" })).toBe("workspace-source");
+        expect(readFileSync(neighbor, "utf8")).toBe(SEED);
+        rmSync(join(work, "result.txt"));
+        const r = await sandboxed("bubblewrap", `${command} && if cat ${JSON.stringify(neighbor)} 2>/dev/null; then exit 9; fi; echo DONE`, work);
+        expect(r.error).toBeNull();
+        expect(r.stdout).toBe("workspace-sourceDONE\n");
+        expect(readFileSync(join(work, "result.txt"), "utf8")).toBe("wrote");
+      } finally {
+        rmSync(temp, { recursive: true, force: true });
+      }
+    });
+
+    it.for([".cache", ".config", ".npm", ".cargo"])("restores workspaces nested in %s scratch", async (dir, ctx) => {
+      const env = guard(ctx);
+      const work = join(env.home, dir, "checkout");
+      mkdirSync(work, { recursive: true });
+      writeFileSync(join(work, "source.txt"), "source");
+      const command = "cat source.txt && printf persisted > output.txt";
+      expect(execFileSync("/bin/sh", ["-c", command], { cwd: work, encoding: "utf8" })).toBe("source");
+      rmSync(join(work, "output.txt"));
+      const r = await sandboxed("bubblewrap", command, work);
+      expect(r.error).toBeNull();
+      expect(r.stdout).toBe("source");
+      expect(readFileSync(join(work, "output.txt"), "utf8")).toBe("persisted");
+    });
+
+    it("keeps user executables and their installed runtimes visible read-only, with writable Cargo/cache scratch", async (ctx) => {
+      const env = guard(ctx);
+      const cargoBin = join(env.home, ".cargo", "bin");
+      const rustupBin = join(env.home, ".rustup", "toolchains", "test", "bin");
+      const localBin = join(env.home, ".local", "bin");
+      const pythonBin = join(env.home, ".local", "share", "uv", "python", "test", "bin");
+      for (const dir of [cargoBin, rustupBin, localBin, pythonBin]) mkdirSync(dir, { recursive: true });
+      // Deterministic executable fixtures reproduce rustup and uv's indirection
+      // without requiring downloads or a particular installed language version.
+      const rust = join(rustupBin, "rustc");
+      const python = join(pythonBin, "python");
+      writeFileSync(rust, "#!/bin/sh\nprintf RUST_OK\n", { mode: 0o755 });
+      writeFileSync(python, "#!/bin/sh\nprintf PYTHON_OK\n", { mode: 0o755 });
+      const cargo = join(cargoBin, "cargo");
+      writeFileSync(cargo, `#!/bin/sh\nset -e\nmkdir -p "$HOME/.cargo/registry" "$HOME/.cache/tool"\nprintf lock > "$HOME/.cargo/.package-cache"\nprintf cache > "$HOME/.cargo/registry/cache"\nprintf cache > "$HOME/.cache/tool/cache"\nexec ${JSON.stringify(rust)}\n`, { mode: 0o755 });
+      symlinkSync(python, join(localBin, "python"));
+      const command = `${JSON.stringify(cargo)} && ${JSON.stringify(join(localBin, "python"))}`;
+      expect(execFileSync("/bin/sh", ["-c", command], { encoding: "utf8" })).toBe("RUST_OKPYTHON_OK");
+      const lock = join(env.home, ".cargo", ".package-cache");
+      const cache = join(env.home, ".cargo", "registry", "cache");
+      const pipCache = join(env.home, ".cache", "tool", "cache");
+      for (const file of [lock, cache, pipCache]) rmSync(file);
+      const credentials = join(env.home, ".cargo", "credentials.toml");
+      writeFileSync(credentials, SEED);
+      expect(readFileSync(credentials, "utf8")).toBe(SEED);
+      const r = await sandboxed("bubblewrap", `${command} && test -f ${JSON.stringify(lock)} && test ! -e ${JSON.stringify(credentials)}`, env.workdir);
+      expect(r.error).toBeNull();
+      expect(r.stdout).toBe("RUST_OKPYTHON_OK");
+      for (const file of [lock, cache, pipCache]) expect(existsSync(file)).toBe(false);
+      for (const dir of [cargoBin, localBin, pythonBin, rustupBin]) {
+        const target = join(dir, "write-control");
+        writeFileSync(target, "host");
+        expect(readFileSync(target, "utf8")).toBe("host");
+        const denied = await sandboxed("bubblewrap", `printf changed > ${JSON.stringify(target)}`, env.workdir);
+        expect(denied.error).not.toBeNull();
+        expect(readFileSync(target, "utf8")).toBe("host");
+      }
+    });
+
+    it.for(["home", "parent"])("keeps config and Cargo credentials masked for a %s workspace", async (scope, ctx) => {
+      const env = guard(ctx);
+      const cwd = scope === "home" ? env.home : join(env.home, "..");
+      const secrets = [
+        join(env.home, ".config", "gh", "hosts.yml"),
+        join(env.home, ".cargo", "credentials.toml"),
+        join(env.home, ".npm", "private-cache"),
+        join(env.home, ".cache", "private-cache"),
+      ];
+      mkdirSync(join(env.home, ".config", "gh"), { recursive: true });
+      const cargoBin = join(env.home, ".cargo", "bin");
+      mkdirSync(cargoBin, { recursive: true });
+      const executable = join(cargoBin, "agav-fixture");
+      writeFileSync(executable, "#!/bin/sh\nprintf TOOLCHAIN_OK\n", { mode: 0o755 });
+      const writes = [".config", ".cargo", ".npm", ".cache"].map(dir => join(env.home, dir, `sandbox-${scope}`));
+      for (const secret of secrets) {
+        writeFileSync(secret, SEED);
+        expect(execFileSync("cat", [secret], { encoding: "utf8" })).toBe(SEED);
+      }
+      for (const target of writes) {
+        writeFileSync(target, "host-control");
+        expect(readFileSync(target, "utf8")).toBe("host-control");
+        rmSync(target);
+      }
+      expect(execFileSync(executable, [], { encoding: "utf8" })).toBe("TOOLCHAIN_OK");
+      const command = [
+        ...secrets.map(secret => `test ! -e ${JSON.stringify(secret)}`),
+        ...writes.map(target => `printf scratch > ${JSON.stringify(target)}`),
+        JSON.stringify(executable),
+      ].join(" && ");
+      const result = await sandboxed("bubblewrap", command, cwd);
+      expect(result.error).toBeNull();
+      expect(result.stdout).toBe("TOOLCHAIN_OK");
+      for (const target of writes) expect(existsSync(target)).toBe(false);
+      for (const secret of secrets) expect(readFileSync(secret, "utf8")).toBe(SEED);
+    });
+
+    it.for([".ssh", ".aws", ".gnupg"])("keeps %s masked when the workspace is HOME or inside credentials", async (dir, ctx) => {
+      const env = guard(ctx);
+      const work = join(env.home, dir, "checkout");
+      mkdirSync(work, { recursive: true });
+      const secret = join(work, "secret");
+      writeFileSync(secret, SEED);
+      expect(execFileSync("cat", [secret], { encoding: "utf8" })).toBe(SEED);
+      const parent = await sandboxed("bubblewrap", `test ! -e ${JSON.stringify(secret)} && echo MASKED`, env.home);
+      expect(parent.error).toBeNull();
+      expect(parent.stdout).toBe("MASKED\n");
+      // The final credential mask hides the nested checkout itself: chdir must
+      // fail closed rather than restoring a credential directory for the command.
+      const nested = await sandboxed("bubblewrap", "echo WORKLOAD_STARTED; cat secret", work);
+      expect(nested.error).not.toBeNull();
+      expect(nested.stdout).not.toContain("WORKLOAD_STARTED");
+      expect(nested.stdout).not.toContain(SEED);
     });
 
     it("masks a seeded credential file with tmpfs (control: host CAN read it)", async (ctx) => {
@@ -358,7 +878,7 @@ describe("real sandbox enforcement (per-OS)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Docker: the only backend that sandboxes the network (--network=none).
+  // Docker: networking is always isolated (--network=none), regardless of policy.
   // Runs wherever a Docker daemon is reachable; otherwise a visible skip.
   // -------------------------------------------------------------------------
   describe.runIf(platform() !== "win32")("Docker network + process isolation", () => {

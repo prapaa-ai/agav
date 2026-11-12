@@ -45,8 +45,8 @@ afterEach(() => {
 
 describe("GeminiProvider usage accounting", () => {
   // Gemini repeats usageMetadata on every chunk with cumulative totals. The
-  // consumer sums usage events, so one event per chunk would report 3x here.
-  it("emits a single usage event carrying the final cumulative totals", async () => {
+  // consumer sums usage events, so each event must contain only the difference.
+  it("emits live deltas summing to the final cumulative totals", async () => {
     mockFetch([
       {
         usageMetadata: { promptTokenCount: 14000, candidatesTokenCount: 20 },
@@ -65,8 +65,11 @@ describe("GeminiProvider usage accounting", () => {
     const events = await collect();
     const usage = usageOf(events);
 
-    expect(usage).toHaveLength(1);
-    expect(usage[0]).toMatchObject({ inputTokens: 14000, outputTokens: 72, cacheReadTokens: 0 });
+    expect(usage).toEqual([
+      { type: "usage", inputTokens: 14000, outputTokens: 20, cacheReadTokens: 0 },
+      { type: "usage", inputTokens: 0, outputTokens: 25, cacheReadTokens: 0 },
+      { type: "usage", inputTokens: 0, outputTokens: 27, cacheReadTokens: 0 },
+    ]);
 
     // The rest of the stream is untouched.
     expect(
@@ -96,8 +99,10 @@ describe("GeminiProvider usage accounting", () => {
     ]);
 
     const usage = usageOf(await collect());
-    expect(usage).toHaveLength(1);
-    expect(usage[0]).toMatchObject({ cacheReadTokens: 13000, inputTokens: 14000 });
+    expect(usage).toEqual([
+      { type: "usage", inputTokens: 14000, outputTokens: 10, cacheReadTokens: 13000 },
+      { type: "usage", inputTokens: 0, outputTokens: 8, cacheReadTokens: 0 },
+    ]);
   });
 
   // The final chunk often carries finishReason with no parts, which the parts
@@ -115,11 +120,13 @@ describe("GeminiProvider usage accounting", () => {
     ]);
 
     const usage = usageOf(await collect());
-    expect(usage).toHaveLength(1);
-    expect(usage[0]).toMatchObject({ inputTokens: 900, outputTokens: 7 });
+    expect(usage).toEqual([
+      { type: "usage", inputTokens: 900, outputTokens: 5, cacheReadTokens: 0 },
+      { type: "usage", inputTokens: 0, outputTokens: 2, cacheReadTokens: 0 },
+    ]);
   });
 
-  it("includes thinking tokens once from the final cumulative usage-only chunk", async () => {
+  it("includes thinking token deltas through the final usage-only chunk", async () => {
     mockFetch([
       {
         usageMetadata: {
@@ -145,7 +152,9 @@ describe("GeminiProvider usage accounting", () => {
 
     const events = await collect();
     expect(usageOf(events)).toEqual([
-      { type: "usage", inputTokens: 900, outputTokens: 37, cacheReadTokens: 800 },
+      { type: "usage", inputTokens: 900, outputTokens: 10, cacheReadTokens: 800 },
+      { type: "usage", inputTokens: 0, outputTokens: 15, cacheReadTokens: 0 },
+      { type: "usage", inputTokens: 0, outputTokens: 12, cacheReadTokens: 0 },
     ]);
     expect(events.filter((e) => e.type === "thinking_delta")).toEqual([
       { type: "thinking_delta", text: "thinking" },
@@ -176,8 +185,40 @@ describe("GeminiProvider usage accounting", () => {
       { usageMetadata: { promptTokenCount: 900, candidatesTokenCount: 7, thoughtsTokenCount: 0 } },
     ]);
     expect(usageOf(await collect())).toEqual([
-      { type: "usage", inputTokens: 900, outputTokens: 7, cacheReadTokens: 0 },
+      { type: "usage", inputTokens: 900, outputTokens: 35, cacheReadTokens: 0 },
+      { type: "usage", inputTokens: 0, outputTokens: -28, cacheReadTokens: 0 },
     ]);
+  });
+
+  it("does not double count repeated snapshots, including after message_end", async () => {
+    const usageMetadata = { promptTokenCount: 100, candidatesTokenCount: 7, thoughtsTokenCount: 3, cachedContentTokenCount: 90 };
+    mockFetch([
+      { usageMetadata },
+      { usageMetadata, candidates: [{ content: { parts: [] }, finishReason: "STOP" }] },
+      { usageMetadata },
+    ]);
+    expect(usageOf(await collect())).toEqual([
+      { type: "usage", inputTokens: 100, outputTokens: 10, cacheReadTokens: 90 },
+    ]);
+  });
+
+  it("keeps cumulative usage local to overlapping requests on one provider", async () => {
+    mockFetch([
+      { usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 7, cachedContentTokenCount: 90 } },
+      { usageMetadata: { promptTokenCount: 120, candidatesTokenCount: 9, cachedContentTokenCount: 100 } },
+    ]);
+    const provider = new GeminiProvider("test-key");
+    const request = async () => {
+      const events: StreamEvent[] = [];
+      for await (const event of provider.stream({ model: "m", messages: [] })) events.push(event);
+      return usageOf(events);
+    };
+    const expected = [
+      { type: "usage", inputTokens: 100, outputTokens: 7, cacheReadTokens: 90 },
+      { type: "usage", inputTokens: 20, outputTokens: 2, cacheReadTokens: 10 },
+    ];
+    expect(await Promise.all([request(), request()])).toEqual([expected, expected]);
+    expect(await request()).toEqual(expected);
   });
 
   it("emits no usage event when the response carries no usageMetadata", async () => {

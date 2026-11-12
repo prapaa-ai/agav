@@ -6,7 +6,7 @@ order: 4
 
 # Configuration
 
-Agav merges defaults, `~/.agav/config.json`, and `./.agav/config.json` in that order. Environment variables then override provider credentials and Ollama address settings; CLI flags override the active startup values.
+Agav merges defaults, `~/.agav/config.json`, and `./.agav/config.json` in that order. Environment variables then override provider credentials and Ollama address settings, `-c key=value` session overrides layer on top of the result, dedicated CLI flags win over those, and organization-managed policy wins over everything (see Precedence).
 
 ## Precedence
 
@@ -16,8 +16,9 @@ For most settings the effective value is the last one found in this chain:
 2. global config — `~/.agav/config.json`
 3. project config — `./.agav/config.json`
 4. environment variables (credentials and Ollama address settings only)
-5. CLI flags (applied at startup)
-6. organization-managed config (see [Organization-managed configuration](#organization-managed-configuration)) — applied **last** and **not overridable** by the user
+5. session overrides — `-c key=value` (repeatable; see the [CLI reference](/reference/cli))
+6. dedicated CLI flags (applied at startup)
+7. organization-managed config (see [Organization-managed configuration](#organization-managed-configuration)) — applied **last** and **not overridable** by the user
 
 When an administrator ships an organization policy, its enforced fields win over every source above, including environment variables and CLI flags. A user can make a setting *stricter* (for example choosing a more restrictive `permissionMode`) but cannot loosen or bypass an org-enforced value.
 
@@ -39,8 +40,8 @@ Because the key fields are removed from project config, a value like `openaiApiK
   "maxTokens": 16384,
   "maxIterations": 800,
   "errorRetries": 5,
+  "providerIdleTimeout": 60000,
   "permissionMode": "ask",
-  "sandboxRequired": false,
   "allowedTools": ["read_file", "run_command:npm run *"],
   "systemPrompt": "Follow the conventions documented in this repository.",
   "hooks": {
@@ -82,14 +83,17 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | `showThinking` | When `true`, stream the model's reasoning text (toggle at runtime with Ctrl+T) |
 | `effort` | `minimal`, `low`, `medium`, `high`, or `max`; invalid values fall back to `medium` |
 | `maxTokens` | Maximum output tokens per model response |
-| `maxIterations` | Maximum agent/tool iterations per prompt; must be a positive integer; can be overridden at startup with `--max-turns` for the current session |
+| `maxIterations` | Maximum agent/tool iterations per prompt; must be a positive integer; can be overridden at startup with `--max-turns` or `-c maxIterations` for the current session |
 | `errorRetries` | Transient provider retries; must be zero or greater |
+| `providerIdleTimeout` | Idle timeout in milliseconds waiting for provider stream activity (positive safe integer 1–2147483647). When unset, `null`, or `"disabled"`, Agav adds no timer and retains provider SDK defaults. Can be overridden at startup with `--provider-idle-timeout`. |
 | `permissionMode` | `ask`, `auto-accept`, or `deny-writes` |
-| `sandboxRequired` | When `true`, refuse to start if no OS-level sandbox (Seatbelt, Bubblewrap, or Docker) is available |
+| `sandboxRequired` | Refuse `run_command` and `run_tests` executions without an OS-level sandbox; does not prevent startup. Default `true` on Windows, `false` elsewhere. Global config only. See [Requiring a sandbox](/reference/security#requiring-a-sandbox). |
+| `sandboxNetwork` | Network policy for Seatbelt and Bubblewrap `run_command` and `run_tests` executions: `allow` (default) or `deny` to block direct off-host networking. Global config only; invalid values are treated as `deny`. See [Network policy](/reference/security#network-policy). |
+| `windowsSandbox` | Run shell/test commands under Agav's Windows restricted-token helper, confining writes to the workspace and a sandbox temp directory. Reads and networking are not confined; execution is refused under `sandboxNetwork: "deny"`. Default `true` on Windows, `false` elsewhere; global config only. A missing helper blocks execution with the default `sandboxRequired: true`, not startup. See [Restricted-token sandbox](/reference/security#restricted-token-sandbox). |
 | `allowedTools` | Tool names or scoped patterns that can run without confirmation |
 | `search` | When `true`, enable the `web_search` tool (off by default). Also settable per session with `--search`. See [Built-in tools](/features/built-in-tools). |
 | `systemPrompt` | Additional project instructions |
-| `backgroundJobsEnabled` | Opt in (default `false`) to the `run_background_job` tool and `/job`. Jobs run outside the shell sandbox. See [Background jobs](/features/background-jobs). |
+| `backgroundJobsEnabled` | Opt in (default `false`) to `run_background_job`, `/job`, and worker-owned ordinary interactive turns with `/detach`. Set `true` before starting the task; no separate flag is needed for detached sessions. Shell jobs run outside the shell sandbox; session tools retain their permission and sandbox policy. See [Background jobs](/features/background-jobs) and [Detached sessions](/features/detached-sessions). |
 | `backgroundAutomation` | `on` (default) or `paused`. `paused` makes `agav job tick` and `agav job daemon` do nothing. Global config only. |
 | `hooks` | Optional commands for `afterEdit`, `afterShell`, and `preCommit` |
 | `theme` | Partial terminal color overrides |
@@ -141,14 +145,15 @@ Prefer environment variables on shared machines. Values in `config.json` are con
 
 ### Project config restrictions
 
-To prevent a malicious repository from redirecting API requests or escalating permissions, the following fields are **ignored in project configuration** and can only be set in global configuration (`~/.agav/config.json`) or via environment variables:
+To prevent a malicious repository from redirecting API requests or escalating permissions, the following fields are **ignored in project configuration** and can only be set in global configuration (`~/.agav/config.json`), via environment variables, or from your own command line with `-c` (explicit user intent, session-only):
 
 - **Endpoint overrides:** `openaiBaseURL`, `openaiHeaders`, `ollamaEndpoint`, `ollamaHost`, `ollamaPort`
 - **API keys:** `anthropicApiKey`, `openaiApiKey`, `openrouterApiKey`, `nvidiaApiKey`, `deepseekApiKey`, `geminiApiKey`, `ollamaApiKey`
 - **Permission escalation:** `permissionMode`
+- **Sandbox policy:** `sandboxRequired`, `sandboxNetwork`, `windowsSandbox`
 - **Unattended automation:** `backgroundAutomation`
 
-These fields are stripped from `./.agav/config.json` before it is merged, so a value placed there is **silently ignored** rather than applied — Agav does not warn about it. This ensures that cloning an untrusted repository cannot silently redirect your credentials to a third-party server or bypass tool confirmations. Set these fields in global config or via environment variables instead.
+These fields are stripped from `./.agav/config.json` before it is merged, so a value placed there is **silently ignored** rather than applied — Agav does not warn about it. This ensures that cloning an untrusted repository cannot silently redirect your credentials to a third-party server or bypass tool confirmations. Set these fields in global config, via environment variables, or with `-c` instead.
 
 > **This is not the same as gitignore.** Ignoring `.agav/` in a repository only stops *you* from accidentally committing *your own* project config. It does not protect you when you clone *someone else's* repo: a malicious author can commit a poisoned `./.agav/config.json` anyway (for example with `git add -f`, which overrides `.gitignore`), and it arrives on your disk as a tracked file the moment you clone. Your local `.gitignore` never applies to it. The deny-list above is the actual defense against that clone-and-run threat, because it strips the dangerous fields at load time regardless of how the file got there. Do not rely on gitignore for credential safety.
 

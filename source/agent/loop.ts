@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   LLMProvider,
   StreamEvent,
@@ -7,6 +8,7 @@ import type {
 import type { ConversationState } from "./conversation.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { clampPermissionMode } from "../config/org-config.js";
+import { isMutatingFetchCall } from "../utils/http-method.js";
 import {
   MAX_STEPS_PROMPT,
   NEEDS_VERIFY_PROMPT,
@@ -15,6 +17,17 @@ import {
   testsFailedPrompt,
   repeatedFailurePrompt,
 } from "./internal-prompts.js";
+
+/** A final drain keeps admission open only when steering can trigger another inference. */
+export interface SteerDrainOptions {
+  final?: boolean;
+  canContinue?: boolean;
+  hasLocalSteers?: boolean;
+}
+
+// Shared by loops using the same allowance; reservations are not spent until
+// provider dispatch. Waiters must distinguish refundable slots from exhaustion.
+const budgetReservations = new WeakMap<object, { count: number; waiters: Set<() => void> }>();
 
 export type AgentEvent =
   | { type: "retry"; message: string }
@@ -30,7 +43,103 @@ export type AgentEvent =
   | { type: "turn_complete" }
   | { type: "steer_applied"; directives: string[] }
   | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
-  | { type: "error"; error: Error; reason?: "iterations_exhausted" };
+  | { type: "error"; error: Error; reason?: "iterations_exhausted" | "provider_idle_timeout" };
+
+export class ProviderIdleTimeoutError extends Error {
+  readonly timeoutMs: number;
+  constructor(timeoutMs: number) {
+    super(`Provider response idle timeout after ${timeoutMs}ms`);
+    this.name = "ProviderIdleTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
+ * Shared idle-watchdog lifecycle for provider streams. Both the main response
+ * loop and summarize() stream from the provider and must abort an attempt that
+ * stalls past `timeoutMs` of inactivity, while forwarding parent cancellation,
+ * suspending the watchdog across retry backoffs, and always cleaning up timers
+ * and listeners. Consolidated here so the two paths cannot drift (see #619).
+ *
+ * Path-specific behavior stays with the caller: the main loop records that the
+ * abort was a timeout (so it can preserve partial text and emit
+ * `provider_idle_timeout`), while summarize() just aborts and falls back. The
+ * `onTimeout` callback lets each path run its own bookkeeping before the
+ * attempt is aborted with a `ProviderIdleTimeoutError`.
+ */
+function createIdleWatchdog(options: {
+  /** Idle timeout in ms; `undefined` or non-positive disables the watchdog. */
+  timeoutMs: number | undefined;
+  /** Attempt controller aborted on idle timeout or parent cancellation. */
+  controller: AbortController;
+  /** Parent signal whose cancellation is forwarded to the attempt controller. */
+  signal?: AbortSignal;
+  /** Caller bookkeeping run immediately before an idle-timeout abort. */
+  onTimeout?: () => void;
+}): {
+  /** Clears any armed timer and re-arms it; no-op when disabled or aborted. */
+  reset: () => void;
+  /** Suspends the watchdog for `backoffMs`, then re-arms via reset(). */
+  suspendForBackoff: (backoffMs: number) => void;
+  /** Clears the timer and removes the parent-abort listener. Idempotent. */
+  cleanup: () => void;
+} {
+  const { controller, signal, onTimeout } = options;
+  const enabled = typeof options.timeoutMs === "number" && options.timeoutMs > 0;
+  const timeoutMs = enabled ? (options.timeoutMs as number) : 0;
+  let idleTimer: NodeJS.Timeout | null = null;
+
+  const clearTimer = () => {
+    if (idleTimer !== null) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+
+  const reset = () => {
+    if (!enabled || controller.signal.aborted) return;
+    clearTimer();
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      onTimeout?.();
+      controller.abort(new ProviderIdleTimeoutError(timeoutMs));
+    }, timeoutMs);
+  };
+
+  const suspendForBackoff = (backoffMs: number) => {
+    // Suspend the watchdog while the provider backs off: a retry wait is not an
+    // idle stall. Re-arm after the backoff so a stall after the retry still trips.
+    clearTimer();
+    if (!enabled || controller.signal.aborted) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      reset();
+    }, backoffMs);
+  };
+
+  const onParentAbort = () => {
+    clearTimer();
+    controller.abort(signal?.reason ?? new Error("Aborted"));
+  };
+
+  let listenerAttached = false;
+  if (signal?.aborted) {
+    controller.abort(signal.reason ?? new Error("Aborted"));
+  } else if (signal) {
+    signal.addEventListener("abort", onParentAbort, { once: true });
+    listenerAttached = true;
+  }
+
+  const cleanup = () => {
+    clearTimer();
+    if (listenerAttached && signal) {
+      signal.removeEventListener("abort", onParentAbort);
+      listenerAttached = false;
+    }
+  };
+
+  return { reset, suspendForBackoff, cleanup };
+}
 
 import type { DiffLine } from "../utils/diff.js";
 import { computeEditDiff, computeDiff } from "../utils/diff.js";
@@ -115,11 +224,11 @@ interface LoopParams {
   hooks?: import("../config/config.js").AgavHooks;
   /**
    * Drains /steer directives queued mid-turn. The main conversation drains
-   * its queue; subagents supply independent broadcast queues so no child
+   * its queue; subagents supply independent recipient queues so no child
    * consumes another recipient's directives. When unset, the loop receives
    * no mid-turn steers.
    */
-  drainSteers?: () => string[];
+  drainSteers?: (options?: SteerDrainOptions) => string[] | Promise<string[]>;
   iterationsBudget?: { remaining: number, total: number }
   /** Explicit skill dispatch shares the normal tool permission/history path. */
   initialToolCall?: { name: "activate_skill"; input: Record<string, unknown> };
@@ -132,6 +241,13 @@ interface LoopParams {
    * contexts (subagents, skills, pipe mode), which just take the default.
    */
   requestManualContextWindow?: (model: string, signal?: AbortSignal) => Promise<number | undefined>;
+  /**
+   * Idle timeout in milliseconds waiting for provider stream activity.
+   * Clock starts when an attempt begins and resets on stream activity.
+   * On expiry, the attempt is aborted with ProviderIdleTimeoutError.
+   * When unset or <= 0, no timer is set and SDK defaults stay unchanged.
+   */
+  providerIdleTimeout?: number;
 }
 
 /** Assumed window for a model no catalog can report and the user declined to specify. */
@@ -266,17 +382,33 @@ export async function* runAgentLoop(
   const failureStreaks = new Map<string, { errorSig: string; count: number; redirected: boolean }>();
   // After this many consecutive identical failures, inject one redirect.
   const REPEATED_FAILURE_THRESHOLD = 3;
-  // Mid-turn /steer directives — see LoopParams.drainSteers. Undefined for
-  // subagent/skill/agent loops, which never receive them.
+  // Recipient-specific directives are collected only at protocol-safe boundaries.
   const drainSteers = params.drainSteers;
-  const collectSteers = () => (drainSteers ? drainSteers() : []);
+  const collectSteers = async (options: SteerDrainOptions = {}) => {
+    const directives = drainSteers ? await drainSteers(options) : [];
+    return options.canContinue === false ? [] : directives;
+  };
 
   let pendingSummarizeUsage: Record<string, number> | null = null;
 
   const summarize = async (msgs: Message[]): Promise<string> => {
     let result = "";
     pendingSummarizeUsage = null;
+
+    const timeoutMs =
+      typeof params.providerIdleTimeout === "number" && params.providerIdleTimeout > 0
+        ? params.providerIdleTimeout
+        : undefined;
+
+    const summarizeController = new AbortController();
+    const watchdog = createIdleWatchdog({
+      timeoutMs,
+      controller: summarizeController,
+      signal,
+    });
+
     try {
+      watchdog.reset();
       for await (const event of provider.stream({
         model,
         messages: msgs,
@@ -290,8 +422,21 @@ export async function* runAgentLoop(
           "This summary replaces earlier messages — anything not included here is lost.",
         effort,
         maxTokens: 2048,
-        signal,
+        signal: summarizeController.signal,
       })) {
+        if (event.type === "retry") {
+          const backoffMs = event.delayMs ?? (() => {
+            const match = event.message.match(/Retrying in (\d+)s/);
+            return match ? parseInt(match[1], 10) * 1000 : 0;
+          })();
+          watchdog.suspendForBackoff(backoffMs);
+          continue;
+        }
+
+        watchdog.reset();
+        if (summarizeController.signal.aborted) {
+          return "";
+        }
         if (event.type === "text_delta") result += event.text;
         if (event.type === "usage") {
           // Providers may split input/cache and output usage across events.
@@ -302,8 +447,13 @@ export async function* runAgentLoop(
           pendingSummarizeUsage["cacheWriteTokens"]! += event.cacheWriteTokens ?? 0;
         }
       }
+      if (summarizeController.signal.aborted) {
+        return "";
+      }
     } catch {
       return "";
+    } finally {
+      watchdog.cleanup();
     }
     return result || "";
   };
@@ -364,17 +514,80 @@ export async function* runAgentLoop(
     conversation.setContextWindow(resolved);
   }
   conversation.setSystemPrompt?.(systemPrompt ?? "");
-  const maxIterations = Math.min(iterationsBudget.total, iterationsBudget.remaining);
+  let reservations = budgetReservations.get(iterationsBudget);
+  if (!reservations) {
+    reservations = { count: 0, waiters: new Set() };
+    budgetReservations.set(iterationsBudget, reservations);
+  }
+  const sharedReservations = reservations;
+  const maxIterations = Math.min(iterationsBudget.total, iterationsBudget.remaining + sharedReservations.count);
+  const settleReservation = () => {
+    sharedReservations.count--;
+    for (const wake of sharedReservations.waiters) wake();
+  };
   const initialToolCall = params.initialToolCall;
-  for (let iteration = initialToolCall ? -1 : 0; iteration < maxIterations && iterationsBudget.remaining > 0; iteration++) {
+  // Own the next iteration before a durable drain can consume steering. Keep
+  // ownership across awaits/yields, then spend it at the next provider request.
+  let continuationReserved = false;
+  const releaseContinuation = () => {
+    if (continuationReserved) {
+      iterationsBudget.remaining++;
+      continuationReserved = false;
+      settleReservation();
+    }
+  };
+  // Check and acquire synchronously; only a genuinely contended acquisition
+  // yields. On waking, retry acquisition rather than trusting stale availability.
+  const acquireIteration = (reserve: boolean): boolean | Promise<boolean> => {
+    if (signal?.aborted) return false;
+    if (iterationsBudget.remaining > 0) {
+      iterationsBudget.remaining--;
+      if (reserve) {
+        continuationReserved = true;
+        sharedReservations.count++;
+      }
+      return true;
+    }
+    if (!sharedReservations.count) return false;
+    return new Promise<void>(resolve => {
+      const wake = () => {
+        sharedReservations.waiters.delete(wake);
+        signal?.removeEventListener("abort", wake);
+        resolve();
+      };
+      sharedReservations.waiters.add(wake);
+      signal?.addEventListener("abort", wake, { once: true });
+    }).then(() => acquireIteration(reserve));
+  };
+  const reserveContinuation = (iteration: number) =>
+    iteration + 1 < maxIterations ? acquireIteration(true) : false;
+  try {
+  for (let iteration = initialToolCall ? -1 : 0; iteration < maxIterations; iteration++) {
     const seededCall = iteration === -1 ? initialToolCall : undefined;
-    if (seededCall && signal?.aborted) {
+    if (signal?.aborted) {
       yield { type: "error", error: new Error("Aborted") };
       return;
     }
-    // A deterministic dispatch is not a model request and spends no iteration.
-    if (!seededCall) {
-      iterationsBudget.remaining--
+    // Reserve the shared request budget before an asynchronous steering drain
+    // lets another delegated loop claim the same remaining iteration.
+    if (!seededCall && !continuationReserved) {
+      const acquired = acquireIteration(false);
+      if (!(typeof acquired === "boolean" ? acquired : await acquired)) break;
+    }
+    // Deliver already accepted startup directives before constructing the first
+    // task request. Seeded tool dispatches drain after their paired results.
+    if (iteration === 0 && !initialToolCall) {
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
+      const startupSteers = await collectSteers();
+      for (const steer of startupSteers) conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
+      if (startupSteers.length) yield { type: "steer_applied", directives: startupSteers };
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
     }
     // Auto-compact if conversation is getting long
     const { compacted, droppedCount } = await conversation.compactIfNeeded(false, summarize);
@@ -393,6 +606,7 @@ export async function* runAgentLoop(
     }
 
     let textAccum = "";
+    const assistantContent: ContentBlock[] = [];
     const toolCalls = new Map<
       string,
       { name: string; argsJson: string; providerMetadata?: Record<string, unknown> }
@@ -408,79 +622,158 @@ export async function* runAgentLoop(
       yield { type: "tool_call_input_delta", toolCallId: id, argsJson };
     }
 
+    let timedOut = false;
+    const timeoutMs = params.providerIdleTimeout;
+    const hasIdleTimeout = typeof timeoutMs === "number" && timeoutMs > 0;
+    const timeoutError = hasIdleTimeout ? new ProviderIdleTimeoutError(timeoutMs) : undefined;
+    const attemptController = new AbortController();
+
+    const watchdog = createIdleWatchdog({
+      timeoutMs,
+      controller: attemptController,
+      signal,
+      // Record that the abort was an idle timeout so the stream drain below can
+      // preserve partial text and emit provider_idle_timeout rather than a
+      // generic abort.
+      onTimeout: () => { timedOut = true; },
+    });
+    const resetIdleTimer = watchdog.reset;
+
+    const commitPartialText = function* (): Generator<AgentEvent, void, unknown> {
+      if (textAccum) {
+        conversation.addAssistantMessage([{ type: "text", text: textAccum }]);
+        yield { type: "assistant_message_complete", text: textAccum };
+      }
+    };
+
     try {
-      if (!seededCall) for await (const event of provider.stream({
-        model,
-        messages: conversation.getMessages(),
-        tools: toolRegistry.getSchemas(),
-        systemPrompt,
-        effort,
-        maxTokens,
-        signal,
-      })) {
-        if (signal?.aborted) {
+      // Seeded skill dispatches are synthetic tool calls with no provider stream; the idle timer only arms when a real stream starts.
+      if (!seededCall) {
+        resetIdleTimer();
+        const request = {
+          model, messages: conversation.getMessages(), tools: toolRegistry.getSchemas(),
+          systemPrompt, effort, maxTokens, signal: attemptController.signal,
+        };
+        const prefix = provider.getThinkingPrefix?.(request) ?? createHash("sha256")
+          .update(JSON.stringify([provider.name, model, systemPrompt ?? "", request.tools, effort])).digest("hex");
+        conversation.prepareThinkingPrefix?.(prefix);
+        request.messages = conversation.getMessages();
+        if (continuationReserved) {
+          continuationReserved = false;
+          settleReservation();
+        }
+        for await (const event of provider.stream(request)) {
+          resetIdleTimer();
+
+          if (attemptController.signal.aborted) {
+            if (timedOut || attemptController.signal.reason instanceof ProviderIdleTimeoutError) {
+              yield* commitPartialText();
+              yield { type: "error", error: timeoutError!, reason: "provider_idle_timeout" };
+              return;
+            }
+            yield { type: "error", error: new Error("Aborted") };
+            return;
+          }
+
+          switch (event.type) {
+            case "text_delta":
+              textAccum += event.text;
+              const lastBlock = assistantContent.at(-1);
+              if (lastBlock?.type === "text") lastBlock.text = (lastBlock.text ?? "") + event.text;
+              else assistantContent.push({ type: "text", text: event.text });
+              yield { type: "streaming_text", text: event.text };
+              break;
+
+            case "thinking_block":
+              assistantContent.push(event.block);
+              break;
+
+            case "thinking_delta":
+              yield { type: "thinking", text: event.text };
+              break;
+
+            case "tool_call_start":
+              assistantContent.push({ type: "tool_use", toolCallId: event.toolCallId });
+              toolCalls.set(event.toolCallId, {
+                name: event.toolName,
+                argsJson: "",
+              });
+              yield {
+                type: "tool_call_start",
+                toolName: event.toolName,
+                toolCallId: event.toolCallId,
+              };
+              break;
+
+            case "tool_call_delta": {
+              const call = toolCalls.get(event.toolCallId);
+              if (call) {
+                call.argsJson += event.argsJson;
+                if (event.providerMetadata) {
+                  call.providerMetadata = { ...call.providerMetadata, ...event.providerMetadata };
+                }
+                if (event.argsJson) {
+                  yield {
+                    type: "tool_call_input_delta",
+                    toolCallId: event.toolCallId,
+                    argsJson: event.argsJson,
+                  };
+                }
+              }
+              break;
+            }
+
+            case "usage":
+              yield { type: "usage", inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens };
+              break;
+
+            case "message_end":
+              stopReason = event.stopReason;
+              break;
+
+            case "retry": {
+              const backoffMs = event.delayMs ?? (() => {
+                const match = event.message.match(/Retrying in (\d+)s/);
+                return match ? parseInt(match[1], 10) * 1000 : 0;
+              })();
+              watchdog.suspendForBackoff(backoffMs);
+              yield event;
+              break;
+            }
+
+            case "error":
+              yield { type: "error", error: event.error };
+              return;
+          }
+        }
+        if (attemptController.signal.aborted || signal?.aborted) {
+          if (timedOut || attemptController.signal.reason instanceof ProviderIdleTimeoutError) {
+            yield* commitPartialText();
+            yield {
+              type: "error",
+              error: timeoutError!,
+              reason: "provider_idle_timeout",
+            };
+            return;
+          }
           yield { type: "error", error: new Error("Aborted") };
           return;
         }
-
-        switch (event.type) {
-          case "text_delta":
-            textAccum += event.text;
-            yield { type: "streaming_text", text: event.text };
-            break;
-
-          case "thinking_delta":
-            yield { type: "thinking", text: event.text };
-            break;
-
-          case "tool_call_start":
-            toolCalls.set(event.toolCallId, {
-              name: event.toolName,
-              argsJson: "",
-            });
-            yield {
-              type: "tool_call_start",
-              toolName: event.toolName,
-              toolCallId: event.toolCallId,
-            };
-            break;
-
-          case "tool_call_delta": {
-            const call = toolCalls.get(event.toolCallId);
-            if (call) {
-              call.argsJson += event.argsJson;
-              if (event.providerMetadata) {
-                call.providerMetadata = { ...call.providerMetadata, ...event.providerMetadata };
-              }
-              if (event.argsJson) {
-                yield {
-                  type: "tool_call_input_delta",
-                  toolCallId: event.toolCallId,
-                  argsJson: event.argsJson,
-                };
-              }
-            }
-            break;
-          }
-
-          case "usage":
-            yield { type: "usage", inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens };
-            break;
-
-          case "message_end":
-            stopReason = event.stopReason;
-            break;
-
-          case "retry":
-            yield event;
-            break;
-
-          case "error":
-            yield { type: "error", error: event.error };
-            return;
-        }
       }
     } catch (err) {
+      if (timedOut || attemptController.signal.reason instanceof ProviderIdleTimeoutError || err instanceof ProviderIdleTimeoutError) {
+        yield* commitPartialText();
+        yield {
+          type: "error",
+          error: timeoutError!,
+          reason: "provider_idle_timeout",
+        };
+        return;
+      }
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       if (/context.*(length|window|limit|overflow)|too many tokens|maximum.*token/i.test(msg)) {
         const { compacted: recovered, droppedCount: recoveredCount } = await conversation.compactIfNeeded(true, summarize);
@@ -498,13 +791,11 @@ export async function* runAgentLoop(
         error: err instanceof Error ? err : new Error(String(err)),
       };
       return;
+    } finally {
+      watchdog.cleanup();
     }
 
     // Build assistant message content blocks
-    const assistantContent: ContentBlock[] = [];
-    if (textAccum) {
-      assistantContent.push({ type: "text", text: textAccum });
-    }
     const parsedInputs = new Map<string, Record<string, unknown>>();
     for (const [id, call] of toolCalls) {
       let input: Record<string, unknown> = {};
@@ -514,13 +805,16 @@ export async function* runAgentLoop(
         input = { raw: call.argsJson };
       }
       parsedInputs.set(id, input);
-      assistantContent.push({
+      const toolBlock = assistantContent.find(block => block.type === "tool_use" && block.toolCallId === id);
+      const content: ContentBlock = {
         type: "tool_use",
         toolCallId: id,
         toolName: call.name,
         toolInput: input,
         ...(call.providerMetadata ? { providerMetadata: call.providerMetadata } : {}),
-      });
+      };
+      if (toolBlock) Object.assign(toolBlock, content);
+      else assistantContent.push(content);
     }
     conversation.addAssistantMessage(assistantContent);
 
@@ -544,11 +838,15 @@ export async function* runAgentLoop(
         yield { type: "error", error: new Error("Aborted") };
         return;
       }
-      // A directive queued after the final tool round would otherwise sit in the
-      // queue forever — this is the loop's last exit before max-iterations.
-      // Deliver it as a fresh user turn so it still reaches the model (and the
-      // next submit() call starts a new loop on top of it).
-      const lateSteers = collectSteers();
+      // Late directives must reach another inference, not a discarded child
+      // conversation. The drain atomically retains or closes admission.
+      const canContinue = await reserveContinuation(iteration);
+      if (signal?.aborted) {
+        yield { type: "error", error: new Error("Aborted") };
+        return;
+      }
+      const lateSteers = await collectSteers({ final: true, canContinue });
+      if (!lateSteers.length) releaseContinuation();
       for (const steer of lateSteers) {
         conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
       }
@@ -559,6 +857,7 @@ export async function* runAgentLoop(
         yield { type: "error", error: new Error("Aborted") };
         return;
       }
+      if (lateSteers.length > 0) continue;
       yield { type: "turn_complete" };
       return;
     }
@@ -573,9 +872,10 @@ export async function* runAgentLoop(
     for (const [id, call] of toolCalls) {
       if (signal?.aborted) break;
       const input = parsedInputs.get(id) ?? { raw: call.argsJson };
-      // Hard block: if an explicit allowlist is set, reject tools not on it
+      const mutatingFetch = isMutatingFetchCall(call.name, input);
+      // Hard block: mutating fetches cannot inherit the read-only SAFE exemption.
       if (params.allowedTools && params.allowedTools.length > 0
-        && !SAFE_TOOLS.has(call.name)
+        && (!SAFE_TOOLS.has(call.name) || mutatingFetch)
         && !isAllowed(call.name, input, params.allowedTools)) {
         toolResults.push({ type: "tool_result", toolCallId: id, toolResult: `Tool '${call.name}' is not permitted in this mode.`, isError: true });
         yield { type: "tool_result", toolName: call.name, output: `Tool '${call.name}' is not permitted in this mode.`, isError: true };
@@ -588,7 +888,7 @@ export async function* runAgentLoop(
       // Only trust destructive:false from builtin tools (SAFE_TOOLS).
       // Non-builtin tools (agents, MCP) cannot lower their own destructive status.
       let isDestructive: boolean;
-      if (toolDestructiveFlag === true) {
+      if (mutatingFetch || toolDestructiveFlag === true) {
         isDestructive = true;
       } else if (toolDestructiveFlag === false && SAFE_TOOLS.has(call.name)) {
         isDestructive = false;
@@ -599,14 +899,14 @@ export async function* runAgentLoop(
       const gate = params.toolGate;
       // Under a strict gate the allowlist only restricts (checked above); it never pre-approves a call.
       const approvalRules = gate ? undefined : params.allowedTools;
-      const destructiveApproved = isDestructive
+      const destructiveApproved = isDestructive && !mutatingFetch
         && isAllowed(call.name, input, approvalRules, { requirePattern: true });
       const denyWrites = permissionMode === "deny-writes";
       const trustedSafe = toolDestructiveFlag === false && SAFE_TOOLS.has(call.name);
       const backgroundManaged = !gate && call.name === "run_background_job";
       const needsConfirm = !backgroundManaged && ((isDestructive && !destructiveApproved)
         || (gate
-          ? !gate.safeTools.has(call.name) && permissionMode !== "auto-accept"
+          ? !gate.safeTools.has(call.name) && call.name !== "fetch_url" && permissionMode !== "auto-accept"
           : !SAFE_TOOLS.has(call.name)
             && !trustedSafe
             && permissionMode !== "auto-accept"
@@ -656,10 +956,12 @@ export async function* runAgentLoop(
         yield { type: "tool_confirmation_request", toolName: call.name, toolCallId: id, input, diffLines: previewDiff, ...(warning ? { warning } : {}) };
         // Yielding also hands control to the UI, which may cancel the turn.
         if (signal?.aborted) break;
-        const choice = warning
+        let choice = warning
           ? await confirmTool(call.name, input, previewDiff, tool?.mcpServerName, warning)
           : await confirmTool(call.name, input, previewDiff, tool?.mcpServerName);
         if (signal?.aborted) break;
+        // A blanket queue/session approval is not consent for this HTTP mutation.
+        if (mutatingFetch && choice === "always") choice = "no";
         if (choice === "always") {
           // Clamp to the org floor: interactive "Always" must not loosen a
           // managed permission policy below deny-writes/ask.
@@ -834,7 +1136,12 @@ export async function* runAgentLoop(
     // never splits an assistant tool_use from its tool_result (which providers
     // reject). Draining before the next provider call means the model sees the
     // directive within the same turn.
-    const steers = collectSteers();
+    const canContinue = await reserveContinuation(iteration);
+    if (signal?.aborted) {
+      yield { type: "error", error: new Error("Aborted") };
+      return;
+    }
+    const steers = await collectSteers({ canContinue, final: !canContinue });
     for (const steer of steers) {
       conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
     }
@@ -878,14 +1185,9 @@ export async function* runAgentLoop(
     return;
   }
 
-  // Deliver any /steer directives queued during the final iteration, then stop.
-  const finalSteers = collectSteers();
-  for (const steer of finalSteers) {
-    conversation.injectUserMessage(STEER_DIRECTIVE_PREFIX + steer);
-  }
-  if (finalSteers.length > 0) {
-    yield { type: "steer_applied", directives: finalSteers };
-  }
+  // No inference remains: reject pending durable directives without acknowledging
+  // them as delivered or appending them to a soon-to-be-discarded conversation.
+  await collectSteers({ final: true, canContinue: false });
   // Exhaustion is incomplete work, not an assistant answer or successful turn.
   // Reuse the error path so every loop consumer terminates with error status.
   yield {
@@ -893,4 +1195,8 @@ export async function* runAgentLoop(
     reason: "iterations_exhausted",
     error: new Error("Agent reached maximum iterations"),
   };
+  } finally {
+    // Includes empty final drains, cancellation, drain failures and iterator return.
+    releaseContinuation();
+  }
 }

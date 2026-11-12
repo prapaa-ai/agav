@@ -404,8 +404,9 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
 
       // Inherited values travel only in the supervisor's process environment, never in the stored spec.
       const inheritedEnv: Record<string, string> = {};
+      const hostEnv = approved === undefined ? session.inheritedEnv : undefined;
       for (const name of spec.envInherit ?? []) {
-        const value = process.env[name];
+        const value = hostEnv !== undefined && Object.hasOwn(hostEnv, name) ? hostEnv[name] : process.env[name];
         if (value !== undefined) inheritedEnv[name] = value;
       }
 
