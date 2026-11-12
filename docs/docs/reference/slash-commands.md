@@ -39,6 +39,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/status` | Show session, model, permissions, working directory, and token usage at a glance. |
 | `/permission [ask\|auto-accept\|deny-writes]` | Show the current permission mode, or change it for this session. Run bare `/permission` to open an interactive picker. The chosen mode persists for the session and is restored when you resume it. Organization policy may enforce a stricter minimum that cannot be loosened. Interactive sessions only. See [Security → Permission modes](/reference/security#permission-modes). |
 | `/export [json] [sanitize\|--sanitize]` | Write the retained conversation to a timestamped Markdown or JSON file in the working directory. Add `sanitize` for best-effort redaction; review before sharing. See [export details](/workflows/sessions-and-memory#export-a-conversation). |
+| `/copy [N]` | Copy an assistant response to the clipboard. With no argument, it copies the most recent response that contains text; `/copy 2` copies the second-most-recent. `N` must be a positive integer, and it counts only responses with text, so turns that only call tools or contain blank text are skipped. |
 | `/voice` | Dictate an editable prompt with offline Agav-managed native transcription; offers verified setup downloads and an idle prompt without attachments. See [Voice Input](/features/voice-input). |
 | `/ps <question>` | Run a brief independent side query with read-only conversation context, without interrupting the active main task. It cannot use tools or plugins. |
 
@@ -106,7 +107,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | Command | Purpose |
 | --- | --- |
 | `/debug` | Show conversation, plan, sandbox, token, plugin, MCP, undo, and memory state. |
-| `/changelog` | Show release notes from the latest update. Agav also shows the changelog automatically once on the first launch after an update. |
+| `/changelog [on\|off]` | Show release notes from the latest update. Agav also shows the changelog automatically once on the first launch after an update. `/changelog off` stops that automatic display and `/changelog on` restores it; the choice persists across sessions. Bare `/changelog` shows the notes either way. |
 | `/exit` | Save the current session and exit Agav. |
 
 MCP prompts appear as additional slash commands supplied by their connected server. Project skills and user-installed skills likewise add commands after Agav restarts; use `/help` or type `/` to see what is available in the current session.
