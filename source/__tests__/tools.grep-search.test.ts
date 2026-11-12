@@ -322,6 +322,54 @@ for (const backend of ["native", "fallback"] as const) {
       const namedLikeDirectory = await file("build", "needle\n");
       expect(await grepSearchTool.execute({ pattern: "needle", path: namedLikeDirectory })).toEqual({ output: `${namedLikeDirectory}:1:needle`, isError: false });
     });
+
+    describe("fixed_strings option", () => {
+      it("matches a literal string that the regex interpretation would miss", async () => {
+        const target = await file("src/code.ts", "items[0].value\n");
+        // As regex, [0] is a char-class matching '0', so items[0].value doesn't match items[0].value
+        expect(await grepSearchTool.execute({ pattern: "items[0].value", path: target }))
+          .toEqual({ output: "No matches found.", isError: false });
+        expect(await grepSearchTool.execute({ pattern: "items[0].value", path: target, fixed_strings: true }))
+          .toEqual({ output: `${target}:1:items[0].value`, isError: false });
+      });
+
+      it("matches a bare unmatched [ that is invalid as a regex", async () => {
+        const target = await file("src/code.ts", "arr[ = 1\n");
+        expect(await grepSearchTool.execute({ pattern: "[", path: target, fixed_strings: true }))
+          .toEqual({ output: `${target}:1:arr[ = 1`, isError: false });
+      });
+
+      it("treats . as a literal period rather than any-character", async () => {
+        const withPeriod = await file("src/a.ts", "foo.bar\n");
+        const withX = await file("src/b.ts", "fooXbar\n");
+        expect(await grepSearchTool.execute({ pattern: "foo.bar", path: withX, fixed_strings: true }))
+          .toEqual({ output: "No matches found.", isError: false });
+        expect(await grepSearchTool.execute({ pattern: "foo.bar", path: withPeriod, fixed_strings: true }))
+          .toEqual({ output: `${withPeriod}:1:foo.bar`, isError: false });
+      });
+
+      it("works with files_only", async () => {
+        const target = await file("src/code.ts", "foo.bar()\n");
+        await file("src/other.ts", "fooXbar()\n");
+        expect(await grepSearchTool.execute({ pattern: "foo.bar()", path: directory, include: "*.ts", fixed_strings: true, files_only: true }))
+          .toEqual({ output: target, isError: false });
+      });
+
+      it("empty literal pattern matches every line", async () => {
+        const target = await file("src/code.ts", "line1\nline2\n");
+        const result = await grepSearchTool.execute({ pattern: "", path: target, fixed_strings: true });
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain(`${target}:1:line1`);
+        expect(result.output).toContain(`${target}:2:line2`);
+      });
+
+      it("preserves include filtering and line numbers", async () => {
+        const ts = await file("src/code.ts", "ignore\nfoo.bar\n");
+        await file("src/notes.txt", "foo.bar\n");
+        expect(await grepSearchTool.execute({ pattern: "foo.bar", path: directory, include: "*.ts", fixed_strings: true }))
+          .toEqual({ output: `${ts}:2:foo.bar`, isError: false });
+      });
+    });
   });
 }
 
@@ -363,5 +411,21 @@ describe("files-only validation and partial search failures", () => {
     expect(result.output).toContain("found.ts");
     expect(result.output).toContain("permission denied");
     expect(result.output).toContain("incomplete");
+  });
+});
+
+describe("fixed_strings validation", () => {
+  it.each([null, "true", 1, {}])("rejects malformed fixed_strings: %s", async value => {
+    const result = await grepSearchTool.execute({ pattern: "needle", path: directory, fixed_strings: value });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("fixed_strings");
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects a fixed_strings pattern containing a newline", async () => {
+    const result = await grepSearchTool.execute({ pattern: "foo\nbar", path: directory, fixed_strings: true });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("newlines");
+    expect(execFile).not.toHaveBeenCalled();
   });
 });
