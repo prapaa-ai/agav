@@ -584,6 +584,19 @@ jobs:
             printf '%s\n' "$NOTES"
             echo "$DELIMITER"
           } >> "$GITHUB_OUTPUT"
+      - name: Generate contributor credits
+        id: contributors
+        env:
+          CURRENT_TAG: v${{ needs.check-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          CONTRIBUTORS=$(node scripts/release-notes.mjs contributors "${CURRENT_TAG#v}")
+          DELIMITER="contributors_$(node -p 'require("crypto").randomUUID()')"
+          {
+            echo "contributors<<$DELIMITER"
+            printf '%s\n' "$CONTRIBUTORS"
+            echo "$DELIMITER"
+          } >> "$GITHUB_OUTPUT"
       # Reconcile the tag BEFORE publishing so the release points at the commit
       # being released now, not a stale commit from a prior failed attempt.
       # softprops/action-gh-release creates the tag if absent but will NOT move
@@ -767,6 +780,8 @@ jobs:
             ```
 
             </details>
+
+            ${{ steps.contributors.outputs.contributors }}
           generate_release_notes: false
           files: release/*
 

@@ -55,29 +55,102 @@ function generatedNotes(base) {
     .map(([name, entries]) => `### ${name}\n\n${entries.join("\n")}`).join("\n\n") + "\n";
 }
 
+// Keep attribution separate from change text: stable squash promotions lose the
+// original commit range, so their contributor list must be reviewed beforehand.
+function reviewedContributors(version) {
+  const path = `docs/releases/v${version}.contributors.json`;
+  let people;
+  try { people = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) { throw new Error(`Cannot read reviewed contributors: ${path} (${error.message})`); }
+  if (!Array.isArray(people) || people.some(person => typeof person !== "string" || !person.trim() || /[\r\n]/.test(person))) {
+    throw new Error(`Invalid reviewed contributors: ${path}. Expected an array of names or @GitHub usernames.`);
+  }
+  return people.map(person => ({ name: person.trim(), login: /^@[a-z\d](?:[a-z\d-]*[a-z\d])?$/i.test(person.trim()) }));
+}
+
+function generatedContributors(base) {
+  // Extract only final trailers, not full squash bodies (which can contain
+  // megabytes of nested, already-shipped commits and co-author text).
+  const records = git("log", ...(base ? [`${base}..HEAD`] : ["HEAD"]),
+    "--format=%aN%x00%aE%x00%(trailers:key=Co-authored-by,valueonly,separator=%x00)%x1e").split("\x1e");
+  const people = new Map();
+  const add = (name, email) => {
+    name = name.trim();
+    email = email.trim().toLowerCase();
+    if (["noreply@anthropic.com", "noreply@openai.com"].includes(email)) return;
+    if (!name || /\[bot\]/i.test(name + email) || /^(?:dependabot|renovate|github-actions)(?:@|$)/i.test(email)) return;
+    const login = /^(?:\d+\+)?([a-z\d](?:[a-z\d-]*[a-z\d])?)@users\.noreply\.github\.com$/i.exec(email)?.[1];
+    // git log is newest first; retain the current name for an email identity.
+    if (!people.has(email)) people.set(email, { name: login ? `@${login}` : name, login: Boolean(login) });
+  };
+  for (const record of records) {
+    const [name, email, ...trailers] = record.trim().split("\x00");
+    if (!email) continue;
+    add(name, email);
+    for (const trailer of trailers) {
+      const match = /^\s*(.*?)\s*<([^<>]+)>\s*$/.exec(trailer);
+      if (match) add(match[1], match[2]);
+    }
+  }
+  return [...people.values()];
+}
+
+
+function contributorSection(people) {
+  if (!people.length) return "";
+  const handles = new Set();
+  const entries = [...people].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase(), "en"))
+    .filter(person => {
+      if (!person.login) return true;
+      const key = person.name.toLowerCase();
+      if (handles.has(key)) return false;
+      handles.add(key);
+      return true;
+    }).map(person => {
+    // Only verified noreply identities or explicitly reviewed handles become
+    // mentions. Escape plain names so commit metadata cannot inject Markdown.
+    const label = person.login
+      ? person.name : person.name.replace(/[\\`*_{}\[\]()<>#!|@]/g, "\\$&");
+    return `- ${label}`;
+  });
+  return `## Contributors\n\nThank you to everyone who contributed to this release!\n\n${entries.join("\n")}\n`;
+}
+
 try {
   const [mode, version] = process.argv.slice(2);
   if (!version || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z]+(?:\.[0-9]+)?)?$/.test(version)) {
     throw new Error(`Invalid version: ${version ?? "(missing)"}`);
   }
-  if (!["prepare", "validate", "publish"].includes(mode)) {
-    throw new Error("Usage: node scripts/release-notes.mjs <prepare|validate|publish> <version>");
+  if (!["prepare", "validate", "publish", "prepare-contributors", "contributors"].includes(mode)) {
+    throw new Error("Usage: node scripts/release-notes.mjs <prepare|validate|publish|prepare-contributors|contributors> <version>");
   }
   const prerelease = version.includes("-");
   if (mode === "validate") {
-    if (!prerelease) reviewedNotes(version);
+    if (!prerelease) {
+      reviewedNotes(version);
+      reviewedContributors(version);
+    }
+  } else if (mode === "contributors" && !prerelease) {
+    process.stdout.write(contributorSection(reviewedContributors(version)));
   } else if (mode === "publish" && !prerelease) {
     process.stdout.write(reviewedNotes(version));
   } else {
-    const base = previousTag(version, prerelease, mode === "prepare");
-    if (mode === "prepare" && !prerelease && !base) {
+    const preparing = mode === "prepare" || mode === "prepare-contributors";
+    const base = previousTag(version, prerelease, preparing);
+    if (preparing && !prerelease && !base) {
       throw new Error("No previous stable tag found. Fetch tags or write reviewed notes manually for the first stable release.");
     }
     console.error(`Release notes baseline: ${base ?? "all history (no ancestor release tag)"}`);
-    if (mode === "prepare") {
-      process.stdout.write(`<!-- DRAFT: review against git diff ${base ?? "<root>"} HEAD; remove already-shipped changes, duplicates and release noise, then remove this marker. -->\n\n`);
+    if (mode === "prepare-contributors") {
+      process.stdout.write(JSON.stringify(generatedContributors(base).map(person => person.name).sort((a, b) => a.localeCompare(b, "en")), null, 2) + "\n");
+    } else if (mode === "contributors") {
+      process.stdout.write(contributorSection(generatedContributors(base)));
+    } else {
+      if (mode === "prepare") {
+        process.stdout.write(`<!-- DRAFT: review against git diff ${base ?? "<root>"} HEAD; remove already-shipped changes, duplicates and release noise, then remove this marker. -->\n\n`);
+      }
+      process.stdout.write(generatedNotes(base));
     }
-    process.stdout.write(generatedNotes(base));
   }
 } catch (error) {
   console.error(error.message);
