@@ -70,7 +70,7 @@ del install.cmd
 
 Setting `AGAV_BETA=1` in the environment does the same thing, which is handy when the flag is awkward to thread through.
 
-Once you're on a pre-release, `agav update` leaves you there: it only ever looks at the latest stable release, and it compares `major.minor.patch` with the suffix stripped. From `0.2.0-beta.1` that means you won't be pulled back to `0.1.9`, but you won't move to `0.2.0` final either — you stay until `0.2.1` ships. To rejoin the stable channel sooner, re-run the installer without `--beta`.
+Agav betas use the preceding stable version as their base: for example, `0.2.4-beta.1` follows stable `0.2.4` and promotes to stable `0.2.5`. Beta installs discover newer beta counters (so `beta.10` follows `beta.9`) and later stable versions; they do not downgrade to the same-core stable. Stable installs check only stable releases and require explicit opt-in to return to beta after promotion. To rejoin stable deliberately, re-run the installer without `--beta` or use `agav update <stable-version>`.
 
 ## Update Agav
 

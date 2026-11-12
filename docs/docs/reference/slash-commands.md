@@ -99,8 +99,8 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 
 | Command | Purpose |
 | --- | --- |
-| `/login` | Sign in to your organization (enterprise enrollment). Accepts the same flags as `agav login`: `--device`, `--oidc`, `--auth-code`, `--saml`, `--control-plane URL`, `--issuer URL`, and `--client-id ID`. Restart Agav to apply the new policy. |
-| `/logout` | Sign out of your organization and clear the cached enrollment. Restart Agav to apply. |
+| `/login` | Smart sign-in. A bare `/login` opens the Agav account wizard — choose "sign in with your Agav account" (browser device authorization) or "paste an API key" (entered in a masked field inside the overlay, never through the composer). Any enterprise flag instead routes to organization enrollment: `--device`, `--oidc`, `--auth-code`, `--saml`, `--control-plane URL`, `--issuer URL`, and `--client-id ID`. The consumer wizard needs an interactive terminal; in headless mode it explains this instead of failing. Restart Agav to apply a new enterprise policy. |
+| `/logout` | Defaults to signing out of your organization and clearing the cached enrollment (restart Agav to apply). Pass `--account` (alias `--consumer`) to sign out of your Agav account instead, clearing the local store and credential entry. |
 
 ## Diagnostics and exit
 
