@@ -15,4 +15,4 @@ export function dim(text: string): string {
 
 export const icons = _useColor
   ? { pending: "⏳", success: "✓", error: "✗", warning: "⚠" }
-  : { pending: "...", success: "ok", error: "FAIL", warning: "!!" };
+  : { pending: "[..]", success: "[ok]", error: "[xx]", warning: "[!!]" };
