@@ -76,6 +76,14 @@ Keep it current:
 agav update
 ```
 
+## Environment variables
+
+Agav's color output respects these environment variables:
+
+- `NO_COLOR` — disable colored output
+- `TERM=dumb` — disable colored output
+- `FORCE_COLOR` — force color on
+
 ## Why Agav
 
 Today, the most powerful AI tools are controlled by a handful of companies. They choose which models you use, where your data goes, and how much you pay. If they change the rules tomorrow, you have no choice but to follow.
