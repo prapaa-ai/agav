@@ -103,10 +103,10 @@ describe("-c/--config flag parsing", () => {
   it.each(["0", "-5", "1.5", "1e3", "10abc", "+2", "", "9007199254740992"])(
     "rejects maxIterations=%j exactly like --max-turns does", (value) => {
       expect(() => parseArgs(["-c", `maxIterations=${value}`])).toThrow(exitError);
-      expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("-c maxIterations must be a positive safe integer"));
+      expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("-c maxIterations must be a plain positive integer (digits only"));
       // Both flags share parseMaxTurns, so they must agree on valid input.
       expect(() => parseArgs(["--max-turns", value])).toThrow(exitError);
-      expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("--max-turns must be a positive safe integer"));
+      expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("--max-turns must be a plain positive integer (digits only"));
     },
   );
 
