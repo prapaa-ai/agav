@@ -523,14 +523,12 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         if (!match || match.index === undefined) return false;
         const start = match.index;
         const end = start + match[0].length;
-        const cur = liveRef.current.cursor;
-        // A caret sitting inside the tile being replaced (or anywhere after
-        // it) must shift by the length delta so it lands in the same
-        // *logical* spot in the expanded text rather than snapping to
-        // wherever the old offset now falls.
-        const delta = fullText.length - match[0].length;
-        const nextCursor = cur <= start ? cur : cur >= end ? cur + delta : end + delta;
-        applyEdit(val.slice(0, start) + fullText + val.slice(end), nextCursor);
+        // Expansion is an inspection gesture: open at the pasted block's
+        // beginning instead of following the old tile's caret to its tail.
+        // The render-time clamp anchors this viewport to the new caret row.
+        viewportStartRef.current = Infinity;
+        clearSelection();
+        applyEdit(val.slice(0, start) + fullText + val.slice(end), start);
         return true;
       });
     }
@@ -809,7 +807,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
       if ((key.upArrow || key.downArrow)
         && (!match.action || match.action === "historyUp" || match.action === "historyDown")
         && historyIndexRef.current < 0
-        && !key.ctrl && !key.meta && !key.super && !key.shift && !suppressHistory) {
+        && !key.ctrl && !key.meta && !key.super && !key.shift) {
         const lines = wrapPrompt(value, usable);
         const row = caretRow(lines, cursorPos);
         if (lines.length > 1 && (!key.upArrow || row > 0)) {
@@ -1173,7 +1171,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           const after = wl.text.slice(selEnd);
           return (
             <Box key={i} {...rowHandlers}>
-              {renderPrefix(wl.isFirst)}
+              {renderPrefix(i === 0)}
               <Text>{before}</Text>
               <Text inverse color="cyan">{selected}</Text>
               <Text>{after}</Text>
@@ -1194,7 +1192,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           const showInlineHint = inlineArgumentHint && i === visibleLines.length - 1 && after.length === 0;
           return (
             <Box key={i} {...rowHandlers}>
-              {renderPrefix(wl.isFirst)}
+              {renderPrefix(i === 0)}
               <Text>{before}</Text>
               <Text inverse>{ch}</Text>
               <Text>{after}</Text>
@@ -1205,7 +1203,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
 
         return (
           <Box key={i} {...rowHandlers}>
-            {renderPrefix(wl.isFirst)}
+            {renderPrefix(i === 0)}
             <Text>{wl.text || " "}</Text>
           </Box>
         );
