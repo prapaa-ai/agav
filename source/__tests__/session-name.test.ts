@@ -187,7 +187,12 @@ describe("session naming and persistence", () => {
     agentWithoutName.conversation.addUserMessage("Auto title message");
     agentWithoutName.saveNow();
 
-    await new Promise((r) => setTimeout(r, 50));
+    // Same bounded wait as the named-session test above: a fixed sleep can
+    // unmount before the async save assigns sessionId.
+    const deadline = Date.now() + 5000;
+    while (agentWithoutName.sessionId === undefined && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     instance.unmount();
 
     expect(agentWithoutName.sessionId).toBeDefined();
