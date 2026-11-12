@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a built binary's paste rendering in a real PTY (requires pyte).
 
-Run: python3 source/__tests__/helpers/paste-expansion-pty.py [binary]
+Run: python3 source/__tests__/helpers/paste-expansion-pty.py
 Uses an isolated profile; never submits a prompt or calls a model.
 """
 import fcntl
@@ -12,14 +12,14 @@ import pty
 import select
 import struct
 import subprocess
-import sys
 import tempfile
 import termios
 import time
 
 import pyte
 
-binary = Path(sys.argv[1] if len(sys.argv) > 1 else "dist/agav").resolve()
+# Only run this checkout's build, independent of arguments or working directory.
+binary = Path(__file__).resolve().parents[3] / "dist" / "agav"
 with tempfile.TemporaryDirectory(prefix="agav-paste-pty-") as scratch:
     home = Path(scratch)
     config = home / ".agav"
