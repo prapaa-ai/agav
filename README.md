@@ -76,6 +76,34 @@ Keep it current:
 agav update
 ```
 
+## Cursor embedded terminal (manual compatibility check)
+
+Terminal compatibility only: this is not native IDE integration and does not imply Codex or any other host support. Extensions, bridge protocols, IDE detection, approval delegation and session handoff are out of scope.
+
+Record the versions you actually run. This repository snapshot is Agav `0.2.7`; record the Cursor version from `Cursor > About` and the Agav version from `agav --version`. No OS requirement is imposed beyond what Cursor and Agav support. Prerequisites: install Agav, configure a provider/model, open the target repository in Cursor, then open its integrated terminal in that repository. If Cursor or provider access is unavailable, mark the live checks unverified; do not record them as passing.
+
+Interactive checks (run `agav` in the embedded terminal):
+- Input after idle: wait at least 10 seconds, then type and submit a short prompt. Expected: input appears and submits normally.
+- Resize: drag the terminal panel or resize the window. Expected: layout reflows without a frozen or duplicated prompt.
+- Selection after the host context menu: right-click, use the host selection action, select text. Expected: selection works and the prompt remains usable.
+- Cancellation: start a request, then press Esc/Ctrl+C as documented. Expected: the request stops and the prompt returns.
+- Normal exit: use the documented exit command. Expected: the terminal restores and the shell prompt returns.
+
+Record deviations verbatim. Unit tests do not certify Cursor's terminal.
+
+Headless check from the same embedded terminal, in the repository root:
+
+```bash
+pwd
+agav run --deny-writes "review the code in src/"
+# or
+agav -P --deny-writes "review the code in src/"
+```
+
+Record the working directory, provider/model, permission mode, stdout, stderr and exit status. Response output belongs on stdout; diagnostics belong on stderr. Headless mode constructs the built-in registry and does not inherit interactive plugin, MCP or named-agent loading. Keep credentials out of the evidence.
+
+An independent reviewer repeats these steps in Cursor, records terminal behavior and command output, and confirms `git status --short` is unchanged. Missing Cursor/Agav/provider access leaves the live checks explicitly unverified.
+
 ## Why Agav
 
 Today, the most powerful AI tools are controlled by a handful of companies. They choose which models you use, where your data goes, and how much you pay. If they change the rules tomorrow, you have no choice but to follow.
