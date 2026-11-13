@@ -355,12 +355,16 @@ for (const backend of ["native", "fallback"] as const) {
           .toEqual({ output: target, isError: false });
       });
 
-      it("empty literal pattern matches every line", async () => {
+      it("empty literal pattern matches every line but not a phantom trailing line", async () => {
         const target = await file("src/code.ts", "line1\nline2\n");
         const result = await grepSearchTool.execute({ pattern: "", path: target, fixed_strings: true });
-        expect(result.isError).toBe(false);
-        expect(result.output).toContain(`${target}:1:line1`);
-        expect(result.output).toContain(`${target}:2:line2`);
+        expect(result).toEqual({ output: `${target}:1:line1\n${target}:2:line2`, isError: false });
+      });
+
+      it("empty literal pattern on an empty file returns no matches", async () => {
+        const target = await file("src/empty.ts", "");
+        expect(await grepSearchTool.execute({ pattern: "", path: target, fixed_strings: true }))
+          .toEqual({ output: "No matches found.", isError: false });
       });
 
       it("preserves include filtering and line numbers", async () => {

@@ -61,7 +61,8 @@ async function nodeGrep(
           if (isBinary(buf)) continue;
           const content = buf.toString("utf-8");
           const lines = content.split("\n");
-          for (let i = 0; i < lines.length; i++) {
+          const lineCount = content === "" ? 0 : content.endsWith("\n") ? lines.length - 1 : lines.length;
+          for (let i = 0; i < lineCount; i++) {
             if (results.length >= limit) return;
             if (pattern.test(lines[i]!)) {
               results.push(filesOnly ? fullPath : `${fullPath}:${i + 1}:${lines[i]}`);
@@ -85,7 +86,8 @@ async function nodeGrep(
         if (!isBinary(buf)) {
           const content = buf.toString("utf-8");
           const lines = content.split("\n");
-          for (let i = 0; i < lines.length; i++) {
+          const lineCount = content === "" ? 0 : content.endsWith("\n") ? lines.length - 1 : lines.length;
+          for (let i = 0; i < lineCount; i++) {
             if (results.length >= limit) break;
             if (pattern.test(lines[i]!)) {
               results.push(filesOnly ? searchPath : `${searchPath}:${i + 1}:${lines[i]}`);
