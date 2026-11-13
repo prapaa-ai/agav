@@ -111,12 +111,16 @@ async function nativeGrep(
   searchPath: string,
   include: string | undefined,
   filesOnly = false,
+  ignoreCase = false,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   // grep can exclude its explicit root too; searching "." bypasses only that
   // root's name, while still excluding generated directories below it.
   const searchFromRoot = SKIP_DIRS.has(basename(searchPath)) &&
     await stat(searchPath).then((info) => info.isDirectory(), () => false);
   const args = filesOnly ? ["-rl", "-I", "--color=never", "-E"] : ["-rn", "-H", "--color=never", "-E"];
+  if (ignoreCase) {
+    args.push("-i");
+  }
   if (include) {
     args.push("--include", include);
   }
@@ -145,7 +149,7 @@ export const grepSearchTool: ToolDefinition = {
     name: "grep_search",
     description:
       "Search for a pattern in files using grep. Returns matching lines with file paths and line numbers. " +
-      "Supports regex patterns. Searches recursively from the given directory. Use files_only for matching paths without content.",
+      "Supports regex patterns. Searches recursively from the given directory. Use files_only for matching paths without content. Use ignore_case to match without regard to letter case.",
     inputSchema: {
       type: "object",
       properties: {
@@ -165,6 +169,10 @@ export const grepSearchTool: ToolDefinition = {
           type: "string",
           description: "File glob pattern to include (e.g. '*.ts', '*.py')",
         },
+        ignore_case: {
+          type: "boolean",
+          description: "Match without regard to letter case (default: false). Affects content matching only; include-glob behavior is unchanged.",
+        },
       },
       required: ["pattern"],
     },
@@ -174,7 +182,11 @@ export const grepSearchTool: ToolDefinition = {
     if (input.files_only !== undefined && typeof input.files_only !== "boolean") {
       return { output: "Invalid files_only: expected a boolean.", isError: true };
     }
+    if (input.ignore_case !== undefined && typeof input.ignore_case !== "boolean") {
+      return { output: "Invalid ignore_case: expected a boolean.", isError: true };
+    }
     const filesOnly = input.files_only === true;
+    const ignoreCase = input.ignore_case === true;
     const pattern = String(input.pattern);
     const searchPath = resolve(String(input.path ?? "."));
     const include = input.include ? String(input.include) : undefined;
@@ -183,7 +195,7 @@ export const grepSearchTool: ToolDefinition = {
     // On Unix, try native grep first for speed, fall back to Node.js if not found.
     if (platform() !== "win32") {
       try {
-        const result = await nativeGrep(pattern, searchPath, include, filesOnly);
+        const result = await nativeGrep(pattern, searchPath, include, filesOnly, ignoreCase);
         if (filesOnly && result.code !== 0 && result.code !== 1) {
           return { output: result.stdout.trimEnd() + "\nSearch incomplete: " + (result.stderr || "grep failed"), isError: true };
         }
@@ -205,7 +217,7 @@ export const grepSearchTool: ToolDefinition = {
 
     // Node.js fallback (always used on Windows)
     try {
-      const regex = new RegExp(pattern);
+      const regex = new RegExp(pattern, ignoreCase ? "i" : "");
       const includeRegex = include ? globToRegex(include) : undefined;
       const results = await nodeGrep(searchPath, regex, includeRegex, filesOnly);
       if (results.length === 0) {
