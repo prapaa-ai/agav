@@ -80,7 +80,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           AGAV_NO_SANDBOX: "1"
         run: |
-          head -c 30000 /tmp/pr-diff.txt | agav -P "Review this PR diff (provided via stdin) for bugs, security issues, and breaking changes only. Be concise. If no issues, say LGTM." --provider openrouter --model openrouter/auto-code > review.md
+          head -c 30000 /tmp/pr-diff.txt | agav -P "Review this PR diff (provided via stdin) for bugs, security issues, and breaking changes only. Be concise. If no issues, say LGTM." --provider openrouter --model openrouter/free > review.md
 
       - name: Post review
         if: always()

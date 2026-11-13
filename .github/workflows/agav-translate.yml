@@ -57,7 +57,7 @@ jobs:
 
           TITLE="$ISSUE_TITLE"
           PROMPT="Determine if this text is in English. Title: ${TITLE}. Body: $(echo "$BODY" | head -c 2000). If the text is NOT in English, respond with a JSON object: {\"needs_translation\":true,\"translated_title\":\"English title\",\"translated_body\":\"English translation of the body\",\"language\":\"detected language\"}. If the text IS in English, respond with: {\"needs_translation\":false}. Respond with ONLY the JSON object."
-          agav -P "$PROMPT" --provider openrouter --model openrouter/auto-code > /tmp/translate-raw.txt 2>/dev/null
+          agav -P "$PROMPT" --provider openrouter --model openrouter/free > /tmp/translate-raw.txt 2>/dev/null
           grep -o '{[^}]*}' /tmp/translate-raw.txt > /tmp/translate.json || echo '{"needs_translation":false}' > /tmp/translate.json
 
       - name: Post translation
