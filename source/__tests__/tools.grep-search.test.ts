@@ -60,6 +60,35 @@ describe("grep_search native output", () => {
     ], { maxBuffer: 200_000, timeout: 15_000, cwd: kind === "excluded root" ? searchPath : undefined }, expect.any(Function));
   });
 
+  it.each([
+    ["line", ["-rn", "-H", "--color=never", "-E", "-i"]],
+    ["files-only", ["-rl", "-I", "--color=never", "-E", "-i"]],
+  ])("passes grep -i in %s mode when ignore_case is true", async (mode, flags) => {
+    const target = await file("src/visible.ts", "Needle\n");
+    vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      callback(null, "", "");
+    }) as typeof execFile);
+    await grepSearchTool.execute({ pattern: "needle", path: target, ignore_case: true, files_only: mode === "files-only" });
+    expect(execFile).toHaveBeenCalledWith("grep", [
+      ...flags,
+      ...excludedDirectories.map((dir) => `--exclude-dir=${dir}`),
+      "-e", "needle", "--", target,
+    ], { maxBuffer: 200_000, timeout: 15_000, cwd: undefined }, expect.any(Function));
+  });
+
+  it("omits grep -i when ignore_case is false or absent", async () => {
+    const target = await file("src/visible.ts", "needle\n");
+    for (const ignoreCase of [false, undefined]) {
+      vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+        callback(null, `${target}:1:needle\n`, "");
+      }) as typeof execFile);
+      expect(await grepSearchTool.execute({ pattern: "needle", path: target, ignore_case: ignoreCase }))
+        .toEqual({ output: `${target}:1:needle`, isError: false });
+      const args = vi.mocked(execFile).mock.calls.at(-1)![1] as string[];
+      expect(args).not.toContain("-i");
+    }
+  });
+
   it("requests filenames even for a single explicit file", async () => {
     const target = await file("single.ts");
     vi.mocked(execFile).mockImplementationOnce(((_command: string, args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
@@ -230,6 +259,53 @@ for (const backend of ["native", "fallback"] as const) {
       expect(capped.output.split("\n").at(-1)).toBe("... results truncated at 100 files");
     });
 
+    it("matches case-insensitively only when ignore_case is true and preserves original capitalization", async () => {
+      const visible = await file("src/visible.ts", "Needle one\nneedle42\nNEEDLE three\n");
+      await file("src/notes.txt", "Needle in txt\n");
+      const mixedCase = [
+        `${visible}:1:Needle one`,
+        `${visible}:2:needle42`,
+        `${visible}:3:NEEDLE three`,
+      ].join("\n");
+      expect(await grepSearchTool.execute({ pattern: "needle", path: directory, include: "*.ts", ignore_case: true })).toEqual({ output: mixedCase, isError: false });
+      expect(await grepSearchTool.execute({ pattern: "NEEDLE", path: directory, include: "*.ts", ignore_case: true })).toEqual({ output: mixedCase, isError: false });
+      const sensitiveOnly = { output: `${visible}:2:needle42`, isError: false };
+      expect(await grepSearchTool.execute({ pattern: "needle", path: directory, include: "*.ts", ignore_case: false })).toEqual(sensitiveOnly);
+      expect(await grepSearchTool.execute({ pattern: "needle", path: directory, include: "*.ts" })).toEqual(sensitiveOnly);
+      expect(await grepSearchTool.execute({ pattern: "Needle", path: directory, include: "*.ts" })).toEqual({ output: `${visible}:1:Needle one`, isError: false });
+    });
+
+    it("applies ignore_case to regex patterns and repeated matches while include still filters filenames", async () => {
+      const visible = await file("src/visible.ts", "NEEDLE43\nignore\nNeedle44\nNEEDLE44\n");
+      await file("src/notes.txt", "NEEDLE44\n");
+      expect(await grepSearchTool.execute({ pattern: "^needle[0-9]+$", path: directory, include: "*.ts", ignore_case: true })).toEqual({
+        output: [`${visible}:1:NEEDLE43`, `${visible}:3:Needle44`, `${visible}:4:NEEDLE44`].join("\n"),
+        isError: false,
+      });
+      expect(await grepSearchTool.execute({ pattern: "^needle[0-9]+$", path: directory, include: "*.ts" })).toEqual({
+        output: "No matches found.",
+        isError: false,
+      });
+      const includeCase = await grepSearchTool.execute({ pattern: "needle", path: directory, include: "*.ts", ignore_case: true });
+      expect(includeCase.isError).toBe(false);
+      expect(includeCase.output).not.toContain("notes.txt");
+    });
+
+    it("combines ignore_case with files_only and keeps line numbers, exclusions and limits", async () => {
+      const upper = await file("src/upper.ts", "NEEDLE\n");
+      const lower = await file("src/lower.ts", "needle\n");
+      await file("build/noise.ts", "Needle noise\n");
+      const filesOnlyResult = await grepSearchTool.execute({ pattern: "needle", path: directory, include: "*.ts", ignore_case: true, files_only: true });
+      expect(filesOnlyResult.isError).toBe(false);
+      expect(filesOnlyResult.output.split("\n").sort()).toEqual([upper, lower].sort());
+      expect(await grepSearchTool.execute({ pattern: "needle", path: directory, include: "*.ts", files_only: true })).toEqual({ output: lower, isError: false });
+      expect(await grepSearchTool.execute({ pattern: "needle", path: upper, ignore_case: true, files_only: true })).toEqual({ output: upper, isError: false });
+      expect(await grepSearchTool.execute({ pattern: "absent", path: directory, ignore_case: true, files_only: true })).toEqual({ output: "No matches found.", isError: false });
+      const excludeCheck = await grepSearchTool.execute({ pattern: "noise", path: directory, ignore_case: true, files_only: true });
+      expect(excludeCheck.isError).toBe(false);
+      expect(excludeCheck.output).not.toContain("build");
+    });
+
     it("reports missing roots and invalid regexes as errors, not no matches", async () => {
       const missing = await grepSearchTool.execute({ pattern: "needle", path: join(directory, "missing"), files_only: true });
       expect(missing.isError).toBe(true);
@@ -248,6 +324,15 @@ for (const backend of ["native", "fallback"] as const) {
     });
   });
 }
+
+describe("ignore_case validation", () => {
+  it.each([null, "true", 1, {}])("rejects malformed ignore_case: %s without searching", async value => {
+    const result = await grepSearchTool.execute({ pattern: "needle", path: directory, ignore_case: value });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("ignore_case");
+    expect(execFile).not.toHaveBeenCalled();
+  });
+});
 
 describe("files-only validation and partial search failures", () => {
   it.each([null, "true", 1, {}])("rejects malformed files_only: %s", async value => {
