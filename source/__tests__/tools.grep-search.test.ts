@@ -286,7 +286,9 @@ for (const backend of ["native", "fallback"] as const) {
         output: "No matches found.",
         isError: false,
       });
-      expect(await grepSearchTool.execute({ pattern: "needle", path: directory, include: "*.ts", ignore_case: true })).not.toContain("notes.txt");
+      const includeCase = await grepSearchTool.execute({ pattern: "needle", path: directory, include: "*.ts", ignore_case: true });
+      expect(includeCase.isError).toBe(false);
+      expect(includeCase.output).not.toContain("notes.txt");
     });
 
     it("combines ignore_case with files_only and keeps line numbers, exclusions and limits", async () => {
@@ -299,15 +301,9 @@ for (const backend of ["native", "fallback"] as const) {
       expect(await grepSearchTool.execute({ pattern: "needle", path: directory, include: "*.ts", files_only: true })).toEqual({ output: lower, isError: false });
       expect(await grepSearchTool.execute({ pattern: "needle", path: upper, ignore_case: true, files_only: true })).toEqual({ output: upper, isError: false });
       expect(await grepSearchTool.execute({ pattern: "absent", path: directory, ignore_case: true, files_only: true })).toEqual({ output: "No matches found.", isError: false });
-      expect(await grepSearchTool.execute({ pattern: "noise", path: directory, ignore_case: true, files_only: true })).not.toContain("build");
-    });
-
-    it("reports invalid ignore_case values as errors without searching", async () => {
-      for (const value of [null, "true", 1, {}]) {
-        const result = await grepSearchTool.execute({ pattern: "needle", path: directory, ignore_case: value });
-        expect(result.isError).toBe(true);
-        expect(result.output).toContain("ignore_case");
-      }
+      const excludeCheck = await grepSearchTool.execute({ pattern: "noise", path: directory, ignore_case: true, files_only: true });
+      expect(excludeCheck.isError).toBe(false);
+      expect(excludeCheck.output).not.toContain("build");
     });
 
     it("reports missing roots and invalid regexes as errors, not no matches", async () => {
@@ -328,6 +324,15 @@ for (const backend of ["native", "fallback"] as const) {
     });
   });
 }
+
+describe("ignore_case validation", () => {
+  it.each([null, "true", 1, {}])("rejects malformed ignore_case: %s without searching", async value => {
+    const result = await grepSearchTool.execute({ pattern: "needle", path: directory, ignore_case: value });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("ignore_case");
+    expect(execFile).not.toHaveBeenCalled();
+  });
+});
 
 describe("files-only validation and partial search failures", () => {
   it.each([null, "true", 1, {}])("rejects malformed files_only: %s", async value => {

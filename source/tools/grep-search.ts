@@ -171,7 +171,7 @@ export const grepSearchTool: ToolDefinition = {
         },
         ignore_case: {
           type: "boolean",
-          description: "Match without regard to letter case (default: false). Affects content matching only; include globs stay case-sensitive.",
+          description: "Match without regard to letter case (default: false). Affects content matching only; include-glob behavior is unchanged.",
         },
       },
       required: ["pattern"],
