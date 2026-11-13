@@ -64,10 +64,30 @@ describe("searchMemories", () => {
     expect(searchMemories(MEMORIES, "tabs")[0].excerpt).toBe("prefer-tabs");
   });
 
-  it("matches a phrase across a line break or extra spaces in the memory", () => {
+  it("matches whitespace literally", () => {
     const wrapped = [memory("deploys", "Deploy notes", "Never deploy on a\nFriday   afternoon.")];
-    expect(searchMemories(wrapped, "friday afternoon")[0].excerpt).toBe("Never deploy on a Friday afternoon.");
-    expect(searchMemories(wrapped, "a friday")).toHaveLength(1);
+    expect(searchMemories(wrapped, "friday afternoon")).toEqual([]);
+    expect(searchMemories(wrapped, "a friday")).toEqual([]);
+    expect(searchMemories(wrapped, "friday   afternoon")[0].excerpt).toBe("Never deploy on a Friday afternoon.");
+  });
+
+  it("bounds the excerpt however long the query is", () => {
+    const long = "word ".repeat(2000).trim();
+    const [match] = searchMemories([memory("long", "x", `before ${long} after`)], long);
+    expect(match.excerpt.length).toBeLessThanOrEqual(120 + 2);
+    expect(match.excerpt).toMatch(/^before word .*…$/);
+  });
+
+  it("never cuts a character made of two UTF-16 code units in half", () => {
+    const wellFormed = (text: string) => !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
+    const before = searchMemories([memory("start", "x", `😀${"x".repeat(39)}needle`)], "needle")[0].excerpt;
+    expect(before).toBe(`…${"x".repeat(39)}needle`);
+    const after = searchMemories([memory("end", "x", `needle${"x".repeat(39)}😀 more`)], "needle")[0].excerpt;
+    expect(after).toBe(`needle${"x".repeat(39)}…`);
+    // a 119-unit match puts the 120-unit cap between the emoji's two halves
+    const capped = searchMemories([memory("cap", "x", `${"x".repeat(119)}😀 tail`)], "x".repeat(119))[0].excerpt;
+    expect(capped).toBe(`${"x".repeat(119)}…`);
+    expect([before, after, capped].every(wellFormed)).toBe(true);
   });
 
   it("keeps the excerpt on the match when lower-casing changes the text's length", () => {
