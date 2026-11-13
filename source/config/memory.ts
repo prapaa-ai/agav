@@ -158,6 +158,74 @@ export async function loadMemories(refresh = false): Promise<MemoryEntry[]> {
   }
 }
 
+const SEARCH_EXCERPT_CONTEXT = 40;
+
+export interface MemorySearchMatch {
+  memory: MemoryEntry;
+  excerpt: string;
+}
+
+/**
+ * `text` lower-cased with each run of whitespace as one space and final sigma read as sigma
+ * (per-character lower-casing can't tell them apart), plus, for every code unit of the result,
+ * the index in `text` it came from. Matching runs on the folded text, and the excerpt is cut from `text`, because
+ * lower-casing can change a string's length.
+ */
+function foldForSearch(text: string): { folded: string; origin: number[] } {
+  let folded = "";
+  const origin: number[] = [];
+  let index = 0;
+  let inSpace = false;
+  for (const ch of text) {
+    if (/\s/.test(ch)) {
+      if (!inSpace) {
+        folded += " ";
+        origin.push(index);
+      }
+      inSpace = true;
+    } else {
+      const lower = ch.toLowerCase().replace(/ς/g, "σ");
+      folded += lower;
+      for (let k = 0; k < lower.length; k++) origin.push(index);
+      inSpace = false;
+    }
+    index += ch.length;
+  }
+  return { folded, origin };
+}
+
+function excerptAround(text: string, start: number, end: number): string {
+  const from = Math.max(0, start - SEARCH_EXCERPT_CONTEXT);
+  const to = Math.min(text.length, end + SEARCH_EXCERPT_CONTEXT);
+  const body = text.slice(from, to).replace(/\s+/g, " ").trim();
+  return `${from > 0 ? "…" : ""}${body}${to < text.length ? "…" : ""}`;
+}
+
+/**
+ * Memories whose name, description or content contains `query` as one phrase, ignoring case and how much
+ * whitespace separates the words (the command line collapses it anyway), in the order given. Each match
+ * carries an excerpt of the first field that matched. Reads nothing and changes nothing, so callers pass
+ * what `loadMemories()` returned.
+ */
+export function searchMemories(memories: MemoryEntry[], query: string): MemorySearchMatch[] {
+  const needle = foldForSearch(query.trim()).folded;
+  if (!needle) return [];
+  const matches: MemorySearchMatch[] = [];
+  for (const memory of memories) {
+    for (const field of [memory.name, memory.description, memory.content]) {
+      const { folded, origin } = foldForSearch(field);
+      const at = folded.indexOf(needle);
+      if (at !== -1) {
+        const after = at + needle.length;
+        const end = after < origin.length ? origin[after] : field.length;
+        matches.push({ memory, excerpt: excerptAround(field, origin[at], Math.max(end, origin[at] + 1)) });
+        break;
+      }
+    }
+  }
+  return matches;
+}
+
 export async function deleteMemory(name: string): Promise<boolean> {
   const dir = await getProjectMemoryDir();
   const slug = slugify(name);
