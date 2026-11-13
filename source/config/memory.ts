@@ -158,6 +158,72 @@ export async function loadMemories(refresh = false): Promise<MemoryEntry[]> {
   }
 }
 
+const SEARCH_EXCERPT_CONTEXT = 40;
+const SEARCH_EXCERPT_MAX = 120;
+
+export interface MemorySearchMatch {
+  memory: MemoryEntry;
+  excerpt: string;
+}
+
+/**
+ * `text` lower-cased with final sigma read as sigma (per-character lower-casing can't tell them apart), plus, for
+ * every code unit of the result, the index in `text` it came from. Matching runs on the folded text, and the excerpt
+ * is cut from `text`, because lower-casing can change a string's length.
+ */
+function foldForSearch(text: string): { folded: string; origin: number[] } {
+  let folded = "";
+  const origin: number[] = [];
+  let index = 0;
+  for (const ch of text) {
+    const lower = ch.toLowerCase().replace(/ς/g, "σ");
+    folded += lower;
+    for (let k = 0; k < lower.length; k++) origin.push(index);
+    index += ch.length;
+  }
+  return { folded, origin };
+}
+
+/** Whether cutting `text` at `index` would split a surrogate pair, leaving half a character on each side. */
+function splitsPair(text: string, index: number): boolean {
+  const code = text.charCodeAt(index);
+  return code >= 0xdc00 && code <= 0xdfff && index > 0 && (text.charCodeAt(index - 1) & 0xfc00) === 0xd800;
+}
+
+/** At most `SEARCH_EXCERPT_MAX` code units of `text` from a little before the match, however long the match is. */
+function excerptAround(text: string, start: number, end: number): string {
+  let from = Math.max(0, start - SEARCH_EXCERPT_CONTEXT);
+  let to = Math.min(text.length, end + SEARCH_EXCERPT_CONTEXT, from + SEARCH_EXCERPT_MAX);
+  if (splitsPair(text, from)) from++;
+  if (splitsPair(text, to)) to--;
+  const body = text.slice(from, to).replace(/\s+/g, " ").trim();
+  return `${from > 0 ? "…" : ""}${body}${to < text.length ? "…" : ""}`;
+}
+
+/**
+ * Memories whose name, description or content contains `query` as one literal phrase, ignoring case, in the
+ * order given. Each match carries an excerpt of the first field that matched. Reads nothing and changes nothing,
+ * so callers pass what `loadMemories()` returned.
+ */
+export function searchMemories(memories: MemoryEntry[], query: string): MemorySearchMatch[] {
+  const needle = foldForSearch(query.trim()).folded;
+  if (!needle) return [];
+  const matches: MemorySearchMatch[] = [];
+  for (const memory of memories) {
+    for (const field of [memory.name, memory.description, memory.content]) {
+      const { folded, origin } = foldForSearch(field);
+      const at = folded.indexOf(needle);
+      if (at !== -1) {
+        const after = at + needle.length;
+        const end = after < origin.length ? origin[after] : field.length;
+        matches.push({ memory, excerpt: excerptAround(field, origin[at], Math.max(end, origin[at] + 1)) });
+        break;
+      }
+    }
+  }
+  return matches;
+}
+
 export async function deleteMemory(name: string): Promise<boolean> {
   const dir = await getProjectMemoryDir();
   const slug = slugify(name);

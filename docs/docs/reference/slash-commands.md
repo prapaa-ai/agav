@@ -69,6 +69,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | --- | --- |
 | `/memory`, `/memory list` | List project-scoped persistent memories. |
 | `/memory add <text>` | Save a persistent memory. |
+| `/memory search <query>` | Show memories whose name, description, or content contains the query, ignoring case, with an excerpt of each match. |
 | `/memory delete <name>`, `/memory rm <name>` | Delete one memory by its listed name. |
 | `/memory clear`, `/memory path` | Delete all project memories or show their storage directory. |
 | `/remember <text>` | Shortcut for `/memory add <text>`. |

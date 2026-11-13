@@ -175,6 +175,7 @@ Agav automatically compacts long histories and preserves a summary of important 
 | `/remember <text>` | Save `<text>` as a durable project memory. |
 | `/memory list` | List the project's saved memories. |
 | `/memory add <text>` | Save `<text>` as a project memory. |
+| `/memory search <query>` | Find saved memories whose name, description, or content contains `<query>`, ignoring case. |
 | `/memory delete <memory name>` | Remove the saved memory named `<memory name>`. |
 | `/memory path` | Show the active project's memory directory. |
 | `/forget` | List the saved memories. |
