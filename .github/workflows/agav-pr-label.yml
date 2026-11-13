@@ -77,7 +77,7 @@ jobs:
                 --permission '{"*":"deny"}' \
                 --max-turns 1 \
                 --provider openrouter \
-                --model openrouter/code \
+                --model openrouter/auto-code \
                 "$PROMPT" > /tmp/labels-raw.txt 2>/tmp/labels-err.txt; then
             echo "::warning::agav exited non-zero; skipping labels."
             cat /tmp/labels-err.txt || true

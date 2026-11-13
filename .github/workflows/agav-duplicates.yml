@@ -48,7 +48,7 @@ jobs:
           BODY=$(gh issue view ${{ github.event.issue.number }} --json body -q .body | head -c 500)
           OPEN=$(gh issue list --state open --limit 30 --json number,title | jq -r '[.[] | select(.number != ${{ github.event.issue.number }})] | .[] | "#\(.number): \(.title)"' | head -30)
           PROMPT="New issue: ${TITLE}. Body: ${BODY}. Open issues: ${OPEN}. If the new issue matches an open issue, respond ONLY with: DUPLICATE #NUMBER reason. If no match, respond ONLY with: NO_DUPLICATE"
-          RESULT=$(agav -P "$PROMPT" --provider openrouter --model openrouter/code)
+          RESULT=$(agav -P "$PROMPT" --provider openrouter --model openrouter/auto-code)
           echo "$RESULT" > /tmp/agav-result.txt
           echo "Agav result: $RESULT"
 
