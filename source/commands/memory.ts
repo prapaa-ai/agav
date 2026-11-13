@@ -15,7 +15,7 @@ export const memoryCommand: SlashCommand = {
   name: "memory",
   description: "Manage persistent memories",
   argumentHint: "[list|add|search|delete|clear|path]",
-  usage: "Usage: /memory <action>\n\n  /memory              Open manager (list in headless mode)\n  /memory list         Print saved memories\n  /memory add <text>   Save a new memory\n  /memory search <q>   Find memories by name, description or content\n  /memory delete <N>   Delete memory by index\n  /memory clear        Delete all memories\n  /memory path         Show the memory storage path\n\nMemories persist across sessions and are injected into the system prompt.",
+  usage: "Usage: /memory <action>\n\n  /memory              Open manager (list in headless mode)\n  /memory list         Print saved memories\n  /memory add <text>   Save a new memory\n  /memory search <q>   Find memories by name, description, or content\n  /memory delete <N>   Delete memory by index\n  /memory clear        Delete all memories\n  /memory path         Show the memory storage path\n\nMemories persist across sessions and are injected into the system prompt.",
   async execute(args: string, context): Promise<CommandResult> {
     if (!args.trim()) {
       const interactive = openResourceManager("memory", context);
@@ -54,7 +54,7 @@ export const memoryCommand: SlashCommand = {
     if (action === "search") {
       const query = args.trim().slice(parts[0].length).trim()
       if (!query) {
-        return { type: "message", text: "Usage: /memory search <query>\n\nMatches memory names, descriptions and content, ignoring case; the whole query is one phrase." }
+        return { type: "message", text: "Usage: /memory search <query>\n\nSearches memory names, descriptions, and content for the whole query as one phrase, ignoring case." }
       }
       const memories = await loadMemories()
       if (memories.length === 0) {

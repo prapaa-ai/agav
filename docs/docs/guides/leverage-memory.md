@@ -16,7 +16,7 @@ Use memory for verified facts that should influence future conversations, not fo
 | `/remember <text>` | Save `<text>` as a durable project memory. |
 | `/memory list` | List saved memories for the current project. |
 | `/memory add <text>` | Save `<text>` as a project memory. |
-| `/memory search <query>` | Find saved memories whose name, description, or content contains `<query>`, ignoring case. |
+| `/memory search <query>` | Find saved memories whose name, description, or content contains `<query>` (case-insensitive). |
 | `/memory path` | Show where the current project's memories are stored. |
 | `/memory delete <memory name>` | Remove the saved memory named `<memory name>`. |
 | `/forget` | List memories so you can select one to remove. |
