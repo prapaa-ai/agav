@@ -61,13 +61,13 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         timeout-minutes: 5
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           AGAV_NO_SANDBOX: "1"
           AGAV_PERMISSION: '{"*":"deny","read_file":"allow","write_file":"allow","edit_file":"allow"}'
         run: |
           RECENT=$(git log --since='6 hours ago' --oneline --stat | head -c 3000)
           PROMPT="Recent commits: ${RECENT}. If any commits added new features, changed CLI flags, or added providers, update README.md. Read it with read_file, then edit with edit_file. If no changes needed, do nothing."
-          agav run --provider gemini --model gemini-3.5-flash-lite --max-turns 10 "$PROMPT"
+          agav run --provider openrouter --model openrouter/code --max-turns 10 "$PROMPT"
 
       - name: Commit and push if changed
         if: steps.check.outputs.skip != 'true'

@@ -56,7 +56,7 @@ jobs:
         id: label
         timeout-minutes: 3
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           # Untrusted, attacker-controlled input. Passed via env so the shell
           # never re-parses it — NEVER interpolate ${{ }} into the run block.
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -76,8 +76,8 @@ jobs:
           if ! agav run \
                 --permission '{"*":"deny"}' \
                 --max-turns 1 \
-                --provider gemini \
-                --model gemini-3.5-flash-lite \
+                --provider openrouter \
+                --model openrouter/code \
                 "$PROMPT" > /tmp/labels-raw.txt 2>/tmp/labels-err.txt; then
             echo "::warning::agav exited non-zero; skipping labels."
             cat /tmp/labels-err.txt || true
