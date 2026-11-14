@@ -83,6 +83,14 @@ describe("structure-only overview", () => {
     expect(readdir).toHaveBeenCalledTimes(2);
   });
 
+  it.each(["false", null])("rejects non-boolean include_symbols before traversal: %j", async (include_symbols) => {
+    expect(await overviewTool.execute({ path, include_symbols })).toEqual({
+      output: "Invalid include_symbols: expected a boolean.", isError: true,
+    });
+    expect(readdir).not.toHaveBeenCalled();
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
   it("keeps explicit true equivalent to the default", async () => {
     await nestedFixture();
     expect(await overviewTool.execute({ path, include_symbols: true }))

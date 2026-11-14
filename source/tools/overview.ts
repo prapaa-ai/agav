@@ -140,6 +140,7 @@ export const overviewTool: ToolDefinition = {
       "Get a high-level map of the codebase showing file structure and key symbols " +
       "(functions, classes, types, interfaces) per file. Use this first to understand " +
       "a project's layout before diving into specific files with read_file or grep_search. " +
+      "Set include_symbols to false for a structure-only map. " +
       "Returns a condensed tree — not file contents, just the skeleton.",
     inputSchema: {
       type: "object",
@@ -167,7 +168,7 @@ export const overviewTool: ToolDefinition = {
       return { output: "Depth must be a non-negative safe integer.", isError: true };
     }
     if (input.include_symbols !== undefined && typeof input.include_symbols !== "boolean") {
-      return { output: "include_symbols must be a boolean.", isError: true };
+      return { output: "Invalid include_symbols: expected a boolean.", isError: true };
     }
     const includeSymbols = input.include_symbols !== false;
     const maxDepth = input.depth === undefined ? Infinity : input.depth as number;
