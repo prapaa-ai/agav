@@ -19,17 +19,25 @@ export const readNotebookTool: ToolDefinition = {
   schema: {
     name: "read_notebook",
     description:
-      "Read a Jupyter notebook (.ipynb) file. Returns cells with their type, source, and outputs.",
+      "Read a Jupyter notebook (.ipynb) file. Returns cell types and source, plus outputs by default.",
     inputSchema: {
       type: "object",
       properties: {
         path: { type: "string", description: "Path to the .ipynb file" },
+        include_outputs: {
+          type: "boolean",
+          description: "Include cached execution outputs (default: true).",
+        },
       },
       required: ["path"],
     },
   },
 
   async execute(input): Promise<ToolResult> {
+    const includeOutputs = input.include_outputs;
+    if (includeOutputs !== undefined && typeof includeOutputs !== "boolean") {
+      return { output: "include_outputs must be a boolean", isError: true };
+    }
     const filePath = resolve(String(input.path));
     try {
       const raw = await readFile(filePath, "utf-8");
@@ -42,7 +50,7 @@ export const readNotebookTool: ToolDefinition = {
         lines.push(`--- Cell ${i + 1} [${cell.cell_type}] ---`);
         lines.push(src);
 
-        if (cell.outputs && cell.outputs.length > 0) {
+        if (includeOutputs !== false && cell.outputs && cell.outputs.length > 0) {
           lines.push("  Output:");
           for (const out of cell.outputs) {
             if (out.text) lines.push("  " + out.text.join(""));
