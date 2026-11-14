@@ -6,6 +6,8 @@ import { pickSession, START_NEW_SESSION } from "../utils/session-picker.js";
 import { clearCommand } from "./clear.js";
 import { openResourceManager } from "./resource-manager.js";
 
+const MAX_RESUME_MATCHES = 10;
+
 export const historyCommand: SlashCommand = {
   name: "history",
   description: "Browse saved sessions",
@@ -51,7 +53,17 @@ export const resumeCommand: SlashCommand = {
       const matches = sessions.filter(s => s.id.startsWith(prefix));
       const match = sessions.find(s => s.id === prefix) ?? (matches.length === 1 ? matches[0] : undefined);
       if (!match && matches.length > 1) {
-        return { type: "message", text: `Ambiguous session ID prefix "${prefix}". Use a longer ID.` };
+        const choices = matches.slice(0, MAX_RESUME_MATCHES)
+          .map(({ id, title }) => {
+            const label = typeof title === "string" ? title.replace(/\s+/g, " ").trim() : "";
+            return `${id} · ${label || "Untitled session"}`;
+          });
+        const omitted = matches.length - choices.length;
+        if (omitted > 0) choices.push(`… and ${omitted} more ${omitted === 1 ? "match" : "matches"}.`);
+        return {
+          type: "message",
+          text: [`Ambiguous session ID prefix "${prefix}". Use a longer ID or choose one:`, ...choices].join("\n"),
+        };
       }
       if (!match) {
         return { type: "message", text: `No session matching "${prefix}". Use /resume to browse all sessions.` };
