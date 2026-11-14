@@ -18,7 +18,7 @@ order: 3
 | `/search <query>` | Find saved sessions that match `<query>`. |
 | `/name <name>` | Give the active session a recognizable name. |
 | `/clear` or `/new` | Start a clean chat while keeping saved sessions. |
-| `/export [json] [sanitize\|--sanitize]` | Export the retained conversation as Markdown or JSON, optionally with best-effort redaction. |
+| `/export [json\|--full] [sanitize\|--sanitize]` | Export the retained conversation as Markdown or JSON, optionally with best-effort redaction. |
 | `/exit` | Save the current session and exit. |
 
 Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`. To keep a task executing after closing the UI, set `backgroundJobsEnabled: true` in global config before submitting it and use `/detach` or the configurable `detachSession` shortcut (default Ctrl+D); see [Detached sessions](/features/detached-sessions). The resume picker also includes live runtimes and their pending approval counts. Workers checkpoint visible conversation history and token usage; live and saved session totals include subagent and skill usage. Resuming observes that progress without replaying the task.
@@ -41,12 +41,16 @@ A session also remembers its permission mode. If you changed the mode mid-sessio
 
 ```text
 /export                  Markdown preview
+/export --full           Markdown with complete retained tool text
+/export --full --sanitize Complete retained tool text with best-effort redaction
 /export json             Structured JSON
 /export sanitize         Markdown with best-effort redaction
 /export json sanitize    JSON with best-effort redaction
 ```
 
 `sanitize` and `json` work in either order; `--sanitize` is an alias for `sanitize`.
+`--full` is for Markdown only. It includes complete retained tool input and result text, but not images or opaque provider metadata. JSON already retains tool text and does not accept `--full`.
+
 Use `/help export` or `/export --help` for usage. Unknown options produce an error
 without creating a file. `/export` can run while Agav is working (with no pending
 attachments). It exports a snapshot of the committed, retained conversation at
@@ -60,7 +64,7 @@ failure message. New files request owner-only read/write permissions on POSIX;
 this does not configure Windows ACLs. Empty or internal-only conversations do not
 create files. Export never changes the active conversation or saved history.
 
-Markdown retains the existing readable layout, with previews of tool inputs
+By default, Markdown retains the existing readable layout, with previews of tool inputs
 (200 characters) and results (500 characters). JSON preserves the full retained
 message structure, text, and tool activity without those additional preview limits.
 Both exclude agent-injected internal prompts while preserving actual user messages.
