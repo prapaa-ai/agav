@@ -72,7 +72,7 @@ PDF and Office ranges use 1-based, inclusive `start_page` and `end_page`, with a
 
 ### `overview`
 
-`overview` returns a source-file and symbol skeleton, not file contents or a complete inventory of every file type. Use a project-relative `path` to focus on a subdirectory. `depth` counts subdirectories relative to that path:
+`overview` returns a source-file and symbol skeleton, not file contents or a complete inventory of every file type. Set `include_symbols: false` to map the same source files without opening them for symbol extraction. Use a project-relative `path` to focus on a subdirectory. `depth` counts subdirectories relative to that path:
 
 | `depth` | Included source files |
 | --- | --- |
