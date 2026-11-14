@@ -35,7 +35,7 @@ Note: resuming a session created with `--max-turns` keeps the session's own hist
 
 A session also remembers its permission mode. If you changed the mode mid-session with [`/permission`](/reference/slash-commands) (for example escalating to `auto-accept` or tightening to `deny-writes`), resuming restores that saved mode rather than the configured launch default. An explicit `-c permissionMode=...` (or `--config permissionMode=...`) at startup overrides the saved mode. Dedicated `--auto-accept` (`-y`) or `--deny-writes` flags take precedence over `-c`, regardless of argument order, and an organization minimum is always enforced. See [Security → Changing the mode during a session](/reference/security#changing-the-mode-during-a-session).
 
-`/resume` opens the same interactive picker in newest-first order. `/search` performs a case-insensitive substring search across saved message text and string tool results, returns up to 10 matching sessions, and shows up to 3 snippets per session. To reopen a result directly, use its ID prefix with `agav --resume <id-prefix>`.
+`/resume` opens the same interactive picker in newest-first order. If a prefix matches multiple sessions, `/resume <prefix>` lists up to 10 full IDs and titles so you can choose one without loading a session. `/search` performs a case-insensitive substring search across saved message text and string tool results, returns up to 10 matching sessions, and shows up to 3 snippets per session. To reopen a result directly, use its ID prefix with `agav --resume <id-prefix>`.
 
 ## Export a conversation
 

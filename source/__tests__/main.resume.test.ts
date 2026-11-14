@@ -76,6 +76,21 @@ describe("resume ID selection", () => {
     });
     expect(loadResumableSession).not.toHaveBeenCalled();
   });
+  it("bounds display titles and removes terminal controls without truncating IDs", async () => {
+    const longId = "abc-" + "1".repeat(90);
+    vi.mocked(listResumableSessions).mockResolvedValue([
+      { ...record(longId), title: "\x1b[31mFirst\x1b[0m\nSecond\x07" },
+      { ...record("abc-long"), title: "a".repeat(200) },
+    ]);
+    const result = await resumeCommand.execute("abc", {} as never);
+    expect(result.type).toBe("message");
+    if (result.type !== "message") throw new Error("Expected a message");
+    expect(result.text.split("\n").slice(1)).toEqual([
+      `${longId} · First Second`,
+      "abc-long · " + "a".repeat(79) + "…",
+    ]);
+    expect(loadResumableSession).not.toHaveBeenCalled();
+  });
   it.each(["abc", "abc-one"])("prefers exact IDs and accepts unique prefixes: %s", async id => {
     const selected = record("abc-one");
     vi.mocked(listResumableSessions).mockResolvedValue([record(id === "abc" ? "other" : "abc-one-longer"), selected]);

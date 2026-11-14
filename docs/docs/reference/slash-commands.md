@@ -47,7 +47,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 
 | Command | Purpose |
 | --- | --- |
-| `/resume [id]` | Open the saved/live session picker or resume one by ID or prefix match, including worker progress and pending approvals. |
+| `/resume [id]` | Open the saved/live session picker or resume one by ID or prefix match, including worker progress and pending approvals. An ambiguous prefix lists up to 10 matching IDs without loading a session. |
 | `/detach` | Close the UI while the current worker-owned turn continues locally. Requires `backgroundJobsEnabled: true` before starting the task; the configurable `detachSession` shortcut (default Ctrl+D) also works at approval prompts. See [Detached sessions](/features/detached-sessions). |
 | `/search <query>` | Search saved session messages, names, and titles by keyword. |
 | `/name <title>` | Give the current session a descriptive name. |
