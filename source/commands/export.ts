@@ -72,6 +72,7 @@ function projectMessages(messages: Message[], sanitize: boolean) {
 }
 
 function quotedCode(text: string): string {
+  text = text.replace(/\r\n/g, "\n");
   // Use a fence longer than any backtick run in the retained tool text.
   let length = 3;
   for (const run of text.matchAll(/`+/g)) length = Math.max(length, run[0].length + 1);
@@ -82,9 +83,13 @@ function quotedCode(text: string): string {
 function toolResultText(block: ExportBlock): string[] {
   const structured = block.toolResultContent?.flatMap(toolResultText) ?? [];
   const plain = block.toolResult;
+  // Hooks include their own line breaks; other result blocks may need a separator.
+  const mirror = plain !== undefined && structured.length > 0
+    && (structured.join("") === plain || structured.join("\n") === plain);
+  if (mirror) return block.type === "text" && block.text !== undefined ? [block.text, plain] : [plain];
   return [
     ...(block.type === "text" && block.text !== undefined ? [block.text] : []),
-    ...(plain !== undefined && !(structured.length === 1 && structured[0] === plain) ? [plain] : []),
+    ...(plain !== undefined ? [plain] : []),
     ...structured,
   ];
 }
@@ -95,6 +100,7 @@ function markdown(messages: ExportMessage[], model: string, provider: string, ex
   lines.push(`**Model:** ${model}  `);
   lines.push(`**Provider:** ${provider}  `);
   lines.push(`**Date:** ${exportedAt}\n`);
+  if (full) lines.push("*Full Markdown includes retained tool text; images are omitted.*\n");
   lines.push("---\n");
 
   for (const msg of messages) {

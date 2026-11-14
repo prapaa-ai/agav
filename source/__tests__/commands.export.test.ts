@@ -189,6 +189,19 @@ describe("export command", () => {
     expect(output().match(/read-file body repeated in structured content/g)).toHaveLength(1);
   });
 
+  it.each(["", "\n"])("prints mirrored multi-block results once (separator %j)", async (separator) => {
+    const input = messages();
+    const result = input[2].content[0];
+    const pieces = ["first line", "\r\n\r\n[Hook output]: second line"];
+    result.toolResult = pieces.join(separator);
+    result.toolResultContent = pieces.map((text) => ({ type: "text", text }));
+    await exportCommand.execute("--full", context(input));
+    expect(output().match(/first line/g)).toHaveLength(1);
+    expect(output().match(/second line/g)).toHaveLength(1);
+    expect(output()).not.toContain("\r");
+    expect(output()).toContain("images are omitted");
+  });
+
   it("rejects full mode for JSON before creating a file", async () => {
     const result = text(await exportCommand.execute("json --full", context()));
     expect(result).toMatch(/JSON already preserves/);
