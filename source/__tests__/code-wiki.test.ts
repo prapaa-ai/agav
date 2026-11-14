@@ -7,23 +7,43 @@ import { overviewTool } from "../tools/overview.js";
 const PINNED_REVISION = "da6cb04937291db5b0a609338dd2d2d8dc00c73c";
 const CANONICAL_DOC_PATH = resolve("docs/code-wiki/overview.md");
 const GENERATED_DOC_PATH = resolve("docs/code-wiki/generated/overview.md");
-const OVERVIEW_SOURCE_PATH = resolve("source/tools/overview.ts");
 const REGISTRY_FACTORY_PATH = resolve("source/tools/registry-factory.ts");
 const DOC_GEN_SKILL_PATH = resolve("source/skills/bundled/doc-gen/SKILL.md");
 
 /**
  * Loads the source content tied directly to the recorded pinned revision.
- * Falls back to reading the working tree file if git history is unavailable.
+ *
+ * The pinned object must be reachable from the local clone. CI checks out a
+ * shallow merge commit, so the test suite fetches the pin explicitly when it is
+ * missing instead of silently falling back to the working tree (whose line
+ * numbers drift as the file evolves and would make these pinned-line anchors
+ * fail in unrelated PRs). If the pin still cannot be fetched, the test fails
+ * loudly rather than validating a mutable working tree against immutable links.
  */
-async function loadPinnedSource(): Promise<string> {
+function ensurePinnedRevision(): void {
   try {
-    return execFileSync("git", ["show", `${PINNED_REVISION}:source/tools/overview.ts`], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
+    execFileSync("git", ["cat-file", "-e", `${PINNED_REVISION}^{commit}`], { stdio: "ignore" });
+    return;
+  } catch { /* not present locally; try to fetch it */ }
+  try {
+    execFileSync("git", ["fetch", "--quiet", "--depth=1", "origin", PINNED_REVISION], { stdio: ["ignore", "ignore", "ignore"] });
+  } catch { /* fall through to the explicit failure below */ }
+  try {
+    execFileSync("git", ["cat-file", "-e", `${PINNED_REVISION}^{commit}`], { stdio: "ignore" });
   } catch {
-    return readFile(OVERVIEW_SOURCE_PATH, "utf-8");
+    throw new Error(
+      `Pinned revision ${PINNED_REVISION} for docs/code-wiki is not available locally and could not be fetched. ` +
+      "Fetch it (git fetch origin " + PINNED_REVISION + ") and re-run; the pinned anchors must never be checked against the working tree.",
+    );
   }
+}
+
+async function loadPinnedSource(): Promise<string> {
+  ensurePinnedRevision();
+  return execFileSync("git", ["show", `${PINNED_REVISION}:source/tools/overview.ts`], {
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 }
 
 describe("code-wiki reference: overview module", () => {
