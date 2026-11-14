@@ -66,6 +66,51 @@ describe("overview paths", () => {
   });
 });
 
+describe("structure-only overview", () => {
+  it("maps the selected files without reading source or showing a symbol count", async () => {
+    await nestedFixture();
+    await file("node_modules/package/ignored.ts");
+    await file("readme.txt");
+    const detailed = await overviewTool.execute({ path, depth: 1 });
+    const tree = detailed.output.split("\n\n")[1]!.replace(/ — .*$/gm, "");
+    vi.clearAllMocks();
+    const result = await overviewTool.execute({ path, depth: 1, include_symbols: false });
+    expect(result).toEqual({ output: `2 files mapped\n\n${tree}`, isError: false });
+    expect(tree).toContain("child.ts");
+    expect(tree).toContain("root.ts");
+    expect(tree).not.toMatch(/deep\.ts|ignored\.ts|readme\.txt/);
+    expect(readFile).not.toHaveBeenCalled();
+    expect(readdir).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["false", null])("rejects non-boolean include_symbols before traversal: %j", async (include_symbols) => {
+    expect(await overviewTool.execute({ path, include_symbols })).toEqual({
+      output: "Invalid include_symbols: expected a boolean.", isError: true,
+    });
+    expect(readdir).not.toHaveBeenCalled();
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit true equivalent to the default", async () => {
+    await nestedFixture();
+    expect(await overviewTool.execute({ path, include_symbols: true }))
+      .toEqual(await overviewTool.execute({ path }));
+  });
+
+  it("preserves the empty map and the file cap without reading source", async () => {
+    expect(await overviewTool.execute({ path, include_symbols: false })).toEqual({
+      output: "No source files found.", isError: false,
+    });
+    await Promise.all(Array.from({ length: 201 }, (_, i) => file(`file-${String(i).padStart(3, "0")}.ts`)));
+    const result = await overviewTool.execute({ path, include_symbols: false });
+    expect(result.output).toContain("200 files mapped");
+    expect(result.output).toContain("File limit reached (200)");
+    expect(result.output).toContain("file-199.ts");
+    expect(result.output).not.toContain("file-200.ts");
+    expect(readFile).not.toHaveBeenCalled();
+  });
+});
+
 describe("overview depth", () => {
   it("reads root files only at depth 0, without traversing children", async () => {
     await nestedFixture();

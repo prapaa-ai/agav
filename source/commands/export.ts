@@ -7,13 +7,14 @@ import { stripTerminalLinks } from "../utils/hyperlink.js";
 import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { createExportRedactor } from "../utils/export-redaction.js";
 
-const USAGE = "Usage: /export [json] [sanitize|--sanitize]\n\n"
+const USAGE = "Usage: /export [json|--full] [sanitize|--sanitize]\n\n"
   + "  /export                 Markdown preview (existing format)\n"
+  + "  /export --full          Markdown with complete retained tool text\n"
   + "  /export json            Structured retained conversation\n"
   + "  /export sanitize        Markdown with best-effort redaction\n"
   + "  /export json sanitize   JSON with best-effort redaction\n\n"
   + "Saves a timestamped file in the working directory. Options may appear in either order.\n"
-  + "JSON preserves retained tool data; Markdown previews tool inputs/results. Earlier trimmed or compacted history cannot be recovered.\n"
+  + "JSON preserves retained tool data; Markdown previews tool inputs/results unless --full is set. Earlier trimmed or compacted history cannot be recovered.\n"
   + "Sanitization masks common credentials and home paths, and omits image bytes from JSON. Review before sharing; arbitrary secrets and personal data may remain.\n"
   + "JSON excludes opaque provider replay metadata and is not a session backup. See the Sessions and Memory guide for its schema.";
 
@@ -70,12 +71,36 @@ function projectMessages(messages: Message[], sanitize: boolean) {
   return { messages: projected, omissions, text };
 }
 
-function markdown(messages: ExportMessage[], model: string, provider: string, exportedAt: string): string {
+function quotedCode(text: string): string {
+  text = text.replace(/\r\n/g, "\n");
+  // Use a fence longer than any backtick run in the retained tool text.
+  let length = 3;
+  for (const run of text.matchAll(/`+/g)) length = Math.max(length, run[0].length + 1);
+  const fence = "`".repeat(length);
+  return [fence, ...text.split("\n"), fence].map((line) => `> ${line}`).join("\n") + "\n";
+}
+
+function toolResultText(block: ExportBlock): string[] {
+  const structured = block.toolResultContent?.flatMap(toolResultText) ?? [];
+  const plain = block.toolResult;
+  // Hooks include their own line breaks; other result blocks may need a separator.
+  const mirror = plain !== undefined && structured.length > 0
+    && (structured.join("") === plain || structured.join("\n") === plain);
+  if (mirror) return block.type === "text" && block.text !== undefined ? [block.text, plain] : [plain];
+  return [
+    ...(block.type === "text" && block.text !== undefined ? [block.text] : []),
+    ...(plain !== undefined ? [plain] : []),
+    ...structured,
+  ];
+}
+
+function markdown(messages: ExportMessage[], model: string, provider: string, exportedAt: string, full: boolean): string {
   const lines: string[] = [];
   lines.push("# Agav Conversation\n");
   lines.push(`**Model:** ${model}  `);
   lines.push(`**Provider:** ${provider}  `);
   lines.push(`**Date:** ${exportedAt}\n`);
+  if (full) lines.push("*Full Markdown includes retained tool text; images are omitted.*\n");
   lines.push("---\n");
 
   for (const msg of messages) {
@@ -91,7 +116,11 @@ function markdown(messages: ExportMessage[], model: string, provider: string, ex
       }
       for (const tr of toolResults) {
         lines.push(`> **Tool Result** (${tr.toolCallId}): ${tr.isError ? "ERROR" : "OK"}`);
-        lines.push(`> \`\`\`\n> ${(tr.toolResult ?? "").slice(0, 500)}\n> \`\`\`\n`);
+        if (full) {
+          lines.push(quotedCode(toolResultText(tr).join("\n")));
+        } else {
+          lines.push(`> \`\`\`\n> ${(tr.toolResult ?? "").slice(0, 500)}\n> \`\`\`\n`);
+        }
       }
     } else if (msg.role === "assistant") {
       const text = msg.content
@@ -103,7 +132,12 @@ function markdown(messages: ExportMessage[], model: string, provider: string, ex
       lines.push(`## Agav\n`);
       if (text) lines.push(`${text}\n`);
       for (const tc of toolCalls) {
-        lines.push(`> **${tc.toolName}** \`${JSON.stringify(tc.toolInput).slice(0, 200)}\`\n`);
+        if (full) {
+          lines.push(`> **${tc.toolName}**`);
+          lines.push(quotedCode(JSON.stringify(tc.toolInput, null, 2) ?? ""));
+        } else {
+          lines.push(`> **${tc.toolName}** \`${JSON.stringify(tc.toolInput).slice(0, 200)}\`\n`);
+        }
       }
     }
   }
@@ -150,15 +184,19 @@ async function saveExport(directory: string, stem: string, extension: string, ou
 export const exportCommand: SlashCommand = {
   name: "export",
   description: "Export the retained conversation as Markdown or JSON, optionally sanitized",
-  argumentHint: "[json] [sanitize]",
+  argumentHint: "[json|--full] [sanitize]",
   usage: USAGE,
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const options = args.trim().split(/\s+/).filter(Boolean);
-    if (options.some((option) => !["json", "sanitize", "--sanitize", "--help"].includes(option))) {
+    if (options.some((option) => !["json", "sanitize", "--sanitize", "--help", "--full"].includes(option))) {
       return { type: "message", text: `Unknown export option.\n\n${USAGE}` };
     }
     if (options.includes("--help")) return { type: "message", text: USAGE };
     const json = options.includes("json");
+    const full = options.includes("--full");
+    if (json && full) {
+      return { type: "message", text: "JSON already preserves retained tool data. Use --full only with Markdown." };
+    }
     const sanitize = options.includes("sanitize") || options.includes("--sanitize");
 
     let output: string;
@@ -195,7 +233,7 @@ export const exportCommand: SlashCommand = {
           messages: snapshot.messages,
         }, null, 2) + "\n";
       } else {
-        output = markdown(snapshot.messages, model, provider, now.toISOString());
+        output = markdown(snapshot.messages, model, provider, now.toISOString(), full);
       }
       directory = process.cwd();
       stem = `agav-export-${now.getTime()}${sanitize ? "-sanitized" : ""}`;
