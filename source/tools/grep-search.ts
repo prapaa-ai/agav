@@ -61,7 +61,8 @@ async function nodeGrep(
           if (isBinary(buf)) continue;
           const content = buf.toString("utf-8");
           const lines = content.split("\n");
-          for (let i = 0; i < lines.length; i++) {
+          const lineCount = content === "" ? 0 : content.endsWith("\n") ? lines.length - 1 : lines.length;
+          for (let i = 0; i < lineCount; i++) {
             if (results.length >= limit) return;
             if (pattern.test(lines[i]!)) {
               results.push(filesOnly ? fullPath : `${fullPath}:${i + 1}:${lines[i]}`);
@@ -85,7 +86,8 @@ async function nodeGrep(
         if (!isBinary(buf)) {
           const content = buf.toString("utf-8");
           const lines = content.split("\n");
-          for (let i = 0; i < lines.length; i++) {
+          const lineCount = content === "" ? 0 : content.endsWith("\n") ? lines.length - 1 : lines.length;
+          for (let i = 0; i < lineCount; i++) {
             if (results.length >= limit) break;
             if (pattern.test(lines[i]!)) {
               results.push(filesOnly ? searchPath : `${searchPath}:${i + 1}:${lines[i]}`);
@@ -111,13 +113,15 @@ async function nativeGrep(
   searchPath: string,
   include: string | undefined,
   filesOnly = false,
+  fixedStrings = false,
   ignoreCase = false,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   // grep can exclude its explicit root too; searching "." bypasses only that
   // root's name, while still excluding generated directories below it.
   const searchFromRoot = SKIP_DIRS.has(basename(searchPath)) &&
     await stat(searchPath).then((info) => info.isDirectory(), () => false);
-  const args = filesOnly ? ["-rl", "-I", "--color=never", "-E"] : ["-rn", "-H", "--color=never", "-E"];
+  const args = filesOnly ? ["-rl", "-I", "--color=never"] : ["-rn", "-H", "--color=never"];
+  args.push(fixedStrings ? "-F" : "-E");
   if (ignoreCase) {
     args.push("-i");
   }
@@ -149,13 +153,14 @@ export const grepSearchTool: ToolDefinition = {
     name: "grep_search",
     description:
       "Search for a pattern in files using grep. Returns matching lines with file paths and line numbers. " +
-      "Supports regex patterns. Searches recursively from the given directory. Use files_only for matching paths without content. Use ignore_case to match without regard to letter case.",
+      "Supports regex patterns by default; pass fixed_strings: true to match exact literal text. " +
+      "Searches recursively from the given directory. Use files_only for matching paths without content. Use ignore_case to match without regard to letter case.",
     inputSchema: {
       type: "object",
       properties: {
         pattern: {
           type: "string",
-          description: "The regex pattern to search for",
+          description: "The pattern to search for. Treated as a regex by default; set fixed_strings: true to match it literally.",
         },
         path: {
           type: "string",
@@ -168,6 +173,10 @@ export const grepSearchTool: ToolDefinition = {
         include: {
           type: "string",
           description: "File glob pattern to include (e.g. '*.ts', '*.py')",
+        },
+        fixed_strings: {
+          type: "boolean",
+          description: "Match the pattern as a fixed literal string, not a regex (default: false). Useful for text with regex metacharacters such as [ ] ( ) . * + ?. Patterns may not contain newlines in this mode.",
         },
         ignore_case: {
           type: "boolean",
@@ -182,20 +191,28 @@ export const grepSearchTool: ToolDefinition = {
     if (input.files_only !== undefined && typeof input.files_only !== "boolean") {
       return { output: "Invalid files_only: expected a boolean.", isError: true };
     }
+    if (input.fixed_strings !== undefined && typeof input.fixed_strings !== "boolean") {
+      return { output: "Invalid fixed_strings: expected a boolean.", isError: true };
+    }
     if (input.ignore_case !== undefined && typeof input.ignore_case !== "boolean") {
       return { output: "Invalid ignore_case: expected a boolean.", isError: true };
     }
     const filesOnly = input.files_only === true;
+    const fixedStrings = input.fixed_strings === true;
     const ignoreCase = input.ignore_case === true;
     const pattern = String(input.pattern);
     const searchPath = resolve(String(input.path ?? "."));
     const include = input.include ? String(input.include) : undefined;
 
+    if (fixedStrings && pattern.includes("\n")) {
+      return { output: "Invalid fixed_strings pattern: patterns may not contain newlines.", isError: true };
+    }
+
     // On Windows, always use the Node.js fallback since grep is not available.
     // On Unix, try native grep first for speed, fall back to Node.js if not found.
     if (platform() !== "win32") {
       try {
-        const result = await nativeGrep(pattern, searchPath, include, filesOnly, ignoreCase);
+        const result = await nativeGrep(pattern, searchPath, include, filesOnly, fixedStrings, ignoreCase);
         if (filesOnly && result.code !== 0 && result.code !== 1) {
           return { output: result.stdout.trimEnd() + "\nSearch incomplete: " + (result.stderr || "grep failed"), isError: true };
         }
@@ -217,7 +234,8 @@ export const grepSearchTool: ToolDefinition = {
 
     // Node.js fallback (always used on Windows)
     try {
-      const regex = new RegExp(pattern, ignoreCase ? "i" : "");
+      const escapedPattern = fixedStrings ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern;
+      const regex = new RegExp(escapedPattern, ignoreCase ? "i" : "");
       const includeRegex = include ? globToRegex(include) : undefined;
       const results = await nodeGrep(searchPath, regex, includeRegex, filesOnly);
       if (results.length === 0) {
