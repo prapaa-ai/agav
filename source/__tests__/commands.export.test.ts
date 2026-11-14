@@ -151,6 +151,50 @@ describe("export command", () => {
     expect(output()).not.toContain("y".repeat(501));
   });
 
+  it.each(["--full --sanitize", "--sanitize --full"])("renders complete safe tool text with %s", async (args) => {
+    const input = messages();
+    const secret = "sk-abcdefgh123456789";
+    const toolInput = "a".repeat(240) + " input tail " + secret;
+    const toolResult = "b".repeat(560) + " result tail " + secret + "\n```\nlast line";
+    input[1].content[1].toolInput = { text: toolInput };
+    input[2].content[0].toolResult = toolResult;
+    input[2].content[0].toolResultContent = [
+      { type: "text", text: "nested tail " + secret },
+      { type: "image", imageData: "opaque image bytes", imageMediaType: "image/png" },
+    ];
+    await exportCommand.execute(args, context(input));
+    const result = output();
+    expect(result).toContain("a".repeat(240) + " input tail ***REDACTED***");
+    expect(result).toContain("b".repeat(560) + " result tail ***REDACTED***");
+    expect(result).toContain("> ```\n> last line");
+    expect(result).toContain("nested tail ***REDACTED***");
+    expect(result).not.toContain(secret);
+    expect(result).not.toContain("opaque image bytes");
+    expect(open).toHaveBeenCalledWith(expect.stringMatching(/-sanitized\.md$/), "wx", 0o600);
+  });
+
+  it("offers complete Markdown without sanitization on request", async () => {
+    const input = messages();
+    input[2].content[0].toolResult = "x".repeat(600) + " final result";
+    await exportCommand.execute("--full", context(input));
+    expect(output()).toContain("x".repeat(600) + " final result");
+  });
+
+  it("prints an actual tool result's mirrored text only once", async () => {
+    const input = messages();
+    const result = input[2].content[0];
+    result.toolResult = "read-file body repeated in structured content";
+    result.toolResultContent = [{ type: "text", text: result.toolResult }];
+    await exportCommand.execute("--full", context(input));
+    expect(output().match(/read-file body repeated in structured content/g)).toHaveLength(1);
+  });
+
+  it("rejects full mode for JSON before creating a file", async () => {
+    const result = text(await exportCommand.execute("json --full", context()));
+    expect(result).toMatch(/JSON already preserves/);
+    expect(open).not.toHaveBeenCalled();
+  });
+
   it("sanitizes all projected text and nested inputs without mutating a frozen session", async () => {
     const secret = "gho_abcdefgh123456";
     const input: Message[] = [
