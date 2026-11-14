@@ -6,6 +6,30 @@ import { pickSession, START_NEW_SESSION } from "../utils/session-picker.js";
 import { clearCommand } from "./clear.js";
 import { openResourceManager } from "./resource-manager.js";
 
+import { stripVTControlCharacters } from "node:util";
+import { visualLen } from "../utils/wrap-text.js";
+
+const MAX_RESUME_MATCHES = 10;
+const MAX_RESUME_TITLE_WIDTH = 80;
+const titleSegments = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function resumeTitle(title: unknown): string {
+  if (typeof title !== "string") return "Untitled session";
+  const label = stripVTControlCharacters(title).replace(/\s+/g, " ")
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim();
+  if (!label) return "Untitled session";
+  if (visualLen(label) <= MAX_RESUME_TITLE_WIDTH) return label;
+
+  let width = 0;
+  let end = 0;
+  for (const { segment, index } of titleSegments.segment(label)) {
+    width += visualLen(segment);
+    if (width >= MAX_RESUME_TITLE_WIDTH) break;
+    end = index + segment.length;
+  }
+  return label.slice(0, end).trimEnd() + "…";
+}
+
 export const historyCommand: SlashCommand = {
   name: "history",
   description: "Browse saved sessions",
@@ -51,7 +75,14 @@ export const resumeCommand: SlashCommand = {
       const matches = sessions.filter(s => s.id.startsWith(prefix));
       const match = sessions.find(s => s.id === prefix) ?? (matches.length === 1 ? matches[0] : undefined);
       if (!match && matches.length > 1) {
-        return { type: "message", text: `Ambiguous session ID prefix "${prefix}". Use a longer ID.` };
+        const choices = matches.slice(0, MAX_RESUME_MATCHES)
+          .map(({ id, title }) => `${id} · ${resumeTitle(title)}`);
+        const omitted = matches.length - choices.length;
+        if (omitted > 0) choices.push(`… and ${omitted} more ${omitted === 1 ? "match" : "matches"}.`);
+        return {
+          type: "message",
+          text: [`Ambiguous session ID prefix "${prefix}". Use a longer ID or choose one:`, ...choices].join("\n"),
+        };
       }
       if (!match) {
         return { type: "message", text: `No session matching "${prefix}". Use /resume to browse all sessions.` };
