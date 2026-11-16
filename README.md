@@ -1,12 +1,10 @@
-
-
 # Agav
 
 **Terminal-native autonomous agent for real repositories and projects**
 
 **[Documentation: https://docs.agav.dev](https://docs.agav.dev)**
 
-![Release](https://img.shields.io/github/v/release/prapaa-ai/agav?include_prereleases&label=release&color=blueviolet)![Terminal-Bench 2.1](https://img.shields.io/badge/Terminal--Bench_2.1-84.7%25-2ea44f?logo=speedtest&logoColor=white)![SWE-bench-Live Lite](https://img.shields.io/badge/SWE--bench--Live_Lite-62.0%25-2ea44f?logo=speedtest&logoColor=white)![Docs](https://img.shields.io/badge/Docs-docs.agav.dev-orange?logo=safari&logoColor=white)![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)![X](https://img.shields.io/badge/X-@agav__dev-black?logo=x&logoColor=white)![YouTube](https://img.shields.io/badge/YouTube-@agav--dev-red?logo=youtube&logoColor=white)![Reddit](https://img.shields.io/badge/Reddit-r/agav-ff4500?logo=reddit&logoColor=white)![License](https://img.shields.io/badge/license-Apache--2.0-blue)
+![Release](https://img.shields.io/github/v/release/prapaa-ai/agav?include_prereleases&label=release&color=blueviolet)&nbsp;![Terminal-Bench 2.1](https://img.shields.io/badge/Terminal--Bench_2.1-84.7%25-2ea44f?logo=speedtest&logoColor=white)&nbsp;![SWE-bench-Live Lite](https://img.shields.io/badge/SWE--bench--Live_Lite-62.0%25-2ea44f?logo=speedtest&logoColor=white)&nbsp;![Docs](https://img.shields.io/badge/Docs-docs.agav.dev-orange?logo=safari&logoColor=white)&nbsp;![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)![X](https://img.shields.io/badge/X-@agav__dev-black?logo=x&logoColor=white)&nbsp;![YouTube](https://img.shields.io/badge/YouTube-@agav--dev-red?logo=youtube&logoColor=white)&nbsp;![Reddit](https://img.shields.io/badge/Reddit-r/agav-ff4500?logo=reddit&logoColor=white)&nbsp;![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 
 
@@ -110,7 +108,7 @@ We’re building the alternative, an AI that works for you, runs on your terms, 
 
 ## Community
 
-![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)![X](https://img.shields.io/badge/X-@agav__dev-black?logo=x&logoColor=white)![YouTube](https://img.shields.io/badge/YouTube-@agav--dev-red?logo=youtube&logoColor=white)![Reddit](https://img.shields.io/badge/Reddit-r/agav-ff4500?logo=reddit&logoColor=white)
+![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)&nbsp;![X](https://img.shields.io/badge/X-@agav__dev-black?logo=x&logoColor=white)&nbsp;![YouTube](https://img.shields.io/badge/YouTube-@agav--dev-red?logo=youtube&logoColor=white)&nbsp;![Reddit](https://img.shields.io/badge/Reddit-r/agav-ff4500?logo=reddit&logoColor=white)
 
 Email: contact@agav.dev
 
