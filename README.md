@@ -1,26 +1,14 @@
-<div align="center">
-
 # Agav
 
 **Terminal-native autonomous agent for real repositories and projects**
 
-<p align="center">
-  <a href="https://docs.agav.dev"><strong>Documentation: https://docs.agav.dev</strong></a>
-</p>
+**[Documentation: https://docs.agav.dev](https://docs.agav.dev)**
+
+![Version](https://img.shields.io/github/package-json/v/prapaa-ai/agav?label=version&color=blueviolet)&nbsp;![Terminal-Bench 2.1](https://img.shields.io/badge/Terminal--Bench_2.1-84.7%25-2ea44f?logo=speedtest&logoColor=white)&nbsp;![SWE-bench-Live Lite](https://img.shields.io/badge/SWE--bench--Live_Lite-62.0%25-2ea44f?logo=speedtest&logoColor=white)&nbsp;![Docs](https://img.shields.io/badge/Docs-docs.agav.dev-orange?logo=safari&logoColor=white)&nbsp;![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)![X](https://img.shields.io/badge/X-@agav__dev-black?logo=x&logoColor=white)&nbsp;![YouTube](https://img.shields.io/badge/YouTube-@agav--dev-red?logo=youtube&logoColor=white)&nbsp;![Reddit](https://img.shields.io/badge/Reddit-r/agav-ff4500?logo=reddit&logoColor=white)&nbsp;![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 
 
-<p>
-  <img alt="Version" src="https://img.shields.io/github/package-json/v/prapaa-ai/agav?style=for-the-badge&amp;label=version&amp;color=111">
-  <img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-111?style=for-the-badge">
-  <a href="https://github.com/harbor-framework/terminal-bench-2-1/pull/225"><img alt="Terminal-Bench 2.1" src="https://img.shields.io/badge/Terminal--Bench_2.1-84.7%25_%7C_top_of_the_board-111?style=for-the-badge"></a>
-  <a href="https://swe-bench-live.github.io"><img alt="SWE-bench-Live Lite" src="https://img.shields.io/badge/SWE--bench--Live_Lite-62.0%25_%7C_%232_on_the_board-111?style=for-the-badge"></a>
-</p>
 
-</div>
-
-<div align="center">
-  <img src="https://www.agav.dev/preview.gif" alt="Agav preview" width="100%" style="border-radius:16px;" />
-</div>
+![Agav preview](https://www.agav.dev/preview.gif)
 
 > ⚠️ **Experimental Beta** — Agav is under active development. Expect breaking changes, rough edges, and rapid iteration. Feedback and bug reports are welcome!
 
@@ -48,6 +36,9 @@ del install.cmd
 
 Download binaries or pre-releases from [Releases](../../releases). See [docs.agav.dev/getting-started/installation](https://docs.agav.dev/getting-started/installation) for detailed installation steps.
 
+## **Free daily usage**
+OpenRouter and NVIDIA NIM offer free daily LLM API credits, no paid plan required. [Create free OpenRouter API key](https://openrouter.ai/keys) · [Create free NVIDIA NIM API key](https://build.nvidia.com/)
+
 ## Run
 
 ```bash
@@ -58,7 +49,8 @@ Pick a provider and model, or use defaults:
 
 ```bash
 agav --provider openai --model gpt-4o
-agav --provider openrouter --model openrouter/auto
+agav --provider openrouter --model openrouter/free
+agav --provider nvidia --model meta/muse-glimmer-30b
 agav --provider ollama --model llama3.2
 ```
 
@@ -116,8 +108,9 @@ We’re building the alternative, an AI that works for you, runs on your terms, 
 
 ## Community
 
-Email: contact@agav.dev  
-Discord: [discord.com/invite/bqDaTQ9ZNS](https://discord.com/invite/bqDaTQ9ZNS)
+![Discord](https://img.shields.io/badge/Discord-Join%20Us-5865F2?logo=discord&logoColor=white)&nbsp;![X](https://img.shields.io/badge/X-@agav__dev-black?logo=x&logoColor=white)&nbsp;![YouTube](https://img.shields.io/badge/YouTube-@agav--dev-red?logo=youtube&logoColor=white)&nbsp;![Reddit](https://img.shields.io/badge/Reddit-r/agav-ff4500?logo=reddit&logoColor=white)
+
+Email: contact@agav.dev
 
 ## License
 
@@ -125,4 +118,4 @@ Discord: [discord.com/invite/bqDaTQ9ZNS](https://discord.com/invite/bqDaTQ9ZNS)
 
 ---
 
-*Documentation source lives in [`docs/`](./docs/). To run locally: `cd docs && npm install && npm run dev`.*
+*Documentation source lives in* [`docs/`](./docs/)*. To run locally:* `cd docs && npm install && npm run dev`*.*
