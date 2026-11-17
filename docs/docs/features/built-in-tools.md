@@ -13,7 +13,7 @@ Agav exposes these tools to its agent loop.
 | `read_file` | Read text ranges and preview images, PDFs, and Office documents |
 | `write_file` | Create or replace a file |
 | `edit_file` | Replace one exact, unique string in a file |
-| `find_files` | Find names and glob matches |
+| `find_files` | Find files by glob; use `relative_paths: true` for paths relative to the search directory. A matching file searched directly is shown by its basename in relative mode. |
 | `grep_search` | Search file contents with regular expressions |
 | `list_directory` | List a directory |
 | `overview` | Map a repository's directory and symbol structure |
@@ -82,6 +82,14 @@ PDF and Office ranges use 1-based, inclusive `start_page` and `end_page`, with a
 | Omitted | Unrestricted depth, still subject to the file cap |
 
 Depth must be a non-negative safe integer; invalid values fail before traversal. Hidden directories and common dependency, build, cache, and worktree directories are skipped. The map stops at **200 source files** and reports that it may be incomplete whenever the cap is reached, even if exactly 200 files exist. Narrow `path` or `depth` rather than assuming the first map covered the whole repository. Explicit shallow requests avoid reading deeper source files as well as returning their symbols.
+
+### `grep_search`
+
+Use the case-sensitive `exclude` basename glob to omit files even when
+they match `include`. Use `*` or `?` as wildcards. Directory paths,
+bracket ranges, and escapes are not supported by this option. `include`
+is case-insensitive in the JavaScript fallback (always used on Windows)
+and case-sensitive in native grep.
 
 ## Structured test runs and verification
 

@@ -26,11 +26,33 @@ export function createHelpCommand(
   return {
     name: "help",
     description: "Show available commands",
+    usage: "Usage: /help [command]\n       /help --search <query>",
     async execute(args: string): Promise<CommandResult> {
       const commands = getCommands();
       const commandMap = new Map(commands.map((c) => [c.name, c]));
 
       const query = args.trim().replace(/^\//, "");
+      const search = /^--search(?:\s+([\s\S]+))?$/.exec(query);
+      if (search) {
+        const phrase = search[1]?.trim();
+        if (!phrase) {
+          return { type: "message", text: "Usage: /help --search <query>" };
+        }
+        const needle = phrase.toLowerCase();
+        const nameNeedle = needle.replace(/^\//, "");
+        const descriptions = new Map(Object.entries(VIRTUAL_COMMANDS).map(([name, cmd]) => [name, cmd.description]));
+        for (const [name, cmd] of commandMap) descriptions.set(name, cmd.description);
+        const matches = [...descriptions]
+          .filter(([name, description]) =>
+            (nameNeedle && name.toLowerCase().includes(nameNeedle)) || description.toLowerCase().includes(needle)
+          )
+          .map(([name, description]) => `/${name} — ${description.replace(/^\[agent\] /, "")}`);
+        return {
+          type: "message",
+          text: matches.length ? matches.join("\n") : `No commands match "${phrase}".`,
+        };
+      }
+
       if (query) {
         const cmd = commandMap.get(query);
         const virtual = VIRTUAL_COMMANDS[query];
@@ -82,7 +104,7 @@ export function createHelpCommand(
       }
 
       sections.push(`  While Agav is working: ${formatMidTurnSafeCommands()}`);
-      sections.push("\n  Tip: /help <command> for detailed usage");
+      sections.push("\n  Tip: /help <command> for detailed usage · /help --search <query> to find commands");
 
       return {
         type: "message",
