@@ -129,6 +129,10 @@ export class CommandRegistry {
       }
     }
 
+    if (name === "memory" && /^show(?: |$)/i.test(args.trim())) {
+      return command.execute(input.slice(1 + name.length).trim(), context)
+    }
+
     return command.execute(args, context)
   }
 }
