@@ -291,6 +291,29 @@ for (const backend of ["native", "fallback"] as const) {
       expect(includeCase.output).not.toContain("notes.txt");
     });
 
+    it("applies exclude by basename after include, before matching content", async () => {
+      const kept = await file("src/keep.ts", "needle\n");
+      const ignored = await file("src/-generated.ts", "needle\n".repeat(110));
+      const upper = await file("src/-UPPER.TS", "NEEDLE\n");
+      await file("src/other.py", "needle\n");
+      const input = { pattern: "needle", path: directory, include: "*.ts", exclude: "-*.ts" };
+      expect(await grepSearchTool.execute(input)).toEqual({ output: kept + ":1:needle", isError: false });
+      expect(await grepSearchTool.execute({ ...input, files_only: true })).toEqual({ output: kept, isError: false });
+      expect(await grepSearchTool.execute({ ...input, path: ignored })).toEqual({
+        output: "No matches found.", isError: false,
+      });
+      expect(await grepSearchTool.execute({
+        pattern: "needle", path: upper, exclude: "-*.ts", ignore_case: true, files_only: true,
+      })).toEqual({ output: upper, isError: false });
+    });
+
+    it("does not mask an explicitly missing path with exclude in strict mode", async () => {
+      const result = await grepSearchTool.execute({
+        pattern: "needle", path: join(directory, "-missing.ts"), exclude: "-*.ts", files_only: true,
+      });
+      expect(result.isError).toBe(true);
+    });
+
     it("combines ignore_case with files_only and keeps line numbers, exclusions and limits", async () => {
       const upper = await file("src/upper.ts", "NEEDLE\n");
       const lower = await file("src/lower.ts", "needle\n");
@@ -432,4 +455,12 @@ describe("fixed_strings validation", () => {
     expect(result.output).toContain("newlines");
     expect(execFile).not.toHaveBeenCalled();
   });
+});
+
+it.each([null, false, "", "src/*.ts", "[a-z].ts", "a\nb", "a\\b"])("rejects exclude %j before running a backend", async (exclude) => {
+  vi.mocked(platform).mockClear();
+  const result = await grepSearchTool.execute({ pattern: "needle", exclude });
+  expect(result.isError).toBe(true);
+  expect(result.output).toContain("exclude");
+  expect(platform).not.toHaveBeenCalled();
 });

@@ -83,6 +83,12 @@ PDF and Office ranges use 1-based, inclusive `start_page` and `end_page`, with a
 
 Depth must be a non-negative safe integer; invalid values fail before traversal. Hidden directories and common dependency, build, cache, and worktree directories are skipped. The map stops at **200 source files** and reports that it may be incomplete whenever the cap is reached, even if exactly 200 files exist. Narrow `path` or `depth` rather than assuming the first map covered the whole repository. Explicit shallow requests avoid reading deeper source files as well as returning their symbols.
 
+### `grep_search`
+
+Use the case-sensitive `exclude` basename glob to omit files even when
+they match `include`. Use `*` or `?` as wildcards. Directory paths,
+bracket ranges, and escapes are not supported by this option.
+
 ## Structured test runs and verification
 
 `run_tests` supports `pytest`, `vitest`, `jest`, `go`, and `cargo`. It detects the framework from the working directory, or accepts a `framework` override. `path` selects a test target, not a new working directory; Cargo treats it as a test-name filter. If detection fails, specify the framework or use `run_command` for the project's own test script.
