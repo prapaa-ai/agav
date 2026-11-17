@@ -129,6 +129,22 @@ describe("commands/help", () => {
 });
 
 describe("commands/help search", () => {
+  it("accepts slash-prefixed command names and formats agent descriptions like the listing", async () => {
+    const registry = new CommandRegistry();
+    const execute = vi.fn<SlashCommand["execute"]>();
+    registry.register({ name: "agent-example", description: "[agent] Find /path entries", execute });
+    expect(await registry.execute("/help --search /agent-example", context)).toMatchObject({ text: "/agent-example — Find /path entries" });
+    expect(await registry.execute("/help --search /path", context)).toMatchObject({ text: "/agent-example — Find /path entries" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("lists search in the help tip and detailed help usage", async () => {
+    const registry = new CommandRegistry();
+    for (const command of ["/help", "/help help"]) {
+      expect(await registry.execute(command, context)).toMatchObject({ text: expect.stringContaining("/help --search <query>") });
+    }
+  });
+
   it("keeps literal spacing in a search phrase through slash dispatch", async () => {
     const registry = new CommandRegistry();
     const execute = vi.fn<SlashCommand["execute"]>();
