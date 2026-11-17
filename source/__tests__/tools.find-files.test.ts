@@ -122,8 +122,10 @@ for (const backend of ["native", "fallback"] as const) {
       });
     });
 
-    it("uses a matching explicit file's basename in relative mode", async () => {
+    it("returns a matching explicit file in absolute or relative mode", async () => {
       const path = await file("nested/space 雪.ts");
+      expect(await findFilesTool.execute({ pattern: "*.ts", path })).toEqual({ output: path, isError: false });
+      expect(await findFilesTool.execute({ pattern: "*.ts", path, relative_paths: false })).toEqual({ output: path, isError: false });
       expect(await findFilesTool.execute({ pattern: "*.ts", path, relative_paths: true })).toEqual({
         output: "space 雪.ts", isError: false,
       });

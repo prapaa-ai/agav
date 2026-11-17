@@ -13,7 +13,7 @@ Agav exposes these tools to its agent loop.
 | `read_file` | Read text ranges and preview images, PDFs, and Office documents |
 | `write_file` | Create or replace a file |
 | `edit_file` | Replace one exact, unique string in a file |
-| `find_files` | Find files by glob; use `relative_paths: true` for paths relative to the search directory. A matching file searched directly is shown by name. |
+| `find_files` | Find files by glob; use `relative_paths: true` for paths relative to the search directory. A matching file searched directly is shown by its basename in relative mode. |
 | `grep_search` | Search file contents with regular expressions |
 | `list_directory` | List a directory |
 | `overview` | Map a repository's directory and symbol structure |

@@ -95,7 +95,7 @@ export const findFilesTool: ToolDefinition = {
         },
         path: {
           type: "string",
-          description: "Directory to search in (default: current directory)",
+          description: "Directory or file to search (default: current directory)",
         },
         relative_paths: {
           type: "boolean",
@@ -142,7 +142,7 @@ export const findFilesTool: ToolDefinition = {
     try {
       const regex = globToRegex(pattern);
       const results = await nodeFind(searchPath, regex);
-      if (relativePaths && results.length === 0 && regex.test(basename(searchPath))) {
+      if (results.length === 0 && regex.test(basename(searchPath))) {
         const info = await lstat(searchPath).catch(() => undefined);
         if (info?.isFile()) results.push(searchPath);
       }
