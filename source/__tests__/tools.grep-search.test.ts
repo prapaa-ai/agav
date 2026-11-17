@@ -307,6 +307,16 @@ for (const backend of ["native", "fallback"] as const) {
       })).toEqual({ output: upper, isError: false });
     });
 
+    it.skipIf(process.platform === "win32")("excludes newline-containing basenames with both wildcards", async () => {
+      const kept = await file("src/keep.ts", "needle\n");
+      await file("src/a\nb.generated.ts", "needle\n");
+      for (const exclude of ["*.generated.ts", "a?b.generated.ts"]) {
+        expect(await grepSearchTool.execute({
+          pattern: "needle", path: directory, exclude, files_only: true,
+        })).toEqual({ output: kept, isError: false });
+      }
+    });
+
     it("does not mask an explicitly missing path with exclude in strict mode", async () => {
       const result = await grepSearchTool.execute({
         pattern: "needle", path: join(directory, "-missing.ts"), exclude: "-*.ts", files_only: true,

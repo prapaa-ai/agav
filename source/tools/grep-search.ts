@@ -217,7 +217,7 @@ export const grepSearchTool: ToolDefinition = {
         (typeof excludeGlob !== "string" || !excludeGlob || /[\/\\\[\]\0\r\n]/.test(excludeGlob))) {
       return { output: "Invalid exclude: expected a nonempty basename glob with * or ? wildcards (no paths, ranges or escapes).", isError: true };
     }
-    const exclude = excludeGlob === undefined ? undefined : { glob: excludeGlob, regex: globToRegex(excludeGlob, "u") };
+    const exclude = excludeGlob === undefined ? undefined : { glob: excludeGlob, regex: globToRegex(excludeGlob, "su") };
     const filesOnly = input.files_only === true;
     const fixedStrings = input.fixed_strings === true;
     const ignoreCase = input.ignore_case === true;

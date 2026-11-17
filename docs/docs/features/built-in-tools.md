@@ -87,7 +87,9 @@ Depth must be a non-negative safe integer; invalid values fail before traversal.
 
 Use the case-sensitive `exclude` basename glob to omit files even when
 they match `include`. Use `*` or `?` as wildcards. Directory paths,
-bracket ranges, and escapes are not supported by this option.
+bracket ranges, and escapes are not supported by this option. `include`
+is case-insensitive in the JavaScript fallback (always used on Windows)
+and case-sensitive in native grep.
 
 ## Structured test runs and verification
 
