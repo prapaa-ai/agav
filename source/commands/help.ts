@@ -31,6 +31,24 @@ export function createHelpCommand(
       const commandMap = new Map(commands.map((c) => [c.name, c]));
 
       const query = args.trim().replace(/^\//, "");
+      const search = /^--search(?:\s+([\s\S]+))?$/.exec(query);
+      if (search) {
+        const phrase = search[1]?.trim();
+        if (!phrase) {
+          return { type: "message", text: "Usage: /help --search <query>" };
+        }
+        const needle = phrase.toLowerCase();
+        const descriptions = new Map(Object.entries(VIRTUAL_COMMANDS).map(([name, cmd]) => [name, cmd.description]));
+        for (const [name, cmd] of commandMap) descriptions.set(name, cmd.description);
+        const matches = [...descriptions]
+          .filter(([name, description]) => name.toLowerCase().includes(needle) || description.toLowerCase().includes(needle))
+          .map(([name, description]) => `/${name} — ${description}`);
+        return {
+          type: "message",
+          text: matches.length ? matches.join("\n") : `No commands match "${phrase}".`,
+        };
+      }
+
       if (query) {
         const cmd = commandMap.get(query);
         const virtual = VIRTUAL_COMMANDS[query];
