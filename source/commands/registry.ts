@@ -119,7 +119,9 @@ export class CommandRegistry {
     const parts = input.slice(1).split(/\s+/)
     const name = parts[0]!
     // Workflow JSON and quoted paths must retain their literal whitespace.
-    const args = name === "workflows" ? input.slice(1 + name.length).trim() : parts.slice(1).join(" ")
+    const rawArgs = input.slice(1 + name.length).trim()
+    const literal = name === "workflows" || (name === "help" && /^--search(?:\s|$)/.test(rawArgs))
+    const args = literal ? rawArgs : parts.slice(1).join(" ")
 
     const command = this.commands.get(name)
     if (!command) {
