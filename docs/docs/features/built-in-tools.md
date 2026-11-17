@@ -20,7 +20,7 @@ Agav exposes these tools to its agent loop.
 | `run_command` | Execute a shell command with sandbox detection |
 | `run_tests` | Detect and run a supported project test framework |
 | `lsp_query` | Request definitions, references, or hover data from a language server; diagnostic notifications are not yet fully surfaced |
-| `read_notebook` | Read Jupyter notebook cells; use `start_cell` or `end_cell` for an inclusive range numbered from 1 |
+| `read_notebook` | Read Jupyter notebook cells, optionally by range |
 | `edit_notebook` | Change a notebook cell or its type |
 | `web_search` | Search the web with DuckDuckGo (opt-in; see note below) |
 | `fetch_url` | Send an HTTP request and return the response |
@@ -29,6 +29,13 @@ Agav exposes these tools to its agent loop.
 | `save_memory` | Persist durable project or user context |
 | `subagent` | Delegate an independent task |
 | `activate_skill` | Run a registered skill by name |
+
+For `read_notebook`, `start_cell` and `end_cell` are inclusive and
+numbered from 1. An omitted bound uses the first or last cell, respectively.
+An end past the last cell is clamped; a start past the last cell is an
+error. Range results report the cells actually read and the notebook's
+total cell count. A range on an empty notebook reports that there are no
+cells.
 
 `web_search` is off by default. Enable it per session with the [`--search`](/reference/cli) flag, or turn it on by default with the `search` field in [configuration](/reference/configuration). Search requests time out after 30 seconds and report an error rather than waiting indefinitely.
 

@@ -38,6 +38,7 @@ describe("read_notebook", () => {
     const result = await readNotebookTool.execute({ path });
     expect(result.isError).toBe(false);
     expect(result.output).toContain("  Output:");
+    expect(result.output).not.toContain("(Showing cells");
     expect(result.output).toContain("printed value");
     expect(result.output).toContain("result value");
     expect(await readNotebookTool.execute({ path, include_outputs: true })).toEqual(result);
@@ -86,6 +87,7 @@ describe("read_notebook cell range", () => {
     expect(result.isError).toBe(false);
     expect([...result.output.matchAll(/^--- Cell (\d+) /gm)].map((m) => Number(m[1]))).toEqual(numbers);
     expect(result.output.includes("printed value")).toBe(numbers.some((n) => n === 2));
+    expect(result.output).toMatch(new RegExp(`\\(Showing cells ${numbers[0]}-${numbers.at(-1)} of 4\\.\\)$`));
     expect(mockWrite).not.toHaveBeenCalled();
   });
 

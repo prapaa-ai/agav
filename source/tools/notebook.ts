@@ -59,6 +59,7 @@ export const readNotebookTool: ToolDefinition = {
     if (end !== undefined && !isCellBound(end)) {
       return { output: "end_cell must be a positive safe integer", isError: true };
     }
+    const hasRange = start !== undefined || end !== undefined;
     const first = start ?? 1;
     if (end !== undefined && end < first) {
       return { output: "end_cell must be greater than or equal to start_cell", isError: true };
@@ -68,7 +69,7 @@ export const readNotebookTool: ToolDefinition = {
     try {
       const raw = await readFile(filePath, "utf-8");
       const nb = JSON.parse(raw) as Notebook;
-      if (start !== undefined || end !== undefined) {
+      if (hasRange) {
         if (nb.cells.length === 0) return { output: "Notebook has no cells.", isError: true };
         if (first > nb.cells.length) {
           return { output: `start_cell ${first} is out of range. Notebook has ${nb.cells.length} cells.`, isError: true };
@@ -93,6 +94,7 @@ export const readNotebookTool: ToolDefinition = {
         lines.push("");
       }
 
+      if (hasRange) lines.push(`(Showing cells ${first}-${last} of ${nb.cells.length}.)`);
       return { output: lines.join("\n"), isError: false };
     } catch (err) {
       return { output: `Failed to read notebook: ${err instanceof Error ? err.message : String(err)}`, isError: true };
