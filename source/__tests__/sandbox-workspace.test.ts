@@ -403,7 +403,7 @@ describe("sandbox workspace snapshot and publication", () => {
 		const rename = fs.renameSync;
 		let calls = 0;
 		vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
-			if (to.endsWith("/a")) {
+			if (String(to).endsWith("/a")) {
 				if (concurrent) write(host, "a", "external");
 				throw new Error("injected rename failure");
 			}
