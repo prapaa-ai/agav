@@ -149,8 +149,7 @@ describe("/memory show", () => {
   it("prints the exact named entry with complete multiline content", async () => {
     const entry = MEMORIES[2]!;
     const result = await run(" show release-notes ");
-    expect(result).toContain(entry.name);
-    expect(result).toContain(entry.type);
+    expect(result).toContain(`[${entry.type}] ${entry.name}`);
     expect(result).toContain(entry.description);
     expect(result).toContain(entry.content);
     expect(saveMemory).not.toHaveBeenCalled();
@@ -163,12 +162,17 @@ describe("/memory show", () => {
     const context = {} as CommandContext;
     expect(await registry.execute("/memory SHOW two  words", context)).toMatchObject({ text: expect.stringContaining("Saved body") });
     expect(await registry.execute("/memory show two words", context)).toMatchObject({ text: expect.stringMatching(/not found/i) });
-    expect(await run("show two")).toMatch(/not found/i);
+    expect(await run("show two")).toBe('Memory "two" not found.');
   });
 
   it("does not choose an entry when names are duplicated", async () => {
     vi.mocked(loadMemories).mockResolvedValue([memory("same", "", "first"), memory("same", "", "second")]);
     expect(await run("show same")).toBe('More than one memory is named "same".');
+  });
+
+  it("omits an empty description without stripping the stored content", async () => {
+    vi.mocked(loadMemories).mockResolvedValue([memory("bare", "", "  preserved\ntext  ")]);
+    expect(await run("show bare")).toBe("[project] bare\n\n  preserved\ntext  ");
   });
 
   it("prints the usage without accessing the store for a missing name", async () => {

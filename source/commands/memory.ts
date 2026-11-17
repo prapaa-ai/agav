@@ -15,7 +15,7 @@ export const memoryCommand: SlashCommand = {
   name: "memory",
   description: "Manage persistent memories",
   argumentHint: "[list|add|search|show|delete|clear|path]",
-  usage: "Usage: /memory <action>\n\n  /memory              Open manager (list in headless mode)\n  /memory list         Print saved memories\n  /memory add <text>   Save a new memory\n  /memory search <q>   Find memories by name, description or content\n  /memory show <name>  Read one memory by its exact name\n  /memory delete <N>   Delete memory by index\n  /memory clear        Delete all memories\n  /memory path         Show the memory storage path\n\nMemories persist across sessions and are injected into the system prompt.",
+  usage: "Usage: /memory <action>\n\n  /memory              Open manager (list in headless mode)\n  /memory list         Print saved memories\n  /memory add <text>   Save a new memory\n  /memory search <q>   Find memories by name, description or content\n  /memory show <name>  Read one memory by its exact stored name (see /memory list)\n  /memory delete <name> Delete memory by name\n  /memory clear        Delete all memories\n  /memory path         Show the memory storage path\n\nMemories persist across sessions and are injected into the system prompt.",
   async execute(args: string, context): Promise<CommandResult> {
     if (!args.trim()) {
       const interactive = openResourceManager("memory", context);
@@ -74,20 +74,19 @@ export const memoryCommand: SlashCommand = {
     if (action === "show") {
       const name = args.trim().slice(parts[0].length).trim()
       if (!name) {
-        return { type: "message", text: "Usage: /memory show <name>" }
+        return { type: "message", text: "Usage: /memory show <name> (use the exact name from /memory list)" }
       }
       const matches = (await loadMemories()).filter((entry) => entry.name === name)
       const [memory] = matches
       if (!memory) {
-        return { type: "message", text: `Memory not found: "${name}".` }
+        return { type: "message", text: `Memory "${name}" not found.` }
       }
       if (matches.length > 1) {
         return { type: "message", text: `More than one memory is named "${name}".` }
       }
-      return {
-        type: "message",
-        text: `${memory.name} [${memory.type}]\n${memory.description}\n\n${memory.content}`,
-      }
+      const header = `[${memory.type}] ${memory.name}`
+      const label = memory.description ? `${header}\n${memory.description}` : header
+      return { type: "message", text: `${label}\n\n${memory.content}` }
     }
 
     if (action === "delete" || action === "rm") {
