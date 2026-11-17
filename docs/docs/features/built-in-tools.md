@@ -20,7 +20,7 @@ Agav exposes these tools to its agent loop.
 | `run_command` | Execute a shell command with sandbox detection |
 | `run_tests` | Detect and run a supported project test framework |
 | `lsp_query` | Request definitions, references, or hover data from a language server; diagnostic notifications are not yet fully surfaced |
-| `read_notebook` | Read Jupyter notebook cells |
+| `read_notebook` | Read Jupyter notebook cells; use `start_cell` or `end_cell` for an inclusive range numbered from 1 |
 | `edit_notebook` | Change a notebook cell or its type |
 | `web_search` | Search the web with DuckDuckGo (opt-in; see note below) |
 | `fetch_url` | Send an HTTP request and return the response |
