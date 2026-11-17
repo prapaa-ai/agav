@@ -107,6 +107,33 @@ for (const backend of ["native", "fallback"] as const) {
       },
     );
 
+    it("renders relative paths from absolute, relative, or omitted roots", async () => {
+      const parent = "space 雪";
+      const target = await file(parent + "/nested/a.ts");
+      const expected = { output: join("nested", "a.ts"), isError: false };
+      expect(await findFilesTool.execute({ pattern: "*.ts", path: join(directory, parent), relative_paths: true })).toEqual(expected);
+      expect(await findFilesTool.execute({ pattern: "*.ts", path: join(directory, parent), relative_paths: false })).toEqual({
+        output: target, isError: false,
+      });
+      process.chdir(directory);
+      expect(await findFilesTool.execute({ pattern: "*.ts", path: parent, relative_paths: true })).toEqual(expected);
+      expect(await findFilesTool.execute({ pattern: "*.ts", relative_paths: true })).toEqual({
+        output: join(parent, "nested", "a.ts"), isError: false,
+      });
+    });
+
+    it("returns a matching explicit file in absolute or relative mode", async () => {
+      const path = await file("nested/space 雪.ts");
+      expect(await findFilesTool.execute({ pattern: "*.ts", path })).toEqual({ output: path, isError: false });
+      expect(await findFilesTool.execute({ pattern: "*.ts", path, relative_paths: false })).toEqual({ output: path, isError: false });
+      expect(await findFilesTool.execute({ pattern: "*.ts", path, relative_paths: true })).toEqual({
+        output: "space 雪.ts", isError: false,
+      });
+      expect(await findFilesTool.execute({ pattern: "*.py", path, relative_paths: true })).toEqual({
+        output: "No files found.", isError: false,
+      });
+    });
+
     it("preserves glob, case and no-match behavior", async () => {
       const lower = await file("config-a.ts");
       const upper = await file("CONFIG-B.TS");
@@ -187,4 +214,12 @@ describe("find_files native output and fallback policy", () => {
     response(new Error("failed"), "", "Parameter format not correct");
     await expectFiles(directory, [target]);
   });
+});
+
+it("rejects a non-boolean relative_paths before selecting a backend", async () => {
+  vi.mocked(platform).mockClear();
+  expect(await findFilesTool.execute({ pattern: "*.ts", relative_paths: "true" })).toEqual({
+    output: "relative_paths must be a boolean", isError: true,
+  });
+  expect(platform).not.toHaveBeenCalled();
 });
