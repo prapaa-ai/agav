@@ -5,9 +5,9 @@ import { openResourceManager } from "./resource-manager.js"
 /** Search saved session history for a keyword match. */
 export const searchCommand: SlashCommand = {
   name: "search",
-  description: "Search past sessions by keyword",
+  description: "Search past sessions by keyword, name, or title",
   argumentHint: "<query>",
-  usage: "Usage: /search <query>\n\n  /search OAuth\n  /search provider bug\n\nSearches saved session messages for the given keyword.\nResults show matching sessions with context.",
+  usage: "Usage: /search <query>\n\n  /search OAuth\n  /search provider bug\n\nSearches saved session messages, names, and titles for the given keyword.\nResults show matching sessions with context.",
   async execute(args: string, context): Promise<CommandResult> {
     if (!args.trim()) {
       const interactive = openResourceManager("search-history", context);
@@ -26,6 +26,7 @@ export const searchCommand: SlashCommand = {
       msgs: number
       snippets: string[]
       matchCount: number
+      metaMatch: string
     }> = []
 
     for (const session of sessions) {
@@ -52,7 +53,21 @@ export const searchCommand: SlashCommand = {
         }
       }
 
-      if (matchCount > 0) {
+      // Metadata match: the saved session name (when present) and/or title.
+      const name = session.name?.trim()
+      const title = session.title?.trim()
+      const nameHit = name ? name.toLowerCase().includes(query) : false
+      const titleHit = title ? title.toLowerCase().includes(query) : false
+      const metaParts: string[] = []
+      if (nameHit && titleHit && name === title) {
+        metaParts.push(`name/title "${name}"`)
+      } else {
+        if (nameHit) metaParts.push(`name "${name}"`)
+        if (titleHit) metaParts.push(`title "${title}"`)
+      }
+      const metaMatch = metaParts.length > 0 ? `matched ${metaParts.join(" and ")}` : ""
+
+      if (matchCount > 0 || metaMatch) {
         matches.push({
           id: session.id,
           title: session.title,
@@ -60,6 +75,7 @@ export const searchCommand: SlashCommand = {
           msgs: session.messages.length,
           snippets,
           matchCount,
+          metaMatch,
         })
       }
 
@@ -72,9 +88,12 @@ export const searchCommand: SlashCommand = {
 
     const lines = matches.map((m, i) => {
       const header = `  ${i + 1}. ${m.title}`
-      const meta = `     ${m.id.slice(0, 8)} · ${m.msgs} msgs · ${m.date} · ${m.matchCount} match${m.matchCount > 1 ? "es" : ""}`
+      const facts = [`${m.id.slice(0, 8)} · ${m.msgs} msgs · ${m.date}`]
+      if (m.matchCount > 0) facts.push(`${m.matchCount} match${m.matchCount > 1 ? "es" : ""}`)
+      if (m.metaMatch) facts.push(m.metaMatch)
+      const meta = `     ${facts.join(" · ")}`
       const context = m.snippets.map((s) => `     ${s}`).join("\n")
-      return `${header}\n${meta}\n${context}`
+      return context ? `${header}\n${meta}\n${context}` : `${header}\n${meta}`
     })
 
     const summary = matches.length === 1

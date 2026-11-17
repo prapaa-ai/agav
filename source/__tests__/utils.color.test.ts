@@ -50,7 +50,7 @@ describe("color module", () => {
     const color = await load({ FORCE_COLOR: "0" });
     expect(color.shouldUseColor()).toBe(false);
     expect(color.dim("x")).toBe("x");
-    expect(color.icons).toEqual({ pending: "...", success: "ok", error: "FAIL", warning: "!!" });
+    expect(color.icons).toEqual({ pending: "[..]", success: "[ok]", error: "[XX]", warning: "[!!]" });
   });
 
   it("NO_COLOR wins over FORCE_COLOR", async () => {

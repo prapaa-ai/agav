@@ -65,6 +65,7 @@ async function walkDir(
   results: FileSymbols[],
   maxFiles: number,
   maxDepth: number,
+  includeSymbols: boolean,
   depth = 0,
 ): Promise<void> {
   if (results.length >= maxFiles) return;
@@ -87,9 +88,13 @@ async function walkDir(
 
     if (entry.isDirectory()) {
       if (depth >= maxDepth || SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
-      await walkDir(join(dir, entry.name), basePath, results, maxFiles, maxDepth, depth + 1);
+      await walkDir(join(dir, entry.name), basePath, results, maxFiles, maxDepth, includeSymbols, depth + 1);
     } else if (SOURCE_EXTS.has(extname(entry.name))) {
       const filePath = relative(basePath, join(dir, entry.name));
+      if (!includeSymbols) {
+        results.push({ path: filePath, symbols: [] });
+        continue;
+      }
       try {
         const content = await readFile(join(dir, entry.name), "utf-8");
         const symbols = extractSymbols(content);
@@ -135,6 +140,7 @@ export const overviewTool: ToolDefinition = {
       "Get a high-level map of the codebase showing file structure and key symbols " +
       "(functions, classes, types, interfaces) per file. Use this first to understand " +
       "a project's layout before diving into specific files with read_file or grep_search. " +
+      "Set include_symbols to false for a structure-only map. " +
       "Returns a condensed tree — not file contents, just the skeleton.",
     inputSchema: {
       type: "object",
@@ -142,6 +148,10 @@ export const overviewTool: ToolDefinition = {
         path: {
           type: "string",
           description: "Directory to map (default: current directory). Use a subdirectory to focus on a specific area.",
+        },
+        include_symbols: {
+          type: "boolean",
+          description: "Read files to show symbols (default: true). Set to false for a structure-only map.",
         },
         depth: {
           type: "integer",
@@ -157,6 +167,10 @@ export const overviewTool: ToolDefinition = {
         (typeof input.depth !== "number" || !Number.isSafeInteger(input.depth) || input.depth < 0)) {
       return { output: "Depth must be a non-negative safe integer.", isError: true };
     }
+    if (input.include_symbols !== undefined && typeof input.include_symbols !== "boolean") {
+      return { output: "Invalid include_symbols: expected a boolean.", isError: true };
+    }
+    const includeSymbols = input.include_symbols !== false;
     const maxDepth = input.depth === undefined ? Infinity : input.depth as number;
     const searchPath = String(input.path ?? ".");
     const maxFiles = 200;
@@ -170,14 +184,16 @@ export const overviewTool: ToolDefinition = {
       return { output: `Directory not found: ${searchPath}`, isError: true };
     }
 
-    await walkDir(absPath, absPath, results, maxFiles, maxDepth);
+    await walkDir(absPath, absPath, results, maxFiles, maxDepth, includeSymbols);
 
     if (results.length === 0) {
       return { output: "No source files found.", isError: false };
     }
 
     const tree = formatTree(results);
-    const summary = `${results.length} files, ${results.reduce((n, f) => n + f.symbols.length, 0)} symbols`;
+    const summary = includeSymbols
+      ? `${results.length} files, ${results.reduce((n, f) => n + f.symbols.length, 0)} symbols`
+      : `${results.length} files mapped`;
 
     const notice = results.length >= maxFiles
       ? `\n\n[File limit reached (${maxFiles}); this map may be incomplete. Use overview with a narrower path or depth to focus the map.]`

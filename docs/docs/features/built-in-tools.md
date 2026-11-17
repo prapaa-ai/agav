@@ -13,14 +13,14 @@ Agav exposes these tools to its agent loop.
 | `read_file` | Read text ranges and preview images, PDFs, and Office documents |
 | `write_file` | Create or replace a file |
 | `edit_file` | Replace one exact, unique string in a file |
-| `find_files` | Find names and glob matches |
+| `find_files` | Find files by glob; use `relative_paths: true` for paths relative to the search directory. A matching file searched directly is shown by its basename in relative mode. |
 | `grep_search` | Search file contents with regular expressions |
-| `list_directory` | List a directory |
+| `list_directory` | List a directory; optionally set `type` to `files` or `directories` |
 | `overview` | Map a repository's directory and symbol structure |
 | `run_command` | Execute a shell command with sandbox detection |
 | `run_tests` | Detect and run a supported project test framework |
 | `lsp_query` | Request definitions, references, or hover data from a language server; diagnostic notifications are not yet fully surfaced |
-| `read_notebook` | Read Jupyter notebook cells |
+| `read_notebook` | Read Jupyter notebook cells, optionally by range |
 | `edit_notebook` | Change a notebook cell or its type |
 | `web_search` | Search the web with DuckDuckGo (opt-in; see note below) |
 | `fetch_url` | Send an HTTP request and return the response |
@@ -29,6 +29,13 @@ Agav exposes these tools to its agent loop.
 | `save_memory` | Persist durable project or user context |
 | `subagent` | Delegate an independent task |
 | `activate_skill` | Run a registered skill by name |
+
+For `read_notebook`, `start_cell` and `end_cell` are inclusive and
+numbered from 1. An omitted bound uses the first or last cell, respectively.
+An end past the last cell is clamped; a start past the last cell is an
+error. Range results report the cells actually read and the notebook's
+total cell count. A range on an empty notebook reports that there are no
+cells.
 
 `web_search` is off by default. Enable it per session with the [`--search`](/reference/cli) flag, or turn it on by default with the `search` field in [configuration](/reference/configuration). Search requests time out after 30 seconds and report an error rather than waiting indefinitely.
 
@@ -70,9 +77,17 @@ Large text files are streamed rather than loaded in full. A bounded text read re
 
 PDF and Office ranges use 1-based, inclusive `start_page` and `end_page`, with at most **10 pages** per preview. Images do not accept line or page ranges, and PDF/Office documents do not accept line ranges. Office fallback behavior depends on available conversion tools: without LibreOffice, `.pptx` uses extracted slide text, while `.docx` uses extracted text without preserving page ranges or visual layout. See [files and context](/workflows/files-and-context) for attachment and preview requirements; `@file` attachment limits are separate from these tool-result limits.
 
+### `list_directory`
+
+`type: "all"` (the default) lists all visible entries. `"files"` lists
+regular files, and `"directories"` lists directories. Symbolic links are
+followed for classification. Special files and entries that cannot be
+classified, such as broken links, appear only in `"all"` mode. Every mode
+skips names starting with a dot, such as `.git`.
+
 ### `overview`
 
-`overview` returns a source-file and symbol skeleton, not file contents or a complete inventory of every file type. Use a project-relative `path` to focus on a subdirectory. `depth` counts subdirectories relative to that path:
+`overview` returns a source-file and symbol skeleton, not file contents or a complete inventory of every file type. Set `include_symbols: false` to map the same source files without opening them for symbol extraction. Use a project-relative `path` to focus on a subdirectory. `depth` counts subdirectories relative to that path:
 
 | `depth` | Included source files |
 | --- | --- |
@@ -82,6 +97,14 @@ PDF and Office ranges use 1-based, inclusive `start_page` and `end_page`, with a
 | Omitted | Unrestricted depth, still subject to the file cap |
 
 Depth must be a non-negative safe integer; invalid values fail before traversal. Hidden directories and common dependency, build, cache, and worktree directories are skipped. The map stops at **200 source files** and reports that it may be incomplete whenever the cap is reached, even if exactly 200 files exist. Narrow `path` or `depth` rather than assuming the first map covered the whole repository. Explicit shallow requests avoid reading deeper source files as well as returning their symbols.
+
+### `grep_search`
+
+Use the case-sensitive `exclude` basename glob to omit files even when
+they match `include`. Use `*` or `?` as wildcards. Directory paths,
+bracket ranges, and escapes are not supported by this option. `include`
+is case-insensitive in the JavaScript fallback (always used on Windows)
+and case-sensitive in native grep.
 
 ## Structured test runs and verification
 
