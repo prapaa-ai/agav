@@ -57,7 +57,7 @@ agav --provider ollama --model llama3.2
 Non-interactive for scripts and CI:
 
 ```bash
-agav run "review the code in src/"
+agav run "List the files in this repository and explain its structure. Do not modify anything."
 agav -P "what does this project do?"
 cat error.log | agav -P "explain this error"
 ```
@@ -68,24 +68,29 @@ Keep it current:
 agav update
 ```
 
-## Why Agav
+## Why harness efficiency matters
 
-Today, the most powerful AI tools are controlled by a handful of companies. They choose which models you use, where your data goes, and how much you pay. If they change the rules tomorrow, you have no choice but to follow.
+AI coding costs are often a harness problem, not just a model problem.
 
-We’re building the alternative, an AI that works for you, runs on your terms, and belongs to no one.
+Agav is built to make every model call count. It reuses cached context, limits repeated work, interrupts unproductive repair loops, bounds retries and budgets, and keeps subagent exploration isolated instead of repeatedly sending the same repository context.
 
-**You own it.** Apache 2.0 open source. No lock-in, no hidden telemetry, auditable code.
+In a Terminal-Bench 2.1 cost study using GPT-5.6 Luna at the same rates, Agav had a 15.2¢ median estimated trial cost across 89 tasks and used 49.1% less total spend than Codex. The savings came from measured cache reuse and controls around context, retries, and budgets.
 
-**You choose the brain.** 7 providers — Anthropic, OpenAI, OpenRouter, NVIDIA NIM, Gemini, Vertex AI, Ollama. Switch models mid-session with `/model`, run local with Ollama, or route via OpenRouter.
+This is a cost result, not a claim of higher accuracy: in that comparison, Agav passed 60.4% of trials versus 76.6% for Codex. We publish the methodology, telemetry, task-level data, implementation references, and limitations in [The economics of coding with Agav](https://agav.dev/research/cost-efficiency).
 
-**You control the data.** Encrypted API keys, local-first option, per-tool permissions, and sandboxed commands on macOS/Linux.
+You own it. Agav is Apache 2.0 open source, with no lock-in, hidden telemetry, or closed hosted runtime required.
 
-**Autonomous and verifiable.** Plans are created and tracked automatically, human-in-the-loop for destructive actions, and non-interactive `agav run` for CI with JSON Schema output.
+You choose the brain. Use Anthropic, OpenAI, OpenRouter, NVIDIA NIM, Gemini, Vertex AI, or Ollama. Switch models mid-session with /model, use local models with Ollama, or route through OpenRouter.
 
-## Proof
+You control the data and actions. API keys are encrypted, local-first operation is supported, tools have per-action permissions, and commands can run in a sandbox on macOS and Linux.
 
-* **Terminal-Bench 2.1** — 84.7% [377/445 trials ±0.84%](https://github.com/harbor-framework/terminal-bench-2-1/pull/225), top of public board.(PR under review)
-* **SWE-bench-Live Lite** — 62.0% [186/300](https://github.com/SWE-bench-Live/submission/blob/main/submissions/lite/agav/gpt-5.5), #2 on the board.
+You can verify the work. Agav creates and tracks plans, keeps sessions resumable, supports human approval for destructive actions, and provides non-interactive agav run for CI with optional JSON Schema output.
+
+## Benchmarks and cost evidence
+
+* Top #1-verified on SWE-bench-Live Lite — 62.0% 186/300, you can view [leaderboard](https://swe-bench-live.github.io/#leaderboard-lite) and its [public submission](https://github.com/SWE-bench-Live/submission/blob/main/submissions/lite/agav/gpt-5.5).
+* Terminal-Bench 2.1 accuracy — 84.7% [377/445 trials ±0.84%](https://github.com/harbor-framework/terminal-bench-2-1/pull/225). This submission's PR is under review.
+* Terminal-Bench 2.1 cost study — 15.2¢ median estimated trial cost and 49.1% lower total spend than Codex at matched GPT-5.6 Luna rates across 89 tasks. See the [full methodology and limitations](https://agav.dev/research/cost-efficiency).
 
 ## Highlights
 
