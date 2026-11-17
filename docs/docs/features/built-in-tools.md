@@ -15,7 +15,7 @@ Agav exposes these tools to its agent loop.
 | `edit_file` | Replace one exact, unique string in a file |
 | `find_files` | Find names and glob matches |
 | `grep_search` | Search file contents with regular expressions |
-| `list_directory` | List a directory |
+| `list_directory` | List a directory; optionally set `type` to `files` or `directories` |
 | `overview` | Map a repository's directory and symbol structure |
 | `run_command` | Execute a shell command with sandbox detection |
 | `run_tests` | Detect and run a supported project test framework |
