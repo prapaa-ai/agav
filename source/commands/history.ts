@@ -30,18 +30,35 @@ function resumeTitle(title: unknown): string {
   return label.slice(0, end).trimEnd() + "…";
 }
 
+const HISTORY_USAGE = "Usage: /history [list [--limit <count>]]";
+
 export const historyCommand: SlashCommand = {
   name: "history",
   description: "Browse saved sessions",
-  usage: "Usage: /history [list] · /resume <id> to load a session",
+  argumentHint: "[list [--limit <count>]]",
+  usage: `${HISTORY_USAGE} · /resume <id> to load a session`,
   async execute(args, context) {
-    if (!args.trim()) {
+    const input = args.trim();
+    let limit: number | undefined;
+    if (!input) {
       const interactive = openResourceManager("history", context);
       if (interactive) return interactive;
+    } else if (input !== "list") {
+      const option = /^list\s+--limit(?:\s+([\s\S]*))?$/.exec(input);
+      if (!option) return { type: "message", text: HISTORY_USAGE };
+      const value = option[1] ?? "";
+      limit = Number(value);
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(limit) || limit < 1) {
+        return { type: "message", text: "--limit requires a positive safe integer. " + HISTORY_USAGE };
+      }
     }
-    if (args.trim() && args.trim() !== "list") return { type: "message", text: "Usage: /history [list]" };
+
     const sessions = await listSessions();
-    return { type: "message", text: sessions.length ? sessions.map((s) => `${s.id.slice(0, 8)} · ${s.title} · ${s.messages.length} messages`).join("\n") : "No saved sessions." };
+    if (sessions.length === 0) return { type: "message", text: "No saved sessions." };
+    const shown = limit === undefined ? sessions : sessions.slice(0, limit);
+    const lines = shown.map((s) => `${s.id.slice(0, 8)} · ${resumeTitle(s.title)} · ${s.messages.length} messages`);
+    if (shown.length < sessions.length) lines.push(`Showing ${shown.length} of ${sessions.length} saved sessions.`);
+    return { type: "message", text: lines.join("\n") };
   },
 };
 

@@ -15,6 +15,8 @@ order: 3
 | `agav --name <title>` | Start a new interactive session with an initial name. |
 | `agav sessions delete <id>` | Delete a saved session by ID or unique prefix (alias: `rm`). |
 | `/resume [id]` | List saved sessions, or resume one by ID or prefix match. |
+| `/history [list]` | Browse saved sessions; use `list` for plain text. |
+| `/history list --limit <count>` | Show the most recent saved sessions in a plain-text list. |
 | `/search <query>` | Find saved sessions that match `<query>`. |
 | `/name <name>` | Give the active session a recognizable name. |
 | `/clear` or `/new` | Start a clean chat while keeping saved sessions. |
