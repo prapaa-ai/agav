@@ -6,18 +6,59 @@ import { pickSession, START_NEW_SESSION } from "../utils/session-picker.js";
 import { clearCommand } from "./clear.js";
 import { openResourceManager } from "./resource-manager.js";
 
+import { stripVTControlCharacters } from "node:util";
+import { visualLen } from "../utils/wrap-text.js";
+
+const MAX_RESUME_MATCHES = 10;
+const MAX_RESUME_TITLE_WIDTH = 80;
+const titleSegments = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function resumeTitle(title: unknown): string {
+  if (typeof title !== "string") return "Untitled session";
+  const label = stripVTControlCharacters(title).replace(/\s+/g, " ")
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim();
+  if (!label) return "Untitled session";
+  if (visualLen(label) <= MAX_RESUME_TITLE_WIDTH) return label;
+
+  let width = 0;
+  let end = 0;
+  for (const { segment, index } of titleSegments.segment(label)) {
+    width += visualLen(segment);
+    if (width >= MAX_RESUME_TITLE_WIDTH) break;
+    end = index + segment.length;
+  }
+  return label.slice(0, end).trimEnd() + "…";
+}
+
+const HISTORY_USAGE = "Usage: /history [list [--limit <count>]]";
+
 export const historyCommand: SlashCommand = {
   name: "history",
   description: "Browse saved sessions",
-  usage: "Usage: /history [list] · /resume <id> to load a session",
+  argumentHint: "[list [--limit <count>]]",
+  usage: `${HISTORY_USAGE} · /resume <id> to load a session`,
   async execute(args, context) {
-    if (!args.trim()) {
+    const input = args.trim();
+    let limit: number | undefined;
+    if (!input) {
       const interactive = openResourceManager("history", context);
       if (interactive) return interactive;
+    } else if (input !== "list") {
+      const option = /^list\s+--limit(?:\s+([\s\S]*))?$/.exec(input);
+      if (!option) return { type: "message", text: HISTORY_USAGE };
+      const value = option[1] ?? "";
+      limit = Number(value);
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(limit) || limit < 1) {
+        return { type: "message", text: "--limit requires a positive safe integer. " + HISTORY_USAGE };
+      }
     }
-    if (args.trim() && args.trim() !== "list") return { type: "message", text: "Usage: /history [list]" };
+
     const sessions = await listSessions();
-    return { type: "message", text: sessions.length ? sessions.map((s) => `${s.id.slice(0, 8)} · ${s.title} · ${s.messages.length} messages`).join("\n") : "No saved sessions." };
+    if (sessions.length === 0) return { type: "message", text: "No saved sessions." };
+    const shown = limit === undefined ? sessions : sessions.slice(0, limit);
+    const lines = shown.map((s) => `${s.id.slice(0, 8)} · ${resumeTitle(s.title)} · ${s.messages.length} messages`);
+    if (shown.length < sessions.length) lines.push(`Showing ${shown.length} of ${sessions.length} saved sessions.`);
+    return { type: "message", text: lines.join("\n") };
   },
 };
 
@@ -51,7 +92,14 @@ export const resumeCommand: SlashCommand = {
       const matches = sessions.filter(s => s.id.startsWith(prefix));
       const match = sessions.find(s => s.id === prefix) ?? (matches.length === 1 ? matches[0] : undefined);
       if (!match && matches.length > 1) {
-        return { type: "message", text: `Ambiguous session ID prefix "${prefix}". Use a longer ID.` };
+        const choices = matches.slice(0, MAX_RESUME_MATCHES)
+          .map(({ id, title }) => `${id} · ${resumeTitle(title)}`);
+        const omitted = matches.length - choices.length;
+        if (omitted > 0) choices.push(`… and ${omitted} more ${omitted === 1 ? "match" : "matches"}.`);
+        return {
+          type: "message",
+          text: [`Ambiguous session ID prefix "${prefix}". Use a longer ID or choose one:`, ...choices].join("\n"),
+        };
       }
       if (!match) {
         return { type: "message", text: `No session matching "${prefix}". Use /resume to browse all sessions.` };

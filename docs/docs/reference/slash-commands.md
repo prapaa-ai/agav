@@ -30,6 +30,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | Command | Purpose |
 | --- | --- |
 | `/help [command]` | List available commands or show detailed usage for one command, including `/ps`. |
+| `/help --search <query>` | Find loaded commands by a literal phrase in their name or description, ignoring case. |
 | `/clear`, `/new` | Start a clean chat without deleting saved sessions. |
 | `/model [name]` | Open the model picker or switch to a specific model; Agav switches provider when needed. |
 | `/effort [minimal\|low\|medium\|high\|max]` | Show or set reasoning effort. |
@@ -38,7 +39,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/context` | Show the estimated current context-window occupancy: a breakdown for the system prompt, tools, MCP tools, skills, and messages, with Used and Free totals. While a turn is running, it excludes in-flight output. Session totals are cumulative across requests and can exceed the context window. |
 | `/status` | Show session, model, permissions, working directory, and token usage at a glance. |
 | `/permission [ask\|auto-accept\|deny-writes]` | Show the current permission mode, or change it for this session. Run bare `/permission` to open an interactive picker. The chosen mode persists for the session and is restored when you resume it. Organization policy may enforce a stricter minimum that cannot be loosened. Interactive sessions only. See [Security → Permission modes](/reference/security#permission-modes). |
-| `/export [json] [sanitize\|--sanitize]` | Write the retained conversation to a timestamped Markdown or JSON file in the working directory. Add `sanitize` for best-effort redaction; review before sharing. See [export details](/workflows/sessions-and-memory#export-a-conversation). |
+| `/export [json\|--full] [sanitize\|--sanitize]` | Write the retained conversation to a timestamped Markdown or JSON file in the working directory. Use `--full` for complete retained tool text in Markdown or add `sanitize` for best-effort redaction; review before sharing. See [export details](/workflows/sessions-and-memory#export-a-conversation). |
 | `/copy [N]` | Copy an assistant response to the clipboard. With no argument, it copies the most recent response that contains text; `/copy 2` copies the second-most-recent. `N` must be a positive integer, and it counts only responses with text, so turns that only call tools or contain blank text are skipped. |
 | `/voice` | Dictate an editable prompt with offline Agav-managed native transcription; offers verified setup downloads and an idle prompt without attachments. See [Voice Input](/features/voice-input). |
 | `/ps <question>` | Run a brief independent side query with read-only conversation context, without interrupting the active main task. It cannot use tools or plugins. |
@@ -47,9 +48,10 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 
 | Command | Purpose |
 | --- | --- |
-| `/resume [id]` | Open the saved/live session picker or resume one by ID or prefix match, including worker progress and pending approvals. |
+| `/resume [id]` | Open the saved/live session picker or resume one by ID or prefix match, including worker progress and pending approvals. An ambiguous prefix lists up to 10 matching IDs without loading a session. |
+| `/history [list [--limit <count>]]` | Browse saved sessions, or list them in plain text with an optional limit. |
 | `/detach` | Close the UI while the current worker-owned turn continues locally. Requires `backgroundJobsEnabled: true` before starting the task; the configurable `detachSession` shortcut (default Ctrl+D) also works at approval prompts. See [Detached sessions](/features/detached-sessions). |
-| `/search <query>` | Search saved session messages by keyword. |
+| `/search <query>` | Search saved session messages, names, and titles by keyword. |
 | `/name <title>` | Give the current session a descriptive name. |
 | `/branch [name]` | List branches in the current session lineage, or fork the current conversation into a named branch. |
 | `/plan` | Show this session's plan and step progress. |
@@ -69,6 +71,8 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | --- | --- |
 | `/memory`, `/memory list` | List project-scoped persistent memories. |
 | `/memory add <text>` | Save a persistent memory. |
+| `/memory search <query>` | Show memories whose name, description, or content contains the query, ignoring case, with an excerpt of each match. |
+| `/memory show <name>` | Show the complete memory by its exact stored name. |
 | `/memory delete <name>`, `/memory rm <name>` | Delete one memory by its listed name. |
 | `/memory clear`, `/memory path` | Delete all project memories or show their storage directory. |
 | `/remember <text>` | Shortcut for `/memory add <text>`. |
@@ -99,8 +103,8 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 
 | Command | Purpose |
 | --- | --- |
-| `/login` | Smart sign-in. A bare `/login` opens the Agav account wizard — choose "sign in with your Agav account" (browser device authorization) or "paste an API key" (entered in a masked field inside the overlay, never through the composer). Any enterprise flag instead routes to organization enrollment: `--device`, `--oidc`, `--auth-code`, `--saml`, `--control-plane URL`, `--issuer URL`, and `--client-id ID`. The consumer wizard needs an interactive terminal; in headless mode it explains this instead of failing. Restart Agav to apply a new enterprise policy. |
-| `/logout` | Defaults to signing out of your organization and clearing the cached enrollment (restart Agav to apply). Pass `--account` (alias `--consumer`) to sign out of your Agav account instead, clearing the local store and credential entry. |
+| `/login` | Sign in to your organization (enterprise enrollment). Accepts the same flags as `agav login`: `--device`, `--oidc`, `--auth-code`, `--saml`, `--control-plane URL`, `--issuer URL`, and `--client-id ID`. Restart Agav to apply the new policy. |
+| `/logout` | Sign out of your organization and clear the cached enrollment. Restart Agav to apply. |
 
 ## Diagnostics and exit
 

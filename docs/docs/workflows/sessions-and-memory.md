@@ -15,10 +15,12 @@ order: 3
 | `agav --name <title>` | Start a new interactive session with an initial name. |
 | `agav sessions delete <id>` | Delete a saved session by ID or unique prefix (alias: `rm`). |
 | `/resume [id]` | List saved sessions, or resume one by ID or prefix match. |
+| `/history [list]` | Browse saved sessions; use `list` for plain text. |
+| `/history list --limit <count>` | Show the most recent saved sessions in a plain-text list. |
 | `/search <query>` | Find saved sessions that match `<query>`. |
 | `/name <name>` | Give the active session a recognizable name. |
 | `/clear` or `/new` | Start a clean chat while keeping saved sessions. |
-| `/export [json] [sanitize\|--sanitize]` | Export the retained conversation as Markdown or JSON, optionally with best-effort redaction. |
+| `/export [json\|--full] [sanitize\|--sanitize]` | Export the retained conversation as Markdown or JSON, optionally with best-effort redaction. |
 | `/exit` | Save the current session and exit. |
 
 Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`. To keep a task executing after closing the UI, set `backgroundJobsEnabled: true` in global config before submitting it and use `/detach` or the configurable `detachSession` shortcut (default Ctrl+D); see [Detached sessions](/features/detached-sessions). The resume picker also includes live runtimes and their pending approval counts. Workers checkpoint visible conversation history and token usage; live and saved session totals include subagent and skill usage. Resuming observes that progress without replaying the task.
@@ -35,18 +37,22 @@ Note: resuming a session created with `--max-turns` keeps the session's own hist
 
 A session also remembers its permission mode. If you changed the mode mid-session with [`/permission`](/reference/slash-commands) (for example escalating to `auto-accept` or tightening to `deny-writes`), resuming restores that saved mode rather than the configured launch default. An explicit `-c permissionMode=...` (or `--config permissionMode=...`) at startup overrides the saved mode. Dedicated `--auto-accept` (`-y`) or `--deny-writes` flags take precedence over `-c`, regardless of argument order, and an organization minimum is always enforced. See [Security → Changing the mode during a session](/reference/security#changing-the-mode-during-a-session).
 
-`/resume` opens the same interactive picker in newest-first order. `/search` performs a case-insensitive substring search across saved message text and string tool results, returns up to 10 matching sessions, and shows up to 3 snippets per session. To reopen a result directly, use its ID prefix with `agav --resume <id-prefix>`.
+`/resume` opens the same interactive picker in newest-first order. If a prefix matches multiple sessions, `/resume <prefix>` lists up to 10 full IDs and titles so you can choose one without loading a session. `/search` performs a case-insensitive substring search across saved message text and string tool results, returns up to 10 matching sessions, and shows up to 3 snippets per session. To reopen a result directly, use its ID prefix with `agav --resume <id-prefix>`.
 
 ## Export a conversation
 
 ```text
 /export                  Markdown preview
+/export --full           Markdown with complete retained tool text
+/export --full --sanitize Complete retained tool text with best-effort redaction
 /export json             Structured JSON
 /export sanitize         Markdown with best-effort redaction
 /export json sanitize    JSON with best-effort redaction
 ```
 
 `sanitize` and `json` work in either order; `--sanitize` is an alias for `sanitize`.
+`--full` is for Markdown only. It includes complete retained tool input and result text, but not images or opaque provider metadata. JSON already retains tool text and does not accept `--full`.
+
 Use `/help export` or `/export --help` for usage. Unknown options produce an error
 without creating a file. `/export` can run while Agav is working (with no pending
 attachments). It exports a snapshot of the committed, retained conversation at
@@ -60,7 +66,7 @@ failure message. New files request owner-only read/write permissions on POSIX;
 this does not configure Windows ACLs. Empty or internal-only conversations do not
 create files. Export never changes the active conversation or saved history.
 
-Markdown retains the existing readable layout, with previews of tool inputs
+By default, Markdown retains the existing readable layout, with previews of tool inputs
 (200 characters) and results (500 characters). JSON preserves the full retained
 message structure, text, and tool activity without those additional preview limits.
 Both exclude agent-injected internal prompts while preserving actual user messages.
@@ -175,6 +181,8 @@ Agav automatically compacts long histories and preserves a summary of important 
 | `/remember <text>` | Save `<text>` as a durable project memory. |
 | `/memory list` | List the project's saved memories. |
 | `/memory add <text>` | Save `<text>` as a project memory. |
+| `/memory search <query>` | Find saved memories whose name, description, or content contains `<query>`, ignoring case. |
+| `/memory show <name>` | Print one memory in full by exact name. |
 | `/memory delete <memory name>` | Remove the saved memory named `<memory name>`. |
 | `/memory path` | Show the active project's memory directory. |
 | `/forget` | List the saved memories. |

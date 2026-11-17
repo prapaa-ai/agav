@@ -9,12 +9,12 @@ const MAX_FILE_SIZE = 1_048_576; // 1 MB — skip files larger than this
 const MAX_RESULTS = 100;
 
 /** Convert a simple glob pattern like "*.ts" to a RegExp. */
-function globToRegex(glob: string): RegExp {
+function globToRegex(glob: string, flags = "i"): RegExp {
   const escaped = glob
     .replace(/[.+^${}()|[\]\\]/g, "\\$&")
     .replace(/\*/g, ".*")
     .replace(/\?/g, ".");
-  return new RegExp(`^${escaped}$`, "i");
+  return new RegExp(`^${escaped}$`, flags);
 }
 
 /** Check whether a buffer looks like a binary file (contains null bytes early on). */
@@ -31,8 +31,11 @@ async function nodeGrep(
   searchPath: string,
   pattern: RegExp,
   include: RegExp | undefined,
+  exclude: RegExp | undefined,
   filesOnly = false,
 ): Promise<string[]> {
+  const matchesFileName = (name: string) =>
+    (!include || include.test(name)) && (!exclude || !exclude.test(name));
   const results: string[] = [];
   const limit = filesOnly ? MAX_RESULTS + 1 : MAX_RESULTS;
 
@@ -53,7 +56,7 @@ async function nodeGrep(
           await walkDir(fullPath);
         }
       } else if (entry.isFile()) {
-        if (include && !include.test(entry.name)) continue;
+        if (!matchesFileName(entry.name)) continue;
         try {
           const info = await stat(fullPath);
           if (info.size > MAX_FILE_SIZE) continue;
@@ -61,7 +64,8 @@ async function nodeGrep(
           if (isBinary(buf)) continue;
           const content = buf.toString("utf-8");
           const lines = content.split("\n");
-          for (let i = 0; i < lines.length; i++) {
+          const lineCount = content === "" ? 0 : content.endsWith("\n") ? lines.length - 1 : lines.length;
+          for (let i = 0; i < lineCount; i++) {
             if (results.length >= limit) return;
             if (pattern.test(lines[i]!)) {
               results.push(filesOnly ? fullPath : `${fullPath}:${i + 1}:${lines[i]}`);
@@ -80,12 +84,13 @@ async function nodeGrep(
   try {
     const info = await stat(searchPath);
     if (info.isFile()) {
-      if (!include || include.test(basename(searchPath))) {
+      if (matchesFileName(basename(searchPath))) {
         const buf = await readFile(searchPath);
         if (!isBinary(buf)) {
           const content = buf.toString("utf-8");
           const lines = content.split("\n");
-          for (let i = 0; i < lines.length; i++) {
+          const lineCount = content === "" ? 0 : content.endsWith("\n") ? lines.length - 1 : lines.length;
+          for (let i = 0; i < lineCount; i++) {
             if (results.length >= limit) break;
             if (pattern.test(lines[i]!)) {
               results.push(filesOnly ? searchPath : `${searchPath}:${i + 1}:${lines[i]}`);
@@ -110,15 +115,29 @@ async function nativeGrep(
   pattern: string,
   searchPath: string,
   include: string | undefined,
+  exclude: { glob: string; regex: RegExp } | undefined,
   filesOnly = false,
+  fixedStrings = false,
+  ignoreCase = false,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
   // grep can exclude its explicit root too; searching "." bypasses only that
   // root's name, while still excluding generated directories below it.
   const searchFromRoot = SKIP_DIRS.has(basename(searchPath)) &&
     await stat(searchPath).then((info) => info.isDirectory(), () => false);
-  const args = filesOnly ? ["-rl", "-I", "--color=never", "-E"] : ["-rn", "-H", "--color=never", "-E"];
+  const args = filesOnly ? ["-rl", "-I", "--color=never"] : ["-rn", "-H", "--color=never"];
+  args.push(fixedStrings ? "-F" : "-E");
+  if (ignoreCase) {
+    args.push("-i");
+  }
   if (include) {
     args.push("--include", include);
+  }
+  if (exclude) {
+    // grep can silently skip explicit missing paths that match --exclude.
+    // Keep its existing diagnostic by leaving the filter out for that path.
+    const canApplyExclude = !exclude.regex.test(basename(searchPath)) ||
+      await stat(searchPath).then(() => true, () => false);
+    if (canApplyExclude) args.push(`--exclude=${exclude.glob}`);
   }
   args.push(
     ...Array.from(SKIP_DIRS, (dir) => `--exclude-dir=${dir}`),
@@ -145,13 +164,14 @@ export const grepSearchTool: ToolDefinition = {
     name: "grep_search",
     description:
       "Search for a pattern in files using grep. Returns matching lines with file paths and line numbers. " +
-      "Supports regex patterns. Searches recursively from the given directory. Use files_only for matching paths without content.",
+      "Supports regex patterns by default; pass fixed_strings: true to match exact literal text. " +
+      "Searches recursively from the given directory. Use exclude to skip matching file names. Use files_only for matching paths without content. Use ignore_case to match without regard to letter case.",
     inputSchema: {
       type: "object",
       properties: {
         pattern: {
           type: "string",
-          description: "The regex pattern to search for",
+          description: "The pattern to search for. Treated as a regex by default; set fixed_strings: true to match it literally.",
         },
         path: {
           type: "string",
@@ -165,6 +185,18 @@ export const grepSearchTool: ToolDefinition = {
           type: "string",
           description: "File glob pattern to include (e.g. '*.ts', '*.py')",
         },
+        exclude: {
+          type: "string",
+          description: "Case-sensitive basename glob to exclude after include. Supports * and ?; no paths, ranges or escapes.",
+        },
+        fixed_strings: {
+          type: "boolean",
+          description: "Match the pattern as a fixed literal string, not a regex (default: false). Useful for text with regex metacharacters such as [ ] ( ) . * + ?. Patterns may not contain newlines in this mode.",
+        },
+        ignore_case: {
+          type: "boolean",
+          description: "Match without regard to letter case (default: false). Affects content matching only; include-glob behavior is unchanged.",
+        },
       },
       required: ["pattern"],
     },
@@ -174,16 +206,34 @@ export const grepSearchTool: ToolDefinition = {
     if (input.files_only !== undefined && typeof input.files_only !== "boolean") {
       return { output: "Invalid files_only: expected a boolean.", isError: true };
     }
+    if (input.fixed_strings !== undefined && typeof input.fixed_strings !== "boolean") {
+      return { output: "Invalid fixed_strings: expected a boolean.", isError: true };
+    }
+    if (input.ignore_case !== undefined && typeof input.ignore_case !== "boolean") {
+      return { output: "Invalid ignore_case: expected a boolean.", isError: true };
+    }
+    const excludeGlob = input.exclude;
+    if (excludeGlob !== undefined &&
+        (typeof excludeGlob !== "string" || !excludeGlob || /[\/\\\[\]\0\r\n]/.test(excludeGlob))) {
+      return { output: "Invalid exclude: expected a nonempty basename glob with * or ? wildcards (no paths, ranges or escapes).", isError: true };
+    }
+    const exclude = excludeGlob === undefined ? undefined : { glob: excludeGlob, regex: globToRegex(excludeGlob, "su") };
     const filesOnly = input.files_only === true;
+    const fixedStrings = input.fixed_strings === true;
+    const ignoreCase = input.ignore_case === true;
     const pattern = String(input.pattern);
     const searchPath = resolve(String(input.path ?? "."));
     const include = input.include ? String(input.include) : undefined;
+
+    if (fixedStrings && pattern.includes("\n")) {
+      return { output: "Invalid fixed_strings pattern: patterns may not contain newlines.", isError: true };
+    }
 
     // On Windows, always use the Node.js fallback since grep is not available.
     // On Unix, try native grep first for speed, fall back to Node.js if not found.
     if (platform() !== "win32") {
       try {
-        const result = await nativeGrep(pattern, searchPath, include, filesOnly);
+        const result = await nativeGrep(pattern, searchPath, include, exclude, filesOnly, fixedStrings, ignoreCase);
         if (filesOnly && result.code !== 0 && result.code !== 1) {
           return { output: result.stdout.trimEnd() + "\nSearch incomplete: " + (result.stderr || "grep failed"), isError: true };
         }
@@ -205,9 +255,10 @@ export const grepSearchTool: ToolDefinition = {
 
     // Node.js fallback (always used on Windows)
     try {
-      const regex = new RegExp(pattern);
+      const escapedPattern = fixedStrings ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern;
+      const regex = new RegExp(escapedPattern, ignoreCase ? "i" : "");
       const includeRegex = include ? globToRegex(include) : undefined;
-      const results = await nodeGrep(searchPath, regex, includeRegex, filesOnly);
+      const results = await nodeGrep(searchPath, regex, includeRegex, exclude?.regex, filesOnly);
       if (results.length === 0) {
         return { output: "No matches found.", isError: false };
       }
