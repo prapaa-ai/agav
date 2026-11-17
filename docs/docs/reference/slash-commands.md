@@ -30,6 +30,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | Command | Purpose |
 | --- | --- |
 | `/help [command]` | List available commands or show detailed usage for one command, including `/ps`. |
+| `/help --search <query>` | Find loaded commands by a literal phrase in their name or description, ignoring case. |
 | `/clear`, `/new` | Start a clean chat without deleting saved sessions. |
 | `/model [name]` | Open the model picker or switch to a specific model; Agav switches provider when needed. |
 | `/effort [minimal\|low\|medium\|high\|max]` | Show or set reasoning effort. |
@@ -48,6 +49,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | Command | Purpose |
 | --- | --- |
 | `/resume [id]` | Open the saved/live session picker or resume one by ID or prefix match, including worker progress and pending approvals. An ambiguous prefix lists up to 10 matching IDs without loading a session. |
+| `/history [list [--limit <count>]]` | Browse saved sessions, or list them in plain text with an optional limit. |
 | `/detach` | Close the UI while the current worker-owned turn continues locally. Requires `backgroundJobsEnabled: true` before starting the task; the configurable `detachSession` shortcut (default Ctrl+D) also works at approval prompts. See [Detached sessions](/features/detached-sessions). |
 | `/search <query>` | Search saved session messages, names, and titles by keyword. |
 | `/name <title>` | Give the current session a descriptive name. |
@@ -70,6 +72,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/memory`, `/memory list` | List project-scoped persistent memories. |
 | `/memory add <text>` | Save a persistent memory. |
 | `/memory search <query>` | Show memories whose name, description, or content contains the query, ignoring case, with an excerpt of each match. |
+| `/memory show <name>` | Show the complete memory by its exact stored name. |
 | `/memory delete <name>`, `/memory rm <name>` | Delete one memory by its listed name. |
 | `/memory clear`, `/memory path` | Delete all project memories or show their storage directory. |
 | `/remember <text>` | Shortcut for `/memory add <text>`. |

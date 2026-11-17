@@ -15,6 +15,8 @@ order: 3
 | `agav --name <title>` | Start a new interactive session with an initial name. |
 | `agav sessions delete <id>` | Delete a saved session by ID or unique prefix (alias: `rm`). |
 | `/resume [id]` | List saved sessions, or resume one by ID or prefix match. |
+| `/history [list]` | Browse saved sessions; use `list` for plain text. |
+| `/history list --limit <count>` | Show the most recent saved sessions in a plain-text list. |
 | `/search <query>` | Find saved sessions that match `<query>`. |
 | `/name <name>` | Give the active session a recognizable name. |
 | `/clear` or `/new` | Start a clean chat while keeping saved sessions. |
@@ -180,6 +182,7 @@ Agav automatically compacts long histories and preserves a summary of important 
 | `/memory list` | List the project's saved memories. |
 | `/memory add <text>` | Save `<text>` as a project memory. |
 | `/memory search <query>` | Find saved memories whose name, description, or content contains `<query>`, ignoring case. |
+| `/memory show <name>` | Print one memory in full by exact name. |
 | `/memory delete <memory name>` | Remove the saved memory named `<memory name>`. |
 | `/memory path` | Show the active project's memory directory. |
 | `/forget` | List the saved memories. |

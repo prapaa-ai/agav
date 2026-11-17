@@ -119,7 +119,9 @@ export class CommandRegistry {
     const parts = input.slice(1).split(/\s+/)
     const name = parts[0]!
     // Workflow JSON and quoted paths must retain their literal whitespace.
-    const args = name === "workflows" ? input.slice(1 + name.length).trim() : parts.slice(1).join(" ")
+    const rawArgs = input.slice(1 + name.length).trim()
+    const literal = name === "workflows" || (name === "help" && /^--search(?:\s|$)/.test(rawArgs))
+    const args = literal ? rawArgs : parts.slice(1).join(" ")
 
     const command = this.commands.get(name)
     if (!command) {
@@ -127,6 +129,10 @@ export class CommandRegistry {
         type: "message",
         text: `Unknown command: /${name}. Type /help for available commands.`,
       }
+    }
+
+    if (name === "memory" && /^show(?: |$)/i.test(args.trim())) {
+      return command.execute(input.slice(1 + name.length).trim(), context)
     }
 
     return command.execute(args, context)
