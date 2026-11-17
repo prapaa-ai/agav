@@ -13,14 +13,14 @@ Agav exposes these tools to its agent loop.
 | `read_file` | Read text ranges and preview images, PDFs, and Office documents |
 | `write_file` | Create or replace a file |
 | `edit_file` | Replace one exact, unique string in a file |
-| `find_files` | Find names and glob matches |
+| `find_files` | Find files by glob; use `relative_paths: true` for paths relative to the search directory. A matching file searched directly is shown by its basename in relative mode. |
 | `grep_search` | Search file contents with regular expressions |
-| `list_directory` | List a directory |
+| `list_directory` | List a directory; optionally set `type` to `files` or `directories` |
 | `overview` | Map a repository's directory and symbol structure |
 | `run_command` | Execute a shell command with sandbox detection |
 | `run_tests` | Detect and run a supported project test framework |
 | `lsp_query` | Request definitions, references, or hover data from a language server; diagnostic notifications are not yet fully surfaced |
-| `read_notebook` | Read Jupyter notebook cells |
+| `read_notebook` | Read Jupyter notebook cells, optionally by range |
 | `edit_notebook` | Change a notebook cell or its type |
 | `web_search` | Search the web with DuckDuckGo (opt-in; see note below) |
 | `fetch_url` | Send an HTTP request and return the response |
@@ -30,7 +30,14 @@ Agav exposes these tools to its agent loop.
 | `subagent` | Delegate an independent task |
 | `activate_skill` | Run a registered skill by name |
 
-`web_search` is off by default. Enable it per session with the [`--search`](/reference/cli) flag, or turn it on by default with the `search` field in [configuration](/reference/configuration).
+For `read_notebook`, `start_cell` and `end_cell` are inclusive and
+numbered from 1. An omitted bound uses the first or last cell, respectively.
+An end past the last cell is clamped; a start past the last cell is an
+error. Range results report the cells actually read and the notebook's
+total cell count. A range on an empty notebook reports that there are no
+cells.
+
+`web_search` is off by default. Enable it per session with the [`--search`](/reference/cli) flag, or turn it on by default with the `search` field in [configuration](/reference/configuration). Search requests time out after 30 seconds and report an error rather than waiting indefinitely.
 
 Connected MCP servers, installed plugins, and active skills can add more tools.
 
@@ -70,9 +77,17 @@ Large text files are streamed rather than loaded in full. A bounded text read re
 
 PDF and Office ranges use 1-based, inclusive `start_page` and `end_page`, with at most **10 pages** per preview. Images do not accept line or page ranges, and PDF/Office documents do not accept line ranges. Office fallback behavior depends on available conversion tools: without LibreOffice, `.pptx` uses extracted slide text, while `.docx` uses extracted text without preserving page ranges or visual layout. See [files and context](/workflows/files-and-context) for attachment and preview requirements; `@file` attachment limits are separate from these tool-result limits.
 
+### `list_directory`
+
+`type: "all"` (the default) lists all visible entries. `"files"` lists
+regular files, and `"directories"` lists directories. Symbolic links are
+followed for classification. Special files and entries that cannot be
+classified, such as broken links, appear only in `"all"` mode. Every mode
+skips names starting with a dot, such as `.git`.
+
 ### `overview`
 
-`overview` returns a source-file and symbol skeleton, not file contents or a complete inventory of every file type. Use a project-relative `path` to focus on a subdirectory. `depth` counts subdirectories relative to that path:
+`overview` returns a source-file and symbol skeleton, not file contents or a complete inventory of every file type. Set `include_symbols: false` to map the same source files without opening them for symbol extraction. Use a project-relative `path` to focus on a subdirectory. `depth` counts subdirectories relative to that path:
 
 | `depth` | Included source files |
 | --- | --- |
@@ -83,9 +98,19 @@ PDF and Office ranges use 1-based, inclusive `start_page` and `end_page`, with a
 
 Depth must be a non-negative safe integer; invalid values fail before traversal. Hidden directories and common dependency, build, cache, and worktree directories are skipped. The map stops at **200 source files** and reports that it may be incomplete whenever the cap is reached, even if exactly 200 files exist. Narrow `path` or `depth` rather than assuming the first map covered the whole repository. Explicit shallow requests avoid reading deeper source files as well as returning their symbols.
 
+### `grep_search`
+
+Use the case-sensitive `exclude` basename glob to omit files even when
+they match `include`. Use `*` or `?` as wildcards. Directory paths,
+bracket ranges, and escapes are not supported by this option. `include`
+is case-insensitive in the JavaScript fallback (always used on Windows)
+and case-sensitive in native grep.
+
 ## Structured test runs and verification
 
 `run_tests` supports `pytest`, `vitest`, `jest`, `go`, and `cargo`. It detects the framework from the working directory, or accepts a `framework` override. `path` selects a test target, not a new working directory; Cargo treats it as a test-name filter. If detection fails, specify the framework or use `run_command` for the project's own test script.
+
+`run_tests` uses the same auto-detected OS sandbox, network policy, credential filtering, and `sandboxRequired` enforcement as `run_command`. It has no `sandbox` parameter or Docker override. If a required sandbox is unavailable or cannot launch, tests are refused without an unsandboxed retry.
 
 The test process has a **120-second timeout** and a **1 MiB output-buffer limit**, separate from `run_command`'s streaming capture. Results show framework and actual test pass/fail counts, up to ten highlighted failures, and short traceback excerpts. Failed or inconclusive runs also show the last **2,000 characters** of raw output, plus any process error; this is not a full log.
 
@@ -130,7 +155,7 @@ Agav combines language-server results with file reads and repository search. If 
 
 ## Confirmations and undo
 
-Writes, edits, and sensitive commands can display a confirmation prompt. Edit confirmations include a diff. Choosing the session-wide approval option releases queued confirmations as well.
+Writes, edits, and sensitive commands can display a confirmation prompt. Edit confirmations include a diff. Choosing the session-wide approval option releases ordinary queued confirmations as well, but does not approve `fetch_url` mutations that require explicit per-call consent.
 
 Agav records prior content for tracked file edits in an in-memory undo stack:
 
@@ -147,7 +172,7 @@ The file tools (`read_file`, `write_file`, `edit_file`) enforce path boundary ch
 
 ## Shell execution
 
-Shell commands have a 30-second default timeout and [bounded output](#output-limits-and-recovery). Agav auto-detects macOS Seatbelt or Linux Bubblewrap; Docker can be requested as a tool override.
+Shell commands have a 30-second default timeout and [bounded output](#output-limits-and-recovery). Agav auto-detects macOS Seatbelt, Linux Bubblewrap, or the Windows restricted-token helper (enabled by default on Windows); Docker can be requested as a `run_command` override.
 
 `run_command` streams stdout/stderr, so a large output no longer fails merely by exceeding the old shell buffer. Small results show stdout followed by stderr; oversized results and saved logs use observed arrival order across the two streams. Above 40,000 decoded UTF-8 bytes (or when status/separator formatting crosses that limit), it saves a log and returns a Unicode-safe head/tail preview. The shared registry can additionally truncate results exceeding 2,000 lines.
 
@@ -157,13 +182,17 @@ Commands are non-interactive: stdin is closed and there is no controlling termin
 
 On Unix, native, Seatbelt, and Bubblewrap shell runners own a process group. Failure, cancellation, timeout, buffered-output overflow, and orderly host exit trigger termination, with forced escalation if needed and bounded pipe drainage. Windows uses `taskkill /T` with forced escalation. This is best-effort cleanup, not rollback: descendants that escape the group and external side effects may remain.
 
-Successful background children are not killed merely because the shell leader finishes. Output from children sharing the inherited pipes is collected until the pipes close or the command timeout bounds that wait. A successful leader can still be reported as successful when only pipe drainage reaches the timeout; do not interpret that status as proof that every background job completed. Manage persistent services explicitly, or use [background jobs](/features/background-jobs) when a command must outlive the turn.
+Under native and Seatbelt execution, successful background children are not killed merely because the shell leader finishes. Bubblewrap's private PID namespace and the Windows sandbox's Job Object prevent descendants from outliving the invocation. Output from children sharing the inherited pipes is collected until the pipes close or the command timeout bounds that wait. A successful leader can still be reported as successful when only pipe drainage reaches the timeout; do not interpret that status as proof that every background job completed. Manage persistent services explicitly, or use [background jobs](/features/background-jobs) when a command must outlive the turn.
 
-The buffered runners used by some integrations still enforce their own output-buffer limits. Test and agent subprocesses receive cancellation signals but do not inherit the shell runner's process-tree cleanup guarantees. MCP cancellation stops Agav's request wait without killing the shared server; server-side work may continue. Docker cancellation signals the local CLI but does **not** guarantee daemon/container cleanup. See [Security](/reference/security#cancellation-is-not-isolation).
+The buffered runners used by some integrations still enforce their own output-buffer limits. Agent subprocesses and Seatbelt/unsandboxed test runners receive cancellation signals but do not inherit the shell runner's process-group cleanup guarantees; Bubblewrap and Windows sandboxed tests retain backend lifecycle isolation. MCP cancellation stops Agav's request wait without killing the shared server; server-side work may continue. Docker cancellation signals the local CLI but does **not** guarantee daemon/container cleanup. See [Security](/reference/security#cancellation-is-not-isolation).
 
 ## HTTP responses
 
 `fetch_url` supports GET (default), POST, PUT, DELETE, and PATCH, with optional headers and body. It streams the response as decoded text, including raw HTML, with a 30-second request timeout. Once started, it does not consume the turn cancellation signal; Esc does not immediately stop that request or undo a POST or other server-side action. Small results include the HTTP status and body unchanged; above **38,000 decoded UTF-8 bytes**, a response log and bounded head/tail preview are used.
+
+POST, PUT, PATCH, and DELETE are blocked in `deny-writes` and require explicit per-call approval in other modes, including `auto-accept`; allowlisting `fetch_url` or choosing “always” does not bypass that requirement. Calls without a confirmation handler are refused. GET (and HEAD when invoked) is treated as read-only by the permission gate.
+
+Only HTTP(S) destinations are accepted. Loopback, private, reserved, and metadata addresses are blocked, including hostnames with any forbidden DNS result. Connections pin the validated address; each redirect is revalidated, with a maximum of five redirects. Cross-origin redirects strip `Authorization`, `Cookie`, and `Proxy-Authorization`. See [HTTP request safety](/reference/security#http-request-safety).
 
 Unlike shell capture, HTTP capture **cancels the remaining response** when its 16 MiB incoming-byte or decoded-storage limit is exceeded. The notice marks the saved response as partial; the preview tail is from the captured prefix, not necessarily the end of the server's body. Reaching this size limit alone does not turn a successful HTTP status into an error. Non-success HTTP statuses and network/stream-read failures do remain errors, with the captured status/body retained where available. Log-storage failures do not repeat the request or change HTTP success status. The [shared text limits and retention rules](#output-limits-and-recovery) apply to these results too.
 
@@ -173,8 +202,9 @@ Each sandbox backend has different isolation properties:
 
 | Backend | Filesystem writes | Network | Credential dirs |
 | --- | --- | --- | --- |
-| Seatbelt (macOS) | System directories and home writes denied, with working-directory and standard cache/config carve-outs | Allowed by default; [opt-in deny](/reference/security#network-policy) | `~/.ssh`, `~/.aws`, `~/.gnupg` reads denied |
-| Bubblewrap (Linux) | Read-only root; writable working directory and scratch tmpfs for `/tmp` and standard caches/config | Allowed by default; [opt-in deny](/reference/security#network-policy) | `~/.ssh`, `~/.aws`, `~/.gnupg` masked |
+| Seatbelt (macOS) | Denied by default; explicit workspace/temp/tooling allowances, with sensitive configuration protected | Allowed by default; [opt-in deny](/reference/security#network-policy) | `~/.ssh`, `~/.aws`, `~/.gnupg` reads denied |
+| Bubblewrap (Linux) | Read-only root; private workspace snapshot with validated publication after successful, uncancelled execution; scratch temp/caches | Allowed by default; [opt-in deny](/reference/security#network-policy) | `~/.ssh`, `~/.aws`, `~/.gnupg` masked |
 | Docker | Mounted working directory only | Denied (`--network=none`) | Not mounted |
+| Windows restricted token | Workspace and dedicated temp; [limitations apply](/reference/security#windows) | Not confined; refuses execution under `deny` | Reads not confined |
 
-When no backend is available, automatic execution runs unsandboxed with secret-like environment variables (`KEY`, `TOKEN`, `SECRET`, …) filtered out. Only starting Agav with the user opt-out `AGAV_NO_SANDBOX=1` permits a model-requested `sandbox: "none"` override; command approval and auto-accept do not enable bypass. Invalid overrides are rejected, and sandbox launch failures are not retried unsandboxed. The footer describes the shell default; tool output identifies a different execution backend when an override is used. Review [security](/reference/security) before using auto-accept mode.
+When no backend is available, `sandboxRequired` refuses shell and test execution. It defaults to `true` on Windows and `false` elsewhere; when disabled, automatic execution can run unsandboxed with secret-like environment variables (`KEY`, `TOKEN`, `SECRET`, …) filtered out. Only starting Agav with the user opt-out `AGAV_NO_SANDBOX=1` permits a model-requested `sandbox: "none"` override; command approval and auto-accept do not enable bypass. Invalid overrides are rejected, and sandbox launch failures are not retried unsandboxed. The footer describes the shell default; tool output identifies a different execution backend when an override is used. Review [security](/reference/security) before using auto-accept mode.

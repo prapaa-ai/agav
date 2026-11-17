@@ -55,6 +55,7 @@ describe("reviewed release notes", () => {
     commit("chore(release): release v0.2.4 (#407)");
     const reviewed = "### Features\n\n- A reviewed feature.\n\n### Fixes\n\n- A reviewed fix.\n";
     notes(reviewed);
+    writeFileSync(join(repo, "docs/releases/v0.2.4.contributors.json"), JSON.stringify(["@contributor"]));
     const result = run("publish");
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toBe(reviewed);
@@ -165,6 +166,104 @@ describe("reviewed release notes", () => {
     git("tag", "-d", "v0.2.3");
     expect(run("prepare").status).toBe(1);
     expect(run("prepare").stderr).toContain("stable tag");
+  });
+
+  it("requires reviewed stable contributors and rejects invalid metadata", () => {
+    notes("- Reviewed change.\n");
+    expect(run("validate").stderr).toContain("v0.2.4.contributors.json");
+    expect(run("contributors").status).toBe(1);
+    for (const content of ["not JSON", "{}", '[null]', '[" "]', '["line\\nbreak"]']) {
+      writeFileSync(join(repo, "docs/releases/v0.2.4.contributors.json"), content);
+      expect(run("validate").status).toBe(1);
+      expect(run("contributors").status).toBe(1);
+    }
+  });
+
+  it("preserves reviewed stable credits after squash without replaying historical people", () => {
+    notes("- Reviewed change.\n");
+    writeFileSync(join(repo, "docs/releases/v0.2.4.contributors.json"), JSON.stringify(["@new", "@returning", "@NEW"]));
+    commit("chore(release): stable squash\n\nCo-authored-by: Old <old@example.invalid>");
+    const result = run("contributors");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("## Contributors\n\nThank you to everyone who contributed to this release!\n\n- @new\n- @returning\n");
+    expect(result.stdout).not.toContain("Old");
+    expect(run("validate").status).toBe(0);
+  });
+
+  it("credits beta authors and final coauthors once, excluding bots and the previous release", () => {
+    git("config", "user.name", "Already shipped");
+    commit("feat: previous beta");
+    git("tag", "v0.2.4-beta.1");
+    git("config", "user.name", "Alice");
+    git("config", "user.email", "123+alice@users.noreply.github.com");
+    commit("fix: current change\n\nCo-authored-by: Historical <old@example.invalid>\n\nNot a final trailer.\n\nCo-authored-by: Bob <bob@example.invalid>\nCo-authored-by: Alice <123+alice@users.noreply.github.com>\nCo-authored-by: dependency[bot] <bot@example.invalid>");
+    commit("chore(release): bump version to 0.2.4-beta.2");
+    git("tag", "v0.2.4-beta.2");
+    const result = run("contributors", "0.2.4-beta.2");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("## Contributors\n\nThank you to everyone who contributed to this release!\n\n- @alice\n- Bob\n");
+    expect(result.stdout).not.toContain("example.invalid");
+  });
+
+  it("keeps distinct people with the same name and never treats display names as handles", () => {
+    commit("fix: contributed\n\nCo-authored-by: Alex <one@example.invalid>\nCo-authored-by: Alex <two@example.invalid>\nCo-authored-by: @unrelated <three@example.invalid>\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>");
+    const result = run("contributors", "0.2.4-beta.1");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.match(/^- Alex$/gm)).toHaveLength(2);
+    expect(result.stdout).toContain("- \\@unrelated");
+    expect(result.stdout).not.toContain("Claude");
+  });
+
+  it("prepares a separate contributor draft without modifying reviewed files", () => {
+    commit("feat: beta contribution\n\nCo-authored-by: Alice <alice@users.noreply.github.com>");
+    git("tag", "v0.2.4-beta.1");
+    notes("- Reviewed.\n");
+    const path = join(repo, "docs/releases/v0.2.4.contributors.json");
+    writeFileSync(path, '["@reviewed"]');
+    const result = run("prepare-contributors");
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(["@alice", "Test"]);
+    expect(readFileSync(path, "utf8")).toBe('["@reviewed"]');
+    git("tag", "-d", "v0.2.3");
+    expect(run("prepare-contributors").status).toBe(1);
+  });
+
+  it("handles tagless betas, escapes Markdown names, and omits an empty section", () => {
+    expect(run("contributors", "0.2.4-beta.1").stdout).toBe("");
+    git("tag", "-d", "v0.2.3");
+    git("config", "user.name", "[Person](https://example.invalid)");
+    commit("docs: contribution");
+    const result = run("contributors", "0.2.4-beta.1");
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("- \\[Person\\]\\(https://example.invalid\\)");
+  });
+
+  it("passes contributor output through the real workflow and puts it last on the release page", () => {
+    const step = workflow.jobs.release.steps.find((s: any) => s.id === "contributors");
+    const publish = workflow.jobs.release.steps.find((s: any) => s.name === "Create GitHub Release");
+    expect(publish.with.body.trimEnd()).toMatch(/\$\{\{ steps.contributors.outputs.contributors \}\}$/);
+    expect(publish.with.body.indexOf("steps.contributors.outputs")).toBeGreaterThan(publish.with.body.indexOf("</details>"));
+    notes("- Reviewed.\n");
+    writeFileSync(join(repo, "docs/releases/v0.2.4.contributors.json"), '["@alice", "EOF"]');
+    mkdirSync(join(repo, "scripts"));
+    writeFileSync(join(repo, "scripts/release-notes.mjs"), readFileSync(script));
+    const output = join(repo, "github-output");
+    const result = spawnSync("bash", ["-eo", "pipefail", "-c", step.run], {
+      cwd: repo, encoding: "utf8",
+      env: { ...process.env, CURRENT_TAG: "v0.2.4", GITHUB_OUTPUT: output },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const written = readFileSync(output, "utf8");
+    const delimiter = written.split("\n")[0]!.slice("contributors<<".length);
+    expect(delimiter).toMatch(/^contributors_[0-9a-f-]+$/);
+    expect(written).toBe(`contributors<<${delimiter}\n${run("contributors").stdout}${delimiter}\n`);
+    rmSync(join(repo, "docs/releases/v0.2.4.contributors.json"));
+    const failure = spawnSync("bash", ["-eo", "pipefail", "-c", step.run], {
+      cwd: repo, encoding: "utf8",
+      env: { ...process.env, CURRENT_TAG: "v0.2.4", GITHUB_OUTPUT: output },
+    });
+    expect(failure.status).not.toBe(0);
+    expect(readFileSync(output, "utf8")).toBe(written);
   });
 
   it.each(["../escape", "v0.2.4", "0.2.4\nmalicious"])("rejects invalid versions (%j)", (version) => {

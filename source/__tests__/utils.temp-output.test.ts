@@ -13,7 +13,7 @@ import { TempOutputManager, MAX_SAVED_OUTPUT_BYTES, tempOutputManager } from "..
 import { boundToolResult } from "../utils/tool-output.js";
 import { fileReadTool } from "../tools/file-read.js";
 import { shellTool } from "../tools/shell.js";
-import { fetchUrlTool } from "../tools/fetch-url.js";
+import { fetchUrlTool, setFetchTransport, type Transport } from "../tools/fetch-url.js";
 import { ToolRegistry } from "../tools/registry.js";
 
 const roots: string[] = [];
@@ -177,8 +177,11 @@ describe("shared temporary output retention", () => {
     expect(shell.isError).toBe(true);
     expect(shell.output).toContain("retention quota reached");
     expect(shell.output).toContain("Command exited with code 7");
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("x".repeat(50000)));
+    async function* httpBody(): AsyncGenerator<Uint8Array> { yield new TextEncoder().encode("x".repeat(50000)); }
+    const fetchMock = vi.fn<Transport>().mockResolvedValue({ status: 200, statusText: "OK", body: httpBody(), cancel: () => {} });
+    setFetchTransport(fetchMock);
     const http = await fetchUrlTool.execute({ url: "https://example.test/" });
+    setFetchTransport(undefined);
     expect(http.isError).toBe(false);
     expect(http.output).toContain("retention quota reached");
     expect(fetchMock).toHaveBeenCalledOnce();

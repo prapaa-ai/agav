@@ -30,15 +30,17 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | Command | Purpose |
 | --- | --- |
 | `/help [command]` | List available commands or show detailed usage for one command, including `/ps`. |
+| `/help --search <query>` | Find loaded commands by a literal phrase in their name or description, ignoring case. |
 | `/clear`, `/new` | Start a clean chat without deleting saved sessions. |
 | `/model [name]` | Open the model picker or switch to a specific model; Agav switches provider when needed. |
 | `/effort [minimal\|low\|medium\|high\|max]` | Show or set reasoning effort. |
-| `/fast`, `/deep` | Switch to the current provider's fast or most capable model shortcut. |
+| `/fast`, `/deep` | Switch to the current provider's fast or most capable model shortcut. Vertex AI `/deep` requires location `global`, `us`, or `eu`; regional locations are rejected without changing the model or location. |
 | `/compact` | Summarize older conversation content to free context-window space. |
-| `/context` | Show a token-use breakdown for the system prompt, tools, MCP tools, skills, and messages. |
+| `/context` | Show the estimated current context-window occupancy: a breakdown for the system prompt, tools, MCP tools, skills, and messages, with Used and Free totals. While a turn is running, it excludes in-flight output. Session totals are cumulative across requests and can exceed the context window. |
 | `/status` | Show session, model, permissions, working directory, and token usage at a glance. |
 | `/permission [ask\|auto-accept\|deny-writes]` | Show the current permission mode, or change it for this session. Run bare `/permission` to open an interactive picker. The chosen mode persists for the session and is restored when you resume it. Organization policy may enforce a stricter minimum that cannot be loosened. Interactive sessions only. See [Security → Permission modes](/reference/security#permission-modes). |
-| `/export [json] [sanitize\|--sanitize]` | Write the retained conversation to a timestamped Markdown or JSON file in the working directory. Add `sanitize` for best-effort redaction; review before sharing. See [export details](/workflows/sessions-and-memory#export-a-conversation). |
+| `/export [json\|--full] [sanitize\|--sanitize]` | Write the retained conversation to a timestamped Markdown or JSON file in the working directory. Use `--full` for complete retained tool text in Markdown or add `sanitize` for best-effort redaction; review before sharing. See [export details](/workflows/sessions-and-memory#export-a-conversation). |
+| `/copy [N]` | Copy an assistant response to the clipboard. With no argument, it copies the most recent response that contains text; `/copy 2` copies the second-most-recent. `N` must be a positive integer, and it counts only responses with text, so turns that only call tools or contain blank text are skipped. |
 | `/voice` | Dictate an editable prompt with offline Agav-managed native transcription; offers verified setup downloads and an idle prompt without attachments. See [Voice Input](/features/voice-input). |
 | `/ps <question>` | Run a brief independent side query with read-only conversation context, without interrupting the active main task. It cannot use tools or plugins. |
 
@@ -46,21 +48,22 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 
 | Command | Purpose |
 | --- | --- |
-| `/resume [id]` | Open the saved/live session picker or resume one by ID or prefix match, including worker progress and pending approvals. |
+| `/resume [id]` | Open the saved/live session picker or resume one by ID or prefix match, including worker progress and pending approvals. An ambiguous prefix lists up to 10 matching IDs without loading a session. |
+| `/history [list [--limit <count>]]` | Browse saved sessions, or list them in plain text with an optional limit. |
 | `/detach` | Close the UI while the current worker-owned turn continues locally. Requires `backgroundJobsEnabled: true` before starting the task; the configurable `detachSession` shortcut (default Ctrl+D) also works at approval prompts. See [Detached sessions](/features/detached-sessions). |
-| `/search <query>` | Search saved session messages by keyword. |
+| `/search <query>` | Search saved session messages, names, and titles by keyword. |
 | `/name <title>` | Give the current session a descriptive name. |
 | `/branch [name]` | List branches in the current session lineage, or fork the current conversation into a named branch. |
 | `/plan` | Show this session's plan and step progress. |
 | `/plan list` | List every plan saved for the current project. |
 | `/plan <n> <status>` | Set step `<n>` to `pending`, `in_progress`, `done`, or `failed`. |
 | `/plan clear` | Delete this session's plan. Use `no plan` in a prompt to skip automatic planning. |
-| `/steer <directive>` | Add durable direction for later turns. Use `/steer list`, `/steer remove <number>`, or `/steer clear` to manage directives. |
+| `/steer <directive>` | Redirect the main agent, or only the inspected subagent, at its next safe step in the same turn. Works while worker-attached, including after resume. Main directives are not inherited by children. Bare `/steer`, `list`, `remove <number>`, and `clear` manage foreground main directives only, not worker attachments or child inspectors. See [steering](/workflows/planning-and-steering#steering). |
 | `/loop` | Show the active loop. `/loop <interval> <prompt>` repeats an agent prompt; intervals support `s`, `m`, and `h`. `/loop <prompt>` defaults to ten minutes, and `/loop stop` cancels it. |
 | `/schedule` | List saved tasks. Use `/schedule add "<five-field cron>" <prompt>`, then `enable`, `disable`, or `remove <id>` to manage them. |
 | `/job` | Open the background-jobs manager (requires `backgroundJobsEnabled`). Subcommands: `list`, `poll <id>`, `log <id> [--stderr] [--tail N]`, `stop <id>`, `schedule list\|create\|revoke`, and `capabilities`. See [Background jobs](/features/background-jobs). |
 | `/watch <path\|glob> <command>` | Run a shell command after matching files change. `/watch stop` cancels it; glob patterns are supported. |
-| `/undo`, `/undo list` | Revert the most recent tracked file change or inspect the current in-memory undo stack. |
+| `/undo`, `/undo list` | Revert the most recent tracked file change or inspect the current in-memory undo stack. Unknown arguments show usage without changing files or consuming an undo entry. |
 
 ## Memory and skills
 
@@ -68,6 +71,8 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | --- | --- |
 | `/memory`, `/memory list` | List project-scoped persistent memories. |
 | `/memory add <text>` | Save a persistent memory. |
+| `/memory search <query>` | Show memories whose name, description, or content contains the query, ignoring case, with an excerpt of each match. |
+| `/memory show <name>` | Show the complete memory by its exact stored name. |
 | `/memory delete <name>`, `/memory rm <name>` | Delete one memory by its listed name. |
 | `/memory clear`, `/memory path` | Delete all project memories or show their storage directory. |
 | `/remember <text>` | Shortcut for `/memory add <text>`. |
@@ -106,7 +111,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | Command | Purpose |
 | --- | --- |
 | `/debug` | Show conversation, plan, sandbox, token, plugin, MCP, undo, and memory state. |
-| `/changelog` | Show release notes from the latest update. Agav also shows the changelog automatically once on the first launch after an update. |
+| `/changelog [on\|off]` | Show release notes from the latest update. Agav also shows the changelog automatically once on the first launch after an update. `/changelog off` stops that automatic display and `/changelog on` restores it; the choice persists across sessions. Bare `/changelog` shows the notes either way. |
 | `/exit` | Save the current session and exit Agav. |
 
 MCP prompts appear as additional slash commands supplied by their connected server. Project skills and user-installed skills likewise add commands after Agav restarts; use `/help` or type `/` to see what is available in the current session.

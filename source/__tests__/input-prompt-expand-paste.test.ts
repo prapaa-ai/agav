@@ -65,10 +65,12 @@ let currentValue = "";
 let expandFn: ((id: number, fullText: string) => boolean) | null = null;
 let insertFn: ((label: string) => void) | null = null;
 
-const Host = ({ initial, keybindings = DEFAULT_KEYBINDINGS, resumeUserMessages }: {
+const Host = ({ initial, keybindings = DEFAULT_KEYBINDINGS, resumeUserMessages, suppressHistory = false, agentLock }: {
   initial: string;
   keybindings?: typeof DEFAULT_KEYBINDINGS;
   resumeUserMessages?: string[];
+  suppressHistory?: boolean;
+  agentLock?: string;
 }) => {
   const [value, setValue] = useState(initial);
   currentValue = value;
@@ -78,12 +80,14 @@ const Host = ({ initial, keybindings = DEFAULT_KEYBINDINGS, resumeUserMessages }
     onSubmit: () => {},
     keybindings,
     resumeUserMessages,
+    suppressHistory,
+    agentLock,
     onRegisterInsert: (fn) => { insertFn = fn; },
     onRegisterExpand: (fn) => { expandFn = fn; },
   });
 };
 
-const mount = async (initial = "", options: { keybindings?: typeof DEFAULT_KEYBINDINGS; resumeUserMessages?: string[] } = {}) => {
+const mount = async (initial = "", options: { keybindings?: typeof DEFAULT_KEYBINDINGS; resumeUserMessages?: string[]; suppressHistory?: boolean; agentLock?: string } = {}) => {
   const stdout = makeStdout();
   const stdin = makeStdin();
   const instance = render(h(Host, { initial, ...options }), {
@@ -184,21 +188,56 @@ describe("expanded paste inspection", () => {
     } finally { instance.unmount(); }
   });
 
-  it("bounds expanded content and follows the caret when navigating", async () => {
-    const { instance, stdout, stdin } = await mount();
+  it.each([false, true])("opens expansion at the beginning and reaches every row (busy: %s)", async (suppressHistory) => {
+    const { instance, stdout, stdin } = await mount("", { suppressHistory });
     try {
       insertFn!("<<Pasted #1 · 100 chars, 30 lines>>");
       await settle(instance);
       const lines = Array.from({ length: 30 }, (_, i) => `row${String(i).padStart(2, "0")}`);
       expect(expandFn!(1, lines.join("\n"))).toBe(true);
       await settle(instance);
-      expect(frame(stdout)).toContain("row29");
-      expect(frame(stdout)).not.toContain("row00");
-      expect(frame(stdout)).toContain("of 30");
+      expect(frame(stdout)).toContain("❯ row00");
+      expect(frame(stdout)).not.toContain("row29");
+      expect(frame(stdout)).toContain("rows 1-6 of 30");
       expect(frame(stdout).split("\n").length).toBeLessThanOrEqual(10);
-      await press(instance, stdin, "\x1b[A");
+      for (let i = 1; i < lines.length; i++) {
+        await press(instance, stdin, "\x1b[B");
+        expect(frame(stdout)).toContain(lines[i]);
+        expect(frame(stdout)).toContain("❯ ");
+      }
+      expect(currentValue).toBe(lines.join("\n") + " ");
       await press(instance, stdin, "X");
-      expect(currentValue).toBe([...lines.slice(0, 29), lines[29]!].map((line, i) => i === 28 ? `${line}X` : line).join("\n") + " ");
+      expect(currentValue).toBe([...lines.slice(0, -1), "Xrow29 "].join("\n"));
+    } finally { instance.unmount(); }
+  });
+
+  it.each([
+    { initial: "", options: {}, prefix: "❯ " },
+    { initial: "!", options: {}, prefix: "Shell › " },
+    { initial: "", options: { agentLock: "reviewer" }, prefix: "reviewer › " },
+  ])("keeps $prefix visible when the first buffer row is offscreen", async ({ initial, options, prefix }) => {
+    const { instance, stdout } = await mount("", options);
+    try {
+      insertFn!(initial + Array.from({ length: 30 }, (_, i) => `row${i}`).join("\n"));
+      await settle(instance);
+      expect(frame(stdout)).toContain(prefix + "row24");
+    } finally { instance.unmount(); }
+  });
+
+  it("opens a later tile at its own beginning without losing surrounding text", async () => {
+    const before = "before\n".repeat(20);
+    const tile = "<<Pasted #2 · 100 chars, 30 lines>>";
+    const { instance, stdout, stdin } = await mount();
+    try {
+      insertFn!(before + tile + "\nafter");
+      await settle(instance);
+      const fullText = Array.from({ length: 30 }, (_, i) => `paste${i}`).join("\n");
+      expect(expandFn!(2, fullText)).toBe(true);
+      await settle(instance);
+      expect(frame(stdout)).toContain("❯ paste0");
+      expect(frame(stdout)).not.toContain("paste29");
+      await press(instance, stdin, "X");
+      expect(currentValue).toBe(before + "X" + fullText + "\nafter ");
     } finally { instance.unmount(); }
   });
 
@@ -281,6 +320,45 @@ describe("App repeat-paste eligibility hint", () => {
     return { instance, stdout, stdin };
   };
   const paste = (text: string) => `\x1b[200~${text}\x1b[201~`;
+
+  it.each(["\n", "\r", "\r\n"])("opens a repeated multiline paste with %j line endings at the head in the full App", async (newline) => {
+    const { instance, stdout, stdin } = await mountApp();
+    const text = Array.from({ length: 30 }, (_, i) => `row${String(i).padStart(2, "0")}`).join(newline);
+    try {
+      await press(instance, stdin, paste(text));
+      expect(frame(stdout)).toContain("paste again to expand");
+      await press(instance, stdin, paste(text));
+      expect(frame(stdout)).toContain("❯ row00");
+      expect(frame(stdout)).toContain("rows 1-6 of 30");
+      expect(frame(stdout)).not.toContain("paste again to expand");
+      await press(instance, stdin, "\x1b[B".repeat(29));
+      expect(frame(stdout)).toContain("❯ row24");
+      expect(frame(stdout)).toContain("row29");
+    } finally { instance.unmount(); }
+  });
+
+  it.each(["\r", "\r\n", "\n"])("renders short pastes with %j line endings on separate rows", async (newline) => {
+    const { instance, stdout, stdin } = await mountApp();
+    try {
+      await press(instance, stdin, paste(["first", "", "last"].join(newline)));
+      expect(frame(stdout)).toMatch(/❯ first\n *\n  last/);
+      expect(frame(stdout)).not.toContain("\r");
+    } finally { instance.unmount(); }
+  });
+
+  it("recognizes a repeated paste across terminal line-ending formats", async () => {
+    const { instance, stdout, stdin } = await mountApp();
+    const lines = ["function example() {", '  return new URL("/", "https://example.com");', "}", ""];
+    try {
+      await press(instance, stdin, paste(lines.join("\r\n")));
+      await press(instance, stdin, paste(lines.join("\r")));
+      expect(frame(stdout)).not.toContain("Pasted #");
+      expect(frame(stdout)).not.toContain("\r");
+      expect(frame(stdout)).toContain("❯ " + lines[0]);
+      expect(frame(stdout)).toContain(lines[1]);
+      expect(frame(stdout)).toContain("\n  }\n");
+    } finally { instance.unmount(); }
+  });
 
   it("shows the hint only until an edit, and an edited repeat creates a fresh tile", async () => {
     const { instance, stdout, stdin } = await mountApp();

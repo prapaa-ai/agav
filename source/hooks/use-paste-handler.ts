@@ -10,6 +10,10 @@ export function useClipboardImageDetector(
   onInsertRaw?: (text: string) => void,
 ) {
   usePaste((text) => {
+    // Terminals can send CR or CRLF for pasted line breaks. Normalize before
+    // routing or repeat-paste tracking so raw CR never reaches the composer
+    // (where it would overwrite the current terminal row instead of wrapping).
+    text = text.replace(/\r\n?/g, "\n");
     if (text.length === 0) {
       getClipboardImage().then((img) => {
         if (img) onImage(img);

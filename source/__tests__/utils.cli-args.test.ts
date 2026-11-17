@@ -43,9 +43,14 @@ describe("utils/cli-args parseMaxTurns", () => {
       expect(() => parseMaxTurns(raw)).toThrow(ExitCalled);
       expect(exitSpy).toHaveBeenCalledTimes(1);
       expect(exitSpy).toHaveBeenCalledWith(1);
-      expect(stderrOutput()).toContain("Error: --max-turns must be a positive safe integer");
+      expect(stderrOutput()).toContain("Error: --max-turns must be a plain positive integer (digits only");
     },
   );
+
+  it.each(["5e2", "+5", "0x10", "1.5"])("echoes the rejected value %j so the digits-only rule is clear", (raw) => {
+    expect(() => parseMaxTurns(raw)).toThrow(ExitCalled);
+    expect(stderrOutput()).toContain(`(digits only, 1–9007199254740991), got ${JSON.stringify(raw)}.`);
+  });
 
   it("uses the default flag name in the usage hint", () => {
     expect(() => parseMaxTurns("abc")).toThrow(ExitCalled);
@@ -55,7 +60,7 @@ describe("utils/cli-args parseMaxTurns", () => {
   it("includes a custom flag and usage in the message", () => {
     expect(() => parseMaxTurns("0", "-c maxIterations", "Use -c maxIterations=N.")).toThrow(ExitCalled);
     const out = stderrOutput();
-    expect(out).toContain("Error: -c maxIterations must be a positive safe integer");
+    expect(out).toContain("Error: -c maxIterations must be a plain positive integer (digits only");
     expect(out).toContain("Use -c maxIterations=N.");
     expect(out).not.toContain("--max-turns");
   });

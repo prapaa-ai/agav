@@ -101,7 +101,7 @@ export function createDefaultAgentInvoker(deps: { provider: LLMProvider; config:
         if (verdict === "deny") return false;
         // Auto-accept approves what passed the gate itself, as the loop would have without the "ask" downgrade.
         if (mode === "auto-accept" && verdict === "allow") return true;
-        return req.confirmTool(toolName, input);
+        return typeof req.confirmTool === "function" ? req.confirmTool(toolName, input) : false;
       };
       const text = await executeNativeAgent(agent, req.task, {
         provider: deps.provider,

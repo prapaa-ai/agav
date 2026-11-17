@@ -3,6 +3,7 @@ import { openResourceManager } from "./resource-manager.js"
 import {
   saveMemory,
   loadMemories,
+  searchMemories,
   deleteMemory,
   deleteAllMemories,
   getProjectMemoryPath,
@@ -13,8 +14,8 @@ import {
 export const memoryCommand: SlashCommand = {
   name: "memory",
   description: "Manage persistent memories",
-  argumentHint: "[list|add|delete|clear|path]",
-  usage: "Usage: /memory <action>\n\n  /memory              Open manager (list in headless mode)\n  /memory list         Print saved memories\n  /memory add <text>   Save a new memory\n  /memory delete <N>   Delete memory by index\n  /memory clear        Delete all memories\n  /memory path         Show the memory storage path\n\nMemories persist across sessions and are injected into the system prompt.",
+  argumentHint: "[list|add|search|show|delete|clear|path]",
+  usage: "Usage: /memory <action>\n\n  /memory              Open manager (list in headless mode)\n  /memory list         Print saved memories\n  /memory add <text>   Save a new memory\n  /memory search <q>   Find memories by name, description or content\n  /memory show <name>  Read one memory by its exact stored name (see /memory list)\n  /memory delete <name> Delete memory by name\n  /memory clear        Delete all memories\n  /memory path         Show the memory storage path\n\nMemories persist across sessions and are injected into the system prompt.",
   async execute(args: string, context): Promise<CommandResult> {
     if (!args.trim()) {
       const interactive = openResourceManager("memory", context);
@@ -50,6 +51,44 @@ export const memoryCommand: SlashCommand = {
       return { type: "message", text: `Saved memory: ${slug}` }
     }
 
+    if (action === "search") {
+      const query = args.trim().slice(parts[0].length).trim()
+      if (!query) {
+        return { type: "message", text: "Usage: /memory search <query>\n\nMatches memory names, descriptions and content, ignoring case; the whole query is one phrase." }
+      }
+      const memories = await loadMemories()
+      if (memories.length === 0) {
+        return { type: "message", text: "No memories saved yet, so there is nothing to search." }
+      }
+      const matches = searchMemories(memories, query)
+      if (matches.length === 0) {
+        return { type: "message", text: `No memories match "${query}" (searched ${memories.length}).` }
+      }
+      const lines = matches.map(({ memory, excerpt }) => `  [${memory.type}] ${memory.name}\n    ${excerpt}`)
+      return {
+        type: "message",
+        text: `Memories matching "${query}" (${matches.length} of ${memories.length}):\n${lines.join("\n")}`,
+      }
+    }
+
+    if (action === "show") {
+      const name = args.trim().slice(parts[0].length).trim()
+      if (!name) {
+        return { type: "message", text: "Usage: /memory show <name> (use the exact name from /memory list)" }
+      }
+      const matches = (await loadMemories()).filter((entry) => entry.name === name)
+      const [memory] = matches
+      if (!memory) {
+        return { type: "message", text: `Memory "${name}" not found.` }
+      }
+      if (matches.length > 1) {
+        return { type: "message", text: `More than one memory is named "${name}".` }
+      }
+      const header = `[${memory.type}] ${memory.name}`
+      const label = memory.description ? `${header}\n${memory.description}` : header
+      return { type: "message", text: `${label}\n\n${memory.content}` }
+    }
+
     if (action === "delete" || action === "rm") {
       const name = parts.slice(1).join(" ").trim()
       if (!name) return { type: "message", text: "Usage: /memory delete <name>" }
@@ -66,7 +105,7 @@ export const memoryCommand: SlashCommand = {
       return { type: "message", text: `Memory directory: ${await getProjectMemoryPath()}` }
     }
 
-    return { type: "message", text: "Usage: /memory [list|add|delete|clear|path]" }
+    return { type: "message", text: "Usage: /memory [list|add|search|show|delete|clear|path]" }
   },
 }
 

@@ -770,6 +770,65 @@ describe("runAgentLoop", () => {
     });
   });
 
+  describe("fetch_url method gating", () => {
+    const runFetch = async (
+      input: Record<string, unknown>,
+      params: { permissionMode?: "ask" | "auto-accept" | "deny-writes"; confirm?: boolean },
+    ) => {
+      const provider = new MockProvider([
+        [
+          { type: "tool_call_start", toolCallId: "f-1", toolName: "fetch_url" },
+          { type: "tool_call_delta", toolCallId: "f-1", argsJson: JSON.stringify(input) },
+          { type: "message_end", stopReason: "tool_use" },
+        ],
+        [{ type: "text_delta", text: "done" }, { type: "message_end", stopReason: "end_turn" }],
+      ]);
+      const conversation = new ConversationState();
+      conversation.setModel("gpt-4");
+      conversation.addUserMessage("fetch it");
+      const execute = vi.fn(async () => ({ output: "ok", isError: false }));
+      const toolRegistry = new ToolRegistry();
+      toolRegistry.register(createTool("fetch_url", execute));
+      const confirmTool = params.confirm === undefined ? undefined : vi.fn().mockResolvedValue(params.confirm ? "yes" : "no");
+      const events = await collectEvents(runAgentLoop({
+        provider, conversation, toolRegistry, model: "gpt-4",
+        iterationsBudget: { remaining: 5, total: 5 },
+        permissionMode: params.permissionMode, ...(confirmTool ? { confirmTool } : {}),
+      }));
+      return { execute, confirmTool, events };
+    };
+
+    it("auto-approves GET without a confirmation handler", async () => {
+      const { execute } = await runFetch({ url: "https://example.com/" }, {});
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("auto-approves HEAD without a confirmation handler", async () => {
+      const { execute } = await runFetch({ url: "https://example.com/", method: "HEAD" }, {});
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it("prompts for POST and runs it when confirmed", async () => {
+      const { execute, confirmTool } = await runFetch({ url: "https://example.com/", method: "POST" }, { confirm: true });
+      expect(confirmTool).toHaveBeenCalledTimes(1);
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["POST", "PUT", "DELETE", "PATCH"])("blocks %s in headless mode", async (method) => {
+      const { execute, events } = await runFetch({ url: "https://example.com/", method }, {});
+      expect(execute).not.toHaveBeenCalled();
+      expect(events).toContainEqual(expect.objectContaining({
+        type: "tool_result", toolName: "fetch_url", isError: true,
+        output: expect.stringContaining("requires confirmation"),
+      }));
+    });
+
+    it("still prompts for POST under --auto-accept", async () => {
+      const { execute } = await runFetch({ url: "https://example.com/", method: "POST" }, { permissionMode: "auto-accept" });
+      expect(execute).not.toHaveBeenCalled();
+    });
+  });
+
   it("handles invalid tool JSON by passing raw input through to the registry", async () => {
     const execute = vi.fn(async (input: Record<string, unknown>) => ({
       output: JSON.stringify(input),

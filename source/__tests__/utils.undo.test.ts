@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -6,6 +6,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getUndoStack, hasUndo, performUndo, pushUndo } from "../utils/undo.js";
 
 describe("utils/undo", () => {
+  /** Directories created by these tests, removed after each one. */
+  const tempDirs: string[] = [];
+
   beforeEach(async () => {
     while (await performUndo()) {
       // drain shared module state
@@ -13,13 +16,25 @@ describe("utils/undo", () => {
   });
 
   afterEach(async () => {
-    while (await performUndo()) {
-      // drain shared module state
+    try {
+      while (await performUndo()) {
+        // drain shared module state
+      }
+    } finally {
+      // Drain first: undoing writes inside a deleted directory would fail.
+      await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
     }
   });
 
+  /** Creates a temporary directory that `afterEach` removes. */
+  async function tempDir(prefix: string): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), prefix));
+    tempDirs.push(dir);
+    return dir;
+  }
+
   it("captures file contents and restores them on undo", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agav-undo-"));
+    const dir = await tempDir("agav-undo-");
     const file = join(dir, "note.txt");
     await writeFile(file, "before", "utf8");
 
@@ -38,7 +53,7 @@ describe("utils/undo", () => {
   });
 
   it("records new file creation and deletes on undo", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agav-undo-new-"));
+    const dir = await tempDir("agav-undo-new-");
     const file = join(dir, "new-file.txt");
 
     await pushUndo(file, "write_file");
@@ -56,7 +71,7 @@ describe("utils/undo", () => {
   });
 
   it("keeps only the most recent 20 undo entries", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "agav-undo-cap-"));
+    const dir = await tempDir("agav-undo-cap-");
 
     for (let i = 0; i < 21; i++) {
       const file = join(dir, `file-${i}.txt`);

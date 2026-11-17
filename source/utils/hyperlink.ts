@@ -17,6 +17,15 @@ export function fileLink(text: string, filePath: string): string {
   return terminalLink(text, pathToFileURL(filePath).href);
 }
 
+/**
+ * One complete OSC 8 control sequence, `ESC ] 8 ; params ; URI ST`, with ST as
+ * `ESC \` or BEL. This matches openers and empty-URI resets alike, so each is
+ * removed on its own and the text between them is never scanned for a partner.
+ * Neither field can contain ESC or BEL, so every attempt stops at the next one
+ * and the scan stays linear; an incomplete control is left as-is.
+ */
+const OSC8_CONTROL = /\x1b\]8;[^;\x1b\x07]*;[^\x1b\x07]*(?:\x1b\\|\x07)/g;
+
 export function stripTerminalLinks(text: string): string {
-  return text.replace(/\x1b\]8;;[^\x1b]*\x1b\\([^\x1b]*)\x1b\]8;;\x1b\\/g, "$1");
+  return text.replace(OSC8_CONTROL, "");
 }

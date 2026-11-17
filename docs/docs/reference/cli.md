@@ -23,6 +23,8 @@ agav update [version]        # Update the installed release
 - Print mode: a single prompt runs with the cap; when reached the agent summarizes its work and stops.
 - Run mode: the cap limits internal model/tool iterations for the task prompt.
 
+The value must contain decimal digits only and be between 1 and 9007199254740991; signs, fractions, scientific notation, and hexadecimal notation are rejected. Both `--max-turns 20` and `--max-turns=20` are accepted.
+
 The flag overrides `maxIterations` in configuration for the current session only. On resume, the session history is kept but the cap is reapplied to new prompts.
 
 ### --config, -c
@@ -41,6 +43,9 @@ agav -P -c provider=ollama "summarize this repo"
 - Dedicated flags still win on conflict (`-c effort=low --effort high` → `high`), and overrides are never written back to `config.json`.
 - `agav login`, `agav logout`, `agav job`, `agav mcp`, and `agav workflows` reject `-c` outright: they dispatch before any session exists, so an override would be silently dropped. Use `agav login --control-plane <url>` to point login at a control plane.
 - Organization-managed policy outranks `-c` on every field it enforces; enforcement keys such as `orgManagedProvider` or `orgPermissionFloor` are rejected outright.
+
+Registered overrides also propagate privately to interactive session workers, using their effective values after dedicated flags and organization policy are applied. See [Detached sessions](/features/detached-sessions#security-and-process-lifetime).
+
 ### --provider-idle-timeout
 
 `--provider-idle-timeout <ms>` sets an idle timeout in milliseconds waiting for provider stream activity (positive safe integer from 1 to 2147483647, or `disabled`).
@@ -75,6 +80,8 @@ agav -P -c provider=ollama "summarize this repo"
 | `--openai-api` | OpenAI API mode: `responses` (default) or `chat`. Use `chat` for OpenAI-compatible endpoints that don't support the Responses API. |
 | `--deny-writes` | Block write operations |
 | `--sandbox-network <deny\|allow>` | Network policy for Seatbelt and Bubblewrap shell commands; default `allow`. Aliases: `--sandbox-no-network`, `--sandbox-allow-network`. See [Network policy](/reference/security#network-policy). |
+| `--sandbox-required` | Refuse `run_command` and `run_tests` execution without an OS-level sandbox; see [sandbox enforcement](/reference/security#requiring-a-sandbox). |
+| `--revoke-windows-sandbox` | Windows only: remove workspace/temp ACL entries recorded by the native sandbox helper; see [Windows sandbox](/reference/security#windows). |
 | `--version`, `-v` | Print the version |
 | `--help`, `-h` | Print help |
 
@@ -108,6 +115,9 @@ When you start a plain `agav` session, the provider and model are resolved in th
 | `OLLAMA_ENDPOINT` | Complete Ollama endpoint |
 | `OLLAMA_HOST` / `OLLAMA_PORT` | Ollama address components |
 | `OLLAMA_API_KEY` | Ollama bearer token |
+| `NO_COLOR` | Any defined value disables Agav's color helpers, taking precedence over `FORCE_COLOR`. |
+| `FORCE_COLOR` | Force colored output even without a TTY or with `TERM=dumb`. Empty, `0`, or `false` disables it (case-insensitive, surrounding whitespace ignored). |
+| `TERM=dumb` | Disable color unless `FORCE_COLOR` enables it. Without an override, color helpers use whether stderr is a TTY. |
 | `AGAV_PERMISSION` | JSON policy used by `agav run` |
 | `AGAV_NO_UPDATE=1` | Disable automatic update checks |
 | `AGAV_NO_SANDBOX=1` | Disable automatic shell sandbox selection |

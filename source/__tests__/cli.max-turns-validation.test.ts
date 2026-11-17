@@ -52,7 +52,7 @@ describe("--max-turns production CLI validation", () => {
     it.each(invalidValues)("rejects %j with an actionable error", (value) => {
       expect(() => parseArgs(args(value))).toThrow(exitError);
       expect(process.exit).toHaveBeenCalledWith(1);
-      expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("--max-turns must be a positive safe integer"));
+      expect(process.stderr.write).toHaveBeenCalledWith(expect.stringContaining("--max-turns must be a plain positive integer (digits only"));
     });
   });
 

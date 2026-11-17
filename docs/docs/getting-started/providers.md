@@ -203,11 +203,13 @@ agav --provider vertex-ai --model vertex/gemini-3.5-flash
 
 Setting the credentials path is what enables the provider; there is no separate on/off flag to keep in sync with it. Agav uses the multi-region `global` endpoint by default — set `VERTEX_AI_LOCATION` (for example `us-east5`) to pin a region instead, which some Claude partner models require.
 
-Claude partner models are supported by the same provider and credentials, addressed with the same `vertex/` prefix. Claude models need the versioned ID that Vertex AI exposes, including its `@YYYYMMDD` suffix:
+Claude partner models are supported by the same provider and credentials, addressed with the same `vertex/` prefix. Use the model ID that Vertex AI exposes, including an `@YYYYMMDD` suffix when required by that model:
 
 ```bash
 agav --provider vertex-ai --model vertex/claude-sonnet-4-5@20250929
 ```
+
+Vertex AI `/deep` selects `vertex/claude-opus-5-5`, which requires `vertexAILocation` (or `VERTEX_AI_LOCATION`) to be `global`, `us`, or `eu`. With a regional location such as `us-east5`, `/deep` rejects the switch without changing your model or location. Configure a supported location explicitly, or use `/model` to choose a regional model.
 
 The service account's `project_id`, `client_email`, `private_key`, and optional `token_uri` are read from the JSON file. Agav exchanges the signed credentials for a short-lived OAuth token and refreshes it automatically. Vertex AI's implicit Gemini caching and Claude's ephemeral prompt caching are used automatically when supported.
 

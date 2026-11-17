@@ -15,13 +15,15 @@ order: 3
 | `agav --name <title>` | Start a new interactive session with an initial name. |
 | `agav sessions delete <id>` | Delete a saved session by ID or unique prefix (alias: `rm`). |
 | `/resume [id]` | List saved sessions, or resume one by ID or prefix match. |
+| `/history [list]` | Browse saved sessions; use `list` for plain text. |
+| `/history list --limit <count>` | Show the most recent saved sessions in a plain-text list. |
 | `/search <query>` | Find saved sessions that match `<query>`. |
 | `/name <name>` | Give the active session a recognizable name. |
 | `/clear` or `/new` | Start a clean chat while keeping saved sessions. |
-| `/export [json] [sanitize\|--sanitize]` | Export the retained conversation as Markdown or JSON, optionally with best-effort redaction. |
+| `/export [json\|--full] [sanitize\|--sanitize]` | Export the retained conversation as Markdown or JSON, optionally with best-effort redaction. |
 | `/exit` | Save the current session and exit. |
 
-Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`. To keep a task executing after closing the UI, set `backgroundJobsEnabled: true` in global config before submitting it and use `/detach` or the configurable `detachSession` shortcut (default Ctrl+D); see [Detached sessions](/features/detached-sessions). The resume picker also includes live runtimes and their pending approval counts. Workers checkpoint visible conversation history and token usage; resuming observes that progress without replaying the task.
+Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`. To keep a task executing after closing the UI, set `backgroundJobsEnabled: true` in global config before submitting it and use `/detach` or the configurable `detachSession` shortcut (default Ctrl+D); see [Detached sessions](/features/detached-sessions). The resume picker also includes live runtimes and their pending approval counts. Workers checkpoint visible conversation history and token usage; live and saved session totals include subagent and skill usage. Resuming observes that progress without replaying the task.
 
 Ordinary `/exit` or Ctrl+C requests durable, generation-bound cancellation of a selected worker; Esc requests cancellation without leaving Agav when no focused UI consumes it. Cancellation is asynchronous, not proof that all effects stopped. Switching sessions or unmounting the presentation does not cancel execution or answer approvals. There is no separate public session stop command; resume and interrupt instead.
 
@@ -29,22 +31,28 @@ Ordinary `/exit` or Ctrl+C requests durable, generation-bound cancellation of a 
 
 `agav --resume` opens a picker listing all saved sessions, with the total count shown in the header. You can move the selection with `↑/↓`, `j/k`, or the mouse wheel, or click a row to select it. Press `Enter` to resume the selected session, `D` to delete saved or terminal sessions (not active workers), `M` or `R` to rename active or terminal sessions, `N` to start a new session instead of resuming one (`Ctrl+N` also works while typing in the search bar), and `Esc` or `q` to cancel. In the rename view, type the new name and press `Enter` to save, or press `Esc` to cancel and return to the list without renaming.
 
+Filter the picker by session name with `/` or a click in its search bar. While search is focused, `Enter` or `Esc` finishes editing the search without resuming a session or closing the picker. Outside search, `Tab` cycles project scope, `s` toggles updated/created sorting, and `a` cycles all/running/needs-approval status filters. The running filter includes workers waiting for approval; an approval banner highlights sessions needing a decision. This name filter is separate from `/search`, which searches saved conversation content.
+
 Note: resuming a session created with `--max-turns` keeps the session's own history but the turn cap is reapplied to each new prompt.
 
-A session also remembers its permission mode. If you changed the mode mid-session with [`/permission`](/reference/slash-commands) (for example escalating to `auto-accept` or tightening to `deny-writes`), resuming restores that saved mode rather than the configured launch default. Explicit `--auto-accept` (`-y`) or `--deny-writes` flags at startup still take precedence, and an organization minimum is always enforced. See [Security → Changing the mode during a session](/reference/security#changing-the-mode-during-a-session).
+A session also remembers its permission mode. If you changed the mode mid-session with [`/permission`](/reference/slash-commands) (for example escalating to `auto-accept` or tightening to `deny-writes`), resuming restores that saved mode rather than the configured launch default. An explicit `-c permissionMode=...` (or `--config permissionMode=...`) at startup overrides the saved mode. Dedicated `--auto-accept` (`-y`) or `--deny-writes` flags take precedence over `-c`, regardless of argument order, and an organization minimum is always enforced. See [Security → Changing the mode during a session](/reference/security#changing-the-mode-during-a-session).
 
-`/resume` opens the same interactive picker in newest-first order. `/search` performs a case-insensitive substring search across saved message text and string tool results, returns up to 10 matching sessions, and shows up to 3 snippets per session. To reopen a result directly, use its ID prefix with `agav --resume <id-prefix>`.
+`/resume` opens the same interactive picker in newest-first order. If a prefix matches multiple sessions, `/resume <prefix>` lists up to 10 full IDs and titles so you can choose one without loading a session. `/search` performs a case-insensitive substring search across saved message text and string tool results, returns up to 10 matching sessions, and shows up to 3 snippets per session. To reopen a result directly, use its ID prefix with `agav --resume <id-prefix>`.
 
 ## Export a conversation
 
 ```text
 /export                  Markdown preview
+/export --full           Markdown with complete retained tool text
+/export --full --sanitize Complete retained tool text with best-effort redaction
 /export json             Structured JSON
 /export sanitize         Markdown with best-effort redaction
 /export json sanitize    JSON with best-effort redaction
 ```
 
 `sanitize` and `json` work in either order; `--sanitize` is an alias for `sanitize`.
+`--full` is for Markdown only. It includes complete retained tool input and result text, but not images or opaque provider metadata. JSON already retains tool text and does not accept `--full`.
+
 Use `/help export` or `/export --help` for usage. Unknown options produce an error
 without creating a file. `/export` can run while Agav is working (with no pending
 attachments). It exports a snapshot of the committed, retained conversation at
@@ -58,7 +66,7 @@ failure message. New files request owner-only read/write permissions on POSIX;
 this does not configure Windows ACLs. Empty or internal-only conversations do not
 create files. Export never changes the active conversation or saved history.
 
-Markdown retains the existing readable layout, with previews of tool inputs
+By default, Markdown retains the existing readable layout, with previews of tool inputs
 (200 characters) and results (500 characters). JSON preserves the full retained
 message structure, text, and tool activity without those additional preview limits.
 Both exclude agent-injected internal prompts while preserving actual user messages.
@@ -162,9 +170,9 @@ A practical pattern is to branch before a risky refactor, compare the result wit
 | Command | Intent |
 | --- | --- |
 | `/compact` | Summarize older conversation context now to make room for continued work. |
-| `/context` | Show a token breakdown for system prompt, tools, skills, MCP, and messages. |
+| `/context` | Show the estimated current context-window occupancy: system prompt, tools, skills, MCP, and messages. |
 
-Agav automatically compacts long histories and preserves a summary of important decisions, paths, bugs, and preferences. Run `/compact` to force compaction. Use `/context` for a real context-window breakdown. When a compaction summary exists, press `Ctrl+O` in the UI to show or hide it.
+Agav automatically compacts long histories and preserves a summary of important decisions, paths, bugs, and preferences. Run `/compact` to force compaction. Use `/context` to see what the context window currently holds. Its Used and Free rows are an estimate of current occupancy, not cumulative token usage. The session totals it also lists add up every request in the session, so they can exceed the context window. While a turn is running, `/context` is a snapshot of committed messages and excludes the output still being generated. When a compaction summary exists, press `Ctrl+O` in the UI to show or hide it.
 
 ## Project memory
 
@@ -173,6 +181,8 @@ Agav automatically compacts long histories and preserves a summary of important 
 | `/remember <text>` | Save `<text>` as a durable project memory. |
 | `/memory list` | List the project's saved memories. |
 | `/memory add <text>` | Save `<text>` as a project memory. |
+| `/memory search <query>` | Find saved memories whose name, description, or content contains `<query>`, ignoring case. |
+| `/memory show <name>` | Print one memory in full by exact name. |
 | `/memory delete <memory name>` | Remove the saved memory named `<memory name>`. |
 | `/memory path` | Show the active project's memory directory. |
 | `/forget` | List the saved memories. |

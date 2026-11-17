@@ -9,13 +9,14 @@ import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileReadTool } from "../tools/file-read.js";
-import { fetchUrlTool } from "../tools/fetch-url.js";
+import { fetchUrlTool, setFetchTransport, type Transport } from "../tools/fetch-url.js";
 import type { ToolResult } from "../tools/types.js";
 
 let directory: string;
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), "agav-read-test-")); });
 afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
+  setFetchTransport(undefined);
   vi.unstubAllGlobals();
 });
 
@@ -197,22 +198,23 @@ describe("bounded file reads", () => {
 
 describe("recoverable bounded fetch output", () => {
   it.each([200, 500])("preserves HTTP %s bodies in recoverable logs", async (status) => {
-    const body = "START\n" + "😀x".repeat(80_000) + "\nEND";
-    const fetch = vi.fn(async () => new Response(body, { status, statusText: status === 200 ? "OK" : "Failure" }));
-    vi.stubGlobal("fetch", fetch);
+    const text = "START\n" + "😀x".repeat(80_000) + "\nEND";
+    async function* body(): AsyncGenerator<Uint8Array> { yield new TextEncoder().encode(text); }
+    const transport = vi.fn<Transport>().mockResolvedValue({ status, statusText: status === 200 ? "OK" : "Failure", body: body(), cancel: () => {} });
+    setFetchTransport(transport);
     const result = await fetchUrlTool.execute({ url: "https://example.test/", method: "POST", headers: { Authorization: "secret" }, body: "payload" });
     expect(result.isError).toBe(status !== 200);
     expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(40_000);
     expect(result.output).toContain("START");
     expect(result.output).toContain("END");
     const path = result.output.match(/Full response saved to: (.+)\n/)![1];
-    try { expect(await readFile(path, "utf8")).toBe(body); }
+    try { expect(await readFile(path, "utf8")).toBe(text); }
     finally { await rm(dirname(path), { recursive: true, force: true }); }
-    expect(fetch).toHaveBeenCalledWith("https://example.test/", expect.objectContaining({ method: "POST", headers: { "User-Agent": "Agav-CLI/0.1", Authorization: "secret" }, body: "payload", signal: expect.any(AbortSignal) }));
+    expect(transport).toHaveBeenCalledWith("https://example.test/", expect.objectContaining({ method: "POST", headers: { "User-Agent": "Agav-CLI/0.1", Authorization: "secret" }, body: "payload", signal: expect.any(AbortSignal) }));
   });
 
   it("preserves fetch errors", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+    setFetchTransport(vi.fn<Transport>().mockRejectedValue(new Error("offline")));
     expect(await fetchUrlTool.execute({ url: "https://example.test" })).toEqual({ output: "Fetch failed: offline", isError: true });
   });
 });

@@ -1,6 +1,7 @@
 import type { ConfirmResult } from "./loop.js";
 import type { DiffLine } from "../utils/diff.js";
 import type { PermissionMode } from "../config/config.js";
+import { isMutatingFetchCall } from "../utils/http-method.js";
 
 export interface QueuedConfirmation {
   toolName: string;
@@ -45,6 +46,9 @@ export class ConfirmationQueue {
 
   /** `signal` withdraws the prompt: aborting resolves it as "no" and removes it from display/queue. */
   enqueue(item: Omit<QueuedConfirmation, "resolve">, signal?: AbortSignal): Promise<ConfirmResult> {
+    // Apply centrally so parent, native-agent and delegated prompts all retain
+    // per-call HTTP consent, including while queued behind a generic Always.
+    if (isMutatingFetchCall(item.toolName, item.input)) item = { ...item, explicitApprovalOnly: true };
     if (this.autoAccept && item.toolName !== "run_background_job" && !item.explicitApprovalOnly) {
       return Promise.resolve("always" as ConfirmResult);
     }

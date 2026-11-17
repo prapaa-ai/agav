@@ -39,7 +39,56 @@ describe("resume ID selection", () => {
     await expect(main()).rejects.toBe(exited);
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Ambiguous session ID prefix "abc"'));
     expect(process.exit).toHaveBeenCalledWith(1);
-    expect(await resumeCommand.execute("abc", {} as never)).toMatchObject({ text: expect.stringContaining("Ambiguous") });
+    const context = { loadSession: vi.fn(), setPickerActive: vi.fn() };
+    const result = await resumeCommand.execute("abc", context as never);
+    expect(result).toEqual({
+      type: "message",
+      text: 'Ambiguous session ID prefix "abc". Use a longer ID or choose one:\nabc-two · abc-two\nabc-one · abc-one',
+    });
+    expect(context.loadSession).not.toHaveBeenCalled();
+    expect(context.setPickerActive).not.toHaveBeenCalled();
+    expect(pickSession).not.toHaveBeenCalled();
+    expect(loadResumableSession).not.toHaveBeenCalled();
+  });
+  it("caps matching slash-resume choices without changing their order", async () => {
+    const sessions = Array.from({ length: 12 }, (_, i) => ({
+      ...record(`abc-${12 - i}`),
+      title: `Session ${12 - i}`,
+    }));
+    vi.mocked(listResumableSessions).mockResolvedValue([record("unrelated"), ...sessions]);
+    const result = await resumeCommand.execute("abc", {} as never);
+    expect(result.type).toBe("message");
+    if (result.type !== "message") return;
+    expect(result.text.split("\n").slice(1)).toEqual([
+      ...sessions.slice(0, 10).map(({ id, title }) => `${id} · ${title}`),
+      "… and 2 more matches.",
+    ]);
+    expect(loadResumableSession).not.toHaveBeenCalled();
+  });
+  it("lists the ID of an older session without a title", async () => {
+    const { title: _unusedTitle, ...legacy } = record("abc-legacy");
+    vi.mocked(listResumableSessions).mockResolvedValue([
+      legacy as ReturnType<typeof record>,
+      { ...record("abc-current"), title: "Current\nsession" },
+    ]);
+    expect(await resumeCommand.execute("abc", {} as never)).toMatchObject({
+      text: expect.stringContaining("abc-legacy · Untitled session\nabc-current · Current session"),
+    });
+    expect(loadResumableSession).not.toHaveBeenCalled();
+  });
+  it("bounds display titles and removes terminal controls without truncating IDs", async () => {
+    const longId = "abc-" + "1".repeat(90);
+    vi.mocked(listResumableSessions).mockResolvedValue([
+      { ...record(longId), title: "\x1b[31mFirst\x1b[0m\nSecond\x07" },
+      { ...record("abc-long"), title: "a".repeat(200) },
+    ]);
+    const result = await resumeCommand.execute("abc", {} as never);
+    expect(result.type).toBe("message");
+    if (result.type !== "message") throw new Error("Expected a message");
+    expect(result.text.split("\n").slice(1)).toEqual([
+      `${longId} · First Second`,
+      "abc-long · " + "a".repeat(79) + "…",
+    ]);
     expect(loadResumableSession).not.toHaveBeenCalled();
   });
   it.each(["abc", "abc-one"])("prefers exact IDs and accepts unique prefixes: %s", async id => {

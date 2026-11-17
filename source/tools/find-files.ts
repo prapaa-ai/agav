@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { readdir } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import { lstat, readdir } from "node:fs/promises";
+import { basename, join, relative, resolve } from "node:path";
 import { platform } from "node:os";
 import type { ToolDefinition, ToolResult } from "./types.js";
 
@@ -84,7 +84,7 @@ export const findFilesTool: ToolDefinition = {
   schema: {
     name: "find_files",
     description:
-      "Find files matching a glob pattern. Returns file paths relative to the search directory. " +
+      "Find files matching a glob pattern. Returns absolute paths by default, or paths relative to the search root when relative_paths is true. " +
       "Useful for discovering project structure or locating specific file types.",
     inputSchema: {
       type: "object",
@@ -95,7 +95,11 @@ export const findFilesTool: ToolDefinition = {
         },
         path: {
           type: "string",
-          description: "Directory to search in (default: current directory)",
+          description: "Directory or file to search (default: current directory)",
+        },
+        relative_paths: {
+          type: "boolean",
+          description: "Show paths relative to the search directory; a matching file used as the root is shown by its name",
         },
       },
       required: ["pattern"],
@@ -103,8 +107,15 @@ export const findFilesTool: ToolDefinition = {
   },
 
   async execute(input): Promise<ToolResult> {
+    const relativePaths = input.relative_paths;
+    if (relativePaths !== undefined && typeof relativePaths !== "boolean") {
+      return { output: "relative_paths must be a boolean", isError: true };
+    }
     const pattern = String(input.pattern);
     const searchPath = resolve(String(input.path ?? "."));
+    const displayPath = (path: string) => relativePaths
+      ? relative(searchPath, path) || basename(path)
+      : path;
 
     // On Windows, always use the Node.js fallback since Unix find is not available.
     // On Unix, try native find first for speed, fall back to Node.js if not found.
@@ -114,8 +125,8 @@ export const findFilesTool: ToolDefinition = {
         if (result.stdout) {
           const lines = result.stdout.split("\n").filter(Boolean);
           const truncated = lines.length > MAX_RESULTS
-            ? lines.slice(0, MAX_RESULTS).join("\n") + `\n... ${lines.length - MAX_RESULTS} more files`
-            : result.stdout.trimEnd();
+            ? lines.slice(0, MAX_RESULTS).map(displayPath).join("\n") + `\n... ${lines.length - MAX_RESULTS} more files`
+            : relativePaths ? lines.map(displayPath).join("\n") : result.stdout.trimEnd();
           return { output: truncated, isError: false };
         }
         if (result.stderr) {
@@ -131,12 +142,17 @@ export const findFilesTool: ToolDefinition = {
     try {
       const regex = globToRegex(pattern);
       const results = await nodeFind(searchPath, regex);
+      if (results.length === 0 && regex.test(basename(searchPath))) {
+        const info = await lstat(searchPath).catch(() => undefined);
+        if (info?.isFile()) results.push(searchPath);
+      }
       if (results.length === 0) {
         return { output: "No files found.", isError: false };
       }
+      const listing = results.map(displayPath).join("\n");
       const output = results.length >= MAX_RESULTS
-        ? results.join("\n") + `\n... ${results.length - MAX_RESULTS} more files`
-        : results.join("\n");
+        ? listing + `\n... ${results.length - MAX_RESULTS} more files`
+        : listing;
       return { output, isError: false };
     } catch (err) {
       return { output: `Search failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };

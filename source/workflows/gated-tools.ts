@@ -2,6 +2,7 @@ import type { AgavConfig } from "../config/config.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import type { ToolContext, ToolResult } from "../tools/types.js";
 import { isDestructiveCommand } from "../utils/sandbox.js";
+import { isMutatingFetchCall, isReadOnlyHttpMethod } from "../utils/http-method.js";
 import { validateToolInput, WORKFLOW_TOOLS } from "./definition.js";
 
 /** Trusted application callbacks, never read from workflow definitions or tool input. */
@@ -64,10 +65,12 @@ export async function confirmAgentTool(name: string, input: Record<string, unkno
  * allowedTools incl. path-scoped rules), `allow` (SAFE tool, auto-accept or allowlisted) or `ask` the host.
  */
 export function agentToolVerdict(name: string, input: Record<string, unknown>, config: AgavConfig): "allow" | "deny" | "ask" {
-  if (SAFE_TOOLS.has(name)) return "allow";
+  if (SAFE_TOOLS.has(name) || (name === "fetch_url" && isReadOnlyHttpMethod(input.method))) return "allow";
   if (name === "run_command" && isDestructiveCommand(String(input.command ?? ""))) return "deny";
   if (config.permissionMode === "deny-writes") return "deny";
   if (config.allowedTools?.length && !allowed(name, input, config.allowedTools)) return "deny";
+  // Tool-name grants and auto-accept do not authorize state-changing HTTP input.
+  if (isMutatingFetchCall(name, input)) return "ask";
   if (config.permissionMode === "auto-accept" || allowed(name, input, config.allowedTools)) return "allow";
   return "ask";
 }
