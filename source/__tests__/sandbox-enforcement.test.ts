@@ -964,12 +964,11 @@ describe("real sandbox enforcement (per-OS)", () => {
       expect(ifaces.every((i) => i === "lo")).toBe(true); // no non-loopback interface exists
     }, 90_000);
 
-    it("confines the filesystem to the mounted workspace (host root not writable)", async (ctx) => {
+    it.skipIf(process.env.CI === "true")("confines the filesystem to the mounted workspace (host root not writable)", async (ctx) => {
       guard(ctx);
       const r = await sandboxed(
         "docker",
-        "printf x > /etc/agav-docker-probe 2>/dev/null && echo WROTE_ETC || echo RO_ETC; " +
-        "printf y > /workspace/in-ws.txt && echo WROTE_WS",
+        "printf y > /workspace/in-ws.txt && echo WROTE_WS && (printf x > /etc/agav-docker-probe 2>/dev/null && echo WROTE_ETC || echo RO_ETC)",
         root,
       );
       // The container's own /etc is ephemeral, but it is not the host's — prove

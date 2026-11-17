@@ -35,7 +35,7 @@ import { copyCommand } from "./copy.js"
 import { voiceCommand } from "./voice.js"
 import { customizeCommand } from "./customize.js"
 import { loginCommand, logoutCommand } from "./login.js"
-export { MID_TURN_SAFE_COMMANDS, isCommandAllowedMidTurn } from "./mid-turn.js"
+export { MID_TURN_SAFE_COMMANDS, isCommandAllowedMidTurn, getMidTurnBlockReason } from "./mid-turn.js"
 
 /** Store slash commands and dispatch raw user input to the matching handler. */
 export class CommandRegistry {

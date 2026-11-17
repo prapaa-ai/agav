@@ -30,7 +30,7 @@ import { advanceVoiceDraft } from "./utils/voice-draft.js";
 import { useAgent } from "./hooks/use-agent.js";
 import { useVoiceInput } from "./hooks/use-voice-input.js";
 import { isInternalUserMessage } from "./agent/internal-prompts.js";
-import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js";
+import { CommandRegistry, isCommandAllowedMidTurn, getMidTurnBlockReason } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { JobsTUI } from "./components/jobs-tui.js";
@@ -333,6 +333,16 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
   const [copyNotice, setCopyNotice] = useState<ClipboardNotice | null>(null);
+  const [queuedCommandNotice, setQueuedCommandNotice] = useState<string | null>(null);
+  const queuedCommandNoticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const showQueuedCommandNotice = useCallback((text: string) => {
+    setQueuedCommandNotice(text);
+    if (queuedCommandNoticeTimer.current) clearTimeout(queuedCommandNoticeTimer.current);
+    queuedCommandNoticeTimer.current = setTimeout(() => setQueuedCommandNotice(null), 18_000);
+  }, []);
+  useEffect(() => () => {
+    if (queuedCommandNoticeTimer.current) clearTimeout(queuedCommandNoticeTimer.current);
+  }, []);
   const { stdout } = useStdout();
   const { stdin } = useStdin();
 
@@ -1231,8 +1241,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         try { await cancelTask; } finally { pendingWorkflowCancelsRef.current.delete(cancelTask); }
         return;
       }
+      const commandArgs = trimmed.slice(1 + commandName.length).trim();
+      const commandAllowedMidTurn = isCommandAllowedMidTurn(commandName, commandArgs);
       const workflowStatus = workflowAbortRef.current && /^\/workflows\s+status\s+\S+\s*$/.test(trimmed);
-      const immediateCommand = trimmed.startsWith("/") && promptAttachments.length === 0 && (isCommandAllowedMidTurn(commandName) || !!workflowStatus);
+      const immediateCommand = trimmed.startsWith("/") && promptAttachments.length === 0 && (commandAllowedMidTurn || !!workflowStatus);
       if (!queued && !immediateCommand && (requestPendingRef.current || !isGenerationPaused || trimmed.startsWith("/") || trimmed.startsWith("!")) &&
           (isLoading || requestPendingRef.current || shellAbortRef.current || queueRef.current.length > 0)) {
         if (!trimmed && promptAttachments.length === 0) return;
@@ -1242,6 +1254,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           attachments: promptAttachments.map(attachment => ({ ...attachment, contentBlock: { ...attachment.contentBlock } })),
           invocationReason,
         }]);
+        if (trimmed.startsWith("/")) {
+          const reason = commandAllowedMidTurn || promptAttachments.length > 0
+            ? "Cannot run this command in the current state."
+            : getMidTurnBlockReason(commandName, commandArgs);
+          showQueuedCommandNotice(`Queued /${commandName}: ${reason} Waiting for idle.`);
+        }
         composerEditVersionRef.current++;
         setInput("");
         setAttachments([]);
@@ -1312,7 +1330,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
         const isSlashCommand = trimmed.startsWith("/")
           && promptAttachments.length === 0
-          && (!isLoading || isCommandAllowedMidTurn(commandName));
+          && (!isLoading || commandAllowedMidTurn || !!workflowStatus);
         if (!isSlashCommand && isLoading) {
           if (!isWorkerAttached && isGenerationPaused && (trimmed || promptAttachments.length > 0)) {
             const extraBlocks: ContentBlock[] = promptAttachments.map((attachment) => ({ ...attachment.contentBlock }));
@@ -1418,7 +1436,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             renameSession,
             currentSessionId: sessionId,
             exit,
-            isLoading,
+            // Immediate commands may run during preparation or direct shell work,
+            // but their handlers must not open an interactive fallback over it.
+            isLoading: isLoading || !!shellAbortRef.current || (immediateCommand && requestPendingRef.current),
             isWorkerAttached: () => isWorkerAttached,
             steer: (directive) => steer(directive, focusedSubagent?.id),
             steerTargetId: focusedSubagent?.id,
@@ -1616,7 +1636,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [steer, focusedSubagent, detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
+    [steer, focusedSubagent, detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, showQueuedCommandNotice, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.
@@ -2123,6 +2143,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
         <StatusBar
           copyNotice={copyNotice}
+          queuedCommandNotice={queuedCommandNotice}
           isPaused={isGenerationPaused || !!pendingConfirmation}
           model={config.model}
           provider={config.provider}
