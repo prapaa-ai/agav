@@ -35,6 +35,7 @@ const HISTORY_USAGE = "Usage: /history [list [--limit <count>]]";
 export const historyCommand: SlashCommand = {
   name: "history",
   description: "Browse saved sessions",
+  argumentHint: "[list [--limit <count>]]",
   usage: `${HISTORY_USAGE} · /resume <id> to load a session`,
   async execute(args, context) {
     const input = args.trim();
@@ -55,7 +56,7 @@ export const historyCommand: SlashCommand = {
     const sessions = await listSessions();
     if (sessions.length === 0) return { type: "message", text: "No saved sessions." };
     const shown = limit === undefined ? sessions : sessions.slice(0, limit);
-    const lines = shown.map((s) => `${s.id.slice(0, 8)} · ${s.title} · ${s.messages.length} messages`);
+    const lines = shown.map((s) => `${s.id.slice(0, 8)} · ${resumeTitle(s.title)} · ${s.messages.length} messages`);
     if (shown.length < sessions.length) lines.push(`Showing ${shown.length} of ${sessions.length} saved sessions.`);
     return { type: "message", text: lines.join("\n") };
   },

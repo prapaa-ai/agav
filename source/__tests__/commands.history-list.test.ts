@@ -10,7 +10,7 @@ const read = vi.mocked(listSessions);
 const open = vi.mocked(openResourceManager);
 const context = {} as CommandContext;
 const records = ["newest", "middle", "oldest"].map((title, idx): SessionRecord => ({
-  id: "session-" + idx, title, createdAt: "2026-11-17T00:00:00Z", model: "test", messages: [], provider: "ollama",
+  id: `0000000${idx}-session`, title, createdAt: "2026-11-17T00:00:00Z", model: "test", messages: [], provider: "ollama",
 }));
 
 beforeEach(() => {
@@ -21,11 +21,33 @@ beforeEach(() => {
 describe("/history list --limit", () => {
   it("limits ordered output and reports the count when it omits records", async () => {
     const result = await historyCommand.execute("list --limit 2", context);
-    expect(result).toMatchObject({ type: "message", text: expect.stringMatching(/newest.*\nmiddle|newest.*\n.*middle/s) });
-    if (result.type !== "message") throw new Error("expected message");
-    expect(result.text).toMatch(/2 .*3/);
-    expect(result.text).not.toContain("oldest");
+    expect(result).toEqual({
+      type: "message",
+      text: [
+        "00000000 · newest · 0 messages",
+        "00000001 · middle · 0 messages",
+        "Showing 2 of 3 saved sessions.",
+      ].join("\n"),
+    });
     expect(open).not.toHaveBeenCalled();
+  });
+
+  it("keeps titles on one line and handles long or missing titles in text output", async () => {
+    const { title: _omittedTitle, ...untitled } = records[2]!;
+    const legacyUntitled = untitled as SessionRecord;
+    read.mockResolvedValue([
+      { ...records[0]!, title: "Two\nlines" },
+      { ...records[1]!, title: "x".repeat(300) },
+      legacyUntitled,
+    ]);
+    expect(await historyCommand.execute("list", context)).toEqual({
+      type: "message",
+      text: [
+        "00000000 · Two lines · 0 messages",
+        `00000001 · ${"x".repeat(79)}… · 0 messages`,
+        "00000002 · Untitled session · 0 messages",
+      ].join("\n"),
+    });
   });
 
   it("leaves equal and oversized requests, unbounded listing and empty history unchanged", async () => {
