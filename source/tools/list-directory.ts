@@ -7,7 +7,7 @@ export const listDirectoryTool: ToolDefinition = {
     name: "list_directory",
     description:
       "List contents of a directory with file types and sizes. " +
-      "Optionally show only files or only directories.",
+      "Optionally show only files or only directories. Names starting with a dot are skipped.",
     inputSchema: {
       type: "object",
       properties: {

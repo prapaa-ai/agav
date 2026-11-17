@@ -70,6 +70,14 @@ Large text files are streamed rather than loaded in full. A bounded text read re
 
 PDF and Office ranges use 1-based, inclusive `start_page` and `end_page`, with at most **10 pages** per preview. Images do not accept line or page ranges, and PDF/Office documents do not accept line ranges. Office fallback behavior depends on available conversion tools: without LibreOffice, `.pptx` uses extracted slide text, while `.docx` uses extracted text without preserving page ranges or visual layout. See [files and context](/workflows/files-and-context) for attachment and preview requirements; `@file` attachment limits are separate from these tool-result limits.
 
+### `list_directory`
+
+`type: "all"` (the default) lists all visible entries. `"files"` lists
+regular files, and `"directories"` lists directories. Symbolic links are
+followed for classification. Special files and entries that cannot be
+classified, such as broken links, appear only in `"all"` mode. Every mode
+skips names starting with a dot, such as `.git`.
+
 ### `overview`
 
 `overview` returns a source-file and symbol skeleton, not file contents or a complete inventory of every file type. Set `include_symbols: false` to map the same source files without opening them for symbol extraction. Use a project-relative `path` to focus on a subdirectory. `depth` counts subdirectories relative to that path:
