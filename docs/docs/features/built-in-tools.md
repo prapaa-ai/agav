@@ -15,7 +15,7 @@ Agav exposes these tools to its agent loop.
 | `edit_file` | Replace one exact, unique string in a file |
 | `find_files` | Find files by glob; use `relative_paths: true` for paths relative to the search directory. A matching file searched directly is shown by its basename in relative mode. |
 | `grep_search` | Search file contents with regular expressions |
-| `list_directory` | List a directory |
+| `list_directory` | List a directory; optionally set `type` to `files` or `directories` |
 | `overview` | Map a repository's directory and symbol structure |
 | `run_command` | Execute a shell command with sandbox detection |
 | `run_tests` | Detect and run a supported project test framework |
@@ -76,6 +76,14 @@ Use the path in the notice with `read_file` and `start_line`/`end_line`, or `gre
 Large text files are streamed rather than loaded in full. A bounded text read returns a contiguous prefix of the requested range, reserving room for headers and recovery instructions (at most 1,995 selected whole lines). Its continuation notice identifies the next `start_line` in the **original file**, preserving any requested `end_line`; no duplicate temporary copy is needed. Follow that notice rather than treating the returned excerpt as the whole file. If the first requested line alone is too long, Agav returns a bounded excerpt and recommends targeted byte extraction with `run_command`; repeating that same line range will not advance through the line.
 
 PDF and Office ranges use 1-based, inclusive `start_page` and `end_page`, with at most **10 pages** per preview. Images do not accept line or page ranges, and PDF/Office documents do not accept line ranges. Office fallback behavior depends on available conversion tools: without LibreOffice, `.pptx` uses extracted slide text, while `.docx` uses extracted text without preserving page ranges or visual layout. See [files and context](/workflows/files-and-context) for attachment and preview requirements; `@file` attachment limits are separate from these tool-result limits.
+
+### `list_directory`
+
+`type: "all"` (the default) lists all visible entries. `"files"` lists
+regular files, and `"directories"` lists directories. Symbolic links are
+followed for classification. Special files and entries that cannot be
+classified, such as broken links, appear only in `"all"` mode. Every mode
+skips names starting with a dot, such as `.git`.
 
 ### `overview`
 
