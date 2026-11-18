@@ -539,6 +539,23 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
     event.stopPropagation?.();
   };
 
+  // Above the background return, so every prompt calls the same hooks in the same order.
+  // Hosts that don't forward the loop's warning (the confirmation queue
+  // carries no warning field) still get it: compute it here for write tools.
+  const [computedWarning, setComputedWarning] = React.useState<string | undefined>(undefined);
+  const targetPath = typeof input.path === "string" ? input.path : "";
+  React.useEffect(() => {
+    if (warning !== undefined || !WARN_TOOLS.has(toolName) || !targetPath) {
+      setComputedWarning(undefined);
+      return;
+    }
+    let cancelled = false;
+    checkWrite(targetPath, process.cwd())
+      .then((result) => { if (!cancelled) setComputedWarning(formatWorkspaceWarning(result)); })
+      .catch(() => { });
+    return () => { cancelled = true; };
+  }, [warning, toolName, targetPath]);
+
   if (background) {
     const info = describeBackgroundConfirmation(background.action, background.spec, background.subject);
     const lines: { text: string; color?: string; bold?: boolean; dim?: boolean }[] = info.job ? [
@@ -573,21 +590,6 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
       </Box>
     );
   }
-  // Hosts that don't forward the loop's warning (the confirmation queue
-  // carries no warning field) still get it: compute it here for write tools.
-  const [computedWarning, setComputedWarning] = React.useState<string | undefined>(undefined);
-  const targetPath = typeof input.path === "string" ? input.path : "";
-  React.useEffect(() => {
-    if (warning !== undefined || !WARN_TOOLS.has(toolName) || !targetPath) {
-      setComputedWarning(undefined);
-      return;
-    }
-    let cancelled = false;
-    checkWrite(targetPath, process.cwd())
-      .then((result) => { if (!cancelled) setComputedWarning(formatWorkspaceWarning(result)); })
-      .catch(() => { });
-    return () => { cancelled = true; };
-  }, [warning, toolName, targetPath]);
   const shownWarning = warning ?? computedWarning;
 
   const label = getToolLabel(toolName);

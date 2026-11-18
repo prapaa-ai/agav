@@ -1092,3 +1092,34 @@ describe("ToolConfirm clickable controls", () => {
     });
   });
 });
+
+describe("ToolConfirm reused across prompts", () => {
+  const backgroundInput = {
+    action: "start",
+    spec: {
+      invocation: { mode: "shell", commandText: "echo hi", interpreter: "cmd" },
+      cwd: process.cwd(), isolation: { backend: "none", required: false }, env: {}, credentialRefs: [],
+      ownershipScope: "unverified", limits: {}, headless: false,
+    },
+  };
+  const flush = async (instance: any) => { await new Promise((resolve) => setTimeout(resolve, 30)); await instance.waitUntilRenderFlush(); };
+
+  it("keeps the same hooks when one instance goes from a background-job prompt to a normal one and back", async () => {
+    const { instance, onConfirm, getFrame } = await mount({ toolName: "run_background_job", input: backgroundInput });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(getFrame()).not.toContain("[D]eny with feedback");
+      instance.render(h(ToolConfirm, { toolName: "write_file", input: { path: "next.txt", content: "x" }, onConfirm, keybindings: DEFAULT_KEYBINDINGS }));
+      await flush(instance);
+      expect(errors).not.toHaveBeenCalled();
+      expect(getFrame()).toContain("[D]eny with feedback");
+      instance.render(h(ToolConfirm, { toolName: "run_background_job", input: backgroundInput, onConfirm, keybindings: DEFAULT_KEYBINDINGS }));
+      await flush(instance);
+      expect(errors).not.toHaveBeenCalled();
+      expect(getFrame()).not.toContain("[D]eny with feedback");
+    } finally {
+      errors.mockRestore();
+      instance.unmount();
+    }
+  });
+});
