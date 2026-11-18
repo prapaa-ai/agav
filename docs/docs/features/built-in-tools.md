@@ -100,6 +100,9 @@ Depth must be a non-negative safe integer; invalid values fail before traversal.
 
 ### `grep_search`
 
+Use `max_results` to cap matching lines, or file paths in `files_only` mode.
+It accepts positive safe integers and defaults to 100.
+
 Use the case-sensitive `exclude` basename glob to omit files even when
 they match `include`. Use `*` or `?` as wildcards. Directory paths,
 bracket ranges, and escapes are not supported by this option. `include`
