@@ -15,7 +15,7 @@ export const memoryCommand: SlashCommand = {
   name: "memory",
   description: "Manage persistent memories",
   argumentHint: "[list|add|search|show|delete|clear|path]",
-  usage: "Usage: /memory <action>\n\n  /memory              Open manager (list in headless mode)\n  /memory list         Print saved memories\n  /memory add <text>   Save a new memory\n  /memory search <q>   Find memories by name, description or content\n  /memory show <name>  Read one memory by its exact stored name (see /memory list)\n  /memory delete <name> Delete memory by name\n  /memory clear        Delete all memories\n  /memory path         Show the memory storage path\n\nMemories persist across sessions and are injected into the system prompt.",
+  usage: "Usage: /memory <action>\n\n  /memory              Open manager (list in headless mode)\n  /memory list [--type user|feedback|project|reference]  Print saved memories\n  /memory add <text>   Save a new memory\n  /memory search <q>   Find memories by name, description or content\n  /memory show <name>  Read one memory by its exact stored name (see /memory list)\n  /memory delete <name> Delete memory by name\n  /memory clear        Delete all memories\n  /memory path         Show the memory storage path\n\nMemories persist across sessions and are injected into the system prompt.",
   async execute(args: string, context): Promise<CommandResult> {
     if (!args.trim()) {
       const interactive = openResourceManager("memory", context);
@@ -25,7 +25,17 @@ export const memoryCommand: SlashCommand = {
     const action = parts[0]?.toLowerCase() || "list"
 
     if (action === "list" || !args.trim()) {
-      const memories = await loadMemories()
+      const type = parts[1] === "--type" ? parts[2] : undefined
+      if (args.trim() && parts.length > 1 && (
+        parts.length !== 3 || (type !== "user" && type !== "feedback" && type !== "project" && type !== "reference")
+      )) {
+        return { type: "message", text: "Usage: /memory list [--type user|feedback|project|reference]" }
+      }
+      const all = await loadMemories()
+      const memories = type ? all.filter((memory) => memory.type === type) : all
+      if (type && memories.length === 0) {
+        return { type: "message", text: `No memories of type "${type}".` }
+      }
       if (memories.length === 0) {
         return { type: "message", text: "No memories saved. Memories are auto-saved by the LLM when it detects preferences, corrections, or project context." }
       }
@@ -34,7 +44,7 @@ export const memoryCommand: SlashCommand = {
       })
       return {
         type: "message",
-        text: `Memories (${memories.length}):\n${lines.join("\n")}\n\n/memory delete <name> to remove · /memory clear to remove all`,
+        text: `Memories${type ? ` of type "${type}"` : ""} (${memories.length}):\n${lines.join("\n")}\n\n/memory delete <name> to remove · /memory clear to remove all`,
       }
     }
 
