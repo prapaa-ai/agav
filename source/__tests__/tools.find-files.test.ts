@@ -216,6 +216,14 @@ describe("find_files native output and fallback policy", () => {
     response(null, paths.join("\n") + "\n");
     expect(await findFilesTool.execute({ pattern: "*", path: directory })).toEqual({ output: paths.slice(0, 200).join("\n") + "\n... 3 more files", isError: false });
   });
+  it("succeeds when native find fills its buffer after the requested limit", async () => {
+    const first = join(directory, "one.ts");
+    const error = Object.assign(new Error("maxBuffer exceeded"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
+    response(error, (first + "\n").repeat(Math.floor(200_000 / (first.length + 1))) + "partial");
+    expect(await findFilesTool.execute({ pattern: "*", path: directory, max_results: 1 }))
+      .toEqual({ output: first + "\n... results truncated", isError: false });
+  });
+
   it("labels partial native output when a configured limit is not reached", async () => {
     const first = join(directory, "one.ts");
     response(new Error("maxBuffer exceeded"), first + "\n");

@@ -48,7 +48,7 @@ async function nodeFind(searchPath: string, pattern: RegExp, limit: number): Pro
 }
 
 /** Run native find and return output. Rejects if find is not found or not Unix find. */
-function nativeFind(pattern: string, searchPath: string): Promise<{ stdout: string; stderr: string }> {
+function nativeFind(pattern: string, searchPath: string): Promise<{ stdout: string; stderr: string; maxBufferExceeded?: boolean }> {
   // -path uses glob matching on both BSD and GNU find. Exempt only the
   // literal starting root, even when it is itself an excluded directory.
   const rootPattern = searchPath.replace(/[\[\]*?\\]/g, (char) => "\\" + char);
@@ -72,7 +72,7 @@ function nativeFind(pattern: string, searchPath: string): Promise<{ stdout: stri
         if (stderr && /parameter format/i.test(stderr)) {
           reject(new Error("Windows find.exe is not Unix find"));
         }
-        resolve({ stdout: stdout || "", stderr: stderr || error.message });
+        resolve({ stdout: stdout || "", stderr: stderr || error.message, maxBufferExceeded: (error as NodeJS.ErrnoException).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
       } else {
         resolve({ stdout: stdout || "", stderr: "" });
       }
@@ -138,6 +138,9 @@ export const findFilesTool: ToolDefinition = {
           const lines = result.stdout.split("\n").filter(Boolean);
           if (requestedLimit !== undefined && result.stderr) {
             const completeLines = result.stdout.endsWith("\n") ? lines : lines.slice(0, -1);
+            if (result.maxBufferExceeded && completeLines.length >= limit) {
+              return { output: completeLines.slice(0, limit).map(displayPath).join("\n") + "\n... results truncated", isError: false };
+            }
             return {
               output: completeLines.slice(0, limit).map(displayPath).join("\n") + "\nSearch incomplete: " + result.stderr,
               isError: true,
