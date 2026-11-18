@@ -15,3 +15,10 @@ overrides:
 allowBuilds:
   esbuild: true
   tesseract.js: true
+# picomatch has no patched release yet; this advisory affects the dev-only
+# Vitest graph. Keep the advisory explicit so all other audit failures remain
+# blocking, and remove these entries when an upstream fix is available.
+auditConfig:
+  ignoreCves:
+    - GHSA-fc5q-39xc-vjpf
+    - CVE-2026-112366
