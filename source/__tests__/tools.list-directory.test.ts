@@ -51,6 +51,27 @@ describe("list_directory entry type", () => {
     expect(mockRead).not.toHaveBeenCalled();
   });
 
+  it("includes hidden entries only when requested and applies the type filter", async () => {
+    mockRead.mockResolvedValue(["z-dir", ".hidden-dir", "w-file", ".hidden-file"] as never);
+    mockStat.mockImplementation(async (path) => {
+      const name = basename(String(path));
+      return { isDirectory: () => name.endsWith("-dir"), isFile: () => name.endsWith("-file"), size: 7 } as Awaited<ReturnType<typeof stat>>;
+    });
+
+    expect((await listDirectoryTool.execute({ include_hidden: false })).output).toBe("w-file  7B\nz-dir/");
+    expect((await listDirectoryTool.execute({ include_hidden: true })).output).toBe(
+      ".hidden-dir/\n.hidden-file  7B\nw-file  7B\nz-dir/",
+    );
+    expect((await listDirectoryTool.execute({ include_hidden: true, type: "files" })).output).toBe(".hidden-file  7B\nw-file  7B");
+    expect((await listDirectoryTool.execute({ include_hidden: true, type: "directories" })).output).toBe(".hidden-dir/\nz-dir/");
+  });
+
+  it.each([null, 1, "true"])("rejects include_hidden %s before reading", async (include_hidden) => {
+    const result = await listDirectoryTool.execute({ include_hidden });
+    expect(result).toEqual({ output: "include_hidden must be a boolean", isError: true });
+    expect(mockRead).not.toHaveBeenCalled();
+  });
+
   it("preserves directory read errors", async () => {
     mockRead.mockRejectedValue(new Error("permission denied"));
     const result = await listDirectoryTool.execute({ type: "files", path: "missing" });

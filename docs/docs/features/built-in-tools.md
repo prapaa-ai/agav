@@ -12,7 +12,7 @@ Agav exposes these tools to its agent loop.
 | --- | --- |
 | `read_file` | Read text ranges and preview images, PDFs, and Office documents |
 | `write_file` | Create or replace a file |
-| `edit_file` | Replace one exact, unique string in a file |
+| `edit_file` | Replace an exact string in a file; use the optional one-based `occurrence` to select a match when text repeats |
 | `find_files` | Find files by glob; use `relative_paths: true` for paths relative to the search directory. A matching file searched directly is shown by its basename in relative mode. |
 | `grep_search` | Search file contents with regular expressions |
 | `list_directory` | List a directory; optionally set `type` to `files` or `directories` |
@@ -37,7 +37,7 @@ error. Range results report the cells actually read and the notebook's
 total cell count. A range on an empty notebook reports that there are no
 cells.
 
-`web_search` is off by default. Enable it per session with the [`--search`](/reference/cli) flag, or turn it on by default with the `search` field in [configuration](/reference/configuration). Search requests time out after 30 seconds and report an error rather than waiting indefinitely.
+`web_search` is off by default. Enable it per session with the [`--search`](/reference/cli) flag, or turn it on by default with the `search` field in [configuration](/reference/configuration). Search requests time out after 30 seconds and report an error rather than waiting indefinitely. The optional `max_results` argument accepts integers from 1 to 30 and defaults to 8. The tool may return fewer results if the provider returns fewer matches.
 
 Connected MCP servers, installed plugins, and active skills can add more tools.
 
@@ -82,8 +82,10 @@ PDF and Office ranges use 1-based, inclusive `start_page` and `end_page`, with a
 `type: "all"` (the default) lists all visible entries. `"files"` lists
 regular files, and `"directories"` lists directories. Symbolic links are
 followed for classification. Special files and entries that cannot be
-classified, such as broken links, appear only in `"all"` mode. Every mode
-skips names starting with a dot, such as `.git`.
+classified, such as broken links, appear only in `"all"` mode. By default,
+all modes skip names starting with a dot, such as `.git`. Set
+`include_hidden: true` to include them; the listing still does not descend
+into subdirectories or read file contents.
 
 ### `overview`
 
