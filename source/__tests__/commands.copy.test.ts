@@ -121,6 +121,60 @@ describe("commands/copy", () => {
     expect(writeClipboardMock).not.toHaveBeenCalled();
   });
 
+  it("copies complete backtick and tilde blocks in order from the latest response", async () => {
+    const earlier = { role: "assistant", content: [{ type: "text", text: "```\nolder\n```" }] } as Message;
+    const latest = {
+      role: "assistant",
+      content: [{
+        type: "text",
+        text: ["Prose `inline`", "", "    indented code", "", "```ts", "  first()", "  next()", "```",
+          "", "~~~sh", "echo second", "~~~", "", "```", "unclosed"].join("\n"),
+      }],
+    } as Message;
+    const context = createContext([earlier, latest]);
+
+    await copyCommand.execute("code", context);
+    await copyCommand.execute("code 2", context);
+    expect(writeClipboardMock.mock.calls.map((call) => call[1])).toEqual(["  first()\n  next()", "echo second"]);
+
+    writeClipboardMock.mockClear();
+    expect(await copyCommand.execute("code 3", context)).toEqual({
+      type: "message", text: "Nothing to copy (only 2 fenced code blocks available).",
+    });
+    expect(writeClipboardMock).not.toHaveBeenCalled();
+  });
+
+  it("does not search older responses when the latest has no complete fence", async () => {
+    const context = createContext([
+      { role: "assistant", content: [{ type: "text", text: "~~~\nolder\n~~~" }] },
+      { role: "assistant", content: [{ type: "text", text: "~~~\nunclosed" }] },
+    ] as Message[]);
+    expect(await copyCommand.execute("code", context)).toEqual({
+      type: "message", text: "Nothing to copy (no complete fenced code blocks in the latest response).",
+    });
+    expect(writeClipboardMock).not.toHaveBeenCalled();
+  });
+
+  it("does not accept a would-be closing fence followed by a nonbreaking space", async () => {
+    const context = createContext([
+      { role: "assistant", content: [{ type: "text", text: "~~~js\nbody\n~~~\u00a0" }] },
+    ] as Message[]);
+    expect(await copyCommand.execute("code", context)).toEqual({
+      type: "message", text: "Nothing to copy (no complete fenced code blocks in the latest response).",
+    });
+    expect(writeClipboardMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["0", "-1", "1.5", "2e0", "1 extra", "9007199254740992"])("rejects invalid code block index %s", async (index) => {
+    const context = createContext([
+      { role: "assistant", content: [{ type: "text", text: "~~~\ncode\n~~~" }] },
+    ] as Message[]);
+    expect(await copyCommand.execute("code " + index, context)).toEqual({
+      type: "message", text: "Invalid code block number. Expected a positive integer.",
+    });
+    expect(writeClipboardMock).not.toHaveBeenCalled();
+  });
+
   it("joins multiple text blocks correctly", async () => {
     const messages: Message[] = [
       { 
