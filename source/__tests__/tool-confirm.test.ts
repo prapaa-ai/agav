@@ -24,12 +24,12 @@ function findNodeWithHandler(node: any, handlerName: string): any {
   return null;
 }
 
-async function mount(props: Partial<Parameters<typeof ToolConfirm>[0]> = {}) {
+async function mount(props: Partial<Parameters<typeof ToolConfirm>[0]> = {}, { columns = 80, rows = 24 } = {}) {
   const chunks: string[] = [];
   const stdout = Object.assign(new EventEmitter(), {
     isTTY: true,
-    columns: 80,
-    rows: 24,
+    columns,
+    rows,
     write: (text: string) => { chunks.push(text); return true; },
   }) as unknown as NodeJS.WriteStream;
   const stdin = Object.assign(new EventEmitter(), {
@@ -834,6 +834,291 @@ describe("ToolConfirm UI", () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(onConfirm).toHaveBeenCalledWith("no");
     } finally {
+      instance.unmount();
+    }
+  });
+});
+
+describe("ToolConfirm clickable controls", () => {
+  const textOf = (node: any): string =>
+    node?.nodeName === "#text" ? String(node.nodeValue ?? "") : (node?.childNodes ?? []).map(textOf).join("");
+  const findControl = (node: any, label: string): any => {
+    if (node && typeof node.onClick === "function" && textOf(node).includes(label)) return node;
+    for (const child of node?.childNodes ?? []) {
+      const found = findControl(child, label);
+      if (found) return found;
+    }
+    return null;
+  };
+  const event = { x: 0, y: 0, button: 0, ctrl: false, alt: false, shift: false };
+  const click = (control: any) => { control.onMouseDown(event); control.onClick(event); };
+  // a click only counts once the prompt has been on screen for the double-click window
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 450));
+  const flush = async (instance: any) => { await new Promise((resolve) => setTimeout(resolve, 30)); await instance.waitUntilRenderFlush(); };
+
+  it.each([["[Y]es", "yes"], ["[N]o", "no"], ["[A]lways", "always"]])("clicking %s answers %s", async (label, choice) => {
+    const { instance, onConfirm } = await mount();
+    try {
+      await settle();
+      click(findControl((instance as any).rootNode, label));
+      expect(onConfirm).toHaveBeenCalledWith(choice);
+    } finally { instance.unmount(); }
+  });
+
+  it("shows no Always control when explicit approval is required", async () => {
+    const { instance, getFrame } = await mount({ explicitApprovalOnly: true });
+    try {
+      expect(getFrame()).not.toContain("[A]lways");
+      expect(findControl((instance as any).rootNode, "[A]lways")).toBeNull();
+    } finally { instance.unmount(); }
+  });
+
+  it("opens the feedback editor by click, then submits or cancels by click", async () => {
+    const first = await mount();
+    try {
+      await settle();
+      click(findControl((first.instance as any).rootNode, "[D]eny with feedback"));
+      await flush(first.instance);
+      expect(first.getFrame()).toContain("Feedback for agent");
+      first.stdin.emit("data", "use the helper");
+      await flush(first.instance);
+      await settle();
+      click(findControl((first.instance as any).rootNode, "Submit denial"));
+      expect(first.onConfirm).toHaveBeenCalledWith({ choice: "no", feedback: "use the helper" });
+    } finally { first.instance.unmount(); }
+
+    const second = await mount();
+    try {
+      await settle();
+      click(findControl((second.instance as any).rootNode, "[D]eny with feedback"));
+      await flush(second.instance);
+      await settle();
+      click(findControl((second.instance as any).rootNode, "[Esc] Cancel"));
+      await flush(second.instance);
+      expect(second.getFrame()).toContain("[Y]es");
+      expect(second.getFrame()).not.toContain("Feedback for agent");
+      expect(second.onConfirm).not.toHaveBeenCalled();
+    } finally { second.instance.unmount(); }
+  });
+
+  it("ignores a click on a prompt that just appeared or that was replaced after the press", async () => {
+    const { instance, onConfirm } = await mount();
+    try {
+      // the second press of a double-click lands on a prompt shown moments ago
+      click(findControl((instance as any).rootNode, "[Y]es"));
+      expect(onConfirm).not.toHaveBeenCalled();
+
+      await settle();
+      const yes = findControl((instance as any).rootNode, "[Y]es");
+      yes.onMouseDown(event);
+      // the next queued confirmation replaces this one before the release
+      instance.render(h(ToolConfirm, { toolName: "write_file", input: { path: "next.txt", content: "x" }, onConfirm, keybindings: DEFAULT_KEYBINDINGS }));
+      await flush(instance);
+      findControl((instance as any).rootNode, "[Y]es").onClick(event);
+      expect(onConfirm).not.toHaveBeenCalled();
+
+      await settle();
+      click(findControl((instance as any).rootNode, "[Y]es"));
+      expect(onConfirm).toHaveBeenCalledWith("yes");
+    } finally { instance.unmount(); }
+  });
+
+  it("ignores the second click of a double-click that opened or left the feedback editor", async () => {
+    const { instance, onConfirm, getFrame } = await mount();
+    try {
+      await settle();
+      click(findControl((instance as any).rootNode, "[D]eny with feedback"));
+      await flush(instance);
+      // the second press lands on Submit denial, now under the pointer
+      click(findControl((instance as any).rootNode, "Submit denial"));
+      expect(onConfirm).not.toHaveBeenCalled();
+      expect(getFrame()).toContain("Feedback for agent");
+
+      await settle();
+      click(findControl((instance as any).rootNode, "[Esc] Cancel"));
+      await flush(instance);
+      // and here on Always, back on the main row
+      click(findControl((instance as any).rootNode, "[A]lways"));
+      expect(onConfirm).not.toHaveBeenCalled();
+    } finally { instance.unmount(); }
+  });
+
+  it("answers a background-job prompt by click", async () => {
+    const input = {
+      action: "start",
+      spec: {
+        invocation: { mode: "shell", commandText: "echo hi", interpreter: "cmd" },
+        cwd: process.cwd(), isolation: { backend: "none", required: false }, env: {}, credentialRefs: [],
+        ownershipScope: "unverified", limits: {}, headless: false,
+      },
+    };
+    const { instance, onConfirm } = await mount({ toolName: "run_background_job", input });
+    try {
+      await settle();
+      expect(findControl((instance as any).rootNode, "[D]eny with feedback")).toBeNull();
+      click(findControl((instance as any).rootNode, "[N]o"));
+      expect(onConfirm).toHaveBeenCalledWith("no");
+    } finally { instance.unmount(); }
+  });
+
+  describe("through terminal mouse reports", () => {
+    // SGR reports go through stdin, hit-testing and dispatch, as a terminal's would.
+    const report = (code: number, at: { x: number; y: number }, final = "M") => `\x1b[<${code};${at.x + 1};${at.y + 1}${final}`;
+    const press = (at: { x: number; y: number }) => report(0, at);
+    const drag = (at: { x: number; y: number }) => report(32, at);
+    const release = (at: { x: number; y: number }) => report(0, at, "m");
+    const wheelDown = (at: { x: number; y: number }) => report(65, at);
+    // a terminal cell inside the control, in screen rows (the frame may have scrolled)
+    const cellOf = (instance: any, label: string, dx = 1, dy = 0) => {
+      const node = findControl(instance.rootNode, label);
+      return { x: node.internal_x + dx, y: node.internal_y + dy - instance.frameScrollOffset };
+    };
+    const send = async (instance: any, stdin: any, ...reports: string[]) => {
+      for (const sequence of reports) stdin.emit("data", sequence);
+      await flush(instance);
+    };
+
+    it("answers a press and release on a control", async () => {
+      const { instance, stdin, onConfirm } = await mount();
+      try {
+        await settle();
+        const always = cellOf(instance, "[A]lways");
+        await send(instance, stdin, press(always), release(always));
+        expect(onConfirm).toHaveBeenCalledWith("always");
+      } finally { instance.unmount(); }
+    });
+
+    it("answers nothing for a press on one control and a release on another", async () => {
+      const { instance, stdin, onConfirm } = await mount();
+      try {
+        await settle();
+        await send(instance, stdin, press(cellOf(instance, "[Y]es")), release(cellOf(instance, "[N]o")));
+        expect(onConfirm).not.toHaveBeenCalled();
+      } finally { instance.unmount(); }
+    });
+
+    it("answers nothing for a text selection dragged onto a control", async () => {
+      const { instance, stdin, onConfirm } = await mount();
+      try {
+        await settle();
+        const yes = cellOf(instance, "[Y]es");
+        const above = { x: yes.x, y: yes.y - 1 };
+        await send(instance, stdin, press(above), drag({ x: yes.x + 2, y: above.y }), drag(yes), release(yes));
+        expect(onConfirm).not.toHaveBeenCalled();
+      } finally { instance.unmount(); }
+    });
+
+    it.each([
+      ["within it", (start: { x: number; y: number }) => [drag({ x: start.x + 2, y: start.y }), drag({ x: start.x + 5, y: start.y }), release({ x: start.x + 5, y: start.y })]],
+      ["to another row and back", (start: { x: number; y: number }) => [drag({ x: 0, y: start.y - 2 }), drag(start), release(start)]],
+      ["off it, released elsewhere", (start: { x: number; y: number }) => [drag({ x: start.x + 20, y: start.y }), release({ x: start.x + 20, y: start.y })]],
+      // some terminals report only the press and the release
+      ["within it, with no drag reports", (start: { x: number; y: number }) => [release({ x: start.x + 4, y: start.y })]],
+    ])("answers nothing for a drag that starts on a control and moves %s", async (_name, gesture) => {
+      const { instance, stdin, onConfirm } = await mount();
+      try {
+        await settle();
+        const start = cellOf(instance, "[A]lways");
+        await send(instance, stdin, press(start), ...gesture(start));
+        expect(onConfirm).not.toHaveBeenCalled();
+      } finally { instance.unmount(); }
+    });
+
+    it("answers nothing when the wheel turns while a control is held", async () => {
+      const { instance, stdin, onConfirm } = await mount();
+      try {
+        await settle();
+        const always = cellOf(instance, "[A]lways");
+        await send(instance, stdin, press(always), wheelDown(always), wheelDown(always), release(always));
+        expect(onConfirm).not.toHaveBeenCalled();
+
+        // the next plain click still counts
+        await send(instance, stdin, press(always), release(always));
+        expect(onConfirm).toHaveBeenCalledWith("always");
+      } finally { instance.unmount(); }
+    });
+
+    it("answers nothing for a click outside the controls", async () => {
+      const { instance, stdin, onConfirm } = await mount();
+      try {
+        await settle();
+        const always = cellOf(instance, "[A]lways");
+        const beside = { x: always.x + 20, y: always.y };
+        const above = { x: always.x, y: always.y - 1 };
+        await send(instance, stdin, press(beside), release(beside), press(above), release(above));
+        expect(onConfirm).not.toHaveBeenCalled();
+      } finally { instance.unmount(); }
+    });
+
+    it("wraps the controls onto their own rows at 18 columns, and each still answers its own choice", async () => {
+      const { instance, stdin, onConfirm } = await mount({}, { columns: 18, rows: 60 });
+      try {
+        await settle();
+        const labels = ["[Y]es", "[N]o", "[D]eny with feedback", "[A]lways"];
+        const nodes = labels.map((label) => findControl((instance as any).rootNode, label));
+        for (const node of nodes) expect(node.internal_x + node.internal_width).toBeLessThanOrEqual(18);
+        // [Y]es and [N]o share the first row; the other two each start a row of their own
+        expect(nodes.map((node) => node.internal_y - nodes[0].internal_y)).toEqual([0, 0, 1, 3]);
+
+        for (const [label, choice] of [["[Y]es", "yes"], ["[N]o", "no"], ["[A]lways", "always"]]) {
+          const at = cellOf(instance, label);
+          await send(instance, stdin, press(at), release(at));
+          expect(onConfirm).toHaveBeenLastCalledWith(choice);
+        }
+        // "[D]eny with feedback" is wider than the terminal; its second row is still the control
+        const deny = cellOf(instance, "[D]eny with feedback", 1, 1);
+        await send(instance, stdin, press(deny), release(deny));
+        expect(findControl((instance as any).rootNode, "Submit denial")).not.toBeNull();
+      } finally { instance.unmount(); }
+    });
+
+    it("answers the control under the pointer after a resize", async () => {
+      const input = { path: "test.txt", content: "data" };
+      const { instance, stdin, stdout, onConfirm } = await mount({ input }, { columns: 80, rows: 60 });
+      try {
+        await settle();
+        const before = cellOf(instance, "[N]o");
+        Object.assign(stdout, { columns: 18 });
+        stdout.emit("resize");
+        // the app re-renders the same pending confirmation at the new width
+        instance.render(h(ToolConfirm, { toolName: "write_file", input, onConfirm, keybindings: DEFAULT_KEYBINDINGS }));
+        await flush(instance);
+        const after = cellOf(instance, "[N]o");
+        expect(after).not.toEqual(before);
+        await send(instance, stdin, press(after), release(after));
+        expect(onConfirm).toHaveBeenCalledTimes(1);
+        expect(onConfirm).toHaveBeenCalledWith("no");
+      } finally { instance.unmount(); }
+    });
+  });
+});
+
+describe("ToolConfirm reused across prompts", () => {
+  const backgroundInput = {
+    action: "start",
+    spec: {
+      invocation: { mode: "shell", commandText: "echo hi", interpreter: "cmd" },
+      cwd: process.cwd(), isolation: { backend: "none", required: false }, env: {}, credentialRefs: [],
+      ownershipScope: "unverified", limits: {}, headless: false,
+    },
+  };
+  const flush = async (instance: any) => { await new Promise((resolve) => setTimeout(resolve, 30)); await instance.waitUntilRenderFlush(); };
+
+  it("keeps the same hooks when one instance goes from a background-job prompt to a normal one and back", async () => {
+    const { instance, onConfirm, getFrame } = await mount({ toolName: "run_background_job", input: backgroundInput });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(getFrame()).not.toContain("[D]eny with feedback");
+      instance.render(h(ToolConfirm, { toolName: "write_file", input: { path: "next.txt", content: "x" }, onConfirm, keybindings: DEFAULT_KEYBINDINGS }));
+      await flush(instance);
+      expect(errors).not.toHaveBeenCalled();
+      expect(getFrame()).toContain("[D]eny with feedback");
+      instance.render(h(ToolConfirm, { toolName: "run_background_job", input: backgroundInput, onConfirm, keybindings: DEFAULT_KEYBINDINGS }));
+      await flush(instance);
+      expect(errors).not.toHaveBeenCalled();
+      expect(getFrame()).not.toContain("[D]eny with feedback");
+    } finally {
+      errors.mockRestore();
       instance.unmount();
     }
   });
