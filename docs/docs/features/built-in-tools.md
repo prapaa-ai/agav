@@ -23,7 +23,7 @@ Agav exposes these tools to its agent loop.
 | `read_notebook` | Read Jupyter notebook cells, optionally by range |
 | `edit_notebook` | Change a notebook cell or its type |
 | `web_search` | Search the web with DuckDuckGo (opt-in; see note below) |
-| `fetch_url` | Send an HTTP request and return the response |
+| `fetch_url` | Send an HTTP request and return the response. Use `HEAD` for status without a body |
 | `github` | Create or view GitHub pull requests and issues |
 | `update_plan` | Update the active plan's current step |
 | `save_memory` | Persist durable project or user context |
@@ -101,6 +101,9 @@ into subdirectories or read file contents.
 Depth must be a non-negative safe integer; invalid values fail before traversal. Hidden directories and common dependency, build, cache, and worktree directories are skipped. The map stops at **200 source files** and reports that it may be incomplete whenever the cap is reached, even if exactly 200 files exist. Narrow `path` or `depth` rather than assuming the first map covered the whole repository. Explicit shallow requests avoid reading deeper source files as well as returning their symbols.
 
 ### `grep_search`
+
+Use `max_results` to cap matching lines, or file paths in `files_only` mode.
+It accepts positive safe integers and defaults to 100.
 
 Use the case-sensitive `exclude` basename glob to omit files even when
 they match `include`. Use `*` or `?` as wildcards. Directory paths,
