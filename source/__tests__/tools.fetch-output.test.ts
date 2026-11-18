@@ -83,7 +83,7 @@ describe("bounded streamed HTTP response", () => {
     expect(await execute()).toEqual({ output: "HTTP 404 Not Found\nnot found", isError: true });
   });
 
-  it("exposes HEAD and reports status without iterating the response body", async () => {
+  it.each([undefined, null])("exposes HEAD and reports status without iterating the response body (%j)", async (body) => {
     const iterate = vi.fn(() => { throw new Error("HEAD body must not be read"); });
     const cancel = vi.fn();
     const transport = vi.fn<Transport>().mockResolvedValue({
@@ -94,10 +94,11 @@ describe("bounded streamed HTTP response", () => {
     expect(fetchUrlTool.schema.inputSchema).toMatchObject({
       properties: { method: { enum: expect.arrayContaining(["HEAD"]) } },
     });
-    await expect(fetchUrlTool.execute({ url: "https://example.com/", method: "HEAD" }))
+    await expect(fetchUrlTool.execute({ url: "https://example.com/", method: "HEAD", body }))
       .resolves.toEqual({ output: "HTTP 200 OK\n", isError: false });
     expect(transport).toHaveBeenCalledWith("https://example.com/", expect.objectContaining({ method: "HEAD", body: undefined }));
     expect(iterate).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
   it.each(["", "body"])("rejects a supplied HEAD body before making a request (%j)", async (body) => {

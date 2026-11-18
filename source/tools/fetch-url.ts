@@ -294,7 +294,7 @@ export const fetchUrlTool: ToolDefinition = {
   async execute(input): Promise<ToolResult> {
     const url = String(input.url);
     const method = String(input.method ?? "GET").toUpperCase();
-    if (method === "HEAD" && input.body !== undefined) {
+    if (method === "HEAD" && input.body != null) {
       return { output: "HEAD requests cannot include a body.", isError: true };
     }
     const headers = (input.headers ?? {}) as Record<string, string>;
