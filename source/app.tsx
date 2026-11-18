@@ -105,6 +105,16 @@ interface QueuedRequest {
 
 let sysMessageId = 0;
 
+// One ToolConfirm per confirmation request, so no editor or selection state carries over to the next
+// prompt. Keyed on the request object: two queued requests can carry the same tool and input.
+const confirmationKeys = new WeakMap<object, number>();
+let lastConfirmationKey = 0;
+function confirmationKey(confirmation: object): number {
+  let key = confirmationKeys.get(confirmation);
+  if (key === undefined) confirmationKeys.set(confirmation, key = ++lastConfirmationKey);
+  return key;
+}
+
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
 export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode, resumeRuntime, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef, detachedSessionRef }: Props) {
 
@@ -1968,6 +1978,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         {queueBlocked && queuedRequests.length > 0 && <Text color="yellow">Queue paused · /queue retry to retry</Text>}
         {!voice.phase && pendingConfirmation && (
           <ToolConfirm
+            key={confirmationKey(pendingConfirmation)}
             detachAvailable={canDetach}
             toolName={pendingConfirmation.toolName}
             input={pendingConfirmation.input}

@@ -81,8 +81,20 @@ for (const backend of ["native", "fallback"] as const) {
       expect(lines).toHaveLength(201);
       expect(new Set(lines.slice(0, 200)).size).toBe(200);
       expect(lines.slice(0, 200).every((path) => visible.includes(path))).toBe(true);
-      // Preserve the existing backend-specific cap messages.
-      expect(lines[200]).toBe(backend === "native" ? "... 5 more files" : "... 0 more files");
+      expect(lines[200]).toBe(backend === "native" ? "... 5 more files" : "... results truncated at 200 files");
+      const expanded = await findFilesTool.execute({ pattern: "*.ts", path: directory, max_results: 205 });
+      expect(expanded.output.split("\n").sort()).toEqual(visible.sort());
+    });
+
+    it("uses the requested limit and reports truncation only when another match exists", async () => {
+      await file("src/one.ts");
+      await file("src/two.ts");
+      const args = { pattern: "*.ts", path: directory, relative_paths: true };
+      const exact = await findFilesTool.execute({ ...args, max_results: 2 });
+      expect(exact.output.split("\n").sort()).toEqual([join("src", "one.ts"), join("src", "two.ts")]);
+      const capped = (await findFilesTool.execute({ ...args, max_results: 1 })).output.split("\n");
+      expect(capped).toHaveLength(2);
+      expect(capped.at(-1)).toBe(backend === "native" ? "... 1 more file" : "... results truncated at 1 file");
     });
 
     it.each(excludedDirectories)("searches explicit %s roots and paths inside excluded ancestors", async (excluded) => {
@@ -183,6 +195,15 @@ describe.skipIf(!nativeAvailable)("find_files native pruning", () => {
   });
 });
 
+it.each([null, 0, -1, 1.5, "2", Number.MAX_SAFE_INTEGER + 1])("rejects invalid max_results %s before invoking find", async (max_results) => {
+  vi.mocked(platform).mockReturnValue("darwin");
+  expect(await findFilesTool.execute({ pattern: "*", path: directory, max_results })).toEqual({
+    output: "max_results must be a positive safe integer",
+    isError: true,
+  });
+  expect(execFile).not.toHaveBeenCalled();
+});
+
 describe("find_files native output and fallback policy", () => {
   beforeEach(() => { vi.mocked(platform).mockReturnValue("linux"); });
   function response(error: Error | null, stdout: string, stderr = "") {
@@ -195,6 +216,23 @@ describe("find_files native output and fallback policy", () => {
     response(null, paths.join("\n") + "\n");
     expect(await findFilesTool.execute({ pattern: "*", path: directory })).toEqual({ output: paths.slice(0, 200).join("\n") + "\n... 3 more files", isError: false });
   });
+  it("succeeds when native find fills its buffer after the requested limit", async () => {
+    const first = join(directory, "one.ts");
+    const error = Object.assign(new Error("maxBuffer exceeded"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
+    response(error, (first + "\n").repeat(Math.floor(200_000 / (first.length + 1))) + "partial");
+    expect(await findFilesTool.execute({ pattern: "*", path: directory, max_results: 1 }))
+      .toEqual({ output: first + "\n... results truncated", isError: false });
+  });
+
+  it("labels partial native output when a configured limit is not reached", async () => {
+    const first = join(directory, "one.ts");
+    response(new Error("maxBuffer exceeded"), first + "\n");
+    expect(await findFilesTool.execute({ pattern: "*", path: directory, max_results: 1000 })).toEqual({
+      output: first + "\nSearch incomplete: maxBuffer exceeded",
+      isError: true,
+    });
+  });
+
   it("falls back when native find is absent", async () => {
     const target = await file("src/visible.ts");
     await file("coverage/noise.ts");

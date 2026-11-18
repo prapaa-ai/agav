@@ -28,7 +28,7 @@ export const githubTool: ToolDefinition = {
   schema: {
     name: "github",
     description:
-      "Interact with GitHub via the gh CLI. Supports creating/viewing PRs and issues. " +
+      "Interact with GitHub via the gh CLI. Supports creating/viewing PRs and issues and commenting on them. " +
       "Requires the gh CLI to be installed and authenticated.",
     // Not marked destructive — loop.ts handles non-SAFE_TOOLS confirmation.
     // This avoids blocking read-only operations like view_pr and list_prs.
@@ -37,7 +37,7 @@ export const githubTool: ToolDefinition = {
       properties: {
         operation: {
           type: "string",
-          enum: ["create_pr", "view_pr", "list_prs", "create_issue", "view_issue", "list_issues"],
+          enum: ["create_pr", "view_pr", "list_prs", "create_issue", "view_issue", "list_issues", "comment_issue", "comment_pr"],
           description: "The GitHub operation to perform.",
         },
         title: {
@@ -46,7 +46,7 @@ export const githubTool: ToolDefinition = {
         },
         body: {
           type: "string",
-          description: "Body/description for the PR or issue.",
+          description: "Body/description for the PR or issue, or the comment text (required for comment operations).",
         },
         base: {
           type: "string",
@@ -54,7 +54,7 @@ export const githubTool: ToolDefinition = {
         },
         number: {
           type: "number",
-          description: "PR or issue number (required for view operations).",
+          description: "PR or issue number (required for view and comment operations).",
         },
       },
       required: ["operation"],
@@ -125,6 +125,21 @@ export const githubTool: ToolDefinition = {
         const result = await run(["issue", "list"]);
         return {
           output: result.stdout || result.stderr || "No open issues.",
+          isError: result.exitCode !== 0,
+        };
+      }
+
+      case "comment_issue":
+      case "comment_pr": {
+        const target = input.number;
+        if (typeof target !== "number" || !Number.isSafeInteger(target) || target < 1) {
+          return { output: "A positive integer issue or PR number is required.", isError: true };
+        }
+        if (!body.trim()) return { output: "Comment body is required.", isError: true };
+        const kind = op === "comment_pr" ? "pr" : "issue";
+        const result = await run([kind, "comment", String(target), "--body", body]);
+        return {
+          output: result.stdout || result.stderr,
           isError: result.exitCode !== 0,
         };
       }

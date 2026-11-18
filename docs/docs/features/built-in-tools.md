@@ -13,7 +13,7 @@ Agav exposes these tools to its agent loop.
 | `read_file` | Read text ranges and preview images, PDFs, and Office documents |
 | `write_file` | Create or replace a file |
 | `edit_file` | Replace an exact string in a file; use the optional one-based `occurrence` to select a match when text repeats |
-| `find_files` | Find files by glob; use `relative_paths: true` for paths relative to the search directory. A matching file searched directly is shown by its basename in relative mode. |
+| `find_files` | Find files by glob; use `relative_paths: true` for paths relative to the search directory. A matching file searched directly is shown by its basename in relative mode. Set `max_results` to a positive safe integer to change the default cap of 200 files. |
 | `grep_search` | Search file contents with regular expressions |
 | `list_directory` | List a directory; optionally set `type` to `files` or `directories` |
 | `overview` | Map a repository's directory and symbol structure |
@@ -23,8 +23,8 @@ Agav exposes these tools to its agent loop.
 | `read_notebook` | Read Jupyter notebook cells, optionally by range |
 | `edit_notebook` | Change a notebook cell or its type |
 | `web_search` | Search the web with DuckDuckGo (opt-in; see note below) |
-| `fetch_url` | Send an HTTP request and return the response |
-| `github` | Create or view GitHub pull requests and issues |
+| `fetch_url` | Send an HTTP request and return the response. Use `HEAD` for status without a body |
+| `github` | Create, view or comment on GitHub pull requests and issues |
 | `update_plan` | Update the active plan's current step |
 | `save_memory` | Persist durable project or user context |
 | `subagent` | Delegate an independent task |
@@ -101,6 +101,9 @@ into subdirectories or read file contents.
 Depth must be a non-negative safe integer; invalid values fail before traversal. Hidden directories and common dependency, build, cache, and worktree directories are skipped. The map stops at **200 source files** and reports that it may be incomplete whenever the cap is reached, even if exactly 200 files exist. Narrow `path` or `depth` rather than assuming the first map covered the whole repository. Explicit shallow requests avoid reading deeper source files as well as returning their symbols.
 
 ### `grep_search`
+
+Use `max_results` to cap matching lines, or file paths in `files_only` mode.
+It accepts positive safe integers and defaults to 100.
 
 Use the case-sensitive `exclude` basename glob to omit files even when
 they match `include`. Use `*` or `?` as wildcards. Directory paths,
