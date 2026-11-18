@@ -964,7 +964,7 @@ describe("real sandbox enforcement (per-OS)", () => {
       expect(ifaces.every((i) => i === "lo")).toBe(true); // no non-loopback interface exists
     }, 90_000);
 
-    it.skipIf(process.env.CI === "true")("confines the filesystem to the mounted workspace (host root not writable)", async (ctx) => {
+    it("confines the filesystem to the mounted workspace (host root not writable)", async (ctx) => {
       guard(ctx);
       const r = await sandboxed(
         "docker",
