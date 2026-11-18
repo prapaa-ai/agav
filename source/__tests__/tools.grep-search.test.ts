@@ -85,6 +85,18 @@ describe("grep_search native output", () => {
     ], { maxBuffer: 200_000, timeout: 15_000, cwd: undefined }, expect.any(Function));
   });
 
+  it("succeeds when native grep fills its buffer after the requested limit", async () => {
+    const line = `${directory}/one.ts:1:needle`;
+    const stdout = (line + "\n").repeat(Math.floor(200_000 / (line.length + 1))) + "partial";
+    vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error, stdout: string, stderr: string) => void) => {
+      callback(Object.assign(new Error("maxBuffer exceeded"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }), stdout, "");
+    }) as typeof execFile);
+    const result = await grepSearchTool.execute({ pattern: "needle", path: directory, max_results: 1 });
+    expect(result.isError).toBe(false);
+    expect(result.output.split("\n")[0]).toBe(line);
+    expect(result.output).not.toContain("partial");
+  });
+
   it("labels partial native line output once a limit is explicitly chosen", async () => {
     const line = `${directory}/one.ts:1:needle`;
     vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error, stdout: string, stderr: string) => void) => {

@@ -119,7 +119,7 @@ async function nativeGrep(
   filesOnly = false,
   fixedStrings = false,
   ignoreCase = false,
-): Promise<{ stdout: string; stderr: string; code: number | null }> {
+): Promise<{ stdout: string; stderr: string; code: number | string | null }> {
   // grep can exclude its explicit root too; searching "." bypasses only that
   // root's name, while still excluding generated directories below it.
   const searchFromRoot = SKIP_DIRS.has(basename(searchPath)) &&
@@ -153,7 +153,7 @@ async function nativeGrep(
       if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
         reject(error);
       } else {
-        resolve({ stdout, stderr: stderr || (filesOnly ? error?.message : "") || "", code: error ? (error as any).code ?? null : 0 });
+        resolve({ stdout, stderr: stderr || (filesOnly ? error?.message : "") || "", code: error ? (error as NodeJS.ErrnoException).code ?? null : 0 });
       }
     });
   });
@@ -250,7 +250,7 @@ export const grepSearchTool: ToolDefinition = {
       try {
         const result = await nativeGrep(pattern, searchPath, include, exclude, filesOnly, fixedStrings, ignoreCase);
         const incomplete = result.code !== 0 && result.code !== 1;
-        const partialLine = requestedLimit !== undefined && incomplete && !result.stdout.endsWith("\n");
+        const partialLine = (requestedLimit !== undefined || filesOnly) && incomplete && !result.stdout.endsWith("\n");
         const stdout = partialLine ? result.stdout.slice(0, result.stdout.lastIndexOf("\n") + 1) : result.stdout;
         const lines = stdout.split("\n").filter(Boolean);
         const output = lines.length > limit
@@ -259,6 +259,9 @@ export const grepSearchTool: ToolDefinition = {
             : `\n... ${lines.length - limit} more matches`)
           : stdout.trimEnd();
         if ((filesOnly || requestedLimit !== undefined) && incomplete) {
+          if (result.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" && lines.length >= limit) {
+            return { output: lines.slice(0, limit).join("\n") + capNotice, isError: false };
+          }
           return { output: output + "\nSearch incomplete: " + (result.stderr || "grep failed"), isError: true };
         }
         if (result.stdout) {
