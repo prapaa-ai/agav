@@ -180,3 +180,22 @@ describe("/memory show", () => {
     expect(loadMemories).not.toHaveBeenCalled();
   });
 });
+
+describe("/memory list --type", () => {
+  it("filters by type and preserves alphabetical order", async () => {
+    const text = await run("list --type project");
+    expect(text).toContain('Memories of type "project" (2):');
+    expect(text.match(/\[project\] [^\n]+/g)).toEqual(["[project] api-shape", "[project] release-notes"]);
+    expect(text).not.toContain("prefer-tabs");
+  });
+
+  it("keeps the unfiltered list and handles an empty category", async () => {
+    expect(await run("list")).toContain("Memories (3):");
+    expect(await run("list --type user")).toBe('No memories of type "user".');
+  });
+
+  it.each(["list --type", "list --type other", "list --type project extra"])("rejects %s before loading", async (args) => {
+    expect(await run(args)).toMatch(/^Usage:/);
+    expect(loadMemories).not.toHaveBeenCalled();
+  });
+});
