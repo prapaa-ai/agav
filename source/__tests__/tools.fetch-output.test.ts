@@ -83,6 +83,30 @@ describe("bounded streamed HTTP response", () => {
     expect(await execute()).toEqual({ output: "HTTP 404 Not Found\nnot found", isError: true });
   });
 
+  it("exposes HEAD and reports status without iterating the response body", async () => {
+    const iterate = vi.fn(() => { throw new Error("HEAD body must not be read"); });
+    const cancel = vi.fn();
+    const transport = vi.fn<Transport>().mockResolvedValue({
+      status: 200, statusText: "OK", body: { [Symbol.asyncIterator]: iterate }, cancel,
+    });
+    setFetchTransport(transport);
+
+    expect(fetchUrlTool.schema.inputSchema).toMatchObject({
+      properties: { method: { enum: expect.arrayContaining(["HEAD"]) } },
+    });
+    await expect(fetchUrlTool.execute({ url: "https://example.com/", method: "HEAD" }))
+      .resolves.toEqual({ output: "HTTP 200 OK\n", isError: false });
+    expect(transport).toHaveBeenCalledWith("https://example.com/", expect.objectContaining({ method: "HEAD", body: undefined }));
+    expect(iterate).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "body"])("rejects a supplied HEAD body before making a request (%j)", async (body) => {
+    const { transport } = respond([]);
+    expect(await fetchUrlTool.execute({ url: "https://example.com/", method: "HEAD", body }))
+      .toEqual({ output: "HEAD requests cannot include a body.", isError: true });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
   it("passes method, body, and timeout with the default User-Agent", async () => {
     const { transport } = respond([encoder.encode("created")], 201, "Created");
     const result = await fetchUrlTool.execute({
