@@ -82,8 +82,10 @@ PDF and Office ranges use 1-based, inclusive `start_page` and `end_page`, with a
 `type: "all"` (the default) lists all visible entries. `"files"` lists
 regular files, and `"directories"` lists directories. Symbolic links are
 followed for classification. Special files and entries that cannot be
-classified, such as broken links, appear only in `"all"` mode. Every mode
-skips names starting with a dot, such as `.git`.
+classified, such as broken links, appear only in `"all"` mode. By default,
+all modes skip names starting with a dot, such as `.git`. Set
+`include_hidden: true` to include them; the listing still does not descend
+into subdirectories or read file contents.
 
 ### `overview`
 
