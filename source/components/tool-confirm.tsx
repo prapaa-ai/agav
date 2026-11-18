@@ -33,6 +33,51 @@ interface Props {
   detachAvailable?: boolean;
 }
 
+// A click only counts on a prompt that has been on screen this long: the second press of a
+// double-click must not answer the confirmation that replaced the first one under the pointer.
+const CLICK_SETTLE_MS = 400;
+
+/** One clickable choice: a single text node, padding included, so a press and its release always hit the
+ *  same target. Its label keeps the keyboard shortcut visible, and it flashes when a press counts (hover would
+ *  need any-motion mouse tracking, which the app leaves off). As in the feedback editor, a drag or a wheel
+ *  turn while the button is held makes the press a selection or a scroll, so its release answers nothing;
+ *  so does a release on another cell, for terminals that report only the press and the release. */
+function ConfirmControl({ label, color, onPress, onActivate }: {
+  label: string;
+  color: string;
+  onPress: () => boolean;
+  onActivate: () => void;
+}) {
+  const [pressed, setPressed] = React.useState(false);
+  const flash = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const pressedAtRef = React.useRef<{ x: number; y: number } | null>(null);
+  React.useEffect(() => () => clearTimeout(flash.current), []);
+  // The handlers sit on a Box because Text does not pass onMouseMove through.
+  return (
+    <Box
+      onMouseDown={(event: MouseEventData) => {
+        pressedAtRef.current = { x: event.x, y: event.y };
+        if (onPress()) {
+          setPressed(true);
+          clearTimeout(flash.current);
+          flash.current = setTimeout(() => setPressed(false), 150);
+        }
+        event.stopPropagation?.();
+      }}
+      onMouseMove={(event: MouseEventData) => { pressedAtRef.current = null; event.stopPropagation?.(); }}
+      onWheel={() => { pressedAtRef.current = null; }}
+      onClick={(event: MouseEventData) => {
+        const at = pressedAtRef.current;
+        pressedAtRef.current = null;
+        if (at?.x === event.x && at.y === event.y) onActivate();
+        event.stopPropagation?.();
+      }}
+    >
+      <Text bold color={color} inverse={pressed}>{` ${label} `}</Text>
+    </Box>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Grapheme-cluster helpers for caret movement, selection, and editing.
 // ---------------------------------------------------------------------------
@@ -174,6 +219,50 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
   // Background approval is reusable and runs unsandboxed, so show the spec in full.
   const background = toolName === "run_background_job" ? parseBackgroundConfirmInput(input) : undefined;
 
+  // Keys and clicks share these, so a click does exactly what its shortcut does.
+  const approve = () => onConfirm("yes");
+  const deny = () => onConfirm("no");
+  const startFeedback = () => {
+    if (background) return;
+    clearSelection();
+    applyEdit("", 0);
+    feedbackModeRef.current = true;
+    setIsFeedbackMode(true);
+  };
+  const approveAlways = () => {
+    if (!explicitApprovalOnly) onConfirm("always");
+  };
+  const submitFeedback = () => {
+    const trimmed = liveRef.current.value.trim();
+    onConfirm(trimmed ? { choice: "no", feedback: trimmed } : "no");
+  };
+  const cancelFeedback = () => {
+    clearSelection();
+    applyEdit("", 0);
+    feedbackModeRef.current = false;
+    setIsFeedbackMode(false);
+  };
+
+  // A click resolves only the set of controls it was pressed on, once they have settled. The set changes
+  // with the prompt and with the feedback editor, and is stamped while rendering: the next prompt can
+  // render and take a press within the same burst of mouse reports, before any effect has run.
+  const shownRef = React.useRef({ input, feedback: isFeedbackMode, at: Date.now() });
+  if (shownRef.current.input !== input || shownRef.current.feedback !== isFeedbackMode) {
+    shownRef.current = { input, feedback: isFeedbackMode, at: Date.now() };
+  }
+  const pressedRef = React.useRef<typeof shownRef.current | null>(null);
+  const pressControl = () => {
+    const shown = shownRef.current;
+    const counts = Date.now() - shown.at >= CLICK_SETTLE_MS;
+    pressedRef.current = counts ? shown : null;
+    return counts;
+  };
+  const activateControl = (action: () => void) => () => {
+    const pressedHere = pressedRef.current === shownRef.current;
+    pressedRef.current = null;
+    if (pressedHere) action();
+  };
+
   useInput((rawChar, rawKey) => {
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
     const detachMatch = detachResolver.current.feed(char, key);
@@ -238,10 +327,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
           copySelectionToClipboard();
           return;
         }
-        clearSelection();
-        applyEdit("", 0);
-        feedbackModeRef.current = false;
-        setIsFeedbackMode(false);
+        cancelFeedback();
         return;
       }
 
@@ -257,17 +343,13 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
 
       // Cancel: Escape
       if (match.action === "cancel" || key.escape) {
-        clearSelection();
-        applyEdit("", 0);
-        feedbackModeRef.current = false;
-        setIsFeedbackMode(false);
+        cancelFeedback();
         return;
       }
 
       // Submit: Enter
       if (match.action === "submit" || key.return) {
-        const trimmed = liveRef.current.value.trim();
-        onConfirm(trimmed ? { choice: "no", feedback: trimmed } : "no");
+        submitFeedback();
         return;
       }
 
@@ -366,16 +448,13 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
     const match = keyResolver.current.feed(char, key);
     if (match.pending) return;
     if (char === "y" || char === "Y" || match.action === "submit") {
-      onConfirm("yes");
+      approve();
     } else if (char === "n" || char === "N" || match.action === "cancel") {
-      onConfirm("no");
-    } else if ((char === "d" || char === "D") && !background) {
-      clearSelection();
-      applyEdit("", 0);
-      feedbackModeRef.current = true;
-      setIsFeedbackMode(true);
-    } else if ((char === "a" || char === "A") && !explicitApprovalOnly) {
-      onConfirm("always");
+      deny();
+    } else if (char === "d" || char === "D") {
+      startFeedback();
+    } else if (char === "a" || char === "A") {
+      approveAlways();
     }
   });
 
@@ -460,6 +539,23 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
     event.stopPropagation?.();
   };
 
+  // Above the background return, so every prompt calls the same hooks in the same order.
+  // Hosts that don't forward the loop's warning (the confirmation queue
+  // carries no warning field) still get it: compute it here for write tools.
+  const [computedWarning, setComputedWarning] = React.useState<string | undefined>(undefined);
+  const targetPath = typeof input.path === "string" ? input.path : "";
+  React.useEffect(() => {
+    if (warning !== undefined || !WARN_TOOLS.has(toolName) || !targetPath) {
+      setComputedWarning(undefined);
+      return;
+    }
+    let cancelled = false;
+    checkWrite(targetPath, process.cwd())
+      .then((result) => { if (!cancelled) setComputedWarning(formatWorkspaceWarning(result)); })
+      .catch(() => { });
+    return () => { cancelled = true; };
+  }, [warning, toolName, targetPath]);
+
   if (background) {
     const info = describeBackgroundConfirmation(background.action, background.spec, background.subject);
     const lines: { text: string; color?: string; bold?: boolean; dim?: boolean }[] = info.job ? [
@@ -487,31 +583,13 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
           {lines.map((line, i) => <Text key={i} color={line.color} bold={line.bold} dimColor={line.dim}>{line.text}</Text>)}
         </ScrollBox>
         {view.overflows && <Text dimColor>  ↑↓: Scroll details</Text>}
-        <Box marginTop={view.overflows ? 0 : 1}>
-          <Text>
-            <Text bold color="green">[Y]es</Text>
-            <Text> / </Text>
-            <Text bold color="red">[N]o</Text>
-          </Text>
+        <Box marginTop={view.overflows ? 0 : 1} flexWrap="wrap" key={shownRef.current.at}>
+          <ConfirmControl label="[Y]es" color="green" onPress={pressControl} onActivate={activateControl(approve)} />
+          <ConfirmControl label="[N]o" color="red" onPress={pressControl} onActivate={activateControl(deny)} />
         </Box>
       </Box>
     );
   }
-  // Hosts that don't forward the loop's warning (the confirmation queue
-  // carries no warning field) still get it: compute it here for write tools.
-  const [computedWarning, setComputedWarning] = React.useState<string | undefined>(undefined);
-  const targetPath = typeof input.path === "string" ? input.path : "";
-  React.useEffect(() => {
-    if (warning !== undefined || !WARN_TOOLS.has(toolName) || !targetPath) {
-      setComputedWarning(undefined);
-      return;
-    }
-    let cancelled = false;
-    checkWrite(targetPath, process.cwd())
-      .then((result) => { if (!cancelled) setComputedWarning(formatWorkspaceWarning(result)); })
-      .catch(() => { });
-    return () => { cancelled = true; };
-  }, [warning, toolName, targetPath]);
   const shownWarning = warning ?? computedWarning;
 
   const label = getToolLabel(toolName);
@@ -609,20 +687,21 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
                 );
               })()}
             </Box>
-            <Text dimColor>Enter to submit denial · Esc to cancel · max {MAX_FEEDBACK_LENGTH} characters</Text>
+            <Box flexWrap="wrap" key={shownRef.current.at}>
+              <ConfirmControl label="[Enter] Submit denial" color="red" onPress={pressControl} onActivate={activateControl(submitFeedback)} />
+              <ConfirmControl label="[Esc] Cancel" color="gray" onPress={pressControl} onActivate={activateControl(cancelFeedback)} />
+              <Text dimColor> max {MAX_FEEDBACK_LENGTH} characters</Text>
+            </Box>
           </Box>
         ) : (
-          <Text>
-            <Text bold color="green">[Y]es</Text>
-            <Text> / </Text>
-            <Text bold color="red">[N]o</Text>
-            <Text> / </Text>
-            <Text bold color="yellow">[D]eny with feedback</Text>
-            {!explicitApprovalOnly && <>
-              <Text> / </Text>
-              <Text bold color="cyan">[A]lways</Text>
-            </>}
-          </Text>
+          <Box flexWrap="wrap" key={shownRef.current.at}>
+            <ConfirmControl label="[Y]es" color="green" onPress={pressControl} onActivate={activateControl(approve)} />
+            <ConfirmControl label="[N]o" color="red" onPress={pressControl} onActivate={activateControl(deny)} />
+            <ConfirmControl label="[D]eny with feedback" color="yellow" onPress={pressControl} onActivate={activateControl(startFeedback)} />
+            {!explicitApprovalOnly && (
+              <ConfirmControl label="[A]lways" color="cyan" onPress={pressControl} onActivate={activateControl(approveAlways)} />
+            )}
+          </Box>
         )}
       </Box>
     </Box>
