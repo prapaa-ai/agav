@@ -42,6 +42,28 @@ describe("tools/web_search", () => {
     await expect(search()).resolves.toEqual({ output: "Search failed: fetch failed", isError: true });
   });
 
+  it("defaults to eight parsed results and allows a smaller or larger limit", async () => {
+    const html = Array.from({ length: 10 }, (_, i) =>
+      `<a class="result__a" href="https://example.com/${i + 1}">Item ${i + 1}</a>`,
+    ).join("");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(html)));
+    const titles = (output: string) => output.split("\n").filter((line) => /^\d+\./.test(line));
+    expect(titles((await search()).output)).toEqual(Array.from({ length: 8 }, (_, i) => `${i + 1}. Item ${i + 1}`));
+    expect(titles((await webSearchTool.execute({ query: "agav", max_results: 2 })).output)).toEqual(["1. Item 1", "2. Item 2"]);
+    expect(titles((await webSearchTool.execute({ query: "agav", max_results: 30 })).output)).toHaveLength(10);
+  });
+
+  it.each([0, -1, 1.5, "2", null, 31, Number.MAX_SAFE_INTEGER + 1])(
+    "reports an invalid max_results (%s) before fetching",
+    async (max_results) => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(""));
+      vi.stubGlobal("fetch", fetchMock);
+      const result = await webSearchTool.execute({ query: "agav", max_results });
+      expect(result).toEqual({ output: "max_results must be an integer between 1 and 30", isError: true });
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("returns parsed results for a normal response", async () => {
     const html =
       '<a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2F&rut=x">Example <b>Site</b></a>' +

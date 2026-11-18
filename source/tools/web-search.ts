@@ -3,6 +3,9 @@ import type { ToolDefinition, ToolResult } from "./types.js";
 /** Same bound as fetch_url; covers both the request and reading the body. */
 export const SEARCH_TIMEOUT_MS = 30_000;
 
+const DEFAULT_MAX_RESULTS = 8;
+const MAX_RESULTS = 30;
+
 export const webSearchTool: ToolDefinition = {
   schema: {
     name: "web_search",
@@ -15,12 +18,28 @@ export const webSearchTool: ToolDefinition = {
           type: "string",
           description: "The search query",
         },
+        max_results: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_RESULTS,
+          description: `Maximum results to return (default: ${DEFAULT_MAX_RESULTS})`,
+        },
       },
       required: ["query"],
     },
   },
 
   async execute(input): Promise<ToolResult> {
+    const requestedLimit = input.max_results;
+    if (requestedLimit !== undefined && (
+      typeof requestedLimit !== "number" ||
+      !Number.isSafeInteger(requestedLimit) ||
+      requestedLimit < 1 ||
+      requestedLimit > MAX_RESULTS
+    )) {
+      return { output: `max_results must be an integer between 1 and ${MAX_RESULTS}`, isError: true };
+    }
+    const limit = requestedLimit ?? DEFAULT_MAX_RESULTS;
     const query = String(input.query);
 
     try {
@@ -44,7 +63,7 @@ export const webSearchTool: ToolDefinition = {
       }
 
       const formatted = results
-        .slice(0, 8)
+        .slice(0, limit)
         .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
         .join("\n\n");
 

@@ -7,7 +7,7 @@ export const listDirectoryTool: ToolDefinition = {
     name: "list_directory",
     description:
       "List contents of a directory with file types and sizes. " +
-      "Optionally show only files or only directories. Names starting with a dot are skipped.",
+      "Optionally show only files or only directories. Dot-prefixed names are skipped unless include_hidden is true.",
     inputSchema: {
       type: "object",
       properties: {
@@ -20,6 +20,10 @@ export const listDirectoryTool: ToolDefinition = {
           enum: ["all", "files", "directories"],
           description: "Entry type to include (default: all)",
         },
+        include_hidden: {
+          type: "boolean",
+          description: "Include names starting with a dot (default: false)",
+        },
       },
       required: [],
     },
@@ -30,6 +34,10 @@ export const listDirectoryTool: ToolDefinition = {
     if (type !== undefined && type !== "all" && type !== "files" && type !== "directories") {
       return { output: "type must be all, files, or directories", isError: true };
     }
+    const includeHidden = input.include_hidden;
+    if (includeHidden !== undefined && typeof includeHidden !== "boolean") {
+      return { output: "include_hidden must be a boolean", isError: true };
+    }
     const filter = type === "files" || type === "directories" ? type : undefined;
     const dirPath = resolve(String(input.path ?? "."));
 
@@ -38,7 +46,7 @@ export const listDirectoryTool: ToolDefinition = {
       const lines: string[] = [];
 
       for (const entry of entries.sort()) {
-        if (entry.startsWith(".")) continue;
+        if (!includeHidden && entry.startsWith(".")) continue;
         try {
           const fullPath = join(dirPath, entry);
           const info = await stat(fullPath);

@@ -41,6 +41,15 @@ async function file(name: string, content = "needle\n") {
   return path;
 }
 
+it.each([null, 0, -1, 1.5, "2", Number.MAX_SAFE_INTEGER + 1])("rejects invalid max_results %s before invoking grep", async (max_results) => {
+  vi.mocked(platform).mockReturnValue("darwin");
+  expect(await grepSearchTool.execute({ pattern: "needle", max_results })).toEqual({
+    output: "max_results must be a positive safe integer",
+    isError: true,
+  });
+  expect(execFile).not.toHaveBeenCalled();
+});
+
 describe("grep_search native output", () => {
   beforeEach(() => {
     vi.mocked(platform).mockReturnValue("linux");
@@ -74,6 +83,29 @@ describe("grep_search native output", () => {
       ...excludedDirectories.map((dir) => `--exclude-dir=${dir}`),
       "-e", "needle", "--", target,
     ], { maxBuffer: 200_000, timeout: 15_000, cwd: undefined }, expect.any(Function));
+  });
+
+  it("succeeds when native grep fills its buffer after the requested limit", async () => {
+    const line = `${directory}/one.ts:1:needle`;
+    const stdout = (line + "\n").repeat(Math.floor(200_000 / (line.length + 1))) + "partial";
+    vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error, stdout: string, stderr: string) => void) => {
+      callback(Object.assign(new Error("maxBuffer exceeded"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }), stdout, "");
+    }) as typeof execFile);
+    const result = await grepSearchTool.execute({ pattern: "needle", path: directory, max_results: 1 });
+    expect(result.isError).toBe(false);
+    expect(result.output.split("\n")[0]).toBe(line);
+    expect(result.output).not.toContain("partial");
+  });
+
+  it("labels partial native line output once a limit is explicitly chosen", async () => {
+    const line = `${directory}/one.ts:1:needle`;
+    vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error, stdout: string, stderr: string) => void) => {
+      callback(Object.assign(new Error("maxBuffer exceeded"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" }), line + "\npartial path", "");
+    }) as typeof execFile);
+    expect(await grepSearchTool.execute({ pattern: "needle", path: directory, max_results: 1000 })).toEqual({
+      output: line + "\nSearch incomplete: grep failed",
+      isError: true,
+    });
   });
 
   it("omits grep -i when ignore_case is false or absent", async () => {
@@ -208,6 +240,8 @@ for (const backend of ["native", "fallback"] as const) {
       const lines = result.output.split("\n");
       expect(lines.slice(0, 100)).toEqual(Array.from({ length: 100 }, (_, i) => `${visible}:${i + 1}:needle relevant`));
       expect(lines[100]).toBe(backend === "native" ? "... 5 more matches" : "... results truncated at 100 matches");
+      const explicitDefault = await grepSearchTool.execute({ pattern: "needle", path: directory, max_results: 100 });
+      expect(explicitDefault.output.split("\n").at(-1)).toBe("... results truncated at requested limit of 100 matches");
       expect(lines).toHaveLength(101);
     });
 
@@ -246,6 +280,28 @@ for (const backend of ["native", "fallback"] as const) {
       const target = await file("build/visible.ts", "--help\n--help\n");
       await file("build/dist/noise.ts", "--help\n");
       expect(await grepSearchTool.execute({ pattern: "--help", path: dirname(target), files_only: true })).toEqual({ output: target, isError: false });
+    });
+
+    it("limits matching lines or file paths and does not flag an exact count", async () => {
+      const first = await file("limit/one.ts", "needle\nneedle\n");
+      const second = await file("limit/two.ts", "needle\n");
+      const args = { pattern: "needle", path: directory, include: "*.ts" };
+      const lines = await grepSearchTool.execute({ ...args, max_results: 2 });
+      expect(lines.isError).toBe(false);
+      expect(lines.output.split("\n")).toHaveLength(3);
+      expect(lines.output.split("\n").at(-1)).toBe("... results truncated at requested limit of 2 matches");
+
+      const files = await grepSearchTool.execute({ ...args, max_results: 1, files_only: true });
+      const paths = files.output.split("\n");
+      expect(files.isError).toBe(false);
+      expect(paths).toHaveLength(2);
+      expect([first, second]).toContain(paths[0]);
+      expect(paths.at(-1)).toBe("... results truncated at requested limit of 1 file");
+      const exact = await grepSearchTool.execute({ ...args, max_results: 2, files_only: true });
+      expect(exact.output.split("\n").sort()).toEqual([first, second].sort());
+      const exactLines = await grepSearchTool.execute({ ...args, max_results: 3 });
+      expect(exactLines.output.split("\n")).toHaveLength(3);
+      expect(exactLines.output).not.toContain("truncated");
     });
 
     it("caps files, not matches, and only reports truncation when additional files exist", async () => {
