@@ -24,9 +24,30 @@ export function computeEditDiff(
   newString: string,
   contextLines = 3,
 ): DiffLine[] {
-  const allLines = fileContent.split("\n");
-  const pos = fileContent.indexOf(oldString);
+  return computeEditDiffAt(fileContent, oldString, newString, fileContent.indexOf(oldString), contextLines);
+}
+
+/** Count non-overlapping exact matches and locate the requested one. */
+export function findEditOccurrence(fileContent: string, oldString: string, occurrence: number): { position: number; count: number } {
+  let position = -1;
+  let count = 0;
+  if (!oldString) return { position, count };
+  for (let offset = fileContent.indexOf(oldString); offset !== -1; offset = fileContent.indexOf(oldString, offset + oldString.length)) {
+    count++;
+    if (count === occurrence) position = offset;
+  }
+  return { position, count };
+}
+
+export function computeEditDiffAt(
+  fileContent: string,
+  oldString: string,
+  newString: string,
+  pos: number,
+  contextLines = 3,
+): DiffLine[] {
   if (pos === -1) return [];
+  const allLines = fileContent.split("\n");
 
   const beforeChange = fileContent.slice(0, pos);
   const startLine = beforeChange.split("\n").length - 1;
