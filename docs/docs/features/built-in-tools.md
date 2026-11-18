@@ -24,7 +24,7 @@ Agav exposes these tools to its agent loop.
 | `edit_notebook` | Change a notebook cell or its type |
 | `web_search` | Search the web with DuckDuckGo (opt-in; see note below) |
 | `fetch_url` | Send an HTTP request and return the response. Use `HEAD` for status without a body |
-| `github` | Create or view GitHub pull requests and issues |
+| `github` | Create, view or comment on GitHub pull requests and issues |
 | `update_plan` | Update the active plan's current step |
 | `save_memory` | Persist durable project or user context |
 | `subagent` | Delegate an independent task |
