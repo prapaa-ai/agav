@@ -439,6 +439,8 @@ function prepareSnapshot(cwd: string, gitStateRoots: string[] = [], protection: 
 				if (after) expected.set(name, after); else expected.delete(name);
 			}
 			const depth = (name: string) => name.split("/").length;
+			const deepestFirst = (a: string, b: string) => depth(b) - depth(a) || a.localeCompare(b);
+			const shallowestFirst = (a: string, b: string) => depth(a) - depth(b) || a.localeCompare(b);
 			let committed = false;
 			const rollback = () => {
 				const failures: unknown[] = [];
@@ -459,17 +461,17 @@ function prepareSnapshot(cwd: string, gitStateRoots: string[] = [], protection: 
 					preflight();
 					committed = true;
 					try {
-						for (const name of [...changes].sort((a, b) => depth(b) - depth(a))) {
+						for (const name of [...changes].sort(deepestFirst)) {
 							const before = baseline.get(name);
 							const after = result.get(name);
 							if (before && (!after || before.kind !== after.kind)) apply(name, undefined);
 						}
-						for (const name of [...changes].sort((a, b) => depth(a) - depth(b))) {
+						for (const name of [...changes].sort(shallowestFirst)) {
 							const after = result.get(name);
 							if (after?.kind === "dir" && !expected.has(name)) apply(name, { ...after, mode: 0o700 });
 							if (after?.kind === "file") apply(name, after);
 						}
-						for (const name of [...changes].sort((a, b) => depth(b) - depth(a))) {
+						for (const name of [...changes].sort(deepestFirst)) {
 							const after = result.get(name);
 							if (after?.kind === "dir" && after.mode !== expected.get(name)?.mode) apply(name, after);
 						}

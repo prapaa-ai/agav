@@ -142,7 +142,7 @@ function createIdleWatchdog(options: {
 }
 
 import type { DiffLine } from "../utils/diff.js";
-import { computeEditDiff, computeDiff } from "../utils/diff.js";
+import { computeEditDiffAt, computeDiff, findEditOccurrence } from "../utils/diff.js";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -930,9 +930,16 @@ export async function* runAgentLoop(
         // Compute diff preview for file-modifying tools
         let previewDiff: DiffLine[] | undefined;
         try {
-          if (call.name === "edit_file" && input.path && input.old_string && input.new_string) {
+          if (call.name === "edit_file" && input.path && input.old_string && input.new_string !== undefined) {
             const content = await readFile(resolve(String(input.path)), "utf-8");
-            previewDiff = computeEditDiff(content, String(input.old_string), String(input.new_string));
+            const oldString = String(input.old_string);
+            const occurrence = input.occurrence;
+            if (occurrence === undefined || (typeof occurrence === "number" && Number.isSafeInteger(occurrence) && occurrence > 0)) {
+              const { position, count } = findEditOccurrence(content, oldString, occurrence ?? 1);
+              if (position !== -1 && (occurrence !== undefined || count === 1)) {
+                previewDiff = computeEditDiffAt(content, oldString, String(input.new_string), position);
+              }
+            }
           } else if (call.name === "write_file" && input.path && input.content) {
             try {
               const oldContent = await readFile(resolve(String(input.path)), "utf-8");
