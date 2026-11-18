@@ -408,9 +408,11 @@ describe("runAgentLoop", () => {
     ]);
   });
 
-  it("requests confirmation for write tools, includes diff preview, and honors always approval", async () => {
+  it.each([undefined, 2])("previews the selected write (occurrence %s) and honors always approval", async (occurrence) => {
     const targetFile = join(cwd, "note.txt");
-    await writeFile(targetFile, "before\nvalue\nafter\n", "utf8");
+    const newString = occurrence === undefined ? "changed" : "";
+    const input = { path: targetFile, old_string: "value", new_string: newString, ...(occurrence && { occurrence }) };
+    await writeFile(targetFile, occurrence ? "before\nvalue\nbetween\nvalue\nafter\n" : "before\nvalue\nafter\n", "utf8");
 
     const editExecute = vi.fn(async (input: Record<string, unknown>) => ({
       output: `edited:${String(input.path)}`,
@@ -431,11 +433,7 @@ describe("runAgentLoop", () => {
         {
           type: "tool_call_delta",
           toolCallId: "edit-1",
-          argsJson: JSON.stringify({
-            path: targetFile,
-            old_string: "value",
-            new_string: "changed",
-          }),
+          argsJson: JSON.stringify(input),
         },
         { type: "message_end", stopReason: "tool_use" },
       ],
@@ -491,20 +489,25 @@ describe("runAgentLoop", () => {
       type: "tool_confirmation_request",
       toolName: "edit_file",
       toolCallId: "edit-1",
-      input: {
-        path: targetFile,
-        old_string: "value",
-        new_string: "changed",
-      },
+      input,
     });
-    expect((confirmation as any)?.diffLines).toEqual([
+    const expectedDiff = occurrence ? [
+      { type: "context", lineNo: 1, text: "before" },
+      { type: "context", lineNo: 2, text: "value" },
+      { type: "context", lineNo: 3, text: "between" },
+      { type: "remove", lineNo: 4, text: "value" },
+      { type: "add", lineNo: 4, text: "" },
+      { type: "context", lineNo: 5, text: "after" },
+      { type: "context", lineNo: 6, text: "" },
+    ] : [
       { type: "context", lineNo: 1, text: "before" },
       { type: "remove", lineNo: 2, text: "value" },
       { type: "add", lineNo: 2, text: "changed" },
       { type: "context", lineNo: 3, text: "after" },
       { type: "context", lineNo: 4, text: "" },
-    ]);
-
+    ];
+    expect((confirmation as any)?.diffLines).toEqual(expectedDiff);
+    expect(confirmTool.mock.calls[0]?.[2]).toEqual(expectedDiff);
     expect(confirmTool).toHaveBeenCalledTimes(1);
     expect(editExecute).toHaveBeenCalledTimes(1);
     expect(shellExecute).toHaveBeenCalledTimes(1);
