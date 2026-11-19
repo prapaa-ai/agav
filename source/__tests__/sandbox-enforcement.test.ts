@@ -968,8 +968,7 @@ describe("real sandbox enforcement (per-OS)", () => {
       guard(ctx);
       const r = await sandboxed(
         "docker",
-        "printf x > /etc/agav-docker-probe 2>/dev/null && echo WROTE_ETC || echo RO_ETC; " +
-        "printf y > /workspace/in-ws.txt && echo WROTE_WS",
+        "printf y > /workspace/in-ws.txt && echo WROTE_WS && (printf x > /etc/agav-docker-probe 2>/dev/null && echo WROTE_ETC || echo RO_ETC)",
         root,
       );
       // The container's own /etc is ephemeral, but it is not the host's — prove
