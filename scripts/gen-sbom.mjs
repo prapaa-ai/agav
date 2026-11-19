@@ -96,7 +96,8 @@ function licenseFor(pkgPath) {
 }
 
 function addComponent(name, node) {
-  if (!name || !node || typeof node.version !== "string") return;
+  // A listed package without a version is an incomplete tree, not one to skip.
+  if (!node || typeof node.version !== "string") fail(`pnpm list gave no version for ${name}.`);
   const key = `${name}@${node.version}`;
   if (components.has(key)) return;
   const component = {
@@ -118,8 +119,23 @@ function walk(deps) {
   }
 }
 
-for (const project of Array.isArray(projects) ? projects : [projects]) {
+const projectList = Array.isArray(projects) ? projects : [projects];
+if (projectList.length === 0 || projectList.some((p) => !p || typeof p !== "object")) {
+  fail("`pnpm list --json` returned no project.");
+}
+// `pnpm list --prod` puts the root's optionalDependencies under their own key.
+for (const project of projectList) {
   walk(project.dependencies);
+  walk(project.optionalDependencies);
+}
+
+// pnpm list leaves out a declared dependency that is not installed, so check
+// the root's own list against package.json rather than emit a partial BOM.
+// Optional ones may be absent (skipped on this platform).
+const listed = new Set(projectList.flatMap((p) => Object.keys(p.dependencies ?? {})));
+const missing = Object.keys(rootPkg.dependencies ?? {}).filter((name) => !listed.has(name));
+if (missing.length) {
+  fail(`pnpm list is missing declared dependencies: ${missing.join(", ")}. Run pnpm install --frozen-lockfile first.`);
 }
 
 // Deterministic ordering so the same input always yields byte-identical output.
