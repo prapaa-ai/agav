@@ -194,6 +194,22 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
     expect(result.stderr).toContain("missing declared dependencies: left-pad");
   });
 
+  it("takes a name declared in both maps as optional, listed or not", () => {
+    // pnpm lists such a package under optionalDependencies; on a platform
+    // that skips it, it is not listed at all.
+    const both = { ...declared, "optional-e": "^5.0.0" };
+    writeRepo(both, graph(), { "optional-e": "^5.0.0" });
+    const listedRun = run();
+    expect(listedRun.stderr).toBe("");
+    expect(listedRun.status).toBe(0);
+    expect(bom(listedRun.out).components.map((c: { name: string }) => c.name)).toContain("optional-e");
+
+    const skipped = graph() as Array<{ optionalDependencies?: Record<string, Node> }>;
+    delete skipped[0].optionalDependencies;
+    writeRepo(both, skipped, { "optional-e": "^5.0.0" });
+    expect(run().status).toBe(0);
+  });
+
   it("fails when a listed package has no version", () => {
     const tree = graph() as Array<{ dependencies: Record<string, Node> }>;
     delete tree[0].dependencies["direct-a"].dependencies!["transitive-b"].version;

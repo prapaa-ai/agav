@@ -131,9 +131,13 @@ for (const project of projectList) {
 
 // pnpm list leaves out a declared dependency that is not installed, so check
 // the root's own list against package.json rather than emit a partial BOM.
-// Optional ones may be absent (skipped on this platform).
+// Optional ones may be absent (skipped on this platform); a name in both maps
+// is optional, as npm reads it, and pnpm lists it under optionalDependencies.
 const listed = new Set(projectList.flatMap((p) => Object.keys(p.dependencies ?? {})));
-const missing = Object.keys(rootPkg.dependencies ?? {}).filter((name) => !listed.has(name));
+const optional = rootPkg.optionalDependencies ?? {};
+const missing = Object.keys(rootPkg.dependencies ?? {}).filter(
+  (name) => !listed.has(name) && !Object.hasOwn(optional, name),
+);
 if (missing.length) {
   fail(`pnpm list is missing declared dependencies: ${missing.join(", ")}. Run pnpm install --frozen-lockfile first.`);
 }
