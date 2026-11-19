@@ -403,13 +403,13 @@ describe("sandbox workspace snapshot and publication", () => {
 		const rename = fs.renameSync;
 		let calls = 0;
 		vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
-			if (String(to).endsWith("/a")) {
+			if (++calls === 2) {
 				if (concurrent) write(host, "a", "external");
 				throw new Error("injected rename failure");
 			}
 			rename(from, to);
 		});
-		expect(() => workspace.publish()).toThrow(concurrent ? /injected rename failure/ : /injected/);
+		expect(() => workspace.publish()).toThrow(concurrent ? /rollback incomplete/ : /injected/);
 		expect(read(host, "a")).toBe(concurrent ? "external" : "original a");
 		expect(read(host, "b")).toBe("original b");
 		expect(fs.readdirSync(host).sort()).toEqual(["a", "b"]);
