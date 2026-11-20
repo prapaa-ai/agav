@@ -6,6 +6,43 @@ import { SessionRuntimeStore, assertSessionRuntimeId, type SessionRuntimeRecord 
 import { readSessionSnapshot, readSessionListingSnapshot } from "./client.js";
 
 /**
+ * Check if a session's owner process is still alive.
+ * Uses the same simple existence check as background-jobs Windows adapter.
+ */
+async function isSessionProcessAlive(pid: number): Promise<boolean> {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "EPERM") return true;
+    return false;
+  }
+}
+
+/**
+ * Reconcile a session that appears stuck in "running" with cancelRequested=true.
+ * If the owner process is dead, mark it as "interrupted" so it doesn't appear stuck forever.
+ */
+async function reconcileSession(
+  store: SessionRuntimeStore,
+  record: SessionRuntimeRecord,
+): Promise<SessionRuntimeRecord> {
+  if (record.status !== "running" || !record.cancelRequested || !record.ownerPid) {
+    return record;
+  }
+  const alive = await isSessionProcessAlive(record.ownerPid);
+  if (!alive) {
+    const updated = await store.update(record.id, record.generation, r => {
+      r.status = "interrupted";
+      r.error ??= "Session process died after cancellation was requested";
+    });
+    return updated;
+  }
+  return record;
+}
+
+/**
  * Runtime transcripts are authoritative, including empty, not-yet-saved conversations.
  *
  * `read` selects the snapshot strategy: load-time resumes use the full
@@ -19,6 +56,8 @@ async function runtimeSession(
   saved?: SessionRecord | null,
   read = readSessionSnapshot,
 ): Promise<SessionRecord> {
+  // Reconcile stuck sessions before using them
+  record = await reconcileSession(store, record);
   const snapshot = await read(record.id, store);
   record = snapshot.record;
   if (record.messages.some(message => !message || typeof message.role !== "string" || !Array.isArray(message.content) ||
