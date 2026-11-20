@@ -187,19 +187,10 @@ const cyclonedxVersion = (() => {
   }
 })();
 
-// Serial number derived from the root package identity and the exact resolved
-// component set, so the same dependency tree always yields the same urn:uuid
-// and the BOM stays byte-for-byte reproducible.
-const serialSeed = JSON.stringify({
-  root: `${rootPkg.name}@${rootPkg.version}`,
-  components: sortedComponents.map((c) => c.purl),
-});
-const serialNumber = `urn:uuid:${uuidV5(serialSeed)}`;
-
 const bom = {
   bomFormat: "CycloneDX",
   specVersion: "1.5",
-  serialNumber,
+  serialNumber: "", // Set below, from the rest of the document.
   version: 1,
   metadata: {
     // A reproducible BOM must not embed a wall-clock timestamp; omitting it
@@ -247,6 +238,10 @@ const bom = {
   },
   components: sortedComponents,
 };
+// Derived from the whole document, so the same input always yields the same
+// urn:uuid and the BOM stays byte-for-byte reproducible, while BOMs that differ
+// only in mode or metadata (production vs build) never share one.
+bom.serialNumber = `urn:uuid:${uuidV5(JSON.stringify(bom))}`;
 
 writeFileSync(outFile, `${JSON.stringify(bom, null, 2)}\n`, "utf8");
 console.log(

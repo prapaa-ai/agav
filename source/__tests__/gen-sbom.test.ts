@@ -314,6 +314,24 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
     expect(result.stderr).toContain("missing declared devDependencies: lint-tool");
   });
 
+  it("gives a production and a build BOM of the same components different serial numbers", () => {
+    const solo = () => ({ solo: { version: "1.0.0", path: pkg("solo", "1.0.0", "MIT") } });
+    writeRepo({ solo: "^1.0.0" }, [{ name: "fixture-app", version: "1.2.3", path: repo, dependencies: solo() }]);
+    const prod = run();
+    expect(prod.status).toBe(0);
+    const prodDoc = bom(prod.out);
+
+    writeRepo({}, [{ name: "fixture-app", version: "1.2.3", path: repo, devDependencies: solo() }], undefined, {
+      solo: "^1.0.0",
+    });
+    const build = run({}, ["--dev"]);
+    expect(build.status).toBe(0);
+    const buildDoc = bom(build.out);
+
+    expect(buildDoc.components).toEqual(prodDoc.components);
+    expect(buildDoc.serialNumber).not.toBe(prodDoc.serialNumber);
+  });
+
   it("fails when pnpm list itself fails", () => {
     writeRepo(declared, graph());
     const result = run({ FAKE_PNPM_EXIT: "1" });
