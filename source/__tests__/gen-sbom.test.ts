@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { Ajv } from "ajv";
@@ -312,6 +312,38 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
     const result = run({}, ["--dev"]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("missing declared devDependencies: lint-tool");
+  });
+
+  it("with --dev, keeps the platform packages pnpm lists but did not install", () => {
+    // pnpm lists every platform variant the lockfile resolves; for one it
+    // skipped on this platform, `path` points at a folder that does not exist.
+    // The variants here are esbuild's binaries for the five release targets.
+    const skipped = ["darwin-arm64", "darwin-x64", "linux-arm64", "win32-x64"].map((target) => ({
+      name: `@esbuild/${target}`,
+      path: join(repo, "store", `@esbuild+${target}@0.28.2`),
+    }));
+    const variants: Record<string, Node> = {
+      "@esbuild/linux-x64": { version: "0.28.2", path: pkg("@esbuild/linux-x64", "0.28.2", "MIT") },
+      ...Object.fromEntries(skipped.map(({ name, path }) => [name, { version: "0.28.2", path }])),
+    };
+    const esbuild: Node = { version: "0.28.2", path: pkg("esbuild", "0.28.2", "MIT"), dependencies: variants };
+    writeRepo({}, [{ name: "fixture-app", version: "1.2.3", path: repo, devDependencies: { esbuild } }], undefined, {
+      esbuild: "^0.28.2",
+    });
+    const result = run({}, ["--dev"]);
+    expect(result.status).toBe(0);
+    for (const { path } of skipped) expect(existsSync(path)).toBe(false);
+
+    // All five listed; the skipped ones have no package.json to read a license from.
+    const doc = bom(result.out);
+    expect(doc.components.map((c: { name: string; licenses?: unknown }) => [c.name, c.licenses !== undefined])).toEqual([
+      ["@esbuild/darwin-arm64", false],
+      ["@esbuild/darwin-x64", false],
+      ["@esbuild/linux-arm64", false],
+      ["@esbuild/linux-x64", true],
+      ["@esbuild/win32-x64", false],
+      ["esbuild", true],
+    ]);
   });
 
   it("gives a production and a build BOM of the same components different serial numbers", () => {
