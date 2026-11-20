@@ -1,15 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { Ajv } from "ajv";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 // gen-sbom.mjs turns `pnpm list --prod --depth Infinity --json` into the
-// CycloneDX BOM the release attests. These tests run it against fixture trees
-// through a fake `pnpm` first on PATH, then check the BOM against the CycloneDX
-// 1.5 schema. The schemas in fixtures/cyclonedx are copied unchanged from
-// CycloneDX/specification at tag 1.5 (Apache-2.0).
+// CycloneDX BOM the release attests, and with --dev turns the root's
+// devDependencies in plain `pnpm list` into the separate build-dependency BOM.
+// These tests run it against fixture trees through a fake `pnpm` first on PATH,
+// then check the BOM against the CycloneDX 1.5 schema. The schemas in
+// fixtures/cyclonedx are copied unchanged from CycloneDX/specification at tag
+// 1.5 (Apache-2.0).
 //
 // The fake pnpm is a shebang script, which Windows cannot exec, so the suite
 // runs on POSIX only; CI runs it on ubuntu.
@@ -47,6 +49,7 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
         "#!/usr/bin/env node",
         'const fs = require("node:fs");',
         'if (process.env.FAKE_PNPM_EXIT) { console.error("pnpm: broken"); process.exit(Number(process.env.FAKE_PNPM_EXIT)); }',
+        'if (process.env.FAKE_PNPM_ARGS) fs.writeFileSync(process.env.FAKE_PNPM_ARGS, process.argv.slice(2).join(" "));',
         'process.stdout.write(fs.readFileSync(process.env.FAKE_PNPM_LIST, "utf8"));',
         "",
       ].join("\n"),
@@ -64,7 +67,12 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
     return dir;
   }
 
-  function writeRepo(dependencies: Record<string, string>, list: unknown, optionalDependencies?: Record<string, string>) {
+  function writeRepo(
+    dependencies: Record<string, string>,
+    list: unknown,
+    optionalDependencies?: Record<string, string>,
+    devDependencies?: Record<string, string>,
+  ) {
     writeFileSync(
       join(repo, "package.json"),
       JSON.stringify({
@@ -74,14 +82,15 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
         license: "Apache-2.0",
         dependencies,
         ...(optionalDependencies ? { optionalDependencies } : {}),
+        ...(devDependencies ? { devDependencies } : {}),
       }),
     );
     writeFileSync(join(repo, "list.json"), typeof list === "string" ? list : JSON.stringify(list));
   }
 
-  function run(env: Record<string, string> = {}) {
+  function run(env: Record<string, string> = {}, flags: string[] = []) {
     const out = join(repo, "bom.cdx.json");
-    const result = spawnSync(process.execPath, [script, out], {
+    const result = spawnSync(process.execPath, [script, ...flags, out], {
       cwd: repo,
       encoding: "utf8",
       env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, FAKE_PNPM_LIST: join(repo, "list.json"), ...env },
@@ -237,6 +246,122 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
     const result = run();
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("returned no project");
+  });
+
+  it("asks pnpm for the production graph by default", () => {
+    writeRepo(declared, graph());
+    const args = join(repo, "args.txt");
+    expect(run({ FAKE_PNPM_ARGS: args }).status).toBe(0);
+    expect(readFileSync(args, "utf8")).toBe("list --prod --depth Infinity --json");
+  });
+
+  // As plain `pnpm list` lists them: the production graph, then the dev graph.
+  // pnpm prints a subtree once per run, so transitive-b comes back under
+  // test-runner deduped, without the shared-c@3.1.0 it pulls in.
+  function devGraph(): unknown {
+    const [project] = graph() as Array<{ dependencies: Record<string, Node> }>;
+    const printed = project.dependencies["direct-a"].dependencies!["transitive-b"];
+    return [
+      {
+        ...project,
+        devDependencies: {
+          "test-runner": {
+            version: "7.0.0",
+            path: pkg("test-runner", "7.0.0", "MIT"),
+            dependencies: {
+              "transitive-b": { version: "2.0.0", path: printed.path, deduped: true, dedupedDependenciesCount: 1 },
+            },
+          },
+          "@types/fixture": { version: "8.0.0", path: pkg("@types/fixture", "8.0.0", "MIT") },
+        },
+      },
+    ];
+  }
+
+  const declaredDev = { "test-runner": "^7.0.0", "@types/fixture": "^8.0.0" };
+
+  it("with --dev, writes the dev/build graph as a separate build-phase BOM", () => {
+    writeRepo(declared, devGraph(), { "optional-e": "^5.0.0" }, declaredDev);
+    const args = join(repo, "args.txt");
+    const result = run({ FAKE_PNPM_ARGS: args }, ["--dev"]);
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    // No --dev: pnpm's --dev also drops optional edges, such as esbuild's platform binary.
+    expect(readFileSync(args, "utf8")).toBe("list --depth Infinity --json");
+    expect(result.stdout).toContain("4 dev/build components");
+    const doc = bom(result.out);
+
+    // Only the dev graph, with the deduped copy followed to shared-c@3.1.0.
+    expect(doc.components.map((c: { purl: string }) => c.purl)).toEqual([
+      "pkg:npm/%40types/fixture@8.0.0",
+      "pkg:npm/shared-c@3.1.0",
+      "pkg:npm/test-runner@7.0.0",
+      "pkg:npm/transitive-b@2.0.0",
+    ]);
+    expect(doc.metadata.lifecycles).toEqual([{ phase: "build" }]);
+    const scope = doc.metadata.properties.find((p: { name: string }) => p.name === "agav:scope");
+    expect(scope.value).toContain("dev/build");
+
+    const { valid, errors } = validateBom(doc);
+    expect(errors).toBeNull();
+    expect(valid).toBe(true);
+  });
+
+  it("with --dev, fails when a declared devDependency is missing from the listed tree", () => {
+    writeRepo(declared, devGraph(), undefined, { ...declaredDev, "lint-tool": "^1.0.0" });
+    const result = run({}, ["--dev"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("missing declared devDependencies: lint-tool");
+  });
+
+  it("with --dev, keeps the platform packages pnpm lists but did not install", () => {
+    // pnpm lists every platform variant the lockfile resolves; for one it
+    // skipped on this platform, `path` points at a folder that does not exist.
+    // The variants here are esbuild's binaries for the five release targets.
+    const skipped = ["darwin-arm64", "darwin-x64", "linux-arm64", "win32-x64"].map((target) => ({
+      name: `@esbuild/${target}`,
+      path: join(repo, "store", `@esbuild+${target}@0.28.2`),
+    }));
+    const variants: Record<string, Node> = {
+      "@esbuild/linux-x64": { version: "0.28.2", path: pkg("@esbuild/linux-x64", "0.28.2", "MIT") },
+      ...Object.fromEntries(skipped.map(({ name, path }) => [name, { version: "0.28.2", path }])),
+    };
+    const esbuild: Node = { version: "0.28.2", path: pkg("esbuild", "0.28.2", "MIT"), dependencies: variants };
+    writeRepo({}, [{ name: "fixture-app", version: "1.2.3", path: repo, devDependencies: { esbuild } }], undefined, {
+      esbuild: "^0.28.2",
+    });
+    const result = run({}, ["--dev"]);
+    expect(result.status).toBe(0);
+    for (const { path } of skipped) expect(existsSync(path)).toBe(false);
+
+    // All five listed; the skipped ones have no package.json to read a license from.
+    const doc = bom(result.out);
+    expect(doc.components.map((c: { name: string; licenses?: unknown }) => [c.name, c.licenses !== undefined])).toEqual([
+      ["@esbuild/darwin-arm64", false],
+      ["@esbuild/darwin-x64", false],
+      ["@esbuild/linux-arm64", false],
+      ["@esbuild/linux-x64", true],
+      ["@esbuild/win32-x64", false],
+      ["esbuild", true],
+    ]);
+  });
+
+  it("gives a production and a build BOM of the same components different serial numbers", () => {
+    const solo = () => ({ solo: { version: "1.0.0", path: pkg("solo", "1.0.0", "MIT") } });
+    writeRepo({ solo: "^1.0.0" }, [{ name: "fixture-app", version: "1.2.3", path: repo, dependencies: solo() }]);
+    const prod = run();
+    expect(prod.status).toBe(0);
+    const prodDoc = bom(prod.out);
+
+    writeRepo({}, [{ name: "fixture-app", version: "1.2.3", path: repo, devDependencies: solo() }], undefined, {
+      solo: "^1.0.0",
+    });
+    const build = run({}, ["--dev"]);
+    expect(build.status).toBe(0);
+    const buildDoc = bom(build.out);
+
+    expect(buildDoc.components).toEqual(prodDoc.components);
+    expect(buildDoc.serialNumber).not.toBe(prodDoc.serialNumber);
   });
 
   it("fails when pnpm list itself fails", () => {

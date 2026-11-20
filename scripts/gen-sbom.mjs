@@ -1,20 +1,25 @@
 #!/usr/bin/env node
 // Generate a CycloneDX software bill of materials for Agav's production
-// dependency graph. Deterministic, pnpm-native, and dependency-free: it reads
-// the resolved tree from `pnpm list --prod` rather than reconstructing it with
-// an npm-only tool, because this repository installs with pnpm and has no npm
-// lockfile for @cyclonedx/cyclonedx-npm to walk. Each component is emitted with
+// dependency graph or, with --dev, for its dev/build graph (the build and test
+// dependencies used to produce the binaries, which never ship in them).
+// Deterministic, pnpm-native, and dependency-free: it reads the resolved tree
+// from `pnpm list` rather than reconstructing it with an npm-only tool, because
+// this repository installs with pnpm and has no npm lockfile for
+// @cyclonedx/cyclonedx-npm to walk. Each component is emitted with
 // its exact version, a package-URL (purl), and — read from the installed
 // package's own package.json — its declared license.
 //
-// Scope and caveat: this BOM covers the npm dependency graph only. Agav ships a
+// Scope and caveat: each BOM covers the npm dependency graph only. Agav ships a
 // compiled binary that statically embeds the Bun runtime and its vendored C
 // libraries (Brotli, c-ares, zlib, libarchive); those are invisible to the npm
 // graph and are tracked separately by scripts/check-bun-advisories.mjs. The
-// caveat is also recorded in the BOM's metadata.properties so a consumer
-// reading the file alone is not misled into thinking it is exhaustive.
+// build BOM likewise leaves out the Bun compiler and the voice helper's native
+// toolchain. The caveat is also recorded in the BOM's metadata.properties so a
+// consumer reading the file alone is not misled into thinking it is exhaustive.
+// Both BOMs list every optional platform package the lockfile resolves, such as
+// esbuild's binary for each OS, whether or not this machine installed it.
 //
-// Usage: node scripts/gen-sbom.mjs <output-file.cdx.json>
+// Usage: node scripts/gen-sbom.mjs [--dev] <output-file.cdx.json>
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -41,20 +46,23 @@ function fail(message) {
   process.exit(1);
 }
 
-const outFile = process.argv[2];
-if (!outFile) fail("Usage: node scripts/gen-sbom.mjs <output-file.cdx.json>");
+const dev = process.argv[2] === "--dev";
+const outFile = process.argv[dev ? 3 : 2];
+if (!outFile || outFile.startsWith("-") || process.argv.length > (dev ? 4 : 3)) fail("Usage: node scripts/gen-sbom.mjs [--dev] <output-file.cdx.json>");
 
 const root = process.cwd();
 const rootPkg = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
 
-// Resolve the production dependency tree with pnpm. --depth Infinity walks the
-// full transitive graph; --prod drops devDependencies, which is the surface
-// that actually reaches users.
+// Resolve the dependency tree with pnpm. --depth Infinity walks the full
+// transitive graph; --prod drops devDependencies, which is the surface that
+// actually reaches users. The dev BOM lists without a filter and walks only the
+// root's devDependencies, because --dev also drops optional edges, such as
+// esbuild's platform binary.
 let listRaw;
 try {
   listRaw = execFileSync(
     "pnpm",
-    ["list", "--prod", "--depth", "Infinity", "--json"],
+    ["list", ...(dev ? [] : ["--prod"]), "--depth", "Infinity", "--json"],
     { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
   );
 } catch (error) {
@@ -111,11 +119,30 @@ function addComponent(name, node) {
   components.set(key, component);
 }
 
+// pnpm prints a package's subtree once per run and marks later copies
+// `deduped`, without children; unfiltered, the printed copy may sit under the
+// production graph. Index printed subtrees by install path (a peer variant has
+// its own) so a deduped copy is followed, and walk each path once.
+const printed = new Map();
+function index(deps) {
+  for (const node of Object.values(deps ?? {})) {
+    if (node?.path && node.dependencies && !printed.has(node.path)) {
+      printed.set(node.path, node.dependencies);
+      index(node.dependencies);
+    }
+  }
+}
+
+const walked = new Set();
 function walk(deps) {
   if (!deps || typeof deps !== "object") return;
   for (const [name, node] of Object.entries(deps)) {
     addComponent(name, node);
-    if (node && typeof node === "object") walk(node.dependencies);
+    if (node.path) {
+      if (walked.has(node.path)) continue;
+      walked.add(node.path);
+    }
+    walk(node.dependencies ?? printed.get(node.path));
   }
 }
 
@@ -123,23 +150,28 @@ const projectList = Array.isArray(projects) ? projects : [projects];
 if (projectList.length === 0 || projectList.some((p) => !p || typeof p !== "object")) {
   fail("`pnpm list --json` returned no project.");
 }
-// `pnpm list --prod` puts the root's optionalDependencies under their own key.
+// pnpm list puts the root's optionalDependencies and devDependencies under
+// their own keys.
+const declaredKey = dev ? "devDependencies" : "dependencies";
 for (const project of projectList) {
-  walk(project.dependencies);
-  walk(project.optionalDependencies);
+  for (const key of ["dependencies", "optionalDependencies", "devDependencies"]) index(project[key]);
+}
+for (const project of projectList) {
+  walk(project[declaredKey]);
+  if (!dev) walk(project.optionalDependencies);
 }
 
 // pnpm list leaves out a declared dependency that is not installed, so check
 // the root's own list against package.json rather than emit a partial BOM.
 // Optional ones may be absent (skipped on this platform); a name in both maps
 // is optional, as npm reads it, and pnpm lists it under optionalDependencies.
-const listed = new Set(projectList.flatMap((p) => Object.keys(p.dependencies ?? {})));
+const listed = new Set(projectList.flatMap((p) => Object.keys(p[declaredKey] ?? {})));
 const optional = rootPkg.optionalDependencies ?? {};
-const missing = Object.keys(rootPkg.dependencies ?? {}).filter(
+const missing = Object.keys(rootPkg[declaredKey] ?? {}).filter(
   (name) => !listed.has(name) && !Object.hasOwn(optional, name),
 );
 if (missing.length) {
-  fail(`pnpm list is missing declared dependencies: ${missing.join(", ")}. Run pnpm install --frozen-lockfile first.`);
+  fail(`pnpm list is missing declared ${declaredKey}: ${missing.join(", ")}. Run pnpm install --frozen-lockfile first.`);
 }
 
 // Deterministic ordering so the same input always yields byte-identical output.
@@ -155,19 +187,10 @@ const cyclonedxVersion = (() => {
   }
 })();
 
-// Serial number derived from the root package identity and the exact resolved
-// component set, so the same dependency tree always yields the same urn:uuid
-// and the BOM stays byte-for-byte reproducible.
-const serialSeed = JSON.stringify({
-  root: `${rootPkg.name}@${rootPkg.version}`,
-  components: sortedComponents.map((c) => c.purl),
-});
-const serialNumber = `urn:uuid:${uuidV5(serialSeed)}`;
-
 const bom = {
   bomFormat: "CycloneDX",
   specVersion: "1.5",
-  serialNumber,
+  serialNumber: "", // Set below, from the rest of the document.
   version: 1,
   metadata: {
     // A reproducible BOM must not embed a wall-clock timestamp; omitting it
@@ -189,22 +212,38 @@ const bom = {
         : {}),
       purl: purlFor(rootPkg.name, rootPkg.version),
     },
-    properties: [
-      {
-        name: "agav:scope",
-        value: "production npm dependency graph only",
-      },
-      {
-        name: "agav:excludes",
-        value:
-          "embedded Bun runtime and vendored C libraries (Brotli, c-ares, zlib, libarchive) — tracked by scripts/check-bun-advisories.mjs",
-      },
-    ],
+    ...(dev ? { lifecycles: [{ phase: "build" }] } : {}),
+    properties: dev
+      ? [
+          {
+            name: "agav:scope",
+            value: "dev/build npm dependency graph only (devDependencies; not shipped in the binaries)",
+          },
+          {
+            name: "agav:excludes",
+            value: "the Bun compiler and the voice helper's native build toolchain (CMake, C/C++ compiler)",
+          },
+        ]
+      : [
+          {
+            name: "agav:scope",
+            value: "production npm dependency graph only",
+          },
+          {
+            name: "agav:excludes",
+            value:
+              "embedded Bun runtime and vendored C libraries (Brotli, c-ares, zlib, libarchive) — tracked by scripts/check-bun-advisories.mjs",
+          },
+        ],
   },
   components: sortedComponents,
 };
+// Derived from the whole document, so the same input always yields the same
+// urn:uuid and the BOM stays byte-for-byte reproducible, while BOMs that differ
+// only in mode or metadata (production vs build) never share one.
+bom.serialNumber = `urn:uuid:${uuidV5(JSON.stringify(bom))}`;
 
 writeFileSync(outFile, `${JSON.stringify(bom, null, 2)}\n`, "utf8");
 console.log(
-  `Wrote ${outFile}: ${sortedComponents.length} production components (CycloneDX ${bom.specVersion}).`,
+  `Wrote ${outFile}: ${sortedComponents.length} ${dev ? "dev/build" : "production"} components (CycloneDX ${bom.specVersion}).`,
 );
