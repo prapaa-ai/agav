@@ -10,21 +10,21 @@ import { stripVTControlCharacters } from "node:util";
 import { visualLen } from "../utils/wrap-text.js";
 
 const MAX_RESUME_MATCHES = 10;
-const MAX_RESUME_TITLE_WIDTH = 80;
+const MAX_SESSION_TITLE_WIDTH = 80;
 const titleSegments = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-function resumeTitle(title: unknown): string {
-  if (typeof title !== "string") return "Untitled session";
+export function formatSessionTitle(title: unknown): string | undefined {
+  if (typeof title !== "string") return undefined;
   const label = stripVTControlCharacters(title).replace(/\s+/g, " ")
     .replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim();
-  if (!label) return "Untitled session";
-  if (visualLen(label) <= MAX_RESUME_TITLE_WIDTH) return label;
+  if (!label) return undefined;
+  if (visualLen(label) <= MAX_SESSION_TITLE_WIDTH) return label;
 
   let width = 0;
   let end = 0;
   for (const { segment, index } of titleSegments.segment(label)) {
     width += visualLen(segment);
-    if (width >= MAX_RESUME_TITLE_WIDTH) break;
+    if (width >= MAX_SESSION_TITLE_WIDTH) break;
     end = index + segment.length;
   }
   return label.slice(0, end).trimEnd() + "…";
@@ -56,7 +56,7 @@ export const historyCommand: SlashCommand = {
     const sessions = await listSessions();
     if (sessions.length === 0) return { type: "message", text: "No saved sessions." };
     const shown = limit === undefined ? sessions : sessions.slice(0, limit);
-    const lines = shown.map((s) => `${s.id.slice(0, 8)} · ${resumeTitle(s.title)} · ${s.messages.length} messages`);
+    const lines = shown.map((s) => `${s.id.slice(0, 8)} · ${formatSessionTitle(s.title) ?? "Untitled session"} · ${s.messages.length} messages`);
     if (shown.length < sessions.length) lines.push(`Showing ${shown.length} of ${sessions.length} saved sessions.`);
     return { type: "message", text: lines.join("\n") };
   },
@@ -93,7 +93,7 @@ export const resumeCommand: SlashCommand = {
       const match = sessions.find(s => s.id === prefix) ?? (matches.length === 1 ? matches[0] : undefined);
       if (!match && matches.length > 1) {
         const choices = matches.slice(0, MAX_RESUME_MATCHES)
-          .map(({ id, title }) => `${id} · ${resumeTitle(title)}`);
+          .map(({ id, title }) => `${id} · ${formatSessionTitle(title) ?? "Untitled session"}`);
         const omitted = matches.length - choices.length;
         if (omitted > 0) choices.push(`… and ${omitted} more ${omitted === 1 ? "match" : "matches"}.`);
         return {

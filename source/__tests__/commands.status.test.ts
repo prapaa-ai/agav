@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { statusCommand } from "../commands/status.js";
 import { contextCommand } from "../commands/context.js";
 import type { CommandContext } from "../commands/types.js";
+import { loadSession, type SessionRecord } from "../config/history.js";
 import { ConversationState } from "../agent/conversation.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { getSandboxName } from "../utils/sandbox.js";
@@ -12,6 +13,16 @@ import { terminalRelativePaths, _clearConfigCache } from "../utils/display-path.
 // system prompt and a single-skill catalog.
 vi.mock("../utils/system-prompt.js", () => ({ buildSystemPrompt: async () => "baseline" }));
 vi.mock("../skills/loader.js", () => ({ getCachedSkills: () => [{ name: "demo" }], buildSkillCatalog: () => "skill catalog" }));
+vi.mock("../config/history.js", () => ({ loadSession: vi.fn() }));
+
+const savedSession: SessionRecord = {
+  id: "58946600-71d2-4aa1-9b40-8d62ba13b812",
+  title: "Summarize README.md",
+  createdAt: "2026-11-20T00:00:00Z",
+  model: "gpt-5.4-mini",
+  provider: "openai",
+  messages: [],
+};
 
 const createContext = (overrides: Partial<CommandContext> = {}): CommandContext => {
   const conversation = new ConversationState();
@@ -65,6 +76,10 @@ async function statusText(context: CommandContext): Promise<string> {
 }
 
 describe("commands/status", () => {
+  beforeEach(() => {
+    vi.mocked(loadSession).mockReset().mockResolvedValue(null);
+  });
+
   it("exposes expected command metadata", () => {
     expect(statusCommand.name).toBe("status");
     expect(statusCommand.description).toBeTruthy();
@@ -81,6 +96,60 @@ describe("commands/status", () => {
     expect(text).toContain(`Permissions:  ask · ${getSandboxName()}`);
     expect(text).toContain(`Directory:    ${process.cwd()}`);
     expect(text).toContain("MCP servers:  2 connected");
+  });
+
+  it("shows an unsaved session without triggering a save", async () => {
+    const context = createContext();
+    const text = await statusText(context);
+
+    expect(text).toMatch(/^  Session: +Unsaved$/m);
+    expect(text).not.toContain("Full ID:");
+    expect(text).not.toContain("Title:");
+    expect(loadSession).not.toHaveBeenCalled();
+    expect(context.saveSession).not.toHaveBeenCalled();
+  });
+
+  it("shows both IDs during a turn even if the history record is missing", async () => {
+    const { id } = savedSession;
+    const context = createContext({ currentSessionId: id, isLoading: true });
+    const text = await statusText(context);
+
+    expect(text).toMatch(/^  Session: +58946600$/m);
+    expect(text.split("\n")).toContain(`  Full ID:      ${id}`);
+    expect(text).not.toContain("Title:");
+    expect(context.saveSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [savedSession.title, savedSession.title],
+    ["\x1b[31mREADME\x1b[0m\nwalkthrough", "README walkthrough"],
+  ])("shows the saved title %j as %j", async (title, expected) => {
+    vi.mocked(loadSession).mockResolvedValue({ ...savedSession, title });
+    const context = createContext({ currentSessionId: savedSession.id });
+
+    expect((await statusText(context)).split("\n")).toContain(`  Title:        ${expected}`);
+    expect(loadSession).toHaveBeenCalledWith(savedSession.id);
+    expect(context.saveSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { ...savedSession, title: 123 as unknown as string },
+    { ...savedSession, id: "another-session" },
+  ])("keeps the active ID visible when the history record has an unusable title", async (record) => {
+    vi.mocked(loadSession).mockResolvedValue(record);
+    const text = await statusText(createContext({ currentSessionId: savedSession.id }));
+
+    expect(text).toContain(savedSession.id);
+    expect(text).not.toContain("Title:");
+    expect(text).toContain("MCP servers:");
+  });
+
+  it.each([123, "bad\nid", "\x1b[2J"])("omits a malformed session ID (%j)", async (id) => {
+    const text = await statusText(createContext({ currentSessionId: id as unknown as string }));
+
+    expect(text).toMatch(/^  Session: +Unsaved$/m);
+    expect(text).not.toContain("Full ID:");
+    expect(text).toContain("MCP servers:");
   });
 
   it("preserves the absolute Directory through terminal path formatting (not collapsed to '.')", async () => {
