@@ -47,7 +47,7 @@
     "react-reconciler": "0.34.0",
     "scheduler": "^0.28.0",
     "slice-ansi": "^10.0.0",
-    "string-width": "^8.3.0",
+    "string-width": "^9.0.0",
     "widest-line": "^6.0.0",
     "yaml": "^2.9.1",
     "yoga-layout": "3.2.1"
