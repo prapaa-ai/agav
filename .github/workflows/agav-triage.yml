@@ -40,14 +40,14 @@ jobs:
       - name: Triage with Agav
         timeout-minutes: 3
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           AGAV_NO_SANDBOX: "1"
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           TITLE=$(gh issue view ${{ github.event.issue.number }} --json title -q .title)
           BODY=$(gh issue view ${{ github.event.issue.number }} --json body -q .body | head -c 2000)
           PROMPT="Issue title: ${TITLE}. Body: ${BODY}. Pick ONE label from: bug, feature, question, documentation, good-first-issue. If the issue is unclear, also write a short comment asking for details. Respond with ONLY a JSON object: {\"label\":\"chosen\",\"comment\":\"text or empty\"}. No explanation."
-          agav -P "$PROMPT" --provider gemini --model gemini-3.5-flash-lite > triage-raw.txt
+          agav -P "$PROMPT" --provider openrouter --model openrouter/free > triage-raw.txt
           grep -o '{[^}]*}' triage-raw.txt > triage.json || echo '{"label":"","comment":""}' > triage.json
 
       - name: Apply triage
