@@ -14,8 +14,8 @@ function run(args: string[]): Promise<{ stdout: string; stderr: string; exitCode
 }
 
 /** Validate that the gh CLI is installed and already authenticated. */
-async function checkGh(): Promise<string | null> {
-  const { exitCode, stderr } = await run(["auth", "status"]);
+async function checkGh(host?: string): Promise<string | null> {
+  const { exitCode, stderr } = await run(host ? ["auth", "status", "--hostname", host] : ["auth", "status"]);
   if (exitCode !== 0) {
     return stderr.includes("not logged")
       ? "GitHub CLI is not authenticated. Run: gh auth login"
@@ -40,6 +40,10 @@ export const githubTool: ToolDefinition = {
           enum: ["create_pr", "view_pr", "list_prs", "create_issue", "view_issue", "list_issues", "comment_issue", "comment_pr"],
           description: "The GitHub operation to perform.",
         },
+        repo: {
+          type: "string",
+          description: "Target OWNER/REPO or HOST/OWNER/REPO. Omit to use gh repository discovery.",
+        },
         title: {
           type: "string",
           description: "Title for the PR or issue (required for create operations).",
@@ -62,7 +66,15 @@ export const githubTool: ToolDefinition = {
   },
 
   async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const authErr = await checkGh();
+    const repo = input.repo;
+    const repoMatch = typeof repo === "string"
+      ? /^(?:([a-z0-9]+(?:[.-][a-z0-9]+)*)\/)?[a-z0-9]+(?:-[a-z0-9]+)*\/(?!\.{1,2}$)[a-z0-9_.-]+$/i.exec(repo)
+      : null;
+    if (repo !== undefined && !repoMatch) {
+      return { output: "Invalid repo: expected OWNER/REPO or HOST/OWNER/REPO.", isError: true };
+    }
+    const runInRepo = (args: string[]) => run(typeof repo === "string" ? [...args, "--repo", repo] : args);
+    const authErr = await checkGh(repoMatch?.[1]);
     if (authErr) return { output: authErr, isError: true };
 
     const op = String(input.operation ?? "");
@@ -77,7 +89,7 @@ export const githubTool: ToolDefinition = {
         const args = ["pr", "create", "--title", title];
         if (body) args.push("--body", body);
         if (base) args.push("--base", base);
-        const result = await run(args);
+        const result = await runInRepo(args);
         return {
           output: result.stdout || result.stderr,
           isError: result.exitCode !== 0,
@@ -86,7 +98,7 @@ export const githubTool: ToolDefinition = {
 
       case "view_pr": {
         if (!number) return { output: "PR number is required.", isError: true };
-        const result = await run(["pr", "view", number]);
+        const result = await runInRepo(["pr", "view", number]);
         return {
           output: result.stdout || result.stderr,
           isError: result.exitCode !== 0,
@@ -94,7 +106,7 @@ export const githubTool: ToolDefinition = {
       }
 
       case "list_prs": {
-        const result = await run(["pr", "list"]);
+        const result = await runInRepo(["pr", "list"]);
         return {
           output: result.stdout || result.stderr || "No open PRs.",
           isError: result.exitCode !== 0,
@@ -105,7 +117,7 @@ export const githubTool: ToolDefinition = {
         if (!title) return { output: "Title is required for creating an issue.", isError: true };
         const args = ["issue", "create", "--title", title];
         if (body) args.push("--body", body);
-        const result = await run(args);
+        const result = await runInRepo(args);
         return {
           output: result.stdout || result.stderr,
           isError: result.exitCode !== 0,
@@ -114,7 +126,7 @@ export const githubTool: ToolDefinition = {
 
       case "view_issue": {
         if (!number) return { output: "Issue number is required.", isError: true };
-        const result = await run(["issue", "view", number]);
+        const result = await runInRepo(["issue", "view", number]);
         return {
           output: result.stdout || result.stderr,
           isError: result.exitCode !== 0,
@@ -122,7 +134,7 @@ export const githubTool: ToolDefinition = {
       }
 
       case "list_issues": {
-        const result = await run(["issue", "list"]);
+        const result = await runInRepo(["issue", "list"]);
         return {
           output: result.stdout || result.stderr || "No open issues.",
           isError: result.exitCode !== 0,
@@ -137,7 +149,7 @@ export const githubTool: ToolDefinition = {
         }
         if (!body.trim()) return { output: "Comment body is required.", isError: true };
         const kind = op === "comment_pr" ? "pr" : "issue";
-        const result = await run([kind, "comment", String(target), "--body", body]);
+        const result = await runInRepo([kind, "comment", String(target), "--body", body]);
         return {
           output: result.stdout || result.stderr,
           isError: result.exitCode !== 0,
