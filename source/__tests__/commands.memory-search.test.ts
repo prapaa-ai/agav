@@ -6,6 +6,7 @@ vi.mock("../config/memory.js", async (importActual) => ({
   ...(await importActual<typeof import("../config/memory.js")>()),
   loadMemories: vi.fn(async () => []),
   saveMemory: vi.fn(),
+  renameMemory: vi.fn(),
   deleteMemory: vi.fn(),
   deleteAllMemories: vi.fn(),
   getProjectMemoryPath: vi.fn(),
@@ -14,7 +15,7 @@ vi.mock("../config/memory.js", async (importActual) => ({
 import { memoryCommand } from "../commands/memory.js";
 import { CommandRegistry } from "../commands/registry.js";
 import type { CommandContext } from "../commands/types.js";
-import { deleteAllMemories, deleteMemory, loadMemories, saveMemory, searchMemories } from "../config/memory.js";
+import { deleteAllMemories, deleteMemory, loadMemories, renameMemory, saveMemory, searchMemories } from "../config/memory.js";
 
 const memory = (name: string, description: string, content: string, type: MemoryEntry["type"] = "project"): MemoryEntry => ({
   name,
@@ -197,5 +198,32 @@ describe("/memory list --type", () => {
   it.each(["list --type", "list --type other", "list --type project extra"])("rejects %s before loading", async (args) => {
     expect(await run(args)).toMatch(/^Usage:/);
     expect(loadMemories).not.toHaveBeenCalled();
+  });
+});
+
+describe("/memory rename", () => {
+  it("renames by exact names and reports the rename", async () => {
+    vi.mocked(renameMemory).mockResolvedValue({ ok: true, memory: MEMORIES[0]! });
+
+    expect(await run("rename api-shape api-shape-v2")).toBe(`Renamed memory "api-shape" to "api-shape-v2".`);
+    expect(renameMemory).toHaveBeenCalledWith("api-shape", "api-shape-v2");
+  });
+
+  it("passes a multiword destination through as one name", async () => {
+    vi.mocked(renameMemory).mockResolvedValue({ ok: true, memory: MEMORIES[0]! });
+
+    expect(await run("rename api-shape api shape v2")).toBe(`Renamed memory "api-shape" to "api shape v2".`);
+    expect(renameMemory).toHaveBeenCalledWith("api-shape", "api shape v2");
+  });
+
+  it.each(["rename", "rename api-shape", "rename  "])("shows usage when a name is missing: %s", async (args) => {
+    expect(await run(args)).toBe("Usage: /memory rename <old-name> <new-name>");
+    expect(renameMemory).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the rename failure without changing anything", async () => {
+    vi.mocked(renameMemory).mockResolvedValue({ ok: false, error: `Memory "nope" not found.` });
+
+    expect(await run("rename nope new-name")).toBe(`Memory "nope" not found.`);
   });
 });

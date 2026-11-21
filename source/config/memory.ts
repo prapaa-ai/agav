@@ -224,6 +224,55 @@ export function searchMemories(memories: MemoryEntry[], query: string): MemorySe
   return matches;
 }
 
+export type RenameMemoryResult =
+  | { ok: true; memory: MemoryEntry }
+  | { ok: false; error: string };
+
+/**
+ * Rename a saved memory, keeping its type, description, and content.
+ * Only the stored name and the file slug change. Names are matched exactly and
+ * are slugified before touching the filesystem, so a name can never escape the
+ * memory directory as a path. The new file is written before the old one is
+ * removed, and a failed removal rolls the new file back, so an interrupted
+ * rename never leaves two records behind.
+ */
+export async function renameMemory(oldName: string, newName: string): Promise<RenameMemoryResult> {
+  const source = oldName.trim();
+  const dest = newName.trim();
+  if (!source) return { ok: false, error: "A memory name is required." };
+  if (!dest) return { ok: false, error: "Usage: /memory rename <old-name> <new-name>" };
+  if (source === dest) return { ok: false, error: `Memory "${source}" is already named "${dest}".` };
+  const destSlug = slugify(dest);
+  if (!destSlug) return { ok: false, error: "The new name must contain at least one letter or digit." };
+
+  const memories = await loadMemories();
+  const existing = memories.find((entry) => entry.name === source);
+  if (!existing) return { ok: false, error: `Memory "${source}" not found.` };
+  const collision = memories.find(
+    (entry) => entry !== existing && (entry.name === dest || slugify(entry.name) === destSlug),
+  );
+  if (collision) {
+    return { ok: false, error: `Memory "${dest}" already exists. Rename did not change anything.` };
+  }
+
+  const dir = await getProjectMemoryDir();
+  const destPath = join(dir, `${destSlug}.md`);
+  const renamed: MemoryEntry = { ...existing, name: dest, filePath: destPath };
+  await writeFile(destPath, formatMemoryFile(renamed));
+  if (existing.filePath !== destPath) {
+    try {
+      await unlink(existing.filePath);
+    } catch {
+      try { await unlink(destPath); } catch {}
+      invalidateMemoriesCache();
+      return { ok: false, error: `Could not remove the old memory file for "${source}". Rename did not change anything.` };
+    }
+  }
+  invalidateMemoriesCache();
+  await updateMemoryIndex();
+  return { ok: true, memory: renamed };
+}
+
 export async function deleteMemory(name: string): Promise<boolean> {
   const dir = await getProjectMemoryDir();
   const slug = slugify(name);
