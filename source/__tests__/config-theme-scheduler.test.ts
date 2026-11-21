@@ -1,12 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../utils/fs.js", () => ({ ensureDir: vi.fn().mockResolvedValue(undefined) }));
-vi.mock("node:fs/promises", () => ({ readFile: vi.fn(), writeFile: vi.fn() }));
+vi.mock("node:fs/promises", () => ({ readFile: vi.fn(), writeFile: vi.fn(), rename: vi.fn(), unlink: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("node:crypto", () => ({ default: { randomUUID: () => "12345678-aaaa-bbbb-cccc-1234567890ab" } }));
 
 const fs = await import("node:fs/promises");
 const readFile = vi.mocked(fs.readFile);
 const writeFile = vi.mocked(fs.writeFile);
+const rename = vi.mocked(fs.rename);
+const unlink = vi.mocked(fs.unlink);
 
 describe("theme", () => {
   beforeEach(() => {
@@ -56,4 +58,48 @@ describe("scheduler cronMatches", () => {
     expect(cronMatches("15 10 * 13 *", date)).toBe(false);
     expect(cronMatches("15 10 * * 7", date)).toBe(false);
   });
+});
+describe("scheduled task updates", () => {
+  const task = { id: "task-01", name: "daily", cron: "0 9 * * *", prompt: "old", enabled: false, createdAt: "2026-01-01", lastRunAt: "2026-01-02" };
+  beforeEach(() => {
+    readFile.mockReset().mockResolvedValue(JSON.stringify([task]));
+    writeFile.mockReset().mockResolvedValue(undefined);
+    rename.mockReset().mockResolvedValue(undefined);
+    unlink.mockClear();
+  });
+
+  it("persists changes without resetting the ID or run metadata", async () => {
+    const { updateScheduledTask } = await import("../config/scheduler.js");
+    const expected = { ...task, cron: "15 10 * * *", prompt: "new text" };
+    expect(await updateScheduledTask(task.id, { cron: expected.cron, prompt: expected.prompt })).toEqual(expected);
+    expect(JSON.parse(String(writeFile.mock.calls[0]?.[1]))).toEqual([expected]);
+    expect(rename).toHaveBeenCalledWith(writeFile.mock.calls[0]?.[0], expect.stringMatching(/scheduled-tasks\.json$/));
+  });
+
+  it("does not write for invalid arguments or unknown IDs", async () => {
+    const { updateScheduledTask } = await import("../config/scheduler.js");
+    await expect(updateScheduledTask(task.id, { cron: "61 9 * * *" })).rejects.toThrow("Invalid cron");
+    await expect(updateScheduledTask(task.id, { prompt: " " })).rejects.toThrow("empty");
+    expect(await updateScheduledTask("task", { prompt: "new" })).toBeUndefined();
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+  it("handles wildcard and bounded range steps with the same validation as updates", async () => {
+    const { updateScheduledTask, cronMatches } = await import("../config/scheduler.js");
+    const cron = "*/15 9 * * *";
+    const updated = await updateScheduledTask(task.id, { cron });
+    expect(updated).toEqual({ ...task, cron });
+    expect(cronMatches(cron, new Date(2026, 0, 1, 9, 30))).toBe(true);
+    expect(cronMatches(cron, new Date(2026, 0, 1, 9, 31))).toBe(false);
+    expect(cronMatches("10-20/5 9 * * *", new Date(2026, 0, 1, 9, 25))).toBe(false);
+  });
+
+  it("keeps prompt whitespace and removes the temporary file if replacement fails", async () => {
+    const { updateScheduledTask } = await import("../config/scheduler.js");
+    const prompt = "  new  ";
+    expect(await updateScheduledTask(task.id, { prompt })).toEqual({ ...task, prompt });
+    rename.mockRejectedValueOnce(new Error("disk failure"));
+    await expect(updateScheduledTask(task.id, { prompt })).rejects.toThrow("disk failure");
+    expect(unlink).toHaveBeenCalledWith(writeFile.mock.calls.at(-1)?.[0]);
+  });
+
 });
