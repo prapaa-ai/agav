@@ -6,6 +6,8 @@ import {
   addScheduledTask,
   removeScheduledTask,
   setTaskEnabled,
+  findScheduledTask,
+  markTaskRun,
 } from "../config/scheduler.js"
 
 /**
@@ -18,8 +20,8 @@ import {
 export const scheduleCommand: SlashCommand = {
   name: "schedule",
   description: "Manage persistent scheduled tasks",
-  argumentHint: "[list|add|remove|enable|disable]",
-  usage: `Usage: /schedule [action]\n\n  /schedule                           Open manager (list in headless mode)\n  /schedule list                      Show all scheduled tasks\n  /schedule add "0 9 * * *" prompt    Add a cron-scheduled task\n  /schedule remove <id>               Remove a task by ID\n  /schedule enable <id>               Enable a disabled task\n  /schedule disable <id>              Disable a task\n\nCron format: minute hour day-of-month month day-of-week\nTasks persist across sessions in ${agavHomePath("scheduled-tasks.json")}.`,
+  argumentHint: "[list|add|remove|enable|disable|run]",
+  usage: `Usage: /schedule [action]\n\n  /schedule                           Open manager (list in headless mode)\n  /schedule list                      Show all scheduled tasks\n  /schedule add "0 9 * * *" prompt    Add a cron-scheduled task\n  /schedule remove <id>               Remove a task by ID\n  /schedule enable <id>               Enable a disabled task\n  /schedule disable <id>              Disable a task\n  /schedule run <id>                  Run a task once now, without changing its schedule\n\nCron format: minute hour day-of-month month day-of-week\nTasks persist across sessions in ${agavHomePath("scheduled-tasks.json")}.`,
   /**
    * Handle schedule management actions.
    *
@@ -29,6 +31,7 @@ export const scheduleCommand: SlashCommand = {
    * - `remove` / `rm` / `delete`: remove a task by id
    * - `enable`: enable a task by id
    * - `disable`: disable a task by id
+   * - `run`: run a task once immediately, without changing its schedule
    *
    * @param args Raw slash-command arguments following `/schedule`.
    * @returns A user-facing message describing the result.
@@ -129,10 +132,42 @@ export const scheduleCommand: SlashCommand = {
       }
     }
 
+    /**
+     * Run a task once immediately. The prompt goes through the same submit
+     * path as a scheduled tick (source "schedule"), so approval, cancellation,
+     * and error handling match scheduled execution. The cron expression and
+     * enabled state are untouched; only the last-run timestamp is updated,
+     * and only after the submission is accepted.
+     */
+    if (action === "run") {
+      const id = parts[1]
+      if (!id) return { type: "message", text: "Usage: /schedule run <id>" }
+      const task = findScheduledTask(await loadScheduledTasks(), id)
+      if (!task) {
+        return { type: "message", text: `Task ${id} not found.` }
+      }
+      try {
+        context.handleSubmit(task.prompt, {
+          source: "schedule",
+          detail: `scheduled task ${task.id} · run now`,
+        })
+      } catch (cause) {
+        return {
+          type: "message",
+          text: `Could not run scheduled task ${task.id}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        }
+      }
+      await markTaskRun(task.id)
+      return {
+        type: "message",
+        text: `Running scheduled task ${task.id} now: "${task.prompt}"\nSchedule and enabled state unchanged.`,
+      }
+    }
+
     /** Fallback help for unsupported schedule actions. */
     return {
       type: "message",
-      text: "Unknown action. Usage: /schedule list | add | remove | enable | disable",
+      text: "Unknown action. Usage: /schedule list | add | remove | enable | disable | run",
     }
   },
 }
