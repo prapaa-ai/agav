@@ -1,7 +1,14 @@
+import { stripVTControlCharacters } from "node:util";
+import sliceAnsi from "slice-ansi";
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
 import { type AgavConfig } from "../config/config.js";
 import { providerSetupHints, orgPolicyError } from "../config/startup.js";
 import { fetchVertexAIModels } from "../providers/vertex-ai.js";
+import { parseMouseEvent, type ParsedMouse } from "../ink/parse-mouse.js";
+import { splitCoalescedKeys } from "../ink/parse-keypress.js";
+import { extendSelection, getSelectedText, type SelectionRange } from "../ink/selection.js";
+import { writeClipboard, type ClipboardResult } from "../ink/termio/clipboard.js";
+import { CURSOR_HOME, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ERASE_DISPLAY } from "../ink/termio/dec.js";
 
 export interface FetchedModel {
   id: string;
@@ -259,9 +266,10 @@ function pickModel(
 
   let selected = Math.max(0, models.findIndex((m) => m.id === currentModel));
   let filter = "";
-  const pageSize = Math.min(models.length, process.stdout.rows ? process.stdout.rows - 8 : 15);
-  const totalLines = pageSize + 5;
-  let rendered = false;
+  let visibleLines: string[] = [];
+  let anchor: { x: number; y: number } | undefined;
+  let selection: SelectionRange | undefined;
+  let copyNotice: ClipboardResult | "No model to copy" | undefined;
 
   function getFiltered(): FetchedModel[] {
     if (!filter) return models;
@@ -269,29 +277,19 @@ function pickModel(
     return models.filter((m) => m.id.toLowerCase().includes(lower) || m.provider.toLowerCase().includes(lower));
   }
 
-  function clearLine() {
-    process.stdout.write(`\x1b[2K`);
-  }
-
   function render() {
     const filtered = getFiltered();
     if (selected >= filtered.length) selected = Math.max(0, filtered.length - 1);
 
-    if (rendered) {
-      process.stdout.write(`\x1b[${totalLines}A`);
-    }
-    rendered = true;
-
-    clearLine();
-    process.stdout.write(`\x1b[1;36m  ${title}\x1b[0m\x1b[2m  (${filtered.length} of ${models.length})\x1b[0m\n`);
-    clearLine();
-    process.stdout.write(`\x1b[2m  ↑↓ navigate · Enter select · Type to filter · Esc cancel\x1b[0m\n`);
-    clearLine();
-    if (filter) {
-      process.stdout.write(`\x1b[33m  Filter: ${filter}\x1b[0m\n`);
-    } else {
-      process.stdout.write("\n");
-    }
+    const pageSize = Math.min(models.length, Math.max(1, (process.stdout.rows || 23) - 8));
+    const notice = copyNotice === "Copied to clipboard" ? "\x1b[32m  ✓ Copied to clipboard\x1b[0m"
+      : copyNotice === "Copy sent to terminal" ? "\x1b[36m  Copy sent to terminal\x1b[0m"
+      : copyNotice ? `\x1b[33m  ${copyNotice}\x1b[0m` : "";
+    const lines = [
+      `\x1b[1;36m  ${title}\x1b[0m\x1b[2m  (${filtered.length} of ${models.length})\x1b[0m${notice}`,
+      "\x1b[2m  ↑↓ move · Enter select · Ctrl+Y copy · Drag to copy · Type filter · Esc cancel\x1b[0m",
+      filter ? `\x1b[33m  Filter: ${filter}\x1b[0m` : "",
+    ];
 
     const scrollStart = Math.max(0, Math.min(selected - Math.floor(pageSize / 2), filtered.length - pageSize));
     const scrollEnd = Math.min(scrollStart + pageSize, filtered.length);
@@ -303,46 +301,106 @@ function pickModel(
       const providerTag = m.provider !== currentProvider ? ` [${m.provider}]` : "";
       const contextTag = m.contextWindow ? ` (${formatContextWindow(m.contextWindow)} ctx)` : "";
 
-      clearLine();
-      if (isSel) {
-        process.stdout.write(`\x1b[46;30m  ❯ ${m.id}${contextTag}${providerTag}${active} \x1b[0m\n`);
-      } else {
-        process.stdout.write(`\x1b[2m    ${m.id}${contextTag}${providerTag}${active}\x1b[0m\n`);
-      }
+      lines.push(isSel
+        ? `\x1b[46;30m  ❯ ${m.id}${contextTag}${providerTag}${active} \x1b[0m`
+        : `\x1b[2m    ${m.id}${contextTag}${providerTag}${active}\x1b[0m`);
     }
 
     for (let i = scrollEnd - scrollStart; i < pageSize; i++) {
-      clearLine();
-      process.stdout.write("\n");
+      lines.push("");
     }
 
-    clearLine();
     if (filtered.length > pageSize) {
-      process.stdout.write(`\x1b[2m  ${scrollStart + 1}-${scrollEnd} of ${filtered.length}\x1b[0m\n`);
-    } else {
-      process.stdout.write("\n");
+      lines.push(`\x1b[2m  ${scrollStart + 1}-${scrollEnd} of ${filtered.length}\x1b[0m`);
     }
-    clearLine();
+
+    // Keep terminal coordinates aligned with the picker rows, including on narrow screens.
+    const width = Math.max(1, (process.stdout.columns || 80) - 1);
+    const frame = lines.map(line => sliceAnsi(line, 0, width));
+    visibleLines = frame.map(stripVTControlCharacters);
+    const painted = frame.map((line, y) => {
+      if (!selection || y < selection.startY || y > selection.endY) return line;
+      const start = y === selection.startY ? selection.startX : 0;
+      const end = y === selection.endY ? selection.endX : width;
+      const text = getSelectedText(visibleLines, { startX: start, endX: end, startY: y, endY: y });
+      if (!text) return line;
+      return sliceAnsi(line, 0, start) + "\x1b[7m" + text + "\x1b[0m" + sliceAnsi(line, end);
+    });
+    process.stdout.write(CURSOR_HOME + painted.map(line => "\x1b[2K" + line).join("\r\n") + "\x1b[J");
   }
 
+  // Ink remains suspended and already owns the alternate screen.
+  process.stdout.write(ERASE_DISPLAY + ENABLE_MOUSE_TRACKING);
   render();
 
   return new Promise((resolve) => {
+    let closed = false;
+    let mouseTail = "";
+    let copyRequest = 0;
+    let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    function showCopyNotice(notice: NonNullable<typeof copyNotice>) {
+      clearTimeout(noticeTimer);
+      copyNotice = notice;
+      render();
+      noticeTimer = setTimeout(() => {
+        copyNotice = undefined;
+        render();
+      }, 2000);
+    }
+
+    function copyText(text: string) {
+      const request = ++copyRequest;
+      writeClipboard(process.stdout, text, result => {
+        if (!closed && request === copyRequest) showCopyNotice(result);
+      });
+    }
+
     function cleanup() {
+      closed = true;
+      clearTimeout(noticeTimer);
       stdin.setRawMode(wasRaw ?? false);
       stdin.removeListener("data", onData);
       stdin.pause();
-      if (rendered) {
-        process.stdout.write(`\x1b[${totalLines}A`);
-        for (let i = 0; i < totalLines; i++) {
-          process.stdout.write(`\x1b[2K\n`);
-        }
-        process.stdout.write(`\x1b[${totalLines}A`);
-      }
+      process.stdout.write(DISABLE_MOUSE_TRACKING + ERASE_DISPLAY + CURSOR_HOME);
     }
 
     function onData(data: Buffer) {
-      const key = data.toString();
+      const input = mouseTail + data.toString();
+      mouseTail = /\x1b\[<[\d;]*$/.exec(input)?.[0] ?? "";
+      const complete = input.slice(0, input.length - mouseTail.length);
+      for (const key of splitCoalescedKeys(complete) ?? [complete]) {
+        if (closed) break;
+        const mouse = parseMouseEvent(key);
+        if (mouse) handleMouse(mouse);
+        else handleKey(key);
+      }
+    }
+
+    function handleMouse(mouse: ParsedMouse) {
+      if (mouse.button !== 0 || mouse.wheel || mouse.x < 0 || mouse.y < 0) return;
+      const point = { x: mouse.x, y: Math.min(mouse.y, visibleLines.length - 1) };
+      if (mouse.action === "press") {
+        anchor = mouse.y < visibleLines.length ? point : undefined;
+        selection = undefined;
+      } else if (anchor && (mouse.action === "drag" || mouse.action === "release")) {
+        selection = anchor.x === point.x && anchor.y === point.y ? undefined : extendSelection(anchor, point);
+        if (mouse.action === "release") {
+          anchor = undefined;
+          const text = selection ? getSelectedText(visibleLines, selection) : "";
+          if (text.trim()) {
+            render();
+            copyText(text);
+            return;
+          }
+        }
+      } else {
+        return;
+      }
+      render();
+    }
+
+    function handleKey(key: string) {
       const filtered = getFiltered();
 
       if (key === "\x1b" || key === "\x03") {
@@ -359,6 +417,18 @@ function pickModel(
         return;
       }
 
+      if (key === "\x19") {
+        const highlighted = filtered[selected];
+        if (highlighted) copyText(highlighted.id);
+        else {
+          copyRequest++;
+          showCopyNotice("No model to copy");
+        }
+        return;
+      }
+
+      anchor = undefined;
+      selection = undefined;
       if (key === "\x1b[A" || key === "k") {
         selected = Math.max(0, selected - 1);
         render();
@@ -396,7 +466,7 @@ export const modelCommand: SlashCommand = {
   name: "model",
   description: "View all available models or change current model",
   argumentHint: "[name]",
-  usage: "Usage: /model [name]\n\n  /model                Open interactive model picker\n  /model gpt-5.4-mini   Switch to a specific model\n  /model gemini-3.5-pro  Auto-switches provider if needed",
+  usage: "Usage: /model [name]\n\n  /model                Open interactive model picker\n  /model gpt-5.4-mini   Switch to a specific model\n  /model gemini-3.5-pro  Auto-switches provider if needed\n\nIn the picker, press Ctrl+Y to copy the highlighted model ID, or drag across text and release to copy the selection. Enter selects a model.",
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const model = args.trim();
 
