@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
 
@@ -7,6 +8,8 @@ interface LSPServer {
   process: ChildProcess;
   nextId: number;
   pending: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>;
+  diagnostics: Map<string, unknown[]>;
+  diagnosticsWaiters: Map<string, Array<(diagnostics: unknown[]) => void>>;
   failure?: Error;
   fail: (error: Error) => void;
 }
@@ -93,6 +96,7 @@ function getOrStartServer(lang: string): LSPServer | null {
     };
     const server: LSPServer = {
       process: proc, nextId: 1, pending: new Map(),
+      diagnostics: new Map(), diagnosticsWaiters: new Map(),
       fail(error) {
         // Exit is not a transport failure: stdout may still contain responses.
         if (disposed || finished || exited) return;
@@ -140,6 +144,18 @@ function getOrStartServer(lang: string): LSPServer | null {
             const p = server.pending.get(msg.id)!;
             if (msg.error) p.reject(new Error(msg.error.message));
             else p.resolve(msg.result);
+          } else if (msg.method === "textDocument/publishDiagnostics" && msg.params && typeof msg.params === "object") {
+            const uri = (msg.params as { uri?: unknown }).uri;
+            const diagnostics = (msg.params as { diagnostics?: unknown }).diagnostics;
+            if (typeof uri === "string") {
+              const list = Array.isArray(diagnostics) ? diagnostics : [];
+              server.diagnostics.set(uri, list);
+              const waiters = server.diagnosticsWaiters.get(uri);
+              if (waiters) {
+                server.diagnosticsWaiters.delete(uri);
+                for (const waiter of waiters) waiter(list);
+              }
+            }
           }
         } catch {}
       }
@@ -202,6 +218,74 @@ function sendRequest(server: LSPServer, method: string, params: unknown): Promis
   });
 }
 
+/** How long the diagnostics operation waits for a publishDiagnostics notification. */
+const DIAGNOSTICS_WAIT_MS = 3000;
+
+/** Cap on rendered diagnostics so a noisy server cannot overflow the result. */
+const MAX_DIAGNOSTICS = 100;
+
+/** LSP DiagnosticSeverity names (LSP 3.17). */
+const DIAGNOSTIC_SEVERITIES: Record<number, string> = {
+  1: "Error", 2: "Warning", 3: "Information", 4: "Hint",
+};
+
+/** Format an LSP range as one-based `startLine:startChar-endLine:endChar`. */
+function formatDiagnosticRange(range: unknown): string {
+  const r = range as {
+    start?: { line?: unknown; character?: unknown };
+    end?: { line?: unknown; character?: unknown };
+  } | null | undefined;
+  const start = r?.start;
+  const end = r?.end;
+  if (typeof start?.line !== "number" || typeof end?.line !== "number") return "";
+  const startChar = typeof start.character === "number" ? start.character + 1 : 1;
+  const endChar = typeof end.character === "number" ? end.character + 1 : 1;
+  return `${start.line + 1}:${startChar}-${end.line + 1}:${endChar}`;
+}
+
+/** Render one diagnostic as `Severity [range]: message`, with the message flattened and bounded. */
+function formatDiagnostic(diagnostic: unknown): string {
+  const d = diagnostic as { severity?: unknown; range?: unknown; message?: unknown } | null | undefined;
+  const severity = typeof d?.severity === "number"
+    ? (DIAGNOSTIC_SEVERITIES[d.severity] ?? `Severity(${d.severity})`)
+    : "Diagnostic";
+  const range = formatDiagnosticRange(d?.range);
+  const message = String(d?.message ?? "").replace(/\s+/g, " ").slice(0, 500);
+  return `${severity}${range ? ` [${range}]` : ""}: ${message}`;
+}
+
+/**
+ * Open a document and wait for the server's publishDiagnostics notification
+ * for it, up to DIAGNOSTICS_WAIT_MS. Any diagnostics already stored for the
+ * URI are discarded first so a later call cannot return a stale report.
+ */
+function waitForDiagnostics(server: LSPServer, uri: string, open: () => void): Promise<unknown[]> {
+  return new Promise((resolve) => {
+    let settled = false;
+    server.diagnostics.delete(uri);
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const waiters = server.diagnosticsWaiters.get(uri);
+      if (waiters) {
+        const index = waiters.indexOf(done);
+        if (index !== -1) waiters.splice(index, 1);
+      }
+      resolve(server.diagnostics.get(uri) ?? []);
+    }, DIAGNOSTICS_WAIT_MS);
+    const done = (diagnostics: unknown[]) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(diagnostics);
+    };
+    const waiters = server.diagnosticsWaiters.get(uri) ?? [];
+    waiters.push(done);
+    server.diagnosticsWaiters.set(uri, waiters);
+    open();
+  });
+}
+
 export const lspTool: ToolDefinition = {
   schema: {
     name: "lsp_query",
@@ -256,12 +340,30 @@ export const lspTool: ToolDefinition = {
       let result: unknown;
 
       switch (operation) {
-        case "diagnostics":
-          // Open document to trigger diagnostics
-          sendRequest(server, "textDocument/didOpen", {
-            textDocument: { uri, languageId: lang, version: 1, text: "" },
-          }).catch(() => {});
-          return { output: "Diagnostics requested. Results come via notifications (not yet captured).", isError: false };
+        case "diagnostics": {
+          let text: string;
+          try {
+            text = await readFile(filePath, "utf8");
+          } catch (err) {
+            return {
+              output: `Could not read ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+              isError: true,
+            };
+          }
+          const diagnostics = await waitForDiagnostics(server, uri, () => {
+            sendRequest(server, "textDocument/didOpen", {
+              textDocument: { uri, languageId: lang, version: 1, text },
+            }).catch(() => {});
+          });
+          if (diagnostics.length === 0) {
+            return { output: "No diagnostics reported.", isError: false };
+          }
+          const lines = diagnostics.slice(0, MAX_DIAGNOSTICS).map(formatDiagnostic);
+          if (diagnostics.length > MAX_DIAGNOSTICS) {
+            lines.push(`... (${diagnostics.length - MAX_DIAGNOSTICS} more diagnostics omitted)`);
+          }
+          return { output: lines.join("\n"), isError: false };
+        }
 
         case "definition":
           result = await sendRequest(server, "textDocument/definition", {
