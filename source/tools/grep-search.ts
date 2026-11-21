@@ -14,7 +14,7 @@ interface GrepContext {
   after: number;
 }
 
-/** A matching or context line; line 0 marks a raw notice such as a binary-file match. */
+/** A matching or context line; line 0 marks a raw, non-matching notice such as a binary-file match. */
 interface GrepLine {
   path: string;
   line: number;
@@ -52,23 +52,50 @@ function formatContextLines(lines: GrepLine[]): string[] {
   return output;
 }
 
-/** Parse native grep --null context output, dropping its own group separators. */
-function parseNativeContextLines(lines: string[]): GrepLine[] {
+const isNotice = (line: string) => line === "--" || /^Binary file .* matches$|: binary file matches$/.test(line);
+
+/**
+ * Parse native grep --null context output before splitting lines, so file names
+ * containing newlines stay intact. Each NUL ends a path, preferably one starting
+ * with `root`; only group separators and binary notices may precede it.
+ */
+function parseNativeContextLines(stdout: string, root: string, relativeRoot: string | undefined): GrepLine[] {
   const parsed: GrepLine[] = [];
-  for (const line of lines) {
-    const nul = line.indexOf("\0");
-    const prefix = nul === -1 ? null : /^(\d+)([:-])/.exec(line.slice(nul + 1));
+  const display = (path: string) => relativeRoot && path.startsWith("./") ? relativeRoot + path.slice(1) : path;
+  const addNotices = (lines: string[]) => {
+    for (const line of lines) {
+      if (line && line !== "--") {
+        const text = relativeRoot ? line.replace(/^(Binary file )?\.\//, (_match, prefix = "") => `${prefix}${relativeRoot}/`) : line;
+        parsed.push({ path: "", line: 0, text, match: false });
+      }
+    }
+  };
+  let rest = stdout;
+  for (let nul = rest.indexOf("\0"); nul !== -1; nul = rest.indexOf("\0")) {
+    const head = rest.slice(0, nul).split("\n");
+    let start = 0;
+    while (start < head.length - 1 && isNotice(head[start]!)) start++;
+    for (let i = head.length - 1; i > start; i--) {
+      if (head[i]!.startsWith(root) && head.slice(0, i).every(isNotice)) {
+        start = i;
+        break;
+      }
+    }
+    addNotices(head.slice(0, start));
+    const prefix = /^(\d+)([:-])/.exec(rest.slice(nul + 1));
+    const end = rest.indexOf("\n", nul);
+    const textEnd = end === -1 ? rest.length : end;
     if (prefix) {
       parsed.push({
-        path: line.slice(0, nul),
+        path: display(head.slice(start).join("\n")),
         line: Number(prefix[1]),
-        text: line.slice(nul + 1 + prefix[0].length),
+        text: rest.slice(nul + 1 + prefix[0].length, textEnd),
         match: prefix[2] === ":",
       });
-    } else if (line !== "--") {
-      parsed.push({ path: "", line: 0, text: line, match: true });
     }
+    rest = rest.slice(textEnd + 1);
   }
+  addNotices(rest.split("\n"));
   return parsed;
 }
 
@@ -220,7 +247,7 @@ async function nativeGrep(
   fixedStrings = false,
   ignoreCase = false,
   context?: GrepContext,
-): Promise<{ stdout: string; stderr: string; code: number | string | null }> {
+): Promise<{ stdout: string; stderr: string; code: number | string | null; root: string; relativeRoot?: string }> {
   // grep can exclude its explicit root too; searching "." bypasses only that
   // root's name, while still excluding generated directories below it.
   const searchFromRoot = SKIP_DIRS.has(basename(searchPath)) &&
@@ -251,13 +278,19 @@ async function nativeGrep(
 
   return new Promise((resolve, reject) => {
     execFile("grep", args, { maxBuffer: 200_000, timeout: 15_000, cwd: searchFromRoot ? searchPath : undefined }, (error, stdout, stderr) => {
-      if (searchFromRoot) {
+      if (searchFromRoot && !context) {
         stdout = stdout.replace(/(^|\n)(Binary file )?\.\//g, (_match, boundary, prefix = "") => `${boundary}${prefix}${searchPath}/`);
       }
       if (error && (error as NodeJS.ErrnoException).code === "ENOENT") {
         reject(error);
       } else {
-        resolve({ stdout, stderr: stderr || (filesOnly ? error?.message : "") || "", code: error ? (error as NodeJS.ErrnoException).code ?? null : 0 });
+        resolve({
+          stdout,
+          stderr: stderr || (filesOnly ? error?.message : "") || "",
+          code: error ? (error as NodeJS.ErrnoException).code ?? null : 0,
+          root: searchFromRoot ? "." : searchPath,
+          relativeRoot: searchFromRoot ? searchPath : undefined,
+        });
       }
     });
   });
@@ -384,7 +417,7 @@ export const grepSearchTool: ToolDefinition = {
         const partialLine = (requestedLimit !== undefined || filesOnly) && incomplete && !result.stdout.endsWith("\n");
         const stdout = partialLine ? result.stdout.slice(0, result.stdout.lastIndexOf("\n") + 1) : result.stdout;
         const lines = stdout.split("\n").filter(Boolean);
-        const contextLines = context ? parseNativeContextLines(lines) : undefined;
+        const contextLines = context ? parseNativeContextLines(stdout, result.root, result.relativeRoot) : undefined;
         const matchCount = contextLines ? contextLines.filter((line) => line.match).length : lines.length;
         const limited = context && contextLines
           ? formatContextLines(limitContextLines(contextLines, limit, context.after))

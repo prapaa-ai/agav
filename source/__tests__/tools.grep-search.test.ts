@@ -236,6 +236,54 @@ describe("grep_search native output", () => {
     ].join("\n"));
   });
 
+  it("does not count binary notices against max_results", async () => {
+    const records = [
+      `Binary file ${directory}/a.bin matches`,
+      `${directory}/b.bin: binary file matches`,
+      `${directory}/c.ts\u00001:needle`,
+      `${directory}/c.ts\u00002-after`,
+    ];
+    vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      callback(null, records.join("\n") + "\n", "");
+    }) as typeof execFile);
+    expect(await grepSearchTool.execute({ pattern: "needle", path: directory, context_after: 1, max_results: 1 })).toEqual({
+      output: [
+        `Binary file ${directory}/a.bin matches`,
+        "--",
+        `${directory}/b.bin: binary file matches`,
+        "--",
+        `${directory}/c.ts:1:needle`,
+        `${directory}/c.ts-2-after`,
+      ].join("\n"),
+      isError: false,
+    });
+  });
+
+  it("parses --null paths containing newlines before splitting records", async () => {
+    const odd = `${directory}/a\n${directory}/b.ts`;
+    const records = [
+      `${directory}/first.ts\u00001:needle`,
+      "--",
+      `Binary file ${directory}/x.bin matches`,
+      `${odd}\u00001-before`,
+      `${odd}\u00002:needle`,
+    ];
+    vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+      callback(null, records.join("\n") + "\n", "");
+    }) as typeof execFile);
+    expect(await grepSearchTool.execute({ pattern: "needle", path: directory, context_before: 1 })).toEqual({
+      output: [
+        `${directory}/first.ts:1:needle`,
+        "--",
+        `Binary file ${directory}/x.bin matches`,
+        "--",
+        `${odd}-1-before`,
+        `${odd}:2:needle`,
+      ].join("\n"),
+      isError: false,
+    });
+  });
+
   it("reports remaining matches, not context lines, past the default limit", async () => {
     const records = Array.from({ length: 102 }, (_, i) => [`/f.ts\u0000${2 * i + 1}-context`, `/f.ts\u0000${2 * i + 2}:needle`]).flat();
     vi.mocked(execFile).mockImplementationOnce(((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
@@ -523,6 +571,22 @@ for (const backend of ["native", "fallback"] as const) {
         expect(await grepSearchTool.execute({ pattern: "needle", path: directory, context_before: 1 })).toEqual({
           output: `${target}-1-x\n${target}:2:needle`, isError: false,
         });
+      });
+
+      it.skipIf(process.platform === "win32").each(["src", "build"])("keeps file names containing newlines intact under %s", async (root) => {
+        const target = await file(`${root}/x\n./y.ts`, "before\nneedle\n");
+        expect(await grepSearchTool.execute({ pattern: "needle", path: join(directory, root), context_before: 1 })).toEqual({
+          output: `${target}-1-before\n${target}:2:needle`, isError: false,
+        });
+      });
+
+      it("does not let skipped binary files consume max_results", async () => {
+        await file("src/a.bin", "needle\0\n");
+        const target = await file("src/z.ts", "needle\nafter\n");
+        const result = await grepSearchTool.execute({ pattern: "needle", path: directory, context_after: 1, max_results: 1 });
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain(`${target}:1:needle\n${target}-2-after`);
+        expect(result.output).not.toContain("truncated");
       });
 
       it("counts matches, not context lines, against max_results", async () => {
