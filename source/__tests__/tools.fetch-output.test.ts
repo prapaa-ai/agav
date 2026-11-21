@@ -284,3 +284,37 @@ describe("redirect credential safety helpers", () => {
     expect(sameOrigin(new URL("https://a.example:8443/"), new URL("https://a.example/"))).toBe(false);
   });
 });
+
+describe("response headers", () => {
+  it("keeps repeated fields and redacts credentials on bodyless responses", async () => {
+    const transport = vi.fn<Transport>().mockResolvedValue({
+      status: 204, statusText: "No Content", cancel: vi.fn(),
+      rawHeaders: ["Link", "first", "Link", "second", "Set-Cookie", "sample", "AUTHORIZATION", "sample", "Cookie", "sample"],
+    });
+    setFetchTransport(transport);
+    expect(await fetchUrlTool.execute({ url: "https://example.com/", method: "HEAD" }))
+      .toEqual({ output: "HTTP 204 No Content\n", isError: false });
+    expect(await fetchUrlTool.execute({ url: "https://example.com/", method: "HEAD", include_headers: true }))
+      .toEqual({ output: "HTTP 204 No Content\nResponse headers:\nLink: first\nLink: second\nSet-Cookie: [redacted]\nAUTHORIZATION: [redacted]\nCookie: [redacted]\n\n", isError: false });
+  });
+
+  it("shows headers before the body and retains the HTTP error status", async () => {
+    setFetchTransport(async () => ({
+      status: 404, statusText: "Not Found", cancel() {},
+      rawHeaders: ["Content-Type", "text/plain"],
+      body: (async function* () { yield new TextEncoder().encode("missing"); })(),
+    }));
+    expect(await fetchUrlTool.execute({ url: "https://example.com/", include_headers: true }))
+      .toEqual({ output: "HTTP 404 Not Found\nResponse headers:\nContent-Type: text/plain\n\nmissing", isError: true });
+  });
+});
+
+it("visibly escapes terminal controls in header names and values", async () => {
+  setFetchTransport(async () => ({
+    status: 200, statusText: "OK", cancel() {},
+    rawHeaders: ["X-\tTest", "a\x1b[31m\r\nb"],
+  }));
+  const result = await fetchUrlTool.execute({ url: "https://example.com/", method: "HEAD", include_headers: true });
+  expect(result.output).toContain(String.raw`X-\u0009Test: a\u001b[31m\u000d\u000ab`);
+  expect(result.output).not.toMatch(/[\x1b\r\t]/);
+});
