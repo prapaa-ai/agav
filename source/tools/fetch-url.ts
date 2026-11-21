@@ -93,11 +93,11 @@ class ResponseCapture {
     }
   }
 
-  finish(status: string, readError?: string): string {
+  finish(status: string, readError?: string, headerBlock = ""): string {
     const warning = (this.partial
       ? "\nWarning: partial response capture (16 MiB limit reached); remaining response was cancelled."
       : "") + (readError ? `\nWarning: response read failed: ${utf8Prefix(Buffer.from(readError), 1_000)}; capture is partial.` : "");
-    const prefix = `${utf8Prefix(Buffer.from(status), 1_000)}\n`;
+    const prefix = `${utf8Prefix(Buffer.from(status), 1_000)}\n${headerBlock}`;
     if (this.total <= SPILL_THRESHOLD) {
       const output = prefix + Buffer.concat(this.small).toString("utf8") + warning;
       if (Buffer.byteLength(output) <= MAX_OUTPUT) return output;
@@ -123,6 +123,8 @@ class ResponseCapture {
 export interface TransportResponse {
   status: number;
   statusText: string;
+  /** Alternating header names and values, in wire order. */
+  rawHeaders?: readonly string[];
   /** Async byte stream of the response body, or undefined for an empty body. */
   body?: AsyncIterable<Uint8Array>;
   /** Cancel an in-progress body read (quota reached / streamed error). */
@@ -171,6 +173,7 @@ function fromIncoming(message: IncomingMessage, method: string): TransportRespon
   return {
     status,
     statusText: message.statusMessage ?? "",
+    rawHeaders: message.rawHeaders,
     body: decoder ?? message,
     cancel: () => { decoder?.destroy(); message.destroy(); },
   };
@@ -269,6 +272,25 @@ function sendOnce(url: URL, target: Awaited<ReturnType<typeof assertSafeUrl>>, r
   });
 }
 
+const RESPONSE_CREDENTIAL_HEADERS = new Set([...CREDENTIAL_HEADERS, "set-cookie"]);
+
+function renderResponseHeaders(headers: readonly string[]): string {
+  const lines: string[] = [];
+  let bytes = 0;
+  for (let index = 0; index + 1 < headers.length; index += 2) {
+    const name = headers[index]!;
+    const value = RESPONSE_CREDENTIAL_HEADERS.has(name.toLowerCase()) ? "[redacted]" : headers[index + 1]!;
+    const line = `${name}: ${value}`;
+    bytes += Buffer.byteLength(line) + 1;
+    if (bytes > 8_000) {
+      lines.push("[Response header output truncated]");
+      break;
+    }
+    lines.push(line);
+  }
+  return `Response headers:\n${lines.join("\n")}\n\n`;
+}
+
 export const fetchUrlTool: ToolDefinition = {
   schema: {
     name: "fetch_url",
@@ -286,12 +308,16 @@ export const fetchUrlTool: ToolDefinition = {
           additionalProperties: { type: "string" },
         },
         body: { type: "string", description: "Request body for POST/PUT/PATCH" },
+        include_headers: { type: "boolean", description: "Include redacted response headers before the body (default: false)." },
       },
       required: ["url"],
     },
   },
 
   async execute(input): Promise<ToolResult> {
+    if (input.include_headers !== undefined && typeof input.include_headers !== "boolean") {
+      return { output: "Invalid include_headers: expected a boolean.", isError: true };
+    }
     const url = String(input.url);
     const method = String(input.method ?? "GET").toUpperCase();
     if (method === "HEAD" && input.body != null) {
@@ -340,7 +366,10 @@ export const fetchUrlTool: ToolDefinition = {
       }
       const ok = res.status >= 200 && res.status < 300;
       return {
-        output: capture.finish(`HTTP ${res.status} ${res.statusText}`, readError),
+        output: capture.finish(
+          `HTTP ${res.status} ${res.statusText}`, readError,
+          input.include_headers ? renderResponseHeaders(res.rawHeaders ?? []) : undefined,
+        ),
         isError: !ok || readError !== undefined,
       };
     } catch (error) {

@@ -284,3 +284,27 @@ describe("redirect credential safety helpers", () => {
     expect(sameOrigin(new URL("https://a.example:8443/"), new URL("https://a.example/"))).toBe(false);
   });
 });
+
+describe("response headers", () => {
+  it("keeps repeated fields and redacts credentials on bodyless responses", async () => {
+    const transport = vi.fn<Transport>().mockResolvedValue({
+      status: 204, statusText: "No Content", cancel: vi.fn(),
+      rawHeaders: ["Link", "first", "Link", "second", "Set-Cookie", "sample", "AUTHORIZATION", "sample", "Cookie", "sample"],
+    });
+    setFetchTransport(transport);
+    expect(await fetchUrlTool.execute({ url: "https://example.com/", method: "HEAD" }))
+      .toEqual({ output: "HTTP 204 No Content\n", isError: false });
+    expect(await fetchUrlTool.execute({ url: "https://example.com/", method: "HEAD", include_headers: true }))
+      .toEqual({ output: "HTTP 204 No Content\nResponse headers:\nLink: first\nLink: second\nSet-Cookie: [redacted]\nAUTHORIZATION: [redacted]\nCookie: [redacted]\n\n", isError: false });
+  });
+
+  it("shows headers before the body and retains the HTTP error status", async () => {
+    setFetchTransport(async () => ({
+      status: 404, statusText: "Not Found", cancel() {},
+      rawHeaders: ["Content-Type", "text/plain"],
+      body: (async function* () { yield new TextEncoder().encode("missing"); })(),
+    }));
+    expect(await fetchUrlTool.execute({ url: "https://example.com/", include_headers: true }))
+      .toEqual({ output: "HTTP 404 Not Found\nResponse headers:\nContent-Type: text/plain\n\nmissing", isError: true });
+  });
+});
