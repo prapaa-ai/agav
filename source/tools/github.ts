@@ -81,7 +81,8 @@ export const githubTool: ToolDefinition = {
     const title = String(input.title ?? "");
     const body = String(input.body ?? "");
     const base = String(input.base ?? "");
-    const number = input.number ? String(input.number) : "";
+    const number = input.number;
+    const positiveNumber = typeof number === "number" && Number.isSafeInteger(number) && number > 0;
 
     switch (op) {
       case "create_pr": {
@@ -97,8 +98,8 @@ export const githubTool: ToolDefinition = {
       }
 
       case "view_pr": {
-        if (!number) return { output: "PR number is required.", isError: true };
-        const result = await runInRepo(["pr", "view", number]);
+        if (!positiveNumber) return { output: "A positive integer PR number is required.", isError: true };
+        const result = await runInRepo(["pr", "view", String(number)]);
         return {
           output: result.stdout || result.stderr,
           isError: result.exitCode !== 0,
@@ -125,8 +126,8 @@ export const githubTool: ToolDefinition = {
       }
 
       case "view_issue": {
-        if (!number) return { output: "Issue number is required.", isError: true };
-        const result = await runInRepo(["issue", "view", number]);
+        if (!positiveNumber) return { output: "A positive integer issue number is required.", isError: true };
+        const result = await runInRepo(["issue", "view", String(number)]);
         return {
           output: result.stdout || result.stderr,
           isError: result.exitCode !== 0,

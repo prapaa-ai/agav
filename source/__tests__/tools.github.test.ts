@@ -96,3 +96,15 @@ describe("GitHub explicit repository", () => {
     expect(execFile).not.toHaveBeenCalled();
   });
 });
+
+it.each(["view_pr", "view_issue"])("rejects invalid issue and PR numbers for %s", async (operation) => {
+  vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+    (args.at(-1) as (error: null, stdout: string, stderr: string) => void)(null, "", "");
+    return {} as ReturnType<typeof execFile>;
+  });
+  for (const number of [0, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
+    vi.mocked(execFile).mockClear();
+    expect((await githubTool.execute({ operation, number })).isError).toBe(true);
+    expect(ghCalls()).toEqual([["auth", "status"]]);
+  }
+});
