@@ -207,7 +207,7 @@ describe("lsp result formatting", () => {
     expect(await tool.execute({ ...input, operation: "hover" })).toEqual({ output: "No hover information.", isError: false });
   });
 
-  it.each(["definition", "references", "hover"])("leaves %s RPC errors unchanged", async (operation) => {
+  it.each(["definition", "references", "hover", "document_symbols"])("leaves %s RPC errors unchanged", async (operation) => {
     rpcError = " server  error\n café 😀 ";
     expect(await tool.execute({ ...input, operation })).toEqual({ output: rpcError, isError: true });
   });
@@ -217,5 +217,70 @@ describe("lsp result formatting", () => {
       output: "Diagnostics requested. Results come via notifications (not yet captured).", isError: false,
     });
     expect(requests.map((request) => request.method)).toEqual(["initialize", "textDocument/didOpen"]);
+  });
+});
+
+describe("lsp document_symbols", () => {
+  const symbolRange = (startLine: number, endLine: number) => ({
+    start: { line: startLine, character: 0 },
+    end: { line: endLine, character: 1 },
+  });
+
+  it("renders a nested DocumentSymbol tree with kinds and one-based ranges", async () => {
+    response = [
+      {
+        name: "Greeter",
+        kind: 5,
+        range: symbolRange(0, 9),
+        selectionRange: { start: { line: 0, character: 6 }, end: { line: 0, character: 13 } },
+        children: [
+          { name: "greet", kind: 6, range: { start: { line: 2, character: 2 }, end: { line: 4, character: 3 } }, children: [] },
+        ],
+      },
+      { name: "main", kind: 12, range: symbolRange(11, 13) },
+    ];
+    expect(await tool.execute({ ...input, operation: "document_symbols" })).toEqual({
+      output: [
+        "Class Greeter [1:1-10:2]",
+        "  Method greet [3:3-5:4]",
+        "Function main [12:1-14:2]",
+      ].join("\n"),
+      isError: false,
+    });
+    expect(requests.map((request) => request.method)).toEqual(["initialize", "textDocument/documentSymbol"]);
+    expect(requests[1].params).toEqual({ textDocument: { uri: `file://${resolve(input.path)}` } });
+  });
+
+  it("renders flat SymbolInformation entries", async () => {
+    response = [
+      { name: "foo", kind: 12, location: { uri: "file:///workspace/example.ts", range: symbolRange(0, 2) }, containerName: "Bar" },
+    ];
+    expect(await tool.execute({ ...input, operation: "document_symbols" })).toEqual({
+      output: "Function foo [1:1-3:2]",
+      isError: false,
+    });
+  });
+
+  it.each([null, []])("returns a clear no-symbols result for %s", async (payload) => {
+    response = payload;
+    expect(await tool.execute({ ...input, operation: "document_symbols" })).toEqual({
+      output: "No symbols found.",
+      isError: false,
+    });
+  });
+
+  it("bounds output for very large symbol trees", async () => {
+    response = Array.from({ length: 205 }, (_, index) => ({
+      name: `fn${index}`,
+      kind: 12,
+      range: { start: { line: index, character: 0 }, end: { line: index, character: 5 } },
+    }));
+    const result = await tool.execute({ ...input, operation: "document_symbols" });
+    expect(result.isError).toBe(false);
+    const lines = result.output.split("\n");
+    expect(lines).toHaveLength(201);
+    expect(lines[0]).toBe("Function fn0 [1:1-1:6]");
+    expect(lines[199]).toBe("Function fn199 [200:1-200:6]");
+    expect(lines[200]).toBe("... (truncated after 200 symbols)");
   });
 });
