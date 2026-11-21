@@ -268,6 +268,9 @@ function formatResults(results: TestResults): string {
   return lines.join("\n");
 }
 
+const DEFAULT_TIMEOUT_MS = 120_000;
+const MAX_TIMEOUT_MS = 600_000;
+
 export const testRunnerTool: ToolDefinition = {
   schema: {
     name: "run_tests",
@@ -284,6 +287,12 @@ export const testRunnerTool: ToolDefinition = {
           type: "string",
           description: "Test file or directory to run (e.g. 'tests/test_auth.py', 'src/__tests__'). Defaults to running all tests.",
         },
+        timeout_ms: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_TIMEOUT_MS,
+          description: "Test process timeout in milliseconds (default: 120000, maximum: 600000).",
+        },
         framework: {
           type: "string",
           enum: ["pytest", "vitest", "jest", "go", "cargo"],
@@ -294,6 +303,12 @@ export const testRunnerTool: ToolDefinition = {
   },
 
   async execute(input, context): Promise<ToolResult> {
+    const requestedTimeout = input.timeout_ms;
+    if (requestedTimeout !== undefined && (typeof requestedTimeout !== "number" ||
+        !Number.isSafeInteger(requestedTimeout) || requestedTimeout < 1 || requestedTimeout > MAX_TIMEOUT_MS)) {
+      return { output: "Invalid timeout_ms: expected an integer from 1 to 600000.", isError: true };
+    }
+    const timeout = requestedTimeout ?? DEFAULT_TIMEOUT_MS;
     const testPath = input.path ? String(input.path) : undefined;
     const cwd = process.cwd();
 
@@ -333,9 +348,9 @@ export const testRunnerTool: ToolDefinition = {
       return { output: `Tests refused: ${cause instanceof Error ? cause.message : String(cause)}`, isError: true };
     }
 
-    const output = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; diagnostic?: string; errorCode?: string }>((resolve) => {
+    const output = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; diagnostic?: string; errorCode?: string; timedOut?: boolean }>((resolve) => {
       try {
-        execFile(sandboxed.file, sandboxed.args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd, env: sandboxed.env, signal: context?.signal }, (err, stdout, stderr) => {
+        execFile(sandboxed.file, sandboxed.args, { timeout, maxBuffer: 1024 * 1024, cwd, env: sandboxed.env, signal: context?.signal }, (err, stdout, stderr) => {
           try {
             if (!err && !context?.signal?.aborted) sandboxed.publish?.();
           } catch (cause) {
@@ -349,6 +364,7 @@ export const testRunnerTool: ToolDefinition = {
             stderr: stderr ?? "",
             exitCode: !err ? 0 : typeof err.code === "number" && !err.signal && !err.killed ? err.code : null,
             diagnostic: err?.message,
+            timedOut: err?.killed === true && err.signal === "SIGTERM" && err.code == null && !context?.signal?.aborted,
             errorCode: typeof err?.code === "string" ? err.code : undefined,
           });
         });
@@ -386,7 +402,7 @@ export const testRunnerTool: ToolDefinition = {
     return {
       output: formatted + (runnerUnavailable
         ? "\n\nTest runner could not start. Use an available relevant check or report the blocker and what remains unverified. Do not modify source code merely to resolve a missing runner."
-        : "") + (output.diagnostic ? `\n\nProcess error: ${output.diagnostic}` : ""),
+        : "") + (output.timedOut ? `\n\nTest process timed out after ${timeout} ms.` : "") + (output.diagnostic ? `\n\nProcess error: ${output.diagnostic}` : ""),
       isError,
       verification: {
         status,

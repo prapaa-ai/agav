@@ -156,3 +156,21 @@ it("reports cleanup errors after a synchronous launcher failure", async () => {
   expect(result.output).toContain("launcher failed");
   expect(result.output).toContain("cleanup failed");
 });
+
+describe("run_tests timeout", () => {
+  it("forwards a bounded timeout and preserves parsed output from a terminated process", async () => {
+    const tool = await runner("seatbelt");
+    output(" Test Files  1 passed (1)\n Tests  2 passed (2)", "", Object.assign(new Error("terminated"), { killed: true, signal: "SIGTERM", code: null }));
+    const result = await tool.execute({ framework: "vitest", timeout_ms: 35 });
+    expect(vi.mocked(execFile).mock.calls[0]?.[2]).toMatchObject({ timeout: 35 });
+    expect(result.verification).toMatchObject({ status: "failed", passed: 2 });
+    expect(result.output).toContain("timed out after 35 ms");
+    expect(unlinkSync).toHaveBeenCalledOnce();
+  });
+
+  it.each([null, 0, 1.5, "25", 600001])("rejects invalid timeout %j before launch", async (timeout_ms) => {
+    const tool = await runner("seatbelt");
+    expect(await tool.execute({ framework: "vitest", timeout_ms })).toMatchObject({ isError: true, output: expect.stringContaining("Invalid timeout_ms") });
+    expect(execFile).not.toHaveBeenCalled();
+  });
+});
