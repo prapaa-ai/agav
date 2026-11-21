@@ -24,11 +24,39 @@ async function checkGh(host?: string): Promise<string | null> {
   return null;
 }
 
+const MAX_LISTED_COMMENTS = 50;
+const MAX_COMMENTS_OUTPUT_CHARS = 8000;
+
+interface GhComment {
+  author?: { login?: string } | null;
+  body?: string | null;
+  createdAt?: string | null;
+}
+
+/** Render parsed `gh --json comments` output as bounded readable text, keeping multiline bodies intact. */
+function formatComments(kindLabel: string, number: number, comments: GhComment[]): string {
+  if (comments.length === 0) return `No comments on ${kindLabel} #${number}.`;
+  const shown = comments.slice(0, MAX_LISTED_COMMENTS);
+  const blocks = shown.map((comment) => {
+    const author = comment.author?.login || "unknown";
+    const when = comment.createdAt ? ` · ${comment.createdAt}` : "";
+    return `${author}${when}\n${comment.body ?? ""}`;
+  });
+  let output = `Comments on ${kindLabel} #${number} (${comments.length}):\n\n${blocks.join("\n\n---\n\n")}`;
+  const omitted = comments.length - shown.length;
+  if (omitted > 0) output += `\n\n... and ${omitted} more ${omitted === 1 ? "comment" : "comments"}.`;
+  if (output.length > MAX_COMMENTS_OUTPUT_CHARS) {
+    output = output.slice(0, MAX_COMMENTS_OUTPUT_CHARS) + "\n...(truncated)";
+  }
+  return output;
+}
+
 export const githubTool: ToolDefinition = {
   schema: {
     name: "github",
     description:
-      "Interact with GitHub via the gh CLI. Supports creating/viewing PRs and issues and commenting on them. " +
+      "Interact with GitHub via the gh CLI. Supports creating/viewing PRs and issues, commenting on them, " +
+      "and listing their comments. " +
       "Requires the gh CLI to be installed and authenticated.",
     // Not marked destructive — loop.ts handles non-SAFE_TOOLS confirmation.
     // This avoids blocking read-only operations like view_pr and list_prs.
@@ -37,7 +65,7 @@ export const githubTool: ToolDefinition = {
       properties: {
         operation: {
           type: "string",
-          enum: ["create_pr", "view_pr", "list_prs", "create_issue", "view_issue", "list_issues", "comment_issue", "comment_pr"],
+          enum: ["create_pr", "view_pr", "list_prs", "create_issue", "view_issue", "list_issues", "comment_issue", "comment_pr", "list_issue_comments", "list_pr_comments"],
           description: "The GitHub operation to perform.",
         },
         repo: {
@@ -155,6 +183,32 @@ export const githubTool: ToolDefinition = {
           output: result.stdout || result.stderr,
           isError: result.exitCode !== 0,
         };
+      }
+
+      case "list_issue_comments":
+      case "list_pr_comments": {
+        if (!positiveNumber) return { output: "A positive integer issue or PR number is required.", isError: true };
+        const kind = op === "list_pr_comments" ? "pr" : "issue";
+        const kindLabel = op === "list_pr_comments" ? "PR" : "issue";
+        const targetNumber = typeof number === "number" ? number : 0;
+        const result = await runInRepo([kind, "view", String(targetNumber), "--json", "comments"]);
+        if (result.exitCode !== 0) {
+          return {
+            output: result.stdout || result.stderr,
+            isError: true,
+          };
+        }
+        let comments: GhComment[];
+        try {
+          const parsed: unknown = JSON.parse(result.stdout);
+          if (!parsed || typeof parsed !== "object" || !Array.isArray((parsed as { comments?: unknown }).comments)) {
+            throw new Error("unexpected shape");
+          }
+          comments = (parsed as { comments: GhComment[] }).comments;
+        } catch {
+          return { output: "Could not parse the comment list returned by gh.", isError: true };
+        }
+        return { output: formatComments(kindLabel, targetNumber, comments), isError: false };
       }
 
       default:

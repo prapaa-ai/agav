@@ -108,3 +108,98 @@ it.each(["view_pr", "view_issue"])("rejects invalid issue and PR numbers for %s"
     expect(ghCalls()).toEqual([["auth", "status"]]);
   }
 });
+
+describe("tools/github list comments", () => {
+  let comments: Array<{ author?: { login?: string } | null; body?: string | null; createdAt?: string | null }>;
+
+  beforeEach(() => {
+    comments = [
+      { author: { login: "alice" }, body: "First point\n- second line", createdAt: "2026-11-21T10:00:06Z" },
+      { author: { login: "bob" }, body: "Looks good.", createdAt: "2026-11-21T11:00:00Z" },
+    ];
+    vi.mocked(execFile).mockReset();
+    vi.mocked(execFile).mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      const ghArgs = args[1] as string[];
+      cb(null, ghArgs[0] === "auth" ? "" : JSON.stringify({ comments }), "");
+      return undefined as any;
+    });
+  });
+
+  it.each([
+    ["list_issue_comments", "issue"],
+    ["list_pr_comments", "pr"],
+  ])("%s returns author, timestamp and multiline body for each comment", async (operation, kind) => {
+    const result = await githubTool.execute({ operation, number: 7 });
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe(
+      "Comments on " + (kind === "pr" ? "PR" : "issue") + " #7 (2):\n\n" +
+      "alice · 2026-11-21T10:00:06Z\nFirst point\n- second line\n\n---\n\n" +
+      "bob · 2026-11-21T11:00:00Z\nLooks good.",
+    );
+    expect(ghCalls()).toEqual([["auth", "status"], [kind, "view", "7", "--json", "comments"]]);
+  });
+
+  it("returns a clear result when there are no comments", async () => {
+    comments = [];
+    const result = await githubTool.execute({ operation: "list_issue_comments", number: 7 });
+
+    expect(result).toEqual({ output: "No comments on issue #7.", isError: false });
+  });
+
+  it.each([0, -3, 1.5, "12", undefined])("rejects number %s before running a comment list", async (number) => {
+    const result = await githubTool.execute({ operation: "list_pr_comments", number });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toBe("A positive integer issue or PR number is required.");
+    expect(ghCalls()).toEqual([["auth", "status"]]);
+  });
+
+  it("reports a failed comment list as an error", async () => {
+    vi.mocked(execFile).mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      const ghArgs = args[1] as string[];
+      if (ghArgs[0] === "auth") cb(null, "", "");
+      else cb(Object.assign(new Error("gh failed"), { code: 1 }), "", "GraphQL: Could not resolve to an issue\n");
+      return undefined as any;
+    });
+
+    const result = await githubTool.execute({ operation: "list_issue_comments", number: 99999 });
+
+    expect(result).toEqual({ output: "GraphQL: Could not resolve to an issue\n", isError: true });
+  });
+
+  it("reports unparseable gh output as an error", async () => {
+    vi.mocked(execFile).mockImplementation((...args: any[]) => {
+      const cb = args[args.length - 1];
+      const ghArgs = args[1] as string[];
+      cb(null, ghArgs[0] === "auth" ? "" : "not json", "");
+      return undefined as any;
+    });
+
+    const result = await githubTool.execute({ operation: "list_issue_comments", number: 7 });
+
+    expect(result).toEqual({ output: "Could not parse the comment list returned by gh.", isError: true });
+  });
+
+  it("caps the listing at 50 comments and names the omitted remainder", async () => {
+    comments = Array.from({ length: 52 }, (_, i) => ({
+      author: { login: `user${i}` }, body: "short", createdAt: "2026-11-21T10:00:06Z",
+    }));
+    const result = await githubTool.execute({ operation: "list_issue_comments", number: 7 });
+
+    expect(result.output).toContain("Comments on issue #7 (52):");
+    expect(result.output).toContain("... and 2 more comments.");
+    expect(result.output).toContain("user49");
+    expect(result.output).not.toContain("user50");
+  });
+
+  it("truncates an over-long listing and says so", async () => {
+    comments = [{ author: { login: "alice" }, body: "x".repeat(9000), createdAt: "2026-11-21T10:00:06Z" }];
+    const result = await githubTool.execute({ operation: "list_issue_comments", number: 7 });
+
+    expect(result.output.endsWith("\n...(truncated)")).toBe(true);
+    expect(result.output.length).toBeLessThan(9000);
+  });
+});
