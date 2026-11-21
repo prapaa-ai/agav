@@ -9,15 +9,24 @@ import { readSessionSnapshot, readSessionListingSnapshot } from "./client.js";
  * Check if a session's owner process is still alive.
  * Uses the same simple existence check as background-jobs Windows adapter.
  */
-async function isSessionProcessAlive(pid: number): Promise<boolean> {
+import { readProcessStartTimePosix } from "../background-jobs/platform/posix-common.js";
+
+async function isSessionProcessAlive(pid: number, expectedStartTime?: string): Promise<boolean> {
+  if (!pid) return false;
   try {
     process.kill(pid, 0);
-    return true;
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
     if (err.code === "EPERM") return true;
     return false;
   }
+  // PID exists; if we have expected start time, verify it matches
+  if (expectedStartTime) {
+    const actual = await readProcessStartTimePosix(pid);
+    if (!actual) return true; // Windows or unavailable; fall back to PID-only
+    return actual === expectedStartTime;
+  }
+  return true;
 }
 
 /**
@@ -31,7 +40,7 @@ async function reconcileSession(
   if (record.status !== "running" || !record.cancelRequested || !record.ownerPid) {
     return record;
   }
-  const alive = await isSessionProcessAlive(record.ownerPid);
+  const alive = await isSessionProcessAlive(record.ownerPid, record.ownerProcessStartTime);
   if (!alive) {
     const updated = await store.update(record.id, record.generation, r => {
       r.status = "interrupted";
