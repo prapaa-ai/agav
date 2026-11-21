@@ -308,3 +308,13 @@ describe("response headers", () => {
       .toEqual({ output: "HTTP 404 Not Found\nResponse headers:\nContent-Type: text/plain\n\nmissing", isError: true });
   });
 });
+
+it("visibly escapes terminal controls in header names and values", async () => {
+  setFetchTransport(async () => ({
+    status: 200, statusText: "OK", cancel() {},
+    rawHeaders: ["X-\tTest", "a\x1b[31m\r\nb"],
+  }));
+  const result = await fetchUrlTool.execute({ url: "https://example.com/", method: "HEAD", include_headers: true });
+  expect(result.output).toContain(String.raw`X-\u0009Test: a\u001b[31m\u000d\u000ab`);
+  expect(result.output).not.toMatch(/[\x1b\r\t]/);
+});
