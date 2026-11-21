@@ -17,6 +17,8 @@ type AgentState = {
   isLoading: boolean;
   subagentStates: SubagentProgress[];
   activePlan: Plan | null;
+  sessionId?: string;
+  sessionName?: string;
 };
 
 const boundary = vi.hoisted(() => ({
@@ -144,6 +146,16 @@ afterEach(() => {
 });
 
 describe("command status timeline", () => {
+  it("keeps the short session ID in the footer when the chat is renamed", async () => {
+    const ui = await mount({ sessionId: "abc12345-0000-4000-8000-000000000000" });
+    try {
+      expect(ui.frame()).toContain("session: abc12345");
+      await ui.update({ sessionName: "Renamed README walkthrough" });
+      expect(ui.frame()).toContain("session: abc12345");
+      expect(ui.frame()).not.toContain("Renamed README walkthrough");
+    } finally { ui.instance.unmount(); }
+  });
+
   it("keeps multiple steer submissions and deliveries before later completed tools and replies", async () => {
     const ui = await mount();
     try {

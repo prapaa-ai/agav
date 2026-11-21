@@ -1,9 +1,11 @@
 import { isAbsolute, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
+import { loadSession } from "../config/history.js";
 import { getContextLimits } from "../utils/tokens.js";
 import { getSandboxName } from "../utils/sandbox.js";
 import { computeContextOccupancy, resolveContextWindow } from "./context-usage.js";
+import { formatSessionTitle } from "./history.js";
 import type { StoredAccount } from "../account/types.js";
 
 /** Load the signed-in consumer Agav account for /status. Never throws. */
@@ -44,7 +46,7 @@ export const statusCommand: SlashCommand = {
   name: "status",
   description: "Show session status, model, and resource usage at a glance",
   autoSubmit: true,
-  usage: "Usage: /status\n\nShows active session configuration, model, reasoning effort, permissions, working directory, token usage, and MCP servers.",
+  usage: "Usage: /status\n\nShows active session ID and title, model, reasoning effort, permissions, working directory, token usage, and MCP servers.",
   async execute(_args: string, context: CommandContext): Promise<CommandResult> {
     await resolveContextWindow(context);
 
@@ -66,9 +68,19 @@ export const statusCommand: SlashCommand = {
     // unreadable store must never break /status, so loadStoredAccount never throws.
     const account = await loadConsumerAccount();
 
+    const rawSessionId = context.currentSessionId;
+    // A malformed history ID must not inject terminal controls or extra lines.
+    const sessionId = typeof rawSessionId === "string" && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(rawSessionId)
+      ? rawSessionId
+      : undefined;
+    const savedSession = sessionId ? await loadSession(sessionId) : null;
+    const title = savedSession && savedSession.id === sessionId ? formatSessionTitle(savedSession.title) : undefined;
     const lines: string[] = [
       "\x1b[1mSession Status\x1b[0m",
       "",
+      `  Session:      ${sessionId ? sessionId.slice(0, 8) : "Unsaved"}`,
+      ...(sessionId ? [`  Full ID:      ${sessionId}`] : []),
+      ...(title ? [`  Title:        ${title}`] : []),
       `  Model:        ${context.config?.model ?? "unknown"} (${context.config?.provider ?? "unknown"})`,
       `  Effort:       ${context.config?.effort ?? "medium"}`,
       `  Permissions:  ${permissionMode} · ${getSandboxName()}`,
