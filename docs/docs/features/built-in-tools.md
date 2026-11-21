@@ -173,9 +173,10 @@ Agav records prior content for tracked file edits in an in-memory undo stack:
 ```text
 /undo list
 /undo
+/undo <n>
 ```
 
-The stack contains up to twenty changes and does not survive process exit. A newly created file has no previous content to restore.
+The stack contains up to twenty changes and does not survive process exit. A newly created file has no previous content to restore. `/undo <n>` reverts only the change numbered `<n>` in `/undo list` (1 is the most recent entry) and leaves newer changes in place.
 
 ## File boundaries
 
