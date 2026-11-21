@@ -49,7 +49,7 @@ async function reconcileSession(
 
   // Re-validate inside the lock to prevent race with worker completion
   const updated = await store.update(record.id, record.generation, r => {
-    if (!activeStatuses.has(r.status) || !r.cancelRequested || r.ownerPid !== expectedPid) {
+    if (!activeStatuses.has(r.status) || !r.cancelRequested || r.ownerPid !== expectedPid || r.ownerProcessStartTime !== expectedStartTime) {
       return; // Worker completed or state changed; don't overwrite
     }
     r.status = "interrupted";

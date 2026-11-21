@@ -235,13 +235,13 @@ describe("resumable history", () => {
       current.ownerPid = process.pid; // Current process exists
       current.ownerProcessStartTime = "2020-01-01T00:00:00.000Z"; // Mismatched start time
     });
-    // Process exists but start time differs -> should be marked interrupted
+    // Process exists but start time differs -> should be marked interrupted (POSIX detects mismatch)
+    // On Windows (start time unavailable), it stays running since process exists
     const listed = await listResumableSessions();
     const record = listed.find(r => r.id === session.id);
-    // On POSIX: interrupted (start time mismatch detected)
-    // On Windows: interrupted (fallback to PID-only, process exists so alive=true -> stays running? No, Windows can't check start time so returns true for alive, stays running)
-    // The key is the test documents the expected behavior
-    expect(record?.runtime?.status).toBeDefined();
+    // POSIX: "interrupted" (start time mismatch)
+    // Windows: "running" (process exists, start time check skipped)
+    expect(["interrupted", "running"]).toContain(record?.runtime?.status);
   });
 
   it("regression: active running + cancelRequested with dead PID -> interrupted", async () => {
@@ -254,6 +254,7 @@ describe("resumable history", () => {
     });
     const listed = await listResumableSessions();
     const record = listed.find(r => r.id === session.id);
+    // Dead PID -> interrupted (no process to protect)
     expect(record?.runtime?.status).toBe("interrupted");
   });
 
@@ -267,6 +268,20 @@ describe("resumable history", () => {
     });
     const listed = await listResumableSessions();
     const record = listed.find(r => r.id === session.id);
+    // Dead PID -> interrupted for needs-approval too
     expect(record?.runtime?.status).toBe("interrupted");
+  });
+
+  it("regression: completed session with PID reused but different start time -> stays completed", async () => {
+    const session = await create("completed-pid-reuse-v2");
+    await store.update(session.id, session.generation, current => {
+      current.status = "completed";
+      current.ownerPid = process.pid; // Current process exists
+      current.ownerProcessStartTime = "2020-01-01T00:00:00.000Z"; // Different from actual
+    });
+    // Completed status should NOT be reconciled regardless of PID/start time
+    const listed = await listResumableSessions();
+    const record = listed.find(r => r.id === session.id);
+    expect(record?.runtime?.status).toBe("completed");
   });
 });
