@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import crypto from "node:crypto";
 import { getAgavDir } from "./config.js";
+import { parseCronExpression } from "../background-jobs/schedule/cron.js";
 import { ensureDir } from "../utils/fs.js";
 
 export interface ScheduledTask {
@@ -61,6 +62,24 @@ export async function removeScheduledTask(id: string): Promise<boolean> {
   const filtered = tasks.filter((t) => t.id !== task.id);
   await saveTasks(filtered);
   return true;
+}
+
+export async function updateScheduledTask(
+  id: string,
+  update: { cron?: string; prompt?: string },
+): Promise<ScheduledTask | undefined> {
+  const cron = update.cron?.trim();
+  const prompt = update.prompt?.trim();
+  if (cron !== undefined) parseCronExpression(cron);
+  if (prompt === "") throw new Error("Prompt must not be empty.");
+  if (cron === undefined && prompt === undefined) throw new Error("Specify a cron expression or prompt.");
+  const tasks = await loadScheduledTasks();
+  const task = tasks.find((candidate) => candidate.id === id);
+  if (!task) return undefined;
+  if (cron !== undefined) task.cron = cron;
+  if (prompt !== undefined) task.prompt = prompt;
+  await saveTasks(tasks);
+  return task;
 }
 
 export async function setTaskEnabled(id: string, enabled: boolean): Promise<boolean> {

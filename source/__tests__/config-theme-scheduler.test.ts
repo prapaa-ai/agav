@@ -57,3 +57,25 @@ describe("scheduler cronMatches", () => {
     expect(cronMatches("15 10 * * 7", date)).toBe(false);
   });
 });
+describe("scheduled task updates", () => {
+  const task = { id: "task-01", name: "daily", cron: "0 9 * * *", prompt: "old", enabled: false, createdAt: "2026-01-01", lastRunAt: "2026-01-02" };
+  beforeEach(() => {
+    readFile.mockReset().mockResolvedValue(JSON.stringify([task]));
+    writeFile.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("persists changes without resetting the ID or run metadata", async () => {
+    const { updateScheduledTask } = await import("../config/scheduler.js");
+    const expected = { ...task, cron: "15 10 * * *", prompt: "new text" };
+    expect(await updateScheduledTask(task.id, { cron: expected.cron, prompt: expected.prompt })).toEqual(expected);
+    expect(JSON.parse(String(writeFile.mock.calls[0]?.[1]))).toEqual([expected]);
+  });
+
+  it("does not write for invalid arguments or unknown IDs", async () => {
+    const { updateScheduledTask } = await import("../config/scheduler.js");
+    await expect(updateScheduledTask(task.id, { cron: "61 9 * * *" })).rejects.toThrow("Invalid cron");
+    await expect(updateScheduledTask(task.id, { prompt: " " })).rejects.toThrow("empty");
+    expect(await updateScheduledTask("task", { prompt: "new" })).toBeUndefined();
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+});
