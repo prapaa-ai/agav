@@ -8,6 +8,44 @@ function isCellBound(value: unknown): value is number {
 
 const MAX_CELL_METADATA_BYTES = 2_000;
 
+function boundedCellMetadata(metadata: Record<string, unknown>): string | undefined {
+  const parts: string[] = [];
+  let remaining = MAX_CELL_METADATA_BYTES;
+  function append(text: string): boolean {
+    remaining -= Buffer.byteLength(text);
+    if (remaining < 0) return false;
+    parts.push(text);
+    return true;
+  }
+  function string(value: string): boolean {
+    return value.length < remaining && append(JSON.stringify(value));
+  }
+  function value(input: unknown, depth: number): boolean {
+    if (depth > 32) return false;
+    if (typeof input === "string") return string(input);
+    if (input === null || typeof input === "number" || typeof input === "boolean") {
+      return append(JSON.stringify(input));
+    }
+    if (Array.isArray(input)) {
+      if (!append("[")) return false;
+      for (let index = 0; index < input.length; index++) {
+        if ((index > 0 && !append(",")) || !value(input[index], depth + 1)) return false;
+      }
+      return append("]");
+    }
+    if (typeof input !== "object" || !append("{")) return false;
+    const object = input as Record<string, unknown>;
+    let first = true;
+    for (const key in object) {
+      if (!Object.hasOwn(object, key)) continue;
+      if ((!first && !append(",")) || !string(key) || !append(":") || !value(object[key], depth + 1)) return false;
+      first = false;
+    }
+    return append("}");
+  }
+  return value(metadata, 0) ? parts.join("") : undefined;
+}
+
 interface NotebookCell {
   cell_type: string;
   source: string[];
@@ -102,12 +140,13 @@ export const readNotebookTool: ToolDefinition = {
             if (out.data?.["text/plain"]) lines.push("  " + out.data["text/plain"].join(""));
           }
         }
-        if (includeMetadata && cell.metadata && Object.keys(cell.metadata).length > 0) {
-          const metadata = JSON.stringify(cell.metadata);
-          lines.push("  Metadata:");
-          lines.push(Buffer.byteLength(metadata) <= MAX_CELL_METADATA_BYTES
-            ? "  " + metadata
-            : "  [Omitted: metadata exceeds 2000 bytes.]");
+        if (includeMetadata && cell.metadata) {
+          const metadata = boundedCellMetadata(cell.metadata);
+          if (metadata !== "{}") {
+            lines.push("  Metadata:", metadata === undefined
+              ? "  [Omitted: metadata exceeds 2000 bytes or nesting limit.]"
+              : "  " + metadata);
+          }
         }
         lines.push("");
       }

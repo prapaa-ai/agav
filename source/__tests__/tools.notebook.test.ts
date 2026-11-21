@@ -1,9 +1,12 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ToolRegistry } from "../tools/registry.js";
+import { MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_LINES } from "../utils/tool-output.js";
 import { readNotebookTool } from "../tools/notebook.js";
 
-vi.mock("node:fs/promises", () => ({ readFile: vi.fn(), writeFile: vi.fn() }));
+vi.mock("node:fs/promises", async (original) => ({ ...await original<typeof import("node:fs/promises")>(), readFile: vi.fn(), writeFile: vi.fn() }));
+vi.mock("../utils/temp-output.js", () => ({ MAX_SAVED_OUTPUT_BYTES: 0, tempOutputManager: { create: () => { throw new Error("Test only"); } } }));
 
 const path = resolve("fixture.ipynb");
 const mockRead = vi.mocked(readFile);
@@ -131,7 +134,7 @@ describe("read_notebook cell metadata", () => {
   it("bounds the serialized metadata by bytes", async () => {
     mockRead.mockResolvedValue(JSON.stringify({ cells: [{ ...notebook.cells[0], metadata: { large: "中".repeat(800) } }] }));
     const result = await readNotebookTool.execute({ path, include_metadata: true });
-    expect(result.output).toContain("Omitted: metadata exceeds 2000 bytes.");
+    expect(result.output).toContain("Omitted: metadata exceeds 2000 bytes or nesting limit.");
     expect(result.output).not.toContain("中");
   });
 
@@ -139,4 +142,27 @@ describe("read_notebook cell metadata", () => {
     expect(await readNotebookTool.execute({ path, include_metadata: null })).toMatchObject({ isError: true });
     expect(mockRead).not.toHaveBeenCalled();
   });
+});
+
+it("omits deeply nested metadata without failing the cell read", async () => {
+  const nested = '['.repeat(6000) + '0' + ']'.repeat(6000);
+  mockRead.mockResolvedValue(`{"cells":[{"cell_type":"markdown","source":["notes"],"metadata":{"nested":${nested}}}]}`);
+  const result = await readNotebookTool.execute({ path, include_metadata: true });
+  expect(result).toMatchObject({ isError: false });
+  expect(result.output).toContain("notes");
+  expect(result.output).toContain("nesting limit");
+});
+
+it("keeps many metadata-bearing cells within registry output limits", async () => {
+  const cells = Array.from({ length: 520 }, () => ({
+    cell_type: "markdown", source: ["notes"], metadata: { payload: "x".repeat(150) },
+  }));
+  mockRead.mockResolvedValue(JSON.stringify({ cells }));
+  const registry = new ToolRegistry();
+  registry.register(readNotebookTool);
+  const result = await registry.execute("read_notebook", { path, include_metadata: true });
+  expect(result.isError).toBe(false);
+  expect(result.output).toContain("middle omitted");
+  expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
+  expect(result.output.split("\n").length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_LINES);
 });
