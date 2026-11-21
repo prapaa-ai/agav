@@ -146,13 +146,18 @@ afterEach(() => {
 });
 
 describe("command status timeline", () => {
-  it("keeps the short session ID in the footer when the chat is renamed", async () => {
+  it("shows the session name in the footer when the chat is named", async () => {
+    const ui = await mount({ sessionId: "abc12345-0000-4000-8000-000000000000", sessionName: "Named" });
+    try {
+      expect(ui.frame()).toContain("session: Named");
+      expect(ui.frame()).not.toContain("session: abc12345");
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("keeps the short session ID in the footer when the chat is unnamed", async () => {
     const ui = await mount({ sessionId: "abc12345-0000-4000-8000-000000000000" });
     try {
       expect(ui.frame()).toContain("session: abc12345");
-      await ui.update({ sessionName: "Renamed README walkthrough" });
-      expect(ui.frame()).toContain("session: abc12345");
-      expect(ui.frame()).not.toContain("Renamed README walkthrough");
     } finally { ui.instance.unmount(); }
   });
 
