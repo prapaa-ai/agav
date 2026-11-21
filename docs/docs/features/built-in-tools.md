@@ -111,6 +111,12 @@ bracket ranges, and escapes are not supported by this option. `include`
 is case-insensitive in the JavaScript fallback (always used on Windows)
 and case-sensitive in native grep.
 
+Use `context_before` and `context_after` (integers from 0 to 50) to show
+surrounding lines. Matches keep the `path:N:text` format, context lines
+use `path-N-text`, overlapping windows are merged, and `--` separates
+non-adjacent groups. `max_results` still counts matches only. Context
+cannot be combined with `files_only`.
+
 ## Structured test runs and verification
 
 `run_tests` supports `pytest`, `vitest`, `jest`, `go`, and `cargo`. It detects the framework from the working directory, or accepts a `framework` override. `path` selects a test target, not a new working directory; Cargo treats it as a test-name filter. If detection fails, specify the framework or use `run_command` for the project's own test script.

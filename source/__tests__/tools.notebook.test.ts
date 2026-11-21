@@ -44,6 +44,29 @@ describe("read_notebook", () => {
     expect(await readNotebookTool.execute({ path, include_outputs: true })).toEqual(result);
   });
 
+  it("reads notebook source and cached output stored as strings", async () => {
+    mockRead.mockResolvedValueOnce(JSON.stringify({
+      ...notebook,
+      cells: [
+        { ...notebook.cells[0], source: "# Notes\nSecond line" },
+        {
+          ...notebook.cells[1],
+          outputs: [
+            { output_type: "stream", name: "stdout", text: "first\nsecond\n" },
+            { output_type: "execute_result", execution_count: 1, metadata: {}, data: { "text/plain": "result" } },
+          ],
+        },
+      ],
+    }));
+
+    const result = await readNotebookTool.execute({ path });
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("--- Cell 1 [markdown] ---\n# Notes\nSecond line");
+    expect(result.output).toContain("--- Cell 2 [code] ---\nprint(value)\nvalue");
+    expect(result.output).toContain("  Output:\n  first\nsecond\n\n  result");
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
   it("omits cached outputs while preserving source, original indices, and the file", async () => {
     const result = await readNotebookTool.execute({ path, include_outputs: false });
     expect(result.isError).toBe(false);

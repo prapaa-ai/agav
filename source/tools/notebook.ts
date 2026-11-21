@@ -6,10 +6,12 @@ function isCellBound(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+type NotebookText = string | string[];
+
 interface NotebookCell {
   cell_type: string;
-  source: string[];
-  outputs?: Array<{ text?: string[]; output_type?: string; data?: Record<string, string[]> }>;
+  source: NotebookText;
+  outputs?: Array<{ text?: NotebookText; output_type?: string; data?: Record<string, NotebookText> }>;
 }
 
 interface Notebook {
@@ -80,15 +82,17 @@ export const readNotebookTool: ToolDefinition = {
 
       for (let i = first - 1; i < last; i++) {
         const cell = nb.cells[i]!;
-        const src = cell.source.join("");
+        const src = notebookText(cell.source);
         lines.push(`--- Cell ${i + 1} [${cell.cell_type}] ---`);
         lines.push(src);
 
         if (includeOutputs !== false && cell.outputs && cell.outputs.length > 0) {
           lines.push("  Output:");
           for (const out of cell.outputs) {
-            if (out.text) lines.push("  " + out.text.join(""));
-            if (out.data?.["text/plain"]) lines.push("  " + out.data["text/plain"].join(""));
+            if (out.text !== undefined) lines.push("  " + notebookText(out.text));
+            if (out.data?.["text/plain"] !== undefined) {
+              lines.push("  " + notebookText(out.data["text/plain"]));
+            }
           }
         }
         lines.push("");
@@ -101,6 +105,10 @@ export const readNotebookTool: ToolDefinition = {
     }
   },
 };
+
+function notebookText(value: NotebookText): string {
+  return typeof value === "string" ? value : value.join("");
+}
 
 export const editNotebookTool: ToolDefinition = {
   schema: {
