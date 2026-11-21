@@ -24,6 +24,25 @@ describe("theme", () => {
   });
 });
 
+describe("scheduler findScheduledTask", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  it("matches by full id, then by id prefix, and misses otherwise", async () => {
+    const { findScheduledTask } = await import("../config/scheduler.js");
+    const tasks = [
+      { id: "abc12345", name: "a", prompt: "p", cron: "* * * * *", enabled: true, createdAt: "" },
+      { id: "def67890", name: "b", prompt: "q", cron: "* * * * *", enabled: false, createdAt: "" },
+    ];
+
+    expect(findScheduledTask(tasks, "abc12345")?.name).toBe("a");
+    expect(findScheduledTask(tasks, "abc")?.name).toBe("a");
+    expect(findScheduledTask(tasks, "def")?.name).toBe("b");
+    expect(findScheduledTask(tasks, "zzz")).toBeUndefined();
+  });
+});
+
 describe("scheduler cronMatches", () => {
   beforeEach(() => {
     vi.resetModules();
