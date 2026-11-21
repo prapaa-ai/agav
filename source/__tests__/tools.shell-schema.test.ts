@@ -82,6 +82,14 @@ describe("session shell capability schema", () => {
     expect(vi.mocked(execFileSync).mock.calls.some(([file]) => file === "/bin/sh")).toBe(false);
   });
 
+  it("exposes the optional cwd working directory", async () => {
+    const schema = await shellSchema();
+    const properties = schema.inputSchema.properties as Record<string, { type?: string }>;
+    expect(properties.cwd?.type).toBe("string");
+    expect(schema.inputSchema.required).not.toContain("cwd");
+    expect(schema.description).toContain("cwd");
+  });
+
   it("uses the same capability schema for explicitly scoped registries", async () => {
     installed(["bwrap"]);
     const { createBuiltinToolRegistry } = await import("../tools/registry-factory.js");

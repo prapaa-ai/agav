@@ -27,9 +27,9 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, spawn: vi.fn(actual.spawn), execFile: vi.fn(actual.execFile) };
 });
 
-import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { spawn, execFile } from "node:child_process";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { platform, tmpdir } from "node:os";
 import { shellTool } from "../tools/shell.js";
 import { runInSandbox } from "../utils/sandbox.js";
@@ -456,5 +456,78 @@ describe("sandbox streaming option", () => {
     if (backend === "seatbelt") expect(args).toContain(`HOME_SSH=${process.env.HOME ?? "/tmp"}/.ssh`);
     else expect(args?.join(" ")).toContain(`--tmpfs ${process.env.HOME ?? "/tmp"}/.ssh`);
     expect(options?.env).not.toHaveProperty("GITHUB_TOKEN");
+  });
+});
+
+describe("explicit working directory", () => {
+  const printCwd = command("process.stdout.write(process.cwd())");
+
+  it("runs the command in an explicit absolute cwd", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agav-shell-cwd-"));
+    directories.add(dir);
+
+    const result = await shellTool.execute({ command: printCwd, sandbox: "none", cwd: dir });
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe(dir);
+  });
+
+  it("resolves a relative cwd against the current working directory", async () => {
+    const dir = mkdtempSync(join(process.cwd(), "agav-shell-cwd-"));
+    directories.add(dir);
+
+    const result = await shellTool.execute({ command: printCwd, sandbox: "none", cwd: basename(dir) });
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe(dir);
+  });
+
+  it("rejects a missing cwd without running the command", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agav-shell-cwd-"));
+    directories.add(dir);
+    const missing = join(dir, "no-such-dir");
+
+    const result = await shellTool.execute({
+      command: command("process.stdout.write('RAN')"),
+      sandbox: "none",
+      cwd: missing,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Invalid cwd");
+    expect(result.output).toContain("does not exist");
+    expect(result.output).not.toContain("RAN");
+  });
+
+  it("rejects a non-directory cwd without running the command", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agav-shell-cwd-"));
+    directories.add(dir);
+    const file = join(dir, "note.txt");
+    writeFileSync(file, "hi", "utf8");
+
+    const result = await shellTool.execute({
+      command: command("process.stdout.write('RAN')"),
+      sandbox: "none",
+      cwd: file,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Invalid cwd");
+    expect(result.output).toContain("is not a directory");
+    expect(result.output).not.toContain("RAN");
+  });
+
+  it("rejects a non-string cwd", async () => {
+    const result = await shellTool.execute({ command: "echo hi", sandbox: "none", cwd: 42 as unknown as string });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Invalid cwd");
+  });
+
+  it("keeps the current directory when cwd is omitted", async () => {
+    const result = await shellTool.execute({ command: printCwd, sandbox: "none" });
+
+    expect(result.isError).toBe(false);
+    expect(result.output).toBe(process.cwd());
   });
 });
