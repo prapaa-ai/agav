@@ -241,7 +241,8 @@ describe("resumable history", () => {
     const record = listed.find(r => r.id === session.id);
     // POSIX: "interrupted" (start time mismatch)
     // Windows: "running" (process exists, start time check skipped)
-    expect(["interrupted", "running"]).toContain(record?.runtime?.status);
+    const isWindows = process.platform === "win32";
+    expect(record?.runtime?.status).toBe(isWindows ? "running" : "interrupted");
   });
 
   it("regression: active running + cancelRequested with dead PID -> interrupted", async () => {
@@ -280,6 +281,20 @@ describe("resumable history", () => {
       current.ownerProcessStartTime = "2020-01-01T00:00:00.000Z"; // Different from actual
     });
     // Completed status should NOT be reconciled regardless of PID/start time
+    const listed = await listResumableSessions();
+    const record = listed.find(r => r.id === session.id);
+    expect(record?.runtime?.status).toBe("completed");
+  });
+
+  it("regression: completion race - worker completes before reconciliation reads record", async () => {
+    const session = await create("completion-race");
+    // Simulate worker completing and updating status to "completed" before reconciliation
+    await store.update(session.id, session.generation, current => {
+      current.status = "completed";
+      current.ownerPid = process.pid;
+      current.ownerProcessStartTime = "2024-01-01T00:00:00.000Z";
+    });
+    // Reconciliation should see status !== active and NOT overwrite
     const listed = await listResumableSessions();
     const record = listed.find(r => r.id === session.id);
     expect(record?.runtime?.status).toBe("completed");
