@@ -16,8 +16,12 @@ export const contextCommand: SlashCommand = {
   name: "context",
   description: "Show context window usage",
   autoSubmit: true,
-  usage: "Usage: /context\n\nShows a breakdown of what's consuming your context window:\nsystem prompt, tools, MCP tools, skills, and conversation messages.",
-  async execute(_args: string, context: CommandContext): Promise<CommandResult> {
+  usage: "Usage: /context [--json]\n\nShows a breakdown of what's consuming your context window:\nsystem prompt, tools, MCP tools, skills, and conversation messages.",
+  async execute(args: string, context: CommandContext): Promise<CommandResult> {
+    const output = args.trim();
+    if (output && output !== "--json") {
+      return { type: "message", text: "Usage: /context [--json]" };
+    }
     await resolveContextWindow(context);
     const limits = getContextLimits(context.config.model, context.conversation.getContextWindow());
     const maxTokens = limits.maxTokens;
@@ -28,6 +32,22 @@ export const contextCommand: SlashCommand = {
       usedTokens, builtinTools, mcpTools, skills, effectivePrompt,
     } = occupancy;
     const freeTokens = Math.max(0, maxTokens - usedTokens);
+
+    if (output === "--json") {
+      return {
+        type: "message",
+        text: JSON.stringify({
+          maxTokens,
+          usedTokens,
+          freeTokens,
+          systemTokens,
+          builtinToolTokens,
+          mcpToolTokens,
+          skillTokens,
+          messageTokens,
+        }),
+      };
+    }
 
     const debugState = context.getDebugState();
 
