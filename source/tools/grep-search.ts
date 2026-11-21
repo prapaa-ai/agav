@@ -7,6 +7,70 @@ import type { ToolDefinition, ToolResult } from "./types.js";
 const SKIP_DIRS = new Set(["node_modules", ".git", "build", "dist", ".next", ".venv", "__pycache__", "coverage"]);
 const MAX_FILE_SIZE = 1_048_576; // 1 MB — skip files larger than this
 const DEFAULT_MAX_RESULTS = 100;
+const MAX_CONTEXT_LINES = 50;
+
+interface GrepContext {
+  before: number;
+  after: number;
+}
+
+/** A matching or context line; line 0 marks a raw notice such as a binary-file match. */
+interface GrepLine {
+  path: string;
+  line: number;
+  text: string;
+  match: boolean;
+}
+
+/** Keep the first `limit` matches with their context, dropping context that only leads into later matches. */
+function limitContextLines(lines: GrepLine[], limit: number, after: number): GrepLine[] {
+  const kept: GrepLine[] = [];
+  let matches = 0;
+  let last: GrepLine | undefined;
+  for (const line of lines) {
+    if (line.match && ++matches > limit) break;
+    if (line.match || matches < limit || (last && line.path === last.path && line.line <= last.line + after)) {
+      kept.push(line);
+    }
+    if (line.match) last = line;
+  }
+  return kept;
+}
+
+/** Format lines like grep -nH with context: "path:N:text" for matches, "path-N-text" for context, "--" between gaps. */
+function formatContextLines(lines: GrepLine[]): string[] {
+  const output: string[] = [];
+  let previous: GrepLine | undefined;
+  for (const line of lines) {
+    if (previous && (line.line === 0 || line.path !== previous.path || line.line !== previous.line + 1)) {
+      output.push("--");
+    }
+    const separator = line.match ? ":" : "-";
+    output.push(line.line === 0 ? line.text : `${line.path}${separator}${line.line}${separator}${line.text}`);
+    previous = line;
+  }
+  return output;
+}
+
+/** Parse native grep --null context output, dropping its own group separators. */
+function parseNativeContextLines(lines: string[]): GrepLine[] {
+  const parsed: GrepLine[] = [];
+  for (const line of lines) {
+    const nul = line.indexOf("\0");
+    const prefix = nul === -1 ? null : /^(\d+)([:-])/.exec(line.slice(nul + 1));
+    if (prefix) {
+      parsed.push({
+        path: line.slice(0, nul),
+        line: Number(prefix[1]),
+        text: line.slice(nul + 1 + prefix[0].length),
+        match: prefix[2] === ":",
+      });
+    } else if (line !== "--") {
+      parsed.push({ path: "", line: 0, text: line, match: true });
+    }
+  }
+  return parsed;
+}
 
 /** Convert a simple glob pattern like "*.ts" to a RegExp. */
 function globToRegex(glob: string, flags = "i"): RegExp {
@@ -34,13 +98,39 @@ async function nodeGrep(
   exclude: RegExp | undefined,
   filesOnly: boolean,
   limit: number,
-): Promise<string[]> {
+  context?: GrepContext,
+): Promise<{ results: string[]; matches: number }> {
   const matchesFileName = (name: string) =>
     (!include || include.test(name)) && (!exclude || !exclude.test(name));
   const results: string[] = [];
+  const contextLines: GrepLine[] = [];
+  let matches = 0;
+
+  const finish = () => ({
+    results: context ? formatContextLines(limitContextLines(contextLines, limit, context.after)) : results.slice(0, limit),
+    matches,
+  });
+
+  function addContext(path: string, lines: string[], lineCount: number, { before, after }: GrepContext): void {
+    const hits: number[] = [];
+    for (let i = 0; i < lineCount && matches <= limit; i++) {
+      if (pattern.test(lines[i]!)) {
+        hits.push(i);
+        matches++;
+      }
+    }
+    let next = 0;
+    for (const hit of hits) {
+      const end = Math.min(lineCount - 1, hit + after);
+      for (let i = Math.max(next, hit - before); i <= end; i++) {
+        contextLines.push({ path, line: i + 1, text: lines[i]!, match: pattern.test(lines[i]!) });
+      }
+      next = end + 1;
+    }
+  }
 
   async function walkDir(dir: string): Promise<void> {
-    if (results.length > limit) return;
+    if (matches > limit) return;
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -49,7 +139,7 @@ async function nodeGrep(
       return;
     }
     for (const entry of entries) {
-      if (results.length > limit) return;
+      if (matches > limit) return;
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) {
@@ -65,9 +155,14 @@ async function nodeGrep(
           const content = buf.toString("utf-8");
           const lines = content.split("\n");
           const lineCount = content === "" ? 0 : content.endsWith("\n") ? lines.length - 1 : lines.length;
+          if (context) {
+            addContext(fullPath, lines, lineCount, context);
+            continue;
+          }
           for (let i = 0; i < lineCount; i++) {
-            if (results.length > limit) return;
+            if (matches > limit) return;
             if (pattern.test(lines[i]!)) {
+              matches++;
               results.push(filesOnly ? fullPath : `${fullPath}:${i + 1}:${lines[i]}`);
               if (filesOnly) break;
             }
@@ -90,24 +185,29 @@ async function nodeGrep(
           const content = buf.toString("utf-8");
           const lines = content.split("\n");
           const lineCount = content === "" ? 0 : content.endsWith("\n") ? lines.length - 1 : lines.length;
+          if (context) {
+            addContext(searchPath, lines, lineCount, context);
+            return finish();
+          }
           for (let i = 0; i < lineCount; i++) {
-            if (results.length > limit) break;
+            if (matches > limit) break;
             if (pattern.test(lines[i]!)) {
+              matches++;
               results.push(filesOnly ? searchPath : `${searchPath}:${i + 1}:${lines[i]}`);
               if (filesOnly) break;
             }
           }
         }
       }
-      return results;
+      return finish();
     }
   } catch (error) {
     if (filesOnly) throw error;
-    return results;
+    return finish();
   }
 
   await walkDir(searchPath);
-  return results;
+  return finish();
 }
 
 /** Run native grep and return output. Rejects if grep is not found. */
@@ -119,6 +219,7 @@ async function nativeGrep(
   filesOnly = false,
   fixedStrings = false,
   ignoreCase = false,
+  context?: GrepContext,
 ): Promise<{ stdout: string; stderr: string; code: number | string | null }> {
   // grep can exclude its explicit root too; searching "." bypasses only that
   // root's name, while still excluding generated directories below it.
@@ -128,6 +229,9 @@ async function nativeGrep(
   args.push(fixedStrings ? "-F" : "-E");
   if (ignoreCase) {
     args.push("-i");
+  }
+  if (context) {
+    args.push("-B", String(context.before), "-A", String(context.after), "--null");
   }
   if (include) {
     args.push("--include", include);
@@ -165,7 +269,8 @@ export const grepSearchTool: ToolDefinition = {
     description:
       "Search for a pattern in files using grep. Returns matching lines with file paths and line numbers. " +
       "Supports regex patterns by default; pass fixed_strings: true to match exact literal text. " +
-      "Searches recursively from the given directory. Use exclude to skip matching file names. Use files_only for matching paths without content. Use ignore_case to match without regard to letter case.",
+      "Searches recursively from the given directory. Use exclude to skip matching file names. Use files_only for matching paths without content. Use ignore_case to match without regard to letter case. " +
+      "Use context_before and context_after to include surrounding lines (path-N-text) around matches (path:N:text).",
     inputSchema: {
       type: "object",
       properties: {
@@ -202,6 +307,18 @@ export const grepSearchTool: ToolDefinition = {
           minimum: 1,
           description: `Maximum matching lines or file paths to return (default: ${DEFAULT_MAX_RESULTS})`,
         },
+        context_before: {
+          type: "integer",
+          minimum: 0,
+          maximum: MAX_CONTEXT_LINES,
+          description: "Lines of context to show before each match (default: 0). Not allowed with files_only.",
+        },
+        context_after: {
+          type: "integer",
+          minimum: 0,
+          maximum: MAX_CONTEXT_LINES,
+          description: "Lines of context to show after each match (default: 0). Not allowed with files_only.",
+        },
       },
       required: ["pattern"],
     },
@@ -224,6 +341,20 @@ export const grepSearchTool: ToolDefinition = {
       return { output: "max_results must be a positive safe integer", isError: true };
     }
     const limit = requestedLimit ?? DEFAULT_MAX_RESULTS;
+    for (const name of ["context_before", "context_after"]) {
+      const value = input[name];
+      if (value !== undefined && (
+        typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > MAX_CONTEXT_LINES
+      )) {
+        return { output: `${name} must be an integer from 0 to ${MAX_CONTEXT_LINES}`, isError: true };
+      }
+    }
+    const before = (input.context_before as number | undefined) ?? 0;
+    const after = (input.context_after as number | undefined) ?? 0;
+    if (input.files_only === true && (before > 0 || after > 0)) {
+      return { output: "context_before and context_after cannot be used with files_only.", isError: true };
+    }
+    const context = before > 0 || after > 0 ? { before, after } : undefined;
     const excludeGlob = input.exclude;
     if (excludeGlob !== undefined &&
         (typeof excludeGlob !== "string" || !excludeGlob || /[\/\\\[\]\0\r\n]/.test(excludeGlob))) {
@@ -248,19 +379,24 @@ export const grepSearchTool: ToolDefinition = {
     // On Unix, try native grep first for speed, fall back to Node.js if not found.
     if (platform() !== "win32") {
       try {
-        const result = await nativeGrep(pattern, searchPath, include, exclude, filesOnly, fixedStrings, ignoreCase);
+        const result = await nativeGrep(pattern, searchPath, include, exclude, filesOnly, fixedStrings, ignoreCase, context);
         const incomplete = result.code !== 0 && result.code !== 1;
         const partialLine = (requestedLimit !== undefined || filesOnly) && incomplete && !result.stdout.endsWith("\n");
         const stdout = partialLine ? result.stdout.slice(0, result.stdout.lastIndexOf("\n") + 1) : result.stdout;
         const lines = stdout.split("\n").filter(Boolean);
-        const output = lines.length > limit
-          ? lines.slice(0, limit).join("\n") + (filesOnly || requestedLimit !== undefined
+        const contextLines = context ? parseNativeContextLines(lines) : undefined;
+        const matchCount = contextLines ? contextLines.filter((line) => line.match).length : lines.length;
+        const limited = context && contextLines
+          ? formatContextLines(limitContextLines(contextLines, limit, context.after))
+          : lines.slice(0, limit);
+        const output = matchCount > limit
+          ? limited.join("\n") + (filesOnly || requestedLimit !== undefined
             ? capNotice
-            : `\n... ${lines.length - limit} more matches`)
-          : stdout.trimEnd();
+            : `\n... ${matchCount - limit} more matches`)
+          : contextLines ? limited.join("\n") : stdout.trimEnd();
         if ((filesOnly || requestedLimit !== undefined) && incomplete) {
-          if (result.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" && lines.length >= limit) {
-            return { output: lines.slice(0, limit).join("\n") + capNotice, isError: false };
+          if (result.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" && matchCount >= limit) {
+            return { output: limited.join("\n") + capNotice, isError: false };
           }
           return { output: output + "\nSearch incomplete: " + (result.stderr || "grep failed"), isError: true };
         }
@@ -281,11 +417,11 @@ export const grepSearchTool: ToolDefinition = {
       const escapedPattern = fixedStrings ? pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : pattern;
       const regex = new RegExp(escapedPattern, ignoreCase ? "i" : "");
       const includeRegex = include ? globToRegex(include) : undefined;
-      const results = await nodeGrep(searchPath, regex, includeRegex, exclude?.regex, filesOnly, limit);
-      if (results.length === 0) {
+      const { results, matches } = await nodeGrep(searchPath, regex, includeRegex, exclude?.regex, filesOnly, limit, context);
+      if (matches === 0) {
         return { output: "No matches found.", isError: false };
       }
-      const output = results.slice(0, limit).join("\n") + (results.length > limit ? capNotice : "");
+      const output = results.join("\n") + (matches > limit ? capNotice : "");
       return { output, isError: false };
     } catch (err) {
       return { output: `Search failed: ${err instanceof Error ? err.message : String(err)}`, isError: true };
