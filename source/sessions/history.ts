@@ -37,18 +37,24 @@ async function reconcileSession(
   store: SessionRuntimeStore,
   record: SessionRuntimeRecord,
 ): Promise<SessionRuntimeRecord> {
+  // Quick check before locking
   if (record.status !== "running" || !record.cancelRequested || !record.ownerPid) {
     return record;
   }
-  const alive = await isSessionProcessAlive(record.ownerPid, record.ownerProcessStartTime);
-  if (!alive) {
-    const updated = await store.update(record.id, record.generation, r => {
-      r.status = "interrupted";
-      r.error ??= "Session process died after cancellation was requested";
-    });
-    return updated;
-  }
-  return record;
+  const expectedPid = record.ownerPid;
+  const expectedStartTime = record.ownerProcessStartTime;
+  const alive = await isSessionProcessAlive(expectedPid, expectedStartTime);
+  if (alive) return record;
+
+  // Re-validate inside the lock to prevent race with worker completion
+  const updated = await store.update(record.id, record.generation, r => {
+    if (r.status !== "running" || !r.cancelRequested || r.ownerPid !== expectedPid) {
+      return; // Worker completed or state changed; don't overwrite
+    }
+    r.status = "interrupted";
+    r.error ??= "Session process died after cancellation was requested";
+  });
+  return updated;
 }
 
 /**
