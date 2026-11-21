@@ -19,6 +19,7 @@ Use memory for verified facts that should influence future conversations, not fo
 | `/memory search <query>` | Find saved memories whose name, description, or content contains `<query>`, ignoring case. |
 | `/memory path` | Show where the current project's memories are stored. |
 | `/memory delete <memory name>` | Remove the saved memory named `<memory name>`. |
+| `/memory rename <old-name> <new-name>` | Rename the saved memory named `<old-name>`, keeping its type, description, and content. |
 | `/forget` | List memories so you can select one to remove. |
 | `/forget <memory name>` | Remove the saved memory named `<memory name>`. |
 | `/memory clear` | Remove every memory for the current project. |
