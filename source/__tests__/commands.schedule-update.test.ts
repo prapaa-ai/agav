@@ -12,7 +12,7 @@ beforeEach(() => update.mockReset());
 
 it.each([
   ['--cron "0 10 * * *"', { cron: "0 10 * * *", prompt: undefined }],
-  ["--prompt new  prompt", { cron: undefined, prompt: "new  prompt" }],
+  ["--prompt  new  prompt  ", { cron: undefined, prompt: " new  prompt  " }],
   ['--cron "0 10 * * *" --prompt new prompt', { cron: "0 10 * * *", prompt: "new prompt" }],
 ])("passes the declared patch for %s", async (args, expected) => {
   await scheduleCommand.execute(`update task-01 ${args}`, context);

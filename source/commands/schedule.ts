@@ -96,7 +96,7 @@ export const scheduleCommand: SlashCommand = {
     }
 
     if (action === "update") {
-      const input = /^update\s+(\S+)(?:\s+--cron\s+"([^"]+)")?(?:\s+--prompt\s+([\s\S]+))?$/i.exec(args.trim())
+      const input = /^update\s+(\S+)(?:\s+--cron\s+"([^"]+)")?(?:\s+--prompt[ \t]([\s\S]*))?\s*$/i.exec(args.trimStart())
       const usage = 'Usage: /schedule update <id> [--cron "<cron>"] [--prompt <text>]'
       if (!input || (input[2] === undefined && input[3] === undefined)) {
         return { type: "message", text: usage }

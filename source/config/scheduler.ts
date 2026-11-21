@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import crypto from "node:crypto";
 import { getAgavDir } from "./config.js";
@@ -29,7 +29,15 @@ export async function loadScheduledTasks(): Promise<ScheduledTask[]> {
 
 async function saveTasks(tasks: ScheduledTask[]): Promise<void> {
   await ensureDir(getAgavDir());
-  await writeFile(getSchedulerPath(), JSON.stringify(tasks, null, 2));
+  const path = getSchedulerPath();
+  const temporary = `${path}.${crypto.randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify(tasks, null, 2), { flag: "wx", mode: 0o600 });
+    await rename(temporary, path);
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
 }
 
 export async function addScheduledTask(
@@ -69,9 +77,9 @@ export async function updateScheduledTask(
   update: { cron?: string; prompt?: string },
 ): Promise<ScheduledTask | undefined> {
   const cron = update.cron?.trim();
-  const prompt = update.prompt?.trim();
+  const prompt = update.prompt;
   if (cron !== undefined) parseCronExpression(cron);
-  if (prompt === "") throw new Error("Prompt must not be empty.");
+  if (prompt !== undefined && !prompt.trim()) throw new Error("Prompt must not be empty.");
   if (cron === undefined && prompt === undefined) throw new Error("Specify a cron expression or prompt.");
   const tasks = await loadScheduledTasks();
   const task = tasks.find((candidate) => candidate.id === id);
@@ -101,8 +109,12 @@ export async function markTaskRun(id: string): Promise<void> {
 }
 
 export function cronMatches(cron: string, date: Date): boolean {
-  const parts = cron.trim().split(/\s+/);
-  if (parts.length !== 5) return false;
+  let fields: ReturnType<typeof parseCronExpression>;
+  try {
+    fields = parseCronExpression(cron);
+  } catch {
+    return false;
+  }
 
   const minute = date.getMinutes();
   const hour = date.getHours();
@@ -111,18 +123,19 @@ export function cronMatches(cron: string, date: Date): boolean {
   const dayOfWeek = date.getDay();
 
   return (
-    fieldMatches(parts[0]!, minute, 0, 59) &&
-    fieldMatches(parts[1]!, hour, 0, 23) &&
-    fieldMatches(parts[2]!, dayOfMonth, 1, 31) &&
-    fieldMatches(parts[3]!, month, 1, 12) &&
-    fieldMatches(parts[4]!, dayOfWeek, 0, 6)
+    fieldMatches(fields.minute, minute) &&
+    fieldMatches(fields.hour, hour) &&
+    fieldMatches(fields.dayOfMonth, dayOfMonth) &&
+    fieldMatches(fields.month, month) &&
+    fieldMatches(fields.dayOfWeek, dayOfWeek)
   );
 }
 
-function fieldMatches(field: string, value: number, _min: number, _max: number): boolean {
+function fieldMatches(field: string, value: number): boolean {
   if (field === "*") return true;
 
   for (const part of field.split(",")) {
+    if (part === "*") return true;
     if (part.includes("/")) {
       const [range, stepStr] = part.split("/");
       const step = parseInt(stepStr!, 10);
@@ -130,8 +143,10 @@ function fieldMatches(field: string, value: number, _min: number, _max: number):
       if (range === "*") {
         if (value % step === 0) return true;
       } else {
-        const start = parseInt(range!, 10);
-        if (!isNaN(start) && value >= start && (value - start) % step === 0) return true;
+        const [startText, endText] = range!.split("-");
+        const start = Number(startText);
+        if (value >= start && (endText === undefined || value <= Number(endText)) &&
+            (value - start) % step === 0) return true;
       }
     } else if (part.includes("-")) {
       const [startStr, endStr] = part.split("-");
