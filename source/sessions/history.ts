@@ -37,8 +37,9 @@ async function reconcileSession(
   store: SessionRuntimeStore,
   record: SessionRuntimeRecord,
 ): Promise<SessionRuntimeRecord> {
-  // Quick check before locking
-  if (record.status !== "running" || !record.cancelRequested || !record.ownerPid) {
+  // Active statuses that can have an owner PID and be cancelled
+  const activeStatuses = new Set(["running", "needs-approval"]);
+  if (!activeStatuses.has(record.status) || !record.cancelRequested || !record.ownerPid) {
     return record;
   }
   const expectedPid = record.ownerPid;
@@ -48,7 +49,7 @@ async function reconcileSession(
 
   // Re-validate inside the lock to prevent race with worker completion
   const updated = await store.update(record.id, record.generation, r => {
-    if (r.status !== "running" || !r.cancelRequested || r.ownerPid !== expectedPid) {
+    if (!activeStatuses.has(r.status) || !r.cancelRequested || r.ownerPid !== expectedPid) {
       return; // Worker completed or state changed; don't overwrite
     }
     r.status = "interrupted";
