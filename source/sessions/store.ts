@@ -54,6 +54,7 @@ export interface SessionRuntimeRecord {
   updatedAt: string;
   jobId?: string;
   ownerPid?: number;
+  ownerProcessStartTime?: string;
   cancelRequested?: boolean;
   cancelledSubagents?: string[];
   /** Generation-scoped durable steering inbox; target "main" is never a child broadcast. */
@@ -79,7 +80,8 @@ function validate(record: SessionRuntimeRecord, id: string): void {
       (record.sandboxNetwork !== undefined && record.sandboxNetwork !== "deny" && record.sandboxNetwork !== "allow") ||
       typeof record.sandboxRequired !== "boolean" || !STATUSES.has(record.status) || !Array.isArray(record.messages) ||
       typeof record.createdAt !== "string" || !Number.isFinite(Date.parse(record.createdAt)) ||
-      typeof record.updatedAt !== "string" || !Number.isFinite(Date.parse(record.updatedAt))) throw new Error(`Corrupt session runtime: ${id}`);
+      typeof record.updatedAt !== "string" || !Number.isFinite(Date.parse(record.updatedAt)) ||
+      (record.ownerProcessStartTime !== undefined && typeof record.ownerProcessStartTime !== "string")) throw new Error(`Corrupt session runtime: ${id}`);
 }
 
 // Shared across store instances; only the owning async stack may reenter.
