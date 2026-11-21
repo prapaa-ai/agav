@@ -11,6 +11,38 @@ const DOCUMENT_EXTENSIONS = new Set([
   ".pdf", ".doc", ".docx", ".ppt", ".pptx",
 ]);
 
+const TEXT_ENCODINGS = ["utf-8", "utf-16le", "utf-16be", "latin1"] as const;
+type TextEncoding = typeof TEXT_ENCODINGS[number];
+
+function isTextEncoding(value: unknown): value is TextEncoding {
+  return TEXT_ENCODINGS.some((encoding) => encoding === value);
+}
+
+async function* readTextChunks(path: string, encoding?: TextEncoding): AsyncGenerator<string> {
+  const stream = createReadStream(path, { encoding: encoding === undefined ? "utf8" : undefined, highWaterMark: 8192 });
+  const decoder = encoding && encoding !== "latin1" ? new TextDecoder(encoding, { fatal: true }) : undefined;
+  const validate = (text: string) => {
+    if (/[\x00-\x08\x0e-\x1f]/.test(text)) throw new Error("Cannot attach binary file");
+    return text;
+  };
+  const decode = (bytes?: Uint8Array) => {
+    try {
+      return decoder!.decode(bytes, { stream: bytes !== undefined });
+    } catch {
+      throw new Error(`Invalid text for encoding ${encoding}`);
+    }
+  };
+  try {
+    for await (const chunk of stream) {
+      if (typeof chunk === "string") yield chunk;
+      else yield validate(decoder ? decode(chunk) : chunk.toString("latin1"));
+    }
+    if (decoder) yield validate(decode());
+  } finally {
+    stream.destroy();
+  }
+}
+
 function validateLineRange(start?: number, end?: number): void {
   if (start !== undefined && (!Number.isInteger(start) || start < 1)) {
     throw new Error("Line range start must be a positive integer");
@@ -23,25 +55,27 @@ function validateLineRange(start?: number, end?: number): void {
   }
 }
 
-async function readBoundedText(path: string, originalPath: string, options: FileContextOptions): Promise<ToolResult> {
+async function readBoundedText(path: string, originalPath: string, options: FileContextOptions, encoding?: TextEncoding): Promise<ToolResult> {
   if (options.startPage !== undefined || options.endPage !== undefined) {
     throw new Error("Page ranges can only be used with PDF or Office documents");
   }
   validateLineRange(options.startLine, options.endLine);
-  // Match the context helper's binary probe without loading the entire file.
-  const handle = await open(path, "r");
-  try {
-    const buffer = Buffer.alloc(8192);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    const sample = buffer.subarray(0, bytesRead);
-    if (sample.includes(0)) throw new Error("Cannot attach binary file");
+  if (encoding === undefined) {
+    // Match the context helper's binary probe without loading the entire file.
+    const handle = await open(path, "r");
     try {
-      new TextDecoder("utf-8", { fatal: true }).decode(sample, { stream: true });
-    } catch {
-      throw new Error("Cannot attach binary file");
+      const buffer = Buffer.alloc(8192);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      const sample = buffer.subarray(0, bytesRead);
+      if (sample.includes(0)) throw new Error("Cannot attach binary file");
+      try {
+        new TextDecoder("utf-8", { fatal: true }).decode(sample, { stream: true });
+      } catch {
+        throw new Error("Cannot attach binary file");
+      }
+    } finally {
+      await handle.close();
     }
-  } finally {
-    await handle.close();
   }
 
   const start = options.startLine ?? 1;
@@ -88,57 +122,51 @@ async function readBoundedText(path: string, originalPath: string, options: File
     line++;
   };
 
-  const stream = createReadStream(path, { encoding: "utf8", highWaterMark: 8192 });
-  try {
-    outer: for await (const chunk of stream) {
-      const text = String(chunk);
-      for (let offset = 0; offset < text.length;) {
-        if (skipLF) {
-          skipLF = false;
-          if (text[offset] === "\n") {
-            if (!ranged && selected.length > 0 && selected[selected.length - 1]!.endsWith("\r")) {
-              selected[selected.length - 1] += "\n";
-              bytes++;
-            }
-            offset++;
-            continue;
+  outer: for await (const text of readTextChunks(path, encoding)) {
+    for (let offset = 0; offset < text.length;) {
+      if (skipLF) {
+        skipLF = false;
+        if (text[offset] === "\n") {
+          if (!ranged && selected.length > 0 && selected[selected.length - 1]!.endsWith("\r")) {
+            selected[selected.length - 1] += "\n";
+            bytes++;
           }
+          offset++;
+          continue;
         }
-        const end = text.slice(offset).search(/[\r\n]/);
-        const stop = end < 0 ? text.length : offset + end;
-        if (stop > offset) hasContent = true;
-        if (line >= start && stop > offset) {
-          if (selected.length >= lineBudget) { nextLine = line; break outer; }
-          const part = text.slice(offset, stop);
-          current += part;
-          currentBytes += Buffer.byteLength(part);
-          if (bytes + currentBytes + 1 > byteBudget) {
-            nextLine = line;
-            if (selected.length === 0) {
-              // An oversized first line must produce a useful excerpt, not an
-              // empty page that tells callers to retry the same line forever.
-              const buffer = Buffer.from(current);
-              let length = Math.min(byteBudget, buffer.length);
-              while (length > 0 && (buffer[length]! & 0xc0) === 0x80) length--;
-              selected.push(buffer.subarray(0, length).toString("utf8"));
-              longLine = true;
-            }
-            break outer;
-          }
-        }
-        if (end < 0) break;
-        const cr = text[stop] === "\r";
-        const crlf = cr && text[stop + 1] === "\n";
-        finishLine(crlf ? "\r\n" : text[stop]!);
-        skipLF = cr && !crlf;
-        offset = stop + (crlf ? 2 : 1);
-        if (stopped) break outer;
       }
+      const end = text.slice(offset).search(/[\r\n]/);
+      const stop = end < 0 ? text.length : offset + end;
+      if (stop > offset) hasContent = true;
+      if (line >= start && stop > offset) {
+        if (selected.length >= lineBudget) { nextLine = line; break outer; }
+        const part = text.slice(offset, stop);
+        current += part;
+        currentBytes += Buffer.byteLength(part);
+        if (bytes + currentBytes + 1 > byteBudget) {
+          nextLine = line;
+          if (selected.length === 0) {
+            // An oversized first line must produce a useful excerpt, not an
+            // empty page that tells callers to retry the same line forever.
+            const buffer = Buffer.from(current);
+            let length = Math.min(byteBudget, buffer.length);
+            while (length > 0 && (buffer[length]! & 0xc0) === 0x80) length--;
+            selected.push(buffer.subarray(0, length).toString("utf8"));
+            longLine = true;
+          }
+          break outer;
+        }
+      }
+      if (end < 0) break;
+      const cr = text[stop] === "\r";
+      const crlf = cr && text[stop + 1] === "\n";
+      finishLine(crlf ? "\r\n" : text[stop]!);
+      skipLF = cr && !crlf;
+      offset = stop + (crlf ? 2 : 1);
+      if (stopped) break outer;
     }
-    if (!stopped && nextLine === undefined && hasContent) finishLine("");
-  } finally {
-    stream.destroy();
   }
+  if (!stopped && nextLine === undefined && hasContent) finishLine("");
 
   if (ranged && selected.length === 0 && nextLine === undefined) {
     throw new Error(`Line ${start} is outside the file (${line - 1} lines)`);
@@ -150,7 +178,7 @@ async function readBoundedText(path: string, originalPath: string, options: File
   if (longLine) {
     output += `\n\n[Warning: Line ${line} is too long; showing a bounded excerpt. Use run_command to extract targeted bytes from ${JSON.stringify(originalPath)} instead of repeating this line range.]`;
   } else if (nextLine !== undefined) {
-    output += `\n\n[Output limited to 40,000 UTF8 bytes / 2000 lines. Continue with read_file path=${JSON.stringify(originalPath)} start_line=${nextLine}${options.endLine === undefined ? "" : ` end_line=${options.endLine}`} (original file).]`;
+    output += `\n\n[Output limited to 40,000 UTF8 bytes / 2000 lines. Continue with read_file path=${JSON.stringify(originalPath)} start_line=${nextLine}${encoding === undefined ? "" : ` encoding=${encoding}`}${options.endLine === undefined ? "" : ` end_line=${options.endLine}`} (original file).]`;
   }
   return { output, contentBlocks: [{ type: "text", text: output }], isError: false };
 }
@@ -167,6 +195,7 @@ export const fileReadTool: ToolDefinition = {
           type: "string",
           description: "The file path to read (absolute or relative to cwd)",
         },
+        encoding: { type: "string", enum: [...TEXT_ENCODINGS], description: "Explicit text encoding. Omit for default UTF-8 detection." },
         start_line: { type: "number", description: "First text line to read (1-based, inclusive)" },
         end_line: { type: "number", description: "Last text line to read (1-based, inclusive)" },
         start_page: { type: "number", description: "First document page to read (1-based, inclusive)" },
@@ -178,6 +207,10 @@ export const fileReadTool: ToolDefinition = {
 
   async execute(input): Promise<ToolResult> {
     const filePath = resolve(String(input.path));
+    const encoding = input.encoding;
+    if (encoding !== undefined && !isTextEncoding(encoding)) {
+      return { output: "Invalid encoding: expected utf-8, utf-16le, utf-16be, or latin1.", isError: true };
+    }
 
     try {
       const denied = await checkPathBoundary(filePath, "read");
@@ -190,7 +223,7 @@ export const fileReadTool: ToolDefinition = {
       };
       const info = await stat(filePath);
       if (info.isFile() && !DOCUMENT_EXTENSIONS.has(extname(filePath).toLowerCase())) {
-        return await readBoundedText(filePath, String(input.path), options);
+        return await readBoundedText(filePath, String(input.path), options, encoding);
       }
       const result = await readFileContext(filePath, options);
       return { output: result.output, contentBlocks: result.contentBlocks, isError: false };

@@ -218,3 +218,34 @@ describe("recoverable bounded fetch output", () => {
     expect(await fetchUrlTool.execute({ url: "https://example.test" })).toEqual({ output: "Fetch failed: offline", isError: true });
   });
 });
+
+describe("read_file explicit text encoding", () => {
+  it("decodes Latin-1 with the existing inclusive line range", async () => {
+    const path = await file(Buffer.from("first\ncafé\nthird", "latin1"));
+    expect((await fileReadTool.execute({ path })).isError).toBe(true);
+    const result = await fileReadTool.execute({ path, encoding: "latin1", start_line: 2, end_line: 2 });
+    expect(result.output).toBe(`[Lines 2-2 from ${path}]\ncafé`);
+    bounded(result);
+  });
+
+  it.each(["utf-16le", "utf-16be"])("decodes %s across a stream chunk boundary", async (encoding) => {
+    const text = "x".repeat(4095) + "😀\nlast";
+    const bytes = Buffer.from(text, "utf16le");
+    const path = await file(encoding === "utf-16be" ? bytes.swap16() : bytes);
+    const result = await fileReadTool.execute({ path, encoding });
+    expect(result.output).toBe(text);
+    bounded(result);
+  });
+
+  it("fails on malformed bytes and rejects binary control bytes", async () => {
+    expect(await fileReadTool.execute({ path: await file(Buffer.from([0x61])), encoding: "utf-16le" }))
+      .toMatchObject({ isError: true, output: expect.stringContaining("Invalid text") });
+    expect(await fileReadTool.execute({ path: await file(Buffer.from([0x61, 0, 0x62])), encoding: "latin1" }))
+      .toMatchObject({ isError: true, output: expect.stringContaining("binary") });
+  });
+
+  it("rejects unsupported encodings before opening the file", async () => {
+    expect(await fileReadTool.execute({ path: join(directory, "missing"), encoding: "base64" }))
+      .toMatchObject({ isError: true, output: expect.stringContaining("Invalid encoding") });
+  });
+});
