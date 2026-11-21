@@ -19,7 +19,7 @@ Agav exposes these tools to its agent loop.
 | `overview` | Map a repository's directory and symbol structure |
 | `run_command` | Execute a shell command with sandbox detection |
 | `run_tests` | Detect and run a supported project test framework |
-| `lsp_query` | Request definitions, references, or hover data from a language server; diagnostic notifications are not yet fully surfaced |
+| `lsp_query` | Request definitions, references, hover data, or the symbols declared in a file from a language server; diagnostic notifications are not yet fully surfaced |
 | `read_notebook` | Read Jupyter notebook cells, optionally by range |
 | `edit_notebook` | Change a notebook cell or its type |
 | `web_search` | Search the web with DuckDuckGo (opt-in; see note below) |
@@ -139,7 +139,7 @@ Bounded outputs and focused reads reduce oversized text sent back to the model, 
 
 ## Language-server navigation
 
-The `lsp_query` tool can find definitions, references, and hover information in TypeScript, JavaScript, Python, Rust, and Go projects when the matching language-server executable is available.
+The `lsp_query` tool can find definitions, references, and hover information, and list the symbols declared in a file, in TypeScript, JavaScript, Python, Rust, and Go projects when the matching language-server executable is available.
 
 | Language | Executable |
 | --- | --- |
