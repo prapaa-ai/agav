@@ -241,8 +241,9 @@ describe("resumable history", () => {
     const record = listed.find(r => r.id === session.id);
     // POSIX: "interrupted" (start time mismatch)
     // Windows: "running" (process exists, start time check skipped)
-    const isWindows = process.platform === "win32";
-    expect(record?.runtime?.status).toBe(isWindows ? "running" : "interrupted");
+    // Fail-closed: if start time cannot be verified (mismatch or unavailable), treat as dead
+    // Both POSIX and Windows now return "interrupted" when identity cannot be confirmed
+    expect(record?.runtime?.status).toBe("interrupted");
   });
 
   it("regression: active running + cancelRequested with dead PID -> interrupted", async () => {

@@ -10,6 +10,7 @@ import { readSessionSnapshot, readSessionListingSnapshot } from "./client.js";
  * Uses the same simple existence check as background-jobs Windows adapter.
  */
 import { readProcessStartTimePosix } from "../background-jobs/platform/posix-common.js";
+import { readProcessStartTimeWindows } from "../background-jobs/platform/windows-probe.js";
 
 async function isSessionProcessAlive(pid: number, expectedStartTime?: string): Promise<boolean> {
   if (!pid) return false;
@@ -22,8 +23,10 @@ async function isSessionProcessAlive(pid: number, expectedStartTime?: string): P
   }
   // PID exists; if we have expected start time, verify it matches
   if (expectedStartTime) {
-    const actual = await readProcessStartTimePosix(pid);
-    if (!actual) return true; // Windows or unavailable; fall back to PID-only
+    const actual = process.platform === "win32"
+      ? await readProcessStartTimeWindows(pid)
+      : await readProcessStartTimePosix(pid);
+    if (!actual) return false; // Cannot verify identity; treat as dead (fail-closed)
     return actual === expectedStartTime;
   }
   return true;
