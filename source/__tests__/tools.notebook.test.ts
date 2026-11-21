@@ -114,3 +114,29 @@ describe("read_notebook cell range", () => {
     expect((await readNotebookTool.execute({ path, end_cell: 2 })).output).toMatch(/no cells/i);
   });
 });
+
+describe("read_notebook cell metadata", () => {
+  it("includes selected cell metadata only when requested", async () => {
+    const fixture = { ...notebook, metadata: { unrelated: true }, cells: notebook.cells.map((cell, index) => (
+      { ...cell, metadata: { tags: [`cell-${index + 1}`] } }
+    )) };
+    mockRead.mockResolvedValue(JSON.stringify(fixture));
+    expect((await readNotebookTool.execute({ path, start_cell: 2, end_cell: 2 })).output).not.toContain("Metadata");
+    const result = await readNotebookTool.execute({ path, start_cell: 2, end_cell: 2, include_metadata: true, include_outputs: false });
+    expect(result.output).toContain('Metadata:\n  {"tags":["cell-2"]}');
+    expect(result.output).not.toMatch(/cell-[134]|printed value|unrelated/);
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("bounds the serialized metadata by bytes", async () => {
+    mockRead.mockResolvedValue(JSON.stringify({ cells: [{ ...notebook.cells[0], metadata: { large: "中".repeat(800) } }] }));
+    const result = await readNotebookTool.execute({ path, include_metadata: true });
+    expect(result.output).toContain("Omitted: metadata exceeds 2000 bytes.");
+    expect(result.output).not.toContain("中");
+  });
+
+  it("rejects non-boolean metadata options before reading", async () => {
+    expect(await readNotebookTool.execute({ path, include_metadata: null })).toMatchObject({ isError: true });
+    expect(mockRead).not.toHaveBeenCalled();
+  });
+});

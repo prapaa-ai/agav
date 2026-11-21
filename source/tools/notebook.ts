@@ -6,9 +6,12 @@ function isCellBound(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+const MAX_CELL_METADATA_BYTES = 2_000;
+
 interface NotebookCell {
   cell_type: string;
   source: string[];
+  metadata?: Record<string, unknown>;
   outputs?: Array<{ text?: string[]; output_type?: string; data?: Record<string, string[]> }>;
 }
 
@@ -38,6 +41,10 @@ export const readNotebookTool: ToolDefinition = {
           minimum: 1,
           description: "Last cell to include, numbered from 1 (default: last cell)",
         },
+        include_metadata: {
+          type: "boolean",
+          description: "Show each cell’s metadata when present, up to 2000 bytes per cell (default: false).",
+        },
         include_outputs: {
           type: "boolean",
           description: "Include cached execution outputs (default: true).",
@@ -48,6 +55,10 @@ export const readNotebookTool: ToolDefinition = {
   },
 
   async execute(input): Promise<ToolResult> {
+    const includeMetadata = input.include_metadata;
+    if (includeMetadata !== undefined && typeof includeMetadata !== "boolean") {
+      return { output: "include_metadata must be a boolean", isError: true };
+    }
     const includeOutputs = input.include_outputs;
     if (includeOutputs !== undefined && typeof includeOutputs !== "boolean") {
       return { output: "include_outputs must be a boolean", isError: true };
@@ -90,6 +101,13 @@ export const readNotebookTool: ToolDefinition = {
             if (out.text) lines.push("  " + out.text.join(""));
             if (out.data?.["text/plain"]) lines.push("  " + out.data["text/plain"].join(""));
           }
+        }
+        if (includeMetadata && cell.metadata && Object.keys(cell.metadata).length > 0) {
+          const metadata = JSON.stringify(cell.metadata);
+          lines.push("  Metadata:");
+          lines.push(Buffer.byteLength(metadata) <= MAX_CELL_METADATA_BYTES
+            ? "  " + metadata
+            : "  [Omitted: metadata exceeds 2000 bytes.]");
         }
         lines.push("");
       }
