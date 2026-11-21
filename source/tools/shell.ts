@@ -1,4 +1,6 @@
 import { StringDecoder } from "node:string_decoder";
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import { tempOutputManager, type TemporaryOutput } from "../utils/temp-output.js";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import {
@@ -135,7 +137,8 @@ export const shellTool: ToolDefinition = {
     description:
       "Execute a shell command and return its stdout and stderr. Defaults to a 30 second timeout; timeout_ms can extend it to 120 seconds for long-running commands. " +
       "Uses the available OS-level sandbox by default (unsandboxed if unavailable). " +
-      "Docker sandbox available as an override. Unsandboxed overrides require user-enabled AGAV_NO_SANDBOX=1.",
+      "Docker sandbox available as an override. Unsandboxed overrides require user-enabled AGAV_NO_SANDBOX=1. " +
+      "Accepts an optional cwd working directory; relative paths resolve against the current working directory.",
     inputSchema: {
       type: "object",
       properties: {
@@ -155,6 +158,10 @@ export const shellTool: ToolDefinition = {
           enum: ["seatbelt", "bubblewrap", "docker", "windows", "none"],
           description: "Sandbox backend override. Omit for auto-detection. 'none' requires the user to start Agav with AGAV_NO_SANDBOX=1; tool confirmation does not enable bypass.",
         },
+        cwd: {
+          type: "string",
+          description: "Optional working directory for the command. Relative paths resolve against the current working directory. Omit to keep the current directory.",
+        },
       },
       required: ["command"],
     },
@@ -168,6 +175,26 @@ export const shellTool: ToolDefinition = {
     const command = String(input.command);
     // Pass through to the shared runtime validator, including malformed values.
     const forceBackend = input.sandbox as SandboxBackend | undefined;
+
+    // Resolve an explicit working directory before starting anything. Relative
+    // paths resolve against the current working directory; a missing path or a
+    // non-directory is a validation error and the command never runs.
+    let cwd = process.cwd();
+    if (input.cwd !== undefined) {
+      if (typeof input.cwd !== "string" || input.cwd.trim() === "") {
+        return { output: "Invalid cwd: expected a non-empty directory path.", isError: true };
+      }
+      const resolved = resolve(process.cwd(), input.cwd);
+      try {
+        const stats = await stat(resolved);
+        if (!stats.isDirectory()) {
+          return { output: `Invalid cwd: ${input.cwd} is not a directory.`, isError: true };
+        }
+      } catch {
+        return { output: `Invalid cwd: ${input.cwd} does not exist or cannot be accessed.`, isError: true };
+      }
+      cwd = resolved;
+    }
 
     if (isDestructiveCommand(command)) {
       return {
@@ -190,7 +217,7 @@ export const shellTool: ToolDefinition = {
     try {
       const result = await runInSandbox({
         command,
-        cwd: process.cwd(),
+        cwd,
         timeout,
         maxBuffer: MAX_OUTPUT * 2,
         forceBackend,
@@ -221,6 +248,7 @@ export function createShellTool(): ToolDefinition {
   }
   const backend = detectSandboxBackend();
   schema.description = "Execute a shell command and return its stdout and stderr. Defaults to a 30 second timeout; timeout_ms can extend it to 120 seconds for long-running commands. "
+    + "Accepts an optional cwd working directory; relative paths resolve against the current working directory. "
     + `Omit sandbox to use the default backend: ${backend}${backend === "none" ? " (unsandboxed fallback)" : ""}. `
     + (overrides.includes("none")
       ? "Explicit unsandboxed overrides are enabled by the user."
