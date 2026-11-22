@@ -28,6 +28,8 @@ export interface ContentBlock {
 }
 
 export interface Message {
+  /** Copied into this conversation when it was branched. */
+  inherited?: true;
   /** Durable identity of the request prefix that produced Claude thinking. */
   thinkingPrefix?: string;
   role: Role;
