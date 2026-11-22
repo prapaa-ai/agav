@@ -125,6 +125,20 @@ describe("commands/model", () => {
     }
   });
 
+  it("preserves filter input delivered with mouse reports", async () => {
+    const { stdout, result, send } = await openPicker();
+    try {
+      send("\x1b[<0;12;4Mc");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: c");
+
+      send("o\x1b[<0;12;4mr");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: cor");
+    } finally {
+      send("\x1b");
+      await result;
+    }
+  });
+
   it("copies dragged text on release and restores mouse input on exit", async () => {
     const { context, stdout, stdin, result, send } = await openPicker();
     try {

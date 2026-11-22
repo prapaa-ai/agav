@@ -4,7 +4,7 @@ import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
 import { type AgavConfig } from "../config/config.js";
 import { providerSetupHints, orgPolicyError } from "../config/startup.js";
 import { fetchVertexAIModels } from "../providers/vertex-ai.js";
-import { parseMouseEvent, type ParsedMouse } from "../ink/parse-mouse.js";
+import { MOUSE_SEQUENCE_RE, parseMouseEvent, type ParsedMouse } from "../ink/parse-mouse.js";
 import { splitCoalescedKeys } from "../ink/parse-keypress.js";
 import { extendSelection, getSelectedText, type SelectionRange } from "../ink/selection.js";
 import { writeClipboard, type ClipboardResult } from "../ink/termio/clipboard.js";
@@ -336,6 +336,7 @@ function pickModel(
   return new Promise((resolve) => {
     let closed = false;
     let mouseTail = "";
+    const mouseReports = new RegExp(MOUSE_SEQUENCE_RE.map(pattern => pattern.source).join("|"), "g");
     let copyRequest = 0;
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -369,11 +370,22 @@ function pickModel(
       const input = mouseTail + data.toString();
       mouseTail = /\x1b\[<[\d;]*$/.exec(input)?.[0] ?? "";
       const complete = input.slice(0, input.length - mouseTail.length);
-      for (const key of splitCoalescedKeys(complete) ?? [complete]) {
-        if (closed) break;
-        const mouse = parseMouseEvent(key);
+      let offset = 0;
+      for (const report of complete.matchAll(mouseReports)) {
+        dispatchKeys(complete.slice(offset, report.index));
+        if (closed) return;
+        const mouse = parseMouseEvent(report[0]);
         if (mouse) handleMouse(mouse);
-        else handleKey(key);
+        offset = report.index + report[0].length;
+      }
+      dispatchKeys(complete.slice(offset));
+    }
+
+    function dispatchKeys(input: string) {
+      if (!input) return;
+      for (const key of splitCoalescedKeys(input) ?? [input]) {
+        if (closed) break;
+        handleKey(key);
       }
     }
 
