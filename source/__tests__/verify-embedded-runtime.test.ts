@@ -30,11 +30,11 @@ describe("verify-embedded-runtime", () => {
 
   it("accepts a correct runtime even when application strings mention other bun versions", () => {
     // Real compiled binaries bundle app text such as a bun compare URL
-    // (bun-v1.4.3...bun-v1.4.4). Those are not runtime identity and must not
+    // (bun-v1.4.3...bun-v1.4.5). Those are not runtime identity and must not
     // trigger a conflict — only the "Bun v<x.y.z> (<commit>)" banner counts.
     writeFileSync(bin(), [
       `Runtime banner: Bun v${PINNED} (38afee6c8)`,
-      "Upgrade notes: https://github.com/oven-sh/bun/compare/bun-v1.4.3...bun-v1.4.4",
+      "Upgrade notes: https://github.com/oven-sh/bun/compare/bun-v1.4.3...bun-v1.4.5",
     ].join("\n"));
     const result = run();
     expect(result.status).toBe(0);
@@ -42,7 +42,7 @@ describe("verify-embedded-runtime", () => {
   });
 
   it("fails closed when the binary has no Bun runtime banner", () => {
-    writeFileSync(bin(), "a binary with no bun runtime banner, only bun-v1.4.4 in a URL");
+    writeFileSync(bin(), "a binary with no bun runtime banner, only bun-v1.4.5 in a URL");
     const result = run();
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("no Bun runtime banner");
