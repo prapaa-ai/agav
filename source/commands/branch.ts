@@ -128,7 +128,10 @@ export const branchCommand: SlashCommand = {
     const name = args.trim();
     if (!name) return listBranches(context);
 
-    const messages = context.conversation.getMessages();
+    const messages = context.conversation.getMessages().map(message => ({
+      ...message,
+      inherited: true as const,
+    }));
     if (messages.length === 0) {
       return { type: "message", text: "Nothing to branch — conversation is empty." };
     }
@@ -143,8 +146,11 @@ export const branchCommand: SlashCommand = {
       context.conversation.wasCompacted,
       name,
       context.currentSessionId,
+      undefined,
+      true,
     );
     context.activateSession(branchId, name);
+    context.conversation.setMessages(messages, context.conversation.wasCompacted);
 
     const shortId = branchId.slice(0, 8);
     return {
