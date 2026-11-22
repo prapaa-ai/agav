@@ -1,4 +1,4 @@
-export async function readProcessStartTimeWindows(pid: number): Promise<string | null> {
+export async function readProcessStartTimeWindows(pid: number): Promise<string | undefined> {
   try {
     const { spawn } = await import("node:child_process");
     const psCommand = `
@@ -22,10 +22,10 @@ export async function readProcessStartTimeWindows(pid: number): Promise<string |
         else resolve("");
       });
     });
-    if (!result) return null;
+    if (!result) return undefined;
     const iso = new Date(result).toISOString();
-    return isNaN(new Date(iso).getTime()) ? null : iso;
+    return isNaN(new Date(iso).getTime()) ? undefined : iso;
   } catch {
-    return null;
+    return undefined;
   }
 }
