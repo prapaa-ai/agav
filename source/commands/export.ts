@@ -3,16 +3,18 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import type { ContentBlock, Message } from "../providers/types.js";
+import { loadSession } from "../config/history.js";
 import { stripTerminalLinks } from "../utils/hyperlink.js";
 import { isInternalUserMessage } from "../agent/internal-prompts.js";
 import { createExportRedactor } from "../utils/export-redaction.js";
 
-const USAGE = "Usage: /export [json|--full] [sanitize|--sanitize]\n\n"
+const USAGE = "Usage: /export [json|--full] [sanitize|--sanitize] [--branch-only]\n\n"
   + "  /export                 Markdown preview (existing format)\n"
   + "  /export --full          Markdown with complete retained tool text\n"
   + "  /export json            Structured retained conversation\n"
   + "  /export sanitize        Markdown with best-effort redaction\n"
-  + "  /export json sanitize   JSON with best-effort redaction\n\n"
+  + "  /export json sanitize   JSON with best-effort redaction\n"
+  + "  /export --branch-only   Only messages added to the active branch\n\n"
   + "Saves a timestamped file in the working directory. Options may appear in either order.\n"
   + "JSON preserves retained tool data; Markdown previews tool inputs/results unless --full is set. Earlier trimmed or compacted history cannot be recovered.\n"
   + "Sanitization masks common credentials and home paths, and omits image bytes from JSON. Review before sharing; arbitrary secrets and personal data may remain.\n"
@@ -23,7 +25,7 @@ interface ExportBlock extends Omit<ContentBlock, "providerMetadata" | "toolResul
   imageDataOmitted?: true;
 }
 
-interface ExportMessage extends Omit<Message, "content" | "internal"> {
+interface ExportMessage extends Omit<Message, "content" | "internal" | "inherited"> {
   content: ExportBlock[];
 }
 
@@ -94,12 +96,13 @@ function toolResultText(block: ExportBlock): string[] {
   ];
 }
 
-function markdown(messages: ExportMessage[], model: string, provider: string, exportedAt: string, full: boolean): string {
+function markdown(messages: ExportMessage[], model: string, provider: string, exportedAt: string, full: boolean, branchSessionId?: string): string {
   const lines: string[] = [];
   lines.push("# Agav Conversation\n");
   lines.push(`**Model:** ${model}  `);
   lines.push(`**Provider:** ${provider}  `);
   lines.push(`**Date:** ${exportedAt}\n`);
+  if (branchSessionId) lines.push(`**Branch session ID:** ${branchSessionId}\n`);
   if (full) lines.push("*Full Markdown includes retained tool text; images are omitted.*\n");
   lines.push("---\n");
 
@@ -184,11 +187,11 @@ async function saveExport(directory: string, stem: string, extension: string, ou
 export const exportCommand: SlashCommand = {
   name: "export",
   description: "Export the retained conversation as Markdown or JSON, optionally sanitized",
-  argumentHint: "[json|--full] [sanitize]",
+  argumentHint: "[json|--full] [sanitize] [--branch-only]",
   usage: USAGE,
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const options = args.trim().split(/\s+/).filter(Boolean);
-    if (options.some((option) => !["json", "sanitize", "--sanitize", "--help", "--full"].includes(option))) {
+    if (options.some((option) => !["json", "sanitize", "--sanitize", "--help", "--full", "--branch-only"].includes(option))) {
       return { type: "message", text: `Unknown export option.\n\n${USAGE}` };
     }
     if (options.includes("--help")) return { type: "message", text: USAGE };
@@ -198,6 +201,10 @@ export const exportCommand: SlashCommand = {
       return { type: "message", text: "JSON already preserves retained tool data. Use --full only with Markdown." };
     }
     const sanitize = options.includes("sanitize") || options.includes("--sanitize");
+    const branchOnly = options.includes("--branch-only");
+    const branchSessionId = branchOnly ? context.currentSessionId : undefined;
+    const branchUnavailable = "Branch-only export requires an active session with recorded fork metadata. Use /branch <name> to create one.";
+    if (branchOnly && !branchSessionId) return { type: "message", text: branchUnavailable };
 
     let output: string;
     let directory: string;
@@ -205,22 +212,31 @@ export const exportCommand: SlashCommand = {
     let compacted: boolean;
     let imagePayloads = 0;
     try {
-      const messages = context.conversation.getMessages().filter((message) => !isInternalUserMessage(message));
-      if (messages.length === 0) return { type: "message", text: "No messages to export." };
+      const messages = context.conversation.getMessages().filter(message =>
+        (!branchOnly || !message.inherited) && !isInternalUserMessage(message));
+      if (!branchOnly && messages.length === 0) return { type: "message", text: "No messages to export." };
       const snapshot = projectMessages(messages, sanitize);
       const now = new Date();
       const model = snapshot.text(context.config.model);
       const provider = snapshot.text(context.config.provider);
       compacted = context.conversation.wasCompacted;
       imagePayloads = snapshot.omissions.imagePayloads;
+      const usage = json ? context.getDebugState()?.tokenUsage : undefined;
+      directory = process.cwd();
+      if (branchSessionId) {
+        if ((await loadSession(branchSessionId))?.branchMarkers !== true) {
+          return { type: "message", text: branchUnavailable };
+        }
+        if (messages.length === 0) return { type: "message", text: "No new branch messages to export." };
+      }
       if (json) {
-        const usage = context.getDebugState()?.tokenUsage;
         output = JSON.stringify({
           schemaVersion: 1,
           model,
           provider,
           exportedAt: now.toISOString(),
-          scope: "retained-conversation",
+          scope: branchOnly ? "branch-only" : "retained-conversation",
+          ...(branchSessionId ? { sessionId: branchSessionId } : {}),
           compacted,
           sanitized: sanitize,
           ...(usage ? { tokenUsage: {
@@ -233,9 +249,8 @@ export const exportCommand: SlashCommand = {
           messages: snapshot.messages,
         }, null, 2) + "\n";
       } else {
-        output = markdown(snapshot.messages, model, provider, now.toISOString(), full);
+        output = markdown(snapshot.messages, model, provider, now.toISOString(), full, branchSessionId);
       }
-      directory = process.cwd();
       stem = `agav-export-${now.getTime()}${sanitize ? "-sanitized" : ""}`;
     } catch {
       return { type: "message", text: "Could not prepare the conversation for export. No export file was created." };
