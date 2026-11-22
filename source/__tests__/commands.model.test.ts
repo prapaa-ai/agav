@@ -88,7 +88,10 @@ async function openPicker() {
   vi.spyOn(process, "stdout", "get").mockReturnValue(stdout as unknown as typeof process.stdout);
   const result = modelCommand.execute("", context);
   await vi.waitFor(() => expect(stdin.listenerCount("data")).toBe(1));
-  return { context, stdin, stdout, result, send: (key: string) => stdin.emit("data", Buffer.from(key)) };
+  return {
+    context, stdin, stdout, result,
+    send: (input: string | Buffer) => stdin.emit("data", typeof input === "string" ? Buffer.from(input) : input),
+  };
 }
 
 beforeEach(() => {
@@ -135,6 +138,84 @@ describe("commands/model", () => {
       expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: cor");
     } finally {
       send("\x1b");
+      await result;
+    }
+  });
+
+  it.each([
+    ["Ctrl+C", "\x1b[<0;12;", "\x03"],
+    ["Escape", "\x1b[<0;12;", "\x1b"],
+    ["Ctrl+C during X10", "\x1b[M ", "\x03"],
+    ["Escape during X10", "\x1b[M ", "\x1b"],
+    ["coalesced Ctrl+C", "\x1b[<0;12;", "c\x03"],
+  ])("cancels with %s after an incomplete mouse report", async (_name, prefix, key) => {
+    const { stdin, result, send } = await openPicker();
+    vi.useFakeTimers();
+    try {
+      send(prefix);
+      send(key);
+      vi.runAllTimers();
+      expect(stdin.listenerCount("data")).toBe(0);
+      expect(stdin.setRawMode).toHaveBeenLastCalledWith(false);
+      expect(messageText(await result)).toContain("Kept model as claude-demo");
+    } finally {
+      send("\x03");
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("keeps split X10 payloads out of the filter and processes the next key", async () => {
+    const { stdout, result, send } = await openPicker();
+    try {
+      const report = "\x1b[M ca";
+      for (let split = 1; split < report.length; split++) {
+        send(report.slice(0, split));
+        send(report.slice(split) + "c");
+        expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: c\x1b");
+        send("\x7f");
+      }
+      send("\x1b[M ");
+      send("c");
+      send("a");
+      expect(stdout.write.mock.lastCall?.[0]).not.toContain("Filter:");
+
+      send(Buffer.from([0x1b, 0x5b, 0x4d, 0x20, 0x83]));
+      send("ac");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: c\x1b");
+    } finally {
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("drops stale and oversized mouse prefixes before handling real keys", async () => {
+    const { stdout, result, send } = await openPicker();
+    vi.useFakeTimers();
+    try {
+      send("\x1b[M ");
+      vi.runOnlyPendingTimers();
+      send("a");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: a\x1b");
+      send("\x7f");
+
+      send("\x1b[<" + "9".repeat(64));
+      send("c");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: c\x1b");
+    } finally {
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("keeps navigation escape sequences intact after an interrupted mouse report", async () => {
+    const { stdout, result, send } = await openPicker();
+    try {
+      send("\x1b[<0;12;");
+      send("\x1b[B\x19");
+      expect(writeClipboard).toHaveBeenCalledExactlyOnceWith(stdout, "vendor/coder-demo", expect.any(Function));
+    } finally {
+      send("\x03");
       await result;
     }
   });
@@ -191,6 +272,7 @@ describe("commands/model", () => {
       const lateResult = vi.mocked(writeClipboard).mock.lastCall?.[2];
       expect(lateResult).toBeDefined();
       send("\x1b");
+      vi.runAllTimers();
       await result;
       const writesBeforeCallback = stdout.write.mock.calls.length;
       lateResult?.("Copied to clipboard");

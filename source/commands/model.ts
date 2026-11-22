@@ -4,8 +4,7 @@ import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
 import { type AgavConfig } from "../config/config.js";
 import { providerSetupHints, orgPolicyError } from "../config/startup.js";
 import { fetchVertexAIModels } from "../providers/vertex-ai.js";
-import { MOUSE_SEQUENCE_RE, parseMouseEvent, type ParsedMouse } from "../ink/parse-mouse.js";
-import { splitCoalescedKeys } from "../ink/parse-keypress.js";
+import { parseMouseEvent, type ParsedMouse } from "../ink/parse-mouse.js";
 import { extendSelection, getSelectedText, type SelectionRange } from "../ink/selection.js";
 import { writeClipboard, type ClipboardResult } from "../ink/termio/clipboard.js";
 import { CURSOR_HOME, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ERASE_DISPLAY } from "../ink/termio/dec.js";
@@ -253,6 +252,18 @@ function formatContextWindow(n: number): string {
   return String(n);
 }
 
+const PICKER_INPUT = new RegExp([
+  // Mouse reports and their prefixes take precedence over general escape sequences.
+  String.raw`\x1b\[<[\d;]*[Mm]?`,
+  String.raw`\x1b\[M[\x20-\xff]{0,3}`,
+  String.raw`\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e]|\x7f)`,
+  String.raw`\x1b\[$`,
+  String.raw`[\x00-\x1f\x7f]`,
+  String.raw`[^\x00-\x1f\x7f]+`,
+].join("|"), "g");
+const MAX_PICKER_INPUT_TAIL = 32;
+const PICKER_INPUT_TIMEOUT_MS = 50;
+
 function pickModel(
   models: FetchedModel[],
   currentModel: string,
@@ -335,8 +346,8 @@ function pickModel(
 
   return new Promise((resolve) => {
     let closed = false;
-    let mouseTail = "";
-    const mouseReports = new RegExp(MOUSE_SEQUENCE_RE.map(pattern => pattern.source).join("|"), "g");
+    let inputTail = "";
+    let inputTimer: ReturnType<typeof setTimeout> | undefined;
     let copyRequest = 0;
     let noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -359,6 +370,7 @@ function pickModel(
 
     function cleanup() {
       closed = true;
+      clearTimeout(inputTimer);
       clearTimeout(noticeTimer);
       stdin.setRawMode(wasRaw ?? false);
       stdin.removeListener("data", onData);
@@ -367,25 +379,35 @@ function pickModel(
     }
 
     function onData(data: Buffer) {
-      const input = mouseTail + data.toString();
-      mouseTail = /\x1b\[<[\d;]*$/.exec(input)?.[0] ?? "";
-      const complete = input.slice(0, input.length - mouseTail.length);
-      let offset = 0;
-      for (const report of complete.matchAll(mouseReports)) {
-        dispatchKeys(complete.slice(offset, report.index));
-        if (closed) return;
-        const mouse = parseMouseEvent(report[0]);
-        if (mouse) handleMouse(mouse);
-        offset = report.index + report[0].length;
-      }
-      dispatchKeys(complete.slice(offset));
-    }
+      clearTimeout(inputTimer);
+      // X10 coordinates are raw bytes. Keep their one-byte boundaries.
+      const input = inputTail + data.toString("latin1");
+      inputTail = "";
 
-    function dispatchKeys(input: string) {
-      if (!input) return;
-      for (const key of splitCoalescedKeys(input) ?? [input]) {
-        if (closed) break;
-        handleKey(key);
+      for (const match of input.matchAll(PICKER_INPUT)) {
+        if (closed) return;
+        const sequence = match[0];
+        const mouseSequence = sequence.startsWith("\x1b[<") || sequence.startsWith("\x1b[M");
+        const mouse = mouseSequence ? parseMouseEvent(sequence) : null;
+        if (mouse) {
+          handleMouse(mouse);
+          continue;
+        }
+
+        const trailing = match.index + sequence.length === input.length;
+        // Wait briefly for an unambiguous mouse prefix or a split escape
+        // sequence. A lone Escape becomes Cancel when no bytes follow.
+        if (trailing && (mouseSequence || sequence === "\x1b" || sequence === "\x1b[")) {
+          if (sequence.length <= MAX_PICKER_INPUT_TAIL) {
+            inputTail = sequence;
+            inputTimer = setTimeout(() => {
+              inputTail = "";
+              if (sequence === "\x1b") handleKey(sequence);
+            }, PICKER_INPUT_TIMEOUT_MS);
+          }
+          return;
+        }
+        if (!mouseSequence) handleKey(sequence);
       }
     }
 
