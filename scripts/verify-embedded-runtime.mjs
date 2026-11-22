@@ -53,9 +53,9 @@ function readPinnedBunVersion() {
  * BANNER — `Bun v<x.y.z> (<commit>)` — into the binary. That banner is the
  * runtime's own identity string; it is distinct from bare `bun-v<x.y.z>`
  * substrings that legitimately appear in application strings (e.g. a
- * `github.com/oven-sh/bun/compare/bun-v1.4.3...bun-v1.4.4` URL in bundled text).
+ * `github.com/oven-sh/bun/compare/bun-v1.4.3...bun-v1.4.5` URL in bundled text).
  * Anchoring on the banner proves the embedded runtime without false positives
- * from app content. Verified present exactly once in real 1.4.4 artifacts across
+ * from app content. Verified present exactly once in real 1.4.5 artifacts across
  * every target (native and cross-compiled).
  */
 function verifyEmbeddedBunVersion(binaryPath, expected) {

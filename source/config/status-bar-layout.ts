@@ -61,7 +61,7 @@ export const STATUS_BAR_ITEMS: readonly StatusBarItemMeta[] = [
   { id: "usage", label: "Token usage", description: "Input/output/cache token counters" },
   { id: "duration", label: "Turn duration", description: "Elapsed or last turn time" },
   { id: "sandbox", label: "Sandbox", description: "Active sandbox backend" },
-  { id: "session", label: "Session", description: "Session name or id" },
+  { id: "session", label: "Session", description: "Short ID of the active session" },
   { id: "hint", label: "Tips", description: "Rotating 💡 tip line below the status" },
 ];
 
