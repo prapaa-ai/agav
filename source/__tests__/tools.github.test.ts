@@ -61,3 +61,50 @@ describe("tools/github comments", () => {
     expect(result).toEqual({ output: "GraphQL: Could not resolve to an issue\n", isError: true });
   });
 });
+
+describe("GitHub explicit repository", () => {
+  beforeEach(() => {
+    vi.mocked(execFile).mockReset();
+    vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+      (args.at(-1) as (error: null, stdout: string, stderr: string) => void)(null, "ok", "");
+      return {} as ReturnType<typeof execFile>;
+    });
+  });
+
+  it.each([
+    ["view_pr", ["pr", "view", "7"]],
+    ["list_prs", ["pr", "list"]],
+    ["create_pr", ["pr", "create", "--title", "Title", "--body", "Body"]],
+    ["view_issue", ["issue", "view", "7"]],
+    ["list_issues", ["issue", "list"]],
+    ["create_issue", ["issue", "create", "--title", "Title", "--body", "Body"]],
+  ])("adds the repository only to the %s command", async (operation, argv) => {
+    expect((await githubTool.execute({ operation, repo: "owner/repo", number: 7, title: "Title", body: "Body" })).isError).toBe(false);
+    expect(ghCalls()).toEqual([["auth", "status"], [...argv, "--repo", "owner/repo"]]);
+  });
+
+  it("checks authentication on an explicit host", async () => {
+    await githubTool.execute({ operation: "list_issues", repo: "github.example.com/owner/repo" });
+    expect(ghCalls()).toEqual([
+      ["auth", "status", "--hostname", "github.example.com"],
+      ["issue", "list", "--repo", "github.example.com/owner/repo"],
+    ]);
+  });
+
+  it.each(["owner", "https://github.com/owner/repo", "owner/../repo", "owner/..", null])("rejects malformed target %j before invoking gh", async (repo) => {
+    expect((await githubTool.execute({ operation: "list_issues", repo })).isError).toBe(true);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+});
+
+it.each(["view_pr", "view_issue"])("rejects invalid issue and PR numbers for %s", async (operation) => {
+  vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+    (args.at(-1) as (error: null, stdout: string, stderr: string) => void)(null, "", "");
+    return {} as ReturnType<typeof execFile>;
+  });
+  for (const number of [0, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
+    vi.mocked(execFile).mockClear();
+    expect((await githubTool.execute({ operation, number })).isError).toBe(true);
+    expect(ghCalls()).toEqual([["auth", "status"]]);
+  }
+});
