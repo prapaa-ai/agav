@@ -91,6 +91,7 @@ describe("writeClipboard (native write path)", () => {
     platformMock.mockReset();
     delete process.env["TMUX"];
     delete process.env["WAYLAND_DISPLAY"];
+    process.env["TERM"] = "xterm-256color";
   });
 
   afterEach(() => {
@@ -146,7 +147,8 @@ describe("writeClipboard (native write path)", () => {
     });
     const { stream, chunks } = makeStdout();
 
-    writeClipboard(stream, "fallback");
+    const onResult = vi.fn();
+    writeClipboard(stream, "fallback", onResult);
     child.emit("spawn");
     child.emit("error", new Error("error after launch"));
     const callback = execFileMock.mock.calls[0]![2] as (error: Error) => void;
@@ -155,6 +157,7 @@ describe("writeClipboard (native write path)", () => {
     // The tool might have taken ownership before exiting with an error.
     expect(child.stdin.written).toBe("fallback");
     expect(chunks).toEqual([]);
+    expect(onResult).toHaveBeenCalledExactlyOnceWith("Clipboard copy failed");
   });
 
   it("does not send OSC 52 if stdin throws after the native tool was launched", async () => {
@@ -319,6 +322,31 @@ describe("writeClipboard (native write path)", () => {
     unsubscribe();
     writeClipboard(stream, "another copy");
     expect(onCopy).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports the terminal fallback only after stdout accepts the request", async () => {
+    const { writeClipboard, osc52Copy } = await loadClipboard({ platform: "linux", availableCommands: [] });
+    const write = vi.fn();
+    const stream = { isTTY: true, write } as unknown as NodeJS.WriteStream;
+    const onResult = vi.fn();
+
+    writeClipboard(stream, "model id", onResult);
+
+    expect(onResult).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledExactlyOnceWith(osc52Copy("model id"), expect.any(Function));
+    write.mock.calls[0]![1]();
+    expect(onResult).toHaveBeenCalledExactlyOnceWith("Copy sent to terminal");
+  });
+
+  it("reports an unavailable clipboard when there is no native command or terminal", async () => {
+    const { writeClipboard } = await loadClipboard({ platform: "linux", availableCommands: [] });
+    const { stream, chunks } = makeStdout();
+    const onResult = vi.fn();
+
+    writeClipboard(stream, "model id", onResult);
+
+    expect(chunks).toEqual([]);
+    expect(onResult).toHaveBeenCalledExactlyOnceWith("Clipboard unavailable");
   });
 
   it("does not throw if the native tool errors after spawn (EPIPE guard)", async () => {
