@@ -183,6 +183,51 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
     expect(validateBom({ ...doc, components: [{ ...doc.components[0], type: "lib" }] }).valid).toBe(false);
   });
 
+  function dependencyMap(doc: { dependencies: Array<{ ref: string; dependsOn: string[] }> }) {
+    return Object.fromEntries(doc.dependencies.map((d) => [d.ref, d.dependsOn]));
+  }
+
+  it("gives every package a bom-ref and records its direct and transitive dependencies", () => {
+    writeRepo(declared, graph(), { "optional-e": "^5.0.0" });
+    const result = run();
+    expect(result.status).toBe(0);
+    const doc = bom(result.out);
+
+    for (const c of doc.components) expect(c["bom-ref"]).toBe(c.purl);
+    expect(doc.metadata.component["bom-ref"]).toBe("pkg:npm/fixture-app@1.2.3");
+    // One entry per package and the application, each listing what it pulls in;
+    // shared-c@3.0.0 is listed twice in the tree (once deduped) but edged once.
+    expect(doc.dependencies.map((d: { ref: string }) => d.ref)).toEqual([
+      "pkg:npm/%40scope/direct-d@4.0.0",
+      "pkg:npm/direct-a@1.0.0",
+      "pkg:npm/fixture-app@1.2.3",
+      "pkg:npm/optional-e@5.0.0",
+      "pkg:npm/peer-f@6.0.0",
+      "pkg:npm/shared-c@3.0.0",
+      "pkg:npm/shared-c@3.1.0",
+      "pkg:npm/transitive-b@2.0.0",
+    ]);
+    expect(dependencyMap(doc)).toEqual({
+      "pkg:npm/fixture-app@1.2.3": [
+        "pkg:npm/%40scope/direct-d@4.0.0",
+        "pkg:npm/direct-a@1.0.0",
+        "pkg:npm/optional-e@5.0.0",
+        "pkg:npm/peer-f@6.0.0",
+      ],
+      "pkg:npm/%40scope/direct-d@4.0.0": ["pkg:npm/peer-f@6.0.0", "pkg:npm/shared-c@3.0.0"],
+      "pkg:npm/direct-a@1.0.0": ["pkg:npm/shared-c@3.0.0", "pkg:npm/transitive-b@2.0.0"],
+      "pkg:npm/transitive-b@2.0.0": ["pkg:npm/shared-c@3.1.0"],
+      "pkg:npm/optional-e@5.0.0": [],
+      "pkg:npm/peer-f@6.0.0": [],
+      "pkg:npm/shared-c@3.0.0": [],
+      "pkg:npm/shared-c@3.1.0": [],
+    });
+
+    const { valid, errors } = validateBom(doc);
+    expect(errors).toBeNull();
+    expect(valid).toBe(true);
+  });
+
   it("writes byte-identical output for the same tree, whatever order pnpm lists it in", () => {
     writeRepo(declared, graph());
     const first = run();
@@ -298,6 +343,14 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
       "pkg:npm/test-runner@7.0.0",
       "pkg:npm/transitive-b@2.0.0",
     ]);
+    // The deduped transitive-b keeps the edge to shared-c@3.1.0 from its printed copy.
+    expect(dependencyMap(doc)).toEqual({
+      "pkg:npm/fixture-app@1.2.3": ["pkg:npm/%40types/fixture@8.0.0", "pkg:npm/test-runner@7.0.0"],
+      "pkg:npm/%40types/fixture@8.0.0": [],
+      "pkg:npm/shared-c@3.1.0": [],
+      "pkg:npm/test-runner@7.0.0": ["pkg:npm/transitive-b@2.0.0"],
+      "pkg:npm/transitive-b@2.0.0": ["pkg:npm/shared-c@3.1.0"],
+    });
     expect(doc.metadata.lifecycles).toEqual([{ phase: "build" }]);
     const scope = doc.metadata.properties.find((p: { name: string }) => p.name === "agav:scope");
     expect(scope.value).toContain("dev/build");

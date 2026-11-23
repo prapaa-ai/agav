@@ -7,7 +7,9 @@
 // this repository installs with pnpm and has no npm lockfile for
 // @cyclonedx/cyclonedx-npm to walk. Each component is emitted with
 // its exact version, a package-URL (purl), and — read from the installed
-// package's own package.json — its declared license.
+// package's own package.json — its declared license. Its purl doubles as its
+// bom-ref, and the `dependencies` section records what each package, and the
+// application itself, directly depends on.
 //
 // Scope and caveat: each BOM covers the npm dependency graph only. Agav ships a
 // compiled binary that statically embeds the Bun runtime and its vendored C
@@ -103,20 +105,29 @@ function licenseFor(pkgPath) {
   return null;
 }
 
+// bom-ref -> the bom-refs it depends on, for the CycloneDX dependency graph.
+// A package's purl is unique per name@version, so it serves as its bom-ref.
+const rootRef = purlFor(rootPkg.name, rootPkg.version);
+const edges = new Map([[rootRef, new Set()]]);
+
 function addComponent(name, node) {
   // A listed package without a version is an incomplete tree, not one to skip.
   if (!node || typeof node.version !== "string") fail(`pnpm list gave no version for ${name}.`);
   const key = `${name}@${node.version}`;
-  if (components.has(key)) return;
+  if (components.has(key)) return components.get(key).purl;
+  const purl = purlFor(name, node.version);
   const component = {
     type: "library",
+    "bom-ref": purl,
     name,
     version: node.version,
-    purl: purlFor(name, node.version),
+    purl,
   };
   const license = node.path ? licenseFor(node.path) : null;
   if (license) component.licenses = [{ license: { name: license } }];
   components.set(key, component);
+  edges.set(purl, new Set());
+  return purl;
 }
 
 // pnpm prints a package's subtree once per run and marks later copies
@@ -134,15 +145,16 @@ function index(deps) {
 }
 
 const walked = new Set();
-function walk(deps) {
+function walk(deps, parentRef) {
   if (!deps || typeof deps !== "object") return;
   for (const [name, node] of Object.entries(deps)) {
-    addComponent(name, node);
+    const ref = addComponent(name, node);
+    edges.get(parentRef).add(ref);
     if (node.path) {
       if (walked.has(node.path)) continue;
       walked.add(node.path);
     }
-    walk(node.dependencies ?? printed.get(node.path));
+    walk(node.dependencies ?? printed.get(node.path), ref);
   }
 }
 
@@ -157,8 +169,8 @@ for (const project of projectList) {
   for (const key of ["dependencies", "optionalDependencies", "devDependencies"]) index(project[key]);
 }
 for (const project of projectList) {
-  walk(project[declaredKey]);
-  if (!dev) walk(project.optionalDependencies);
+  walk(project[declaredKey], rootRef);
+  if (!dev) walk(project.optionalDependencies, rootRef);
 }
 
 // pnpm list leaves out a declared dependency that is not installed, so check
@@ -175,9 +187,11 @@ if (missing.length) {
 }
 
 // Deterministic ordering so the same input always yields byte-identical output.
-const sortedComponents = [...components.values()].sort((a, b) =>
-  a.purl < b.purl ? -1 : a.purl > b.purl ? 1 : 0,
-);
+const byString = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const sortedComponents = [...components.values()].sort((a, b) => byString(a.purl, b.purl));
+const dependencies = [...edges]
+  .map(([ref, dependsOn]) => ({ ref, dependsOn: [...dependsOn].sort(byString) }))
+  .sort((a, b) => byString(a.ref, b.ref));
 
 const cyclonedxVersion = (() => {
   try {
@@ -210,7 +224,8 @@ const bom = {
       ...(typeof rootPkg.license === "string" && rootPkg.license.trim()
         ? { licenses: [{ license: { name: rootPkg.license.trim() } }] }
         : {}),
-      purl: purlFor(rootPkg.name, rootPkg.version),
+      "bom-ref": rootRef,
+      purl: rootRef,
     },
     ...(dev ? { lifecycles: [{ phase: "build" }] } : {}),
     properties: dev
@@ -237,6 +252,7 @@ const bom = {
         ],
   },
   components: sortedComponents,
+  dependencies,
 };
 // Derived from the whole document, so the same input always yields the same
 // urn:uuid and the BOM stays byte-for-byte reproducible, while BOMs that differ
