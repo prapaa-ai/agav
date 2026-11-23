@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -10,17 +11,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // devDependencies in plain `pnpm list` into the separate build-dependency BOM.
 // These tests run it against fixture trees through a fake `pnpm` first on PATH,
 // then check the BOM against the CycloneDX 1.5 schema. The schemas in
-// fixtures/cyclonedx are copied unchanged from CycloneDX/specification at tag
-// 1.5 (Apache-2.0).
+// scripts/cyclonedx are copied unchanged from CycloneDX/specification at tag
+// 1.5 (Apache-2.0); the generator reads its SPDX license ids from the same copy.
 //
 // The fake pnpm is a shebang script, which Windows cannot exec, so the suite
 // runs on POSIX only; CI runs it on ubuntu.
 
 const root = resolve(import.meta.dirname, "../..");
 const script = join(root, "scripts/gen-sbom.mjs");
-const schemaDir = join(import.meta.dirname, "fixtures/cyclonedx");
+const schemaDir = join(root, "scripts/cyclonedx");
 
-type Node = { version?: string; path?: string; dependencies?: Record<string, Node> };
+type Node = { version?: string; path?: string; resolved?: string; dependencies?: Record<string, Node> };
 
 function validateBom(bom: unknown) {
   // Format keywords (iri-reference, idn-email) need ajv-formats, which is not a
@@ -60,11 +61,24 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
 
   // A package directory with its own package.json, as pnpm's `path` points at;
   // `peers` is the suffix pnpm adds to the folder of a package with peers.
-  function pkg(name: string, version: string, license?: string, peers = ""): string {
+  function pkg(name: string, version: string, license?: string, peers = "", fields: Record<string, unknown> = {}): string {
     const dir = join(repo, "store", `${name.replace("/", "+")}@${version}${peers}`);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version, ...(license ? { license } : {}) }));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version, ...(license ? { license } : {}), ...fields }));
     return dir;
+  }
+
+  // pnpm-lock.yaml as pnpm 10 writes it: one `packages` entry per name@version,
+  // its resolution carrying the SRI integrity of the registry tarball.
+  function writeLock(integrity: Record<string, string>) {
+    const entries = Object.entries(integrity).map(([key, sri]) => `  '${key}':\n    resolution: {integrity: ${sri}}\n`);
+    writeFileSync(join(repo, "pnpm-lock.yaml"), `lockfileVersion: '9.0'\n\npackages:\n\n${entries.join("\n")}`);
+  }
+
+  // An SRI string and the hex digest CycloneDX records for it.
+  function sri(alg: "sha1" | "sha512", content: string) {
+    const hash = () => createHash(alg).update(content);
+    return { integrity: `${alg}-${hash().digest("base64")}`, hex: hash().digest("hex") };
   }
 
   function writeRepo(
@@ -159,18 +173,21 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
       "pkg:npm/transitive-b@2.0.0",
     ]);
     const byName = Object.fromEntries(doc.components.map((c: { name: string }) => [c.name, c]));
-    expect(byName["direct-a"].licenses).toEqual([{ license: { name: "MIT" } }]);
-    expect(byName["peer-f"].licenses).toEqual([{ license: { name: "MIT" } }]);
-    expect(byName["optional-e"].licenses).toEqual([{ license: { name: "BSD-3-Clause" } }]);
+    expect(byName["direct-a"].licenses).toEqual([{ license: { id: "MIT" } }]);
+    expect(byName["peer-f"].licenses).toEqual([{ license: { id: "MIT" } }]);
+    expect(byName["optional-e"].licenses).toEqual([{ license: { id: "BSD-3-Clause" } }]);
     // No license field in its package.json, and none invented.
     expect(byName["@scope/direct-d"].licenses).toBeUndefined();
+    // No lockfile and no resolved URL in this tree: no hashes or references made up.
+    expect(byName["direct-a"].hashes).toBeUndefined();
+    expect(byName["direct-a"].externalReferences).toBeUndefined();
 
     expect(doc.metadata.component).toMatchObject({
       type: "application",
       name: "fixture-app",
       version: "1.2.3",
       purl: "pkg:npm/fixture-app@1.2.3",
-      licenses: [{ license: { name: "Apache-2.0" } }],
+      licenses: [{ license: { id: "Apache-2.0" } }],
     });
     expect(doc.metadata.timestamp).toBeUndefined();
     expect(doc.metadata.properties.map((p: { name: string }) => p.name)).toEqual(["agav:scope", "agav:excludes"]);
@@ -223,6 +240,127 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
       "pkg:npm/shared-c@3.1.0": [],
     });
 
+    const { valid, errors } = validateBom(doc);
+    expect(errors).toBeNull();
+    expect(valid).toBe(true);
+  });
+
+  it("records the lockfile integrity as hashes, and the tarball and source repository as references", () => {
+    const a = sri("sha512", "direct-a tarball");
+    const b = sri("sha1", "transitive-b tarball");
+    const c = sri("sha512", "shared-c tarball");
+    const registry = (name: string, version: string) => `https://registry.npmjs.org/${name}/-/${name.split("/").pop()}-${version}.tgz`;
+    const tree = [
+      {
+        name: "fixture-app",
+        version: "1.2.3",
+        path: repo,
+        dependencies: {
+          "direct-a": {
+            version: "1.0.0",
+            resolved: registry("direct-a", "1.0.0"),
+            path: pkg("direct-a", "1.0.0", "MIT", "", { repository: "owner/direct-a" }),
+            dependencies: {
+              "transitive-b": {
+                version: "2.0.0",
+                resolved: registry("transitive-b", "2.0.0"),
+                path: pkg("transitive-b", "2.0.0", "MIT", "", { repository: { type: "git", url: "git+https://github.com/owner/transitive-b.git" } }),
+              },
+            },
+          },
+          "@scope/direct-d": {
+            version: "4.0.0",
+            resolved: registry("@scope/direct-d", "4.0.0"),
+            path: pkg("@scope/direct-d", "4.0.0", "MIT", "", { repository: "gitlab:owner/direct-d" }),
+            dependencies: { "shared-c": { version: "3.0.0", resolved: registry("shared-c", "3.0.0"), path: pkg("shared-c", "3.0.0", "ISC") } },
+          },
+          // Not in the lockfile and no resolved URL: listed without either.
+          "peer-f": { version: "6.0.0", path: pkg("peer-f", "6.0.0", "MIT") },
+        },
+      },
+    ];
+    writeRepo(declared, tree);
+    // transitive-b carries a legacy sha1 next to a sha512, as old packages do.
+    const b512 = sri("sha512", "transitive-b tarball");
+    writeLock({
+      "direct-a@1.0.0": a.integrity,
+      "transitive-b@2.0.0": `${b.integrity} ${b512.integrity}`,
+      "shared-c@3.0.0": c.integrity,
+      "@scope/direct-d@4.0.0": "sha512-not*base64",
+    });
+    const result = run();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    const doc = bom(result.out);
+    const byName = Object.fromEntries(doc.components.map((x: { name: string }) => [x.name, x]));
+
+    expect(byName["direct-a"].hashes).toEqual([{ alg: "SHA-512", content: a.hex }]);
+    expect(byName["transitive-b"].hashes).toEqual([
+      { alg: "SHA-1", content: b.hex },
+      { alg: "SHA-512", content: b512.hex },
+    ]);
+    expect(byName["shared-c"].hashes).toEqual([{ alg: "SHA-512", content: c.hex }]);
+    // A malformed integrity is left out, not decoded into a wrong digest.
+    expect(byName["@scope/direct-d"].hashes).toBeUndefined();
+    expect(byName["peer-f"].hashes).toBeUndefined();
+
+    expect(byName["direct-a"].externalReferences).toEqual([
+      { type: "distribution", url: "https://registry.npmjs.org/direct-a/-/direct-a-1.0.0.tgz" },
+      { type: "vcs", url: "https://github.com/owner/direct-a" },
+    ]);
+    expect(byName["transitive-b"].externalReferences).toEqual([
+      { type: "distribution", url: "https://registry.npmjs.org/transitive-b/-/transitive-b-2.0.0.tgz" },
+      { type: "vcs", url: "git+https://github.com/owner/transitive-b.git" },
+    ]);
+    expect(byName["@scope/direct-d"].externalReferences).toEqual([
+      { type: "distribution", url: "https://registry.npmjs.org/@scope/direct-d/-/direct-d-4.0.0.tgz" },
+      { type: "vcs", url: "https://gitlab.com/owner/direct-d" },
+    ]);
+    // No repository field: the tarball only.
+    expect(byName["shared-c"].externalReferences).toEqual([
+      { type: "distribution", url: "https://registry.npmjs.org/shared-c/-/shared-c-3.0.0.tgz" },
+    ]);
+    expect(byName["peer-f"].externalReferences).toBeUndefined();
+
+    const { valid, errors } = validateBom(doc);
+    expect(errors).toBeNull();
+    expect(valid).toBe(true);
+  });
+
+  it("fails on a lockfile it cannot parse, rather than drop every hash", () => {
+    writeRepo(declared, graph());
+    writeFileSync(join(repo, "pnpm-lock.yaml"), "packages:\n  'direct-a@1.0.0': {resolution: [\n");
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Could not parse pnpm-lock.yaml");
+  });
+
+  it("emits SPDX ids and expressions, and keeps any other license text as written", () => {
+    const licensed: Array<[string, string]> = [
+      ["lower-id", "mit"],
+      ["either", "(MIT OR Apache-2.0)"],
+      ["both", "Apache-2.0 AND BSD-3-Clause"],
+      ["see-file", "SEE LICENSE IN LICENSE.md"],
+      ["vague", "BSD"],
+      ["unknown-in-expression", "MIT OR Nonsense-1.0"],
+      ["dangling", "MIT OR"],
+    ];
+    const deps = Object.fromEntries(licensed.map(([name, license]) => [name, { version: "1.0.0", path: pkg(name, "1.0.0", license) }]));
+    writeRepo(Object.fromEntries(licensed.map(([name]) => [name, "^1.0.0"])), [{ name: "fixture-app", version: "1.2.3", path: repo, dependencies: deps }]);
+    const result = run();
+    expect(result.status).toBe(0);
+    const doc = bom(result.out);
+    const licenses = Object.fromEntries(doc.components.map((x: { name: string; licenses: unknown }) => [x.name, x.licenses]));
+
+    expect(licenses).toEqual({
+      "lower-id": [{ license: { id: "MIT" } }],
+      either: [{ expression: "(MIT OR Apache-2.0)" }],
+      both: [{ expression: "Apache-2.0 AND BSD-3-Clause" }],
+      "see-file": [{ license: { name: "SEE LICENSE IN LICENSE.md" } }],
+      vague: [{ license: { name: "BSD" } }],
+      "unknown-in-expression": [{ license: { name: "MIT OR Nonsense-1.0" } }],
+      dangling: [{ license: { name: "MIT OR" } }],
+    });
     const { valid, errors } = validateBom(doc);
     expect(errors).toBeNull();
     expect(valid).toBe(true);
