@@ -74,3 +74,24 @@ describe("/history list --limit", () => {
     expect(read).not.toHaveBeenCalled();
   });
 });
+
+describe("/history list filters", () => {
+  it("combines literal model and exact provider filters before applying the limit", async () => {
+    read.mockResolvedValue([
+      { ...records[0]!, provider: "openai", model: "other" },
+      { ...records[1]!, model: "Model.v2" },
+      { ...records[2]!, model: "MODEL.V2" },
+    ]);
+    expect(await historyCommand.execute("list --model model.v2 --limit 1 --provider ollama", context)).toEqual({
+      type: "message", text: "00000001 · middle · 0 messages\nShowing 1 of 2 saved sessions.",
+    });
+    expect(await historyCommand.execute("list --provider Ollama", context)).toEqual({
+      type: "message", text: "No saved sessions match the filters.",
+    });
+  });
+
+  it.each(["list --model", "list --provider --model x", "list --model x --model y"])("rejects %s before reading", async (args) => {
+    expect((await historyCommand.execute(args, context)).type).toBe("message");
+    expect(read).not.toHaveBeenCalled();
+  });
+});

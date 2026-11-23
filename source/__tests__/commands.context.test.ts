@@ -67,3 +67,27 @@ describe("/context accounting", () => {
     expect(await output(context)).toMatch(new RegExp(`System prompt\\s+${estimateTokens("custom prompt")}\\s`));
   });
 });
+
+describe("/context --json", () => {
+  it("returns numeric occupancy and excludes cumulative session totals", async () => {
+    const { context } = setup();
+    const result = await contextCommand.execute("--json", context);
+    expect(result.type).toBe("message");
+    if (result.type !== "message") throw new Error("expected a message");
+    const value = JSON.parse(result.text);
+    expect(Object.keys(value).sort()).toEqual([
+      "builtinToolTokens", "freeTokens", "maxTokens", "mcpToolTokens",
+      "messageTokens", "skillTokens", "systemTokens", "usedTokens",
+    ]);
+    expect(Object.values(value).every((number) => Number.isFinite(number))).toBe(true);
+    expect(value.systemTokens).toBe(estimateTokens("custom prompt"));
+    expect(value.usedTokens).toBe(
+      value.systemTokens + value.builtinToolTokens + value.mcpToolTokens + value.skillTokens + value.messageTokens,
+    );
+  });
+
+  it("rejects unsupported arguments before reading the conversation", async () => {
+    expect(await contextCommand.execute("--other", {} as CommandContext))
+      .toEqual({ type: "message", text: "Usage: /context [--json]" });
+  });
+});

@@ -332,6 +332,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     activateSession,
     renameSession,
     sessionId,
+    sessionName,
     turnStartTime,
     lastTurnDurationMs,
     isGenerationPaused,
@@ -2030,7 +2031,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               usage: tokenUsage.inputTokens + tokenUsage.outputTokens > 0 ? "… tokens" : "0 tokens",
               duration: lastTurnDurationMs != null ? "⏱ …" : "",
               sandbox: `sandbox: ${getSandboxName()}`,
-              session: sessionId ? `session: ${sessionId.slice(0, 8)}` : "",
+              session: (sessionName ?? (sessionId ? sessionId.slice(0, 8) : ""))
+                ? `session: ${sessionName ?? sessionId!.slice(0, 8)}`
+                : "",
               hint: getRandomHint(keybindings, enhancedKeyboard),
             } satisfies StatusBarSegments}
             onChange={(layout: StatusBarLayout) => {
@@ -2169,7 +2172,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
           workflowStatus={workflowBadge}
           sandboxBackend={`sandbox: ${getSandboxName()}`}
-          branchName={sessionId?.slice(0, 8)}
+          branchName={sessionName ?? sessionId?.slice(0, 8)}
           turnStartTime={turnStartTime}
           lastTurnDurationMs={lastTurnDurationMs}
           isLoading={isLoading}

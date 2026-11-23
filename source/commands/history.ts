@@ -30,34 +30,60 @@ export function formatSessionTitle(title: unknown): string | undefined {
   return label.slice(0, end).trimEnd() + "…";
 }
 
-const HISTORY_USAGE = "Usage: /history [list [--limit <count>]]";
+const HISTORY_USAGE = "Usage: /history [list [--limit <count>] [--provider <name>] [--model <name>]]";
 
 export const historyCommand: SlashCommand = {
   name: "history",
   description: "Browse saved sessions",
-  argumentHint: "[list [--limit <count>]]",
+  argumentHint: "[list [--limit <count>] [--provider <name>] [--model <name>]]",
   usage: `${HISTORY_USAGE} · /resume <id> to load a session`,
   async execute(args, context) {
     const input = args.trim();
     let limit: number | undefined;
+    let provider: string | undefined;
+    let model: string | undefined;
     if (!input) {
       const interactive = openResourceManager("history", context);
       if (interactive) return interactive;
-    } else if (input !== "list") {
-      const option = /^list\s+--limit(?:\s+([\s\S]*))?$/.exec(input);
-      if (!option) return { type: "message", text: HISTORY_USAGE };
-      const value = option[1] ?? "";
-      limit = Number(value);
-      if (!/^\d+$/.test(value) || !Number.isSafeInteger(limit) || limit < 1) {
-        return { type: "message", text: "--limit requires a positive safe integer. " + HISTORY_USAGE };
+    } else {
+      const [action, ...options] = input.split(/\s+/);
+      if (action !== "list") return { type: "message", text: HISTORY_USAGE };
+      const seen = new Set<string>();
+      for (let i = 0; i < options.length; i += 2) {
+        const flag = options[i]!;
+        const value = options[i + 1];
+        if (seen.has(flag)) return { type: "message", text: HISTORY_USAGE };
+        seen.add(flag);
+        if (flag === "--limit") {
+          limit = Number(value);
+          if (!value || !/^\d+$/.test(value) || !Number.isSafeInteger(limit) || limit < 1) {
+            return { type: "message", text: "--limit requires a positive safe integer. " + HISTORY_USAGE };
+          }
+          if (options[i + 2] && !options[i + 2]!.startsWith("--")) {
+            return { type: "message", text: "--limit requires a positive safe integer. " + HISTORY_USAGE };
+          }
+        } else if (flag === "--provider" || flag === "--model") {
+          if (!value || value.startsWith("--")) {
+            return { type: "message", text: `${flag} requires a name. ${HISTORY_USAGE}` };
+          }
+          if (flag === "--provider") provider = value;
+          else model = value.toLowerCase();
+        } else return { type: "message", text: HISTORY_USAGE };
       }
     }
 
-    const sessions = await listSessions();
-    if (sessions.length === 0) return { type: "message", text: "No saved sessions." };
+    const saved = await listSessions();
+    const filtered = provider !== undefined || model !== undefined;
+    const sessions = filtered ? saved.filter((session) =>
+      (provider === undefined || session.provider === provider) &&
+      (model === undefined || session.model?.toLowerCase() === model)
+    ) : saved;
+    if (sessions.length === 0) {
+      return { type: "message", text: filtered ? "No saved sessions match the filters." : "No saved sessions." };
+    }
     const shown = limit === undefined ? sessions : sessions.slice(0, limit);
     const lines = shown.map((s) => `${s.id.slice(0, 8)} · ${formatSessionTitle(s.title) ?? "Untitled session"} · ${s.messages.length} messages`);
-    if (shown.length < sessions.length) lines.push(`Showing ${shown.length} of ${sessions.length} saved sessions.`);
+    if (filtered || shown.length < sessions.length) lines.push(`Showing ${shown.length} of ${sessions.length} saved sessions.`);
     return { type: "message", text: lines.join("\n") };
   },
 };
