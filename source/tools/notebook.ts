@@ -1,9 +1,50 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_LINES } from "../utils/tool-output.js";
 import type { ToolDefinition, ToolResult } from "./types.js";
 
 function isCellBound(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+const MAX_CELL_METADATA_BYTES = 2_000;
+
+function boundedCellMetadata(metadata: Record<string, unknown>): string | undefined {
+  const parts: string[] = [];
+  let remaining = MAX_CELL_METADATA_BYTES;
+  function append(text: string): boolean {
+    remaining -= Buffer.byteLength(text);
+    if (remaining < 0) return false;
+    parts.push(text);
+    return true;
+  }
+  function string(value: string): boolean {
+    return value.length < remaining && append(JSON.stringify(value));
+  }
+  function value(input: unknown, depth: number): boolean {
+    if (depth > 32) return false;
+    if (typeof input === "string") return string(input);
+    if (input === null || typeof input === "number" || typeof input === "boolean") {
+      return append(JSON.stringify(input));
+    }
+    if (Array.isArray(input)) {
+      if (!append("[")) return false;
+      for (let index = 0; index < input.length; index++) {
+        if ((index > 0 && !append(",")) || !value(input[index], depth + 1)) return false;
+      }
+      return append("]");
+    }
+    if (typeof input !== "object" || !append("{")) return false;
+    const object = input as Record<string, unknown>;
+    let first = true;
+    for (const key in object) {
+      if (!Object.hasOwn(object, key)) continue;
+      if ((!first && !append(",")) || !string(key) || !append(":") || !value(object[key], depth + 1)) return false;
+      first = false;
+    }
+    return append("}");
+  }
+  return value(metadata, 0) ? parts.join("") : undefined;
 }
 
 type NotebookText = string | string[];
@@ -11,6 +52,7 @@ type NotebookText = string | string[];
 interface NotebookCell {
   cell_type: string;
   source: NotebookText;
+  metadata?: Record<string, unknown>;
   outputs?: Array<{ text?: NotebookText; output_type?: string; data?: Record<string, NotebookText> }>;
 }
 
@@ -40,6 +82,10 @@ export const readNotebookTool: ToolDefinition = {
           minimum: 1,
           description: "Last cell to include, numbered from 1 (default: last cell)",
         },
+        include_metadata: {
+          type: "boolean",
+          description: "Show each cell’s metadata when present, up to 2000 bytes per cell (default: false).",
+        },
         include_outputs: {
           type: "boolean",
           description: "Include cached execution outputs (default: true).",
@@ -50,6 +96,10 @@ export const readNotebookTool: ToolDefinition = {
   },
 
   async execute(input): Promise<ToolResult> {
+    const includeMetadata = input.include_metadata;
+    if (includeMetadata !== undefined && typeof includeMetadata !== "boolean") {
+      return { output: "include_metadata must be a boolean", isError: true };
+    }
     const includeOutputs = input.include_outputs;
     if (includeOutputs !== undefined && typeof includeOutputs !== "boolean") {
       return { output: "include_outputs must be a boolean", isError: true };
@@ -78,36 +128,64 @@ export const readNotebookTool: ToolDefinition = {
         }
       }
       const last = Math.min(end ?? nb.cells.length, nb.cells.length);
-      const lines: string[] = [];
+      const parts: string[] = [];
+      let bytes = 0;
+      let lines = 1;
+      const marker = "\n[Notebook output truncated. Request a narrower cell range.]";
+      const byteLimit = MAX_TOOL_OUTPUT_BYTES - Buffer.byteLength(marker);
 
-      for (let i = first - 1; i < last; i++) {
-        const cell = nb.cells[i]!;
-        const src = notebookText(cell.source);
-        lines.push(`--- Cell ${i + 1} [${cell.cell_type}] ---`);
-        lines.push(src);
-
-        if (includeOutputs !== false && cell.outputs && cell.outputs.length > 0) {
-          lines.push("  Output:");
-          for (const out of cell.outputs) {
-            if (out.text !== undefined) lines.push("  " + notebookText(out.text));
-            if (out.data?.["text/plain"] !== undefined) {
-              lines.push("  " + notebookText(out.data["text/plain"]));
-            }
-          }
+      for (const part of notebookParts(nb, first, last, includeOutputs !== false, includeMetadata === true, hasRange)) {
+        bytes += Buffer.byteLength(part);
+        if (bytes > byteLimit) return { output: parts.join("") + marker, isError: false };
+        for (const char of part) {
+          if (char === "\n") lines++;
         }
-        lines.push("");
+        if (lines >= MAX_TOOL_OUTPUT_LINES) return { output: parts.join("") + marker, isError: false };
+        if (part) parts.push(part);
       }
-
-      if (hasRange) lines.push(`(Showing cells ${first}-${last} of ${nb.cells.length}.)`);
-      return { output: lines.join("\n"), isError: false };
+      return { output: parts.join(""), isError: false };
     } catch (err) {
       return { output: `Failed to read notebook: ${err instanceof Error ? err.message : String(err)}`, isError: true };
     }
   },
 };
 
-function notebookText(value: NotebookText): string {
-  return typeof value === "string" ? value : value.join("");
+function* notebookText(value: NotebookText): Generator<string> {
+  if (typeof value === "string") yield value;
+  else yield* value;
+}
+
+function* notebookParts(
+  nb: Notebook, first: number, last: number, includeOutputs: boolean, includeMetadata: boolean, hasRange: boolean,
+): Generator<string> {
+  for (let i = first - 1; i < last; i++) {
+    const cell = nb.cells[i]!;
+    yield `--- Cell ${i + 1} [${cell.cell_type}] ---\n`;
+    yield* notebookText(cell.source);
+    yield "\n";
+    if (includeOutputs && cell.outputs?.length) {
+      yield "  Output:\n";
+      for (const out of cell.outputs) {
+        for (const text of [out.text, out.data?.["text/plain"]]) {
+          if (text === undefined) continue;
+          yield "  ";
+          yield* notebookText(text);
+          yield "\n";
+        }
+      }
+    }
+    if (includeMetadata && cell.metadata) {
+      const metadata = boundedCellMetadata(cell.metadata);
+      if (metadata !== "{}") {
+        yield "  Metadata:\n";
+        yield metadata === undefined
+          ? "  [Omitted: metadata exceeds 2000 bytes or nesting limit.]\n"
+          : `  ${metadata}\n`;
+      }
+    }
+    if (i + 1 < last || hasRange) yield "\n";
+  }
+  if (hasRange) yield `(Showing cells ${first}-${last} of ${nb.cells.length}.)`;
 }
 
 export const editNotebookTool: ToolDefinition = {
