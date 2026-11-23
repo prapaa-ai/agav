@@ -22,7 +22,7 @@ export const PROVIDERS: readonly ProviderName[] = [
 ];
 
 const DEFAULT_MODELS: Record<ProviderName, string> = {
-  anthropic: "claude-sonnet-4-20250514",
+  anthropic: "claude-sonnet-5-5",
   openai: "gpt-5.4-mini",
   openrouter: "openrouter/auto",
   nvidia: "nvidia/nemotron-3.5-lightning-30b-a3b",
