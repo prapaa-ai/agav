@@ -66,6 +66,7 @@ async function walkDir(
   maxFiles: number,
   maxDepth: number,
   includeSymbols: boolean,
+  includeHidden: boolean,
   depth = 0,
 ): Promise<void> {
   if (results.length >= maxFiles) return;
@@ -86,9 +87,11 @@ async function walkDir(
   for (const entry of entries) {
     if (results.length >= maxFiles) return;
 
+    if (!includeHidden && entry.name.startsWith(".")) continue;
+
     if (entry.isDirectory()) {
-      if (depth >= maxDepth || SKIP_DIRS.has(entry.name) || entry.name.startsWith(".")) continue;
-      await walkDir(join(dir, entry.name), basePath, results, maxFiles, maxDepth, includeSymbols, depth + 1);
+      if (depth >= maxDepth || SKIP_DIRS.has(entry.name)) continue;
+      await walkDir(join(dir, entry.name), basePath, results, maxFiles, maxDepth, includeSymbols, includeHidden, depth + 1);
     } else if (SOURCE_EXTS.has(extname(entry.name))) {
       const filePath = relative(basePath, join(dir, entry.name));
       if (!includeSymbols) {
@@ -153,6 +156,10 @@ export const overviewTool: ToolDefinition = {
           type: "boolean",
           description: "Read files to show symbols (default: true). Set to false for a structure-only map.",
         },
+        include_hidden: {
+          type: "boolean",
+          description: "Include hidden source files and directories (default: false). Generated directories remain excluded.",
+        },
         depth: {
           type: "integer",
           minimum: 0,
@@ -170,6 +177,9 @@ export const overviewTool: ToolDefinition = {
     if (input.include_symbols !== undefined && typeof input.include_symbols !== "boolean") {
       return { output: "Invalid include_symbols: expected a boolean.", isError: true };
     }
+    if (input.include_hidden !== undefined && typeof input.include_hidden !== "boolean") {
+      return { output: "Invalid include_hidden: expected a boolean.", isError: true };
+    }
     const includeSymbols = input.include_symbols !== false;
     const maxDepth = input.depth === undefined ? Infinity : input.depth as number;
     const searchPath = String(input.path ?? ".");
@@ -184,7 +194,7 @@ export const overviewTool: ToolDefinition = {
       return { output: `Directory not found: ${searchPath}`, isError: true };
     }
 
-    await walkDir(absPath, absPath, results, maxFiles, maxDepth, includeSymbols);
+    await walkDir(absPath, absPath, results, maxFiles, maxDepth, includeSymbols, input.include_hidden === true);
 
     if (results.length === 0) {
       return { output: "No source files found.", isError: false };
