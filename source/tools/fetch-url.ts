@@ -274,7 +274,7 @@ function sendOnce(url: URL, target: Awaited<ReturnType<typeof assertSafeUrl>>, r
 
 const RESPONSE_CREDENTIAL_HEADERS = new Set([...CREDENTIAL_HEADERS, "set-cookie"]);
 
-function escapeHeaderControls(value: string): string {
+function escapeHttpControls(value: string): string {
   return value.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]/g, (character) =>
     `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
@@ -285,7 +285,7 @@ function renderResponseHeaders(headers: readonly string[]): string {
   for (let index = 0; index + 1 < headers.length; index += 2) {
     const name = headers[index]!;
     const value = RESPONSE_CREDENTIAL_HEADERS.has(name.toLowerCase()) ? "[redacted]" : headers[index + 1]!;
-    const line = `${escapeHeaderControls(name)}: ${escapeHeaderControls(value)}`;
+    const line = `${escapeHttpControls(name)}: ${escapeHttpControls(value)}`;
     bytes += Buffer.byteLength(line) + 1;
     if (bytes > 8_000) {
       lines.push("[Response header output truncated]");
@@ -372,7 +372,7 @@ export const fetchUrlTool: ToolDefinition = {
       const ok = res.status >= 200 && res.status < 300;
       return {
         output: capture.finish(
-          `HTTP ${res.status} ${res.statusText}`, readError,
+          `HTTP ${res.status} ${escapeHttpControls(res.statusText)}`, readError,
           input.include_headers ? renderResponseHeaders(res.rawHeaders ?? []) : undefined,
         ),
         isError: !ok || readError !== undefined,

@@ -309,12 +309,13 @@ describe("response headers", () => {
   });
 });
 
-it("visibly escapes terminal controls in header names and values", async () => {
+it("visibly escapes terminal controls in the reason phrase and response headers", async () => {
   setFetchTransport(async () => ({
-    status: 200, statusText: "OK", cancel() {},
+    status: 200, statusText: "O\x1b[31mK", cancel() {},
     rawHeaders: ["X-\tTest", "a\x1b[31m\r\nb"],
   }));
   const result = await fetchUrlTool.execute({ url: "https://example.com/", method: "HEAD", include_headers: true });
+  expect(result.output).toContain(String.raw`HTTP 200 O\u001b[31mK`);
   expect(result.output).toContain(String.raw`X-\u0009Test: a\u001b[31m\u000d\u000ab`);
   expect(result.output).not.toMatch(/[\x1b\r\t]/);
 });

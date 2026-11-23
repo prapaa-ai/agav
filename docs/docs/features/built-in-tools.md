@@ -195,6 +195,8 @@ The buffered runners used by some integrations still enforce their own output-bu
 
 `fetch_url` supports GET (default), POST, PUT, DELETE, and PATCH, with optional headers and body. It streams the response as decoded text, including raw HTML, with a 30-second request timeout. Once started, it does not consume the turn cancellation signal; Esc does not immediately stop that request or undo a POST or other server-side action. Small results include the HTTP status and body unchanged; above **38,000 decoded UTF-8 bytes**, a response log and bounded head/tail preview are used.
 
+Set `include_headers: true` to include response headers before the body. The default is `false`. Repeated fields stay on separate lines. Credential headers, including `Set-Cookie`, are redacted, and the block is capped at **8,000 UTF-8 bytes** of header lines with a truncation marker. Control characters in the reason phrase and displayed headers are escaped.
+
 POST, PUT, PATCH, and DELETE are blocked in `deny-writes` and require explicit per-call approval in other modes, including `auto-accept`; allowlisting `fetch_url` or choosing “always” does not bypass that requirement. Calls without a confirmation handler are refused. GET (and HEAD when invoked) is treated as read-only by the permission gate.
 
 Only HTTP(S) destinations are accepted. Loopback, private, reserved, and metadata addresses are blocked, including hostnames with any forbidden DNS result. Connections pin the validated address; each redirect is revalidated, with a maximum of five redirects. Cross-origin redirects strip `Authorization`, `Cookie`, and `Proxy-Authorization`. See [HTTP request safety](/reference/security#http-request-safety).
