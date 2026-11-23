@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, type MouseEventData } from "../ink/index.js";
+import { pointerSelect, usePointerMotion } from "./hover-text.js";
 import { wheelSelect } from "./wheel-select.js";
 import { getTheme } from "../config/theme.js";
 import { buildStatusBarText, type StatusBarSegments } from "./status-bar.js";
@@ -37,6 +38,7 @@ const AREAS: { id: Screen; label: string; description: string }[] = [
  * and persists on exit, so the footer reflects edits immediately.
  */
 export function CustomizeTUI({ initialLayout, preview, onChange, onExit }: CustomizeTUIProps) {
+  usePointerMotion();
   const [screen, setScreen] = useState<Screen>("hub");
   // Hold the latest layout so closing from the hub persists edits made in an
   // editor the user then backed out of.
@@ -81,10 +83,10 @@ function CustomizeHub({ onOpen, onExit }: { onOpen: (screen: Screen) => void; on
         {AREAS.map((area, index) => {
           const active = index === selected;
           return (
-            <Box key={area.id}>
+            <Box key={area.id} onMouseMove={pointerSelect(() => setSelected(index))}>
               <Text color={active ? theme.promptColor : undefined}>{active ? "❯ " : "  "}</Text>
-              <Text bold={active} onClick={(event) => {
-                if (event.ctrl || event.alt || event.shift) return;
+              <Text bold={active} color={active ? "cyan" : undefined} inverse={active} onClick={(event) => {
+                if (event.button !== 0 || event.ctrl || event.alt || event.shift) return;
                 event.stopPropagation?.();
                 openArea(index);
               }}>{area.label}</Text>
@@ -184,12 +186,12 @@ function StatusBarEditor({
           const meta = statusBarItemMeta(item.id);
           const active = index === selected;
           const select = (event: MouseEventData) => {
-            if (event.ctrl || event.alt || event.shift) return;
+            if (event.button !== 0 || event.ctrl || event.alt || event.shift) return;
             event.stopPropagation?.();
             setSelected(index);
           };
           return (
-            <Box key={item.id}>
+            <Box key={item.id} onMouseMove={pointerSelect(() => { checkboxPress.current = null; setSelected(index); })}>
               <Text color={active ? theme.promptColor : undefined}>{active ? "❯ " : "  "}</Text>
               <Text color={item.enabled ? theme.promptColor : undefined} dimColor={!item.enabled}
                 onMouseDown={({ x, y }) => {
@@ -199,14 +201,14 @@ function StatusBarEditor({
                 onClick={(event) => {
                   const press = checkboxPress.current;
                   checkboxPress.current = null;
-                  if (event.ctrl || event.alt || event.shift || press?.id !== item.id || press.x !== event.x || press.y !== event.y) return;
+                  if (event.button !== 0 || event.ctrl || event.alt || event.shift || press?.id !== item.id || press.x !== event.x || press.y !== event.y) return;
                   event.stopPropagation?.();
                   toggle(index);
                 }}
               >
                 {item.enabled ? "[x] " : "[ ] "}
               </Text>
-              <Text bold={active} dimColor={!item.enabled} onClick={select}>{meta.label}</Text>
+              <Text bold={active} color={active ? "cyan" : undefined} inverse={active} dimColor={!active && !item.enabled} onClick={select}>{meta.label}</Text>
               <Text dimColor>{"  — "}{meta.description}</Text>
             </Box>
           );

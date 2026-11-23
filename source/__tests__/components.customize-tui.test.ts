@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { createElement as h } from "react";
-import { describe, expect, it, vi } from "vitest";
-import render from "../ink/render.js";
+import { describe, expect, it } from "vitest";
+import Ink from "../ink/ink.js";
 import { CustomizeTUI } from "../components/customize-tui.js";
 import {
   defaultStatusBarLayout,
@@ -13,16 +13,17 @@ const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
 interface Harness {
   frame: () => string;
   key: (text: string) => Promise<void>;
+  mouse: (label: string, button?: number, releaseOffset?: number) => Promise<void>;
+  unmount: () => void;
   changes: StatusBarLayout[];
   exited: StatusBarLayout[];
 }
 
 async function mount(initialLayout?: StatusBarLayout): Promise<Harness> {
-  const chunks: string[] = [];
   const stdout = new EventEmitter() as NodeJS.WriteStream;
   Object.assign(stdout, {
     isTTY: true, columns: 100, rows: 40,
-    write: (text: string) => { chunks.push(text); return true; },
+    write: () => true,
   });
   const stdin = new EventEmitter() as NodeJS.ReadStream;
   Object.assign(stdin, {
@@ -30,7 +31,8 @@ async function mount(initialLayout?: StatusBarLayout): Promise<Harness> {
   });
   const changes: StatusBarLayout[] = [];
   const exited: StatusBarLayout[] = [];
-  const instance = render(
+  const instance = new Ink({ stdout, stdin, stderr: stdout, patchConsole: false, exitOnCtrlC: false, alternateScreen: false, maxFps: 30 });
+  instance.render(
     h(CustomizeTUI, {
       initialLayout,
       preview: {
@@ -45,7 +47,6 @@ async function mount(initialLayout?: StatusBarLayout): Promise<Harness> {
       onChange: (layout) => changes.push(layout),
       onExit: (layout) => exited.push(layout),
     }),
-    { stdout, stdin, patchConsole: false, exitOnCtrlC: false },
   );
   const settle = async () => {
     // Wait past ink's 50 ms bare-Escape disambiguation timer so a lone ESC is
@@ -53,15 +54,21 @@ async function mount(initialLayout?: StatusBarLayout): Promise<Harness> {
     await new Promise((resolve) => setTimeout(resolve, 80));
     await instance.waitUntilRenderFlush();
   };
-  const frame = () => chunks.map(stripAnsi).filter((t) => /[a-z]/i.test(t)).at(-1) ?? "";
+  const frame = () => stripAnsi((instance as unknown as { lastOutput: string }).lastOutput);
   const key = async (text: string) => { stdin.emit("data", Buffer.from(text)); await settle(); };
   await settle();
-  return { frame, key, changes, exited };
+  const mouse = async (label: string, button = 0, releaseOffset = 0) => {
+    const lines = frame().split("\n");
+    const row = lines.findIndex((line) => line.includes(label));
+    expect(row).toBeGreaterThanOrEqual(0);
+    const col = lines[row]!.indexOf(label) + 1;
+    await key(`\x1b[<${button};${col};${row + 1}M${button < 64 ? `\x1b[<${button};${col + releaseOffset};${row + 1}m` : ""}`);
+  };
+  return { frame, key, mouse, changes, exited, unmount: () => instance.unmount() };
 }
 
 // Key escape sequences.
 const DOWN = "\x1b[B";
-const UP = "\x1b[A";
 const ENTER = "\r";
 const ESC = "\x1b";
 
@@ -74,6 +81,27 @@ describe("CustomizeTUI", () => {
     expect(h.frame()).toContain("Customize");
     expect(h.frame()).toContain("Preview");
     expect(h.frame()).toContain("Model");
+  });
+
+  it("opens from the hub, selects labels, wheels the list, and toggles only on an explicit checkbox click", async () => {
+    const ui = await mount();
+    try {
+      await ui.mouse("Status bar");
+      expect(ui.frame()).toContain("Preview");
+      await ui.mouse("Reasoning effort");
+      expect(ui.frame()).toContain("❯ [x] Reasoning effort");
+      expect(ui.changes).toHaveLength(0);
+      await ui.mouse("Reasoning effort", 65); // wheel down to Message count
+      expect(ui.frame()).toContain("❯ [x] Message count");
+      await ui.mouse("[x] Reasoning effort", 0, 1); // release on another cell; no intervening drag report
+      expect(ui.changes).toHaveLength(0);
+      await ui.mouse("[x] Reasoning effort");
+      expect(ui.frame()).toContain("❯ [ ] Reasoning effort");
+      expect(ui.changes).toHaveLength(1);
+      expect(ui.exited).toHaveLength(0);
+      await ui.key(ENTER);
+      expect(ui.exited).toEqual(ui.changes);
+    } finally { ui.unmount(); }
   });
 
   it("toggles a segment with Space, emitting the change and updating the preview", async () => {

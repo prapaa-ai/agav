@@ -28,6 +28,8 @@ export function useSearch() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searching, setSearching] = useState(false);
 
+  const startSearch = () => setSearching(true);
+
   function handleSearchKey(input: string, key: Key): boolean {
     if (searching) {
       if (key.escape) {
@@ -50,7 +52,7 @@ export function useSearch() {
       return true;
     }
     if (input === "s") {
-      setSearching(true);
+      startSearch();
       return true;
     }
     if (key.escape && searchQuery) {
@@ -66,7 +68,7 @@ export function useSearch() {
     return true;
   }
 
-  return { searchQuery, searching, handleSearchKey, handleSearchPaste };
+  return { searchQuery, searching, handleSearchKey, handleSearchPaste, startSearch };
 }
 
 export function SearchBar({

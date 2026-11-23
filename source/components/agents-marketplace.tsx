@@ -8,6 +8,9 @@ import { parseFileUrl } from "./agents-types.js";
 import { useSearch, filterMarketplaceAgents, SearchBar } from "./agents-search.js";
 import { MarketplaceInspectView } from "./agents-inspect.js";
 import { wheelSelect, stepIndex } from "./wheel-select.js";
+import { pointerSelect } from "./hover-text.js";
+
+const PAGE_SIZE = 3;
 
 export function MarketplaceTab({
   onReloadAgents,
@@ -186,8 +189,9 @@ export function MarketplaceTab({
   };
 
   const filteredAgents = filterMarketplaceAgents(marketplaceAgents, searchQuery);
+  const canSelectAgent = !busy && !loading && !error;
   const selectAgent = (next: React.SetStateAction<number>) => {
-    if (busy || loading || error) return false;
+    if (!canSelectAgent) return false;
     setSelectedIndex(next);
     setInstallStatus(null);
     return true;
@@ -195,7 +199,6 @@ export function MarketplaceTab({
   const stepSelection = (delta: number) => selectAgent((i) => stepIndex(i, delta, filteredAgents.length));
 
   useInput(async (input, key) => {
-
     if (reinstallCandidate) {
       if (input === "y" || input === "Y") await doReinstall();
       else if (key.escape || input === "n" || input === "N") { setReinstallCandidate(null); }
@@ -257,7 +260,6 @@ export function MarketplaceTab({
 
     if (installing) return;
 
-    const PAGE_SIZE = 3;
     const currentPage = Math.floor(selectedIndex / PAGE_SIZE);
     const totalPages = Math.ceil(filteredAgents.length / PAGE_SIZE);
 
@@ -341,7 +343,6 @@ export function MarketplaceTab({
     );
   }
 
-  const PAGE_SIZE = 3;
   const currentPage = Math.floor(selectedIndex / PAGE_SIZE);
   const totalPages = Math.ceil(filteredAgents.length / PAGE_SIZE);
   const pageAgents = filteredAgents.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
@@ -418,12 +419,13 @@ export function MarketplaceTab({
         const isInstalled = installed !== undefined;
         const hasUpdate = isInstalled && installed.version !== agent.version;
         return (
-          <Box key={agent.name} flexDirection="column" marginBottom={1}>
-            <Box onClick={(event) => {
-              if (event.ctrl || event.alt || event.shift) return;
-              if (selectAgent(absIndex)) event.stopPropagation?.();
-            }}>
-              <Text color={isSelected ? "cyan" : undefined} bold={isSelected}>
+          <Box key={agent.name} flexDirection="column" marginBottom={1}
+            onMouseMove={canSelectAgent ? pointerSelect(() => { if (!isSelected) selectAgent(absIndex); }) : undefined}>
+            <Box>
+              <Text color={isSelected ? "cyan" : undefined} bold={isSelected} inverse={isSelected} onClick={canSelectAgent ? (event) => {
+                if (event.button !== 0 || event.ctrl || event.alt || event.shift) return;
+                if (selectAgent(absIndex)) event.stopPropagation?.();
+              } : undefined}>
                 {isSelected ? "→ " : "  "}
                 {agent.name}
               </Text>

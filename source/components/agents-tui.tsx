@@ -24,6 +24,7 @@ const agentsAdapter = createResourceAdapter("agents");
 import { InspectView, ConfigEditView } from "./agents-inspect.js";
 import { MarketplaceTab } from "./agents-marketplace.js";
 import { CreateTab } from "./agents-create.js";
+import { HoverText, usePointerMotion } from "./hover-text.js";
 
 export function AgentsTUI({ onExit, provider, config, height }: AgentsTUIProps) {
   const [activeTab, setActiveTab] = useState<Tab>("list");
@@ -212,9 +213,13 @@ export function AgentsTUI({ onExit, provider, config, height }: AgentsTUIProps) 
 
   const filteredAgents = agents;
 
+  const isEditingConfig = listView === "config" && (configEditing || configPickerActive || nativeToolsEditing);
+  const canSwitchTab = !(isEditingConfig || marketplaceBusy || managerBusy || createBusy);
+  // The parent also supplies pointer motion to the Marketplace rows.
+  usePointerMotion(!loading && canSwitchTab);
+
   const switchTab = (tab: Tab) => {
-    const isEditingConfig = listView === "config" && (configEditing || configPickerActive || nativeToolsEditing);
-    if (isEditingConfig || marketplaceBusy || managerBusy || createBusy) return false;
+    if (!canSwitchTab) return false;
     scrollControls.current?.scrollToBottom();
     setActiveTab(tab);
     if (tab !== "create") setSelectedIndex(0);
@@ -223,7 +228,7 @@ export function AgentsTUI({ onExit, provider, config, height }: AgentsTUIProps) 
   };
 
   const clickTab = (tab: Tab) => (event: MouseEventData) => {
-    if (event.ctrl || event.alt || event.shift) return;
+    if (event.button !== 0 || event.ctrl || event.alt || event.shift) return;
     if (switchTab(tab)) event.stopPropagation?.();
   };
 
@@ -421,17 +426,17 @@ export function AgentsTUI({ onExit, provider, config, height }: AgentsTUIProps) 
       </Box>
 
       <Box marginBottom={1}>
-        <Text color={activeTab === "list" ? "cyan" : "gray"} onClick={clickTab("list")}>
+        <HoverText color={activeTab === "list" ? "cyan" : "gray"} onClick={canSwitchTab ? clickTab("list") : undefined}>
           [1] List
-        </Text>
+        </HoverText>
         <Text> </Text>
-        <Text color={activeTab === "marketplace" ? "cyan" : "gray"} onClick={clickTab("marketplace")}>
+        <HoverText color={activeTab === "marketplace" ? "cyan" : "gray"} onClick={canSwitchTab ? clickTab("marketplace") : undefined}>
           [2] Marketplace
-        </Text>
+        </HoverText>
         <Text> </Text>
-        <Text color={activeTab === "create" ? "cyan" : "gray"} onClick={clickTab("create")}>
+        <HoverText color={activeTab === "create" ? "cyan" : "gray"} onClick={canSwitchTab ? clickTab("create") : undefined}>
           [3] Create
-        </Text>
+        </HoverText>
       </Box>
       </Box>
 

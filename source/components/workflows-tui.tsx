@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, usePaste, useStdout } from "../ink/index.js";
 import { ResourceManager, type ResourceAction } from "./resource-manager.js";
+import { HoverText, usePointerMotion } from "./hover-text.js";
 import WorkflowConsent from "./workflow-consent.js";
 import type { AgavConfig } from "../config/config.js";
 import type { ClipboardNotice } from "../ink/termio/clipboard.js";
@@ -217,8 +218,11 @@ export function WorkflowsTUI({ onExit, config, deps: provided, initialTab = "wor
 
   const nextTab = WORKFLOW_TABS[(WORKFLOW_TABS.indexOf(tab) + 1) % WORKFLOW_TABS.length]!;
   const tabLabel = (t: WorkflowTab) => t === "inbox" && inboxCount > 0 ? `${TAB_LABELS[t]} (${inboxCount})` : TAB_LABELS[t];
+  const canSwitchTab = !managerBusy && !pending && !stage;
+  usePointerMotion(canSwitchTab);
+
   const switchTab = (target: WorkflowTab) => {
-    if (managerBusy || pending || stage || target === tab) return false;
+    if (!canSwitchTab || target === tab) return false;
     setNotice("");
     setTab(target);
     return true;
@@ -262,10 +266,10 @@ export function WorkflowsTUI({ onExit, config, deps: provided, initialTab = "wor
     <Box>
       {WORKFLOW_TABS.map((t, i) => <React.Fragment key={t}>
         {i > 0 && <Text dimColor> │ </Text>}
-        <Text color={t === tab ? "cyan" : undefined} bold={t === tab} dimColor={t !== tab} onClick={(event) => {
-          if (event.ctrl || event.alt || event.shift) return;
+        <HoverText color={t === tab ? "cyan" : undefined} bold={t === tab} dimColor={t !== tab} onClick={canSwitchTab && t !== tab ? (event) => {
+          if (event.button !== 0 || event.ctrl || event.alt || event.shift) return;
           if (switchTab(t)) event.stopPropagation?.();
-        }}>{tabLabel(t)}</Text>
+        } : undefined}>{tabLabel(t)}</HoverText>
       </React.Fragment>)}
     </Box>
     {notice && <Text color="yellow" wrap="truncate-end">{notice}</Text>}

@@ -1,5 +1,6 @@
 import React, { useRef, useState } from "react";
 import { Box, Text, useInput } from "../ink/index.js";
+import { HoverText, pointerSelect, usePointerMotion } from "./hover-text.js";
 import { PERMISSION_MODES, type PermissionMode } from "../config/config.js";
 import { clampPermissionMode } from "../config/org-config.js";
 import { getTheme } from "../config/theme.js";
@@ -14,6 +15,7 @@ interface Props {
 
 /** A session-scoped choice: navigation and row clicks preview only. */
 export function PermissionPicker({ current, floor, onDone }: Props) {
+  usePointerMotion();
   const theme = getTheme();
   const effective = clampPermissionMode(current, floor);
   const [selected, setSelected] = useState(() => PERMISSION_MODES.indexOf(effective));
@@ -60,14 +62,7 @@ export function PermissionPicker({ current, floor, onDone }: Props) {
         {PERMISSION_MODES.map((mode, index) => {
           const blocked = clampPermissionMode(mode, floor) !== mode;
           const active = index === selected;
-          return (
-            <Box key={mode} flexDirection="column" onClick={() => preview(index)}>
-              <Text bold={active} dimColor={blocked} color={active ? theme.promptColor : undefined}>
-                {active ? "❯ " : "  "}{mode}{mode === effective ? " (current)" : ""}{blocked ? " [blocked by organization]" : ""}
-              </Text>
-              <Text dimColor>  {MODE_HELP[mode]}</Text>
-            </Box>
-          );
+          return <PermissionRow key={mode} mode={mode} active={active} blocked={blocked} current={mode === effective} onClick={() => preview(index)} />;
         })}
       </Box>
       {PERMISSION_MODES[selected] === "auto-accept" && <Text color="yellow">Warning: sensitive tool actions will run without confirmation.</Text>}
@@ -76,11 +71,28 @@ export function PermissionPicker({ current, floor, onDone }: Props) {
         <Text dimColor>Applies to this session and is saved for resume.</Text>
         <Box flexWrap="wrap">
           <Text dimColor>↑/↓ Navigate · </Text>
-          <Text underline onClick={apply}>Enter Apply</Text>
+          <HoverText onClick={apply}>Enter Apply</HoverText>
           <Text dimColor> · </Text>
-          <Text underline onClick={cancel}>Esc Cancel</Text>
+          <HoverText onClick={cancel}>Esc Cancel</HoverText>
         </Box>
       </Box>
+    </Box>
+  );
+}
+
+function PermissionRow({ mode, active, current, blocked, onClick }: {
+  mode: PermissionMode;
+  active: boolean;
+  current: boolean;
+  blocked: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Box flexDirection="column" onMouseMove={pointerSelect(() => { if (!active) onClick(); })} onClick={onClick}>
+      <Text bold={active} inverse={active} dimColor={blocked && !active} color={active ? getTheme().promptColor : undefined}>
+        {active ? "❯ " : "  "}{mode}{current ? " (current)" : ""}{blocked ? " [blocked by organization]" : ""}
+      </Text>
+      <Text dimColor>  {MODE_HELP[mode]}</Text>
     </Box>
   );
 }

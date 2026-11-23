@@ -1,5 +1,6 @@
 import React, { useRef, useState } from "react";
 import { Box, Text, useInput, usePaste } from "../ink/index.js";
+import { HoverText, usePointerMotion } from "./hover-text.js";
 
 interface Props {
   model: string;
@@ -15,6 +16,7 @@ interface Props {
  * default without requiring the user to type it out.
  */
 export default function ContextWindowPrompt({ model, defaultValue, onSubmit }: Props) {
+  usePointerMotion();
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const valueRef = useRef(value);
@@ -29,11 +31,11 @@ export default function ContextWindowPrompt({ model, defaultValue, onSubmit }: P
     finished.current = true;
     onSubmit(tokens);
   };
-  const useDefault = () => finish();
+  const submitDefault = () => finish();
   const confirm = () => {
     if (finished.current) return;
     const trimmed = valueRef.current.trim();
-    if (!trimmed) { useDefault(); return; }
+    if (!trimmed) { submitDefault(); return; }
     const parsed = Number(trimmed.replace(/[,_]/g, ""));
     if (!Number.isFinite(parsed) || parsed <= 0) {
       setError("Enter a positive number of tokens, or press Esc to use the default.");
@@ -44,7 +46,7 @@ export default function ContextWindowPrompt({ model, defaultValue, onSubmit }: P
 
   useInput((input, key) => {
     if (finished.current) return;
-    if (key.escape) useDefault();
+    if (key.escape) submitDefault();
     else if (key.return) confirm();
     else if (key.backspace || key.delete) updateValue(valueRef.current.slice(0, -1));
     // Digits only — this is a token count, not free text.
@@ -77,9 +79,9 @@ export default function ContextWindowPrompt({ model, defaultValue, onSubmit }: P
       </Box>
       {error && <Text color="red">{error}</Text>}
       <Box marginTop={1} flexWrap="wrap">
-        <Text underline onClick={confirm}>Enter to confirm</Text>
+        <HoverText onClick={confirm}>Enter to confirm</HoverText>
         <Text dimColor> · </Text>
-        <Text underline onClick={useDefault}>Esc to use default ({defaultValue.toLocaleString()})</Text>
+        <HoverText onClick={submitDefault}>Esc to use default ({defaultValue.toLocaleString()})</HoverText>
       </Box>
     </Box>
   );

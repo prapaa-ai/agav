@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { Box, Text, ScrollBox, Spinner, useInput, useApp, useStdout, useStdin, measureElement } from "./ink/index.js";
-import type { DOMElement, ScrollBoxControls, WheelEventData } from "./ink/index.js";
+import type { DOMElement, MouseEventData, ScrollBoxControls, WheelEventData } from "./ink/index.js";
 import MessageList from "./components/message-list.js";
 import type { DisplayMessage } from "./components/message-list.js";
 import StreamingResponse from "./components/streaming-response.js";
@@ -12,6 +12,8 @@ import RequestQueue from "./components/request-queue.js";
 import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
 import ToolConfirm from "./components/tool-confirm.js";
+import ConfirmControl, { useConfirmSurface } from "./components/confirm-control.js";
+import { pointerSelect } from "./components/hover-text.js";
 import WorkflowConsent from "./components/workflow-consent.js";
 import ContextWindowPrompt from "./components/context-window-prompt.js";
 import { DEFAULT_UNKNOWN_CONTEXT_WINDOW } from "./agent/loop.js";
@@ -354,7 +356,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     if (queuedCommandNoticeTimer.current) clearTimeout(queuedCommandNoticeTimer.current);
   }, []);
   const { stdout } = useStdout();
-  const { stdin } = useStdin();
+  const { stdin, setMouseMotionTracking } = useStdin();
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -918,6 +920,48 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     ? subagentStates.find((s) => s.id === focusedSubagentId)
     : undefined;
 
+  const subagentControlsEnabled = hasSubagents && !pendingConfirmation && !pendingContextWindowRequest
+    && !workflowConsent && !pickerActive && !queueActive && !workflowsTUI && !voice.phase;
+  const subagentSurface = useConfirmSurface(docControls,
+    subagentControlsEnabled ? (focusedSubagent ? `detail:${focusedSubagent.id}` : "overview") : "inactive");
+  const [subagentHover, setSubagentHover] = useState<{ revision: number; target: string }>();
+  useEffect(() => {
+    if (!subagentControlsEnabled) return;
+    // Opt in only while these controls are available, not for the whole chat.
+    setMouseMotionTracking(true);
+    return () => setMouseMotionTracking(false);
+  }, [subagentControlsEnabled, setMouseMotionTracking]);
+  const isSubagentHovered = (target: string) => subagentControlsEnabled
+    && subagentHover?.revision === subagentSurface.revision && subagentHover.target === target;
+  const subagentHoverHandlers = (target: string) => ({
+    onMouseEnter: (event: MouseEventData) => {
+      if (subagentControlsEnabled && event.button === 3) setSubagentHover({ revision: subagentSurface.revision, target });
+    },
+    onMouseLeave: () => setSubagentHover(current => current?.target === target ? undefined : current),
+  });
+  const canClickSubagent = () => subagentControlsEnabled && !voice.isActive();
+  const onSubagentClick = (action: () => void) => (event: MouseEventData) => {
+    if (event.button !== 0 || event.ctrl || event.alt || event.shift || !canClickSubagent()) return;
+    event.stopPropagation?.();
+    action();
+  };
+  const inspectSubagent = (index: number) => {
+    const target = subagentStates[index];
+    if (!target) return;
+    setSelectedSubagentIdx(index);
+    setFocusedSubagentId(target.id);
+  };
+  const backToSubagentOverview = () => setFocusedSubagentId(null);
+  const cancelTurnOrSubagent = (id: string | null) => {
+    if (!id) { cancel(); return; }
+    cancelSubagent(id);
+    backToSubagentOverview();
+  };
+  const clickSubagentCancel = (id: string | null) => {
+    if (canClickSubagent() && !workflowAbortRef.current && !shellAbortRef.current) cancelTurnOrSubagent(id);
+  };
+  const subagentCancelKey = formatKeybinding(keybindings, "cancel");
+
   // Drop the detail view when the plan it was showing is cleared or finished,
   // so a later plan does not reopen it without being asked.
   useEffect(() => {
@@ -1024,12 +1068,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       return;
     }
     if (match.action === "cancel" && (isLoading || requestPendingRef.current) && !pendingConfirmation) {
-      if (focusedSubagentId) {
-        cancelSubagent(focusedSubagentId);
-        setFocusedSubagentId(null);
-      } else {
-        cancel();
-      }
+      cancelTurnOrSubagent(focusedSubagentId);
       return;
     }
     // Ink no longer exits on Ctrl+C (main passes exitOnCtrlC: false so workflows can settle),
@@ -1039,7 +1078,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       return;
     }
     if (focusedSubagentId && isLoading && !pendingConfirmation && key.tab) {
-      setFocusedSubagentId(null);
+      backToSubagentOverview();
       return;
     }
     // The prompt owns navigation and completion while it contains text.
@@ -1054,8 +1093,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         return;
       }
       if (key.return && !key.shift && !key.ctrl && !key.meta && !key.super && !key.hyper) {
-        const sa = subagentStates[selectedSubagentIdx];
-        if (sa) setFocusedSubagentId(sa.id);
+        inspectSubagent(selectedSubagentIdx);
         return;
       }
     }
@@ -1894,7 +1932,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             return (
               <Box flexDirection="column" marginBottom={1}>
                 <SubagentDisplay progress={focusedSubagent} mode="detail" />
-                <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cancel")}: cancel this subagent · Tab: back to overview</Text>
+                <Box marginTop={1} paddingLeft={2} flexWrap="wrap" key={subagentSurface.revision}>
+                  <ConfirmControl label={`${subagentCancelKey}: cancel this subagent`} color="gray" bold={false} padded={false}
+                    surface={subagentSurface} onActivate={() => clickSubagentCancel(focusedSubagent.id)}
+                    hovered={isSubagentHovered("cancel-one")} {...subagentHoverHandlers("cancel-one")} />
+                  <Text dimColor>{" · "}</Text>
+                  <Text dimColor={!isSubagentHovered("back")} inverse={isSubagentHovered("back")}
+                    {...subagentHoverHandlers("back")} onClick={onSubagentClick(backToSubagentOverview)}>Tab: back to overview</Text>
+                </Box>
               </Box>
             );
           }
@@ -1909,9 +1954,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               {subagentStates.map((sa, i) => {
                 const isSelected = i === selectedSubagentIdx;
                 return (
-                  <Box key={sa.id}>
+                  <Box key={sa.id} alignSelf="flex-start" onMouseMove={pointerSelect(() => { if (canClickSubagent()) setSelectedSubagentIdx(i); })} onClick={onSubagentClick(() => inspectSubagent(i))}>
                     {isSelected ? <Text color="cyan">{"▸ "}</Text> : <Text>{"  "}</Text>}
-                    <SubagentDisplay progress={sa} mode="compact" index={i} />
+                    <SubagentDisplay progress={sa} mode="compact" index={i} active={isSelected} />
                   </Box>
                 );
               })}
@@ -1932,7 +1977,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               })()}
               <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} isPaused={isGenerationPaused} />
               {hasSubagents && (
-                <Text dimColor>{"\n  "}↑↓: select · Enter: inspect · {formatKeybinding(keybindings, "cancel")}: cancel all</Text>
+                <Box marginTop={1} paddingLeft={2} flexWrap="wrap" key={subagentSurface.revision}>
+                  <Text dimColor>{"↑↓: select · "}</Text>
+                  <Text dimColor={!isSubagentHovered("inspect")} inverse={isSubagentHovered("inspect")}
+                    {...subagentHoverHandlers("inspect")} onClick={onSubagentClick(() => inspectSubagent(selectedSubagentIdx))}>Enter: inspect</Text>
+                  <Text dimColor>{" · "}</Text>
+                  <ConfirmControl label={`${subagentCancelKey}: cancel all`} color="gray" bold={false} padded={false}
+                    surface={subagentSurface} onActivate={() => clickSubagentCancel(null)}
+                    hovered={isSubagentHovered("cancel-all")} {...subagentHoverHandlers("cancel-all")} />
+                </Box>
               )}
             </Box>
           );

@@ -1,3 +1,4 @@
+import chalk from "chalk";
 import { EventEmitter } from "node:events";
 import { createElement as h, useState } from "react";
 import { describe, it, expect, vi } from "vitest";
@@ -205,6 +206,36 @@ describe("clicking autocomplete choices", () => {
     { name: "name", description: "Name the session", argumentHint: "<title>" },
     { name: "customize", description: "Customize appearance", autoSubmit: true },
   ];
+
+  it("moves the visible cyan selection from /model to /mcp and back with the keyboard", async () => {
+    const level = chalk.level;
+    chalk.level = 1;
+    try {
+      const onSubmit = vi.fn();
+      const { instance, stdin, stdout } = await mount("/m", { onSubmit, commands: [
+        { name: "model", description: "View models", argumentHint: "[name]" },
+        { name: "memory", description: "Manage memories" },
+        { name: "mcp", description: "View MCP connections", autoSubmit: true },
+      ] });
+      try {
+        const marked = (name: string) => stdout.chunks.filter(chunk => chunk.includes("View MCP connections")).at(-1)
+          ?.split("\x1b[7m").slice(1).some(run => run.split("\x1b[27m")[0]?.replace(/\x1b\[[0-9;]*m/g, "").includes(` /${name} `)) ?? false;
+        expect(stdout.chunks.join("")).toContain("\x1b[?1003h");
+        expect(marked("model")).toBe(true);
+        // Hover over the description, not just the command name.
+        stdin.emit("data", Buffer.from("\x1b[<35;17;4M"));
+        await settle(instance);
+        expect(marked("mcp")).toBe(true);
+        expect(marked("model")).toBe(false);
+        expect(currentValue).toBe("/m");
+        expect(onSubmit).not.toHaveBeenCalled();
+        stdin.emit("data", Buffer.from("\x1b[A"));
+        await settle(instance);
+        expect(marked("memory")).toBe(true);
+        expect(marked("mcp")).toBe(false);
+      } finally { instance.unmount(); }
+    } finally { chalk.level = level; }
+  });
 
   it("completes the clicked slash command without running it until Enter", async () => {
     const onSubmit = vi.fn();

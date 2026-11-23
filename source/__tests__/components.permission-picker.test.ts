@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { createElement as h } from "react";
+import stringWidth from "string-width";
 import { describe, expect, it, vi } from "vitest";
 import render from "../ink/render.js";
 import { PermissionPicker } from "../components/permission-picker.js";
@@ -15,10 +16,19 @@ async function mount(current: PermissionMode = "ask", floor?: PermissionMode, co
   const instance = render(h(PermissionPicker, { current, floor, onDone }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
   const settle = async () => { await new Promise(resolve => setTimeout(resolve, 80)); await instance.waitUntilRenderFlush(); };
   await settle();
+  const frame = () => chunks.map(text => text.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")).filter(text => /[a-z]/i.test(text)).at(-1) ?? "";
+  const key = async (key: string) => { stdin.emit("data", Buffer.from(key)); await settle(); };
+  const mouse = (label: string, button: number, suffix: "M" | "m" = "M") => {
+    const lines = frame().split("\n");
+    const row = lines.findIndex(line => line.includes(label));
+    expect(row, `rendered position of ${label}`).toBeGreaterThanOrEqual(0);
+    const line = lines[row]!;
+    const column = stringWidth(line.slice(0, line.indexOf(label))) + 1;
+    return `\x1b[<${button};${column};${row + 1}${suffix}`;
+  };
   return {
-    onDone,
-    frame: () => chunks.map(text => text.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")).filter(text => /[a-z]/i.test(text)).at(-1) ?? "",
-    key: async (key: string) => { stdin.emit("data", Buffer.from(key)); await settle(); },
+    onDone, frame, key, mouse,
+    click: async (label: string) => key(mouse(label, 0) + mouse(label, 0, "m")),
     stop: () => instance.unmount(),
   };
 }
@@ -64,6 +74,45 @@ describe("PermissionPicker", () => {
       await ui.key("\x1b[B");
       await ui.key("\r");
       expect(ui.onDone).toHaveBeenCalledWith("deny-writes");
+    } finally { ui.stop(); }
+  });
+
+  it("previews a mode by click, navigates by wheel, and applies only with the separate action", async () => {
+    const ui = await mount();
+    try {
+      await ui.click("auto-accept");
+      expect(ui.frame()).toContain("❯ auto-accept");
+      expect(ui.frame()).toContain("Warning: sensitive tool actions");
+      expect(ui.onDone).not.toHaveBeenCalled();
+      await ui.key(ui.mouse("auto-accept", 65)); // wheel down over the list
+      expect(ui.frame()).toContain("❯ deny-writes");
+      expect(ui.onDone).not.toHaveBeenCalled();
+      await ui.click("Enter Apply");
+      expect(ui.onDone).toHaveBeenCalledExactlyOnceWith("deny-writes");
+    } finally { ui.stop(); }
+  });
+
+  it("previews on pointer motion and applies that same row with Enter", async () => {
+    const ui = await mount();
+    try {
+      await ui.key(ui.mouse("auto-accept", 35));
+      expect(ui.frame()).toContain("❯ auto-accept");
+      expect(ui.onDone).not.toHaveBeenCalled();
+      await ui.key("\r");
+      expect(ui.onDone).toHaveBeenCalledExactlyOnceWith("auto-accept");
+    } finally { ui.stop(); }
+  });
+
+  it("enforces the organization floor on mouse Apply and lets the user cancel", async () => {
+    const ui = await mount("ask", "ask");
+    try {
+      await ui.click("auto-accept [blocked by organization]");
+      expect(ui.frame()).toContain("❯ auto-accept [blocked by organization]");
+      await ui.click("Enter Apply");
+      expect(ui.frame()).toContain("Blocked by organization policy");
+      expect(ui.onDone).not.toHaveBeenCalled();
+      await ui.click("Esc Cancel");
+      expect(ui.onDone).toHaveBeenCalledExactlyOnceWith(undefined);
     } finally { ui.stop(); }
   });
 

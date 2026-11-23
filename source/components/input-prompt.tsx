@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import stringWidth from "string-width";
 import { Box, Text, useInput, useStdin, useStdout, type DOMElement, type MouseEventData } from "../ink/index.js";
+import { pointerSelect, usePointerMotion } from "./hover-text.js";
 import { KeybindingResolver, PROMPT_ACTIONS, formatKeybinding, formatUsableKeybinding, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { loadPromptHistory, savePromptHistory } from "../config/prompt-history.js";
 import { writeClipboard } from "../ink/termio/clipboard.js";
@@ -573,6 +574,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     : [];
   const hasAgentArgSuggestions = matchingAgentArgs.length > 0;
 
+  usePointerMotion(!readOnly && !disabled && (hasCommandSuggestions || hasAgentArgSuggestions || hasFileSuggestions));
+
   const completeSuggestionText = (completed: string) => {
     clearSelection();
     applyEdit(completed, completed.length);
@@ -1080,7 +1083,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
    * that crosses wrapped-line boundaries still resolves correctly.
    */
   const handleContainerMouseMove = (event: MouseEventData) => {
-    if (selAnchorRef.current === null) return;
+    if (event.button !== 0 || selAnchorRef.current === null) return;
     const offset = snapOutOfAttachment(liveRef.current.value, eventToOffsetAuto(event, wrappedLinesRef.current));
     draggingRef.current = true;
     selFocusRef.current = offset;
@@ -1233,7 +1236,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
               const displayDesc = isAgent ? cmd.description.replace("[agent] ", "") : cmd.description;
               return (
                 // Mouse completion always inserts text, even for autoSubmit commands.
-                <Text key={cmd.name} onClick={clickSuggestion(() => completeSuggestionText(`/${cmd.name} `))}>
+                <Text key={cmd.name} onMouseMove={readOnly || disabled ? undefined : pointerSelect(() => setSelectedSuggestion(i))} onClick={clickSuggestion(() => completeSuggestionText(`/${cmd.name} `))}>
                   <Text dimColor={!isSelected}>{"  "}</Text>
                   <Text color={isSelected ? selectedColor : undefined} bold={isSelected} inverse={isSelected}>
                     {` /${cmd.name} `}
@@ -1255,7 +1258,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           {matchingAgentArgs.map((agent, i) => {
             const isSelected = i === selectedSuggestion;
             return (
-              <Text key={agent.name} onClick={clickSuggestion(() => completeSuggestionText(`/agent ${agent.name} `))}>
+              <Text key={agent.name} onMouseMove={readOnly || disabled ? undefined : pointerSelect(() => setSelectedSuggestion(i))} onClick={clickSuggestion(() => completeSuggestionText(`/agent ${agent.name} `))}>
                 <Text dimColor={!isSelected}>{"  "}</Text>
                 <Text color={isSelected ? "magenta" : undefined} bold={isSelected} inverse={isSelected}>
                   {` ${agent.name} `}
@@ -1271,7 +1274,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           {fileSuggestions.map((suggestion, i) => {
             const isSelected = i === selectedSuggestion;
             return (
-              <Text key={suggestion.path} onClick={clickSuggestion(() => completeFileSuggestion(suggestion, activeFileToken))}>
+              <Text key={suggestion.path} onMouseMove={readOnly || disabled ? undefined : pointerSelect(() => setSelectedSuggestion(i))} onClick={clickSuggestion(() => completeFileSuggestion(suggestion, activeFileToken))}>
                 <Text dimColor>{"  "}</Text>
                 <Text color={isSelected ? "cyan" : undefined} bold={isSelected} inverse={isSelected}>
                   {` @${suggestion.path}${suggestion.isDirectory ? "/" : ""} `}

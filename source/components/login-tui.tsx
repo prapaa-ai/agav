@@ -5,6 +5,7 @@ import { readSecretFromTty } from "../account/secret-prompt.js";
 import { signInWithApiKey } from "../account/account-login.js";
 import { AccountAcknowledgementError, signInWithBrowser } from "../account/browser-auth.js";
 import { accountEndpoint } from "../account/account-client.js";
+import { HoverText, pointerSelect, usePointerMotion } from "./hover-text.js";
 import { wheelSelect } from "./wheel-select.js";
 
 export type LoginWizardResult = { cancelled: boolean; message?: string };
@@ -34,6 +35,7 @@ export function LoginTUI({ accountService, openBrowser, onDone }: LoginTUIProps)
   const { stdin } = useStdin();
   const { stdout } = useStdout();
   const [phase, setPhase] = useState<Phase>("menu");
+  usePointerMotion(phase === "menu" || phase === "browser" || phase === "validating" || phase === "retry");
   const phaseRef = useRef<Phase>("menu");
   const [selected, setSelected] = useState(0);
   const selectedRef = useRef(0);
@@ -191,7 +193,7 @@ export function LoginTUI({ accountService, openBrowser, onDone }: LoginTUIProps)
     else if (key.return) choose(selectedRef.current);
   });
 
-  const cancelAction = <Text underline onClick={cancel}>Esc / Ctrl-C Cancel</Text>;
+  const cancelAction = <HoverText onClick={cancel}>Esc / Ctrl-C Cancel</HoverText>;
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.bannerColor} paddingX={1}>
@@ -200,14 +202,13 @@ export function LoginTUI({ accountService, openBrowser, onDone }: LoginTUIProps)
 
       {phase === "menu" && <Box marginTop={1} flexDirection="column">
         <Box flexDirection="column" onWheel={wheelSelect(move)}>
-          {ITEMS.map((label, index) => <Box key={label} flexDirection="column" onClick={() => choose(index)}>
-            <Text underline bold={index === selected} color={index === selected ? theme.promptColor : undefined}>{index === selected ? "❯" : " "} {index + 1}. {label}</Text>
-            <Text dimColor>    {index === 0 ? "Use existing agav subscription by doing browser authentication." : "Already have a key from agav account?"}</Text>
-          </Box>)}
+          {ITEMS.map((label, index) => (
+            <LoginOption key={label} label={label} index={index} active={index === selected} onPoint={() => select(index)} onClick={() => choose(index)} />
+          ))}
         </Box>
         <Box flexWrap="wrap">
           <Text dimColor>↑/↓ Navigate · 1/2 Select · </Text>
-          <Text underline onClick={() => choose(selectedRef.current)}>Enter Choose</Text>
+          <HoverText onClick={() => choose(selectedRef.current)}>Enter Choose</HoverText>
           <Text dimColor> · </Text>
           {cancelAction}
         </Box>
@@ -241,15 +242,31 @@ export function LoginTUI({ accountService, openBrowser, onDone }: LoginTUIProps)
       {phase === "retry" && <Box marginTop={1} flexDirection="column">
         <Text color={theme.errorColor}>{error}</Text>
         <Box flexWrap="wrap">
-          <Text underline onClick={retry}>Enter / R Try again</Text>
+          <HoverText onClick={retry}>Enter / R Try again</HoverText>
           <Text dimColor> · </Text>
-          <Text underline onClick={back}>B Back to options</Text>
+          <HoverText onClick={back}>B Back to options</HoverText>
           <Text dimColor> · </Text>
           {cancelAction}
         </Box>
       </Box>}
 
       <Text dimColor>Account page: {accountUrl}</Text>
+    </Box>
+  );
+}
+
+function LoginOption({ label, index, active, onPoint, onClick }: {
+  label: string;
+  index: number;
+  active: boolean;
+  onPoint: () => void;
+  onClick: () => void;
+}) {
+  const theme = getTheme();
+  return (
+    <Box flexDirection="column" onClick={onClick} onMouseMove={pointerSelect(onPoint)}>
+      <Text bold={active} inverse={active} color={active ? theme.promptColor : undefined}>{active ? "❯" : " "} {index + 1}. {label}</Text>
+      <Text dimColor>    {index === 0 ? "Use existing agav subscription by doing browser authentication." : "Already have a key from agav account?"}</Text>
     </Box>
   );
 }
