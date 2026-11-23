@@ -99,7 +99,7 @@ agav --provider openrouter --model openrouter/auto
 The default model is `openrouter/auto`, which lets OpenRouter choose the best model for each request. You can also specify any model available on OpenRouter:
 
 ```bash
-agav --provider openrouter --model anthropic/claude-sonnet-4-20250514
+agav --provider openrouter --model anthropic/claude-sonnet-5.5
 agav --provider openrouter --model openai/gpt-5.4-mini
 ```
 
