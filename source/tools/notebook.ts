@@ -40,6 +40,11 @@ export const readNotebookTool: ToolDefinition = {
           minimum: 1,
           description: "Last cell to include, numbered from 1 (default: last cell)",
         },
+        cell_type: {
+          type: "string",
+          enum: ["all", "code", "markdown"],
+          description: "Filter selected cells by type (default: all). Original cell numbers are retained.",
+        },
         include_outputs: {
           type: "boolean",
           description: "Include cached execution outputs (default: true).",
@@ -50,6 +55,11 @@ export const readNotebookTool: ToolDefinition = {
   },
 
   async execute(input): Promise<ToolResult> {
+    const cellType = input.cell_type;
+    if (cellType !== undefined && cellType !== "all" && cellType !== "code" && cellType !== "markdown") {
+      return { output: "cell_type must be all, code, or markdown", isError: true };
+    }
+    const filterType = cellType === "code" || cellType === "markdown" ? cellType : undefined;
     const includeOutputs = input.include_outputs;
     if (includeOutputs !== undefined && typeof includeOutputs !== "boolean") {
       return { output: "include_outputs must be a boolean", isError: true };
@@ -82,6 +92,7 @@ export const readNotebookTool: ToolDefinition = {
 
       for (let i = first - 1; i < last; i++) {
         const cell = nb.cells[i]!;
+        if (filterType && cell.cell_type !== filterType) continue;
         const src = notebookText(cell.source);
         lines.push(`--- Cell ${i + 1} [${cell.cell_type}] ---`);
         lines.push(src);
@@ -98,6 +109,9 @@ export const readNotebookTool: ToolDefinition = {
         lines.push("");
       }
 
+      if (filterType && lines.length === 0) {
+        return { output: `No ${filterType} cells in the selected range.`, isError: false };
+      }
       if (hasRange) lines.push(`(Showing cells ${first}-${last} of ${nb.cells.length}.)`);
       return { output: lines.join("\n"), isError: false };
     } catch (err) {
