@@ -98,7 +98,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 
 | Command | Purpose |
 | --- | --- |
-| `/customize` | Open the customization interface to show, hide, and reorder footer (status bar) segments. Changes apply to the footer live and persist across sessions in the `statusBar` config field. Interactive terminal sessions only. |
+| `/customize` | Open the customization interface to show, hide, and reorder footer (status bar) segments. Use the mouse wheel to move through entries, left-click an entry to open/select it, and left-click a checkbox to toggle it. Changes apply to the footer live and persist across sessions in the `statusBar` config field. Interactive terminal sessions only. |
 
 ## Account
 

@@ -12,6 +12,8 @@ import { isEscapeResidue } from "./input-prompt.js";
 import { writeClipboard } from "../ink/termio/clipboard.js";
 import stringWidth from "string-width";
 import { checkWrite, formatWorkspaceWarning } from "../utils/workspace-guard.js";
+import ConfirmControl, { useConfirmSurface } from "./confirm-control.js";
+import { usePointerMotion } from "./hover-text.js";
 
 /** Write tools whose targets get an outside-the-project warning line. */
 const WARN_TOOLS = new Set(["write_file", "edit_file", "edit_notebook"]);
@@ -31,51 +33,6 @@ interface Props {
   /** Informational one-line warning, e.g. a write target outside the project. */
   warning?: string;
   detachAvailable?: boolean;
-}
-
-// A click only counts on a prompt that has been on screen this long: the second press of a
-// double-click must not answer the confirmation that replaced the first one under the pointer.
-const CLICK_SETTLE_MS = 400;
-
-/** One clickable choice: a single text node, padding included, so a press and its release always hit the
- *  same target. Its label keeps the keyboard shortcut visible, and it flashes when a press counts (hover would
- *  need any-motion mouse tracking, which the app leaves off). As in the feedback editor, a drag or a wheel
- *  turn while the button is held makes the press a selection or a scroll, so its release answers nothing;
- *  so does a release on another cell, for terminals that report only the press and the release. */
-function ConfirmControl({ label, color, onPress, onActivate }: {
-  label: string;
-  color: string;
-  onPress: () => boolean;
-  onActivate: () => void;
-}) {
-  const [pressed, setPressed] = React.useState(false);
-  const flash = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const pressedAtRef = React.useRef<{ x: number; y: number } | null>(null);
-  React.useEffect(() => () => clearTimeout(flash.current), []);
-  // The handlers sit on a Box because Text does not pass onMouseMove through.
-  return (
-    <Box
-      onMouseDown={(event: MouseEventData) => {
-        pressedAtRef.current = { x: event.x, y: event.y };
-        if (onPress()) {
-          setPressed(true);
-          clearTimeout(flash.current);
-          flash.current = setTimeout(() => setPressed(false), 150);
-        }
-        event.stopPropagation?.();
-      }}
-      onMouseMove={(event: MouseEventData) => { pressedAtRef.current = null; event.stopPropagation?.(); }}
-      onWheel={() => { pressedAtRef.current = null; }}
-      onClick={(event: MouseEventData) => {
-        const at = pressedAtRef.current;
-        pressedAtRef.current = null;
-        if (at?.x === event.x && at.y === event.y) onActivate();
-        event.stopPropagation?.();
-      }}
-    >
-      <Text bold color={color} inverse={pressed}>{` ${label} `}</Text>
-    </Box>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +83,7 @@ function wordBoundsAt(text: string, offset: number): [number, number] {
 export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, explicitApprovalOnly, keybindings, warning, detachAvailable }: Props) {
   const detachResolver = React.useRef(new KeybindingResolver(keybindings, ["detachSession"]));
   const keyResolver = React.useRef(new KeybindingResolver(keybindings, ["cancel", "submit", "clearInput", "deleteWordBackward"]));
+  usePointerMotion();
   const { stdout } = useStdout();
   const [rows, setRows] = React.useState(stdout.rows || 24);
   const detailScroll = React.useRef<ScrollBoxControls | null>(null);
@@ -243,25 +201,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
     setIsFeedbackMode(false);
   };
 
-  // A click resolves only the set of controls it was pressed on, once they have settled. The set changes
-  // with the prompt and with the feedback editor, and is stamped while rendering: the next prompt can
-  // render and take a press within the same burst of mouse reports, before any effect has run.
-  const shownRef = React.useRef({ input, feedback: isFeedbackMode, at: Date.now() });
-  if (shownRef.current.input !== input || shownRef.current.feedback !== isFeedbackMode) {
-    shownRef.current = { input, feedback: isFeedbackMode, at: Date.now() };
-  }
-  const pressedRef = React.useRef<typeof shownRef.current | null>(null);
-  const pressControl = () => {
-    const shown = shownRef.current;
-    const counts = Date.now() - shown.at >= CLICK_SETTLE_MS;
-    pressedRef.current = counts ? shown : null;
-    return counts;
-  };
-  const activateControl = (action: () => void) => () => {
-    const pressedHere = pressedRef.current === shownRef.current;
-    pressedRef.current = null;
-    if (pressedHere) action();
-  };
+  const surface = useConfirmSurface(input, `${toolName}:${isFeedbackMode}:${Boolean(explicitApprovalOnly)}`);
 
   useInput((rawChar, rawKey) => {
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
@@ -514,7 +454,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
   };
 
   const handleMouseMove = (event: MouseEventData) => {
-    if (selAnchorRef.current === null) return;
+    if (event.button !== 0 || selAnchorRef.current === null) return;
     const offset = eventToOffset(event);
     draggingRef.current = true;
     selFocusRef.current = offset;
@@ -583,9 +523,9 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
           {lines.map((line, i) => <Text key={i} color={line.color} bold={line.bold} dimColor={line.dim}>{line.text}</Text>)}
         </ScrollBox>
         {view.overflows && <Text dimColor>  ↑↓: Scroll details</Text>}
-        <Box marginTop={view.overflows ? 0 : 1} flexWrap="wrap" key={shownRef.current.at}>
-          <ConfirmControl label="[Y]es" color="green" onPress={pressControl} onActivate={activateControl(approve)} />
-          <ConfirmControl label="[N]o" color="red" onPress={pressControl} onActivate={activateControl(deny)} />
+        <Box marginTop={view.overflows ? 0 : 1} flexWrap="wrap" key={surface.revision}>
+          <ConfirmControl label="[Y]es" color="green" surface={surface} onActivate={approve} />
+          <ConfirmControl label="[N]o" color="red" surface={surface} onActivate={deny} />
         </Box>
       </Box>
     );
@@ -687,19 +627,19 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
                 );
               })()}
             </Box>
-            <Box flexWrap="wrap" key={shownRef.current.at}>
-              <ConfirmControl label="[Enter] Submit denial" color="red" onPress={pressControl} onActivate={activateControl(submitFeedback)} />
-              <ConfirmControl label="[Esc] Cancel" color="gray" onPress={pressControl} onActivate={activateControl(cancelFeedback)} />
+            <Box flexWrap="wrap" key={surface.revision}>
+              <ConfirmControl label="[Enter] Submit denial" color="red" surface={surface} onActivate={submitFeedback} />
+              <ConfirmControl label="[Esc] Cancel" color="gray" surface={surface} onActivate={cancelFeedback} />
               <Text dimColor> max {MAX_FEEDBACK_LENGTH} characters</Text>
             </Box>
           </Box>
         ) : (
-          <Box flexWrap="wrap" key={shownRef.current.at}>
-            <ConfirmControl label="[Y]es" color="green" onPress={pressControl} onActivate={activateControl(approve)} />
-            <ConfirmControl label="[N]o" color="red" onPress={pressControl} onActivate={activateControl(deny)} />
-            <ConfirmControl label="[D]eny with feedback" color="yellow" onPress={pressControl} onActivate={activateControl(startFeedback)} />
+          <Box flexWrap="wrap" key={surface.revision}>
+            <ConfirmControl label="[Y]es" color="green" surface={surface} onActivate={approve} />
+            <ConfirmControl label="[N]o" color="red" surface={surface} onActivate={deny} />
+            <ConfirmControl label="[D]eny with feedback" color="yellow" surface={surface} onActivate={startFeedback} />
             {!explicitApprovalOnly && (
-              <ConfirmControl label="[A]lways" color="cyan" onPress={pressControl} onActivate={activateControl(approveAlways)} />
+              <ConfirmControl label="[A]lways" color="cyan" surface={surface} onActivate={approveAlways} />
             )}
           </Box>
         )}

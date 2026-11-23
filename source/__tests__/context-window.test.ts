@@ -1,4 +1,9 @@
+import { EventEmitter } from "node:events";
+import { createElement as h } from "react";
+import stringWidth from "string-width";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import ContextWindowPrompt from "../components/context-window-prompt.js";
+import render from "../ink/render.js";
 import { ConversationState } from "../agent/conversation.js";
 import { DEFAULT_UNKNOWN_CONTEXT_WINDOW, runAgentLoop } from "../agent/loop.js";
 import { contextCommand } from "../commands/context.js";
@@ -185,5 +190,42 @@ describe("/context manual override precedence", () => {
     });
     await contextCommand.execute("", context);
     expect(conversation.getContextWindow()).toBeUndefined();
+  });
+});
+
+describe("context window terminal prompt", () => {
+  it.each([
+    { label: "Enter to confirm", nextKey: "\x1b", expected: 32_768 },
+    { label: "Esc to use default", nextKey: "\r", expected: undefined },
+  ])("handles $label and ignores a coalesced second submission", async ({ label, nextKey, expected }) => {
+    const chunks: string[] = [];
+    const stdout = Object.assign(new EventEmitter(), {
+      isTTY: true, columns: 100, rows: 40,
+      write: (text: string) => { chunks.push(text); return true; },
+    }) as unknown as NodeJS.WriteStream;
+    const stdin = Object.assign(new EventEmitter(), {
+      isTTY: true, setRawMode() { return this; }, resume() { return this; }, pause() { return this; }, read: () => null,
+    }) as unknown as NodeJS.ReadStream;
+    const onSubmit = vi.fn();
+    const instance = render(h(ContextWindowPrompt, { model, defaultValue: 16_384, onSubmit }), {
+      stdout, stdin, patchConsole: false, exitOnCtrlC: false,
+    });
+    const flush = async () => {
+      await new Promise(resolve => setTimeout(resolve, 80));
+      await instance.waitUntilRenderFlush();
+    };
+    try {
+      await flush();
+      const frame = chunks.filter(text => text.includes(label)).at(-1) ?? "";
+      const lines = frame.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").split("\n");
+      const row = lines.findIndex(line => line.includes(label));
+      expect(row, `rendered position of ${label}`).toBeGreaterThanOrEqual(0);
+      const line = lines[row]!;
+      const column = stringWidth(line.slice(0, line.indexOf(label))) + 1;
+      const click = `\x1b[<0;${column};${row + 1}M\x1b[<0;${column};${row + 1}m`;
+      stdin.emit("data", Buffer.from(`\x1b[200~32768\x1b[201~${click}${nextKey}`));
+      await flush();
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith(expected);
+    } finally { instance.unmount(); }
   });
 });
