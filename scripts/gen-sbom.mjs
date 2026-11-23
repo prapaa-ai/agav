@@ -30,7 +30,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parseAllDocuments } from "yaml";
 
 const require = createRequire(import.meta.url);
 
@@ -116,20 +116,47 @@ const spdxIds = new Map(
   ]),
 );
 
-// A compound SPDX expression of known ids joined by AND / OR, with optional
-// parentheses, such as "(MIT OR Apache-2.0)". WITH clauses and LicenseRefs are
-// not recognised; such text is kept as a license name instead.
-function isSpdxExpression(text) {
+// An SPDX license expression (SPDX 2.3 Annex D) over the 1.5 list: ids with an
+// optional "+", LicenseRef- / DocumentRef-:LicenseRef- references, a license
+// WITH an exception, AND / OR and parentheses, such as "(MIT OR Apache-2.0)".
+// Returns it with every id in its canonical casing, or undefined when the text
+// is not one. The 1.5 list holds exception ids beside license ids without
+// telling them apart, so WITH accepts any id on it.
+const LICENSE_REF = /^(?:DocumentRef-[A-Za-z0-9.-]+:)?LicenseRef-[A-Za-z0-9.-]+$/;
+function spdxLicense(token) {
+  if (LICENSE_REF.test(token)) return token;
+  const lower = token.toLowerCase();
+  if (spdxIds.has(lower)) return spdxIds.get(lower);
+  return lower.endsWith("+") && spdxIds.has(lower.slice(0, -1)) ? `${spdxIds.get(lower.slice(0, -1))}+` : undefined;
+}
+function spdxExpression(text) {
+  // next: what the token must be — "license", "exception", or an operator
+  // ("simple" right after a license, which WITH may follow; "compound" otherwise).
   let depth = 0;
-  let expectId = true;
+  let next = "license";
+  const canonical = [];
   for (const token of text.match(/[()]|[^\s()]+/g) ?? []) {
-    if (expectId && token === "(") depth += 1;
-    else if (expectId && spdxIds.has(token.toLowerCase())) expectId = false;
-    else if (!expectId && token === ")" && depth > 0) depth -= 1;
-    else if (!expectId && (token === "AND" || token === "OR")) expectId = true;
-    else return false;
+    if (token === "(" && next === "license") depth += 1;
+    else if (token === ")" && next !== "license" && next !== "exception" && depth > 0) {
+      depth -= 1;
+      next = "compound";
+    } else if (next === "license" && spdxLicense(token)) {
+      canonical.push(spdxLicense(token));
+      next = "simple";
+    } else if (next === "exception" && spdxIds.has(token.toLowerCase())) {
+      canonical.push(spdxIds.get(token.toLowerCase()));
+      next = "compound";
+    } else if (next === "simple" && token === "WITH") {
+      canonical.push(token);
+      next = "exception";
+    } else if ((next === "simple" || next === "compound") && (token === "AND" || token === "OR")) {
+      canonical.push(token);
+      next = "license";
+    } else return undefined;
   }
-  return !expectId && depth === 0;
+  if (depth !== 0 || (next !== "simple" && next !== "compound")) return undefined;
+  let i = 0;
+  return text.replace(/[^\s()]+/g, () => canonical[i++]);
 }
 
 function licensesFor(declared) {
@@ -141,26 +168,35 @@ function licensesFor(declared) {
   const text = declared.trim();
   const id = spdxIds.get(text.toLowerCase());
   if (id) return [{ license: { id } }];
-  if (isSpdxExpression(text)) return [{ expression: text }];
+  const expression = spdxExpression(text);
+  if (expression) return [{ expression }];
   return [{ license: { name: text } }];
 }
 
 // pnpm-lock.yaml's `packages` map (name@version -> resolution), from which a
 // component gets the integrity pnpm verified its tarball against. Without a
-// lockfile there are no hashes to give; an unreadable one fails the run rather
-// than silently drop every hash.
+// lockfile there are no hashes to give; an unreadable or malformed one fails the
+// run rather than silently drop every hash. pnpm may lead the file with an env
+// lockfile document (its own pinned version), so the project's lockfile is the
+// last document. A lockfile of a project with no dependencies has no `packages`;
+// that is only an error once a component needs it (undefined, see addComponent).
 function lockedPackages() {
   const file = resolve(root, "pnpm-lock.yaml");
   if (!existsSync(file)) return {};
   let lock;
   try {
-    lock = parseYaml(readFileSync(file, "utf8"));
+    const documents = Array.from(parseAllDocuments(readFileSync(file, "utf8")));
+    const [error] = documents.flatMap((document) => document.errors);
+    if (error) throw error;
+    lock = documents.at(-1)?.toJS();
   } catch (error) {
     fail(`Could not parse pnpm-lock.yaml: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const packages = lock?.packages ?? {};
-  if (typeof packages !== "object" || Array.isArray(packages)) fail("pnpm-lock.yaml has a malformed packages map.");
-  return packages;
+  const isMap = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!isMap(lock) || (lock.packages !== undefined && !isMap(lock.packages))) {
+    fail("pnpm-lock.yaml is malformed: expected a mapping with a packages map.");
+  }
+  return lock.packages;
 }
 
 // SRI integrity ("sha512-<base64>", possibly several, space-separated) as
@@ -207,6 +243,7 @@ function addComponent(name, node) {
     version: node.version,
     purl,
   };
+  if (!locked) fail(`pnpm-lock.yaml has no packages map, so ${key} would get no hash.`);
   const hashes = Object.hasOwn(locked, key) ? hashesFor(locked[key]?.resolution?.integrity) : [];
   if (hashes.length) component.hashes = hashes;
   const manifest = node.path ? manifestAt(node.path) : {};

@@ -335,6 +335,38 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
     expect(result.stderr).toContain("Could not parse pnpm-lock.yaml");
   });
 
+  it("reads the project lockfile after a leading env lockfile document", () => {
+    // pnpm 11+ may put its env lockfile (pnpm's own pin) first in pnpm-lock.yaml.
+    writeRepo(declared, graph());
+    const pnpm = sri("sha512", "pnpm tarball");
+    const a = sri("sha512", "direct-a tarball");
+    writeFileSync(
+      join(repo, "pnpm-lock.yaml"),
+      `---\nlockfileVersion: '9.0'\n\nimporters:\n  .:\n    packageManagerDependencies:\n      pnpm: {specifier: 12.0.0, version: 12.0.0}\n\npackages:\n  'pnpm@12.0.0':\n    resolution: {integrity: ${pnpm.integrity}}\n` +
+        `---\nlockfileVersion: '9.0'\n\npackages:\n  'direct-a@1.0.0':\n    resolution: {integrity: ${a.integrity}}\n`,
+    );
+    const result = run();
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    const directA = bom(result.out).components.find((x: { name: string }) => x.name === "direct-a");
+    expect(directA.hashes).toEqual([{ alg: "SHA-512", content: a.hex }]);
+  });
+
+  it.each([
+    ["an empty file", ""],
+    ["no packages map", "lockfileVersion: '9.0'\n"],
+    ["a null packages map", "lockfileVersion: '9.0'\npackages:\n"],
+    ["a list for packages", "lockfileVersion: '9.0'\npackages: [direct-a@1.0.0]\n"],
+    ["a scalar document", "just text\n"],
+  ])("fails on a lockfile with %s, rather than emit a BOM without hashes", (_, content) => {
+    writeRepo(declared, graph());
+    writeFileSync(join(repo, "pnpm-lock.yaml"), content);
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("pnpm-lock.yaml");
+    expect(existsSync(result.out)).toBe(false);
+  });
+
   it("emits SPDX ids and expressions, and keeps any other license text as written", () => {
     const licensed: Array<[string, string]> = [
       ["lower-id", "mit"],
@@ -344,6 +376,14 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
       ["vague", "BSD"],
       ["unknown-in-expression", "MIT OR Nonsense-1.0"],
       ["dangling", "MIT OR"],
+      ["lower-expression", "(mit OR apache-2.0)"],
+      ["with-exception", "apache-2.0 WITH llvm-exception"],
+      ["or-later", "(LGPL-2.1-only+ OR MIT)"],
+      ["license-ref", "LicenseRef-Acme-EULA"],
+      ["document-ref", "MIT AND DocumentRef-spdx-tool-1.2:LicenseRef-MIT-Style-2"],
+      ["with-unknown", "MIT WITH Nonsense-exception"],
+      ["with-after-group", "(MIT OR ISC) WITH LLVM-exception"],
+      ["empty-ref", "LicenseRef-"],
     ];
     const deps = Object.fromEntries(licensed.map(([name, license]) => [name, { version: "1.0.0", path: pkg(name, "1.0.0", license) }]));
     writeRepo(Object.fromEntries(licensed.map(([name]) => [name, "^1.0.0"])), [{ name: "fixture-app", version: "1.2.3", path: repo, dependencies: deps }]);
@@ -360,6 +400,16 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
       vague: [{ license: { name: "BSD" } }],
       "unknown-in-expression": [{ license: { name: "MIT OR Nonsense-1.0" } }],
       dangling: [{ license: { name: "MIT OR" } }],
+      // Ids in their canonical casing.
+      "lower-expression": [{ expression: "(MIT OR Apache-2.0)" }],
+      "with-exception": [{ expression: "Apache-2.0 WITH LLVM-exception" }],
+      "or-later": [{ expression: "(LGPL-2.1-only+ OR MIT)" }],
+      "license-ref": [{ expression: "LicenseRef-Acme-EULA" }],
+      "document-ref": [{ expression: "MIT AND DocumentRef-spdx-tool-1.2:LicenseRef-MIT-Style-2" }],
+      "with-unknown": [{ license: { name: "MIT WITH Nonsense-exception" } }],
+      // WITH applies to a single license, not a group.
+      "with-after-group": [{ license: { name: "(MIT OR ISC) WITH LLVM-exception" } }],
+      "empty-ref": [{ license: { name: "LicenseRef-" } }],
     });
     const { valid, errors } = validateBom(doc);
     expect(errors).toBeNull();
