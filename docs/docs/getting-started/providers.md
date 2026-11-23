@@ -182,7 +182,7 @@ Context window sizes are detected automatically from the DeepSeek API. The API b
 
 ```bash
 export ANTHROPIC_API_KEY="your-key"
-agav --provider anthropic --model claude-sonnet-4-20250514
+agav --provider anthropic --model claude-sonnet-5-5
 ```
 
 ## Google Gemini
