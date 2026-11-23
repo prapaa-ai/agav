@@ -87,8 +87,10 @@ async function walkDir(
   for (const entry of entries) {
     if (results.length >= maxFiles) return;
 
+    if (!includeHidden && entry.name.startsWith(".")) continue;
+
     if (entry.isDirectory()) {
-      if (depth >= maxDepth || SKIP_DIRS.has(entry.name) || (!includeHidden && entry.name.startsWith("."))) continue;
+      if (depth >= maxDepth || SKIP_DIRS.has(entry.name)) continue;
       await walkDir(join(dir, entry.name), basePath, results, maxFiles, maxDepth, includeSymbols, includeHidden, depth + 1);
     } else if (SOURCE_EXTS.has(extname(entry.name))) {
       const filePath = relative(basePath, join(dir, entry.name));
@@ -156,7 +158,7 @@ export const overviewTool: ToolDefinition = {
         },
         include_hidden: {
           type: "boolean",
-          description: "Traverse hidden directories (default: false). Generated directories remain excluded.",
+          description: "Include hidden source files and directories (default: false). Generated directories remain excluded.",
         },
         depth: {
           type: "integer",

@@ -98,7 +98,7 @@ into subdirectories or read file contents.
 | `2` or higher | Files through that many subdirectory levels |
 | Omitted | Unrestricted depth, still subject to the file cap |
 
-Depth must be a non-negative safe integer; invalid values fail before traversal. Hidden directories and common dependency, build, cache, and worktree directories are skipped. The map stops at **200 source files** and reports that it may be incomplete whenever the cap is reached, even if exactly 200 files exist. Narrow `path` or `depth` rather than assuming the first map covered the whole repository. Explicit shallow requests avoid reading deeper source files as well as returning their symbols.
+Depth must be a non-negative safe integer; invalid values fail before traversal. By default, hidden source files and directories are skipped. Set `include_hidden: true` to include them. Common dependency, build, cache, and worktree directories are still skipped. The map stops at **200 source files** and reports that it may be incomplete whenever the cap is reached, even if exactly 200 files exist. Narrow `path` or `depth` rather than assuming the first map covered the whole repository. Explicit shallow requests avoid reading deeper source files as well as returning their symbols.
 
 ### `grep_search`
 
