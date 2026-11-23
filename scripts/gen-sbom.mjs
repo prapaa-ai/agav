@@ -146,7 +146,12 @@ function index(deps) {
 
 const walked = new Set();
 function walk(deps, parentRef) {
-  if (!deps || typeof deps !== "object") return;
+  if (deps === undefined) return;
+  // A present map that is not an object would drop its subtree from a BOM
+  // that still looks complete, so fail instead.
+  if (deps === null || typeof deps !== "object" || Array.isArray(deps)) {
+    fail(`\`pnpm list --json\` returned a malformed dependency map under ${parentRef}.`);
+  }
   for (const [name, node] of Object.entries(deps)) {
     const ref = addComponent(name, node);
     edges.get(parentRef).add(ref);
@@ -154,7 +159,7 @@ function walk(deps, parentRef) {
       if (walked.has(node.path)) continue;
       walked.add(node.path);
     }
-    walk(node.dependencies ?? printed.get(node.path), ref);
+    walk(node.dependencies === undefined ? printed.get(node.path) : node.dependencies, ref);
   }
 }
 

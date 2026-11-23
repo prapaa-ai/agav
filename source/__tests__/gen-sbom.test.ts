@@ -274,6 +274,19 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
   });
 
   it.each([
+    ["a string", "corrupt"],
+    ["an array", []],
+    ["null", null],
+  ])("fails when a nested dependency map is %s", (_label, deps) => {
+    const tree = graph() as Array<{ dependencies: Record<string, Record<string, unknown>> }>;
+    tree[0].dependencies["direct-a"].dependencies = deps;
+    writeRepo(declared, tree);
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("malformed dependency map");
+  });
+
+  it.each([
     ["truncated JSON", '[{"name": "fixture-app", "dependencies": {"direct-a": {'],
     ["no JSON at all", "ERR_PNPM_SOMETHING"],
   ])("fails on %s", (_label, list) => {
