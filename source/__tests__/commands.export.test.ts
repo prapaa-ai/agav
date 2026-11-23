@@ -16,6 +16,7 @@ import { exportCommand } from "../commands/export.js";
 import { createHelpCommand } from "../commands/help.js";
 import { ConversationState } from "../agent/conversation.js";
 import { MAX_STEPS_PROMPT } from "../agent/internal-prompts.js";
+import * as history from "../config/history.js";
 import type { CommandContext, CommandResult } from "../commands/types.js";
 import type { Message } from "../providers/types.js";
 
@@ -94,6 +95,62 @@ describe("export command", () => {
     });
     expect(output()).toMatch(/\n  "schemaVersion": 1,/);
     expect(output().endsWith("\n")).toBe(true);
+  });
+
+  it.each(["--branch-only", "--full --branch-only", "json --branch-only", "json --sanitize --branch-only"])(
+    "writes only branch messages and identifies the session with %s", async (args) => {
+      const sessionId = "0da34d29-867e-43c6-ac4d-61a9ddd1298e";
+      const branch = messages();
+      const toolText = "/home/ann/private " + "tool-output ".repeat(100) + "TOOL_END";
+      branch[2].content[0].toolResult = toolText;
+      branch[0].content.push({ type: "image", imageData: "base64", imageMediaType: "image/png" });
+      const input: Message[] = [
+        { role: "user", inherited: true, content: [{ type: "text", text: "PARENT_PRIVATE_SENTINEL" }] },
+        { role: "user", internal: true, content: [{ type: "text", text: "INTERNAL_SUMMARY_SENTINEL" }] },
+        ...branch,
+      ];
+      vi.spyOn(history, "loadSession").mockResolvedValue({ id: sessionId, branchMarkers: true } as history.SessionRecord);
+      const result = await exportCommand.execute(args, { ...context(input), currentSessionId: sessionId });
+
+      expect(text(result)).toContain("Exported");
+      expect(output()).not.toMatch(/PARENT_PRIVATE_SENTINEL|INTERNAL_SUMMARY_SENTINEL|"inherited"/);
+      expect(output()).toContain("Hello");
+      expect(open).toHaveBeenCalledWith(expect.any(String), "wx", 0o600);
+      if (args.includes("json")) {
+        expect(json()).toMatchObject({ sessionId, scope: "branch-only" });
+        if (args.includes("--sanitize")) {
+          expect(json().messages[0].content[1]).toMatchObject({ imageDataOmitted: true });
+          expect(json().messages[0].content[1]).not.toHaveProperty("imageData");
+          expect(json().omissions.imagePayloads).toBe(1);
+          expect(output()).not.toContain("/home/ann");
+        } else {
+          expect(json().messages).toEqual(branch);
+        }
+      } else {
+        expect(output()).toContain(`**Branch session ID:** ${sessionId}`);
+        expect(output()).not.toContain("base64");
+      }
+      expect(output().includes("TOOL_END")).toBe(args.includes("json") || args.includes("--full"));
+    },
+  );
+
+  it.each([undefined, "root", "legacy-branch", "missing-history"])(
+    "rejects branch-only export for %s without creating a file", async (sessionId) => {
+      vi.spyOn(history, "loadSession").mockResolvedValue(
+        sessionId === "missing-history" ? null : { id: sessionId, ...(sessionId === "legacy-branch" ? { parentId: "root" } : {}) } as history.SessionRecord,
+      );
+      const result = await exportCommand.execute("--branch-only", { ...context(), currentSessionId: sessionId });
+      expect(text(result)).toContain("requires an active session with recorded fork metadata");
+      expect(open).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not write a file when the branch has no new retained messages", async () => {
+    vi.spyOn(history, "loadSession").mockResolvedValue({ branchMarkers: true } as history.SessionRecord);
+    const input = messages().map(message => ({ ...message, inherited: true as const }));
+    const result = await exportCommand.execute("--branch-only", { ...context(input), currentSessionId: "branch" });
+    expect(text(result)).toBe("No new branch messages to export.");
+    expect(open).not.toHaveBeenCalled();
   });
 
   it.each(["", "json", "sanitize", "json sanitize"])("filters internal prompts before rendering %s", async (args) => {

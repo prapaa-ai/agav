@@ -47,6 +47,29 @@ describe("read_notebook", () => {
     expect(await readNotebookTool.execute({ path, include_outputs: true })).toEqual(result);
   });
 
+  it("reads notebook source and cached output stored as strings", async () => {
+    mockRead.mockResolvedValueOnce(JSON.stringify({
+      ...notebook,
+      cells: [
+        { ...notebook.cells[0], source: "# Notes\nSecond line" },
+        {
+          ...notebook.cells[1],
+          outputs: [
+            { output_type: "stream", name: "stdout", text: "first\nsecond\n" },
+            { output_type: "execute_result", execution_count: 1, metadata: {}, data: { "text/plain": "result" } },
+          ],
+        },
+      ],
+    }));
+
+    const result = await readNotebookTool.execute({ path });
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("--- Cell 1 [markdown] ---\n# Notes\nSecond line");
+    expect(result.output).toContain("--- Cell 2 [code] ---\nprint(value)\nvalue");
+    expect(result.output).toContain("  Output:\n  first\nsecond\n\n  result");
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
   it("omits cached outputs while preserving source, original indices, and the file", async () => {
     const result = await readNotebookTool.execute({ path, include_outputs: false });
     expect(result.isError).toBe(false);
@@ -162,7 +185,8 @@ it("keeps many metadata-bearing cells within registry output limits", async () =
   registry.register(readNotebookTool);
   const result = await registry.execute("read_notebook", { path, include_metadata: true });
   expect(result.isError).toBe(false);
-  expect(result.output).toContain("middle omitted");
+  expect(result.output).toContain("Notebook output truncated");
+  expect(result.output).not.toContain("--- Cell 520");
   expect(Buffer.byteLength(result.output)).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
   expect(result.output.split("\n").length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_LINES);
 });

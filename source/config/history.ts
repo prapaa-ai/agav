@@ -24,6 +24,8 @@ export interface SessionRecord {
   title: string;
   name?: string;
   parentId?: string;
+  /** This branch was created with inherited messages marked. */
+  branchMarkers?: true;
   messages: Message[];
   tokenUsage?: SessionTokenUsage;
   compacted?: boolean;
@@ -107,6 +109,7 @@ export async function saveSession(
   name?: string,
   parentId?: string,
   permissionMode?: PermissionMode,
+  branchMarkers?: true,
 ): Promise<string> {
   const id = existingId ?? generateId();
   return withRuntimeLock(id, async store => {
@@ -116,6 +119,7 @@ export async function saveSession(
     const existing = existingId ? await loadSession(existingId) : null;
     const sessionName = name ?? runtime?.name ?? existing?.name ?? runtime?.title;
     const branchParentId = parentId ?? existing?.parentId;
+    const recordedBranchMarkers = branchMarkers ?? existing?.branchMarkers;
     // An explicit mode wins; otherwise the runtime is authoritative, then saved history.
     const effectivePermissionMode = permissionMode ?? runtime?.permissionMode ?? existing?.permissionMode;
     const now = new Date().toISOString();
@@ -124,6 +128,7 @@ export async function saveSession(
       title: sessionName ?? extractTitle(messages),
       ...(sessionName ? { name: sessionName } : {}),
       ...(branchParentId ? { parentId: branchParentId } : {}),
+      ...(recordedBranchMarkers ? { branchMarkers: recordedBranchMarkers } : {}),
       messages, tokenUsage, compacted,
       ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}),
     };

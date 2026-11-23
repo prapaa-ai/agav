@@ -58,7 +58,7 @@ async function loadYamlParser() {
  * Raise this whenever a new Bun security release fixes a CVE that affects the
  * embedded runtime. Keep the rationale in `advisories` below.
  */
-const minimumSafeVersion = "1.4.4";
+const minimumSafeVersion = "1.4.5";
 
 /**
  * Known advisories that forced the floor upward, newest first. Documentation
@@ -81,6 +81,19 @@ const advisories = [
       "DecompressionStream('brotli'). Remote code execution demonstrated on an " +
       "unpatched Node.js build sharing the same decoder source.",
   },
+  {
+    id: "GHSA-wpr3-8q3r-4q8c",
+    aliases: [],
+    severity: "HIGH",
+    component: "c-ares (vendored into the Bun runtime)",
+    affected: "Bun <= 1.4.4 (bundles c-ares <= 1.34.8)",
+    fixedIn: "1.4.5",
+    reference: "https://github.com/c-ares/c-ares/security/advisories/GHSA-wpr3-8q3r-4q8c",
+    note:
+      "Double-free/use-after-free when an application cancels a lookup from " +
+      "a callback after a connection failure; fixed by c-ares 1.34.9, which " +
+      "Bun 1.4.5 vendors.",
+  },
 ];
 
 /**
@@ -102,14 +115,14 @@ const advisories = [
  * component. `current` below the `floor` fails closed.
  */
 const vendoredComponents = {
-  "1.4.4": [
+  "1.4.5": [
     {
       name: "brotli",
       current: "1.2.1",
       floor: "1.2.1",
       note: "1.2.1 carries the CVE-2026-111497 fix (google/brotli@0ed4268).",
     },
-    { name: "c-ares", current: "1.34.8", floor: "1.34.8" },
+    { name: "c-ares", current: "1.34.9", floor: "1.34.9" },
     // Bun bundles zlib-ng (zlib-compatible ABI), pinned to its 2.3.3 tag.
     { name: "zlib-ng", current: "2.3.3", floor: "2.3.3" },
     { name: "libarchive", current: "3.8.9", floor: "3.8.9" },

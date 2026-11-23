@@ -28,6 +28,8 @@ import { applySandboxRequiredPolicy } from "../utils/sandbox-startup.js";
 import { createExclusive } from "../background-jobs/storage/atomic-file.js";
 import { SessionApprovalBroker } from "./approvals.js";
 import { SessionRuntimeStore, type SessionRuntimeRecord } from "./store.js";
+import { readProcessStartTimePosix } from "../background-jobs/platform/posix-common.js";
+import { readProcessStartTimeWindows } from "../background-jobs/platform/windows-probe.js";
 import { drainSessionSteers } from "./client.js";
 import { restoreSessionConfigOverrides } from "./config-overrides.js";
 
@@ -266,8 +268,11 @@ export function startSessionExecution(id: string, deps: SessionExecutionDeps): S
       conversation.setModel(config.model);
       conversation.setMessages(initial.messages, initial.compacted);
       const iterationsBudget = initial.iterationsBudget ?? { remaining: config.maxIterations, total: config.maxIterations };
-      await deps.store.update(id, initial.generation, record => {
+      await deps.store.update(id, initial.generation, async record => {
         record.ownerPid = process.pid;
+        record.ownerProcessStartTime = process.platform === "win32"
+        ? await readProcessStartTimeWindows(process.pid)
+        : await readProcessStartTimePosix(process.pid);
         record.status = "running";
         record.permissionMode = config.permissionMode;
         record.backgroundPermissionMode = clampPermissionMode(record.backgroundPermissionMode, config.orgPermissionFloor);

@@ -6,6 +6,64 @@ import { SessionRuntimeStore, assertSessionRuntimeId, type SessionRuntimeRecord 
 import { readSessionSnapshot, readSessionListingSnapshot } from "./client.js";
 
 /**
+ * Check if a session's owner process is still alive.
+ * Uses the same simple existence check as background-jobs Windows adapter.
+ */
+import { readProcessStartTimePosix } from "../background-jobs/platform/posix-common.js";
+import { readProcessStartTimeWindows } from "../background-jobs/platform/windows-probe.js";
+
+async function isSessionProcessAlive(pid: number, expectedStartTime?: string): Promise<"alive" | "dead" | "unknown"> {
+  if (!pid) return "dead";
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code === "EPERM") return "alive";
+    return "dead";
+  }
+  // PID exists; if we have expected start time, verify it matches
+  if (expectedStartTime) {
+    const actual = process.platform === "win32"
+      ? await readProcessStartTimeWindows(pid)
+      : await readProcessStartTimePosix(pid);
+    if (!actual) return "unknown"; // Identity unavailable (probe failed); don't assume dead
+    return actual === expectedStartTime ? "alive" : "dead";
+  }
+  return "alive";
+}
+
+/**
+ * Reconcile a session that appears stuck in "running" with cancelRequested=true.
+ * If the owner process is dead, mark it as "interrupted" so it doesn't appear stuck forever.
+ */
+async function reconcileSession(
+  store: SessionRuntimeStore,
+  record: SessionRuntimeRecord,
+): Promise<SessionRuntimeRecord> {
+  // Active statuses that can have an owner PID and be cancelled
+  const activeStatuses = new Set(["running", "needs-approval"]);
+  if (!activeStatuses.has(record.status) || !record.cancelRequested || !record.ownerPid) {
+    return record;
+  }
+  const expectedPid = record.ownerPid;
+  const expectedStartTime = record.ownerProcessStartTime;
+  const alive = await isSessionProcessAlive(expectedPid, expectedStartTime);
+  if (alive === "alive") return record;
+  if (alive === "unknown") return record; // Cannot verify identity; don't mark interrupted
+
+  // alive === "dead" - process confirmed dead
+  // Re-validate inside the lock to prevent race with worker completion
+  const updated = await store.update(record.id, record.generation, r => {
+    if (!activeStatuses.has(r.status) || !r.cancelRequested || r.ownerPid !== expectedPid || r.ownerProcessStartTime !== expectedStartTime) {
+      return; // Worker completed or state changed; don't overwrite
+    }
+    r.status = "interrupted";
+    r.error ??= "Session process died after cancellation was requested";
+  });
+  return updated;
+}
+
+/**
  * Runtime transcripts are authoritative, including empty, not-yet-saved conversations.
  *
  * `read` selects the snapshot strategy: load-time resumes use the full
@@ -19,6 +77,8 @@ async function runtimeSession(
   saved?: SessionRecord | null,
   read = readSessionSnapshot,
 ): Promise<SessionRecord> {
+  // Reconcile stuck sessions before using them
+  record = await reconcileSession(store, record);
   const snapshot = await read(record.id, store);
   record = snapshot.record;
   if (record.messages.some(message => !message || typeof message.role !== "string" || !Array.isArray(message.content) ||

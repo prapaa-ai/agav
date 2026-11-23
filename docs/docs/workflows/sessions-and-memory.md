@@ -20,7 +20,7 @@ order: 3
 | `/search <query>` | Find saved sessions that match `<query>`. |
 | `/name <name>` | Give the active session a recognizable name. |
 | `/clear` or `/new` | Start a clean chat while keeping saved sessions. |
-| `/export [json\|--full] [sanitize\|--sanitize]` | Export the retained conversation as Markdown or JSON, optionally with best-effort redaction. |
+| `/export [json\|--full] [sanitize\|--sanitize] [--branch-only]` | Export the retained conversation as Markdown or JSON, optionally limited to the active branch or with best-effort redaction. |
 | `/exit` | Save the current session and exit. |
 
 Agav auto-saves interactive conversations after each completed turn under `~/.agav/history`. To keep a task executing after closing the UI, set `backgroundJobsEnabled: true` in global config before submitting it and use `/detach` or the configurable `detachSession` shortcut (default Ctrl+D); see [Detached sessions](/features/detached-sessions). The resume picker also includes live runtimes and their pending approval counts. Workers checkpoint visible conversation history and token usage; live and saved session totals include subagent and skill usage. Resuming observes that progress without replaying the task.
@@ -48,6 +48,8 @@ A session also remembers its permission mode. If you changed the mode mid-sessio
 /export json             Structured JSON
 /export sanitize         Markdown with best-effort redaction
 /export json sanitize    JSON with best-effort redaction
+/export --branch-only    Markdown of messages added to the active branch
+/export json --branch-only JSON of messages added to the active branch
 ```
 
 `sanitize` and `json` work in either order; `--sanitize` is an alias for `sanitize`.
@@ -70,6 +72,13 @@ By default, Markdown retains the existing readable layout, with previews of tool
 (200 characters) and results (500 characters). JSON preserves the full retained
 message structure, text, and tool activity without those additional preview limits.
 Both exclude agent-injected internal prompts while preserving actual user messages.
+
+`--branch-only` skips messages copied into the active branch by `/branch`.
+It works with Markdown, JSON, `--full` Markdown, and `--sanitize`. Markdown includes
+the branch session ID in the header. JSON sets `scope` to `"branch-only"` and includes
+`sessionId`. Root sessions, older branches without recorded fork metadata, and
+branches with no new retained messages produce a message instead of a file.
+Review exports before sharing because new replies can still quote earlier context.
 
 Exports cover the **retained conversation**, not a complete session archive.
 Context management may already have trimmed tool results or replaced old messages

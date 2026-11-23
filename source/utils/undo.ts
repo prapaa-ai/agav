@@ -24,7 +24,17 @@ export async function pushUndo(path: string, tool: string): Promise<void> {
 }
 
 export async function performUndo(): Promise<{ path: string; tool: string; deleted?: boolean } | null> {
-  const entry = undoStack.pop();
+  return performUndoAt(undoStack.length - 1);
+}
+
+/**
+ * Revert exactly the entry at `index` (0 = oldest) and remove only that
+ * entry from the stack, leaving newer entries untouched. Returns null when
+ * the index is out of range, without mutating any file.
+ */
+export async function performUndoAt(index: number): Promise<{ path: string; tool: string; deleted?: boolean } | null> {
+  if (!Number.isInteger(index) || index < 0 || index >= undoStack.length) return null;
+  const [entry] = undoStack.splice(index, 1);
   if (!entry) return null;
 
   if (entry.content === null) {
