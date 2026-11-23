@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from "react";
-import { Box, Text, useInput } from "../ink/index.js";
+import React, { useMemo, useRef, useState } from "react";
+import { Box, Text, useInput, type MouseEventData } from "../ink/index.js";
+import { wheelSelect } from "./wheel-select.js";
 import { getTheme } from "../config/theme.js";
 import { buildStatusBarText, type StatusBarSegments } from "./status-bar.js";
 import {
@@ -63,23 +64,30 @@ function CustomizeHub({ onOpen, onExit }: { onOpen: (screen: Screen) => void; on
   const theme = getTheme();
   const [selected, setSelected] = useState(0);
 
+  const openArea = (index: number) => onOpen(AREAS[index]!.id);
+  const stepSelection = (delta: number) => setSelected((i) => (i + delta + AREAS.length) % AREAS.length);
+
   useInput((_input, key) => {
     if (key.escape) { onExit(); return; }
-    if (key.upArrow) { setSelected((i) => (i - 1 + AREAS.length) % AREAS.length); return; }
-    if (key.downArrow) { setSelected((i) => (i + 1) % AREAS.length); return; }
-    if (key.return) { onOpen(AREAS[selected]!.id); return; }
+    if (key.upArrow) { stepSelection(-1); return; }
+    if (key.downArrow) { stepSelection(1); return; }
+    if (key.return) { openArea(selected); return; }
   });
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={theme.bannerColor} paddingX={1}>
       <Text bold color={theme.bannerColor}>Customize Agav</Text>
-      <Box marginTop={1} flexDirection="column">
+      <Box marginTop={1} flexDirection="column" onWheel={wheelSelect(stepSelection)}>
         {AREAS.map((area, index) => {
           const active = index === selected;
           return (
             <Box key={area.id}>
               <Text color={active ? theme.promptColor : undefined}>{active ? "❯ " : "  "}</Text>
-              <Text bold={active}>{area.label}</Text>
+              <Text bold={active} onClick={(event) => {
+                if (event.ctrl || event.alt || event.shift) return;
+                event.stopPropagation?.();
+                openArea(index);
+              }}>{area.label}</Text>
               <Text dimColor>{"  — "}{area.description}</Text>
             </Box>
           );
@@ -111,6 +119,9 @@ function StatusBarEditor({
   );
   const [selected, setSelected] = useState(0);
 
+  const checkboxPress = useRef<{ x: number; y: number; id: string } | null>(null);
+  const stepSelection = (delta: number) => setSelected((i) => (i + delta + layout.length) % layout.length);
+
   // Apply a mutation, keeping the cursor on the same item and pushing the new
   // layout to the live footer.
   const apply = (next: StatusBarLayout, keepIndex = selected) => {
@@ -141,8 +152,8 @@ function StatusBarEditor({
     if (key.return) { onExit(layout); return; }
     if (key.upArrow && key.shift) { move(selected, -1); return; }
     if (key.downArrow && key.shift) { move(selected, 1); return; }
-    if (key.upArrow) { setSelected((i) => (i - 1 + layout.length) % layout.length); return; }
-    if (key.downArrow) { setSelected((i) => (i + 1) % layout.length); return; }
+    if (key.upArrow) { stepSelection(-1); return; }
+    if (key.downArrow) { stepSelection(1); return; }
     if (input === " ") { toggle(selected); return; }
     if (input === "[") { move(selected, -1); return; }
     if (input === "]") { move(selected, 1); return; }
@@ -165,17 +176,37 @@ function StatusBarEditor({
         {hintEnabled && <Text dimColor italic>{"💡 "}{hintPreview}</Text>}
       </Box>
 
-      <Box marginTop={1} flexDirection="column">
+      <Box marginTop={1} flexDirection="column" onWheel={wheelSelect((delta) => {
+        checkboxPress.current = null;
+        stepSelection(delta);
+      })}>
         {layout.map((item, index) => {
           const meta = statusBarItemMeta(item.id);
           const active = index === selected;
+          const select = (event: MouseEventData) => {
+            if (event.ctrl || event.alt || event.shift) return;
+            event.stopPropagation?.();
+            setSelected(index);
+          };
           return (
             <Box key={item.id}>
               <Text color={active ? theme.promptColor : undefined}>{active ? "❯ " : "  "}</Text>
-              <Text color={item.enabled ? theme.promptColor : undefined} dimColor={!item.enabled}>
+              <Text color={item.enabled ? theme.promptColor : undefined} dimColor={!item.enabled}
+                onMouseDown={({ x, y }) => {
+                  // Observe the press without claiming it: a drag should still select text.
+                  checkboxPress.current = { x, y, id: item.id };
+                }}
+                onClick={(event) => {
+                  const press = checkboxPress.current;
+                  checkboxPress.current = null;
+                  if (event.ctrl || event.alt || event.shift || press?.id !== item.id || press.x !== event.x || press.y !== event.y) return;
+                  event.stopPropagation?.();
+                  toggle(index);
+                }}
+              >
                 {item.enabled ? "[x] " : "[ ] "}
               </Text>
-              <Text bold={active} dimColor={!item.enabled}>{meta.label}</Text>
+              <Text bold={active} dimColor={!item.enabled} onClick={select}>{meta.label}</Text>
               <Text dimColor>{"  — "}{meta.description}</Text>
             </Box>
           );

@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { createElement as h, useState } from "react";
 import { describe, it, expect, vi } from "vitest";
 import render from "../ink/render.js";
-import { Box, Text } from "../ink/index.js";
+import { Box, Text, useInput } from "../ink/index.js";
 import InputPrompt, { snapOutOfAttachment } from "../components/input-prompt.js";
 import { DEFAULT_KEYBINDINGS } from "../config/keybindings.js";
 
@@ -52,7 +52,14 @@ const settle = async (instance: { waitUntilRenderFlush: () => Promise<void> }) =
 
 let currentValue = "";
 
-const Host = ({ initial }: { initial: string }) => {
+type HostOptions = Partial<Pick<
+  Parameters<typeof InputPrompt>[0],
+  "commands" | "agentNames" | "readOnly" | "disabled" | "onSubmit"
+>>;
+
+const Host = ({ initial, ...options }: { initial: string } & HostOptions) => {
+  // Keep raw input enabled even when the prompt is read-only or disabled.
+  useInput(() => {});
   const [value, setValue] = useState(initial);
   currentValue = value;
   return h(InputPrompt, {
@@ -60,13 +67,14 @@ const Host = ({ initial }: { initial: string }) => {
     onChange: setValue,
     onSubmit: () => {},
     keybindings: DEFAULT_KEYBINDINGS,
+    ...options,
   });
 };
 
-const mount = async (initial = "") => {
+const mount = async (initial = "", options: HostOptions = {}) => {
   const stdout = makeStdout();
   const stdin = makeStdin();
-  const instance = render(h(Host, { initial }), {
+  const instance = render(h(Host, { initial, ...options }), {
     stdout,
     stdin,
     patchConsole: false,
@@ -189,6 +197,73 @@ describe("clicking in the input prompt", () => {
 
     expect(currentValue).toBe("X");
     instance.unmount();
+  });
+});
+
+describe("clicking autocomplete choices", () => {
+  const commands = [
+    { name: "name", description: "Name the session", argumentHint: "<title>" },
+    { name: "customize", description: "Customize appearance", autoSubmit: true },
+  ];
+
+  it("completes the clicked slash command without running it until Enter", async () => {
+    const onSubmit = vi.fn();
+    const { instance, stdin } = await mount("/", { commands, onSubmit });
+    try {
+      // Click the second choice, not the keyboard-highlighted first choice.
+      await clickAt(instance, stdin, 5, 2);
+      expect(currentValue).toBe("/customize ");
+      expect(onSubmit).not.toHaveBeenCalled();
+
+      await type(instance, stdin, "\r");
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith("/customize ");
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  it("completes an agent argument without submitting", async () => {
+    const onSubmit = vi.fn();
+    const { instance, stdin } = await mount("/agent ", {
+      agentNames: [
+        { name: "alpha", description: "First agent" },
+        { name: "beta", description: "Second agent" },
+      ],
+      onSubmit,
+    });
+    try {
+      await clickAt(instance, stdin, 5, 2);
+      expect(currentValue).toBe("/agent beta ");
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  it("completes a file mention at the caret", async () => {
+    const onSubmit = vi.fn();
+    const { instance, stdin } = await mount("", { onSubmit });
+    try {
+      // package.json is a single match in the repository root.
+      await type(instance, stdin, "@package.jso");
+      await clickAt(instance, stdin, 5, 1);
+      expect(currentValue).toBe("@package.json ");
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally {
+      instance.unmount();
+    }
+  });
+
+  it.each([{ readOnly: true }, { disabled: true }])("ignores clicks when %o", async (options) => {
+    const onSubmit = vi.fn();
+    const { instance, stdin } = await mount("/", { ...options, commands, onSubmit });
+    try {
+      await clickAt(instance, stdin, 5, 2);
+      expect(currentValue).toBe("/");
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally {
+      instance.unmount();
+    }
   });
 });
 

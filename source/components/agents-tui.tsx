@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Box, Text, ScrollBox, useInput, usePaste, useStdout, measureElement } from "../ink/index.js";
-import type { DOMElement, ScrollBoxControls } from "../ink/index.js";
+import type { DOMElement, MouseEventData, ScrollBoxControls } from "../ink/index.js";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
@@ -212,15 +212,24 @@ export function AgentsTUI({ onExit, provider, config, height }: AgentsTUIProps) 
 
   const filteredAgents = agents;
 
-  useInput(async (input, key) => {
+  const switchTab = (tab: Tab) => {
     const isEditingConfig = listView === "config" && (configEditing || configPickerActive || nativeToolsEditing);
-    if (!isEditingConfig && !marketplaceBusy && !managerBusy && !createBusy && (input === "1" || input === "2" || input === "3")) {
-      scrollControls.current?.scrollToBottom();
-      if (input === "1") { setActiveTab("list"); setSelectedIndex(0); setListView("list"); }
-      else if (input === "2") { setActiveTab("marketplace"); setSelectedIndex(0); }
-      else if (input === "3") { setActiveTab("create"); }
-      return;
-    }
+    if (isEditingConfig || marketplaceBusy || managerBusy || createBusy) return false;
+    scrollControls.current?.scrollToBottom();
+    setActiveTab(tab);
+    if (tab !== "create") setSelectedIndex(0);
+    if (tab === "list") setListView("list");
+    return true;
+  };
+
+  const clickTab = (tab: Tab) => (event: MouseEventData) => {
+    if (event.ctrl || event.alt || event.shift) return;
+    if (switchTab(tab)) event.stopPropagation?.();
+  };
+
+  useInput(async (input, key) => {
+    const tab = input === "1" ? "list" : input === "2" ? "marketplace" : input === "3" ? "create" : undefined;
+    if (tab && switchTab(tab)) return;
 
     if (activeTab === "list") {
       if (listView === "list") {
@@ -412,15 +421,15 @@ export function AgentsTUI({ onExit, provider, config, height }: AgentsTUIProps) 
       </Box>
 
       <Box marginBottom={1}>
-        <Text color={activeTab === "list" ? "cyan" : "gray"}>
+        <Text color={activeTab === "list" ? "cyan" : "gray"} onClick={clickTab("list")}>
           [1] List
         </Text>
         <Text> </Text>
-        <Text color={activeTab === "marketplace" ? "cyan" : "gray"}>
+        <Text color={activeTab === "marketplace" ? "cyan" : "gray"} onClick={clickTab("marketplace")}>
           [2] Marketplace
         </Text>
         <Text> </Text>
-        <Text color={activeTab === "create" ? "cyan" : "gray"}>
+        <Text color={activeTab === "create" ? "cyan" : "gray"} onClick={clickTab("create")}>
           [3] Create
         </Text>
       </Box>
