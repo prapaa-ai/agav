@@ -6,23 +6,25 @@ import { randomUUID } from "node:crypto";
 import { createElement as h } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCoordinator, type Coordinator } from "../background-jobs/coordinator/service.js";
+import { createScheduleEngine, type ScheduleEngine } from "../background-jobs/schedule/engine.js";
 import { IpcClient } from "../background-jobs/ipc/client.js";
 import { jobPath } from "../background-jobs/storage/paths.js";
 import type { SessionPolicySnapshot } from "../background-jobs/types.js";
 
-const shared = vi.hoisted(() => ({ coordinator: undefined as Coordinator | undefined }));
+const shared = vi.hoisted(() => ({ coordinator: undefined as Coordinator | undefined, engine: undefined as ScheduleEngine | undefined }));
 vi.mock("../background-jobs-integration.js", () => ({
   getSharedCoordinator: async () => shared.coordinator!,
-  getSharedScheduleEngine: async () => ({ listSchedules: async () => [] }),
+  getSharedScheduleEngine: async () => shared.engine!,
 }));
 const { JobsTUI } = await import("../components/jobs-tui.js");
-const { createJobsAdapter, describeStopResult } = await import("../resources/job-adapters.js");
+const { createJobsAdapter, describeStopResult, shellLaunchTemplate } = await import("../resources/job-adapters.js");
 const { default: render } = await import("../ink/render.js");
 let root: string, id: string, c: Coordinator;
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "agav-ui-recovery-"));
   c = await createCoordinator({ root });
   shared.coordinator = c;
+  shared.engine = createScheduleEngine({ root: c.root, repositories: c.repositories, coordinator: c, authorizationService: c.authorization });
   id = randomUUID();
   await c.repositories.jobs.create({ jobId: id, requestId: randomUUID(), specHash: "fixture", protocolVersion: 1, state: "recovery-required", stopState: "none", nonce: "", uncertaintyReason: "ambiguous dispatch" });
   vi.spyOn(IpcClient, "connectWithRetry").mockRejectedValue(new Error("offline"));
@@ -181,5 +183,51 @@ it("does not confirm abandonment after unmount or interpret search as actions", 
     await ui.key("y");
     expect(abandon).not.toHaveBeenCalled();
     expect((await c.poll(id)).abandonment).toBeUndefined();
+  } finally { ui.close(); }
+});
+
+it("deletes only finished jobs and inactive schedules across both tabs after one confirmation", async () => {
+  const job = async (state: "running" | "completed" | "interrupted") => {
+    const jobId = randomUUID();
+    await c.repositories.jobs.create({ jobId, requestId: jobId, specHash: "fixture", protocolVersion: 1, state, stopState: "none", nonce: "" });
+    return jobId;
+  };
+  const [running, completed, interrupted] = await Promise.all([job("running"), job("completed"), job("interrupted")]);
+  const schedule = async (scheduleId: string, enabled: boolean, requestId?: string, status: "dispatched" | "reserved" = "dispatched") => {
+    await c.repositories.schedules.put({ scheduleId, enabled, version: 1, cron: "0 9 * * *", timezone: "UTC",
+      grantId: "fixture", createdAt: new Date().toISOString(), launchSpecTemplate: shellLaunchTemplate("echo test"),
+      ...(scheduleId === "paused" ? { pausedAt: new Date().toISOString() } : {}),
+    });
+    if (requestId) await c.repositories.occurrences.reserve({ scheduleId, requestId, status,
+      occurrenceId: `occ-${scheduleId}`, occurrenceKey: scheduleId, createdAt: new Date().toISOString(),
+    });
+  };
+  await schedule("paused", false, completed);
+  await schedule("revoked", false);
+  await schedule("enabled", true);
+  await schedule("active-run", false, running);
+  await schedule("pending-launch", false, randomUUID(), "reserved");
+  await schedule("uncertain-run", false, (await c.repositories.jobs.get(id))!.requestId);
+  const deleteJob = vi.spyOn(c, "deleteJob");
+  const deleteSchedule = vi.spyOn(shared.engine!, "deleteSchedule");
+  const ui = await mount();
+  try {
+    await ui.key("\t");
+    await ui.key("s"); await ui.key("no match"); await ui.key("\r");
+    expect(ui.frame()).toContain("No resources found");
+    expect(ui.frame()).toContain("D: Delete stopped");
+    await ui.key("D");
+    expect(ui.frame().replaceAll("\n", "")).toContain("across both tabs");
+    expect(deleteJob).not.toHaveBeenCalled();
+    expect(deleteSchedule).not.toHaveBeenCalled();
+    await ui.key("n");
+    expect(deleteJob).not.toHaveBeenCalled();
+    expect(deleteSchedule).not.toHaveBeenCalled();
+    await ui.key("D"); await ui.key("y");
+    expect(ui.frame()).toContain("Deleted 2 jobs and 2 schedules.");
+    expect((await c.list()).map((entry) => entry.jobId).sort()).toEqual([id, running].sort());
+    expect((await shared.engine!.listSchedules()).map((entry) => entry.scheduleId).sort()).toEqual(["active-run", "enabled", "pending-launch", "uncertain-run"]);
+    expect(await shared.engine!.listRuns("paused")).toEqual([]);
+    expect(await c.repositories.jobs.get(interrupted)).toBeUndefined();
   } finally { ui.close(); }
 });

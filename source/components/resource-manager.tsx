@@ -26,6 +26,8 @@ export interface ResourceAction {
   inDetail?: boolean;
   /** Ask y/n with this text before running (for permanent operations). */
   confirm?: string;
+  /** A list action that ignores the selected item, even when asking for confirmation. */
+  listWide?: boolean;
   run(item: ResourceItem | undefined): void | string | ResourceActionView | Promise<void | string | ResourceActionView>;
 }
 
@@ -103,7 +105,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     run: () => adapter.remove!(target.id),
     doneLabel: `${adapter.removedLabel ?? "Deleted"}.`,
   });
-  const actionConfirmation = (action: ResourceAction, target: ResourceItem) => ({
+  const actionConfirmation = (action: ResourceAction, target: ResourceItem | undefined) => ({
     label: action.label,
     text: action.confirm!,
     // Confirmed actions are operations; a returned report view is not shown from the confirm step.
@@ -235,9 +237,10 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   };
   const runListAction = (action: ResourceAction) => {
     if (busyRef.current) return;
-    if (action.confirm && item) { setDetail(item); setPendingConfirm(actionConfirmation(action, item)); setView("delete"); }
+    const target = action.listWide ? undefined : item;
+    if (action.confirm && (target || action.listWide)) { setDetail(target); setPendingConfirm(actionConfirmation(action, target)); setView("delete"); }
     else void run(async () => {
-      const result = await action.run(item);
+      const result = await action.run(target);
       if (result && typeof result === "object" && mounted.current) {
         // A report, not the item itself: never offer delete/stop on it, and never refresh it.
         live.current.detailFromGet = false;
@@ -361,7 +364,7 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
           <Text dimColor>  {entry.description.replace(/\s+/g, " ").slice(0, Math.max(20, columns - 6))}</Text>
         </Box>) : <Text dimColor>{emptyText}</Text>)}
         {view === "detail" && <Text>{detail?.detail}</Text>}
-        {view === "delete" && <Text color="yellow">{pendingConfirm?.label} "{detail?.title}"? {pendingConfirm?.text} y: Confirm · n/ESC: Cancel</Text>}
+        {view === "delete" && <Text color="yellow">{pendingConfirm?.label}{detail ? ` "${detail.title}"` : ""}? {pendingConfirm?.text} y: Confirm · n/ESC: Cancel</Text>}
         {form && fields.map((f, i) => <Box key={f.name} flexDirection="column" alignItems="flex-start">
           <Text onMouseMove={busy ? undefined : pointerSelect(() => { if (!busyRef.current) setFieldIndex(i); })} onClick={busy ? undefined : () => { if (!busyRef.current) setFieldIndex(i); }} color={i === fieldIndex ? "cyan" : undefined} inverse={i === fieldIndex}>{i === fieldIndex ? "→ " : "  "}{f.label}{f.options ? ` (${f.options.join(" / ")})` : ""}: {values[f.name] ?? ""}{i === fieldIndex ? "█" : ""}</Text>
         </Box>)}

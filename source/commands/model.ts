@@ -7,7 +7,7 @@ import { fetchVertexAIModels } from "../providers/vertex-ai.js";
 import { parseMouseEvent, type ParsedMouse } from "../ink/parse-mouse.js";
 import { extendSelection, getSelectedText, type SelectionRange } from "../ink/selection.js";
 import { writeClipboard, type ClipboardResult } from "../ink/termio/clipboard.js";
-import { CURSOR_HOME, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ERASE_DISPLAY } from "../ink/termio/dec.js";
+import { CURSOR_HOME, decreset, decset, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ERASE_DISPLAY } from "../ink/termio/dec.js";
 
 export interface FetchedModel {
   id: string;
@@ -263,6 +263,7 @@ const PICKER_INPUT = new RegExp([
 ].join("|"), "g");
 const MAX_PICKER_INPUT_TAIL = 32;
 const PICKER_INPUT_TIMEOUT_MS = 50;
+const MOUSE_ANY_MOTION = 1003;
 
 function pickModel(
   models: FetchedModel[],
@@ -278,6 +279,10 @@ function pickModel(
   let selected = Math.max(0, models.findIndex((m) => m.id === currentModel));
   let filter = "";
   let visibleLines: string[] = [];
+  let visibleStart = 0;
+  let firstModelRow = 0;
+  let visibleModels: FetchedModel[] = [];
+  let pressedModel: FetchedModel | undefined;
   let anchor: { x: number; y: number } | undefined;
   let selection: SelectionRange | undefined;
   let copyNotice: ClipboardResult | "No model to copy" | undefined;
@@ -288,7 +293,7 @@ function pickModel(
     return models.filter((m) => m.id.toLowerCase().includes(lower) || m.provider.toLowerCase().includes(lower));
   }
 
-  function render() {
+  function render(keepWindow = false) {
     const filtered = getFiltered();
     if (selected >= filtered.length) selected = Math.max(0, filtered.length - 1);
 
@@ -298,12 +303,19 @@ function pickModel(
       : copyNotice ? `\x1b[33m  ${copyNotice}\x1b[0m` : "";
     const lines = [
       `\x1b[1;36m  ${title}\x1b[0m\x1b[2m  (${filtered.length} of ${models.length})\x1b[0m${notice}`,
-      "\x1b[2m  ↑↓ move · Enter select · Ctrl+Y copy · Drag to copy · Type filter · Esc cancel\x1b[0m",
+      "\x1b[2m  ↑↓/scroll · Enter/click select · Ctrl+Y copy · Drag to copy · Type filter · Esc cancel\x1b[0m",
       filter ? `\x1b[33m  Filter: ${filter}\x1b[0m` : "",
     ];
 
-    const scrollStart = Math.max(0, Math.min(selected - Math.floor(pageSize / 2), filtered.length - pageSize));
+    // Keep the model under the pointer stationary when mouse input moves the highlight.
+    const start = keepWindow
+      ? Math.max(selected - pageSize + 1, Math.min(visibleStart, selected))
+      : selected - Math.floor(pageSize / 2);
+    const scrollStart = Math.max(0, Math.min(start, filtered.length - pageSize));
     const scrollEnd = Math.min(scrollStart + pageSize, filtered.length);
+    visibleStart = scrollStart;
+    firstModelRow = lines.length;
+    visibleModels = filtered.slice(scrollStart, scrollEnd);
 
     for (let i = scrollStart; i < scrollEnd; i++) {
       const m = filtered[i]!;
@@ -341,7 +353,7 @@ function pickModel(
   }
 
   // Ink remains suspended and already owns the alternate screen.
-  process.stdout.write(ERASE_DISPLAY + ENABLE_MOUSE_TRACKING);
+  process.stdout.write(ERASE_DISPLAY + ENABLE_MOUSE_TRACKING + decset(MOUSE_ANY_MOTION));
   render();
 
   return new Promise((resolve) => {
@@ -354,10 +366,10 @@ function pickModel(
     function showCopyNotice(notice: NonNullable<typeof copyNotice>) {
       clearTimeout(noticeTimer);
       copyNotice = notice;
-      render();
+      render(true);
       noticeTimer = setTimeout(() => {
         copyNotice = undefined;
-        render();
+        render(true);
       }, 2000);
     }
 
@@ -375,7 +387,7 @@ function pickModel(
       stdin.setRawMode(wasRaw ?? false);
       stdin.removeListener("data", onData);
       stdin.pause();
-      process.stdout.write(DISABLE_MOUSE_TRACKING + ERASE_DISPLAY + CURSOR_HOME);
+      process.stdout.write(decreset(MOUSE_ANY_MOTION) + DISABLE_MOUSE_TRACKING + ERASE_DISPLAY + CURSOR_HOME);
     }
 
     function onData(data: Buffer) {
@@ -411,19 +423,58 @@ function pickModel(
       }
     }
 
+    function choose(model: FetchedModel) {
+      cleanup();
+      resolve(model);
+    }
+
     function handleMouse(mouse: ParsedMouse) {
-      if (mouse.button !== 0 || mouse.wheel || mouse.x < 0 || mouse.y < 0) return;
+      if (mouse.x < 0 || mouse.y < 0) return;
+      if (mouse.wheel) {
+        pressedModel = undefined;
+        const delta = mouse.wheel === "up" ? -1 : 1;
+        const next = Math.max(0, Math.min(selected + delta, getFiltered().length - 1));
+        if (next !== selected) {
+          anchor = undefined;
+          selection = undefined;
+          selected = next;
+          render();
+        }
+        return;
+      }
+      const row = mouse.y - firstModelRow;
+      const model = visibleModels[row];
+      if (mouse.action === "move") {
+        if (!anchor && model && selected !== visibleStart + row) {
+          selected = visibleStart + row;
+          render(true);
+        }
+        return;
+      }
+      if (mouse.button !== 0) return;
+
       const point = { x: mouse.x, y: Math.min(mouse.y, visibleLines.length - 1) };
       if (mouse.action === "press") {
         anchor = mouse.y < visibleLines.length ? point : undefined;
+        pressedModel = model;
         selection = undefined;
+        if (model) selected = visibleStart + row;
       } else if (anchor && (mouse.action === "drag" || mouse.action === "release")) {
+        const samePoint = anchor.x === mouse.x && anchor.y === mouse.y;
         selection = anchor.x === point.x && anchor.y === point.y ? undefined : extendSelection(anchor, point);
-        if (mouse.action === "release") {
+        if (mouse.action === "drag") {
+          pressedModel = undefined;
+        } else {
+          const clicked = samePoint && model === pressedModel ? pressedModel : undefined;
           anchor = undefined;
+          pressedModel = undefined;
+          if (clicked) {
+            choose(clicked);
+            return;
+          }
           const text = selection ? getSelectedText(visibleLines, selection) : "";
           if (text.trim()) {
-            render();
+            render(true);
             copyText(text);
             return;
           }
@@ -431,11 +482,12 @@ function pickModel(
       } else {
         return;
       }
-      render();
+      render(true);
     }
 
     function handleKey(key: string) {
       const filtered = getFiltered();
+      pressedModel = undefined;
 
       if (key === "\x1b" || key === "\x03") {
         cleanup();
@@ -444,10 +496,8 @@ function pickModel(
       }
 
       if (key === "\r" || key === "\n") {
-        if (filtered.length > 0 && filtered[selected]) {
-          cleanup();
-          resolve(filtered[selected]!);
-        }
+        const highlighted = filtered[selected];
+        if (highlighted) choose(highlighted);
         return;
       }
 
@@ -500,7 +550,7 @@ export const modelCommand: SlashCommand = {
   name: "model",
   description: "View all available models or change current model",
   argumentHint: "[name]",
-  usage: "Usage: /model [name]\n\n  /model                Open interactive model picker\n  /model gpt-5.4-mini   Switch to a specific model\n  /model gemini-3.5-pro  Auto-switches provider if needed\n\nIn the picker, press Ctrl+Y to copy the highlighted model ID, or drag across text and release to copy the selection. Enter selects a model.",
+  usage: "Usage: /model [name]\n\n  /model                Open interactive model picker\n  /model gpt-5.4-mini   Switch to a specific model\n  /model gemini-3.5-pro  Auto-switches provider if needed\n\nIn the picker, press Ctrl+Y to copy the highlighted model ID, or drag across text and release to copy the selection. Click a model or press Enter to select it.",
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const model = args.trim();
 
