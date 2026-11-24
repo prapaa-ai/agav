@@ -155,6 +155,46 @@ describe("commands/copy", () => {
     expect(writeClipboardMock).not.toHaveBeenCalled();
   });
 
+  it("copies a block from an older response with --response, numbered as /copy N", async () => {
+    const context = createContext([
+      { role: "assistant", content: [{ type: "text", text: "```\nthird a\n```\n\n~~~\nthird b\n~~~" }] },
+      { role: "assistant", content: [{ type: "text", text: "no fence here" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read_file", input: {} }] },
+      { role: "assistant", content: [{ type: "text", text: "```\nlatest\n```" }] },
+    ] as Message[]);
+
+    expect(await copyCommand.execute("code 2 --response 3", context)).toEqual({
+      type: "message", text: "Copied code block 2 from response -3 to clipboard.",
+    });
+    expect(await copyCommand.execute("code --response 3", context)).toEqual({
+      type: "message", text: "Copied code block 1 from response -3 to clipboard.",
+    });
+    expect(await copyCommand.execute("code --response 1", context)).toEqual({
+      type: "message", text: "Copied code block 1 to clipboard.",
+    });
+    expect(writeClipboardMock.mock.calls.map((call) => call[1])).toEqual(["third b", "third a", "latest"]);
+  });
+
+  it("says which index failed with --response and leaves the clipboard alone", async () => {
+    const context = createContext([
+      { role: "assistant", content: [{ type: "text", text: "```\nolder\n```" }] },
+      { role: "assistant", content: [{ type: "text", text: "no fence here" }] },
+      { role: "assistant", content: [{ type: "text", text: "```\nlatest\n```" }] },
+    ] as Message[]);
+    const text = async (args: string) => ((await copyCommand.execute(args, context)) as any).text;
+
+    for (const bad of ["code x --response 3", "code 0 --response 3", "code 1.5 --response 3"]) {
+      expect(await text(bad)).toBe("Invalid code block number. Expected a positive integer.");
+    }
+    for (const bad of ["code 1 --response", "code 1 --response 0", "code 1 --response x", "code --response 2 3"]) {
+      expect(await text(bad)).toBe("Invalid response number. Expected a positive integer.");
+    }
+    expect(await text("code 1 --response 4")).toBe("Nothing to copy (only 3 assistant messages available).");
+    expect(await text("code 2 --response 3")).toBe("Nothing to copy (only 1 fenced code block available in response -3).");
+    expect(await text("code --response 2")).toBe("Nothing to copy (no complete fenced code blocks in response -2).");
+    expect(writeClipboardMock).not.toHaveBeenCalled();
+  });
+
   it("does not accept a would-be closing fence followed by a nonbreaking space", async () => {
     const context = createContext([
       { role: "assistant", content: [{ type: "text", text: "~~~js\nbody\n~~~\u00a0" }] },
