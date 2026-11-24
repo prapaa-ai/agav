@@ -269,7 +269,18 @@ export function fitColumns(naturalWidths: number[], available: number): number[]
  * Render a table using unicode box-drawing characters with string-width v8
  * for accurate column padding across all scripts and emoji.
  */
-function renderUnicodeTable(headers: string[], rows: string[][], colWidths: number[]): string {
+function alignToWidth(s: string, width: number, align: string | null): string {
+  const pad = width - stringWidth(s);
+  if (pad <= 0) return s;
+  if (align === "right") return " ".repeat(pad) + s;
+  if (align === "center") {
+    const left = Math.floor(pad / 2);
+    return " ".repeat(left) + s + " ".repeat(pad - left);
+  }
+  return s + " ".repeat(pad);
+}
+
+function renderUnicodeTable(headers: string[], rows: string[][], colWidths: number[], aligns: (string | null)[] = []): string {
   function hLine(left: string, mid: string, right: string, fill: string): string {
     return left + colWidths.map((w) => fill.repeat(w + 2)).join(mid) + right;
   }
@@ -280,7 +291,7 @@ function renderUnicodeTable(headers: string[], rows: string[][], colWidths: numb
 
     const out: string[] = [];
     for (let line = 0; line < height; line++) {
-      const parts = wrapped.map((wc, i) => " " + padToWidth(wc[line] ?? "", colWidths[i]!) + " ");
+      const parts = wrapped.map((wc, i) => " " + alignToWidth(wc[line] ?? "", colWidths[i]!, aligns[i] ?? null) + " ");
       out.push("│" + parts.join("│") + "│");
     }
     return out.join("\n");
@@ -316,7 +327,8 @@ function makeTableExtension(termWidth: number) {
 
       // borders: colCount + 1 │ chars, padding: 1 space each side per column
       const overhead = (colCount + 1) + (colCount * 2);
-      return renderUnicodeTable(headers, rows, fitColumns(naturalWidths, termWidth - overhead));
+      const aligns: (string | null)[] = (token.align ?? []).slice(0, colCount);
+      return renderUnicodeTable(headers, rows, fitColumns(naturalWidths, termWidth - overhead), aligns);
     },
   };
 }
