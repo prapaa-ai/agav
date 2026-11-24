@@ -32,15 +32,6 @@ async function waitDecision(store: WorkflowStore, runId: string, decisionId: str
   return (await readDecision(store, runId, decisionId))?.decided;
 }
 
-/** Waits for the background launch. Approving consent resolves the keypress before the async
- * coordinator.start() records the request, so fixed settles can race it under load; poll instead. */
-async function waitStarts(coordinator: FakeCoordinator, count: number) {
-  for (let i = 0; i < 50 && coordinator.starts.length < count; i++) {
-    await new Promise((r) => setTimeout(r, 20));
-  }
-  return coordinator.starts;
-}
-
 async function mount(size: { columns: number; rows: number } = { columns: 140, rows: 30 }, reconcileRuns?: (opts: { maxConcurrentWorkflowRuns?: number }) => Promise<void>, height?: number) {
   const onExit = vi.fn();
   let output = "";
@@ -203,8 +194,11 @@ describe("WorkflowsTUI", () => {
       await ui.key("n");
       expect(ui.frame()).toContain("Not cancelled.");
       expect((await store.read(run.id, registry)).status).not.toBe("cancelled");
-      await ui.key("x"); await ui.key("y"); await ui.settle();
-      expect((await store.read(run.id, registry)).status).toBe("cancelled");
+      await ui.key("x"); await ui.key("y");
+      // Confirmation can return before cancellation is persisted.
+      await vi.waitFor(async () => {
+        expect((await store.read(run.id, registry)).status).toBe("cancelled");
+      }, { timeout: 2500 });
     } finally { ui.instance.unmount(); }
   });
 
@@ -223,9 +217,11 @@ describe("WorkflowsTUI", () => {
       expect(ui.frame()).toContain('Run workflow "greeter" in the background?');
       expect(ui.frame()).toContain("y: Approve · n/ESC: Deny");
       await ui.key("y");
-      await ui.settle(); await ui.settle();
-      expect(await waitStarts(coordinator, 1)).toHaveLength(1);
-      expect(ui.frame()).toContain("Workflow runs · List");
+      // The coordinator records the launch before React renders the Runs tab.
+      await vi.waitFor(() => {
+        expect(coordinator.starts).toHaveLength(1);
+        expect(ui.frame()).toContain("Workflow runs · List");
+      }, { timeout: 2500 });
       const [id] = await store.listIds();
       expect((await store.read(id!, registry)).inputs).toEqual({ who: "bob" });
     } finally { ui.instance.unmount(); }
