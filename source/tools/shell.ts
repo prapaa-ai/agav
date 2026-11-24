@@ -1,4 +1,6 @@
 import { StringDecoder } from "node:string_decoder";
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import { tempOutputManager, type TemporaryOutput } from "../utils/temp-output.js";
 import type { ToolDefinition, ToolResult } from "./types.js";
 import {
@@ -143,6 +145,10 @@ export const shellTool: ToolDefinition = {
           type: "string",
           description: "The shell command to execute",
         },
+        cwd: {
+          type: "string",
+          description: "Directory to run the command in. A relative path resolves against Agav's current directory, and the directory must exist.",
+        },
         timeout_ms: {
           type: "integer",
           minimum: 1,
@@ -164,6 +170,23 @@ export const shellTool: ToolDefinition = {
     const timeout = input.timeout_ms === undefined ? DEFAULT_TIMEOUT : input.timeout_ms;
     if (typeof timeout !== "number" || !Number.isSafeInteger(timeout) || timeout < 1 || timeout > MAX_TIMEOUT) {
       return { output: "Invalid timeout_ms: expected an integer between 1 and 120000 milliseconds.", isError: true };
+    }
+    let cwd = process.cwd();
+    if (input.cwd !== undefined) {
+      if (typeof input.cwd !== "string" || !input.cwd.trim()) {
+        return { output: "Invalid cwd: expected a non-empty directory path.", isError: true };
+      }
+      const candidate = resolve(cwd, input.cwd);
+      // Validate before anything runs: a bad directory must not look like a
+      // command failure, and sandbox policy applies to the resolved path.
+      try {
+        if (!(await stat(candidate)).isDirectory()) {
+          return { output: `Invalid cwd: ${candidate} is not a directory.`, isError: true };
+        }
+      } catch {
+        return { output: `Invalid cwd: ${candidate} does not exist or cannot be read.`, isError: true };
+      }
+      cwd = candidate;
     }
     const command = String(input.command);
     // Pass through to the shared runtime validator, including malformed values.
@@ -190,7 +213,7 @@ export const shellTool: ToolDefinition = {
     try {
       const result = await runInSandbox({
         command,
-        cwd: process.cwd(),
+        cwd,
         timeout,
         maxBuffer: MAX_OUTPUT * 2,
         forceBackend,
