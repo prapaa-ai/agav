@@ -51,6 +51,28 @@ describe("cli/skills-cli", () => {
     expect(line).toContain("[disabled]");
   });
 
+  it("info prints metadata for a disabled bundled skill", async () => {
+    const cap = captureConsole();
+    const code = await runSkillsCommand("info", [target]);
+    const output = cap.out();
+    cap.restore();
+
+    expect(code).toBe(0);
+    expect(output).toContain(`Name: ${target}`);
+    expect(output).toContain("Origin: bundled");
+    expect(output).toContain("Path:");
+  });
+
+  it("info reports an unknown skill without changing anything", async () => {
+    const cap = captureConsole();
+    const code = await runSkillsCommand("info", ["does-not-exist"]);
+    const err = cap.err();
+    cap.restore();
+
+    expect(code).toBe(1);
+    expect(err).toContain('Skill "does-not-exist" not found');
+  });
+
   it("enable writes a registry entry and list marks it enabled", async () => {
     const c1 = captureConsole();
     const code = await runSkillsCommand("enable", [target]);
