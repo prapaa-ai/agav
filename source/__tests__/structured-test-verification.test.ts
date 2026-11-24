@@ -178,6 +178,19 @@ describe("built-in test runner", () => {
     const result = await testRunnerTool.execute({ framework: "pytest" });
     expect(result.verification).toMatchObject({ status: "passed", passed: 2 });
   });
+  it("reports pytest skips without counting them as passes", async () => {
+    childOutput("2 passed, 3 skipped in 0.1s");
+    const result = await testRunnerTool.execute({ framework: "pytest" });
+    expect(result.output).toContain("Skipped: 3");
+    expect(result.verification).toMatchObject({ status: "passed", passed: 2 });
+  });
+  it("reports a skipped-only pytest run as inconclusive", async () => {
+    childOutput("3 skipped in 0.1s");
+    const result = await testRunnerTool.execute({ framework: "pytest" });
+    expect(result.output).toContain("Skipped: 3");
+    expect(result.verification).toMatchObject({ status: "inconclusive", passed: 0 });
+  });
+
   it("does not interpret FAIL inside a passing test title as a failure", async () => {
     childOutput(" ✓ example.test.ts > returns FAIL for invalid input\n Tests  1 passed (1)\n");
     const result = await testRunnerTool.execute({ framework: "vitest" });
