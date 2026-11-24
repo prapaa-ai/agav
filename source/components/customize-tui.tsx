@@ -35,12 +35,17 @@ const AREAS: { id: Screen; label: string; description: string }[] = [
  * area today is the status bar. Each editor applies changes live (via onChange)
  * and persists on exit, so the footer reflects edits immediately.
  */
+/** Tips is a separate line, so keep it out of the reorderable inline run. */
+function hintLast(layout: StatusBarLayout): StatusBarLayout {
+  return [...layout.filter((item) => item.id !== "hint"), ...layout.filter((item) => item.id === "hint")];
+}
+
 export function CustomizeTUI({ initialLayout, preview, onChange, onExit }: CustomizeTUIProps) {
   const [screen, setScreen] = useState<Screen>("hub");
   // Hold the latest layout so closing from the hub persists edits made in an
   // editor the user then backed out of.
   const [layout, setLayout] = useState<StatusBarLayout>(() =>
-    normalizeStatusBarLayout(initialLayout ?? defaultStatusBarLayout()),
+    hintLast(normalizeStatusBarLayout(initialLayout ?? defaultStatusBarLayout())),
   );
   const handleChange = (next: StatusBarLayout) => { setLayout(next); onChange(next); };
 
@@ -124,7 +129,10 @@ function StatusBarEditor({
   };
 
   const move = (index: number, delta: number) => {
-    const target = index + delta;
+    // Tips is fixed: it can be toggled but never reordered among inline items.
+    if (layout[index]?.id === "hint") return;
+    let target = index + delta;
+    if (layout[target]?.id === "hint") target += delta;
     if (target < 0 || target >= layout.length) return;
     const next = [...layout];
     const [item] = next.splice(index, 1);
@@ -183,7 +191,8 @@ function StatusBarEditor({
       </Box>
 
       <Box marginTop={1} flexDirection="column">
-        <Text dimColor>↑/↓ Navigate · Space Show/Hide · [ / ] Move · Shift+↑/↓ Move</Text>
+        <Text dimColor>↑/↓ Navigate · Space Show/Hide · [ / ] Move inline items · Shift+↑/↓ Move</Text>
+        <Text dimColor>Tips is a separate line and stays fixed</Text>
         <Text dimColor>r Restore defaults · Enter Save &amp; close · Esc Back</Text>
       </Box>
     </Box>
