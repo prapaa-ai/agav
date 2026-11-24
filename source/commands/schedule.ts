@@ -6,6 +6,7 @@ import {
   addScheduledTask,
   removeScheduledTask,
   setTaskEnabled,
+  updateScheduledTask,
 } from "../config/scheduler.js"
 
 /**
@@ -18,7 +19,7 @@ import {
 export const scheduleCommand: SlashCommand = {
   name: "schedule",
   description: "Manage persistent scheduled tasks",
-  argumentHint: "[list|add|remove|enable|disable]",
+  argumentHint: "[list|add|update|remove|enable|disable]",
   usage: `Usage: /schedule [action]\n\n  /schedule                           Open manager (list in headless mode)\n  /schedule list                      Show all scheduled tasks\n  /schedule add "0 9 * * *" prompt    Add a cron-scheduled task\n  /schedule remove <id>               Remove a task by ID\n  /schedule enable <id>               Enable a disabled task\n  /schedule disable <id>              Disable a task\n\nCron format: minute hour day-of-month month day-of-week\nTasks persist across sessions in ${agavHomePath("scheduled-tasks.json")}.`,
   /**
    * Handle schedule management actions.
@@ -26,6 +27,7 @@ export const scheduleCommand: SlashCommand = {
    * Supported actions:
    * - `list` or no args: show configured tasks
    * - `add`: create a task from a quoted 5-field cron expression and prompt
+   * - `update`: change the cron and/or prompt, keeping the id and history
    * - `remove` / `rm` / `delete`: remove a task by id
    * - `enable`: enable a task by id
    * - `disable`: disable a task by id
@@ -94,6 +96,27 @@ export const scheduleCommand: SlashCommand = {
       }
     }
 
+    /** Change a task's schedule and/or prompt without losing its identity. */
+    if (action === "update") {
+      const id = parts[1]
+      const rest = parts.slice(2).join(" ")
+      const match = rest.match(/^"([^"]+)"(?:\s+(.+))?$/)
+      if (!id || !match) {
+        return { type: "message", text: 'Usage: /schedule update <id> "cron" [prompt]\nExample: /schedule update 1a2b3c4d "0 8 * * 1-5" run morning tests' }
+      }
+      const cron = match[1]!.trim()
+      const prompt = match[2]?.trim()
+      if (cron.split(/\s+/).length !== 5) {
+        return { type: "message", text: "Invalid cron expression. Must be 5 fields: minute hour day-of-month month day-of-week" }
+      }
+      if (prompt !== undefined && !prompt) {
+        return { type: "message", text: "Prompt cannot be empty. Omit it to keep the current prompt." }
+      }
+      const updated = await updateScheduledTask(id, { cron, ...(prompt !== undefined ? { prompt } : {}) })
+      if (!updated) return { type: "message", text: `Task ${id} not found.` }
+      return { type: "message", text: `Updated task ${updated.id}: "${updated.cron}" -> ${updated.prompt}` }
+    }
+
     /** Remove an existing task by id, supporting common delete aliases. */
     if (action === "remove" || action === "rm" || action === "delete") {
       const id = parts[1]
@@ -132,7 +155,7 @@ export const scheduleCommand: SlashCommand = {
     /** Fallback help for unsupported schedule actions. */
     return {
       type: "message",
-      text: "Unknown action. Usage: /schedule list | add | remove | enable | disable",
+      text: "Unknown action. Usage: /schedule list | add | update | remove | enable | disable",
     }
   },
 }

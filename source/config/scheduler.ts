@@ -63,6 +63,25 @@ export async function removeScheduledTask(id: string): Promise<boolean> {
   return true;
 }
 
+export interface ScheduledTaskUpdate {
+  cron?: string;
+  prompt?: string;
+}
+
+/** Update the cron and/or prompt while keeping the id, enabled state and last run. */
+export async function updateScheduledTask(id: string, update: ScheduledTaskUpdate): Promise<ScheduledTask | null> {
+  const tasks = await loadScheduledTasks();
+  const task = findTask(tasks, id);
+  if (!task) return null;
+  if (update.cron !== undefined) task.cron = update.cron;
+  if (update.prompt !== undefined) {
+    task.prompt = update.prompt;
+    task.name = update.prompt.slice(0, 40);
+  }
+  await saveTasks(tasks);
+  return task;
+}
+
 export async function setTaskEnabled(id: string, enabled: boolean): Promise<boolean> {
   const tasks = await loadScheduledTasks();
   const task = findTask(tasks, id);
