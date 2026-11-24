@@ -56,6 +56,39 @@ export function createSkillSlashCommand(skill: SkillDefinition): SlashCommand {
   };
 }
 
+/** The `/skills info` text, shared with `agav skills info`. */
+export async function formatSkillInfo(skill: Awaited<ReturnType<typeof loadAllSkills>>[number]): Promise<string> {
+  const traces = await getSkillTraces(skill.name);
+  const totalTokens = traces.reduce((sum, t) => sum + t.tokensUsed, 0);
+  const avgTokens = traces.length > 0 ? Math.round(totalTokens / traces.length) : 0;
+  const successRate = traces.length > 0
+    ? Math.round(traces.filter((t) => t.success !== false).length / traces.length * 100)
+    : 0;
+  const fm = skill.frontmatter;
+  const lines = [
+    `Name: ${skill.name}`,
+    `Description: ${skill.description}`,
+    `Version: ${fm.version ?? "unversioned"}`,
+    `Invocation: ${fm.invocation ?? "both"}`,
+    `Origin: ${skill.origin}${skill.overriddenOrigin ? ` (overrides ${skill.overriddenOrigin})` : ""}`,
+    `Tags: ${fm.tags?.join(", ") ?? "none"}`,
+    `Allowed tools: ${fm["allowed-tools"]?.join(", ") ?? "all"}`,
+    `Disallowed tools: ${fm["disallowed-tools"]?.join(", ") ?? "none"}`,
+  ];
+  // Spec fields, shown only when the author set them — most skills do not.
+  if (fm.license) lines.push(`License: ${fm.license}`);
+  if (fm.compatibility) lines.push(`Compatibility: ${fm.compatibility}`);
+  if (fm.metadata) {
+    const extra = Object.entries(fm.metadata).map(([k, v]) => `${k}=${v}`);
+    if (extra.length > 0) lines.push(`Metadata: ${extra.join(", ")}`);
+  }
+  lines.push(
+    `Usage: ${traces.length} runs · ${avgTokens} avg tokens · ${successRate}% success`,
+    `Path: ${skill.filePath}`,
+  );
+  return lines.join("\n");
+}
+
 export const skillsCommand: SlashCommand = {
   name: "skills",
   description: "Manage skills",
@@ -154,35 +187,7 @@ export const skillsCommand: SlashCommand = {
       const slug = slugify(name);
       const skill = (await loadAllSkills()).find((s) => s.slug === slug || s.name === name);
       if (!skill) return { type: "message", text: `Skill "${name}" not found.` };
-      const traces = await getSkillTraces(skill.name);
-      const totalTokens = traces.reduce((sum, t) => sum + t.tokensUsed, 0);
-      const avgTokens = traces.length > 0 ? Math.round(totalTokens / traces.length) : 0;
-      const successRate = traces.length > 0
-        ? Math.round(traces.filter((t) => t.success !== false).length / traces.length * 100)
-        : 0;
-      const fm = skill.frontmatter;
-      const lines = [
-        `Name: ${skill.name}`,
-        `Description: ${skill.description}`,
-        `Version: ${fm.version ?? "unversioned"}`,
-        `Invocation: ${fm.invocation ?? "both"}`,
-        `Origin: ${skill.origin}${skill.overriddenOrigin ? ` (overrides ${skill.overriddenOrigin})` : ""}`,
-        `Tags: ${fm.tags?.join(", ") ?? "none"}`,
-        `Allowed tools: ${fm["allowed-tools"]?.join(", ") ?? "all"}`,
-        `Disallowed tools: ${fm["disallowed-tools"]?.join(", ") ?? "none"}`,
-      ];
-      // Spec fields, shown only when the author set them — most skills do not.
-      if (fm.license) lines.push(`License: ${fm.license}`);
-      if (fm.compatibility) lines.push(`Compatibility: ${fm.compatibility}`);
-      if (fm.metadata) {
-        const extra = Object.entries(fm.metadata).map(([k, v]) => `${k}=${v}`);
-        if (extra.length > 0) lines.push(`Metadata: ${extra.join(", ")}`);
-      }
-      lines.push(
-        `Usage: ${traces.length} runs · ${avgTokens} avg tokens · ${successRate}% success`,
-        `Path: ${skill.filePath}`,
-      );
-      return { type: "message", text: lines.join("\n") };
+      return { type: "message", text: await formatSkillInfo(skill) };
     }
 
     return { type: "message", text: "Unknown action. Usage: /skills [list|add|remove|disable|enable|clear|info|marketplace]" };

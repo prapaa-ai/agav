@@ -6,6 +6,7 @@ import { loadAllSkills } from "../skills/loader.js";
 import { installFromUrl, installFromPath, removeSkill, clearSkills } from "../skills/marketplace.js";
 import { setSkillEnabled } from "../skills/skill-registry.js";
 import { slugify } from "../skills/skill-utils.js";
+import { formatSkillInfo } from "../skills/commands.js";
 
 /**
  * List all skills grouped by origin, marking disabled ones.
@@ -198,9 +199,25 @@ export async function runSkillsCommand(command: string | undefined, args: string
       return await setEnabledCommand(args, true);
     case "disable":
       return await setEnabledCommand(args, false);
+    case "info": {
+      const name = args.join(" ").trim();
+      if (!name) {
+        console.error("\nError: No skill name provided.\n");
+        console.error("Usage: agav skills info <name>\n");
+        return 1;
+      }
+      const slug = slugify(name);
+      const skill = (await loadAllSkills()).find((s) => s.slug === slug || s.name === name);
+      if (!skill) {
+        console.error(`\nError: Skill "${name}" not found.\n`);
+        return 1;
+      }
+      console.log("\n" + await formatSkillInfo(skill) + "\n");
+      return 0;
+    }
     default:
       console.error(`\nError: Unknown command '${command}'\n`);
-      console.error("Available commands: list, add, remove, clear, enable, disable\n");
+      console.error("Available commands: list, info, add, remove, clear, enable, disable\n");
       return 1;
   }
 }
