@@ -114,8 +114,9 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     doneLabel: `${action.label} done.`,
   });
   const canToggle = Boolean(adapter.setEnabled && item?.enabled !== undefined);
+  const pageRows = Math.max(1, scrollHeight - 2);
   const hint = form ? "Tab/↑↓: Field | ENTER: Save | ESC: Cancel" : view === "detail" ? [
-    "↑↓: Scroll", "b/ESC: Back", detailCanRemove && `d: ${removeLabel}`,
+    "↑↓: Scroll", "PgUp/PgDn: Page", "b/ESC: Back", detailCanRemove && `d: ${removeLabel}`,
     ...detailActions.map(actionHint),
   ].filter(Boolean).join(" | ") : view === "delete" ? `y: ${pendingConfirm?.label ?? removeLabel} | n/ESC: Cancel` : listHint(item, false);
   const hintExtraRows = wrappedRows(hint) - 1;
@@ -258,6 +259,8 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
       if (key.escape || input === "b") { setScrollOffset(Number.POSITIVE_INFINITY); setView("list"); }
       else if (key.upArrow) scroll.current?.scrollBy(1);
       else if (key.downArrow) scroll.current?.scrollBy(-1);
+      else if (key.pageUp) scroll.current?.scrollBy(pageRows);
+      else if (key.pageDown) scroll.current?.scrollBy(-pageRows);
       else if (input === "d" && detailCanRemove && detailTarget) { setPendingConfirm(removeConfirmation(detailTarget)); setView("delete"); }
       else {
         const action = detailActions.find((a) => a.key === input);
