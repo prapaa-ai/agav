@@ -137,6 +137,18 @@ function coerceValue(key: string, spec: KeySpec, raw: string): unknown {
  * obvious scalars are coerced; values starting with { or [ parse as JSON.
  */
 function coerceNestedValue(keyPath: string, raw: string): unknown {
+  // A JSON string literal is the only way to ask for the string "false" under
+  // a dotted path. Decode escapes and empty strings, and reject a broken quote
+  // instead of storing it literally.
+  if (raw.startsWith('"')) {
+    try {
+      const value = JSON.parse(raw);
+      if (typeof value === "string") return value;
+    } catch {
+      /* fall through to the clear error below */
+    }
+    fail(`-c ${keyPath} expects a valid JSON string, e.g. -c ${keyPath}='"false"'.`);
+  }
   if (raw === "true") return true;
   if (raw === "false") return false;
   if (NUMBER_RE.test(raw)) return Number(raw);

@@ -110,6 +110,16 @@ describe("-c/--config flag parsing", () => {
     },
   );
 
+  it("decodes JSON string literals under a dotted path", () => {
+    expect(parseConfigOverride('theme.promptColor="false"').value).toBe("false");
+    expect(parseConfigOverride('theme.promptColor=""').value).toBe("");
+    expect(parseConfigOverride('theme.promptColor="a\\"b"').value).toBe('a"b');
+  });
+
+  it("rejects a malformed quoted dotted value", () => {
+    expect(() => parseConfigOverride('theme.promptColor="unterminated')).toThrow();
+  });
+
   it("parses dotted paths and coerces obvious scalars under them", () => {
     expect(parseConfigOverride("theme.promptColor=blue"))
       .toEqual({ path: ["theme", "promptColor"], value: "blue" });
