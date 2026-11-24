@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { ToolDefinition, ToolResult } from "./types.js";
 
 interface LSPServer {
@@ -202,18 +203,46 @@ function sendRequest(server: LSPServer, method: string, params: unknown): Promis
   });
 }
 
+const SYMBOL_KINDS: Record<number, string> = {
+  1: "file", 2: "module", 3: "namespace", 4: "package", 5: "class", 6: "method", 7: "property", 8: "field",
+  9: "constructor", 10: "enum", 11: "interface", 12: "function", 13: "variable", 14: "constant", 15: "string",
+  16: "number", 17: "boolean", 18: "array", 19: "object", 20: "key", 21: "null", 22: "enum-member",
+  23: "struct", 24: "event", 25: "operator", 26: "type-parameter",
+};
+
+function symbolRange(node: any): string {
+  const range = node.range ?? node.location?.range;
+  if (!range) return "";
+  return ` [${range.start.line + 1}:${range.start.character + 1}-${range.end.line + 1}:${range.end.character + 1}]`;
+}
+
+function formatSymbols(result: unknown): string[] {
+  if (!Array.isArray(result)) return [];
+  const lines: string[] = [];
+  const walk = (nodes: any[], depth: number) => {
+    for (const node of nodes) {
+      if (!node || typeof node !== "object") continue;
+      const kind = SYMBOL_KINDS[Number(node.kind)] ?? `kind-${node.kind}`;
+      lines.push(`${"  ".repeat(depth)}${node.name ?? "(unnamed)"} (${kind})${symbolRange(node)}`);
+      if (Array.isArray(node.children)) walk(node.children, depth + 1);
+    }
+  };
+  walk(result, 0);
+  return lines;
+}
+
 export const lspTool: ToolDefinition = {
   schema: {
     name: "lsp_query",
     description:
-      "Query a language server for code intelligence. Supports: diagnostics, definition, references, hover. " +
+      "Query a language server for code intelligence. Supports: diagnostics, definition, references, hover, document_symbols. " +
       "Auto-detects language server based on file extension.",
     inputSchema: {
       type: "object",
       properties: {
         operation: {
           type: "string",
-          enum: ["diagnostics", "definition", "references", "hover"],
+          enum: ["diagnostics", "definition", "references", "hover", "document_symbols"],
           description: "The LSP operation to perform",
         },
         path: {
@@ -277,6 +306,18 @@ export const lspTool: ToolDefinition = {
             context: { includeDeclaration: true },
           });
           return { output: JSON.stringify(result), isError: false };
+
+        case "document_symbols": {
+          const text = await readFile(filePath, "utf-8");
+          await sendRequest(server, "textDocument/didOpen", {
+            textDocument: { uri, languageId: lang, version: 1, text },
+          });
+          result = await sendRequest(server, "textDocument/documentSymbol", { textDocument: { uri } });
+          const lines = formatSymbols(result);
+          if (lines.length === 0) return { output: "No symbols found.", isError: false };
+          const out = lines.join("\n");
+          return { output: out.length > 12000 ? `${out.slice(0, 12000)}\n... (truncated)` : out, isError: false };
+        }
 
         case "hover":
           result = await sendRequest(server, "textDocument/hover", {
