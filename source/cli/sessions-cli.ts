@@ -7,13 +7,17 @@ export async function runSessionsCommand(
   command: string | undefined,
   args: string[],
 ): Promise<number> {
-  // Reject any flags early (e.g. `agav sessions delete <id> --bogus`)
+  // Reject any flags early (e.g. `agav sessions delete <id> --bogus`).
+  // `--dry-run` belongs to delete/rm only.
+  const dryRun = (command === "delete" || command === "rm") && args.includes("--dry-run");
   for (const arg of args) {
+    if (arg === "--dry-run" && dryRun) continue;
     if (arg.startsWith("-")) {
       console.error(`\nError: Unknown option '${arg}'\n`);
       return 1;
     }
   }
+  if (dryRun) args = args.filter((arg) => arg !== "--dry-run");
 
   if (!command) {
     console.error("\nUsage: agav sessions <command> [args]");
@@ -62,6 +66,11 @@ export async function runSessionsCommand(
       }
 
       const targetId = matching[0]!.id;
+      if (dryRun) {
+        const title = matching[0]!.title?.trim() || "untitled";
+        console.log(`\nSession ${targetId} (${title}) would be deleted. Nothing was removed.\n`);
+        return 0;
+      }
       const ok = await deleteSession(targetId);
       if (!ok) {
         console.error(`\nError: Failed to delete session '${targetId}'.\n`);

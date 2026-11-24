@@ -35,6 +35,30 @@ describe("sessions-cli", () => {
     expect(consoleErrorMock).toHaveBeenCalledWith(expect.stringContaining("Unknown option '--bogus'"));
   });
 
+  it("prints the resolved session and deletes nothing with --dry-run", async () => {
+    vi.mocked(history.listSessions).mockResolvedValue([
+      { id: "session-abcdef", title: "Deploy notes" } as any,
+    ]);
+
+    const exitCode = await runSessionsCommand("rm", ["session-a", "--dry-run"]);
+
+    expect(exitCode).toBe(0);
+    expect(history.deleteSession).not.toHaveBeenCalled();
+    expect(consoleLogMock).toHaveBeenCalledWith(expect.stringContaining("session-abcdef"));
+    expect(consoleLogMock).toHaveBeenCalledWith(expect.stringContaining("Deploy notes"));
+    expect(consoleLogMock).toHaveBeenCalledWith(expect.stringContaining("Nothing was removed"));
+  });
+
+  it("still rejects an ambiguous id with --dry-run", async () => {
+    vi.mocked(history.listSessions).mockResolvedValue([
+      { id: "session-a1", title: "A" } as any,
+      { id: "session-a2", title: "B" } as any,
+    ]);
+    const exitCode = await runSessionsCommand("delete", ["session-a", "--dry-run"]);
+    expect(exitCode).toBe(1);
+    expect(history.deleteSession).not.toHaveBeenCalled();
+  });
+
   it("fails if delete is called without session ID", async () => {
     const exitCode = await runSessionsCommand("delete", []);
     expect(exitCode).toBe(1);
