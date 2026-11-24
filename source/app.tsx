@@ -8,6 +8,7 @@ import InputPrompt from "./components/input-prompt.js";
 import VoiceModelSetup from "./components/voice-model-setup.js";
 import VoiceInputPanel from "./components/voice-input.js";
 import StatusBar from "./components/status-bar.js";
+import SessionNoticeLine, { formatSessionNotice, type SessionNotice } from "./components/session-notice.js";
 import RequestQueue from "./components/request-queue.js";
 import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
@@ -87,6 +88,7 @@ interface Props {
   enhancedKeyboard?: boolean;
   /** Show the changelog once on the first interactive launch after an update. */
   showChangelogOnLaunch?: boolean;
+  startupWarning?: string;
   /** Retained after unmount so the terminal host can await foreground settlement. */
   shutdownRef?: { current: (() => Promise<void>) | null };
   detachedSessionRef?: { current: string | null };
@@ -118,7 +120,7 @@ function confirmationKey(confirmation: object): number {
 }
 
 /** Render the interactive terminal UI and coordinate command, tool, and subagent views. */
-export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode, resumeRuntime, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, shutdownRef, detachedSessionRef }: Props) {
+export default function App({ config: initialConfig, keybindings, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumePermissionMode, resumeRuntime, repoBranch, enhancedKeyboard = false, showChangelogOnLaunch = false, startupWarning, shutdownRef, detachedSessionRef }: Props) {
 
   const [input, setInput] = useState("");
   const readPromptRef = useRef<(() => string) | null>(null);
@@ -293,6 +295,8 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     isLoading,
     toolCalls,
     error,
+    mcpAuthWarning,
+    mcpStartupWarnings,
     pendingConfirmation,
     pendingContextWindowRequest,
     resolveContextWindowRequest,
@@ -344,6 +348,18 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   } = useAgent(activeProvider, config, resumeMessages, resumeSessionId, resumeTokenUsage, resumeCompacted, resumeSessionName, resumeRuntime, resumePermissionMode);
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
+  const [feedback, setFeedback] = useState<SessionNotice[]>([]);
+  const reportNotice = useCallback((text: string, severity: SessionNotice["severity"]) => {
+    setFeedback(previous => [{ text, severity }, ...previous.filter(notice =>
+      notice.text !== text || notice.severity !== severity)].slice(0, 10));
+  }, []);
+  const notices = useMemo((): SessionNotice[] => [
+    ...feedback,
+    ...(error ? [{ severity: "error" as const, text: error }] : []),
+    ...(mcpAuthWarning ? [{ severity: "warning" as const, text: mcpAuthWarning }] : []),
+    ...(mcpStartupWarnings ?? []).map(text => ({ severity: "warning" as const, text })),
+    ...(startupWarning ? [{ severity: "warning" as const, text: startupWarning }] : []),
+  ], [feedback, error, mcpAuthWarning, mcpStartupWarnings, startupWarning]);
   const [copyNotice, setCopyNotice] = useState<ClipboardNotice | null>(null);
   const [queuedCommandNotice, setQueuedCommandNotice] = useState<string | null>(null);
   const queuedCommandNoticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -371,10 +387,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     };
   }, []);
 
-  /** Show a single-line status update via the system-message channel. */
   const showStatusLine = useCallback((text: string, isError = false) => {
-    setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: text, isError }]);
-  }, []);
+    if (isError) reportNotice(text, "error");
+    else setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: text }]);
+  }, [reportNotice]);
 
   const voiceDraftVersion = useRef(0);
   const replaceVoicePromptRef = useRef<((text: string, preserveCursor?: boolean) => void) | null>(null);
@@ -745,7 +761,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   /** Run a side query independently so it never delays the active agent turn. */
   const runPsQuery = useCallback(async (query: { text: string; blocks: ContentBlock[] }) => {
     if (!activeSideProvider) {
-      setPsResponse("No LLM provider configured. Check the API key for this session's provider.");
+      reportNotice("/ps: No LLM provider configured. Check the API key for this session's provider.", "error");
       return;
     }
     setPsLoading(true);
@@ -808,11 +824,11 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       }
       setPsResponse(response.trim() || "No response.");
     } catch (err) {
-      setPsResponse(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      reportNotice(`/ps: ${err instanceof Error ? err.message : String(err)}`, "error");
     } finally {
       setPsLoading(false);
     }
-  }, [activeSideProvider, config.effort, config.model, conversation, addTokenUsage]);
+  }, [activeSideProvider, config.effort, config.model, conversation, addTokenUsage, reportNotice]);
 
   const resumeUserMessages = useMemo(() => {
     if (!resumeMessages) return undefined;
@@ -988,7 +1004,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     const detachMatch = detachResolverRef.current.feed(normalized.input, normalized.key);
     if (detachMatch.pending || detachMatch.action) {
       if (detachMatch.action && canDetach) {
-        void detachCurrentSession().then(() => exit()).catch(error => showStatusLine(error instanceof Error ? error.message : String(error)));
+        void detachCurrentSession().then(() => exit()).catch(error => showStatusLine(error instanceof Error ? error.message : String(error), true));
       }
       return;
     }
@@ -1208,13 +1224,11 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           for (const a of promptAttachments) unregisterAttachment(a.id);
           setAttachments([]);
           lastPasteRef.current = null;
-          setSystemMessages([{
-            id: `sys-${++sysMessageId}`,
-            role: "system",
-            content:
-              "For your security, don't paste your Agav API key into the prompt — it could be saved or sent to the model.\n" +
-              "Run `/login`, choose Paste an Agav API key, and enter it in the secure prompt; it won't enter chat or prompt history.",
-          }]);
+          reportNotice(
+            "For your security, don't paste your Agav API key into the prompt — it could be saved or sent to the model.\n" +
+            "Run /login, choose Paste an Agav API key, and enter it in the secure prompt; it won't enter chat or prompt history.",
+            "warning",
+          );
           return;
         }
       }
@@ -1235,6 +1249,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         showStatusLine("Voice input is available when the prompt is idle.", true);
         return;
       }
+      if (trimmed === "/notices" && !promptAttachments.length && !queued && !invocationReason) {
+        setInput("");
+        if (!notices.length) {
+          showStatusLine("No session notices.");
+          docControls.current?.scrollToBottom();
+        } else {
+          setPreview({ title: "Session notices", text: notices.map(formatSessionNotice).join("\n\n") });
+          docControls.current?.scrollToBottom();
+        }
+        return;
+      }
       if (trimmed === "/queue" || trimmed === "/queue retry") {
         setInput("");
         if (trimmed === "/queue retry") setQueueBlocked(false);
@@ -1251,14 +1276,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         try {
           expansion = await expandFileMentions(query, { cwd: process.cwd() });
         } catch (err) {
-          setSystemMessages([{ id: `sys-${++sysMessageId}`, role: "system", content: err instanceof Error ? err.message : String(err), isError: true }]);
+          showStatusLine(err instanceof Error ? err.message : String(err), true);
           return;
         }
         setInput("");
         void runPsQuery({ text: expansion.expanded, blocks: expansion.contentBlocks });
-        if (expansion.warnings.length > 0) {
-          setSystemMessages(expansion.warnings.map((warning) => ({ id: `sys-${++sysMessageId}`, role: "system" as const, content: `⚠ ${warning}` })));
-        }
+        for (const warning of expansion.warnings) reportNotice(warning, "warning");
         return;
       }
 
@@ -1455,6 +1478,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
                 permissionMode: resolveResumePermissionMode({ ...prev, permissionMode: defaultPermissionMode }, {}),
               }));
               setSystemMessages([]);
+              setFeedback([]);
               setPreview(null);
               clearAttachmentRegistry();
               resetDisplay();
@@ -1473,12 +1497,16 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               );
               // Restore the same mode for the foreground hook and config-based
               // background/workflow authorization, including legacy sessions.
+              setFeedback([]);
+              setPreview(null);
               loadSession({ ...session, permissionMode });
               setConfig((prev) => ({ ...prev, permissionMode }));
             },
             activateSession: (...args) => {
               updateQueue([]);
               setQueueBlocked(false);
+              setFeedback([]);
+              setPreview(null);
               return activateSession(...args);
             },
             renameSession,
@@ -1684,7 +1712,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [steer, focusedSubagent, detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, showQueuedCommandNotice, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
+    [steer, focusedSubagent, detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, reportNotice, notices, showQueuedCommandNotice, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.
@@ -1716,13 +1744,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   }, [isLoading, runningShellCommand, runningSkillName, pendingConfirmation, pendingContextWindowRequest,
     pickerActive, queueActive, queueBlocked, queuedRequests, requestCompletion, handleSubmit, updateQueue, showStatusLine, voice.phase, voice.isActive]);
 
-  const displayError = error;
   const allMessages = useMemo(() => {
     return [BANNER, ...messages];
   }, [messages]);
 
-  // Snap the viewport back to the newest message whenever the transcript grows.
-  useEffect(() => { docControls.current?.scrollToBottom(); }, [allMessages.length]);
+  // Explicit new user turns follow the tail; asynchronous replies and notices
+  // should not pull the reader away from older messages.
+  const userMessageCount = useMemo(() => messages.filter(message => message.role === "user").length, [messages]);
+  useEffect(() => { docControls.current?.scrollToBottom(); }, [userMessageCount]);
 
   const toolMessages = useMemo(() => messages.filter((m) => m.role === "tool"), [messages]);
 
@@ -1830,12 +1859,6 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         put instead of drifting.
       */}
       <ScrollBox height={documentHeight} stickToBottom={false} controls={docControls}>
-        {displayError && (
-          <Box marginBottom={1} flexShrink={0}>
-            <Text color="red">Error: {terminalRelativePaths(displayError)}</Text>
-          </Box>
-        )}
-
         <MessageList messages={allMessages} toolDetailKey={formatKeybinding(keybindings, "toggleToolDetail")} columns={termCols} onOpenRef={handleOpenRef} renderPlan={(plan) => (
           <Box flexDirection="column" marginBottom={1} marginLeft={2}>
             <Text bold dimColor>Plan: {terminalRelativePaths(plan.goal)}</Text>
@@ -2186,6 +2209,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             ownsVoiceControls={voice.isActive}
             suppressHistory={isLoading}
             commands={[
+              { name: "notices", description: "Read session errors and warnings" },
               { name: "queue", description: "Manage queued requests (retry to resume)" },
               { name: "ps", description: "Side query while agent is working", argumentHint: "<question>" },
               ...commandRegistryRef.current.list().map((c) => ({
@@ -2207,6 +2231,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           /></Box>
         )}
 
+        <SessionNoticeLine notices={notices} columns={termCols} />
         <StatusBar
           copyNotice={copyNotice}
           queuedCommandNotice={queuedCommandNotice}
@@ -2214,7 +2239,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           model={config.model}
           provider={config.provider}
           effort={config.effort}
-          messageCount={messages.filter((m) => m.role === "user").length}
+          messageCount={userMessageCount}
           inputTokens={tokenUsage.inputTokens}
           outputTokens={tokenUsage.outputTokens}
           cacheReadTokens={tokenUsage.cacheReadTokens}

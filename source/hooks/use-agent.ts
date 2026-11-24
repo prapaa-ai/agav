@@ -132,6 +132,8 @@ interface UseAgentReturn {
   isLoading: boolean;
   toolCalls: ToolCallInfo[];
   error: string | null;
+  mcpAuthWarning: string | null;
+  mcpStartupWarnings: string[];
   pendingConfirmation: PendingConfirmation | null;
   pendingContextWindowRequest: PendingContextWindowRequest | null;
   resolveContextWindowRequest: (tokens: number | undefined) => void;
@@ -242,6 +244,8 @@ export function useAgent(
   const [sessionName, setSessionName] = useState<string | undefined>(resumeSessionName);
   const [transcriptRevision, setTranscriptRevision] = useState(0);
   const [mcpServers, setMcpServers] = useState<string[]>([]);
+  const [mcpAuthWarning, setMcpAuthWarning] = useState<string | null>(null);
+  const [mcpStartupWarnings, setMcpStartupWarnings] = useState<string[]>([]);
   const [mcpPromptCommands, setMcpPromptCommands] = useState<SlashCommand[]>([]);
   const [skillCommands, setSkillCommands] = useState<SlashCommand[]>([]);
   const [agentCommands, setAgentCommands] = useState<SlashCommand[]>([]);
@@ -460,11 +464,7 @@ export function useAgent(
     setMcpResourceCount(mcpManagerRef.current.getAllResources().length);
     setMcpPromptCount(prompts.length);
     setMcpServers(mcpManagerRef.current.getServerNames());
-    const warning = formatMCPAuthenticationWarning(mcpManagerRef.current.getAuthenticationRequired());
-    setMessages(prev => {
-      const messages = prev.filter(message => message.id !== "mcp-auth-warning");
-      return warning ? [...messages, { id: "mcp-auth-warning", role: "system", content: warning }] : messages;
-    });
+    setMcpAuthWarning(formatMCPAuthenticationWarning(mcpManagerRef.current.getAuthenticationRequired()));
   }, []);
 
   // Load optional extension points once so plugin and MCP tools become available for later turns.
@@ -562,11 +562,11 @@ export function useAgent(
             syncMcpState();
           } catch (err) {
             if (err instanceof MCPAuthenticationRequiredError) return;
-            process.stderr.write(`[mcp:${name}] failed to start: ${err instanceof Error ? err.message : String(err)}\n`);
+            const warning = `MCP server ${name} failed to start: ${err instanceof Error ? err.message : String(err)}`;
+            setMcpStartupWarnings(previous => previous.includes(warning) ? previous : [...previous, warning]);
           }
         }));
-        const warning = formatMCPAuthenticationWarning(mcpManagerRef.current.getAuthenticationRequired());
-        if (warning) setMessages(prev => [...prev.filter(message => message.id !== "mcp-auth-warning"), { id: "mcp-auth-warning", role: "system", content: warning }]);
+        setMcpAuthWarning(formatMCPAuthenticationWarning(mcpManagerRef.current.getAuthenticationRequired()));
       }
     })();
 
@@ -1549,6 +1549,7 @@ export function useAgent(
                 // Cancellation (including retry backoff) is not a hard UI error.
                 if (abortController.signal.aborted) throw event.error;
                 const errorMsg = event.error.message || "Unknown error";
+                setError(errorMsg);
                 setMessages((prev) => [
                   ...prev,
                   {
@@ -1590,6 +1591,7 @@ export function useAgent(
             }
           } else {
             const errMsg = err instanceof Error ? err.message : String(err);
+            setError(errMsg || "Unknown error");
             setMessages((prev) => [
               ...prev,
               {
@@ -1742,6 +1744,7 @@ export function useAgent(
         } catch (err) {
           if (!abortController.signal.aborted) {
             const errMsg = err instanceof Error ? err.message : String(err);
+            setError(errMsg || "Unknown error");
             setMessages((prev) => [
               ...prev,
               {
@@ -1836,6 +1839,8 @@ export function useAgent(
     isLoading: isLoading || attachment.live,
     toolCalls,
     error,
+    mcpAuthWarning,
+    mcpStartupWarnings,
     pendingConfirmation: attachedConfirmationRef.current ?? pendingConfirmation,
     pendingContextWindowRequest,
     resolveContextWindowRequest,
