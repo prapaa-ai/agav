@@ -137,3 +137,25 @@ describe("read_notebook cell range", () => {
     expect((await readNotebookTool.execute({ path, end_cell: 2 })).output).toMatch(/no cells/i);
   });
 });
+
+describe("read_notebook cell type filter", () => {
+  it("keeps original cell numbers and composes with range and output selection", async () => {
+    const result = await readNotebookTool.execute({ path, cell_type: "code", start_cell: 1, end_cell: 3, include_outputs: false });
+    expect(result.isError).toBe(false);
+    expect([...result.output.matchAll(/^--- Cell (\d+) /gm)].map((match) => match[1])).toEqual(["2", "3"]);
+    expect(result.output).not.toContain("printed value");
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("preserves all cells in all mode and describes an empty filtered range", async () => {
+    expect(await readNotebookTool.execute({ path, cell_type: "all" })).toEqual(await readNotebookTool.execute({ path }));
+    expect(await readNotebookTool.execute({ path, cell_type: "markdown", start_cell: 2 })).toEqual({
+      output: "No markdown cells in the selected range.", isError: false,
+    });
+  });
+
+  it("rejects unsupported cell types before reading", async () => {
+    expect(await readNotebookTool.execute({ path, cell_type: "raw" })).toMatchObject({ isError: true });
+    expect(mockRead).not.toHaveBeenCalled();
+  });
+});

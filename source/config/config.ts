@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
 import { decrypt, encrypt, isEncrypted } from "../utils/encrypt.js";
 import { loadOrgPolicy, applyOrgConfig, applyGatewayToken } from "./org-config.js";
+import { defaultModelForProvider } from "./provider-defaults.js";
 
 export type PermissionMode = "ask" | "auto-accept" | "deny-writes";
 export type EffortLevel = "minimal" | "low" | "medium" | "high" | "max";
@@ -381,7 +382,7 @@ export const PROJECT_CONFIG_TEMPLATE = {
 
 const DEFAULT_CONFIG: AgavConfig = {
   provider: "anthropic",
-  model: "claude-sonnet-4-20250514",
+  model: defaultModelForProvider("anthropic"),
   effort: "high",
   permissionMode: "ask",
   maxTokens: 16384,

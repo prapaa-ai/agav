@@ -1,7 +1,13 @@
+import { stripVTControlCharacters } from "node:util";
+import sliceAnsi from "slice-ansi";
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
 import { type AgavConfig } from "../config/config.js";
 import { providerSetupHints, orgPolicyError } from "../config/startup.js";
 import { fetchVertexAIModels } from "../providers/vertex-ai.js";
+import { parseMouseEvent, type ParsedMouse } from "../ink/parse-mouse.js";
+import { extendSelection, getSelectedText, type SelectionRange } from "../ink/selection.js";
+import { writeClipboard, type ClipboardResult } from "../ink/termio/clipboard.js";
+import { CURSOR_HOME, decreset, decset, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ERASE_DISPLAY } from "../ink/termio/dec.js";
 
 export interface FetchedModel {
   id: string;
@@ -246,6 +252,19 @@ function formatContextWindow(n: number): string {
   return String(n);
 }
 
+const PICKER_INPUT = new RegExp([
+  // Mouse reports and their prefixes take precedence over general escape sequences.
+  String.raw`\x1b\[<[\d;]*[Mm]?`,
+  String.raw`\x1b\[M[\x20-\xff]{0,3}`,
+  String.raw`\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|O[\x40-\x7e]|\x7f)`,
+  String.raw`\x1b\[$`,
+  String.raw`[\x00-\x1f\x7f]`,
+  String.raw`[^\x00-\x1f\x7f]+`,
+].join("|"), "g");
+const MAX_PICKER_INPUT_TAIL = 32;
+const PICKER_INPUT_TIMEOUT_MS = 50;
+const MOUSE_ANY_MOTION = 1003;
+
 function pickModel(
   models: FetchedModel[],
   currentModel: string,
@@ -259,9 +278,14 @@ function pickModel(
 
   let selected = Math.max(0, models.findIndex((m) => m.id === currentModel));
   let filter = "";
-  const pageSize = Math.min(models.length, process.stdout.rows ? process.stdout.rows - 8 : 15);
-  const totalLines = pageSize + 5;
-  let rendered = false;
+  let visibleLines: string[] = [];
+  let visibleStart = 0;
+  let firstModelRow = 0;
+  let visibleModels: FetchedModel[] = [];
+  let pressedModel: FetchedModel | undefined;
+  let anchor: { x: number; y: number } | undefined;
+  let selection: SelectionRange | undefined;
+  let copyNotice: ClipboardResult | "No model to copy" | undefined;
 
   function getFiltered(): FetchedModel[] {
     if (!filter) return models;
@@ -269,32 +293,29 @@ function pickModel(
     return models.filter((m) => m.id.toLowerCase().includes(lower) || m.provider.toLowerCase().includes(lower));
   }
 
-  function clearLine() {
-    process.stdout.write(`\x1b[2K`);
-  }
-
-  function render() {
+  function render(keepWindow = false) {
     const filtered = getFiltered();
     if (selected >= filtered.length) selected = Math.max(0, filtered.length - 1);
 
-    if (rendered) {
-      process.stdout.write(`\x1b[${totalLines}A`);
-    }
-    rendered = true;
+    const pageSize = Math.min(models.length, Math.max(1, (process.stdout.rows || 23) - 8));
+    const notice = copyNotice === "Copied to clipboard" ? "\x1b[32m  ✓ Copied to clipboard\x1b[0m"
+      : copyNotice === "Copy sent to terminal" ? "\x1b[36m  Copy sent to terminal\x1b[0m"
+      : copyNotice ? `\x1b[33m  ${copyNotice}\x1b[0m` : "";
+    const lines = [
+      `\x1b[1;36m  ${title}\x1b[0m\x1b[2m  (${filtered.length} of ${models.length})\x1b[0m${notice}`,
+      "\x1b[2m  ↑↓/scroll · Enter/click select · Ctrl+Y copy · Drag to copy · Type filter · Esc cancel\x1b[0m",
+      filter ? `\x1b[33m  Filter: ${filter}\x1b[0m` : "",
+    ];
 
-    clearLine();
-    process.stdout.write(`\x1b[1;36m  ${title}\x1b[0m\x1b[2m  (${filtered.length} of ${models.length})\x1b[0m\n`);
-    clearLine();
-    process.stdout.write(`\x1b[2m  ↑↓ navigate · Enter select · Type to filter · Esc cancel\x1b[0m\n`);
-    clearLine();
-    if (filter) {
-      process.stdout.write(`\x1b[33m  Filter: ${filter}\x1b[0m\n`);
-    } else {
-      process.stdout.write("\n");
-    }
-
-    const scrollStart = Math.max(0, Math.min(selected - Math.floor(pageSize / 2), filtered.length - pageSize));
+    // Keep the model under the pointer stationary when mouse input moves the highlight.
+    const start = keepWindow
+      ? Math.max(selected - pageSize + 1, Math.min(visibleStart, selected))
+      : selected - Math.floor(pageSize / 2);
+    const scrollStart = Math.max(0, Math.min(start, filtered.length - pageSize));
     const scrollEnd = Math.min(scrollStart + pageSize, filtered.length);
+    visibleStart = scrollStart;
+    firstModelRow = lines.length;
+    visibleModels = filtered.slice(scrollStart, scrollEnd);
 
     for (let i = scrollStart; i < scrollEnd; i++) {
       const m = filtered[i]!;
@@ -303,47 +324,170 @@ function pickModel(
       const providerTag = m.provider !== currentProvider ? ` [${m.provider}]` : "";
       const contextTag = m.contextWindow ? ` (${formatContextWindow(m.contextWindow)} ctx)` : "";
 
-      clearLine();
-      if (isSel) {
-        process.stdout.write(`\x1b[46;30m  ❯ ${m.id}${contextTag}${providerTag}${active} \x1b[0m\n`);
-      } else {
-        process.stdout.write(`\x1b[2m    ${m.id}${contextTag}${providerTag}${active}\x1b[0m\n`);
-      }
+      lines.push(isSel
+        ? `\x1b[46;30m  ❯ ${m.id}${contextTag}${providerTag}${active} \x1b[0m`
+        : `\x1b[2m    ${m.id}${contextTag}${providerTag}${active}\x1b[0m`);
     }
 
     for (let i = scrollEnd - scrollStart; i < pageSize; i++) {
-      clearLine();
-      process.stdout.write("\n");
+      lines.push("");
     }
 
-    clearLine();
     if (filtered.length > pageSize) {
-      process.stdout.write(`\x1b[2m  ${scrollStart + 1}-${scrollEnd} of ${filtered.length}\x1b[0m\n`);
-    } else {
-      process.stdout.write("\n");
+      lines.push(`\x1b[2m  ${scrollStart + 1}-${scrollEnd} of ${filtered.length}\x1b[0m`);
     }
-    clearLine();
+
+    // Keep terminal coordinates aligned with the picker rows, including on narrow screens.
+    const width = Math.max(1, (process.stdout.columns || 80) - 1);
+    const frame = lines.map(line => sliceAnsi(line, 0, width));
+    visibleLines = frame.map(stripVTControlCharacters);
+    const painted = frame.map((line, y) => {
+      if (!selection || y < selection.startY || y > selection.endY) return line;
+      const start = y === selection.startY ? selection.startX : 0;
+      const end = y === selection.endY ? selection.endX : width;
+      const text = getSelectedText(visibleLines, { startX: start, endX: end, startY: y, endY: y });
+      if (!text) return line;
+      return sliceAnsi(line, 0, start) + "\x1b[7m" + text + "\x1b[0m" + sliceAnsi(line, end);
+    });
+    process.stdout.write(CURSOR_HOME + painted.map(line => "\x1b[2K" + line).join("\r\n") + "\x1b[J");
   }
 
+  // Ink remains suspended and already owns the alternate screen.
+  process.stdout.write(ERASE_DISPLAY + ENABLE_MOUSE_TRACKING + decset(MOUSE_ANY_MOTION));
   render();
 
   return new Promise((resolve) => {
+    let closed = false;
+    let inputTail = "";
+    let inputTimer: ReturnType<typeof setTimeout> | undefined;
+    let copyRequest = 0;
+    let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+
+    function showCopyNotice(notice: NonNullable<typeof copyNotice>) {
+      clearTimeout(noticeTimer);
+      copyNotice = notice;
+      render(true);
+      noticeTimer = setTimeout(() => {
+        copyNotice = undefined;
+        render(true);
+      }, 2000);
+    }
+
+    function copyText(text: string) {
+      const request = ++copyRequest;
+      writeClipboard(process.stdout, text, result => {
+        if (!closed && request === copyRequest) showCopyNotice(result);
+      });
+    }
+
     function cleanup() {
+      closed = true;
+      clearTimeout(inputTimer);
+      clearTimeout(noticeTimer);
       stdin.setRawMode(wasRaw ?? false);
       stdin.removeListener("data", onData);
       stdin.pause();
-      if (rendered) {
-        process.stdout.write(`\x1b[${totalLines}A`);
-        for (let i = 0; i < totalLines; i++) {
-          process.stdout.write(`\x1b[2K\n`);
-        }
-        process.stdout.write(`\x1b[${totalLines}A`);
-      }
+      process.stdout.write(decreset(MOUSE_ANY_MOTION) + DISABLE_MOUSE_TRACKING + ERASE_DISPLAY + CURSOR_HOME);
     }
 
     function onData(data: Buffer) {
-      const key = data.toString();
+      clearTimeout(inputTimer);
+      // X10 coordinates are raw bytes. Keep their one-byte boundaries.
+      const input = inputTail + data.toString("latin1");
+      inputTail = "";
+
+      for (const match of input.matchAll(PICKER_INPUT)) {
+        if (closed) return;
+        const sequence = match[0];
+        const mouseSequence = sequence.startsWith("\x1b[<") || sequence.startsWith("\x1b[M");
+        const mouse = mouseSequence ? parseMouseEvent(sequence) : null;
+        if (mouse) {
+          handleMouse(mouse);
+          continue;
+        }
+
+        const trailing = match.index + sequence.length === input.length;
+        // Wait briefly for an unambiguous mouse prefix or a split escape
+        // sequence. A lone Escape becomes Cancel when no bytes follow.
+        if (trailing && (mouseSequence || sequence === "\x1b" || sequence === "\x1b[")) {
+          if (sequence.length <= MAX_PICKER_INPUT_TAIL) {
+            inputTail = sequence;
+            inputTimer = setTimeout(() => {
+              inputTail = "";
+              if (sequence === "\x1b") handleKey(sequence);
+            }, PICKER_INPUT_TIMEOUT_MS);
+          }
+          return;
+        }
+        if (!mouseSequence) handleKey(sequence);
+      }
+    }
+
+    function choose(model: FetchedModel) {
+      cleanup();
+      resolve(model);
+    }
+
+    function handleMouse(mouse: ParsedMouse) {
+      if (mouse.x < 0 || mouse.y < 0) return;
+      if (mouse.wheel) {
+        pressedModel = undefined;
+        const delta = mouse.wheel === "up" ? -1 : 1;
+        const next = Math.max(0, Math.min(selected + delta, getFiltered().length - 1));
+        if (next !== selected) {
+          anchor = undefined;
+          selection = undefined;
+          selected = next;
+          render();
+        }
+        return;
+      }
+      const row = mouse.y - firstModelRow;
+      const model = visibleModels[row];
+      if (mouse.action === "move") {
+        if (!anchor && model && selected !== visibleStart + row) {
+          selected = visibleStart + row;
+          render(true);
+        }
+        return;
+      }
+      if (mouse.button !== 0) return;
+
+      const point = { x: mouse.x, y: Math.min(mouse.y, visibleLines.length - 1) };
+      if (mouse.action === "press") {
+        anchor = mouse.y < visibleLines.length ? point : undefined;
+        pressedModel = model;
+        selection = undefined;
+        if (model) selected = visibleStart + row;
+      } else if (anchor && (mouse.action === "drag" || mouse.action === "release")) {
+        const samePoint = anchor.x === mouse.x && anchor.y === mouse.y;
+        selection = anchor.x === point.x && anchor.y === point.y ? undefined : extendSelection(anchor, point);
+        if (mouse.action === "drag") {
+          pressedModel = undefined;
+        } else {
+          const clicked = samePoint && model === pressedModel ? pressedModel : undefined;
+          anchor = undefined;
+          pressedModel = undefined;
+          if (clicked) {
+            choose(clicked);
+            return;
+          }
+          const text = selection ? getSelectedText(visibleLines, selection) : "";
+          if (text.trim()) {
+            render(true);
+            copyText(text);
+            return;
+          }
+        }
+      } else {
+        return;
+      }
+      render(true);
+    }
+
+    function handleKey(key: string) {
       const filtered = getFiltered();
+      pressedModel = undefined;
 
       if (key === "\x1b" || key === "\x03") {
         cleanup();
@@ -352,13 +496,23 @@ function pickModel(
       }
 
       if (key === "\r" || key === "\n") {
-        if (filtered.length > 0 && filtered[selected]) {
-          cleanup();
-          resolve(filtered[selected]!);
+        const highlighted = filtered[selected];
+        if (highlighted) choose(highlighted);
+        return;
+      }
+
+      if (key === "\x19") {
+        const highlighted = filtered[selected];
+        if (highlighted) copyText(highlighted.id);
+        else {
+          copyRequest++;
+          showCopyNotice("No model to copy");
         }
         return;
       }
 
+      anchor = undefined;
+      selection = undefined;
       if (key === "\x1b[A" || key === "k") {
         selected = Math.max(0, selected - 1);
         render();
@@ -396,7 +550,7 @@ export const modelCommand: SlashCommand = {
   name: "model",
   description: "View all available models or change current model",
   argumentHint: "[name]",
-  usage: "Usage: /model [name]\n\n  /model                Open interactive model picker\n  /model gpt-5.4-mini   Switch to a specific model\n  /model gemini-3.5-pro  Auto-switches provider if needed",
+  usage: "Usage: /model [name]\n\n  /model                Open interactive model picker\n  /model gpt-5.4-mini   Switch to a specific model\n  /model gemini-3.5-pro  Auto-switches provider if needed\n\nIn the picker, press Ctrl+Y to copy the highlighted model ID, or drag across text and release to copy the selection. Click a model or press Enter to select it.",
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const model = args.trim();
 

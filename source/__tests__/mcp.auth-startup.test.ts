@@ -38,17 +38,15 @@ describe("explicit MCP startup authentication", () => {
         if (agent.mcpServers.includes("public")) break;
       }
       expect(agent.mcpServers).toEqual(["public"]);
-      const warnings = agent.messages.filter(message => message.content.includes("require") && message.content.includes("authentication"));
-      expect(warnings).toHaveLength(count ? 1 : 0);
-      if (count) expect(warnings[0]!.content).toBe(`Warning: ${count} MCP server${count === 1 ? " requires" : "s require"} authentication. Run /mcp to view them, then /mcp auth <name> to sign in.`);
+      expect(agent.messages).toEqual([]);
+      expect(agent.mcpAuthWarning).toBe(count ? `Warning: ${count} MCP server${count === 1 ? " requires" : "s require"} authentication. Run /mcp to view them, then /mcp auth <name> to sign in.` : null);
       expect(stderr.mock.calls.some(([text]) => String(text).includes("failed to start"))).toBe(false);
       if (count) {
         vi.spyOn(MCPManager.prototype, "authenticateServer").mockImplementation(async name => { names.splice(names.indexOf(name), 1); });
         await agent.authenticateMCPServer("server-0");
         for (let i = 0; i < 20; i++) await instance.waitUntilRenderFlush();
-        const updated = agent.messages.filter(message => message.id === "mcp-auth-warning");
-        expect(updated).toHaveLength(count > 1 ? 1 : 0);
-        if (count > 1) expect(updated[0]!.content).toContain(`${count - 1} MCP servers require authentication`);
+        if (count > 1) expect(agent.mcpAuthWarning).toContain(`${count - 1} MCP servers require authentication`);
+        else expect(agent.mcpAuthWarning).toBeNull();
       }
     } finally { instance.unmount(); }
   });
@@ -76,22 +74,21 @@ describe("explicit MCP startup authentication", () => {
       for (let i = 0; i < 100; i++) { await instance.waitUntilRenderFlush(); if (agent.mcpServers.length) break; }
       expect(agent.toolRegistry.get("linear__list")).toBeDefined();
       expect(agent.mcpPromptCommands).toHaveLength(1);
-      expect(agent.messages.filter(message => message.id === "mcp-auth-warning")).toEqual([]);
+      expect(agent.mcpAuthWarning).toBeNull();
       await agent.logoutMCPServer("linear");
       for (let i = 0; i < 20; i++) await instance.waitUntilRenderFlush();
       expect(agent.toolRegistry.get("linear__list")).toBeUndefined();
       expect(agent.toolRegistry.get("other__list")).toBeDefined();
       expect(agent.mcpPromptCommands).toEqual([]);
       expect(agent.mcpServers).toEqual(["other"]);
-      const warnings = () => agent.messages.filter(message => message.id === "mcp-auth-warning");
-      expect(warnings()).toHaveLength(1);
-      expect(warnings()[0]!.content).toBe("Warning: 1 MCP server requires authentication. Run /mcp to view them, then /mcp auth <name> to sign in.");
+      expect(agent.mcpAuthWarning).toBe("Warning: 1 MCP server requires authentication. Run /mcp to view them, then /mcp auth <name> to sign in.");
+      const warning = agent.mcpAuthWarning;
       await agent.logoutMCPServer("linear");
       for (let i = 0; i < 20; i++) await instance.waitUntilRenderFlush();
-      expect(warnings()).toHaveLength(1);
+      expect(agent.mcpAuthWarning).toBe(warning);
       await agent.authenticateMCPServer("linear");
       for (let i = 0; i < 20; i++) await instance.waitUntilRenderFlush();
-      expect(warnings()).toEqual([]);
+      expect(agent.mcpAuthWarning).toBeNull();
       expect(agent.toolRegistry.get("linear__list")).toBeDefined();
       await expect(agent.logoutMCPServer("unknown")).rejects.toThrow("not a configured remote server");
     } finally { instance.unmount(); }

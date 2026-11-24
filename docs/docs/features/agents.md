@@ -131,6 +131,8 @@ Open `/agents` to manage agents interactively. The three tabs are:
 - **`[2] Marketplace`** — browse and install community agents.
 - **`[3] Create`** — create new agents with the wizard, and manage your agents and templates.
 
+The tabs and visible list rows can be selected with a left-click. In list and marketplace views, the mouse wheel moves the selection; resource-manager footer controls such as search, inspect, and refresh are clickable when enabled. Keyboard shortcuts remain available as a fallback, and clicks do not bypass confirmation prompts.
+
 ## Related
 
 - [Agent Marketplace](/features/agent-marketplace) — browse and install community agents

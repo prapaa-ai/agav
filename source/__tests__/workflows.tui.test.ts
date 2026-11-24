@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import chalk from "chalk";
 import { createElement as h } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import render from "../ink/render.js";
@@ -43,10 +44,31 @@ async function mount(size: { columns: number; rows: number } = { columns: 140, r
   const key = async (text: string) => { output = ""; stdin.emit("data", Buffer.from(text)); await settle(); await settle(); };
   const frame = () => output.replaceAll(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
   await settle(); await settle();
-  return { instance, key, settle, onExit, frame };
+  const click = (column: number, row = 1) => key(`\x1b[<0;${column};${row}M\x1b[<0;${column};${row}m`);
+  const tabBar = () => output.split("\n").reverse().find((line) => line.includes("Workflows") && line.includes("Runs")) ?? "";
+  return { instance, key, click, settle, onExit, frame, tabBar, output: () => output };
 }
 
 describe("WorkflowsTUI", () => {
+  it("highlights only the hovered switchable tab without underlining it", async () => {
+    const previousLevel = chalk.level;
+    chalk.level = 1;
+    try {
+      const ui = await mount();
+      try {
+        expect(ui.output()).toContain("\x1b[?1003h");
+        expect(ui.tabBar()).not.toContain("\x1b[4m");
+        await ui.key("\x1b[<35;13;1M"); // Move over Runs without pressing a button.
+        expect(ui.tabBar()).toMatch(/\x1b\[7m(?:\x1b\[[0-9;]+m)*Runs/);
+        await ui.key("\x1b[<35;10;1M"); // Move onto the divider.
+        expect(ui.tabBar()).not.toContain("\x1b[7m");
+        expect(ui.tabBar()).not.toContain("\x1b[4m");
+        await ui.click(13);
+        expect(ui.frame()).toContain("Workflow runs · List");
+        expect(ui.tabBar()).not.toContain("\x1b[4m");
+      } finally { ui.instance.unmount(); }
+    } finally { chalk.level = previousLevel; }
+  });
   it("fires a best-effort reconcile/admission pass once on open without blocking render", async () => {
     const reconcileRuns = vi.fn(() => new Promise<void>(() => {})); // never settles
     const ui = await mount(undefined, reconcileRuns);
@@ -101,9 +123,12 @@ describe("WorkflowsTUI", () => {
     const [pending] = await listPendingDecisions(store, run.id);
     const ui = await mount();
     try {
-      await ui.key("\t"); await ui.key("\t");
+      await ui.click(20); // Inbox tab
+      expect(ui.frame()).toContain("Workflow inbox · List");
       await ui.key("D");
       expect(ui.frame()).toContain("Deny this approval?");
+      await ui.click(2); // The Workflows tab cannot dismiss the confirmation.
+      expect((await readDecision(store, run.id, pending!.decisionId))?.decided).toBeUndefined();
       await ui.key("n");
       expect(ui.frame()).toContain("Not decided.");
       expect(ui.frame()).not.toContain("Deny this approval?");

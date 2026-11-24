@@ -32,7 +32,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/help [command]` | List available commands or show detailed usage for one command, including `/ps`. |
 | `/help --search <query>` | Find loaded commands by a literal phrase in their name or description, ignoring case. |
 | `/clear`, `/new` | Start a clean chat without deleting saved sessions. |
-| `/model [name]` | Open the model picker or switch to a specific model; Agav switches provider when needed. |
+| `/model [name]` | Open the model picker or switch to a specific model. In the picker, press Ctrl+Y to copy the highlighted model ID or drag to copy selected text. Enter selects the model and switches provider when needed. |
 | `/effort [minimal\|low\|medium\|high\|max]` | Show or set reasoning effort. |
 | `/fast`, `/deep` | Switch to the current provider's fast or most capable model shortcut. Vertex AI `/deep` requires location `global`, `us`, or `eu`; regional locations are rejected without changing the model or location. |
 | `/compact` | Summarize older conversation content to free context-window space. |
@@ -99,7 +99,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 
 | Command | Purpose |
 | --- | --- |
-| `/customize` | Open the customization interface to show, hide, and reorder footer (status bar) segments. Changes apply to the footer live and persist across sessions in the `statusBar` config field. Interactive terminal sessions only. |
+| `/customize` | Open the customization interface to show, hide, and reorder footer (status bar) segments. Use the mouse wheel to move through entries, left-click an entry to open/select it, and left-click a checkbox to toggle it. Changes apply to the footer live and persist across sessions in the `statusBar` config field. Interactive terminal sessions only. |
 
 ## Account
 

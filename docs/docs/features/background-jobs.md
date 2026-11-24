@@ -64,6 +64,8 @@ Job IDs can be given as unambiguous prefixes.
 
 In the manager, the job list shows each job's command and directory, and search matches both. Press `x` to stop the selected job. In the Schedules tab, `n` creates a schedule, `t` pauses or resumes one, and `d` revokes it.
 
+Press uppercase `D` in either list and confirm with `y` to permanently delete finished jobs (including their logs) and eligible paused or revoked schedules (including their run history) across both tabs. This ignores search filters. Active or uncertain jobs, abandoned job evidence, enabled schedules, and schedules with an active job or pending launch are kept.
+
 `/job stop`, `/job schedule create`, and `/job schedule revoke` show the approval prompt inline in the interactive app. If no prompt is available, they open the manager so you can approve there; the original action is not re-run for you. An unknown or ambiguous job ID is reported as an error and never opens the manager.
 
 `/job log <id>` shows stdout. For a job that failed, it also appends the exit code and its stderr, so you do not have to rerun with `--stderr`. Passing `--stdout` or `--stderr` shows only that stream.

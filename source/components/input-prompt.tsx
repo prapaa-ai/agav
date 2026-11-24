@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import stringWidth from "string-width";
 import { Box, Text, useInput, useStdin, useStdout, type DOMElement, type MouseEventData } from "../ink/index.js";
+import { pointerSelect, usePointerMotion } from "./hover-text.js";
 import { KeybindingResolver, PROMPT_ACTIONS, formatKeybinding, formatUsableKeybinding, normalizeKeyEvent, type Keybindings } from "../config/keybindings.js";
 import { loadPromptHistory, savePromptHistory } from "../config/prompt-history.js";
 import { writeClipboard } from "../ink/termio/clipboard.js";
@@ -573,6 +574,24 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     : [];
   const hasAgentArgSuggestions = matchingAgentArgs.length > 0;
 
+  usePointerMotion(!readOnly && !disabled && (hasCommandSuggestions || hasAgentArgSuggestions || hasFileSuggestions));
+
+  const completeSuggestionText = (completed: string) => {
+    clearSelection();
+    applyEdit(completed, completed.length);
+    setSelectedSuggestion(0);
+  };
+
+  const clickSuggestion = (complete: () => void) => readOnly || disabled
+    ? undefined
+    : (event: MouseEventData) => {
+        event.stopPropagation?.();
+        // A keypress can change the live buffer before these rows re-render.
+        // In particular, don't replace an @ token using stale caret offsets.
+        if (liveRef.current.value !== text || liveRef.current.cursor !== cursorPos) return;
+        complete();
+      };
+
   /** Applies the selected file suggestion to the current token. */
   const completeFileSuggestion = (selected: FileSuggestion, token: ActiveFileToken) => {
     const completedPath = `${selected.path}${selected.isDirectory ? "/" : ""}`;
@@ -583,6 +602,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
     const suffix = selected.isDirectory ? "" : " ";
     const buf = liveRef.current.value;
     const nextValue = buf.slice(0, token.start) + mention + suffix + buf.slice(token.end);
+    clearSelection();
     applyEdit(nextValue, token.start + mention.length + suffix.length);
     setSelectedSuggestion(0);
   };
@@ -726,18 +746,14 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
         if (key.tab) {
           const selected = matchingAgentArgs[selectedSuggestion];
           if (selected) {
-            const completed = `/agent ${selected.name} `;
-            applyEdit(completed, completed.length);
-            setSelectedSuggestion(0);
+            completeSuggestionText(`/agent ${selected.name} `);
           }
           return;
         }
         if (match.action === "submit") {
           const selected = matchingAgentArgs[selectedSuggestion];
           if (selected && selected.name.toLowerCase() !== agentArgPartial) {
-            const completed = `/agent ${selected.name} `;
-            applyEdit(completed, completed.length);
-            setSelectedSuggestion(0);
+            completeSuggestionText(`/agent ${selected.name} `);
             return;
           }
         }
@@ -774,9 +790,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
               setSelectedSuggestion(0);
               onSubmit(`/${selected.name}`);
             } else {
-              const completed = `/${selected.name} `;
-              applyEdit(completed, completed.length);
-              setSelectedSuggestion(0);
+              completeSuggestionText(`/${selected.name} `);
             }
           }
           return;
@@ -789,9 +803,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
             return;
           }
           if (selected && partial !== selected.name) {
-            const completed = `/${selected.name} `;
-            applyEdit(completed, completed.length);
-            setSelectedSuggestion(0);
+            completeSuggestionText(`/${selected.name} `);
             return;
           }
         }
@@ -1071,7 +1083,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
    * that crosses wrapped-line boundaries still resolves correctly.
    */
   const handleContainerMouseMove = (event: MouseEventData) => {
-    if (selAnchorRef.current === null) return;
+    if (event.button !== 0 || selAnchorRef.current === null) return;
     const offset = snapOutOfAttachment(liveRef.current.value, eventToOffsetAuto(event, wrappedLinesRef.current));
     draggingRef.current = true;
     selFocusRef.current = offset;
@@ -1223,7 +1235,8 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
               const selectedColor = isAgent ? "magenta" : "cyan";
               const displayDesc = isAgent ? cmd.description.replace("[agent] ", "") : cmd.description;
               return (
-                <Text key={cmd.name}>
+                // Mouse completion always inserts text, even for autoSubmit commands.
+                <Text key={cmd.name} onMouseMove={readOnly || disabled ? undefined : pointerSelect(() => setSelectedSuggestion(i))} onClick={clickSuggestion(() => completeSuggestionText(`/${cmd.name} `))}>
                   <Text dimColor={!isSelected}>{"  "}</Text>
                   <Text color={isSelected ? selectedColor : undefined} bold={isSelected} inverse={isSelected}>
                     {` /${cmd.name} `}
@@ -1245,7 +1258,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           {matchingAgentArgs.map((agent, i) => {
             const isSelected = i === selectedSuggestion;
             return (
-              <Text key={agent.name}>
+              <Text key={agent.name} onMouseMove={readOnly || disabled ? undefined : pointerSelect(() => setSelectedSuggestion(i))} onClick={clickSuggestion(() => completeSuggestionText(`/agent ${agent.name} `))}>
                 <Text dimColor={!isSelected}>{"  "}</Text>
                 <Text color={isSelected ? "magenta" : undefined} bold={isSelected} inverse={isSelected}>
                   {` ${agent.name} `}
@@ -1256,12 +1269,12 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           })}
         </Box>
       )}
-      {hasFileSuggestions && (
+      {hasFileSuggestions && activeFileToken && (
         <Box flexDirection="column">
           {fileSuggestions.map((suggestion, i) => {
             const isSelected = i === selectedSuggestion;
             return (
-              <Text key={suggestion.path}>
+              <Text key={suggestion.path} onMouseMove={readOnly || disabled ? undefined : pointerSelect(() => setSelectedSuggestion(i))} onClick={clickSuggestion(() => completeFileSuggestion(suggestion, activeFileToken))}>
                 <Text dimColor>{"  "}</Text>
                 <Text color={isSelected ? "cyan" : undefined} bold={isSelected} inverse={isSelected}>
                   {` @${suggestion.path}${suggestion.isDirectory ? "/" : ""} `}

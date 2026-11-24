@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import { createElement as h, useState } from "react";
+import stringWidth from "string-width";
+import chalk from "chalk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import render from "../ink/render.js";
 import App from "../app.js";
@@ -27,6 +29,8 @@ const boundary = vi.hoisted(() => ({
   append: undefined as undefined | ((message: DisplayMessage) => void),
   update: undefined as undefined | ((patch: Partial<AgentState>) => void),
   refreshPlan: vi.fn(),
+  cancel: vi.fn(),
+  cancelSubagent: vi.fn(),
   planExecute: vi.fn(),
 }));
 vi.mock("../providers/registry.js", () => ({ createProvider: () => null }));
@@ -51,6 +55,7 @@ vi.mock("../hooks/use-agent.js", () => ({ useAgent: vi.fn(() => {
     mcpPromptCommands: [], skillCommands: [], agentCommands: [],
     tokenUsage: { inputTokens: 0, outputTokens: 0 }, conversation: {},
     addDisplayMessage: boundary.append, refreshPlan: boundary.refreshPlan,
+    cancel: boundary.cancel, cancelSubagent: boundary.cancelSubagent,
     steer: async (directive: string, subagentId?: string) => {
       if (subagentId !== undefined) queueSubagentSteer(subagentId, directive);
       else queueSteer(directive);
@@ -85,9 +90,33 @@ async function mount(initial: Partial<AgentState> = {}) {
     await new Promise(resolve => setTimeout(resolve, 80));
     await instance.waitUntilRenderFlush();
   };
-  const frame = () => chunks.map(stripAnsi).filter(text => /[a-z]/i.test(text)).at(-1) ?? "";
+  const paint = () => chunks.filter(text => /[a-z]/i.test(stripAnsi(text))).at(-1) ?? "";
+  const frame = () => stripAnsi(paint());
   const key = async (text: string) => {
     stdin.emit("data", Buffer.from(text));
+    await settle();
+  };
+  const mouseAt = (label: string, offset = 0) => {
+    const lines = frame().split("\n");
+    const row = lines.findIndex(line => line.includes(label));
+    expect(row, `visible position of ${label}`).toBeGreaterThanOrEqual(0);
+    const line = lines[row]!;
+    const column = stringWidth(line.slice(0, line.indexOf(label))) + 1 + offset;
+    return { column, row: row + 1 };
+  };
+  const click = async (label: string, options: { drag?: boolean; offset?: number } = {}) => {
+    const { column, row } = mouseAt(label, options.offset);
+    const report = (button: number, x: number, suffix: string) => `\x1b[<${button};${x};${row}${suffix}`;
+    await key(report(0, column, "M") + (options.drag ? report(32, column + 1, "M") : "") + report(0, column, "m"));
+  };
+  const hover = async (label: string) => {
+    const { column, row } = mouseAt(label);
+    await key(`\x1b[<35;${column};${row}M`);
+  };
+  const awaitClickSettle = () => new Promise(resolve => setTimeout(resolve, 425));
+  const resize = async (columns: number) => {
+    stdout.columns = columns;
+    stdout.emit("resize");
     await settle();
   };
   const submit = async (text: string) => { await boundary.submit!(text); await settle(); };
@@ -97,7 +126,7 @@ async function mount(initial: Partial<AgentState> = {}) {
   };
   const update = async (patch: Partial<AgentState>) => { boundary.update!(patch); await settle(); };
   await settle();
-  return { instance, frame, key, submit, append, update };
+  return { instance, frame, paint, chunks, key, click, hover, awaitClickSettle, resize, submit, append, update };
 }
 
 // Presence and multiplicity checks are essential: indexOf alone accepts missing
@@ -146,13 +175,18 @@ afterEach(() => {
 });
 
 describe("command status timeline", () => {
-  it("keeps the short session ID in the footer when the chat is renamed", async () => {
+  it("shows the session name in the footer when the chat is named", async () => {
+    const ui = await mount({ sessionId: "abc12345-0000-4000-8000-000000000000", sessionName: "Named" });
+    try {
+      expect(ui.frame()).toContain("session: Named");
+      expect(ui.frame()).not.toContain("session: abc12345");
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("keeps the short session ID in the footer when the chat is unnamed", async () => {
     const ui = await mount({ sessionId: "abc12345-0000-4000-8000-000000000000" });
     try {
       expect(ui.frame()).toContain("session: abc12345");
-      await ui.update({ sessionName: "Renamed README walkthrough" });
-      expect(ui.frame()).toContain("session: abc12345");
-      expect(ui.frame()).not.toContain("Renamed README walkthrough");
     } finally { ui.instance.unmount(); }
   });
 
@@ -227,6 +261,86 @@ describe("command status timeline", () => {
       expectTimeline(ui.frame(), [...timeline, "Completed while focused", "first worker", "second worker", "Live progress"]);
       expect(ui.frame()).not.toContain("Focused subagent update");
       expect(ui.frame()).toContain("Enter: inspect");
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("inspects the clicked subagent or selected row and supports keyboard and mouse Back", async () => {
+    const ui = await mount({ subagentStates: [progress("first"), progress("second")] });
+    try {
+      await ui.click("second worker");
+      expect(ui.frame()).toContain("Tab: back to overview");
+      expect(ui.frame()).not.toContain("first worker");
+      await ui.key("\t");
+      expect(ui.frame()).toContain("first worker");
+      await ui.key("\x1b[A");
+      await ui.resize(55);
+      await ui.click("Enter: inspect");
+      expect(ui.frame()).not.toContain("second worker");
+      await ui.click("Tab: back to overview");
+      expect(ui.frame()).toContain("second worker");
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("selects subagent rows on motion and highlights action controls without underlining", async () => {
+    const previousLevel = chalk.level;
+    chalk.level = 1;
+    try {
+      const ui = await mount({ subagentStates: [progress("first"), progress("second")] });
+      try {
+        const motionOn = "\x1b[?1003h";
+        const inverse = "\x1b[7m";
+        const underline = "\x1b[4m";
+        const styled = (label: string, style: string) => ui.paint().split("\n").some(line => {
+          const run = line.split(style).slice(1);
+          return run.some(text => stripAnsi(text.split(style === inverse ? "\x1b[27m" : "\x1b[24m")[0]!).includes(label));
+        });
+        expect(ui.chunks.join("")).toContain(motionOn);
+        expect(styled("second worker", underline)).toBe(false);
+        expect(styled("Enter: inspect", underline)).toBe(false);
+        await ui.hover("second worker");
+        expect(ui.frame()).toMatch(/▸ .*second worker/);
+        expect(ui.frame()).not.toMatch(/▸ .*first worker/);
+        expect(styled("first worker", inverse)).toBe(false);
+        await ui.hover("Enter: inspect");
+        expect(styled("second worker", inverse)).toBe(true);
+        expect(styled("Enter: inspect", inverse)).toBe(true);
+        await ui.hover("cancel all");
+        expect(styled("cancel all", inverse)).toBe(true);
+        expect(styled("cancel all", underline)).toBe(false);
+        await ui.key("\r");
+        expect(ui.frame()).toContain("second worker");
+        expect(ui.frame()).not.toContain("first worker");
+        await ui.hover("Tab: back to overview");
+        expect(styled("Tab: back to overview", inverse)).toBe(true);
+        await ui.hover("cancel this subagent");
+        expect(styled("cancel this subagent", inverse)).toBe(true);
+        expect(styled("Tab: back to overview", inverse)).toBe(false);
+        expect(boundary.cancelSubagent).not.toHaveBeenCalled();
+        expect(boundary.cancel).not.toHaveBeenCalled();
+        await ui.update({ isLoading: false });
+        expect(ui.chunks.join("").split(motionOn).at(-1)).toContain("\x1b[?1003l");
+      } finally { ui.instance.unmount(); }
+    } finally { chalk.level = previousLevel; }
+  });
+
+  it("cancels only the inspected subagent, ignores drags and blank space, and cancels all from overview", async () => {
+    const ui = await mount({ subagentStates: [progress("first"), progress("second")] });
+    try {
+      await ui.click("second worker");
+      await ui.awaitClickSettle();
+      await ui.click("cancel this subagent", { drag: true });
+      expect(boundary.cancelSubagent).not.toHaveBeenCalled();
+      expect(boundary.cancel).not.toHaveBeenCalled();
+      await ui.click("cancel this subagent");
+      expect(boundary.cancelSubagent).toHaveBeenCalledExactlyOnceWith("second");
+      expect(boundary.cancel).not.toHaveBeenCalled();
+      expect(ui.frame()).toContain("Enter: inspect");
+      await ui.awaitClickSettle();
+      await ui.click("cancel all", { offset: 14 });
+      expect(boundary.cancel).not.toHaveBeenCalled();
+      await ui.click("cancel all");
+      expect(boundary.cancel).toHaveBeenCalledOnce();
+      expect(boundary.cancelSubagent).toHaveBeenCalledOnce();
     } finally { ui.instance.unmount(); }
   });
 

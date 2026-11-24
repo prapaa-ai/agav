@@ -355,10 +355,11 @@ describe("session picker rename view", () => {
     const promise = pickSession(makeSessions());
     await tick();
 
+    const beforeRename = stdout.chunks.length;
     stdin.send("r"); // enter rename view
     await tick();
     // The editor needs button motion; SGR coordinates remain enabled.
-    expect(stdout.chunks.join("")).toContain("\x1b[?1002h");
+    expect(stdout.chunks.slice(beforeRename).join("")).toContain("\x1b[?1003l\x1b[?1002h");
     expect(stdout.chunks.join("")).not.toContain("\x1b[?1006l");
 
     const before = stdout.chunks.length;
@@ -366,7 +367,7 @@ describe("session picker rename view", () => {
     await tick();
     // Returning to the list re-enables mouse reporting.
     const afterReturn = stdout.chunks.slice(before).join("");
-    expect(afterReturn).toContain("\x1b[?1000h");
+    expect(afterReturn).toContain("\x1b[?1003h");
     expect(afterReturn).toContain("\x1b[?1002l");
     expect(afterReturn).not.toContain("\x1b[?1006l");
 
@@ -1015,7 +1016,7 @@ describe("session picker pagination", () => {
     const out = allOutput(stdout);
     expect(out).toContain("scroll");
     expect(out).toContain("click");
-    expect(out).toContain("Enter resume");
+    expect(out).toContain("Enter/click resume");
 
     stdin.send("\x1b");
     expect(await promise).toBeNull();
@@ -1026,7 +1027,7 @@ describe("session picker pagination", () => {
     await tick();
 
     // Mouse modes are turned on while the picker is open.
-    expect(stdout.chunks.join("")).toContain("\x1b[?1000h");
+    expect(stdout.chunks.join("")).toContain("\x1b[?1003h");
     expect(stdout.chunks.join("")).toContain("\x1b[?1006h");
 
     stdin.send("\x1b"); // cancel
@@ -1034,7 +1035,7 @@ describe("session picker pagination", () => {
 
     // ...and turned back off on exit so they don't leak into Ink.
     const full = stdout.chunks.join("");
-    expect(full).toContain("\x1b[?1000l");
+    expect(full).toContain("\x1b[?1003l");
     expect(full).toContain("\x1b[?1006l");
   });
 });
@@ -1058,6 +1059,50 @@ describe("session picker mouse support", () => {
   const wheelDown = () => "\x1b[<65;1;1M";
   const wheelUp = () => "\x1b[<64;1;1M";
   const click = (row: number) => `\x1b[<0;5;${row}M`;
+
+  const hover = (row: number, column = 20) => `\x1b[<35;${column};${row}M`;
+
+  it("moves the cyan selection to the hovered row without moving the viewport or resuming", async () => {
+    const sessions = makeManySessions(50);
+    const picked = vi.fn();
+    const promise = pickSession(sessions).then(picked);
+    const lastFrame = () => stdout.chunks.at(-1)!.split("\n");
+    try {
+      const before = lastFrame();
+      const targetRow = 17;
+      const target = stripAnsi(before[targetRow - 1]!).trim();
+      expect(target).toContain("Session 9");
+      stdin.send(hover(targetRow));
+      expect(lastFrame()[targetRow - 1]).toContain("\x1b[36m\x1b[7m");
+      expect(stripAnsi(lastFrame()[targetRow - 1]!).replace("❯", "").trim()).toBe(target);
+      expect(lastFrame().filter(row => row.includes("❯"))).toHaveLength(1);
+      await tick();
+      expect(picked).not.toHaveBeenCalled();
+      stdin.send("\x1b[A");
+      expect(lastFrame().find(row => row.includes("❯"))).toContain("Session 8");
+      stdin.send("\r");
+      await promise;
+      expect(pickedId(picked.mock.calls[0]![0])).toBe(sessions[8]!.id);
+    } finally { stdin.send("q"); }
+  });
+
+  it("uses the approval banner and resized window for hover without stealing search focus", async () => {
+    const sessions = makeManySessions(50);
+    sessions[0]!.runtime = { generation: "gen", status: "needs-approval", pendingCount: 1, cwd: "/work" };
+    const promise = pickSession(sessions);
+    try {
+      stdout.rows = 15;
+      stdout.emit("resize");
+      stdin.send("/");
+      stdin.send(hover(3) + hover(10) + hover(15));
+      const frame = stripAnsi(stdout.chunks.at(-1)!);
+      expect(frame).toMatch(/❯ Session 1\s/);
+      expect(frame).toContain("type to filter");
+      stdin.send("\r"); // Blur search, do not resume.
+      stdin.send("\r");
+      expect(pickedId(await promise)).toBe(sessions[1]!.id);
+    } finally { stdin.send("q"); }
+  });
 
   it("wheel down moves the selection forward", async () => {
     const sessions = makeManySessions(50);
@@ -1306,19 +1351,36 @@ describe("session picker mouse support", () => {
     expect(pickedId(await promise)).toBe(sessions[2]!.id);
   });
 
-  it("a mouse release event does not re-fire the selection", async () => {
+  it.each([false, true])("opens a session on click release (hover first: %s)", async (hoverFirst) => {
     const sessions = makeManySessions(50);
-    const promise = pickSession(sessions);
+    const picked = vi.fn();
+    const promise = pickSession(sessions).then(picked);
+    if (hoverFirst) stdin.send(hover(17));
+    stdin.send(click(17));
     await tick();
-
-    stdin.send("\x1b[<0;5;10M"); // press on row 10 → index 2
-    stdin.send("\x1b[<0;5;10m"); // release — must be ignored
-    await tick();
-    stdin.send("\r");
-
-    const picked = await promise;
-    expect(pickedId(picked)).toBe(sessions[2]!.id);
+    expect(picked).not.toHaveBeenCalled();
+    try {
+      stdin.send("\x1b[<0;5;17m");
+      await tick();
+      expect(picked).toHaveBeenCalledExactlyOnceWith(sessions[9]);
+      expect(stdin.listenerCount("data")).toBe(0);
+    } finally {
+      stdin.send("q");
+      await promise;
+    }
   });
+
+  it.each([
+    "\x1b[<0;5;10m", // release with no press
+    click(5) + "\x1b[<0;5;10m", // press outside the list
+    click(10) + "\x1b[<0;5;11m", // release on another row
+    click(10) + "\x1b[<32;6;10M\x1b[<0;5;10m", // drag back to the start
+  ])("does not resume on an unmatched release: %j", async (reports) => {
+    const promise = pickSession(makeManySessions(50));
+    stdin.send(reports + "q");
+    expect(await promise).toBeNull();
+  });
+
 });
 
 describe("session picker narrow terminal", () => {
@@ -1864,7 +1926,7 @@ describe("session picker start-new-session key", () => {
     stdout.columns = 80;
     const promise = pickSession(makeSessions());
     await tick();
-    const hint = allOutput(stdout).split("\n").find((line) => line.includes("Enter resume"));
+    const hint = allOutput(stdout).split("\n").find((line) => line.includes("Enter/click resume"));
     expect(hint).toBeDefined();
     expect(hint).toContain("q quit");
     expect(stringWidth(hint!)).toBeLessThan(80);

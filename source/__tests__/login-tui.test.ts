@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { createElement as h } from "react";
+import stringWidth from "string-width";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import render from "../ink/render.js";
 import { LoginTUI } from "../components/login-tui.js";
@@ -24,9 +25,9 @@ beforeEach(() => {
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
 
 async function mount(openBrowser = vi.fn(async (_url: string) => true)) {
-  let output = "";
+  const chunks: string[] = [];
   const stdout = Object.assign(new EventEmitter(), { isTTY: true, columns: 100, rows: 30,
-    write: (s: string) => { output += s; return true; } }) as unknown as NodeJS.WriteStream;
+    write: (s: string) => { chunks.push(s); return true; } }) as unknown as NodeJS.WriteStream;
   const stream = Object.assign(new PassThrough(), { isTTY: true, isRaw: false,
     setRawMode(value: boolean) { this.isRaw = value; return this; } });
   const onDone = vi.fn();
@@ -36,7 +37,17 @@ async function mount(openBrowser = vi.fn(async (_url: string) => true)) {
   const settle = async () => { await new Promise(r => setTimeout(r, 80)); await instance.waitUntilRenderFlush(); };
   const key = async (s: string) => { stream.write(s); await settle(); };
   await settle();
-  return { instance, stream, key, settle, onDone, openBrowser, output: () => output };
+  const mouse = (label: string, button: number, suffix: "M" | "m" = "M") => {
+    const frame = chunks.map(s => s.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")).filter(s => s.includes("Sign in to your Agav account")).at(-1) ?? "";
+    const lines = frame.split("\n");
+    const row = lines.findIndex(line => line.includes(label));
+    expect(row, `rendered position of ${label}`).toBeGreaterThanOrEqual(0);
+    const line = lines[row]!;
+    const column = stringWidth(line.slice(0, line.indexOf(label))) + 1;
+    return `\x1b[<${button};${column};${row + 1}${suffix}`;
+  };
+  const clickSequence = (label: string) => mouse(label, 0) + mouse(label, 0, "m");
+  return { instance, stream, key, settle, onDone, openBrowser, mouse, clickSequence, output: () => chunks.join("") };
 }
 const START = "\x1b[200~", END = "\x1b[201~";
 const KEY = "agav_sk_mykey123456";
@@ -62,6 +73,32 @@ describe("login wizard", () => {
     expect(signIn).toHaveBeenCalledExactlyOnceWith(KEY, { accountService: "https://staging.example/base/", signal: expect.any(AbortSignal) });
     expect(ui.output()).not.toContain(KEY);
     expect(ui.onDone).toHaveBeenCalledWith({ cancelled: false, message: expect.stringContaining("you@example.test") });
+  });
+
+  it("opens isolated key entry with a click and ignores other mouse reports during entry", async () => {
+    const ui = await mount();
+    expect(ui.output()).toContain("\x1b[?1003h");
+    const browserRow = ui.clickSequence("1. Sign in with your Agav account");
+    await ui.key(ui.clickSequence("2. Paste an Agav API key") + browserRow);
+    expect(ui.output()).toContain("Paste your Agav API key");
+    expect(ui.output().split("\x1b[?1003h").at(-1)).toContain("\x1b[?1003l");
+    expect(ui.output()).toContain("\x1b[?1006l");
+    await ui.key(browserRow + "\x1b[<35;15;10M"); // Reports arriving after Ink suspends stay out of the key.
+    expect(browserSignIn).not.toHaveBeenCalled();
+    expect(ui.onDone).not.toHaveBeenCalled();
+    await ui.key(START + KEY + END + "\r");
+    expect(signIn).toHaveBeenCalledExactlyOnceWith(KEY, { accountService: "https://staging.example/base/", signal: expect.any(AbortSignal) });
+    expect(ui.output()).not.toContain(KEY);
+  });
+
+  it("navigates the menu by wheel without launching and cancels by click", async () => {
+    const ui = await mount();
+    await ui.key(ui.mouse("1. Sign in with your Agav account", 65));
+    expect(ui.output()).toContain("❯ 2. Paste an Agav API key");
+    expect(signIn).not.toHaveBeenCalled();
+    expect(browserSignIn).not.toHaveBeenCalled();
+    await ui.key(ui.clickSequence("Esc / Ctrl-C Cancel"));
+    expect(ui.onDone).toHaveBeenCalledExactlyOnceWith({ cancelled: true });
   });
 
   it("submits Windows Ctrl-V through the isolated reader, without exposing the key", async () => {
