@@ -74,8 +74,8 @@ function createContext(config: Partial<AgavConfig>): CommandContext {
   };
 }
 
-async function openPicker() {
-  stubFetch(["claude-demo"], ["vendor/coder-demo"]);
+async function openPicker(anthropicModels = ["claude-demo"], rows = 24) {
+  stubFetch(anthropicModels, ["vendor/coder-demo"]);
   const context = createContext({
     provider: "anthropic", model: "claude-demo",
     anthropicApiKey: "test-anthropic", openrouterApiKey: "test-openrouter",
@@ -83,7 +83,7 @@ async function openPicker() {
   const stdin = Object.assign(new EventEmitter(), {
     isRaw: false, setRawMode: vi.fn(), resume: vi.fn(), pause: vi.fn(),
   });
-  const stdout = { rows: 24, columns: 100, write: vi.fn() };
+  const stdout = { rows, columns: 100, write: vi.fn() };
   vi.spyOn(process, "stdin", "get").mockReturnValue(stdin as unknown as typeof process.stdin);
   vi.spyOn(process, "stdout", "get").mockReturnValue(stdout as unknown as typeof process.stdout);
   const result = modelCommand.execute("", context);
@@ -220,13 +220,78 @@ describe("commands/model", () => {
     }
   });
 
+  it("highlights the hovered model without moving the viewport or choosing it", async () => {
+    const models = Array.from({ length: 8 }, (_, i) => `claude-${i}`);
+    const { context, stdout, result, send } = await openPicker(models, 12);
+    try {
+      send("\x1b[<35;8;7M");
+      const frame = stdout.write.mock.lastCall?.[0].split("\r\n");
+      expect(frame?.[6]).toContain("❯ claude-3");
+      expect(frame?.[3]).toContain("claude-0");
+      expect(context.setModel).not.toHaveBeenCalled();
+      send("\r");
+      expect(messageText(await result)).toContain("Model changed to: claude-3");
+    } finally {
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("scrolls the filtered model list in both directions without choosing a model", async () => {
+    const models = Array.from({ length: 8 }, (_, i) => `claude-${i}`);
+    const { context, stdout, result, send } = await openPicker(models, 12);
+    const down = "\x1b[<65;8;5M";
+    const up = "\x1b[<64;8;5M";
+    try {
+      send("l");
+      send(down.repeat(12));
+      expect(stdout.write.mock.lastCall?.[0]).toContain("❯ claude-7");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("5-8 of 8");
+      send(up.repeat(4));
+      expect(stdout.write.mock.lastCall?.[0]).toContain("❯ claude-3");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("2-5 of 8");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: l");
+      expect(context.setModel).not.toHaveBeenCalled();
+      send("\r");
+      expect(messageText(await result)).toContain("Model changed to: claude-3");
+    } finally {
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("chooses a model only on a matching click release", async () => {
+    const { context, stdout, stdin, result, send } = await openPicker();
+    try {
+      expect(stdout.write.mock.calls.flat().join("")).toContain("\x1b[?1003h");
+      send("\x1b[<0;8;5m"); // release without a press
+      send("\x1b[<0;8;2M\x1b[<0;8;2m"); // header, not a model
+      send("\x1b[<0;8;5M");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("❯ vendor/coder-demo");
+      expect(stdin.listenerCount("data")).toBe(1);
+      send("\x1b[<0;8;5m");
+      expect(stdin.listenerCount("data")).toBe(0);
+      expect(messageText(await result)).toContain("Model changed to: vendor/coder-demo");
+      expect(context.setProvider).toHaveBeenCalledWith("openrouter");
+      expect(writeClipboard).not.toHaveBeenCalled();
+      expect(stdout.write.mock.lastCall?.[0]).toContain("\x1b[?1003l");
+    } finally {
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("does not choose a model when a drag ends back at its starting point", async () => {
+    const { result, send } = await openPicker();
+    send("\x1b[<0;8;5M\x1b[<32;9;5M\x1b[<0;8;5m\x03");
+    expect(messageText(await result)).toContain("Kept model as claude-demo");
+    expect(writeClipboard).not.toHaveBeenCalled();
+  });
+
   it("copies dragged text on release and restores mouse input on exit", async () => {
     const { context, stdout, stdin, result, send } = await openPicker();
     try {
       expect(stdout.write.mock.calls.flat().join("")).toContain("\x1b[?1002h");
-      send("\x1b[<0;12;4M\x1b[<0;12;4m");
-      expect(writeClipboard).not.toHaveBeenCalled();
-
       send("\x1b[<0;12;4M\x1b[<32;");
       send("16;4M");
       expect(stdout.write.mock.lastCall?.[0]).toContain("\x1b[7mdemo\x1b[0m");
