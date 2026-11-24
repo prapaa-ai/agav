@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-10-25T00:00:00Z",
+  "reviewedAt": "2026-11-24T05:11:17Z",
   "owner": "prapaa-ai/security",
   "maxAgeDays": 30,
   "scope": "Bun and recorded native component inventory (Bun runtime + vendored C libs, and the native voice helper's statically-linked C/C++ components); not an assertion that no advisories apply",
