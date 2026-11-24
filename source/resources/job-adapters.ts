@@ -265,6 +265,47 @@ function describeRun(run: ScheduleRun): string {
   return `${displayTime(run.job.startedAt ?? run.occurrence.createdAt)}  ${shortId(run.job.jobId)}  ${run.job.state}${exit}`;
 }
 
+function canRemoveSchedule(s: ScheduleRecord, runs: ScheduleRun[]): boolean {
+  // An expired jobless reservation does not block: deleteSchedule() fences it first.
+  const now = Date.now();
+  return !s.enabled && !runs.some((run) => classifyOccurrence(run.occurrence, run.job, now) === "active");
+}
+
+/** The TUI calls this only after the user confirms deletion across both tabs. */
+export async function deleteStoppedJobsAndSchedules(): Promise<string> {
+  return friendly(async () => {
+    const [coordinator, engine] = await Promise.all([getSharedCoordinator(), getSharedScheduleEngine()]);
+    const [jobs, schedules] = await Promise.all([coordinator.list(), engine.listSchedules()]);
+    const jobIds = jobs.filter((job) => !job.abandonment && isTerminalLifecycle(job.state)).map((job) => job.jobId);
+    const scheduleIds: string[] = [];
+    for (const schedule of schedules) {
+      if (!schedule.enabled && canRemoveSchedule(schedule, await engine.listRuns(schedule.scheduleId))) {
+        scheduleIds.push(schedule.scheduleId);
+      }
+    }
+    if (!jobIds.length && !scheduleIds.length) return "No stopped jobs or schedules eligible for deletion.";
+
+    let failed = 0;
+    let firstError = "";
+    const remove = async (ids: string[], deleteOne: (id: string) => Promise<void>) => {
+      let deleted = 0;
+      for (const id of ids) {
+        try { await deleteOne(id); deleted++; }
+        catch (error) {
+          failed++;
+          if (failed === 1) firstError = `${id}: ${describeBackgroundJobError(error)}`;
+        }
+      }
+      return deleted;
+    };
+    // Preserve the job records for the schedule's final ownership check. Each deletion rechecks eligibility.
+    const deletedSchedules = await remove(scheduleIds, (id) => engine.deleteSchedule(id));
+    const deletedJobs = await remove(jobIds, (id) => coordinator.deleteJob(id, { exact: true }));
+    const result = `Deleted ${deletedJobs} job${deletedJobs === 1 ? "" : "s"} and ${deletedSchedules} schedule${deletedSchedules === 1 ? "" : "s"}.`;
+    return failed ? `${result} ${failed} could not be deleted. First error: ${firstError}` : result;
+  });
+}
+
 function scheduleItem(s: ScheduleRecord, runs: ScheduleRun[]): ResourceItem {
   const revoked = isScheduleRevoked(s);
   const lastRun = runs[0] ? describeRun(runs[0]) : "never";
@@ -288,9 +329,7 @@ function scheduleItem(s: ScheduleRecord, runs: ScheduleRun[]): ResourceItem {
     // Revocation is permanent: nothing left to toggle or revoke.
     enabled: revoked ? undefined : s.enabled,
     // Display hint only; deleteSchedule() re-checks under the schedule lock.
-    // Same rule as the engine (schedule/ownership.ts). An expired jobless reservation does not block:
-    // deleteSchedule() fences it before removing the schedule.
-    removable: !s.enabled && !runs.some((run) => classifyOccurrence(run.occurrence, run.job, Date.now()) === "active"),
+    removable: canRemoveSchedule(s, runs),
     searchText: `${s.scheduleId} ${s.cron} ${s.timezone}`,
   };
 }

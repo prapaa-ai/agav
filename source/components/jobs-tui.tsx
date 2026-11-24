@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useInput } from "../ink/index.js";
 import { ResourceManager, type ResourceAction } from "./resource-manager.js";
-import { createJobsAdapter, createJobSchedulesAdapter, jobCapabilities, revokeSchedule, REVOKE_SCHEDULE_CONFIRM, stopJob, abandonJob, ABANDON_JOB_CONFIRM } from "../resources/job-adapters.js";
+import { createJobsAdapter, createJobSchedulesAdapter, jobCapabilities, deleteStoppedJobsAndSchedules, revokeSchedule, REVOKE_SCHEDULE_CONFIRM, stopJob, abandonJob, ABANDON_JOB_CONFIRM } from "../resources/job-adapters.js";
 import type { ResourceItem } from "../resources/types.js";
 import type { ConfirmSubject, GrantAction, SessionPolicySnapshot } from "../background-jobs/types.js";
 import {
@@ -76,6 +76,9 @@ export function JobsTUI({ onExit, permissionMode, height }: JobsTUIProps) {
       { key: "a", label: "Abandon", inDetail: true, confirm: ABANDON_JOB_CONFIRM, when: (item: ResourceItem) => item.abandonable === true, run: async (item: Parameters<ResourceAction["run"]>[0]) => item ? abandonJob(item.id, session) : undefined },
       { key: "h", label: includeAbandoned ? "Hide abandoned" : "Show abandoned", run: () => setIncludeAbandoned(!includeAbandoned) },
     ]),
+    { key: "D", label: "Delete stopped", listWide: true,
+      confirm: "Permanently removes finished jobs with their logs and eligible paused or revoked schedules with their run history, across both tabs. Search filters do not apply.",
+      run: deleteStoppedJobsAndSchedules },
     { key: "c", label: "Capabilities", run: async () => ({ detail: await jobCapabilities() }) },
   ];
   return <ResourceManager key={`${schedules}-${includeAbandoned}`} adapter={schedules ? scheduleAdapter : jobs} height={height} onExit={onExit} actions={actions} prompt={pending ? confirmationPrompt(pending) : undefined} promptDetails={pending ? confirmationDetails(pending) : undefined} />;
