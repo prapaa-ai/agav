@@ -39,7 +39,7 @@ Create a weekday morning prompt:
 /schedule add "0 9 * * 1-5" review counter.py and greeting.py for any TODO comments or missing error handling
 ```
 
-Use `/schedule list`, then enable, disable, or remove a task by ID.
+Use `/schedule list`, then enable, disable, or remove a task by ID. Test a task without waiting for its cron match with `/schedule run <id>` — it submits the saved prompt once and leaves the schedule and enabled state unchanged.
 
 ## Choose the right mechanism
 

@@ -61,7 +61,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/plan clear` | Delete this session's plan. Use `no plan` in a prompt to skip automatic planning. |
 | `/steer <directive>` | Redirect the main agent, or only the inspected subagent, at its next safe step in the same turn. Works while worker-attached, including after resume. Main directives are not inherited by children. Bare `/steer`, `list`, `remove <number>`, and `clear` manage foreground main directives only, not worker attachments or child inspectors. See [steering](/workflows/planning-and-steering#steering). |
 | `/loop` | Show the active loop. `/loop <interval> <prompt>` repeats an agent prompt; intervals support `s`, `m`, and `h`. `/loop <prompt>` defaults to ten minutes, and `/loop stop` cancels it. |
-| `/schedule` | List saved tasks. Use `/schedule add "<five-field cron>" <prompt>`, then `enable`, `disable`, or `remove <id>` to manage them. |
+| `/schedule` | List saved tasks. Use `/schedule add "<five-field cron>" <prompt>`, then `enable`, `disable`, or `remove <id>` to manage them. `/schedule run <id>` runs a task once now without changing its schedule. |
 | `/job` | Open the background-jobs manager (requires `backgroundJobsEnabled`). Subcommands: `list`, `poll <id>`, `log <id> [--stderr] [--tail N]`, `stop <id>`, `schedule list\|create\|revoke`, and `capabilities`. See [Background jobs](/features/background-jobs). |
 | `/watch <path\|glob> <command>` | Run a shell command after matching files change. `/watch stop` cancels it; glob patterns are supported. |
 | `/undo`, `/undo list` | Revert the most recent tracked file change or inspect the current in-memory undo stack. Unknown arguments show usage without changing files or consuming an undo entry. |

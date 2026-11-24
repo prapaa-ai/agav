@@ -54,6 +54,11 @@ function findTask(tasks: ScheduledTask[], idOrPrefix: string): ScheduledTask | u
   return tasks.find((t) => t.id === idOrPrefix) ?? tasks.find((t) => t.id.startsWith(idOrPrefix));
 }
 
+/** Find a task by full id or id prefix, matching remove/enable/disable. */
+export function findScheduledTask(tasks: ScheduledTask[], idOrPrefix: string): ScheduledTask | undefined {
+  return findTask(tasks, idOrPrefix);
+}
+
 export async function removeScheduledTask(id: string): Promise<boolean> {
   const tasks = await loadScheduledTasks();
   const task = findTask(tasks, id);
