@@ -10,6 +10,7 @@ interface NotebookCell {
   cell_type: string;
   source: string[];
   outputs?: Array<{ text?: string[]; output_type?: string; data?: Record<string, string[]> }>;
+  metadata?: Record<string, unknown>;
 }
 
 interface Notebook {
@@ -42,6 +43,10 @@ export const readNotebookTool: ToolDefinition = {
           type: "boolean",
           description: "Include cached execution outputs (default: true).",
         },
+        include_metadata: {
+          type: "boolean",
+          description: "Include each selected cell's metadata as bounded JSON (default: false).",
+        },
       },
       required: ["path"],
     },
@@ -51,6 +56,10 @@ export const readNotebookTool: ToolDefinition = {
     const includeOutputs = input.include_outputs;
     if (includeOutputs !== undefined && typeof includeOutputs !== "boolean") {
       return { output: "include_outputs must be a boolean", isError: true };
+    }
+    const includeMetadata = input.include_metadata;
+    if (includeMetadata !== undefined && typeof includeMetadata !== "boolean") {
+      return { output: "include_metadata must be a boolean", isError: true };
     }
     const { start_cell: start, end_cell: end } = input;
     if (start !== undefined && !isCellBound(start)) {
@@ -90,6 +99,11 @@ export const readNotebookTool: ToolDefinition = {
             if (out.text) lines.push("  " + out.text.join(""));
             if (out.data?.["text/plain"]) lines.push("  " + out.data["text/plain"].join(""));
           }
+        }
+        if (includeMetadata === true && cell.metadata && Object.keys(cell.metadata).length > 0) {
+          // Bound one cell's metadata so a pathological notebook cannot flood the result.
+          const json = JSON.stringify(cell.metadata);
+          lines.push("  Metadata: " + (json.length > 2000 ? `${json.slice(0, 2000)}…` : json));
         }
         lines.push("");
       }
