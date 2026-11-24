@@ -37,7 +37,7 @@ export const githubTool: ToolDefinition = {
       properties: {
         operation: {
           type: "string",
-          enum: ["create_pr", "view_pr", "list_prs", "create_issue", "view_issue", "list_issues"],
+          enum: ["create_pr", "view_pr", "list_prs", "list_issue_comments", "list_pr_comments", "create_issue", "view_issue", "list_issues"],
           description: "The GitHub operation to perform.",
         },
         title: {
@@ -119,6 +119,23 @@ export const githubTool: ToolDefinition = {
           output: result.stdout || result.stderr,
           isError: result.exitCode !== 0,
         };
+      }
+
+      case "list_issue_comments":
+      case "list_pr_comments": {
+        const target = Number(number);
+        if (!Number.isSafeInteger(target) || target < 1) {
+          return { output: "A positive issue or PR number is required.", isError: true };
+        }
+        const kind = op === "list_pr_comments" ? "pr" : "issue";
+        const jq = '.comments[] | "\(.author.login) at \(.createdAt):\n\(.body)\n"';
+        const result = await run([kind, "view", String(target), "--json", "comments", "--jq", jq]);
+        if (result.exitCode !== 0) return { output: result.stderr || result.stdout, isError: true };
+        const text = result.stdout.trim();
+        if (!text) return { output: `No comments on ${kind === "pr" ? "PR" : "issue"} #${target}.`, isError: false };
+        // Bound one conversation so a long thread cannot flood the tool result.
+        const bounded = text.length > 12000 ? `${text.slice(0, 12000)}\n... (truncated)` : text;
+        return { output: bounded, isError: false };
       }
 
       case "list_issues": {
