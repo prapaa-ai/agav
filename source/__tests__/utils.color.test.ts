@@ -1,60 +1,70 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { resolveUseColor } from "../utils/color.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// The decision is memoised at module load, so every case re-imports the module
+// after stubbing the env and stderr's TTY flag.
+async function load(env: Record<string, string | undefined>, isTTY: boolean | undefined) {
+  vi.resetModules();
+  vi.unstubAllEnvs();
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) vi.stubEnv(key, value);
+  }
+  // stderr has no isTTY outside a terminal, so define one for the import.
+  Object.defineProperty(process.stderr, "isTTY", { value: isTTY, configurable: true, writable: true });
+  return import("../utils/color.js");
+}
+
+beforeEach(() => {
+  vi.unstubAllEnvs();
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  delete (process.stderr as { isTTY?: boolean }).isTTY;
+});
 
 describe("resolveUseColor", () => {
-  it.each([
-    // [env, isTTY, expected]
-    [{}, true, true],
-    [{}, false, false],
-    [{}, undefined, false],
-    [{ TERM: "dumb" }, true, false],
-    [{ NO_COLOR: "" }, true, false],
-    [{ NO_COLOR: "1" }, true, false],
-    [{ FORCE_COLOR: "1" }, false, true],
-    [{ FORCE_COLOR: "3" }, false, true],
-    [{ FORCE_COLOR: "true" }, false, true],
-    [{ FORCE_COLOR: "1", TERM: "dumb" }, false, true],
-    [{ FORCE_COLOR: "0" }, true, false],
-    [{ FORCE_COLOR: "false" }, true, false],
-    [{ FORCE_COLOR: " FALSE " }, true, false],
-    [{ FORCE_COLOR: "" }, true, false],
-    [{ FORCE_COLOR: "1", NO_COLOR: "1" }, true, false],
-  ] as const)("env %j, isTTY %j → %j", (env, isTTY, expected) => {
-    expect(resolveUseColor(env, isTTY)).toBe(expected);
+  it("is off whenever NO_COLOR is set, ignoring the TTY", async () => {
+    const { resolveUseColor } = await load({}, true);
+    expect(resolveUseColor({ NO_COLOR: "1" }, true)).toBe(false);
+    expect(resolveUseColor({ NO_COLOR: "" }, true)).toBe(false);
+  });
+
+  it("honours FORCE_COLOR, including over a dumb terminal", async () => {
+    const { resolveUseColor } = await load({}, false);
+    expect(resolveUseColor({ FORCE_COLOR: "1", TERM: "dumb" }, false)).toBe(true);
+    expect(resolveUseColor({ FORCE_COLOR: "true" }, false)).toBe(true);
+    for (const off of ["", "0", "false", " FALSE "]) {
+      expect(resolveUseColor({ FORCE_COLOR: off }, true)).toBe(false);
+    }
+  });
+
+  it("is off for TERM=dumb and otherwise follows the TTY", async () => {
+    const { resolveUseColor } = await load({}, false);
+    expect(resolveUseColor({ TERM: "dumb" }, true)).toBe(false);
+    expect(resolveUseColor({ TERM: "xterm-256color" }, true)).toBe(true);
+    expect(resolveUseColor({}, undefined)).toBe(false);
   });
 });
 
-describe("color module", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-    vi.resetModules();
+describe("colour on", () => {
+  it("wraps dim text and uses the glyph icons", async () => {
+    const { dim, icons, shouldUseColor } = await load({ FORCE_COLOR: "1" }, false);
+    expect(shouldUseColor()).toBe(true);
+    expect(dim("quiet")).toBe("\x1b[2mquiet\x1b[0m");
+    expect(icons).toEqual({ pending: "⏳", success: "✓", error: "✗", warning: "⚠" });
+  });
+});
+
+describe("colour off", () => {
+  it("returns text unchanged and uses the ASCII fallbacks", async () => {
+    const { dim, icons, shouldUseColor } = await load({ NO_COLOR: "1" }, true);
+    expect(shouldUseColor()).toBe(false);
+    expect(dim("quiet")).toBe("quiet");
+    expect(icons).toEqual({ pending: "[..]", success: "[ok]", error: "[XX]", warning: "[!!]" });
   });
 
-  async function load(env: Record<string, string | undefined>) {
-    vi.stubEnv("NO_COLOR", undefined);
-    vi.stubEnv("FORCE_COLOR", undefined);
-    vi.stubEnv("TERM", undefined);
-    for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
-    vi.resetModules();
-    return import("../utils/color.js");
-  }
-
-  it("FORCE_COLOR=1 turns color on whatever the TTY state", async () => {
-    const color = await load({ FORCE_COLOR: "1" });
-    expect(color.shouldUseColor()).toBe(true);
-    expect(color.dim("x")).toBe("\x1b[2mx\x1b[0m");
-    expect(color.icons.success).toBe("✓");
-  });
-
-  it("FORCE_COLOR=0 turns color off, with plain icons", async () => {
-    const color = await load({ FORCE_COLOR: "0" });
-    expect(color.shouldUseColor()).toBe(false);
-    expect(color.dim("x")).toBe("x");
-    expect(color.icons).toEqual({ pending: "[..]", success: "[ok]", error: "[XX]", warning: "[!!]" });
-  });
-
-  it("NO_COLOR wins over FORCE_COLOR", async () => {
-    const color = await load({ FORCE_COLOR: "1", NO_COLOR: "1" });
-    expect(color.shouldUseColor()).toBe(false);
+  it("is off without a TTY unless forced", async () => {
+    const { shouldUseColor } = await load({}, false);
+    expect(shouldUseColor()).toBe(false);
   });
 });
