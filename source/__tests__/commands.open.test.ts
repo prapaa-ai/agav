@@ -92,6 +92,21 @@ describe("commands/open", () => {
     expect((result as any).text.toLowerCase()).toContain("not a valid attachment number");
   });
 
+  it("accepts the hash prefix shown in the attachment list", async () => {
+    const paste = createTextAttachment("hash prefix works");
+    const context = createContext();
+
+    const result = await openCommand.execute(`#${paste.id}`, context);
+
+    expect((result as any).text).toContain("hash prefix works");
+  });
+
+  it.each(["#abc", "##1", "#1x"])("rejects the malformed hash id %s without opening anything", async (arg) => {
+    const result = await openCommand.execute(arg, createContext());
+    expect((result as any).text.toLowerCase()).toContain("not a valid attachment number");
+    expect(openTargetMock).not.toHaveBeenCalled();
+  });
+
   it("reports a nonexistent attachment id as not found", async () => {
     const context = createContext();
     const result = await openCommand.execute("9999", context);
