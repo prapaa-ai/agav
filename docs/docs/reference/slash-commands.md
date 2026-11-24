@@ -55,6 +55,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/search <query>` | Search saved session messages, names, and titles by keyword. |
 | `/name <title>` | Give the current session a descriptive name. |
 | `/branch [name]` | List branches in the current session lineage, or fork the current conversation into a named branch. |
+| `/branch checkout <id-or-prefix>` | Check out a saved branch of the current chat by ID or unique ID prefix. |
 | `/plan` | Show this session's plan and step progress. |
 | `/plan list` | List every plan saved for the current project. |
 | `/plan <n> <status>` | Set step `<n>` to `pending`, `in_progress`, `done`, or `failed`. |
