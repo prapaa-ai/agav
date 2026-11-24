@@ -13,7 +13,7 @@ import { VERSION } from "../version.js";
 import { useDetectedTargets } from "../hooks/use-detected-targets.js";
 import { buildClickableLines } from "../utils/render-clickable.js";
 import { targetToRefId, wrapTextToRuns } from "../utils/wrap-runs.js";
-import { encodeOpenRef, type OpenRef } from "../utils/open-ref.js";
+import { decodeOpenRef, encodeOpenRef, type OpenRef } from "../utils/open-ref.js";
 
 /** Normalized message shape used for terminal rendering. */
 export interface DisplayMessage {
@@ -68,8 +68,8 @@ const ClickableMarkdown = React.memo(function ClickableMarkdown({
   }, { dimColor });
 
   const handleOpen = (targetId: string) => {
-    const ref = JSON.parse(targetId) as OpenRef;
-    onOpenRef(ref);
+    const ref = decodeOpenRef(targetId);
+    if (ref) onOpenRef(ref);
   };
 
   return (
@@ -106,8 +106,8 @@ const UserMessage = React.memo(function UserMessage({ message, columns, onOpenRe
     : undefined;
 
   const handleOpen = (targetId: string) => {
-    const ref = JSON.parse(targetId) as OpenRef;
-    onOpenRef?.(ref);
+    const ref = decodeOpenRef(targetId);
+    if (ref) onOpenRef?.(ref);
   };
 
   // Every line is padded out to the full width below, which only paints a
