@@ -3,7 +3,7 @@ import { createBuiltinToolRegistry } from "../tools/registry-factory.js";
 import { cancelRun, decideRunDecision, decisionSummary, resolveDecisionTarget } from "../workflows/control.js";
 import { listPendingDecisions } from "../workflows/decisions.js";
 import { loadDefinition, WORKFLOW_TOOLS } from "../workflows/definition.js";
-import { resolveWorkflow } from "../workflows/discovery.js";
+import { discoverWorkflows, resolveWorkflow } from "../workflows/discovery.js";
 import { WorkflowStore, type WorkflowRun } from "../workflows/store.js";
 import type { JobCoordinatorLike } from "../workflows/job-node.js";
 import { launchRun, type RunnerCoordinator } from "../workflows/launch.js";
@@ -22,6 +22,7 @@ const USAGE = `Usage
   agav workflows validate <name|file>
   agav workflows run <name|file> [--input '{"key":"value"}'] [--wait] [--json]
   agav workflows list [--json]
+  agav workflows catalog [--json]
   agav workflows status <run-id> [--json]
 
 <run-id> is the full UUID or any unique prefix of at least 4 characters (list shows 8).
@@ -39,7 +40,7 @@ A bare name is looked up in ./.agav/workflows then ~/.agav/workflows (*.json, *.
 Enable both backgroundJobsEnabled and workflowsEnabled in ~/.agav/config.json. Approval nodes
 do not grant tool permissions.
 `;
-const COMMANDS = ["validate", "run", "list", "status", "inbox", "approve", "deny", "resume", "cancel"];
+const COMMANDS = ["validate", "run", "list", "catalog", "status", "inbox", "approve", "deny", "resume", "cancel"];
 type Coordinator = RunnerCoordinator & JobCoordinatorLike;
 
 export interface WorkflowCliOptions {
@@ -77,10 +78,10 @@ export async function runWorkflowsCli(argv: string[], options: WorkflowCliOption
     const config = options.config ?? await loadConfig();
     if (config.backgroundJobsEnabled !== true || config.workflowsEnabled !== true) throw new Error("Workflows require backgroundJobsEnabled=true AND workflowsEnabled=true.");
     if (!COMMANDS.includes(command)) throw new Error(`Unsupported workflow command: ${command}`);
-    const json = args.includes("--json") && ["list", "status", "run", "inbox"].includes(command);
+    const json = args.includes("--json") && ["list", "catalog", "status", "run", "inbox"].includes(command);
     const [operand, ...rest] = command === "run" ? args : args.filter(arg => !(json && arg === "--json"));
     let target = operand;
-    if (command === "list" ? target !== undefined : command !== "inbox" && !target) throw new Error(command === "list" ? `Unexpected argument for workflows list: ${target}` : `Missing operand.\n${USAGE}`);
+    if (command === "list" || command === "catalog" ? target !== undefined : command !== "inbox" && !target) throw new Error(command === "list" || command === "catalog" ? `Unexpected argument for workflows ${command}: ${target}` : `Missing operand.\n${USAGE}`);
     const isDecision = command === "approve" || command === "deny";
     if (command !== "run" && !isDecision && rest.length !== 0) throw new Error(`Unexpected or missing argument for workflows ${command}.`);
     if (isDecision && rest.length === 0) throw new Error(`Missing node or decision id for workflows ${command}.`);
@@ -95,6 +96,13 @@ export async function runWorkflowsCli(argv: string[], options: WorkflowCliOption
     if (target !== undefined && command !== "validate" && command !== "run") target = await resolveRunId(store, target);
 
     if (command === "validate") { await loadDefinition((await resolveWorkflow(target!, process.cwd())).path, registry); write("Workflow valid.\n"); return 0; }
+    if (command === "catalog") {
+      // Discovery only: no coordinator, run store or definition execution.
+      const found = await discoverWorkflows(process.cwd());
+      const rows = found.map(({ name, origin, path }) => ({ name, origin, path }));
+      write(json ? JSON.stringify(rows, null, 2) + "\n" : rows.length ? rows.map(({ name, origin, path }) => `${name}  ${origin}  ${path}`).join("\n") + "\n" : "No workflows found.\n");
+      return 0;
+    }
     if (command === "list" || command === "status") {
       await reconcileQuietly(store, command === "status" ? target : undefined, await launchDeps(), warn);
       if (command === "status") {
