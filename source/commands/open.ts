@@ -26,10 +26,12 @@ export const openCommand: SlashCommand = {
       return { type: "message", text: `Attachments:\n${lines.join("\n")}\n\nUse /open <n> to open or preview one.` };
     }
 
-    const id = Number(trimmed);
-    if (!Number.isInteger(id)) {
+    // The listing writes "#3"; accept it as well as the bare number.
+    const match = /^#?([1-9]\d*)$/.exec(trimmed);
+    if (!match) {
       return { type: "message", text: `"${trimmed}" is not a valid attachment number. Use /open to list them.` };
     }
+    const id = Number(match[1]);
 
     const attachment = getAttachment(id);
     if (!attachment) {
