@@ -1,6 +1,6 @@
-import { open, unlink } from "node:fs/promises";
+import { open, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import type { ContentBlock, Message } from "../providers/types.js";
 import { stripTerminalLinks } from "../utils/hyperlink.js";
@@ -12,8 +12,9 @@ const USAGE = "Usage: /export [json|--full] [sanitize|--sanitize]\n\n"
   + "  /export --full          Markdown with complete retained tool text\n"
   + "  /export json            Structured retained conversation\n"
   + "  /export sanitize        Markdown with best-effort redaction\n"
-  + "  /export json sanitize   JSON with best-effort redaction\n\n"
-  + "Saves a timestamped file in the working directory. Options may appear in either order.\n"
+  + "  /export json sanitize   JSON with best-effort redaction\n"
+  + "  /export --dir <dir>     Write there instead of the working directory (quote a path with spaces)\n\n"
+  + "Saves a timestamped file in the working directory, or in --dir when given. Options may appear in either order.\n"
   + "JSON preserves retained tool data; Markdown previews tool inputs/results unless --full is set. Earlier trimmed or compacted history cannot be recovered.\n"
   + "Sanitization masks common credentials and home paths, and omits image bytes from JSON. Review before sharing; arbitrary secrets and personal data may remain.\n"
   + "JSON excludes opaque provider replay metadata and is not a session backup. See the Sessions and Memory guide for its schema.";
@@ -187,7 +188,24 @@ export const exportCommand: SlashCommand = {
   argumentHint: "[json|--full] [sanitize]",
   usage: USAGE,
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
-    const options = args.trim().split(/\s+/).filter(Boolean);
+    // `--dir` takes the next token, quoted or not; strip it before the simple
+    // option scan so a path with spaces is not split into options.
+    let destination: string | undefined;
+    let remaining = args;
+    if (/--dir(?:\s|=|$)/.test(args)) {
+      const match = args.match(/--dir(?:=|\s+)(?:"([^"]*)"|'([^']*)'|(\S+))/);
+      if (!match) return { type: "message", text: `--dir needs a directory.\n\n${USAGE}` };
+      destination = resolve(process.cwd(), match[1] ?? match[2] ?? match[3]!);
+      remaining = args.replace(match[0], " ");
+      try {
+        if (!(await stat(destination)).isDirectory()) {
+          return { type: "message", text: `--dir ${destination} is not a directory. No export file was created.` };
+        }
+      } catch {
+        return { type: "message", text: `--dir ${destination} does not exist or cannot be read. No export file was created.` };
+      }
+    }
+    const options = remaining.trim().split(/\s+/).filter(Boolean);
     if (options.some((option) => !["json", "sanitize", "--sanitize", "--help", "--full"].includes(option))) {
       return { type: "message", text: `Unknown export option.\n\n${USAGE}` };
     }
@@ -235,7 +253,7 @@ export const exportCommand: SlashCommand = {
       } else {
         output = markdown(snapshot.messages, model, provider, now.toISOString(), full);
       }
-      directory = process.cwd();
+      directory = destination ?? process.cwd();
       stem = `agav-export-${now.getTime()}${sanitize ? "-sanitized" : ""}`;
     } catch {
       return { type: "message", text: "Could not prepare the conversation for export. No export file was created." };

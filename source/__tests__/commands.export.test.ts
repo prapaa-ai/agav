@@ -65,6 +65,31 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("export command", () => {
+  it("writes into --dir, including a quoted path with spaces", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agav export "));
+    try {
+      const result = await exportCommand.execute(`--dir "${dir}"`, context());
+      expect(text(result)).toContain(dir);
+      expect(open).toHaveBeenCalledWith(join(dir, `agav-export-${now.getTime()}.md`), "wx", 0o600);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails before creating a file when --dir is missing or not a directory", async () => {
+    const missing = await exportCommand.execute("--dir /definitely/not/here", context());
+    expect(text(missing)).toContain("does not exist");
+    const file = join(tmpdir(), "agav-export-target.txt");
+    await realWriteFile(file, "x");
+    try {
+      const notDir = await exportCommand.execute(`--dir ${file}`, context());
+      expect(text(notDir)).toContain("is not a directory");
+    } finally {
+      await rm(file, { force: true });
+    }
+    expect(open).not.toHaveBeenCalled();
+  });
+
   it("preserves the existing default Markdown bytes", async () => {
     const result = await exportCommand.execute("", context());
     expect(output()).toBe([
