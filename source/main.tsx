@@ -1009,6 +1009,7 @@ export async function main() {
     config.permissionMode = "deny-writes";
   }
 
+  let startupWarning: string | undefined;
   if (flags.sandboxRequired) {
     config.sandboxRequired = true;
   }
@@ -1026,7 +1027,10 @@ export async function main() {
       configValue: config.sandboxRequired,
       detectBackend: detectSandboxBackend,
       setRequired: setSandboxRequired,
-      warn: (message) => { process.stderr.write(message); },
+      warn: (message) => {
+        if (flags.print || flags.run || !process.stdin.isTTY) process.stderr.write(message);
+        else startupWarning = message;
+      },
     });
     setSandboxNetwork(config.sandboxNetwork === "deny" ? "deny" : "allow");
   }
@@ -1346,7 +1350,7 @@ export async function main() {
     // Never block startup on changelog/launch-state failures.
   }
 
-  const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} resumePermissionMode={resumePermissionMode} resumeRuntime={resumeRuntime} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} shutdownRef={shutdownRef} detachedSessionRef={detachedSessionRef} />, {
+  const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} resumePermissionMode={resumePermissionMode} resumeRuntime={resumeRuntime} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} startupWarning={startupWarning} shutdownRef={shutdownRef} detachedSessionRef={detachedSessionRef} />, {
     // App owns Ctrl+C so foreground workflows can abort and checkpoint before exit.
     exitOnCtrlC: false,
     // Alt-screen keeps the UI self-contained (no scrollback pollution, no
