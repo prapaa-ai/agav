@@ -174,6 +174,10 @@ jobs:
   # would reject an SBOM attestation). Does not cover the embedded Bun runtime
   # and its vendored C libraries — those are invisible to the npm dependency
   # graph and are tracked separately by scripts/check-bun-advisories.mjs.
+  # The same job writes a second, separate SBOM of the dev/build graph (the
+  # build and test dependencies, which never ship in the binaries) as
+  # agav-build-sbom-<version>.cdx.json, from the same checkout and frozen
+  # lockfile, with its own attestation and checksum.
   sbom:
     name: SBOM Generation and Attestation
     needs: check-version
@@ -202,6 +206,10 @@ jobs:
         env:
           VERSION: ${{ needs.check-version.outputs.version }}
         run: node scripts/gen-sbom.mjs "agav-sbom-${VERSION}.cdx.json"
+      - name: Generate CycloneDX build SBOM
+        env:
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: node scripts/gen-sbom.mjs --dev "agav-build-sbom-${VERSION}.cdx.json"
       - name: Attest SBOM provenance
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
@@ -209,13 +217,20 @@ jobs:
           # repository's release workflow produced this SBOM from this commit.
           subject-path: agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json
           sbom-path: agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json
-      - name: Checksum the SBOM
+      - name: Attest build SBOM provenance
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: agav-build-sbom-${{ needs.check-version.outputs.version }}.cdx.json
+          sbom-path: agav-build-sbom-${{ needs.check-version.outputs.version }}.cdx.json
+      - name: Checksum the SBOMs
         env:
           VERSION: ${{ needs.check-version.outputs.version }}
         run: |
           if command -v sha256sum >/dev/null 2>&1; then hash() { sha256sum "$1"; }; else hash() { shasum -a 256 "$1"; }; fi
-          hash "agav-sbom-${VERSION}.cdx.json" > "agav-sbom-${VERSION}.cdx.json.sha256"
-          cat "agav-sbom-${VERSION}.cdx.json.sha256"
+          for sbom in "agav-sbom-${VERSION}.cdx.json" "agav-build-sbom-${VERSION}.cdx.json"; do
+            hash "$sbom" > "$sbom.sha256"
+            cat "$sbom.sha256"
+          done
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: agav-sbom
@@ -228,6 +243,8 @@ jobs:
           path: |
             agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json
             agav-sbom-${{ needs.check-version.outputs.version }}.cdx.json.sha256
+            agav-build-sbom-${{ needs.check-version.outputs.version }}.cdx.json
+            agav-build-sbom-${{ needs.check-version.outputs.version }}.cdx.json.sha256
 
   # Validate the release SHA here, not a separate workflow or a PR's merge SHA.
   validation:
@@ -356,7 +373,7 @@ jobs:
           token: ${{ secrets.TOKEN }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.4.4"
+          bun-version: "1.4.5"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
@@ -550,20 +567,21 @@ jobs:
               done
             done
           done
-          # Publish the attested SBOM and its checksum alongside the binaries.
-          # Fail closed: the SBOM job is a prerequisite of this job, so both the
-          # SBOM and its checksum MUST exist. A missing file here means the
-          # attested SBOM would be silently dropped from the release, so stop
-          # rather than publish binaries without it.
+          # Publish the attested SBOMs (production and build) and their
+          # checksums alongside the binaries. Fail closed: the SBOM job is a
+          # prerequisite of this job, so every SBOM and checksum MUST exist. A
+          # missing file here means an attested SBOM would be silently dropped
+          # from the release, so stop rather than publish binaries without it.
           SBOM="agav-sbom-${VERSION}.cdx.json"
-          for required in "$SBOM" "$SBOM.sha256"; do
+          BUILD_SBOM="agav-build-sbom-${VERSION}.cdx.json"
+          for required in "$SBOM" "$SBOM.sha256" "$BUILD_SBOM" "$BUILD_SBOM.sha256"; do
             if [ ! -f "artifacts/agav-sbom/$required" ]; then
               echo "::error::Expected SBOM asset artifacts/agav-sbom/$required is missing."
               exit 1
             fi
             cp "artifacts/agav-sbom/$required" "release/$required"
           done
-          # Generate combined SHA256SUMS file. Each binary and the SBOM get a
+          # Generate combined SHA256SUMS file. Each binary and each SBOM get a
           # line; the detached .sha256 and .sig files do not.
           cd release
           sha256sum agav-* 2>/dev/null | grep -v -e '\.sha256$' -e '\.sig$' -e '\.sigstore$' > SHA256SUMS || true
@@ -712,6 +730,14 @@ jobs:
             The SBOM covers the npm dependency graph only. The embedded Bun
             runtime and its vendored C libraries are not in that graph and are
             tracked separately by the release's runtime advisory gate.
+
+            A separate CycloneDX SBOM of the build and test dependencies used to
+            produce the binaries, which do not ship in them, is published as
+            `agav-build-sbom-${{ needs.check-version.outputs.version }}.cdx.json`
+            with its own attestation; verify it with the same command and that
+            file name. Like the production SBOM, it lists the optional platform
+            packages for every OS the lockfile resolves; it leaves out the Bun
+            compiler and the voice helper's native build toolchain.
 
             <details>
             <summary>Manual install</summary>

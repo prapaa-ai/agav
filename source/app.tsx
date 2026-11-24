@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { Box, Text, ScrollBox, Spinner, useInput, useApp, useStdout, useStdin, measureElement } from "./ink/index.js";
-import type { DOMElement, ScrollBoxControls, WheelEventData } from "./ink/index.js";
+import type { DOMElement, MouseEventData, ScrollBoxControls, WheelEventData } from "./ink/index.js";
 import MessageList from "./components/message-list.js";
 import type { DisplayMessage } from "./components/message-list.js";
 import StreamingResponse from "./components/streaming-response.js";
@@ -12,6 +12,8 @@ import RequestQueue from "./components/request-queue.js";
 import { renderMarkdown } from "./components/markdown-text.js";
 import ToolCallDisplay from "./components/tool-call-display.js";
 import ToolConfirm from "./components/tool-confirm.js";
+import ConfirmControl, { useConfirmSurface } from "./components/confirm-control.js";
+import { pointerSelect } from "./components/hover-text.js";
 import WorkflowConsent from "./components/workflow-consent.js";
 import ContextWindowPrompt from "./components/context-window-prompt.js";
 import { DEFAULT_UNKNOWN_CONTEXT_WINDOW } from "./agent/loop.js";
@@ -30,7 +32,7 @@ import { advanceVoiceDraft } from "./utils/voice-draft.js";
 import { useAgent } from "./hooks/use-agent.js";
 import { useVoiceInput } from "./hooks/use-voice-input.js";
 import { isInternalUserMessage } from "./agent/internal-prompts.js";
-import { CommandRegistry, isCommandAllowedMidTurn } from "./commands/registry.js";
+import { CommandRegistry, isCommandAllowedMidTurn, getMidTurnBlockReason } from "./commands/registry.js";
 import { AgentsTUI } from "./components/agents-tui.js";
 import { SkillsTUI } from "./components/skills-tui.js";
 import { JobsTUI } from "./components/jobs-tui.js";
@@ -343,8 +345,18 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
   const [systemMessages, setSystemMessages] = useState<DisplayMessage[]>([]);
   const [copyNotice, setCopyNotice] = useState<ClipboardNotice | null>(null);
+  const [queuedCommandNotice, setQueuedCommandNotice] = useState<string | null>(null);
+  const queuedCommandNoticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const showQueuedCommandNotice = useCallback((text: string) => {
+    setQueuedCommandNotice(text);
+    if (queuedCommandNoticeTimer.current) clearTimeout(queuedCommandNoticeTimer.current);
+    queuedCommandNoticeTimer.current = setTimeout(() => setQueuedCommandNotice(null), 18_000);
+  }, []);
+  useEffect(() => () => {
+    if (queuedCommandNoticeTimer.current) clearTimeout(queuedCommandNoticeTimer.current);
+  }, []);
   const { stdout } = useStdout();
-  const { stdin } = useStdin();
+  const { stdin, setMouseMotionTracking } = useStdin();
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -908,6 +920,48 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     ? subagentStates.find((s) => s.id === focusedSubagentId)
     : undefined;
 
+  const subagentControlsEnabled = hasSubagents && !pendingConfirmation && !pendingContextWindowRequest
+    && !workflowConsent && !pickerActive && !queueActive && !workflowsTUI && !voice.phase;
+  const subagentSurface = useConfirmSurface(docControls,
+    subagentControlsEnabled ? (focusedSubagent ? `detail:${focusedSubagent.id}` : "overview") : "inactive");
+  const [subagentHover, setSubagentHover] = useState<{ revision: number; target: string }>();
+  useEffect(() => {
+    if (!subagentControlsEnabled) return;
+    // Opt in only while these controls are available, not for the whole chat.
+    setMouseMotionTracking(true);
+    return () => setMouseMotionTracking(false);
+  }, [subagentControlsEnabled, setMouseMotionTracking]);
+  const isSubagentHovered = (target: string) => subagentControlsEnabled
+    && subagentHover?.revision === subagentSurface.revision && subagentHover.target === target;
+  const subagentHoverHandlers = (target: string) => ({
+    onMouseEnter: (event: MouseEventData) => {
+      if (subagentControlsEnabled && event.button === 3) setSubagentHover({ revision: subagentSurface.revision, target });
+    },
+    onMouseLeave: () => setSubagentHover(current => current?.target === target ? undefined : current),
+  });
+  const canClickSubagent = () => subagentControlsEnabled && !voice.isActive();
+  const onSubagentClick = (action: () => void) => (event: MouseEventData) => {
+    if (event.button !== 0 || event.ctrl || event.alt || event.shift || !canClickSubagent()) return;
+    event.stopPropagation?.();
+    action();
+  };
+  const inspectSubagent = (index: number) => {
+    const target = subagentStates[index];
+    if (!target) return;
+    setSelectedSubagentIdx(index);
+    setFocusedSubagentId(target.id);
+  };
+  const backToSubagentOverview = () => setFocusedSubagentId(null);
+  const cancelTurnOrSubagent = (id: string | null) => {
+    if (!id) { cancel(); return; }
+    cancelSubagent(id);
+    backToSubagentOverview();
+  };
+  const clickSubagentCancel = (id: string | null) => {
+    if (canClickSubagent() && !workflowAbortRef.current && !shellAbortRef.current) cancelTurnOrSubagent(id);
+  };
+  const subagentCancelKey = formatKeybinding(keybindings, "cancel");
+
   // Drop the detail view when the plan it was showing is cleared or finished,
   // so a later plan does not reopen it without being asked.
   useEffect(() => {
@@ -1014,12 +1068,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       return;
     }
     if (match.action === "cancel" && (isLoading || requestPendingRef.current) && !pendingConfirmation) {
-      if (focusedSubagentId) {
-        cancelSubagent(focusedSubagentId);
-        setFocusedSubagentId(null);
-      } else {
-        cancel();
-      }
+      cancelTurnOrSubagent(focusedSubagentId);
       return;
     }
     // Ink no longer exits on Ctrl+C (main passes exitOnCtrlC: false so workflows can settle),
@@ -1029,7 +1078,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       return;
     }
     if (focusedSubagentId && isLoading && !pendingConfirmation && key.tab) {
-      setFocusedSubagentId(null);
+      backToSubagentOverview();
       return;
     }
     // The prompt owns navigation and completion while it contains text.
@@ -1044,8 +1093,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         return;
       }
       if (key.return && !key.shift && !key.ctrl && !key.meta && !key.super && !key.hyper) {
-        const sa = subagentStates[selectedSubagentIdx];
-        if (sa) setFocusedSubagentId(sa.id);
+        inspectSubagent(selectedSubagentIdx);
         return;
       }
     }
@@ -1241,8 +1289,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         try { await cancelTask; } finally { pendingWorkflowCancelsRef.current.delete(cancelTask); }
         return;
       }
+      const commandArgs = trimmed.slice(1 + commandName.length).trim();
+      const commandAllowedMidTurn = isCommandAllowedMidTurn(commandName, commandArgs);
       const workflowStatus = workflowAbortRef.current && /^\/workflows\s+status\s+\S+\s*$/.test(trimmed);
-      const immediateCommand = trimmed.startsWith("/") && promptAttachments.length === 0 && (isCommandAllowedMidTurn(commandName) || !!workflowStatus);
+      const immediateCommand = trimmed.startsWith("/") && promptAttachments.length === 0 && (commandAllowedMidTurn || !!workflowStatus);
       if (!queued && !immediateCommand && (requestPendingRef.current || !isGenerationPaused || trimmed.startsWith("/") || trimmed.startsWith("!")) &&
           (isLoading || requestPendingRef.current || shellAbortRef.current || queueRef.current.length > 0)) {
         if (!trimmed && promptAttachments.length === 0) return;
@@ -1252,6 +1302,12 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           attachments: promptAttachments.map(attachment => ({ ...attachment, contentBlock: { ...attachment.contentBlock } })),
           invocationReason,
         }]);
+        if (trimmed.startsWith("/")) {
+          const reason = commandAllowedMidTurn || promptAttachments.length > 0
+            ? "Cannot run this command in the current state."
+            : getMidTurnBlockReason(commandName, commandArgs);
+          showQueuedCommandNotice(`Queued /${commandName}: ${reason} Waiting for idle.`);
+        }
         composerEditVersionRef.current++;
         setInput("");
         setAttachments([]);
@@ -1322,7 +1378,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
         const isSlashCommand = trimmed.startsWith("/")
           && promptAttachments.length === 0
-          && (!isLoading || isCommandAllowedMidTurn(commandName));
+          && (!isLoading || commandAllowedMidTurn || !!workflowStatus);
         if (!isSlashCommand && isLoading) {
           if (!isWorkerAttached && isGenerationPaused && (trimmed || promptAttachments.length > 0)) {
             const extraBlocks: ContentBlock[] = promptAttachments.map((attachment) => ({ ...attachment.contentBlock }));
@@ -1428,7 +1484,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             renameSession,
             currentSessionId: sessionId,
             exit,
-            isLoading,
+            // Immediate commands may run during preparation or direct shell work,
+            // but their handlers must not open an interactive fallback over it.
+            isLoading: isLoading || !!shellAbortRef.current || (immediateCommand && requestPendingRef.current),
             isWorkerAttached: () => isWorkerAttached,
             steer: (directive) => steer(directive, focusedSubagent?.id),
             steerTargetId: focusedSubagent?.id,
@@ -1626,7 +1684,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [steer, focusedSubagent, detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
+    [steer, focusedSubagent, detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, showQueuedCommandNotice, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.
@@ -1874,7 +1932,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             return (
               <Box flexDirection="column" marginBottom={1}>
                 <SubagentDisplay progress={focusedSubagent} mode="detail" />
-                <Text dimColor>{"\n  "}{formatKeybinding(keybindings, "cancel")}: cancel this subagent · Tab: back to overview</Text>
+                <Box marginTop={1} paddingLeft={2} flexWrap="wrap" key={subagentSurface.revision}>
+                  <ConfirmControl label={`${subagentCancelKey}: cancel this subagent`} color="gray" bold={false} padded={false}
+                    surface={subagentSurface} onActivate={() => clickSubagentCancel(focusedSubagent.id)}
+                    hovered={isSubagentHovered("cancel-one")} {...subagentHoverHandlers("cancel-one")} />
+                  <Text dimColor>{" · "}</Text>
+                  <Text dimColor={!isSubagentHovered("back")} inverse={isSubagentHovered("back")}
+                    {...subagentHoverHandlers("back")} onClick={onSubagentClick(backToSubagentOverview)}>Tab: back to overview</Text>
+                </Box>
               </Box>
             );
           }
@@ -1889,9 +1954,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               {subagentStates.map((sa, i) => {
                 const isSelected = i === selectedSubagentIdx;
                 return (
-                  <Box key={sa.id}>
+                  <Box key={sa.id} alignSelf="flex-start" onMouseMove={pointerSelect(() => { if (canClickSubagent()) setSelectedSubagentIdx(i); })} onClick={onSubagentClick(() => inspectSubagent(i))}>
                     {isSelected ? <Text color="cyan">{"▸ "}</Text> : <Text>{"  "}</Text>}
-                    <SubagentDisplay progress={sa} mode="compact" index={i} />
+                    <SubagentDisplay progress={sa} mode="compact" index={i} active={isSelected} />
                   </Box>
                 );
               })}
@@ -1912,7 +1977,15 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               })()}
               <StreamingResponse text={streamingText} thinkingText={thinkingText} isLoading={!pendingConfirmation} showThinking={showThinking} isPaused={isGenerationPaused} />
               {hasSubagents && (
-                <Text dimColor>{"\n  "}↑↓: select · Enter: inspect · {formatKeybinding(keybindings, "cancel")}: cancel all</Text>
+                <Box marginTop={1} paddingLeft={2} flexWrap="wrap" key={subagentSurface.revision}>
+                  <Text dimColor>{"↑↓: select · "}</Text>
+                  <Text dimColor={!isSubagentHovered("inspect")} inverse={isSubagentHovered("inspect")}
+                    {...subagentHoverHandlers("inspect")} onClick={onSubagentClick(() => inspectSubagent(selectedSubagentIdx))}>Enter: inspect</Text>
+                  <Text dimColor>{" · "}</Text>
+                  <ConfirmControl label={`${subagentCancelKey}: cancel all`} color="gray" bold={false} padded={false}
+                    surface={subagentSurface} onActivate={() => clickSubagentCancel(null)}
+                    hovered={isSubagentHovered("cancel-all")} {...subagentHoverHandlers("cancel-all")} />
+                </Box>
               )}
             </Box>
           );
@@ -2011,7 +2084,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
               usage: tokenUsage.inputTokens + tokenUsage.outputTokens > 0 ? "… tokens" : "0 tokens",
               duration: lastTurnDurationMs != null ? "⏱ …" : "",
               sandbox: `sandbox: ${getSandboxName()}`,
-              session: (sessionName ?? (sessionId ? sessionId.slice(0, 8) : "")) ? `session: ${sessionName ?? sessionId!.slice(0, 8)}` : "",
+              session: (sessionName ?? (sessionId ? sessionId.slice(0, 8) : ""))
+                ? `session: ${sessionName ?? sessionId!.slice(0, 8)}`
+                : "",
               hint: getRandomHint(keybindings, enhancedKeyboard),
             } satisfies StatusBarSegments}
             onChange={(layout: StatusBarLayout) => {
@@ -2134,6 +2209,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
 
         <StatusBar
           copyNotice={copyNotice}
+          queuedCommandNotice={queuedCommandNotice}
           isPaused={isGenerationPaused || !!pendingConfirmation}
           model={config.model}
           provider={config.provider}
@@ -2149,7 +2225,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           loopStatus={(() => { const ls = getLoopStatus(); return ls ? `⟳ Loop: "${ls.prompt}" every ${ls.interval} (tick #${ls.tickCount})` : undefined; })()}
           workflowStatus={workflowBadge}
           sandboxBackend={`sandbox: ${getSandboxName()}`}
-          branchName={sessionName ?? (sessionId ? sessionId.slice(0, 8) : undefined)}
+          branchName={sessionName ?? sessionId?.slice(0, 8)}
           turnStartTime={turnStartTime}
           lastTurnDurationMs={lastTurnDurationMs}
           isLoading={isLoading}

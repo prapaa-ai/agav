@@ -85,6 +85,7 @@ const clipboardCmd = resolveClipboardCmd();
 const GTK_STARTUP_TIMEOUT_MS = 2000;
 
 export type ClipboardNotice = "Copied to clipboard" | "Copy sent to terminal";
+export type ClipboardResult = ClipboardNotice | "Clipboard unavailable" | "Clipboard copy failed";
 const copyListeners = new Set<(notice: ClipboardNotice) => void>();
 
 /** Subscribe to copy actions so the UI can show brief feedback. */
@@ -132,7 +133,7 @@ Gtk.main()
  * `→`, and box-drawing symbols get garbled. We use PowerShell's
  * `Set-Clipboard` instead, which handles Unicode natively.
  */
-const nativeCopy = (text: string, onSuccess: () => void, onFailure: () => void): boolean => {
+const nativeCopy = (text: string, onSuccess: () => void, onFailure: () => void, onWriteFailure: () => void): boolean => {
 	if (!clipboardCmd) return false;
 	try {
 		if (clipboardCmd.cmd === "python3-gtk") {
@@ -204,24 +205,29 @@ const nativeCopy = (text: string, onSuccess: () => void, onFailure: () => void):
 		// (over a bare spawn) gives us the completion callback that reaps the
 		// child, but it has no `input` option for the async form — the payload
 		// still has to go through child.stdin explicitly.
+		let launched = false;
+		let stdinFailed = false;
 		const child = execFile(clipboardCmd.cmd, clipboardCmd.args, error => {
 			// A nonzero exit can follow a partial or complete clipboard write.
 			// Sending OSC 52 then could overwrite the text a native tool copied.
-			if (!error) onSuccess();
+			if (!error && !stdinFailed) onSuccess();
+			else if (launched) onWriteFailure();
+			else onFailure();
 		});
-		let launched = false;
 		child.once("spawn", () => { launched = true; });
 		child.on("error", () => {
 			// ChildProcess can also emit error after launch. Only a failed
 			// spawn proves that no clipboard write occurred.
 			if (!launched) onFailure();
+			else onWriteFailure();
 		});
-		child.stdin?.on("error", () => {}); // guard against EPIPE if the tool exits early
+		child.stdin?.on("error", () => { stdinFailed = true; });
 		try {
 			child.stdin?.end(text); // write payload and signal EOF in one call
 		} catch {
 			// The tool was launched and may already have consumed bytes. Do not
 			// send a second copy through OSC 52 after a possible partial write.
+			stdinFailed = true;
 		}
 		return true;
 	} catch {
@@ -238,17 +244,38 @@ const nativeCopy = (text: string, onSuccess: () => void, onFailure: () => void):
 export const writeClipboard = (
 	stream: NodeJS.WriteStream,
 	text: string,
+	onResult?: (result: ClipboardResult) => void,
 ): void => {
-	let fellBack = false;
+	let settled = false;
+	let sendingFallback = false;
+	const finish = (result: ClipboardResult) => {
+		if (settled) return;
+		settled = true;
+		if (onResult) onResult(result);
+		else if (result === "Copied to clipboard" || result === "Copy sent to terminal") notifyClipboardCopy(result);
+	};
 	const fallback = () => {
-		if (fellBack) return;
-		fellBack = true;
+		if (settled || sendingFallback) return;
+		sendingFallback = true;
 		const sequence = osc52Copy(text);
-		stream.write(process.env["TMUX"] ? wrapTmux(sequence) : sequence);
-		notifyClipboardCopy("Copy sent to terminal");
+		const payload = process.env["TMUX"] ? wrapTmux(sequence) : sequence;
+		if (!onResult) {
+			stream.write(payload);
+			finish("Copy sent to terminal");
+			return;
+		}
+		if (!stream.isTTY || process.env["TERM"] === "dumb") {
+			finish("Clipboard unavailable");
+			return;
+		}
+		try {
+			stream.write(payload, error => finish(error ? "Clipboard copy failed" : "Copy sent to terminal"));
+		} catch {
+			finish("Clipboard copy failed");
+		}
 	};
 	// Try native first — most reliable, works in all terminals.
-	if (nativeCopy(text, () => notifyClipboardCopy("Copied to clipboard"), fallback)) return;
+	if (nativeCopy(text, () => finish("Copied to clipboard"), fallback, () => finish("Clipboard copy failed"))) return;
 
 	// Fallback to OSC 52.
 	fallback();
