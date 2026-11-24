@@ -34,6 +34,18 @@ beforeEach(() => {
 });
 
 describe("read_notebook", () => {
+  it("shows bounded cell metadata only when asked", async () => {
+    mockRead.mockResolvedValueOnce(JSON.stringify({
+      cells: [{ cell_type: "code", source: ["x = 1"], metadata: { tags: ["keep"], nbformat: 4 } }],
+      metadata: { kernelspec: { name: "python3" } }, nbformat: 4, nbformat_minor: 5,
+    }));
+    const plain = await readNotebookTool.execute({ path });
+    expect(plain.output).not.toContain("Metadata:");
+    const withMeta = await readNotebookTool.execute({ path, include_metadata: true });
+    expect(withMeta.output).toContain('"tags":["keep"]');
+    expect(withMeta.output).not.toContain("kernelspec");
+  });
+
   it("includes stream and plain-text output by default and with true", async () => {
     const result = await readNotebookTool.execute({ path });
     expect(result.isError).toBe(false);
