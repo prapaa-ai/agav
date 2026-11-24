@@ -39,6 +39,25 @@ describe("list_directory entry type", () => {
     });
   });
 
+  it("caps entries after filtering and reports the omitted count", async () => {
+    const result = await listDirectoryTool.execute({ max_entries: 2 });
+    expect(result).toEqual({
+      output: "a-dir-link/\nw-file  7B\n... 3 more entries omitted",
+      isError: false,
+    });
+    expect(result.output).not.toContain("x-other");
+  });
+
+  it("shows no truncation notice when the limit is an exact fit", async () => {
+    const result = await listDirectoryTool.execute({ max_entries: 5 });
+    expect(result.output).not.toContain("omitted");
+  });
+
+  it.each([0, -1, 1.5, "3", true])("rejects max_entries %s before reading the directory", async (max_entries) => {
+    expect((await listDirectoryTool.execute({ max_entries })).isError).toBe(true);
+    expect(mockRead).not.toHaveBeenCalled();
+  });
+
   it("reports when the selected type has no matches", async () => {
     mockRead.mockResolvedValue(["z-dir"] as never);
     const result = await listDirectoryTool.execute({ type: "files" });
