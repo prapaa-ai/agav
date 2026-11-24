@@ -13,7 +13,23 @@ export const searchCommand: SlashCommand = {
       const interactive = openResourceManager("search-history", context);
       if (interactive) return interactive;
     }
-    const query = args.trim().toLowerCase()
+    const tokens = args.trim().split(/\s+/)
+    let limit = 10
+    if (tokens[0] === "--limit" || tokens[0]?.startsWith("--limit=")) {
+      let raw: string | undefined
+      if (tokens[0] === "--limit") {
+        raw = tokens[1]
+        tokens.splice(0, 2)
+      } else {
+        raw = tokens[0]!.slice("--limit=".length)
+        tokens.splice(0, 1)
+      }
+      if (raw === undefined || !/^[1-9]\d*$/.test(raw) || Number(raw) > 100) {
+        return { type: "message", text: "Usage: /search --limit <1-100> <query>" }
+      }
+      limit = Number(raw)
+    }
+    const query = tokens.join(" ").toLowerCase()
     if (!query) {
       return { type: "message", text: "Usage: /search <keyword>" }
     }
@@ -79,14 +95,17 @@ export const searchCommand: SlashCommand = {
         })
       }
 
-      if (matches.length >= 10) break
+      // One extra match is enough to know the result was truncated.
+      if (matches.length > limit) break
     }
 
     if (matches.length === 0) {
       return { type: "message", text: `No sessions matching "${query}".` }
     }
 
-    const lines = matches.map((m, i) => {
+    const truncated = matches.length > limit
+    const shown = truncated ? matches.slice(0, limit) : matches
+    const lines = shown.map((m, i) => {
       const header = `  ${i + 1}. ${m.title}`
       const facts = [`${m.id.slice(0, 8)} · ${m.msgs} msgs · ${m.date}`]
       if (m.matchCount > 0) facts.push(`${m.matchCount} match${m.matchCount > 1 ? "es" : ""}`)
@@ -96,13 +115,16 @@ export const searchCommand: SlashCommand = {
       return context ? `${header}\n${meta}\n${context}` : `${header}\n${meta}`
     })
 
-    const summary = matches.length === 1
+    const summary = shown.length === 1
       ? `1 session matches "${query}":`
-      : `${matches.length} sessions match "${query}":`
+      : `${shown.length} sessions match "${query}":`
+    const notice = truncated
+      ? `\n\n  More sessions match; use /search --limit ${Math.min(100, limit * 2)} ${query} to see more.`
+      : ""
 
     return {
       type: "message",
-      text: `${summary}\n\n${lines.join("\n\n")}\n\n  Tip: /resume to load a session`,
+      text: `${summary}\n\n${lines.join("\n\n")}${notice}\n\n  Tip: /resume to load a session`,
     }
   },
 }

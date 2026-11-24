@@ -34,6 +34,33 @@ describe("commands/search-history", () => {
     listSessionsMock.mockResolvedValue([]);
   });
 
+  it("caps results at ten and says when more sessions match", async () => {
+    listSessionsMock.mockResolvedValue(
+      Array.from({ length: 12 }, (_, i) => session({ id: `${i}`.padStart(8, "0") + "-0000-0000-0000-000000000000" })),
+    );
+    const text = ((await run("untitled")) as { text: string }).text;
+    expect(text).toContain("10 sessions match");
+    expect(text).toContain("More sessions match; use /search --limit 20");
+  });
+
+  it("honours --limit and does not warn when every match fits", async () => {
+    listSessionsMock.mockResolvedValue(
+      Array.from({ length: 12 }, (_, i) => session({ id: `${i}`.padStart(8, "0") + "-0000-0000-0000-000000000000" })),
+    );
+    const text = ((await run("--limit 25 untitled")) as { text: string }).text;
+    expect(text).toContain("12 sessions match");
+    expect(text).not.toContain("More sessions match");
+  });
+
+  it.each(["--limit 0 untitled", "--limit 101 untitled", "--limit nope untitled", "--limit= untitled"])(
+    "rejects an invalid limit: %s",
+    async (args) => {
+      const result = await run(args);
+      expect((result as { text: string }).text).toContain("Usage: /search --limit");
+      expect(listSessionsMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("matches a session by its saved name even when no message text matches", async () => {
     listSessionsMock.mockResolvedValue([
       session({
