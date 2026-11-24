@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import { resolve } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import type { ToolDefinition } from "../tools/types.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -16,7 +18,9 @@ let response: unknown;
 let rpcError: string | undefined;
 let autoReply: boolean;
 let responseChunks: (frame: Buffer) => Buffer[];
+let diagnosticsPayload: unknown[] | undefined;
 const requests: { id: number; method: string; params: unknown }[] = [];
+const notifications: { method: string; params: unknown }[] = [];
 
 function encodeFrame(message: unknown): Buffer {
   const body = Buffer.from(JSON.stringify(message), "utf8");
@@ -28,6 +32,8 @@ beforeEach(async () => {
   vi.useFakeTimers();
   vi.mocked(spawn).mockReset();
   requests.length = 0;
+  notifications.length = 0;
+  diagnosticsPayload = undefined;
   response = null;
   rpcError = undefined;
   autoReply = true;
@@ -39,6 +45,19 @@ beforeEach(async () => {
       write(chunk, _encoding, callback) {
         const frame = chunk.toString();
         const request = JSON.parse(frame.slice(frame.indexOf("\r\n\r\n") + 4));
+        if (request.id === undefined) {
+          notifications.push(request);
+          // Publish the configured diagnostics as soon as the document opens.
+          if (diagnosticsPayload && (request.method === "textDocument/didOpen" || request.method === "textDocument/didChange")) {
+            const uri = request.params?.textDocument?.uri;
+            const frameOut = encodeFrame({
+              jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri, diagnostics: diagnosticsPayload },
+            });
+            Promise.resolve().then(() => child.stdout.write(frameOut));
+          }
+          callback();
+          return;
+        }
         requests.push(request);
         const reply = request.method === "initialize"
           ? { result: { capabilities: {} } }
@@ -212,10 +231,38 @@ describe("lsp result formatting", () => {
     expect(await tool.execute({ ...input, operation })).toEqual({ output: rpcError, isError: true });
   });
 
-  it("leaves the diagnostics placeholder unchanged", async () => {
-    expect(await tool.execute({ ...input, operation: "diagnostics" })).toEqual({
-      output: "Diagnostics requested. Results come via notifications (not yet captured).", isError: false,
-    });
-    expect(requests.map((request) => request.method)).toEqual(["initialize", "textDocument/didOpen"]);
+  it("returns the diagnostics a server publishes for the opened document", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "agav-lsp-"));
+    const path = join(directory, "example.ts");
+    writeFileSync(path, "const value: string = 1;\n");
+    try {
+      diagnosticsPayload = [{
+        severity: 1, message: "Type 'number' is not assignable to type 'string'.",
+        range: { start: { line: 0, character: 6 }, end: { line: 0, character: 11 } },
+      }];
+      expect(await tool.execute({ path, operation: "diagnostics" })).toEqual({
+        output: "1:7-1:12  error  Type 'number' is not assignable to type 'string'.",
+        isError: false,
+      });
+      expect(notifications.map((request) => request.method)).toContain("textDocument/didOpen");
+      // The file content reaches the server; nothing is written back.
+      expect(JSON.stringify(notifications[0]?.params)).toContain("const value");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("says when a server publishes no diagnostics in time", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "agav-lsp-"));
+    const path = join(directory, "quiet.ts");
+    writeFileSync(path, "export const ok = 1;\n");
+    try {
+      diagnosticsPayload = [];
+      const result = await tool.execute({ path, operation: "diagnostics" });
+      // An empty publish still arrives, so this is the explicit empty result.
+      expect(result).toEqual({ output: `No diagnostics for ${path}.`, isError: false });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });

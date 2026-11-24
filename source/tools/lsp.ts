@@ -1,12 +1,19 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { ToolDefinition, ToolResult } from "./types.js";
 
 interface LSPServer {
   process: ChildProcess;
   nextId: number;
   pending: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>;
+  /** Last publishDiagnostics payload per document uri. */
+  diagnostics: Map<string, unknown[]>;
+  /** Waiters resolved when that uri publishes again. */
+  diagnosticWaiters: Map<string, Array<(value: unknown[] | null) => void>>;
+  /** didOpen done, so the next query has to send didChange instead. */
+  opened: Map<string, number>;
   failure?: Error;
   fail: (error: Error) => void;
 }
@@ -93,6 +100,7 @@ function getOrStartServer(lang: string): LSPServer | null {
     };
     const server: LSPServer = {
       process: proc, nextId: 1, pending: new Map(),
+      diagnostics: new Map(), diagnosticWaiters: new Map(), opened: new Map(),
       fail(error) {
         // Exit is not a transport failure: stdout may still contain responses.
         if (disposed || finished || exited) return;
@@ -140,6 +148,17 @@ function getOrStartServer(lang: string): LSPServer | null {
             const p = server.pending.get(msg.id)!;
             if (msg.error) p.reject(new Error(msg.error.message));
             else p.resolve(msg.result);
+          } else if (msg.method === "textDocument/publishDiagnostics") {
+            const uri = msg.params?.uri;
+            if (typeof uri === "string") {
+              const list = Array.isArray(msg.params.diagnostics) ? msg.params.diagnostics : [];
+              server.diagnostics.set(uri, list);
+              const waiters = server.diagnosticWaiters.get(uri);
+              if (waiters?.length) {
+                server.diagnosticWaiters.delete(uri);
+                for (const resolve of waiters) resolve(list);
+              }
+            }
           }
         } catch {}
       }
@@ -202,6 +221,74 @@ function sendRequest(server: LSPServer, method: string, params: unknown): Promis
   });
 }
 
+/** Send a JSON-RPC notification (no id, no response expected). */
+function sendNotification(server: LSPServer, method: string, params: unknown): void {
+  if (server.failure || !server.process.stdin?.writable) return;
+  try {
+    const body = JSON.stringify({ jsonrpc: "2.0", method, params });
+    server.process.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`, (error) => {
+      if (error) server.fail(error);
+    });
+  } catch (error) {
+    server.fail(error instanceof Error ? error : new Error(String(error)));
+  }
+}
+
+/** How long a server gets to publish diagnostics for a freshly opened document. */
+export const DIAGNOSTIC_WAIT_MS = 3_000;
+const MAX_DIAGNOSTIC_OUTPUT = 12_000;
+const SEVERITY_NAMES: Record<number, string> = { 1: "error", 2: "warning", 3: "information", 4: "hint" };
+
+interface DiagnosticLike {
+  severity?: number;
+  message?: string;
+  source?: string;
+  range?: { start?: { line?: number; character?: number }; end?: { line?: number; character?: number } };
+}
+
+/**
+ * One line per diagnostic: one-based `startLine:startCol-endLine:endCol`,
+ * severity and message, sorted by position. Malformed entries are skipped.
+ */
+export function formatDiagnostics(diagnostics: unknown[]): string[] {
+  const rows: Array<{ position: number[]; text: string }> = [];
+  for (const entry of diagnostics) {
+    if (!entry || typeof entry !== "object") continue;
+    const d = entry as DiagnosticLike;
+    const message = typeof d.message === "string" ? d.message.replace(/\s+/g, " ").trim() : "";
+    if (!message) continue;
+    const start = d.range?.start ?? {};
+    const end = d.range?.end ?? {};
+    const one = (value: unknown) => (typeof value === "number" && value >= 0 ? value + 1 : 1);
+    const [sl, sc, el, ec] = [one(start.line), one(start.character), one(end.line), one(end.character)];
+    const severity = SEVERITY_NAMES[Number(d.severity)] ?? "diagnostic";
+    const source = typeof d.source === "string" && d.source ? ` (${d.source})` : "";
+    rows.push({ position: [sl, sc, el, ec], text: `${sl}:${sc}-${el}:${ec}  ${severity}  ${message}${source}` });
+  }
+  return rows
+    .sort((a, b) => a.position[0]! - b.position[0]! || a.position[1]! - b.position[1]! || a.position[2]! - b.position[2]!)
+    .map((row) => row.text);
+}
+
+/** Resolve with the next publishDiagnostics for `uri`, or null after `timeoutMs`. */
+function waitForDiagnostics(server: LSPServer, uri: string, timeoutMs: number): Promise<unknown[] | null> {
+  return new Promise((resolve) => {
+    const finish = (value: unknown[] | null) => {
+      clearTimeout(timer);
+      const waiters = server.diagnosticWaiters.get(uri);
+      if (waiters) {
+        const next = waiters.filter((waiter) => waiter !== finish);
+        if (next.length) server.diagnosticWaiters.set(uri, next);
+        else server.diagnosticWaiters.delete(uri);
+      }
+      resolve(value);
+    };
+    // Registered before the notification is written so a fast publish is not missed.
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    server.diagnosticWaiters.set(uri, [...(server.diagnosticWaiters.get(uri) ?? []), finish]);
+  });
+}
+
 export const lspTool: ToolDefinition = {
   schema: {
     name: "lsp_query",
@@ -256,12 +343,45 @@ export const lspTool: ToolDefinition = {
       let result: unknown;
 
       switch (operation) {
-        case "diagnostics":
-          // Open document to trigger diagnostics
-          sendRequest(server, "textDocument/didOpen", {
-            textDocument: { uri, languageId: lang, version: 1, text: "" },
-          }).catch(() => {});
-          return { output: "Diagnostics requested. Results come via notifications (not yet captured).", isError: false };
+        case "diagnostics": {
+          let text: string;
+          try {
+            text = await readFile(filePath, "utf-8");
+          } catch (error) {
+            return { output: `Could not read ${filePath}: ${error instanceof Error ? error.message : String(error)}`, isError: true };
+          }
+          // Drop any earlier set so a quiet server cannot show stale problems.
+          server.diagnostics.delete(uri);
+          const pending = waitForDiagnostics(server, uri, DIAGNOSTIC_WAIT_MS);
+          const version = (server.opened.get(uri) ?? 0) + 1;
+          if (server.opened.has(uri)) {
+            sendNotification(server, "textDocument/didChange", {
+              textDocument: { uri, version },
+              contentChanges: [{ text }],
+            });
+          } else {
+            sendNotification(server, "textDocument/didOpen", {
+              textDocument: { uri, languageId: lang, version, text },
+            });
+          }
+          server.opened.set(uri, version);
+          const published = await pending;
+          if (published === null) {
+            return {
+              output: `No diagnostics were reported for ${filePath} within ${DIAGNOSTIC_WAIT_MS / 1000}s.`,
+              isError: false,
+            };
+          }
+          const lines = formatDiagnostics(published);
+          if (lines.length === 0) return { output: `No diagnostics for ${filePath}.`, isError: false };
+          const out = lines.join("\n");
+          return {
+            output: out.length > MAX_DIAGNOSTIC_OUTPUT
+              ? `${out.slice(0, MAX_DIAGNOSTIC_OUTPUT)}\n... (truncated; ${lines.length} diagnostics)`
+              : out,
+            isError: false,
+          };
+        }
 
         case "definition":
           result = await sendRequest(server, "textDocument/definition", {
