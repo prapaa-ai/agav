@@ -211,6 +211,12 @@ describe("getChangelog full cached release notes", () => {
     expect(await getChangelog()).toBe(header + notes);
   });
 
+  it.each(["<!-->", "<!--->"])("does not let an empty HTML comment hide the Installation heading (%s)", async (comment) => {
+    const notes = `## Changes\n\n- First fix ${comment}\n\n- Last fix`;
+    await seed(`${notes}\n\n## Installation\nHidden`);
+    expect(await getChangelog()).toBe(header + notes);
+  });
+
   it("preserves real cross-token comments surrounding reference-definition gaps", async () => {
     const notes = '## Changes\n\n<details>\n<!--\n\n[example]: https://example.com "-->"\n\n## Installation\n\n<div>--></div>\n</details>\n\n- Last fix';
     await seed(`${notes}\n\n## Installation\nHidden`);

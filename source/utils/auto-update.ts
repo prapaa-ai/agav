@@ -689,6 +689,16 @@ export async function getChangelog(): Promise<string> {
           continue;
         }
       }
+      // HTML closes an empty comment immediately on `>` or `->` after
+      // the opener. Marked can emit these as complete inline HTML units.
+      if (!inComment && html && text.startsWith("<!-->", position)) {
+        position += 5;
+        continue;
+      }
+      if (!inComment && html && text.startsWith("<!--->", position)) {
+        position += 6;
+        continue;
+      }
       const marker = inComment ? "-->" : "<!--";
       if (text.startsWith(marker, position)) {
         position += marker.length;
