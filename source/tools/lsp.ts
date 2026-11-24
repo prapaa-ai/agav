@@ -202,18 +202,77 @@ function sendRequest(server: LSPServer, method: string, params: unknown): Promis
   });
 }
 
+/** LSP SymbolKind names (LSP 3.17). Unknown kinds fall back to `Symbol(<n>)`. */
+const SYMBOL_KINDS: Record<number, string> = {
+  1: "File", 2: "Module", 3: "Namespace", 4: "Package", 5: "Class",
+  6: "Method", 7: "Property", 8: "Field", 9: "Constructor", 10: "Enum",
+  11: "Interface", 12: "Function", 13: "Variable", 14: "Constant",
+  15: "String", 16: "Number", 17: "Boolean", 18: "Array", 19: "Object",
+  20: "Key", 21: "Null", 22: "EnumMember", 23: "Struct", 24: "Event",
+  25: "Operator", 26: "TypeParameter",
+};
+
+/** Cap on rendered symbols so a very large file cannot flood the model context. */
+const MAX_DOCUMENT_SYMBOLS = 200;
+
+function symbolKindName(kind: unknown): string {
+  return typeof kind === "number" ? (SYMBOL_KINDS[kind] ?? `Symbol(${kind})`) : "Symbol";
+}
+
+/** Format an LSP range as one-based `startLine:startChar-endLine:endChar`. */
+function formatRange(range: unknown): string {
+  const r = range as {
+    start?: { line?: unknown; character?: unknown };
+    end?: { line?: unknown; character?: unknown };
+  } | null | undefined;
+  const start = r?.start;
+  const end = r?.end;
+  if (typeof start?.line !== "number" || typeof end?.line !== "number") return "";
+  const startChar = typeof start.character === "number" ? start.character + 1 : 1;
+  const endChar = typeof end.character === "number" ? end.character + 1 : 1;
+  return `${start.line + 1}:${startChar}-${end.line + 1}:${endChar}`;
+}
+
+/**
+ * Render document symbols as a compact indented tree, preserving nesting.
+ * Accepts DocumentSymbol[] (nested via `children`) and SymbolInformation[]
+ * (flat, with `location.range`). Stops after MAX_DOCUMENT_SYMBOLS.
+ */
+function formatDocumentSymbols(symbols: unknown[]): { lines: string[]; truncated: boolean } {
+  const lines: string[] = [];
+  let total = 0;
+  let truncated = false;
+  const render = (symbol: any, depth: number): void => {
+    if (total >= MAX_DOCUMENT_SYMBOLS) { truncated = true; return; }
+    total += 1;
+    const range = formatRange(symbol?.range ?? symbol?.location?.range);
+    const label = `${symbolKindName(symbol?.kind)} ${String(symbol?.name ?? "(unnamed)")}${range ? ` [${range}]` : ""}`;
+    lines.push(`${"  ".repeat(depth)}${label}`);
+    const children = Array.isArray(symbol?.children) ? symbol.children : [];
+    for (const child of children) {
+      if (total >= MAX_DOCUMENT_SYMBOLS) { truncated = true; break; }
+      render(child, depth + 1);
+    }
+  };
+  for (const symbol of symbols) {
+    if (total >= MAX_DOCUMENT_SYMBOLS) { truncated = true; break; }
+    render(symbol, 0);
+  }
+  return { lines, truncated };
+}
+
 export const lspTool: ToolDefinition = {
   schema: {
     name: "lsp_query",
     description:
-      "Query a language server for code intelligence. Supports: diagnostics, definition, references, hover. " +
+      "Query a language server for code intelligence. Supports: diagnostics, definition, references, hover, document_symbols. " +
       "Auto-detects language server based on file extension.",
     inputSchema: {
       type: "object",
       properties: {
         operation: {
           type: "string",
-          enum: ["diagnostics", "definition", "references", "hover"],
+          enum: ["diagnostics", "definition", "references", "hover", "document_symbols"],
           description: "The LSP operation to perform",
         },
         path: {
@@ -291,6 +350,25 @@ export const lspTool: ToolDefinition = {
             return { output: text, isError: false };
           }
           return { output: "No hover information.", isError: false };
+
+        case "document_symbols":
+          result = await sendRequest(server, "textDocument/documentSymbol", {
+            textDocument: { uri },
+          });
+          if (!result || (Array.isArray(result) && result.length === 0)) {
+            return { output: "No symbols found.", isError: false };
+          }
+          if (!Array.isArray(result)) {
+            return { output: `Unexpected documentSymbol response: ${JSON.stringify(result)}`, isError: true };
+          }
+          const { lines, truncated } = formatDocumentSymbols(result);
+          if (lines.length === 0) {
+            return { output: "No symbols found.", isError: false };
+          }
+          if (truncated) {
+            lines.push(`... (truncated after ${MAX_DOCUMENT_SYMBOLS} symbols)`);
+          }
+          return { output: lines.join("\n"), isError: false };
 
         default:
           return { output: `Unknown operation: ${operation}`, isError: true };
