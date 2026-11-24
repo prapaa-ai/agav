@@ -145,8 +145,14 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
   live.current = { ...live.current, view, detail, itemId: item?.id, searchQuery };
 
   const reload = async () => {
+    // Keep the selected resource, not its row: a manual refresh must not move
+    // the highlight to whatever was inserted above it.
+    const previousId = item?.id;
     const loaded = await adapter.list();
-    if (mounted.current) { setItems(loaded); setIndex((i) => Math.min(i, Math.max(0, loaded.length - 1))); }
+    if (!mounted.current) return;
+    setItems(loaded);
+    const at = previousId === undefined ? -1 : filterResources(loaded, searchQuery).findIndex((entry) => entry.id === previousId);
+    setIndex((i) => at >= 0 ? at : Math.min(i, Math.max(0, loaded.length - 1)));
   };
   const run = async (operation: () => Promise<void>) => {
     if (busyRef.current) return;
