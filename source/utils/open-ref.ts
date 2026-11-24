@@ -12,26 +12,33 @@ export type OpenRef =
   | { kind: "path"; absPath: string; line?: number; col?: number };
 
 export function encodeOpenRef(ref: OpenRef): string {
-  return JSON.stringify(ref);
+  if (ref.kind !== "path") return JSON.stringify(ref);
+  // JSON would encode non-finite coordinates as null, invalidating the ref.
+  const { line, col, ...path } = ref;
+  return JSON.stringify({
+    ...path,
+    line: isOptionalFiniteNumber(line) ? line : undefined,
+    col: isOptionalFiniteNumber(col) ? col : undefined,
+  });
 }
 
-function isOptionalNumber(value: unknown): boolean {
-  return value === undefined || typeof value === "number";
+function isOptionalFiniteNumber(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value));
 }
 
 function isOpenRef(value: unknown): value is OpenRef {
-  if (!value || typeof value !== "object") return false;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const ref = value as Record<string, unknown>;
   switch (ref.kind) {
     case "attachment":
-      return typeof ref.id === "number";
+      return typeof ref.id === "number" && Number.isSafeInteger(ref.id) && ref.id > 0;
     case "url":
-      return typeof ref.url === "string";
+      return typeof ref.url === "string" && ref.url.trim().length > 0;
     case "path":
       return (
-        typeof ref.absPath === "string" &&
-        isOptionalNumber(ref.line) &&
-        isOptionalNumber(ref.col)
+        typeof ref.absPath === "string" && ref.absPath.trim().length > 0 &&
+        isOptionalFiniteNumber(ref.line) &&
+        isOptionalFiniteNumber(ref.col)
       );
     default:
       return false;

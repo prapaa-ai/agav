@@ -12,6 +12,7 @@ describe("decodeOpenRef", () => {
       { kind: "url", url: "https://example.com" },
       { kind: "path", absPath: "/tmp/a.ts" },
       { kind: "path", absPath: "/tmp/a.ts", line: 12, col: 4 },
+      { kind: "path", absPath: "/tmp/a.ts", line: 0 },
     ];
     for (const ref of refs) {
       expect(decodeOpenRef(encodeOpenRef(ref))).toEqual(ref);
@@ -35,8 +36,30 @@ describe("decodeOpenRef", () => {
     expect(decodeOpenRef('{"kind":"path","absPath":"/a","col":null}')).toBeNull();
   });
 
+  it("omits non-finite path coordinates while preserving finite ones", () => {
+    expect(decodeOpenRef(encodeOpenRef({ kind: "path", absPath: "/a", line: NaN, col: 4 })))
+      .toEqual({ kind: "path", absPath: "/a", col: 4 });
+    expect(decodeOpenRef(encodeOpenRef({ kind: "path", absPath: "/a", line: 0, col: Infinity })))
+      .toEqual({ kind: "path", absPath: "/a", line: 0 });
+  });
+
+  it.each([
+    '{"kind":"attachment","id":null}',
+    '{"kind":"attachment","id":-1}',
+    '{"kind":"attachment","id":0}',
+    '{"kind":"attachment","id":1.5}',
+    '{"kind":"attachment","id":9007199254740992}',
+    '{"kind":"url","url":""}',
+    '{"kind":"path","absPath":" "}',
+    '{"kind":"path","absPath":"/a","line":1e999}',
+    '{"kind":"path","absPath":"/a","col":-1e999}',
+  ])("rejects unusable field values: %s", (key) => {
+    expect(decodeOpenRef(key)).toBeNull();
+  });
+
   it("returns null for non-ref ids and malformed input", () => {
     expect(decodeOpenRef("plain-id")).toBeNull();
+    expect(decodeOpenRef("[]")).toBeNull();
     expect(decodeOpenRef("null")).toBeNull();
     expect(decodeOpenRef("42")).toBeNull();
     expect(decodeOpenRef("{")).toBeNull();
