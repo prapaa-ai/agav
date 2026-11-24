@@ -26,6 +26,18 @@ describe("MCP authentication CLI", () => {
     expect(process.exit).toHaveBeenCalledWith(0);
     expect(command === "auth" ? mocks.auth : mocks.disconnect).toHaveBeenCalledOnce();
   });
+  it("lists configured servers by name and kind without connecting", async () => {
+    expect(await runMCPCommand("list", [])).toBe(0);
+    expect(console.log).toHaveBeenCalledWith("Configured MCP servers:\n  figma  remote\n  local  local");
+    expect(mocks.auth).not.toHaveBeenCalled();
+    expect(mocks.disconnect).not.toHaveBeenCalled();
+  });
+  it("has an explicit empty state for no configured servers", async () => {
+    mocks.config.mockResolvedValueOnce({ mcpServers: {} });
+    expect(await runMCPCommand("list", [])).toBe(0);
+    expect(console.log).toHaveBeenCalledWith("No MCP servers configured.");
+  });
+
   it("authenticates and removes its signal handlers", async () => {
     const count = process.listenerCount("SIGINT");
     expect(await runMCPCommand("auth", ["figma"])).toBe(0);
