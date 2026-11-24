@@ -68,6 +68,16 @@ Keep it current:
 agav update
 ```
 
+### Color output
+
+Agav follows the terminal it runs in and three environment variables:
+
+- `NO_COLOR`, when defined, turns color off (it wins over everything else).
+- `TERM=dumb` turns color off unless `FORCE_COLOR` is set.
+- `FORCE_COLOR` turns color on even without a TTY; an empty value, `0` or `false` turns it off.
+
+The reference lists the rest of the [environment variables](docs/docs/reference/cli.md#environment-variables).
+
 ## Why harness efficiency matters
 
 AI coding costs are often a harness problem, not just a model problem.
