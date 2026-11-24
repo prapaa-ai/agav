@@ -42,6 +42,20 @@ describe("tools/web_search", () => {
     await expect(search()).resolves.toEqual({ output: "Search failed: fetch failed", isError: true });
   });
 
+  it("leaves a result without a snippet empty instead of shifting the next one", async () => {
+    const html =
+      '<a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fone.example%2F">One</a>' +
+      '<a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Ftwo.example%2F">Two</a>' +
+      '<a class="result__snippet" href="#">Only two has this snippet</a>';
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(html, { status: 200 })));
+
+    await expect(search()).resolves.toEqual({
+      output: "1. One\n   https://one.example/\n   " +
+        "\n\n2. Two\n   https://two.example/\n   Only two has this snippet",
+      isError: false,
+    });
+  });
+
   it("returns parsed results for a normal response", async () => {
     const html =
       '<a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2F&rut=x">Example <b>Site</b></a>' +
