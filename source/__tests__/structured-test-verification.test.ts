@@ -168,6 +168,28 @@ describe("built-in test runner", () => {
     const result = await testRunnerTool.execute({ framework: "pytest" });
     expect(result.isError).toBe(false);
     expect(result.verification).toMatchObject({ status: "inconclusive", passed: 0, exitCode: 0 });
+    expect(result.output).toContain("Passed: 0 | Failed: 0 | Skipped: 1");
+  });
+  it("reports nonzero pytest skipped counts alongside passed, failed, and errors", async () => {
+    childOutput("2 passed, 3 skipped in 0.05s\n");
+    const passedRun = await testRunnerTool.execute({ framework: "pytest" });
+    expect(passedRun.isError).toBe(false);
+    expect(passedRun.verification).toMatchObject({ status: "passed", passed: 2, failed: 0, errors: 0, exitCode: 0 });
+    expect(passedRun.output).toContain("Passed: 2 | Failed: 0 | Skipped: 3");
+
+    childOutput("1 passed, 1 failed, 2 errors, 4 skipped in 0.12s\n", Object.assign(new Error("pytest failed"), { code: 1 }));
+    const failedRun = await testRunnerTool.execute({ framework: "pytest" });
+    expect(failedRun.isError).toBe(true);
+    expect(failedRun.verification).toMatchObject({ status: "failed", passed: 1, failed: 1, errors: 2, exitCode: 1 });
+    expect(failedRun.output).toContain("Passed: 1 | Failed: 1 | Errors: 2 | Skipped: 4");
+  });
+  it("ignores lookalike skipped counts in captured logs when final pytest summary has none", async () => {
+    childOutput("captured stdout: 5 skipped\n5 skipped in 0.01s\n2 passed in 0.03s\n");
+    const result = await testRunnerTool.execute({ framework: "pytest" });
+    expect(result.isError).toBe(false);
+    expect(result.verification).toMatchObject({ status: "passed", passed: 2, exitCode: 0 });
+    expect(result.output).toContain("Passed: 2 | Failed: 0");
+    expect(result.output).not.toContain("Skipped:");
   });
   it.each([
     "2 passed, 1 warning in 0.03s",

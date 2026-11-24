@@ -15,6 +15,7 @@ interface TestResults {
   passed: number;
   failed: number;
   errors: number;
+  skipped?: number;
   failures: TestFailure[];
   raw?: string;
 }
@@ -102,6 +103,7 @@ function parsePytest(output: string): TestResults {
   let passed = 0;
   let failed = 0;
   let errors = 0;
+  let skipped = 0;
 
   // Counts must come from pytest's result summary, not warnings or captured logs.
   const summaries = output.match(/^[ \t]*(?:=+[ \t]*)?\d+[ \t]+(?:passed|failed|errors?|skipped|deselected|warnings?|xfailed|xpassed)(?:,[ \t]*\d+[ \t]+(?:passed|failed|errors?|skipped|deselected|warnings?|xfailed|xpassed))*[ \t]+in[ \t]+\d+(?:\.\d+)?s(?:[ \t]+\([^\n]*\))?[ \t]*(?:=+)?[ \t]*$/gm);
@@ -109,6 +111,7 @@ function parsePytest(output: string): TestResults {
   passed = Number(summary.match(/(\d+)\s+passed/)?.[1] ?? 0);
   failed = Number(summary.match(/(\d+)\s+failed/)?.[1] ?? 0);
   errors = Number(summary.match(/(\d+)\s+errors?/)?.[1] ?? 0);
+  skipped = Number(summary.match(/(\d+)\s+skipped/)?.[1] ?? 0);
 
   const failureBlocks = output.split(/^FAILED\s+/m).slice(1);
   for (const block of failureBlocks) {
@@ -140,7 +143,7 @@ function parsePytest(output: string): TestResults {
     }
   }
 
-  return { framework: "pytest", passed, failed, errors, failures };
+  return { framework: "pytest", passed, failed, errors, skipped, failures };
 }
 
 function parseJsTest(output: string, framework: string): TestResults {
@@ -237,7 +240,7 @@ function parseOutput(framework: Framework, output: string): TestResults {
 function formatResults(results: TestResults): string {
   const lines: string[] = [];
   lines.push(`Framework: ${results.framework}`);
-  lines.push(`Passed: ${results.passed} | Failed: ${results.failed}${results.errors ? ` | Errors: ${results.errors}` : ""}`);
+  lines.push(`Passed: ${results.passed} | Failed: ${results.failed}${results.errors ? ` | Errors: ${results.errors}` : ""}${results.skipped ? ` | Skipped: ${results.skipped}` : ""}`);
 
   if (results.failures.length > 0) {
     lines.push("");
