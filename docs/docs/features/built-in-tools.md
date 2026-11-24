@@ -184,7 +184,7 @@ The file tools (`read_file`, `write_file`, `edit_file`) enforce path boundary ch
 
 ## Shell execution
 
-Shell commands have a 30-second default timeout and [bounded output](#output-limits-and-recovery). Agav auto-detects macOS Seatbelt, Linux Bubblewrap, or the Windows restricted-token helper (enabled by default on Windows); Docker can be requested as a `run_command` override.
+Shell commands have a 30-second default timeout and [bounded output](#output-limits-and-recovery). Agav auto-detects macOS Seatbelt, Linux Bubblewrap, or the Windows restricted-token helper (enabled by default on Windows); Docker can be requested as a `run_command` override. `run_command` accepts an optional `cwd` working directory; relative paths resolve against the current working directory, and a missing path or a non-directory is rejected before the command runs.
 
 `run_command` streams stdout/stderr, so a large output no longer fails merely by exceeding the old shell buffer. Small results show stdout followed by stderr; oversized results and saved logs use observed arrival order across the two streams. Above 40,000 decoded UTF-8 bytes (or when status/separator formatting crosses that limit), it saves a log and returns a Unicode-safe head/tail preview. The shared registry can additionally truncate results exceeding 2,000 lines.
 
