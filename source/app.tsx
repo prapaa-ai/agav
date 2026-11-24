@@ -2023,7 +2023,10 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
                   const { saveStatusBarLayout } = await import("./config/config.js");
                   await saveStatusBarLayout(toStore);
                 } catch {
-                  // Never let a persistence failure break the session.
+                  // Keep the in-session layout, but say it will not survive a
+                  // restart instead of failing silently. Never show config contents.
+                  setCopyNotice("Settings could not be saved; this layout is session-only");
+                  setTimeout(() => setCopyNotice(null), 4000);
                 }
               })();
               const resolve = customizeTUIResolveRef.current;
