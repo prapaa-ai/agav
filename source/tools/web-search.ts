@@ -3,6 +3,9 @@ import type { ToolDefinition, ToolResult } from "./types.js";
 /** Same bound as fetch_url; covers both the request and reading the body. */
 export const SEARCH_TIMEOUT_MS = 30_000;
 
+/** Results kept from one page of search hits. */
+export const MAX_RESULTS = 8;
+
 export const webSearchTool: ToolDefinition = {
   schema: {
     name: "web_search",
@@ -44,7 +47,7 @@ export const webSearchTool: ToolDefinition = {
       }
 
       const formatted = results
-        .slice(0, 8)
+        .slice(0, MAX_RESULTS)
         .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`)
         .join("\n\n");
 
