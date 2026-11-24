@@ -3,8 +3,23 @@ import { MCPOAuth } from "../mcp/oauth.js";
 
 /** Authenticate a configured remote server without starting an agent session. */
 export async function runMCPCommand(command: string | undefined, args: string[]): Promise<number> {
-  const usage = "Usage: agav mcp auth <name> | agav mcp logout <name>";
+  const usage = "Usage: agav mcp list | agav mcp auth <name> | agav mcp logout <name>";
   if (!command) { console.log(usage); return 0; }
+  if (command === "list") {
+    if (args.length > 0) { console.error(usage); return 1; }
+    const config = await loadConfig();
+    const servers = config.mcpServers ?? {};
+    const names = Object.keys(servers).sort();
+    if (names.length === 0) { console.log("No MCP servers configured."); return 0; }
+    // Read-only inventory: never print endpoints, commands, env or credentials.
+    const rows = names.map((name) => {
+      const server = servers[name];
+      const kind = server && typeof server === "object" && "url" in server && server.url ? "remote" : "local";
+      return `  ${name}  ${kind}`;
+    });
+    console.log(`Configured MCP servers:\n${rows.join("\n")}`);
+    return 0;
+  }
   if (command !== "auth" && command !== "logout") { console.error(usage); return 1; }
   if (args[0] === "--") args = args.slice(1);
   if (args.length !== 1 || !args[0]) { console.error(usage); return 1; }
