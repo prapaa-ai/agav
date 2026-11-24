@@ -72,16 +72,19 @@ function parseResults(html: string): SearchResult[] {
   const results: SearchResult[] = [];
 
   const linkRegex = /<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gs;
-  const snippetRegex = /<a[^>]+class="result__snippet"[^>]*>(.*?)<\/a>/gs;
+  const snippetRegex = /<a[^>]+class="result__snippet"[^>]*>(.*?)<\/a>/s;
 
   const links = [...html.matchAll(linkRegex)];
-  const snippets = [...html.matchAll(snippetRegex)];
 
   for (let i = 0; i < links.length; i++) {
     const link = links[i]!;
     let url = link[1] ?? "";
     const title = stripTags(link[2] ?? "");
-    const snippet = stripTags(snippets[i]?.[1] ?? "");
+    // A snippet belongs to the row between this link and the next one. A
+    // result without a snippet stays empty instead of borrowing the next one.
+    const rowEnd = links[i + 1]?.index ?? html.length;
+    const row = html.slice(link.index! + link[0].length, rowEnd);
+    const snippet = stripTags(row.match(snippetRegex)?.[1] ?? "");
 
     // DuckDuckGo wraps URLs in a redirect
     const uddg = url.match(/uddg=([^&]+)/);
