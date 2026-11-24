@@ -73,6 +73,98 @@ async function mount(props: Partial<Parameters<typeof ToolConfirm>[0]> = {}, { c
   return { instance, stdin, stdout, onConfirm, getFrame };
 }
 
+describe("ToolConfirm shell commands", () => {
+  const flush = async (instance: Ink) => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await instance.waitUntilRenderFlush();
+  };
+
+  const clickRow = async (ui: Awaited<ReturnType<typeof mount>>, text: string) => {
+    const row = ui.getFrame().split("\n").findIndex((line) => line.includes(text));
+    expect(row).toBeGreaterThanOrEqual(0);
+    ui.stdin.emit("data", `\x1b[<0;5;${row + 1}M\x1b[<0;5;${row + 1}m`);
+    await flush(ui.instance);
+  };
+
+  it.each(["run_command", "skill_shell_block"])("starts with the compact %s preview and expands on click", async (toolName) => {
+    const first = `printf '%s' '${"x".repeat(90)}'`;
+    const last = `printf '%s' '${process.cwd()}/test.txt'`;
+    const ui = await mount({ toolName, input: { command: `${first}\n${last}` } }, { columns: 160 });
+    try {
+      const compact = ui.getFrame();
+      expect(compact).toContain(`command: ${first.slice(0, 80)}...`);
+      expect(compact.split(first.slice(0, 60))).toHaveLength(2);
+      expect(compact).not.toContain(last);
+
+      await clickRow(ui, "command:");
+      expect(ui.getFrame()).toContain(first);
+      expect(ui.getFrame()).toContain(last);
+      expect(ui.getFrame()).not.toContain("...");
+
+      await clickRow(ui, "command:");
+      expect(ui.getFrame()).toBe(compact);
+      expect(ui.onConfirm).not.toHaveBeenCalled();
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("scrolls to the end of a wrapped command while keeping approval visible", async () => {
+    const input = { command: `printf '%s' 'START_${"x".repeat(400)}_END'`, timeout_ms: 5000 };
+    const ui = await mount({ toolName: "run_command", input }, { columns: 40, rows: 16 });
+    const { instance, stdin, onConfirm, getFrame } = ui;
+    try {
+      expect(getFrame()).not.toContain("Scroll command");
+      await clickRow(ui, "command:");
+      expect(getFrame()).toContain("START_");
+      expect(getFrame()).not.toContain("_END");
+      expect(getFrame()).toContain("Scroll command");
+      expect(getFrame()).toContain("timeout_ms: 5000");
+      expect(getFrame()).toContain("[Y]es");
+
+      for (let i = 0; i < 20; i++) stdin.emit("data", "\x1b[B");
+      await flush(instance);
+      expect(getFrame()).toContain("_END'");
+      expect(getFrame()).not.toContain("START_");
+      expect(getFrame()).toContain("[Y]es");
+      expect(onConfirm).not.toHaveBeenCalled();
+
+      stdin.emit("data", "y");
+      await flush(instance);
+      expect(onConfirm).toHaveBeenCalledExactlyOnceWith("yes");
+    } finally { instance.unmount(); }
+  });
+
+  it("reflows on a width-only resize and scrolls with the mouse wheel", async () => {
+    const input = { command: `printf '%s' 'START_${"x".repeat(196)}_END'` };
+    const ui = await mount({ toolName: "run_command", input }, { columns: 80, rows: 16 });
+    const { instance, stdin, stdout, onConfirm, getFrame } = ui;
+    try {
+      await clickRow(ui, "command:");
+      expect(getFrame()).toContain("_END'");
+      expect(getFrame()).not.toContain("Scroll command");
+
+      stdout.columns = 35;
+      stdout.emit("resize");
+      await flush(instance);
+      expect(getFrame()).toContain("Scroll command");
+      expect(getFrame()).not.toContain("_END'");
+
+      const commandRow = getFrame().split("\n").findIndex((line) => line.includes("START_"));
+      stdin.emit("data", `\x1b[<65;5;${commandRow + 1}M`);
+      await flush(instance);
+      expect(getFrame()).toContain("_END'");
+      expect(onConfirm).not.toHaveBeenCalled();
+    } finally { instance.unmount(); }
+  });
+
+  it("displays terminal control bytes as text", async () => {
+    const ui = await mount({ toolName: "run_command", input: { command: "printf '\x1b[2J\r\tend'" } });
+    try {
+      await clickRow(ui, "command:");
+      expect(ui.getFrame()).toContain("printf '\\x1b[2J\\x0d\\x09end'");
+    } finally { ui.instance.unmount(); }
+  });
+});
+
 describe("ToolConfirm UI", () => {
   beforeEach(() => {
     writeClipboardMock.mockClear();

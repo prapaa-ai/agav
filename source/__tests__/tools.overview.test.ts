@@ -219,3 +219,31 @@ describe("overview depth", () => {
     expect(result.output).not.toContain("file-200.ts");
   });
 });
+
+describe("hidden overview entries", () => {
+  it("includes hidden source files and directories on request while excluding generated directories", async () => {
+    await file(".local/tool.ts");
+    await file(".local/.nested/hidden.ts");
+    await file(".git/ignored.ts");
+    await file(".agav/cache.ts");
+    await file(".root.ts");
+
+    const standard = await overviewTool.execute({ path, include_symbols: false });
+    expect(standard.output).not.toContain(".root.ts");
+    expect(standard.output).not.toContain("tool.ts");
+
+    const expanded = await overviewTool.execute({ path, depth: 1, include_symbols: false, include_hidden: true });
+    expect(expanded.output).toContain("2 files mapped");
+    expect(expanded.output).toContain(".root.ts");
+    expect(expanded.output).toContain("tool.ts");
+    expect(expanded.output).not.toMatch(/hidden\.ts|ignored\.ts|cache\.ts/);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid flags before traversal", async () => {
+    expect(await overviewTool.execute({ path, include_hidden: "true" })).toEqual({
+      output: "Invalid include_hidden: expected a boolean.", isError: true,
+    });
+    expect(readdir).not.toHaveBeenCalled();
+  });
+});

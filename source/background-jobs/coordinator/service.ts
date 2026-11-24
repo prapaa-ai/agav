@@ -49,7 +49,7 @@ export interface CoordinatorExtensions {
    * (record, control intents, completion events/acks, logs, and its spec when no other job shares it).
    * Refuses any job that is not terminal under fresh liveness evidence (`invalid-state`).
    */
-  deleteJob(jobIdOrPrefix: string): Promise<void>;
+  deleteJob(jobIdOrPrefix: string, options?: { exact?: boolean }): Promise<void>;
   /**
    * Reconcile possibly-orphaned jobs (startup sweep): `running`/`unknown` jobs, plus
    * `accepted`/`starting` jobs created more than `olderThanMs` ago (default 2 min).
@@ -667,8 +667,9 @@ export async function createCoordinator(opts?: CreateCoordinatorOptions): Promis
       }), opts?.admissionRetry);
     },
 
-    async deleteJob(jobIdOrPrefix: string): Promise<void> {
-      const jobId = await resolveJobId(jobIdOrPrefix);
+    async deleteJob(jobIdOrPrefix, options) {
+      // Bulk deletion targets exact IDs from a snapshot; a vanished ID must not match a prefix.
+      const jobId = options?.exact ? jobIdOrPrefix : await resolveJobId(jobIdOrPrefix);
       if ((await repositories.jobs.get(jobId)) === undefined) {
         throw new BackgroundJobError("not-found", `No JobRecord found for jobId "${jobId}".`);
       }

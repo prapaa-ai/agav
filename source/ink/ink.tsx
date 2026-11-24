@@ -1229,6 +1229,7 @@ export default class Ink {
 				}
 			}
 
+			if (ev.action === "move" && target) dispatchMouseMove(target, base);
 			dispatchHover(this.rootNode, this.prevHoverTarget, target, base);
 			this.prevHoverTarget = target;
 		}

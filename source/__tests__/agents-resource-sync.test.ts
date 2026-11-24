@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import chalk from "chalk";
 import { createElement as h } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentDefinition } from "../agents/types.js";
@@ -7,6 +8,7 @@ const state = vi.hoisted(() => ({
   agents: [] as AgentDefinition[],
   cached: [] as AgentDefinition[],
   marketplace: new Map<string, unknown>(),
+  liveMarketplace: false,
   createdAgents: [] as AgentDefinition[],
   registry: {} as Record<string, unknown>,
   createdRegistry: {} as Record<string, unknown>,
@@ -34,11 +36,21 @@ vi.mock("../agents/credentials.js", () => ({
   getMissingCredentials: vi.fn(async () => []),
   saveAgentConfig: vi.fn(),
 }));
-vi.mock("../components/agents-marketplace.js", () => ({
-  MarketplaceTab: (props: { installedAgents: Map<string, unknown> }) => {
+vi.mock("../components/agents-marketplace.js", async (original) => {
+  const { MarketplaceTab } = await original<typeof import("../components/agents-marketplace.js")>();
+  return { MarketplaceTab: (props: Parameters<typeof MarketplaceTab>[0]) => {
     state.marketplace = props.installedAgents;
-    return null;
-  },
+    return state.liveMarketplace ? h(MarketplaceTab, props) : null;
+  } };
+});
+vi.mock("../config/config.js", async (original) => ({
+  ...await original<typeof import("../config/config.js")>(),
+  loadConfig: vi.fn(async () => ({ agentMarketplace: "https://marketplace.example" })),
+}));
+vi.mock("../agents/installer.js", async (original) => ({
+  ...await original<typeof import("../agents/installer.js")>(),
+  installAgent: vi.fn(),
+  uninstallAgent: vi.fn(),
 }));
 vi.mock("../components/agents-create.js", () => ({
   CreateTab: (props: { agents: AgentDefinition[]; registryEntries: Record<string, unknown> }) => {
@@ -48,10 +60,10 @@ vi.mock("../components/agents-create.js", () => ({
   },
 }));
 
+import { installAgent, uninstallAgent } from "../agents/installer.js";
 import { AgentsTUI } from "../components/agents-tui.js";
 import { loadAgents, setCachedAgents } from "../agents/loader.js";
 import { loadAgentConfig, getMissingCredentials } from "../agents/credentials.js";
-import render from "../ink/render.js";
 import Ink from "../ink/ink.js";
 
 function agent(name = "test-agent"): AgentDefinition {
@@ -61,16 +73,14 @@ function agent(name = "test-agent"): AgentDefinition {
   };
 }
 
-async function mount(height?: number) {
+async function mount(height = 30) {
   let output = "";
   const stdout = new EventEmitter() as NodeJS.WriteStream;
-  Object.assign(stdout, { isTTY: true, columns: 160, rows: 30, write: (text: string) => { output += text; return true; } });
+  Object.assign(stdout, { isTTY: true, columns: 160, rows: 40, write: (text: string) => { output += text; return true; } });
   const stdin = new EventEmitter() as NodeJS.ReadStream;
   Object.assign(stdin, { isTTY: true, setRawMode: () => stdin, resume: () => stdin, pause: () => stdin, read: () => null });
-  const instance = height === undefined
-    ? render(h(AgentsTUI, { onExit: vi.fn() }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false })
-    : new Ink({ stdout, stdin, stderr: stdout, patchConsole: false, exitOnCtrlC: false, alternateScreen: false, maxFps: 30 });
-  if (instance instanceof Ink) instance.render(h(AgentsTUI, { onExit: vi.fn(), height }));
+  const instance = new Ink({ stdout, stdin, stderr: stdout, patchConsole: false, exitOnCtrlC: false, alternateScreen: false, maxFps: 30 });
+  instance.render(h(AgentsTUI, { onExit: vi.fn(), height }));
   const settle = async () => {
     for (let i = 0; i < 3; i++) {
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -79,7 +89,8 @@ async function mount(height?: number) {
   };
   const key = async (text: string) => { output = ""; stdin.emit("data", Buffer.from(text)); await settle(); };
   await settle();
-  return { instance, key, settle, output: () => output, frame: () => (instance as unknown as { lastOutput: string }).lastOutput };
+  const click = (column: number, row: number) => key(`\x1b[<0;${column};${row}M\x1b[<0;${column};${row}m`);
+  return { instance, key, click, settle, output: () => output, frame: () => (instance as unknown as { lastOutput: string }).lastOutput };
 }
 
 beforeEach(() => {
@@ -87,6 +98,7 @@ beforeEach(() => {
   state.agents = [agent()];
   state.cached = [];
   state.marketplace = new Map();
+  state.liveMarketplace = false;
   state.createdAgents = [];
   state.registry = {};
   state.createdRegistry = {};
@@ -100,10 +112,35 @@ describe("agents resource manager parent synchronization", () => {
     } finally { ui.instance.unmount(); }
   });
 
+  it("disables tab hover and clicks while the manager is confirming deletion", async () => {
+    const previousLevel = chalk.level;
+    chalk.level = 1;
+    try {
+      const ui = await mount(24);
+      try {
+        const tabBar = () => ui.frame().split("\n").find((line) => line.includes("[2] Marketplace"));
+        await ui.key("\x1b[<35;12;4M");
+        expect(tabBar()).toContain("\x1b[7m");
+        expect(tabBar()).not.toContain("\x1b[4m");
+        await ui.key("d");
+        expect(tabBar()).toBeDefined();
+        expect(tabBar()).not.toContain("\x1b[7m");
+        await ui.key("\x1b[<0;12;4M\x1b[<0;12;4m");
+        expect(state.marketplace.size).toBe(0);
+        await ui.key("n");
+        await ui.key("\x1b[<35;60;4M");
+        await ui.key("\x1b[<35;12;4M");
+        expect(tabBar()).toContain("\x1b[7m");
+      } finally { ui.instance.unmount(); }
+    } finally { chalk.level = previousLevel; }
+  });
+
   it("clears the marketplace installed guard after confirmed deletion", async () => {
     const ui = await mount();
     try {
       await ui.key("d");
+      await ui.click(12, 4); // Marketplace cannot dismiss the delete confirmation.
+      expect(state.marketplace.size).toBe(0);
       await ui.key("y");
       expect(ui.output()).toContain("Deleted.");
       expect(state.cached).toEqual([]);
@@ -137,9 +174,9 @@ describe("agents resource manager parent synchronization", () => {
       await ui.key("r");
       expect(loadAgentConfig).toHaveBeenCalled();
       expect(getMissingCredentials).toHaveBeenCalled();
-      await ui.key("2");
+      await ui.click(12, 4);
       expect([...state.marketplace.keys()]).toEqual(["new-alias"]);
-      await ui.key("3");
+      await ui.click(29, 4);
       expect(state.createdAgents).toEqual(state.agents);
       expect(state.createdRegistry).toEqual(state.registry);
     } finally { ui.instance.unmount(); }
@@ -157,5 +194,44 @@ describe("agents resource manager parent synchronization", () => {
       await ui.key("2");
       expect(state.marketplace.size).toBe(0);
     } finally { ui.instance.unmount(); }
+  });
+});
+
+describe("Agents marketplace mouse selection", () => {
+  it("only selects on click, respects search and installation prompts, and leaves installation to the keyboard", async () => {
+    state.liveMarketplace = true;
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ agents: ["first", "second"].map((name) => ({
+      name, path: name, version: "1.0.0", description: `Description for ${name}`, category: "test", tags: [], "tool-count": 0,
+    })) })));
+    const ui = await mount(30);
+    try {
+      const clickRow = async (label: string) => {
+        const lines = ui.frame().replaceAll(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").split("\n");
+        const row = lines.findIndex((line) => line.includes(label));
+        expect(row).toBeGreaterThanOrEqual(0);
+        await ui.click(lines[row]!.indexOf(label) + 1, row + 1);
+      };
+      await ui.click(12, 4);
+      await ui.settle();
+      expect(ui.frame()).toContain("→ first");
+      await ui.key("s");
+      await clickRow("second v1.0.0");
+      expect(ui.frame()).toContain("→ first");
+      await ui.key("\r"); // finish search
+      await clickRow("second v1.0.0");
+      expect(ui.frame()).toContain("→ second");
+      expect(ui.frame()).not.toContain("Install second:");
+      await ui.key("\r");
+      expect(ui.frame()).toContain("Install second:");
+      await clickRow("first v1.0.0");
+      await ui.click(3, 4); // List is locked while a destination is pending.
+      expect(ui.frame()).toContain("Install second:");
+      expect(ui.frame()).toContain("→ second");
+      expect(installAgent).not.toHaveBeenCalled();
+      expect(uninstallAgent).not.toHaveBeenCalled();
+    } finally {
+      ui.instance.unmount();
+      vi.unstubAllGlobals();
+    }
   });
 });

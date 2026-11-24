@@ -98,7 +98,7 @@ into subdirectories or read file contents.
 | `2` or higher | Files through that many subdirectory levels |
 | Omitted | Unrestricted depth, still subject to the file cap |
 
-Depth must be a non-negative safe integer; invalid values fail before traversal. Hidden directories and common dependency, build, cache, and worktree directories are skipped. The map stops at **200 source files** and reports that it may be incomplete whenever the cap is reached, even if exactly 200 files exist. Narrow `path` or `depth` rather than assuming the first map covered the whole repository. Explicit shallow requests avoid reading deeper source files as well as returning their symbols.
+Depth must be a non-negative safe integer; invalid values fail before traversal. By default, hidden source files and directories are skipped. Set `include_hidden: true` to include them. Common dependency, build, cache, and worktree directories are still skipped. The map stops at **200 source files** and reports that it may be incomplete whenever the cap is reached, even if exactly 200 files exist. Narrow `path` or `depth` rather than assuming the first map covered the whole repository. Explicit shallow requests avoid reading deeper source files as well as returning their symbols.
 
 ### `grep_search`
 
@@ -110,6 +110,12 @@ they match `include`. Use `*` or `?` as wildcards. Directory paths,
 bracket ranges, and escapes are not supported by this option. `include`
 is case-insensitive in the JavaScript fallback (always used on Windows)
 and case-sensitive in native grep.
+
+Use `context_before` and `context_after` (integers from 0 to 50) to show
+surrounding lines. Matches keep the `path:N:text` format, context lines
+use `path-N-text`, overlapping windows are merged, and `--` separates
+non-adjacent groups. `max_results` still counts matches only. Context
+cannot be combined with `files_only`.
 
 ## Structured test runs and verification
 
@@ -167,9 +173,10 @@ Agav records prior content for tracked file edits in an in-memory undo stack:
 ```text
 /undo list
 /undo
+/undo <n>
 ```
 
-The stack contains up to twenty changes and does not survive process exit. A newly created file has no previous content to restore.
+The stack contains up to twenty changes and does not survive process exit. A newly created file has no previous content to restore. `/undo <n>` reverts only the change numbered `<n>` in `/undo list` (1 is the most recent entry) and leaves newer changes in place.
 
 ## File boundaries
 
@@ -193,11 +200,11 @@ The buffered runners used by some integrations still enforce their own output-bu
 
 ## HTTP responses
 
-`fetch_url` supports GET (default), POST, PUT, DELETE, and PATCH, with optional headers and body. It streams the response as decoded text, including raw HTML, with a 30-second request timeout. Once started, it does not consume the turn cancellation signal; Esc does not immediately stop that request or undo a POST or other server-side action. Small results include the HTTP status and body unchanged; above **38,000 decoded UTF-8 bytes**, a response log and bounded head/tail preview are used.
+`fetch_url` supports GET (default), HEAD, POST, PUT, PATCH, and DELETE, with optional headers and body. It streams the response as decoded text, including raw HTML, with a 30-second request timeout. Once started, it does not consume the turn cancellation signal; Esc does not immediately stop that request or undo a POST or other server-side action. Small results include the HTTP status and body unchanged; above **38,000 decoded UTF-8 bytes**, a response log and bounded head/tail preview are used.
 
-POST, PUT, PATCH, and DELETE are blocked in `deny-writes` and require explicit per-call approval in other modes, including `auto-accept`; allowlisting `fetch_url` or choosing “always” does not bypass that requirement. Calls without a confirmation handler are refused. GET (and HEAD when invoked) is treated as read-only by the permission gate.
+GET and HEAD are read-only for permission checks and run without a confirmation prompt. POST, PUT, PATCH, and DELETE are blocked in `deny-writes` and require explicit approval for each call in other modes, including `auto-accept`. This requirement still applies if `fetch_url` is allowlisted or you choose “always.” Agav refuses these methods when no confirmation handler is available.
 
-Only HTTP(S) destinations are accepted. Loopback, private, reserved, and metadata addresses are blocked, including hostnames with any forbidden DNS result. Connections pin the validated address; each redirect is revalidated, with a maximum of five redirects. Cross-origin redirects strip `Authorization`, `Cookie`, and `Proxy-Authorization`. See [HTTP request safety](/reference/security#http-request-safety).
+To protect against server-side request forgery (SSRF), `fetch_url` accepts only HTTP(S) URLs and blocks loopback, private, link-local, reserved, and cloud metadata addresses. Agav rejects hostnames that resolve to any blocked address and pins each connection to a validated address. It applies the same destination checks to every redirect and follows at most five redirects. Cross-origin redirects strip `Authorization`, `Cookie`, and `Proxy-Authorization`. See [HTTP request safety](/reference/security#http-request-safety).
 
 Unlike shell capture, HTTP capture **cancels the remaining response** when its 16 MiB incoming-byte or decoded-storage limit is exceeded. The notice marks the saved response as partial; the preview tail is from the captured prefix, not necessarily the end of the server's body. Reaching this size limit alone does not turn a successful HTTP status into an error. Non-success HTTP statuses and network/stream-read failures do remain errors, with the captured status/body retained where available. Log-storage failures do not repeat the request or change HTTP success status. The [shared text limits and retention rules](#output-limits-and-recovery) apply to these results too.
 

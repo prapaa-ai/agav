@@ -17,27 +17,29 @@ interface Props {
   progress: SubagentProgress;
   mode?: "compact" | "detail";
   index?: number;
+  active?: boolean;
 }
 
 /** Displays subagent progress in compact or detailed form. */
-export default function SubagentDisplay({ progress, mode = "compact", index }: Props) {
+export default function SubagentDisplay({ progress, mode = "compact", index, active }: Props) {
   const elapsed = Math.round((Date.now() - progress.startedAt) / 1000);
   const totalTools = progress.totalToolCalls;
   const prefix = index != null ? `[${index + 1}] ` : "";
 
   if (mode === "compact") {
-    return <CompactView progress={progress} elapsed={elapsed} totalTools={totalTools} prefix={prefix} />;
+    return <CompactView progress={progress} elapsed={elapsed} totalTools={totalTools} prefix={prefix} active={active} />;
   }
 
   return <DetailView progress={progress} elapsed={elapsed} />;
 }
 
 /** Renders a one-line summary of subagent progress. */
-function CompactView({ progress, elapsed, totalTools, prefix }: {
+function CompactView({ progress, elapsed, totalTools, prefix, active }: {
   progress: SubagentProgress;
   elapsed: number;
   totalTools: number;
   prefix: string;
+  active?: boolean;
 }) {
   const { inputTokens, outputTokens, cacheReadTokens } = progress.tokenUsage;
   const hasTokens = inputTokens > 0 || outputTokens > 0;
@@ -50,7 +52,7 @@ function CompactView({ progress, elapsed, totalTools, prefix }: {
       <Box>
         <Text dimColor>{"  "}{prefix}</Text>
         <Text color="green">{"✓ "}</Text>
-        <Text bold color="cyan">{progress.title}</Text>
+        <Text bold color="cyan" inverse={active}>{progress.title}</Text>
         {progress.model && <Text dimColor> · {progress.model}</Text>}
         <Text dimColor> ({totalTools} tool{totalTools !== 1 ? "s" : ""}, {elapsed}s{tokenSummary})</Text>
       </Box>
@@ -62,7 +64,7 @@ function CompactView({ progress, elapsed, totalTools, prefix }: {
       <Box>
         <Text dimColor>{"  "}{prefix}</Text>
         <Text color="red">{"✗ "}</Text>
-        <Text bold color="cyan">{progress.title}</Text>
+        <Text bold color="cyan" inverse={active}>{progress.title}</Text>
         <Text dimColor> — {terminalRelativePaths(progress.error ?? "error")}</Text>
       </Box>
     );
@@ -72,7 +74,7 @@ function CompactView({ progress, elapsed, totalTools, prefix }: {
     <Box>
       <Text dimColor>{"  "}{prefix}</Text>
       <Text color="cyan"><Spinner />{" "}</Text>
-      <Text bold color="cyan">{progress.title}</Text>
+      <Text bold color="cyan" inverse={active}>{progress.title}</Text>
       <Text dimColor> ({elapsed}s{totalTools > 0 ? ` · ${totalTools} tool${totalTools !== 1 ? "s" : ""}` : ""}{tokenSummary})</Text>
     </Box>
   );

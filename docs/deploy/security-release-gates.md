@@ -53,7 +53,7 @@ Both run in the PR `All Checks` gate (on dependency or source change), at releas
 
 ## SBOM retention and publishing
 
-Every SBOM is produced by `scripts/gen-sbom.mjs`, so they are generated identically and cannot drift. By default the script reads the resolved production tree from `pnpm list --prod` (pnpm-native, no npm lockfile needed); with `--dev` it reads the whole tree from `pnpm list` and keeps the root's devDependencies graph instead. Either way it emits a deterministic CycloneDX 1.5 document with a package-URL and declared license per component, and omits any wall-clock timestamp so the same dependency tree yields byte-identical output.
+Every SBOM is produced by `scripts/gen-sbom.mjs`, so they are generated identically and cannot drift. By default the script reads the resolved production tree from `pnpm list --prod` (pnpm-native, no npm lockfile needed); with `--dev` it reads the whole tree from `pnpm list` and keeps the root's devDependencies graph instead. Either way it emits a deterministic CycloneDX 1.5 document with a package-URL (also its `bom-ref`) and declared license per component and a `dependencies` graph of each package's direct dependencies, and omits any wall-clock timestamp so the same dependency tree yields byte-identical output.
 
 The document carries a deterministic `serialNumber` (an RFC 4122 v5 UUID derived from the rest of the document, so the production and build SBOMs never share one), which the attestation action requires to recognise the file as CycloneDX while keeping the output reproducible.
 

@@ -1,10 +1,13 @@
+import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../providers/vertex-ai.js", () => ({
   fetchVertexAIModels: vi.fn(),
 }));
+vi.mock("../ink/termio/clipboard.js", () => ({ writeClipboard: vi.fn() }));
 
 const { fetchVertexAIModels } = await import("../providers/vertex-ai.js");
+const { writeClipboard } = await import("../ink/termio/clipboard.js");
 const fetchVertexAIModelsMock = vi.mocked(fetchVertexAIModels);
 const { fetchAvailableModels, findMatchingModels, modelCommand } = await import("../commands/model.js");
 
@@ -71,15 +74,282 @@ function createContext(config: Partial<AgavConfig>): CommandContext {
   };
 }
 
+async function openPicker(anthropicModels = ["claude-demo"], rows = 24) {
+  stubFetch(anthropicModels, ["vendor/coder-demo"]);
+  const context = createContext({
+    provider: "anthropic", model: "claude-demo",
+    anthropicApiKey: "test-anthropic", openrouterApiKey: "test-openrouter",
+  });
+  const stdin = Object.assign(new EventEmitter(), {
+    isRaw: false, setRawMode: vi.fn(), resume: vi.fn(), pause: vi.fn(),
+  });
+  const stdout = { rows, columns: 100, write: vi.fn() };
+  vi.spyOn(process, "stdin", "get").mockReturnValue(stdin as unknown as typeof process.stdin);
+  vi.spyOn(process, "stdout", "get").mockReturnValue(stdout as unknown as typeof process.stdout);
+  const result = modelCommand.execute("", context);
+  await vi.waitFor(() => expect(stdin.listenerCount("data")).toBe(1));
+  return {
+    context, stdin, stdout, result,
+    send: (input: string | Buffer) => stdin.emit("data", typeof input === "string" ? Buffer.from(input) : input),
+  };
+}
+
 beforeEach(() => {
   fetchVertexAIModelsMock.mockReset();
+  vi.mocked(writeClipboard).mockReset().mockImplementation((_stdout, _text, onResult) => {
+    onResult?.("Copied to clipboard");
+  });
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("commands/model", () => {
+  it("copies the highlighted filtered ID without switching until Enter", async () => {
+    const { context, stdout, result, send } = await openPicker();
+    try {
+      for (const key of "coder") send(key);
+      expect(stdout.write.mock.calls.flat().join("")).toContain("Filter: coder");
+      send("\x19");
+      expect(writeClipboard).toHaveBeenCalledWith(stdout, "vendor/coder-demo", expect.any(Function));
+      expect(stdout.write.mock.lastCall?.[0]).toContain("(1 of 2)\x1b[0m\x1b[32m  ✓ Copied to clipboard");
+      expect(context.setModel).not.toHaveBeenCalled();
+      expect(context.setProvider).not.toHaveBeenCalled();
+
+      send("\r");
+      expect(messageText(await result)).toContain("Model changed to: vendor/coder-demo");
+      expect(context.setModel).toHaveBeenCalledWith("vendor/coder-demo");
+      expect(context.setProvider).toHaveBeenCalledWith("openrouter");
+    } finally {
+      send("\x1b");
+    }
+  });
+
+  it("preserves filter input delivered with mouse reports", async () => {
+    const { stdout, result, send } = await openPicker();
+    try {
+      send("\x1b[<0;12;4Mc");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: c");
+
+      send("o\x1b[<0;12;4mr");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: cor");
+    } finally {
+      send("\x1b");
+      await result;
+    }
+  });
+
+  it.each([
+    ["Ctrl+C", "\x1b[<0;12;", "\x03"],
+    ["Escape", "\x1b[<0;12;", "\x1b"],
+    ["Ctrl+C during X10", "\x1b[M ", "\x03"],
+    ["Escape during X10", "\x1b[M ", "\x1b"],
+    ["coalesced Ctrl+C", "\x1b[<0;12;", "c\x03"],
+  ])("cancels with %s after an incomplete mouse report", async (_name, prefix, key) => {
+    const { stdin, result, send } = await openPicker();
+    vi.useFakeTimers();
+    try {
+      send(prefix);
+      send(key);
+      vi.runAllTimers();
+      expect(stdin.listenerCount("data")).toBe(0);
+      expect(stdin.setRawMode).toHaveBeenLastCalledWith(false);
+      expect(messageText(await result)).toContain("Kept model as claude-demo");
+    } finally {
+      send("\x03");
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("keeps split X10 payloads out of the filter and processes the next key", async () => {
+    const { stdout, result, send } = await openPicker();
+    try {
+      const report = "\x1b[M ca";
+      for (let split = 1; split < report.length; split++) {
+        send(report.slice(0, split));
+        send(report.slice(split) + "c");
+        expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: c\x1b");
+        send("\x7f");
+      }
+      send("\x1b[M ");
+      send("c");
+      send("a");
+      expect(stdout.write.mock.lastCall?.[0]).not.toContain("Filter:");
+
+      send(Buffer.from([0x1b, 0x5b, 0x4d, 0x20, 0x83]));
+      send("ac");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: c\x1b");
+    } finally {
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("drops stale and oversized mouse prefixes before handling real keys", async () => {
+    const { stdout, result, send } = await openPicker();
+    vi.useFakeTimers();
+    try {
+      send("\x1b[M ");
+      vi.runOnlyPendingTimers();
+      send("a");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: a\x1b");
+      send("\x7f");
+
+      send("\x1b[<" + "9".repeat(64));
+      send("c");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: c\x1b");
+    } finally {
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("keeps navigation escape sequences intact after an interrupted mouse report", async () => {
+    const { stdout, result, send } = await openPicker();
+    try {
+      send("\x1b[<0;12;");
+      send("\x1b[B\x19");
+      expect(writeClipboard).toHaveBeenCalledExactlyOnceWith(stdout, "vendor/coder-demo", expect.any(Function));
+    } finally {
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("highlights the hovered model without moving the viewport or choosing it", async () => {
+    const models = Array.from({ length: 8 }, (_, i) => `claude-${i}`);
+    const { context, stdout, result, send } = await openPicker(models, 12);
+    try {
+      send("\x1b[<35;8;7M");
+      const frame = stdout.write.mock.lastCall?.[0].split("\r\n");
+      expect(frame?.[6]).toContain("❯ claude-3");
+      expect(frame?.[3]).toContain("claude-0");
+      expect(context.setModel).not.toHaveBeenCalled();
+      send("\r");
+      expect(messageText(await result)).toContain("Model changed to: claude-3");
+    } finally {
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("scrolls the filtered model list in both directions without choosing a model", async () => {
+    const models = Array.from({ length: 8 }, (_, i) => `claude-${i}`);
+    const { context, stdout, result, send } = await openPicker(models, 12);
+    const down = "\x1b[<65;8;5M";
+    const up = "\x1b[<64;8;5M";
+    try {
+      send("l");
+      send(down.repeat(12));
+      expect(stdout.write.mock.lastCall?.[0]).toContain("❯ claude-7");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("5-8 of 8");
+      send(up.repeat(4));
+      expect(stdout.write.mock.lastCall?.[0]).toContain("❯ claude-3");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("2-5 of 8");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: l");
+      expect(context.setModel).not.toHaveBeenCalled();
+      send("\r");
+      expect(messageText(await result)).toContain("Model changed to: claude-3");
+    } finally {
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("chooses a model only on a matching click release", async () => {
+    const { context, stdout, stdin, result, send } = await openPicker();
+    try {
+      expect(stdout.write.mock.calls.flat().join("")).toContain("\x1b[?1003h");
+      send("\x1b[<0;8;5m"); // release without a press
+      send("\x1b[<0;8;2M\x1b[<0;8;2m"); // header, not a model
+      send("\x1b[<0;8;5M");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("❯ vendor/coder-demo");
+      expect(stdin.listenerCount("data")).toBe(1);
+      send("\x1b[<0;8;5m");
+      expect(stdin.listenerCount("data")).toBe(0);
+      expect(messageText(await result)).toContain("Model changed to: vendor/coder-demo");
+      expect(context.setProvider).toHaveBeenCalledWith("openrouter");
+      expect(writeClipboard).not.toHaveBeenCalled();
+      expect(stdout.write.mock.lastCall?.[0]).toContain("\x1b[?1003l");
+    } finally {
+      send("\x03");
+      await result;
+    }
+  });
+
+  it("does not choose a model when a drag ends back at its starting point", async () => {
+    const { result, send } = await openPicker();
+    send("\x1b[<0;8;5M\x1b[<32;9;5M\x1b[<0;8;5m\x03");
+    expect(messageText(await result)).toContain("Kept model as claude-demo");
+    expect(writeClipboard).not.toHaveBeenCalled();
+  });
+
+  it("copies dragged text on release and restores mouse input on exit", async () => {
+    const { context, stdout, stdin, result, send } = await openPicker();
+    try {
+      expect(stdout.write.mock.calls.flat().join("")).toContain("\x1b[?1002h");
+      send("\x1b[<0;12;4M\x1b[<32;");
+      send("16;4M");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("\x1b[7mdemo\x1b[0m");
+      expect(writeClipboard).not.toHaveBeenCalled();
+      send("\x1b[<0;16;4m");
+      expect(writeClipboard).toHaveBeenCalledOnce();
+      expect(writeClipboard).toHaveBeenCalledWith(stdout, "demo", expect.any(Function));
+      expect(stdout.write.mock.lastCall?.[0]).toContain("(2 of 2)\x1b[0m\x1b[32m  ✓ Copied to clipboard");
+      expect(context.setProvider).not.toHaveBeenCalled();
+      expect(context.setModel).not.toHaveBeenCalled();
+
+      send("\x1b");
+      expect(messageText(await result)).toContain("Kept model as claude-demo");
+      expect(stdin.listenerCount("data")).toBe(0);
+      expect(stdin.setRawMode).toHaveBeenLastCalledWith(false);
+      expect(stdout.write.mock.lastCall?.[0]).toContain("\x1b[?1002l");
+    } finally {
+      send("\x1b");
+    }
+  });
+
+  it("clears clipboard feedback without losing the filter and ignores late results on close", async () => {
+    const { context, stdout, result, send } = await openPicker();
+    vi.useFakeTimers();
+    try {
+      vi.mocked(writeClipboard).mockImplementationOnce((_stdout, _text, onResult) => {
+        onResult?.("Clipboard unavailable");
+      });
+      for (const key of "coder") send(key);
+      send("\x19");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Clipboard unavailable");
+      vi.advanceTimersByTime(2000);
+      expect(stdout.write.mock.lastCall?.[0]).not.toContain("Clipboard unavailable");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("Filter: coder");
+
+      send("z");
+      send("\x19");
+      expect(stdout.write.mock.lastCall?.[0]).toContain("No model to copy");
+      expect(writeClipboard).toHaveBeenCalledOnce();
+      send("\x7f");
+      vi.mocked(writeClipboard).mockImplementationOnce(() => {});
+      send("\x19");
+      const lateResult = vi.mocked(writeClipboard).mock.lastCall?.[2];
+      expect(lateResult).toBeDefined();
+      send("\x1b");
+      vi.runAllTimers();
+      await result;
+      const writesBeforeCallback = stdout.write.mock.calls.length;
+      lateResult?.("Copied to clipboard");
+      vi.runAllTimers();
+      expect(stdout.write).toHaveBeenCalledTimes(writesBeforeCallback);
+      expect(context.setProvider).not.toHaveBeenCalled();
+      expect(context.setModel).not.toHaveBeenCalled();
+    } finally {
+      send("\x1b");
+    }
+  });
+
   it("matches a bare model against OpenRouter's provider-prefixed catalog name", async () => {
     stubFetch([], ["openai/gpt-5.6-sol"]);
 

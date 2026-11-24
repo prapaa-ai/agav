@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as config from "../config/config.js";
 import { deleteSession, listSessions, loadSession, renameSession, saveSession, saveSessionRuntime } from "../config/history.js";
+import { ConversationState } from "../agent/conversation.js";
+import { branchCommand } from "../commands/branch.js";
+import { exportCommand } from "../commands/export.js";
+import type { CommandContext } from "../commands/types.js";
+import { loadResumableSession } from "../sessions/history.js";
 import { SessionRuntimeStore } from "../sessions/store.js";
 import type { Message } from "../providers/types.js";
 
@@ -20,6 +25,107 @@ afterEach(async () => { vi.restoreAllMocks(); await rm(root, { recursive: true, 
 const create = () => store.create({ cwd: root, model: "worker-model", provider: "anthropic", permissionMode: "ask", sandboxRequired: false, messages, tokenUsage: tokens });
 
 describe("history persistence", () => {
+  it("marks messages in the saved and active fork without changing the parent", async () => {
+    const conversation = new ConversationState();
+    conversation.addUserMessage("Parent question");
+    conversation.addAssistantMessage([{ type: "text", text: "Parent answer" }]);
+    const original = conversation.getMessages();
+    const parentId = await saveSession(original, "model", "openai");
+    const activateSession = vi.fn();
+    const context = {
+      conversation,
+      currentSessionId: parentId,
+      config: { model: "model", provider: "openai" },
+      getDebugState: () => ({ tokenUsage: tokens }),
+      activateSession,
+    } as unknown as CommandContext;
+
+    await branchCommand.execute("experiment", context);
+
+    expect(activateSession).toHaveBeenCalledOnce();
+    const [id] = activateSession.mock.calls[0];
+    expect(id).not.toBe(parentId);
+    expect(await loadSession(id)).toMatchObject({
+      id, parentId, branchMarkers: true, name: "experiment",
+      messages: original.map(message => ({ ...message, inherited: true })),
+    });
+    expect(conversation.getMessages()).toEqual((await loadSession(id))?.messages);
+    expect(await loadSession(parentId)).toMatchObject({ messages: original });
+    expect(original.every(message => message.inherited === undefined)).toBe(true);
+  });
+
+  it("keeps branch markers through continued saves, worker checkpoints and resumed compaction", async () => {
+    const inherited = { ...messages[0]!, inherited: true as const };
+    const id = await saveSession([inherited], "model", "openai", undefined, tokens, false, "Branch", "parent", undefined, true);
+    await saveSession([inherited, ...messages], "model", "openai", id);
+    const saved = (await loadSession(id))!;
+    expect(saved).toMatchObject({ branchMarkers: true, parentId: "parent", messages: [inherited, ...messages] });
+
+    const runtime = await store.create({
+      id, cwd: root, model: "model", provider: "openai", permissionMode: "ask",
+      sandboxRequired: false, messages: saved.messages,
+    });
+    await saveSessionRuntime(runtime, store);
+    expect(await loadSession(id)).toMatchObject({ branchMarkers: true, messages: saved.messages });
+
+    const conversation = new ConversationState();
+    conversation.setMessages(saved.messages);
+    for (let turn = 0; turn < 2; turn++) {
+      conversation.addUserMessage(`New branch question ${turn}`);
+      conversation.addAssistantMessage([{ type: "text", text: "New branch answer" }]);
+    }
+    expect(await conversation.compactIfNeeded(true)).toMatchObject({ compacted: true, droppedCount: 2 });
+    const retained = conversation.getMessages();
+    expect(retained.every(message => message.inherited === undefined)).toBe(true);
+    const completed = await store.update(id, runtime.generation, current => {
+      current.status = "completed";
+      current.compacted = true;
+      current.messages = retained;
+    });
+    await saveSessionRuntime(completed, store);
+    expect(await loadResumableSession(id)).toMatchObject({
+      branchMarkers: true, parentId: "parent", compacted: true, messages: retained,
+    });
+  });
+
+  it("exports only new messages from a resumed nested branch", async () => {
+    vi.spyOn(process, "cwd").mockReturnValue(root);
+    const conversation = new ConversationState();
+    conversation.addUserMessage("ROOT_PRIVATE_SENTINEL");
+    const context = {
+      conversation,
+      currentSessionId: await saveSession(conversation.getMessages(), "model", "openai"),
+      config: { model: "model", provider: "openai" },
+      getDebugState: () => ({ tokenUsage: tokens }),
+      activateSession: (id: string) => { context.currentSessionId = id; },
+    } as unknown as CommandContext;
+    await branchCommand.execute("first", context);
+    conversation.addUserMessage("PARENT_BRANCH_PRIVATE_SENTINEL");
+    await branchCommand.execute("second", context);
+    const id = context.currentSessionId!;
+
+    expect(await exportCommand.execute("json --branch-only", context)).toMatchObject({
+      text: "No new branch messages to export.",
+    });
+    expect(await readdir(root)).not.toEqual(expect.arrayContaining([expect.stringMatching(/\.json$/)]));
+
+    conversation.addUserMessage("Nested branch question");
+    conversation.addAssistantMessage([{ type: "text", text: "Nested branch answer" }]);
+    await saveSession(conversation.getMessages(), "model", "openai", id);
+    const resumed = (await loadResumableSession(id))!;
+    const restored = new ConversationState();
+    restored.setMessages(resumed.messages, resumed.compacted);
+    await exportCommand.execute("json --branch-only", { ...context, conversation: restored });
+
+    const path = (await readdir(root)).find(file => file.endsWith(".json"));
+    expect(path).toBeDefined();
+    const exported = await readFile(join(root, path!), "utf-8");
+    expect(exported).not.toContain("PRIVATE_SENTINEL");
+    expect(JSON.parse(exported)).toMatchObject({
+      sessionId: id, scope: "branch-only", messages: resumed.messages.slice(2),
+    });
+  });
+
   it("supports legacy dotted ids without reading or locking the runtime store", async () => {
     const read = vi.spyOn(SessionRuntimeStore.prototype, "read");
     const lock = vi.spyOn(SessionRuntimeStore.prototype, "lock");

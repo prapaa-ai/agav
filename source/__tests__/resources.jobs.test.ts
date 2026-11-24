@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
     stop: vi.fn(),
     capabilities: vi.fn(),
     abandonJob: vi.fn(),
+    deleteJob: vi.fn(),
   },
   engine: {
     listSchedules: vi.fn(),
@@ -30,7 +31,7 @@ vi.mock("../background-jobs-integration.js", () => ({
 }));
 
 const { CommandRegistry } = await import("../commands/registry.js");
-const { createJobsAdapter, createJobSchedulesAdapter, stopJob, revokeSchedule, jobCapabilities, sortJobsNewestFirst } = await import("../resources/job-adapters.js");
+const { createJobsAdapter, createJobSchedulesAdapter, deleteStoppedJobsAndSchedules, stopJob, revokeSchedule, jobCapabilities, sortJobsNewestFirst } = await import("../resources/job-adapters.js");
 
 const summary: JobSummary = {
   jobId: "0123456789abcdef",
@@ -257,6 +258,25 @@ describe("job schedules adapter", () => {
   });
 });
 
+describe("bulk background job deletion", () => {
+  it("reports a no-op without trying to stop or delete active records", async () => {
+    mocks.coordinator.list.mockResolvedValue([summary]);
+    mocks.engine.listSchedules.mockResolvedValue([schedule(true)]);
+    expect(await deleteStoppedJobsAndSchedules()).toBe("No stopped jobs or schedules eligible for deletion.");
+    expect(mocks.coordinator.deleteJob).not.toHaveBeenCalled();
+    expect(mocks.engine.deleteSchedule).not.toHaveBeenCalled();
+  });
+
+  it("continues after a deletion is refused and reports partial success", async () => {
+    mocks.coordinator.list.mockResolvedValue([{ ...summary, state: "failed" }]);
+    mocks.coordinator.deleteJob.mockResolvedValueOnce(undefined);
+    mocks.engine.listSchedules.mockResolvedValue([schedule(false)]);
+    mocks.engine.deleteSchedule.mockRejectedValueOnce(new BackgroundJobError("invalid-state", "The schedule was resumed."));
+    expect(await deleteStoppedJobsAndSchedules()).toBe("Deleted 1 job and 0 schedules. 1 could not be deleted. First error: sched-0123456789: The schedule was resumed.");
+    expect(mocks.coordinator.deleteJob).toHaveBeenCalledExactlyOnceWith(summary.jobId, { exact: true });
+  });
+});
+
 describe("JobsTUI", () => {
   async function mountJobsTUI(height = 16) {
     vi.resetModules();
@@ -293,7 +313,7 @@ describe("JobsTUI", () => {
     try {
       expect(mocks.props!.adapter.title).toBe("Background jobs");
       // Logs live in the ENTER/i detail view; no separate key duplicates it.
-      expect(mocks.props!.actions.map((a) => a.key)).toEqual(["Tab", "x", "a", "h", "c"]);
+      expect(mocks.props!.actions.map((a) => a.key)).toEqual(["Tab", "x", "a", "h", "D", "c"]);
       expect(mocks.props!.prompt).toBeUndefined();
 
       mocks.coordinator.stop.mockResolvedValue(summary);
@@ -308,7 +328,7 @@ describe("JobsTUI", () => {
       ui.action("Tab").run(undefined);
       await ui.settle();
       expect(mocks.props!.adapter.title).toBe("Background job schedules");
-      expect(mocks.props!.actions.map((a) => a.key)).toEqual(["Tab", "x", "c"]);
+      expect(mocks.props!.actions.map((a) => a.key)).toEqual(["Tab", "x", "D", "c"]);
     } finally {
       ui.cleanup();
     }
