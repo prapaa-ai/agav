@@ -84,7 +84,7 @@ const resolveClipboardCmd = (): { cmd: string; args: string[] } | null => {
 const clipboardCmd = resolveClipboardCmd();
 const GTK_STARTUP_TIMEOUT_MS = 2000;
 
-export type ClipboardNotice = "Copied to clipboard" | "Copy sent to terminal";
+export type ClipboardNotice = "Copied to clipboard" | "Copy sent to terminal" | "Settings could not be saved; this layout is session-only";
 const copyListeners = new Set<(notice: ClipboardNotice) => void>();
 
 /** Subscribe to copy actions so the UI can show brief feedback. */
