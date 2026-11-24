@@ -5,7 +5,9 @@ import {
   loadScheduledTasks,
   addScheduledTask,
   removeScheduledTask,
+  findScheduledTask,
   setTaskEnabled,
+  markTaskRun,
 } from "../config/scheduler.js"
 
 /**
@@ -105,6 +107,16 @@ export const scheduleCommand: SlashCommand = {
         type: "message",
         text: removed ? `Removed task ${id}.` : `Task ${id} not found.`,
       }
+    }
+
+    /** Run a task once through the normal prompt path; its schedule is untouched. */
+    if (action === "run") {
+      const id = parts[1]
+      if (!id) return { type: "message", text: "Usage: /schedule run <id>" }
+      const task = await findScheduledTask(id)
+      if (!task) return { type: "message", text: `Task ${id} not found.` }
+      await markTaskRun(task.id)
+      return { type: "submit", text: task.prompt }
     }
 
     /** Enable a disabled task so it can run on future schedule matches. */
