@@ -10,6 +10,17 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, spawn: vi.fn() };
 });
 
+// The diagnostics operation reads the file with node:fs/promises; resolve it
+// from a microtask (not real disk I/O) so the fake-timer tests stay deterministic.
+vi.mock("node:fs/promises", () => ({
+  readFile: vi.fn(async (path: unknown) => {
+    if (String(path).endsWith("does-not-exist.ts")) {
+      throw new Error("ENOENT: no such file or directory");
+    }
+    return "const lspTool = {};\n";
+  }),
+}));
+
 let tool: ToolDefinition;
 let child: EventEmitter & { stdout: PassThrough; stderr: PassThrough; stdin: Writable };
 let response: unknown;
@@ -212,10 +223,81 @@ describe("lsp result formatting", () => {
     expect(await tool.execute({ ...input, operation })).toEqual({ output: rpcError, isError: true });
   });
 
-  it("leaves the diagnostics placeholder unchanged", async () => {
-    expect(await tool.execute({ ...input, operation: "diagnostics" })).toEqual({
-      output: "Diagnostics requested. Results come via notifications (not yet captured).", isError: false,
-    });
+});
+
+describe("lsp diagnostics", () => {
+  // File contents come from the node:fs/promises mock above; the path only
+  // needs a TypeScript extension so the tool picks the right language server.
+  const diagnosticsInput = { path: "source/tools/lsp.ts", operation: "diagnostics" };
+  const diagnosticsUri = `file://${resolve(diagnosticsInput.path)}`;
+
+  function publishDiagnostics(diagnostics: unknown[]) {
+    child.stdout.write(encodeFrame({
+      jsonrpc: "2.0",
+      method: "textDocument/publishDiagnostics",
+      params: { uri: diagnosticsUri, diagnostics },
+    }));
+  }
+
+  it("returns formatted diagnostics with severity and one-based ranges", async () => {
+    const result = tool.execute(diagnosticsInput);
+    await vi.advanceTimersByTimeAsync(0);
     expect(requests.map((request) => request.method)).toEqual(["initialize", "textDocument/didOpen"]);
+    const didOpen = requests[1].params as { textDocument: { uri: string; languageId: string; version: number; text: string } };
+    expect(didOpen.textDocument.uri).toBe(diagnosticsUri);
+    expect(didOpen.textDocument.languageId).toBe("typescript");
+    expect(didOpen.textDocument.text).toBe("const lspTool = {};\n");
+    publishDiagnostics([
+      { range: { start: { line: 2, character: 4 }, end: { line: 2, character: 17 } }, severity: 1, message: "Cannot find name 'foo'." },
+      { range: { start: { line: 5, character: 0 }, end: { line: 5, character: 3 } }, severity: 2, message: "Unused variable." },
+    ]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await result).toEqual({
+      output: [
+        "Error [3:5-3:18]: Cannot find name 'foo'.",
+        "Warning [6:1-6:4]: Unused variable.",
+      ].join("\n"),
+      isError: false,
+    });
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a clear no-diagnostics result for an empty report", async () => {
+    const result = tool.execute(diagnosticsInput);
+    await vi.advanceTimersByTimeAsync(0);
+    publishDiagnostics([]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await result).toEqual({ output: "No diagnostics reported.", isError: false });
+  });
+
+  it("returns a clear no-diagnostics result when no notification arrives in time", async () => {
+    const result = tool.execute(diagnosticsInput);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(await result).toEqual({ output: "No diagnostics reported.", isError: false });
+  });
+
+  it("bounds output for a noisy server", async () => {
+    const result = tool.execute(diagnosticsInput);
+    await vi.advanceTimersByTimeAsync(0);
+    publishDiagnostics(Array.from({ length: 105 }, (_, index) => ({
+      range: { start: { line: index, character: 0 }, end: { line: index, character: 1 } },
+      severity: 2,
+      message: `warning ${index}`,
+    })));
+    await vi.advanceTimersByTimeAsync(0);
+    const output = (await result).output;
+    const lines = output.split("\n");
+    expect(lines).toHaveLength(101);
+    expect(lines[0]).toBe("Warning [1:1-1:2]: warning 0");
+    expect(lines[99]).toBe("Warning [100:1-100:2]: warning 99");
+    expect(lines[100]).toBe("... (5 more diagnostics omitted)");
+  });
+
+  it("reports an unreadable file without opening a document", async () => {
+    expect(await tool.execute({ path: "source/does-not-exist.ts", operation: "diagnostics" })).toEqual({
+      output: expect.stringContaining("Could not read"),
+      isError: true,
+    });
+    expect(requests.map((request) => request.method)).toEqual(["initialize"]);
   });
 });
