@@ -150,18 +150,36 @@ async function fetchOllamaModels(baseUrl: string): Promise<FetchedModel[]> {
   }
 }
 
-async function fetchGeminiModels(apiKey: string): Promise<FetchedModel[]> {
+export async function fetchGeminiModels(apiKey: string): Promise<FetchedModel[]> {
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
-      { signal: AbortSignal.timeout(5000) },
-    );
-    if (!res.ok) return [];
-    const data = (await res.json()) as { models?: { name: string; supportedGenerationMethods?: string[]; inputTokenLimit?: number }[] };
-    return (data.models ?? [])
-      .filter((m) => m.supportedGenerationMethods?.includes("generateContent"))
-      .map((m) => ({ id: m.name.replace("models/", ""), provider: "gemini", contextWindow: m.inputTokenLimit ?? undefined }))
-      .sort((a, b) => a.id.localeCompare(b.id));
+    const deadline = Date.now() + 5000;
+    const byId = new Map<string, FetchedModel>();
+    const seenTokens = new Set<string>();
+    let pageToken: string | undefined;
+    do {
+      const url = new URL("https://generativelanguage.googleapis.com/v1beta/models");
+      url.searchParams.set("key", apiKey);
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+      const remaining = Math.max(1, deadline - Date.now());
+      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(remaining) });
+      if (!res.ok) break;
+      const data = (await res.json()) as {
+        nextPageToken?: string;
+        models?: { name: string; supportedGenerationMethods?: string[]; inputTokenLimit?: number }[];
+      };
+      for (const model of data.models ?? []) {
+        if (!model.supportedGenerationMethods?.includes("generateContent")) continue;
+        const id = model.name.replace("models/", "");
+        if (!byId.has(id)) {
+          byId.set(id, { id, provider: "gemini", contextWindow: model.inputTokenLimit ?? undefined });
+        }
+      }
+      const next = data.nextPageToken;
+      if (!next || seenTokens.has(next)) break;
+      seenTokens.add(next);
+      pageToken = next;
+    } while (Date.now() < deadline);
+    return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
   } catch {
     return [];
   }
