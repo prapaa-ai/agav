@@ -123,6 +123,8 @@ class ResponseCapture {
 export interface TransportResponse {
   status: number;
   statusText: string;
+  /** Response headers; repeated names keep every value. Omitted by fakes that do not need them. */
+  headers?: Record<string, string | string[]>;
   /** Async byte stream of the response body, or undefined for an empty body. */
   body?: AsyncIterable<Uint8Array>;
   /** Cancel an in-progress body read (quota reached / streamed error). */
@@ -168,9 +170,13 @@ function fromIncoming(message: IncomingMessage, method: string): TransportRespon
     // the callback observes completion without an unhandled rejected promise.
     pipeline(message, decoder, () => {});
   }
+  const headers = Object.fromEntries(
+    Object.entries(message.headers).filter((entry): entry is [string, string | string[]] => entry[1] !== undefined),
+  );
   return {
     status,
     statusText: message.statusMessage ?? "",
+    headers,
     body: decoder ?? message,
     cancel: () => { decoder?.destroy(); message.destroy(); },
   };
@@ -269,6 +275,26 @@ function sendOnce(url: URL, target: Awaited<ReturnType<typeof assertSafeUrl>>, r
   });
 }
 
+/** Header names whose values must never be shown, even to the model. */
+const SECRET_RESPONSE_HEADERS = new Set(["authorization", "cookie", "set-cookie", "proxy-authorization"]);
+
+/**
+ * One header block, values redacted where they carry credentials. Repeated
+ * values are printed on their own line so nothing is silently dropped.
+ */
+export function formatResponseHeaders(headers: Record<string, string | string[]> | undefined): string {
+  const names = Object.keys(headers ?? {}).sort();
+  if (names.length === 0) return "Headers:\n  (none)";
+  const lines = ["Headers:"];
+  for (const name of names) {
+    const values = Array.isArray(headers![name]) ? headers![name] as string[] : [headers![name] as string];
+    for (const value of values) {
+      lines.push(`  ${name}: ${SECRET_RESPONSE_HEADERS.has(name.toLowerCase()) ? "[redacted]" : value}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 export const fetchUrlTool: ToolDefinition = {
   schema: {
     name: "fetch_url",
@@ -286,6 +312,10 @@ export const fetchUrlTool: ToolDefinition = {
           additionalProperties: { type: "string" },
         },
         body: { type: "string", description: "Request body for POST/PUT/PATCH" },
+        include_headers: {
+          type: "boolean",
+          description: "Show the response headers before the body (default: false). Credential values are redacted.",
+        },
       },
       required: ["url"],
     },
@@ -296,6 +326,10 @@ export const fetchUrlTool: ToolDefinition = {
     const method = String(input.method ?? "GET").toUpperCase();
     const headers = (input.headers ?? {}) as Record<string, string>;
     const body = input.body ? String(input.body) : undefined;
+    const includeHeaders = input.include_headers;
+    if (includeHeaders !== undefined && typeof includeHeaders !== "boolean") {
+      return { output: "include_headers must be a boolean", isError: true };
+    }
     const transport = activeTransport ?? nodeTransport;
     try {
       const res = await transport(url, {
@@ -333,8 +367,10 @@ export const fetchUrlTool: ToolDefinition = {
         }
       }
       const ok = res.status >= 200 && res.status < 300;
+      const status = `HTTP ${res.status} ${res.statusText}`
+        + (includeHeaders === true ? `\n\n${formatResponseHeaders(res.headers)}` : "");
       return {
-        output: capture.finish(`HTTP ${res.status} ${res.statusText}`, readError),
+        output: capture.finish(status, readError),
         isError: !ok || readError !== undefined,
       };
     } catch (error) {
