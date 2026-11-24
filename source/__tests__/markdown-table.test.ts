@@ -237,6 +237,27 @@ describe("renderMarkdown tables", () => {
     expect(new Set(rows).size).toBe(1);
   });
 
+  it("honours right and centre column alignment", () => {
+    const aligned = [
+      "| Item | Qty |",
+      "|:--|--:|",
+      "| A | 7 |",
+      "| Longer item | 123 |",
+    ].join("\n");
+    const out = stripAnsi(renderMarkdown(aligned));
+    expect(out).toContain("│   7 │");
+    expect(out).toContain("│ 123 │");
+
+    const centered = [
+      "| Head |",
+      "|:-:|",
+      "| x |",
+    ].join("\n");
+    const centerOut = stripAnsi(renderMarkdown(centered));
+    expect(centerOut).toContain("│ Head │");
+    expect(centerOut).toContain("│  x   │");
+  });
+
   it("stays within the terminal width for wide content", () => {
     const wide = [
       "| Column | Description |",
