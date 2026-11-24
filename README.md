@@ -10,8 +10,6 @@
 
 ![Agav preview](https://www.agav.dev/preview.gif)
 
-> ⚠️ **Experimental Beta** — Agav is under active development. Expect breaking changes, rough edges, and rapid iteration. Feedback and bug reports are welcome!
-
 ## Install
 
 No Node.js required. One command, self-contained binary:
