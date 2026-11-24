@@ -436,7 +436,8 @@ function getMarked(): Marked {
     strong: chalk.bold,
     em: chalk.italic,
     codespan: chalk.bold.yellow,
-    code: chalk.yellow,
+    // Wrap code so the prose cleanup below can leave it untouched.
+    code: (code: string) => `\u0001${chalk.yellow(code)}\u0002`,
     listitem: (s: string) => s,
   }) as any);
   // marked-terminal emits OSC8 on capable terminals (e.g. Cursor), but our
@@ -493,9 +494,20 @@ export function renderMarkdown(text: string): string {
     });
     const result = getMarked().parse(renderMathInMarkdown(stripUnsupportedFenceLanguages(text), protectMath));
     if (typeof result !== "string") return text;
-    let cleaned = result.replace(/\n+$/, "");
-    cleaned = cleaned.replace(/^(\s*)\* /gm, "$1• ");
+    const cleaned = result.replace(/\n+$/, "");
+    let inCode = false;
     const lines = cleaned.split("\n").map((line) => {
+      const startsCode = line.includes("\u0001");
+      const endsCode = line.includes("\u0002");
+      line = line.replace(/[\u0001\u0002]/g, "");
+      // Fenced code keeps its literal punctuation: no bullet rewrite, headings
+      // or emphasis markup inside the block.
+      if (inCode || startsCode) {
+        inCode = startsCode ? !endsCode : !endsCode;
+        return line;
+      }
+      line = line.replace(/^(\s*)\* /, "$1• ");
+
       // Skip lines containing box-drawing characters (table borders/rows) —
       // the bold/italic/code regexes would corrupt column alignment.
       const stripped = stripAnsi(line);
