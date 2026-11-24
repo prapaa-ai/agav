@@ -9,7 +9,7 @@ function isCellBound(value: unknown): value is number {
 interface NotebookCell {
   cell_type: string;
   source: string[];
-  outputs?: Array<{ text?: string[]; output_type?: string; data?: Record<string, string[]> }>;
+  outputs?: Array<{ text?: string[]; output_type?: string; data?: Record<string, string[]>; ename?: string; evalue?: string }>;
 }
 
 interface Notebook {
@@ -87,7 +87,14 @@ export const readNotebookTool: ToolDefinition = {
         if (includeOutputs !== false && cell.outputs && cell.outputs.length > 0) {
           lines.push("  Output:");
           for (const out of cell.outputs) {
-            if (out.text) lines.push("  " + out.text.join(""));
+            if (out.output_type === "error") {
+              // A cached Jupyter error has its message in ename/evalue, not text.
+              const name = out.ename || "Error";
+              const value = out.evalue ? `${name}: ${out.evalue}` : name;
+              lines.push("  " + value);
+            } else if (out.text) {
+              lines.push("  " + out.text.join(""));
+            }
             if (out.data?.["text/plain"]) lines.push("  " + out.data["text/plain"].join(""));
           }
         }

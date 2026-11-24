@@ -34,6 +34,19 @@ beforeEach(() => {
 });
 
 describe("read_notebook", () => {
+  it("shows cached error outputs and tolerates missing error fields", async () => {
+    mockRead.mockResolvedValueOnce(JSON.stringify({
+      cells: [{ cell_type: "code", source: ["1/0"],
+        outputs: [{ output_type: "error", ename: "ZeroDivisionError", evalue: "division by zero" },
+                  { output_type: "error" }] }],
+      metadata: {}, nbformat: 4, nbformat_minor: 5,
+    }));
+    const result = await readNotebookTool.execute({ path });
+    expect(result.output).toContain("ZeroDivisionError: division by zero");
+    expect(result.output).toContain("Error");
+    expect(result.isError).toBe(false);
+  });
+
   it("includes stream and plain-text output by default and with true", async () => {
     const result = await readNotebookTool.execute({ path });
     expect(result.isError).toBe(false);
