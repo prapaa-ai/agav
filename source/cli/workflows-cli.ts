@@ -49,6 +49,7 @@ export interface WorkflowCliOptions {
   cliPath?: string;
   stdin?: NodeJS.ReadableStream & { isTTY?: boolean };
   stdout?: NodeJS.WritableStream & { isTTY?: boolean };
+  stderr?: NodeJS.WritableStream & { isTTY?: boolean };
   env?: NodeJS.ProcessEnv;
   /** `--wait` poll interval (default 1000 ms). */
   pollIntervalMs?: number;
@@ -71,8 +72,9 @@ export async function runWorkflowsCli(argv: string[], options: WorkflowCliOption
   const [command, ...args] = argv;
   if (!command || ["help", "--help", "-h"].includes(command)) { process.stdout.write(USAGE); return 0; }
   const out = options.stdout ?? process.stdout;
+  const err = options.stderr ?? process.stderr;
   const write = (text: string): void => { out.write(text); };
-  const warn = (text: string): void => { process.stderr.write(`warning: ${text}\n`); };
+  const warn = (text: string): void => { err.write(`warning: ${text}\n`); };
   try {
     const config = options.config ?? await loadConfig();
     if (config.backgroundJobsEnabled !== true || config.workflowsEnabled !== true) throw new Error("Workflows require backgroundJobsEnabled=true AND workflowsEnabled=true.");
@@ -121,7 +123,7 @@ export async function runWorkflowsCli(argv: string[], options: WorkflowCliOption
       return result.won ? 0 : 1;
     }
     setWindowsSandboxEnabled(config.windowsSandbox === true);
-    applySandboxRequiredPolicy({ flagSet: sandboxRequired, configValue: config.sandboxRequired, detectBackend: detectSandboxBackend, setRequired: setSandboxRequired, warn: message => { process.stderr.write(message); } });
+    applySandboxRequiredPolicy({ flagSet: sandboxRequired, configValue: config.sandboxRequired, detectBackend: detectSandboxBackend, setRequired: setSandboxRequired, warn: message => { err.write(message); } });
     setSandboxNetwork(sandboxNetwork);
     if (command === "cancel") {
       // The run's own consent covers stopping its runner and job nodes; without it nothing is pre-approved.
@@ -140,20 +142,22 @@ export async function runWorkflowsCli(argv: string[], options: WorkflowCliOption
     const { inputs, wait, json: asJson } = parseRunArgs(rest);
     // Consent is per invocation and never inferred: without a terminal there is no one to ask.
     const input = options.stdin ?? process.stdin;
-    if (input.isTTY !== true || out.isTTY !== true) throw new Error("workflow run requires interactive consent");
+    const prompt = asJson ? err : out;
+    const report = (text: string): void => { prompt.write(text); };
+    if (input.isTTY !== true || prompt.isTTY !== true) throw new Error("workflow run requires interactive consent");
     const resolved = await resolveWorkflow(target!, process.cwd());
     // Validated before consent; the run is only created once the user approves.
     const prepared = await prepareLaunch(await loadDefinition(resolved.path, registry), inputs, resolved.name, config, consentEnvNames(options.env));
     const deps = await launchDeps();
     await assertBackgroundRunsAvailable(deps.coordinator);
-    const envNames = await promptWorkflowConsent(prepared.request, input, out);
-    if (!envNames) { write("Workflow run not approved.\n"); return 1; }
+    const envNames = await promptWorkflowConsent(prepared.request, input, prompt);
+    if (!envNames) { report("Workflow run not approved.\n"); return 1; }
     const result = await startBackgroundRun(store, prepared, config.permissionMode, envNames, deps);
     write(asJson ? JSON.stringify({ status: result.status, run: result.run }, null, 2) + "\n" : launchSummary(result) + "\n");
     if (!wait) return 0;
     return await waitForRun(store, result.run, deps, options.pollIntervalMs ?? 1000, write, warn);
   } catch (error) {
-    process.stderr.write(`error: ${error instanceof Error ? error.message : String(error)}\n`);
+    err.write(`error: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
   }
 }
