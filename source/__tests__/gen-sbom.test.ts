@@ -434,6 +434,23 @@ describe.skipIf(process.platform === "win32")("gen-sbom", () => {
     const result = run();
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("missing declared dependencies: left-pad");
+    expect(existsSync(result.out)).toBe(false);
+  });
+
+  it("fails without writing a BOM when required production dependencies resolve to no components", () => {
+    writeRepo(declared, [{ dependencies: {} }]);
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("missing declared dependencies:");
+    expect(result.stderr).toContain("@scope/direct-d");
+    expect(existsSync(result.out)).toBe(false);
+  });
+
+  it("allows an empty production graph with no required production dependencies", () => {
+    writeRepo({ optional: "^1.0.0" }, { dependencies: {} }, { optional: "^1.0.0" });
+    const result = run();
+    expect(result.status).toBe(0);
+    expect(bom(result.out).components).toEqual([]);
   });
 
   it("takes a name declared in both maps as optional, listed or not", () => {
