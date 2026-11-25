@@ -28,6 +28,31 @@ describe("commands/help", () => {
     expect(listing).not.toContain("  Agent commands\n");
   });
 
+  it("keeps runtime skills and agents separate from built-in categories", async () => {
+    const registry = new CommandRegistry();
+    const execute = vi.fn<SlashCommand["execute"]>();
+    registry.register({ name: "release-notes", description: "Draft release notes", execute });
+    registry.register({ name: "reviewer", description: "[agent] Review changes", execute });
+    const result = await registry.execute("/help", context);
+    if (result?.type !== "message") throw new Error("expected message result");
+
+    const listing = result.text.split("  While Agav is working:")[0]!;
+    const sections = new Map(listing.trimEnd().split("\n\n").map(section => [
+      section.split("\n")[0]!.trim(),
+      [...section.matchAll(/^    \/(\S+)\s/gm)].map(match => match[1]),
+    ]));
+    expect(sections.get("Sessions")).toContain("history");
+    expect(sections.get("Safety")).toContain("permission");
+    expect(sections.get("Chat")).toContain("copy");
+    expect(sections.get("Skill commands")).toEqual(["release-notes"]);
+    expect(sections.get("Agent commands")).toEqual(["reviewer"]);
+    expect(listing).toContain("Review changes");
+    expect(listing).not.toContain("[agent]");
+    const names = [...listing.matchAll(/^    \/(\S+)\s/gm)].map(match => match[1]);
+    expect(names.sort()).toEqual([...registry.list().map(command => command.name), "ps"].sort());
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("lists commands that can run while Agav is working", async () => {
     const helpCommand = createHelpCommand(() => commands);
 
