@@ -8,6 +8,9 @@ import { parseFileUrl } from "./agents-types.js";
 import { useSearch, filterMarketplaceAgents, SearchBar } from "./agents-search.js";
 import { MarketplaceInspectView } from "./agents-inspect.js";
 import { wheelSelect, stepIndex } from "./wheel-select.js";
+import { pointerSelect } from "./hover-text.js";
+
+const PAGE_SIZE = 3;
 
 export function MarketplaceTab({
   onReloadAgents,
@@ -34,12 +37,12 @@ export function MarketplaceTab({
   const [resolvedMarketplaceUrl, setResolvedMarketplaceUrl] = useState("");
   const { searchQuery, searching, handleSearchKey } = useSearch();
 
+  const busy = Boolean(pendingInstallAgent || reinstallCandidate || inspecting || searching || installing);
+
   useEffect(() => {
-    onBusyChange?.(Boolean(
-      pendingInstallAgent || reinstallCandidate || inspecting || searching || installing
-    ));
+    onBusyChange?.(busy);
     return () => onBusyChange?.(false);
-  }, [pendingInstallAgent, reinstallCandidate, inspecting, searching, installing]);
+  }, [busy, onBusyChange]);
 
   useEffect(() => {
     loadMarketplace();
@@ -185,9 +188,17 @@ export function MarketplaceTab({
     }
   };
 
-  useInput(async (input, key) => {
-    const filteredAgents = filterMarketplaceAgents(marketplaceAgents, searchQuery);
+  const filteredAgents = filterMarketplaceAgents(marketplaceAgents, searchQuery);
+  const canSelectAgent = !busy && !loading && !error;
+  const selectAgent = (next: React.SetStateAction<number>) => {
+    if (!canSelectAgent) return false;
+    setSelectedIndex(next);
+    setInstallStatus(null);
+    return true;
+  };
+  const stepSelection = (delta: number) => selectAgent((i) => stepIndex(i, delta, filteredAgents.length));
 
+  useInput(async (input, key) => {
     if (reinstallCandidate) {
       if (input === "y" || input === "Y") await doReinstall();
       else if (key.escape || input === "n" || input === "N") { setReinstallCandidate(null); }
@@ -249,24 +260,19 @@ export function MarketplaceTab({
 
     if (installing) return;
 
-    const PAGE_SIZE = 3;
     const currentPage = Math.floor(selectedIndex / PAGE_SIZE);
     const totalPages = Math.ceil(filteredAgents.length / PAGE_SIZE);
 
     if (key.upArrow && selectedIndex > 0) {
-      setSelectedIndex(selectedIndex - 1);
-      setInstallStatus(null);
+      stepSelection(-1);
     } else if (key.downArrow && selectedIndex < filteredAgents.length - 1) {
-      setSelectedIndex(selectedIndex + 1);
-      setInstallStatus(null);
+      stepSelection(1);
     } else if (key.leftArrow && currentPage > 0) {
       const prevPageStart = (currentPage - 1) * PAGE_SIZE;
       const prevPageEnd = Math.min(prevPageStart + PAGE_SIZE, filteredAgents.length) - 1;
-      setSelectedIndex(prevPageEnd);
-      setInstallStatus(null);
+      selectAgent(prevPageEnd);
     } else if (key.rightArrow && currentPage < totalPages - 1) {
-      setSelectedIndex((currentPage + 1) * PAGE_SIZE);
-      setInstallStatus(null);
+      selectAgent((currentPage + 1) * PAGE_SIZE);
     } else if (input === "i" && filteredAgents[selectedIndex]) {
       setInspecting(true);
       setInstallStatus(null);
@@ -305,8 +311,7 @@ export function MarketplaceTab({
   }
 
   if (inspecting) {
-    const filteredForInspect = filterMarketplaceAgents(marketplaceAgents, searchQuery);
-    const agent = filteredForInspect[selectedIndex];
+    const agent = filteredAgents[selectedIndex];
     if (agent) {
       return <MarketplaceInspectView marketplaceAgent={agent} marketplaceUrl={resolvedMarketplaceUrl} isInstalled={installedAgents.has(agent.name)} hasUpdate={installedAgents.has(agent.name) && installedAgents.get(agent.name)!.version !== agent.version} />;
     }
@@ -338,17 +343,11 @@ export function MarketplaceTab({
     );
   }
 
-  const filteredAgents = filterMarketplaceAgents(marketplaceAgents, searchQuery);
-  const PAGE_SIZE = 3;
   const currentPage = Math.floor(selectedIndex / PAGE_SIZE);
   const totalPages = Math.ceil(filteredAgents.length / PAGE_SIZE);
   const pageAgents = filteredAgents.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
 
-  const handleWheel = wheelSelect((delta) => {
-    if (installing || pendingInstallAgent || reinstallCandidate) return;
-    setSelectedIndex((i) => stepIndex(i, delta, filteredAgents.length));
-    setInstallStatus(null);
-  });
+  const handleWheel = wheelSelect(stepSelection);
 
   return (
     <Box flexDirection="column" onWheel={handleWheel}>
@@ -413,16 +412,20 @@ export function MarketplaceTab({
         </Box>
       )}
 
-      {pageAgents.map((agent) => {
-        const absIndex = filteredAgents.indexOf(agent);
+      {pageAgents.map((agent, index) => {
+        const absIndex = currentPage * PAGE_SIZE + index;
         const isSelected = absIndex === selectedIndex;
         const installed = installedAgents.get(agent.name);
         const isInstalled = installed !== undefined;
         const hasUpdate = isInstalled && installed.version !== agent.version;
         return (
-          <Box key={agent.name} flexDirection="column" marginBottom={1}>
+          <Box key={agent.name} flexDirection="column" marginBottom={1}
+            onMouseMove={canSelectAgent ? pointerSelect(() => { if (!isSelected) selectAgent(absIndex); }) : undefined}>
             <Box>
-              <Text color={isSelected ? "cyan" : undefined} bold={isSelected}>
+              <Text color={isSelected ? "cyan" : undefined} bold={isSelected} inverse={isSelected} onClick={canSelectAgent ? (event) => {
+                if (event.button !== 0 || event.ctrl || event.alt || event.shift) return;
+                if (selectAgent(absIndex)) event.stopPropagation?.();
+              } : undefined}>
                 {isSelected ? "→ " : "  "}
                 {agent.name}
               </Text>

@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import { createElement as h } from "react";
 import { describe, expect, it, vi } from "vitest";
+import stringWidth from "string-width";
+import chalk from "chalk";
 import render from "../ink/render.js";
 import { ResourceManager } from "../components/resource-manager.js";
 import type { ResourceAdapter, ResourceItem } from "../resources/types.js";
@@ -26,18 +28,116 @@ async function mount(overrides: Partial<ResourceAdapter> = {}, props: { refreshI
   };
   const onExit = vi.fn();
   let output = "";
+  let latestFrame = "";
+  let paint = "";
   const stdout = new EventEmitter() as NodeJS.WriteStream;
-  Object.assign(stdout, { isTTY: true, columns: 120, rows: 24, write: (text: string) => { output += text; return true; } });
+  Object.assign(stdout, { isTTY: true, columns: 120, rows: 24, write: (text: string) => {
+    output += text;
+    const plain = text.replaceAll(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+    if (plain.includes("Test resources ·")) { latestFrame = plain; paint = text; }
+    return true;
+  } });
   const stdin = new EventEmitter() as NodeJS.ReadStream;
   Object.assign(stdin, { isTTY: true, setRawMode: () => stdin, resume: () => stdin, pause: () => stdin, read: () => null });
   const instance = render(h(ResourceManager, { adapter, onExit, ...props }), { stdout, stdin, patchConsole: false, exitOnCtrlC: false });
   const settle = async () => { await new Promise((r) => setTimeout(r, 50)); await instance.waitUntilRenderFlush(); };
   const key = async (text: string) => { output = ""; stdin.emit("data", Buffer.from(text)); await settle(); };
   await settle();
-  return { instance, key, settle, adapter, onExit, output: () => output };
+  const frame = () => latestFrame;
+  const clickAt = (column: number, row: number) => key(`\x1b[<0;${column};${row}M\x1b[<0;${column};${row}m`);
+  const cell = (label: string) => {
+    const lines = frame().split("\n");
+    const row = lines.findIndex((line) => line.includes(label));
+    expect(row, `visible row containing ${label}: ${frame()}`).toBeGreaterThanOrEqual(0);
+    const line = lines[row]!;
+    return [stringWidth(line.slice(0, line.indexOf(label))) + 1, row + 1] as const;
+  };
+  const resize = async (columns: number, rows = stdout.rows) => {
+    output = "";
+    Object.assign(stdout, { columns, rows });
+    stdout.emit("resize");
+    await settle();
+  };
+  return { instance, key, settle, adapter, onExit, output: () => output, frame, paint: () => paint,
+    click: (label: string) => clickAt(...cell(label)), clickAt, resize,
+    hover: (label: string) => key(`\x1b[<35;${cell(label).join(";")}M`),
+  };
 }
 
 describe("shared resource manager", () => {
+  it("shares row selection between pointer and keyboard without opening anything on hover", async () => {
+    const level = chalk.level;
+    chalk.level = 1;
+    try {
+      const ui = await mount();
+      try {
+        const styled = (label: string, start: number, end: number) => {
+          const line = ui.paint().split("\n").find(line => line.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").includes(label));
+          return line?.split(`\x1b[${start}m`).slice(1).some(run => run.split(`\x1b[${end}m`)[0]?.includes(label));
+        };
+        expect(ui.output()).toContain("\x1b[?1003h");
+        expect(styled("Item 1 [enabled]", 4, 24)).toBe(false);
+        expect(styled("t: Enable/disable", 4, 24)).toBe(false);
+        await ui.hover("Item 1 [enabled]");
+        expect(ui.frame()).toContain("→ Item 1");
+        expect(styled("Item 1 [enabled]", 7, 27)).toBe(true);
+        expect(styled("Item 0 [enabled]", 7, 27)).toBe(false);
+        expect(ui.frame()).not.toContain("→ Item 0");
+        await ui.key("\x1b[B");
+        expect(ui.frame()).toContain("→ Item 2");
+        // A new motion report inside the same row takes over again.
+        await ui.hover("tem 1 [enabled]");
+        expect(ui.frame()).toContain("→ Item 1");
+        await ui.resize(52);
+        await ui.hover("ENTER/i: Inspect");
+        expect(styled("ENTER/i: Inspect", 7, 27)).toBe(true);
+        expect(styled("ENTER/i: Inspect", 4, 24)).toBe(false);
+        expect(styled("Item 1 [enabled]", 7, 27)).toBe(true);
+        expect(ui.frame()).toContain("→ Item 1");
+        expect(ui.adapter.get).not.toHaveBeenCalled();
+        await ui.key("\r");
+        expect(ui.adapter.get).toHaveBeenCalledExactlyOnceWith("1");
+      } finally { ui.instance.unmount(); }
+    } finally { chalk.level = level; }
+  });
+
+  it("selects visible page rows without opening them and shares Inspect and Back with the keyboard", async () => {
+    const ui = await mount();
+    try {
+      await ui.key("\x1b[C");
+      expect(ui.frame()).toContain("Page 2/2");
+      await ui.click("Item 10 [enabled]");
+      expect(ui.frame()).toContain("→ Item 10");
+      expect(ui.adapter.get).not.toHaveBeenCalled();
+      await ui.key("\r");
+      expect(ui.adapter.get).toHaveBeenCalledWith("10");
+      await ui.click("b/ESC: Back");
+      await ui.key("\x1b[A");
+      await ui.click("ENTER/i: Inspect");
+      expect(ui.adapter.get).toHaveBeenLastCalledWith("9");
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("keeps blank space and mutation hints inert and finds controls after a width-only resize", async () => {
+    const ui = await mount();
+    try {
+      await ui.resize(46);
+      const row = ui.frame().split("\n").findIndex(line => line.includes("Item 1 [enabled]"));
+      expect(row).toBeGreaterThanOrEqual(0);
+      await ui.clickAt(45, row + 1);
+      await ui.key("\r");
+      expect(ui.adapter.get).toHaveBeenLastCalledWith("0");
+      await ui.click("b/ESC: Back");
+      await ui.click("t: Enable/disable");
+      expect(ui.adapter.setEnabled).not.toHaveBeenCalled();
+      await ui.click("s: Search");
+      await ui.key("Item 11");
+      await ui.key("\r");
+      await ui.click("ENTER/i: Inspect");
+      expect(ui.adapter.get).toHaveBeenLastCalledWith("11");
+    } finally { ui.instance.unmount(); }
+  });
+
   it("shows clipboard copy notices while the resource manager is active", async () => {
     const ui = await mount();
     try {

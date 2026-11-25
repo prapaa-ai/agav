@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { createElement as h } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Ink from "../ink/ink.js";
+import type { DOMElement, DOMNode } from "../ink/dom.js";
 import App from "../app.js";
 import { DEFAULT_KEYBINDINGS } from "../config/keybindings.js";
 import type { AgavConfig } from "../config/config.js";
@@ -51,10 +52,51 @@ async function mount() {
     await new Promise((resolve) => setTimeout(resolve, 50));
     await instance!.waitUntilRenderFlush();
   };
-  return { screen, type };
+  const yesCell = () => {
+    const { rootNode, frameScrollOffset } = instance as unknown as { rootNode: DOMNode; frameScrollOffset: number };
+    const findYes = (node: DOMNode): DOMElement | undefined => {
+      if (node.nodeName === "#text") return;
+      if (node.nodeName === "ink-text" && textOf(node).includes("[Y]es")) return node;
+      for (const child of node.childNodes) {
+        const found = findYes(child);
+        if (found) return found;
+      }
+    };
+    const yes = findYes(rootNode);
+    if (yes?.internal_x === undefined || yes.internal_y === undefined) throw new Error("Yes control is not laid out");
+    return `${yes.internal_x + 2};${yes.internal_y - frameScrollOffset + 1}`;
+  };
+  const click = (cell: string) => type(`\x1b[<0;${cell}M\x1b[<0;${cell}m`);
+  return { screen, type, yesCell, click };
 }
 
 describe("App confirmation prompts", () => {
+  it("does not let a double-click approve the next queued prompt at the same terminal cell", async () => {
+    const { screen, yesCell, click } = await mount();
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const first = boundary.agent!.requestConfirmation("write_file", { path: "first.txt", content: "x" });
+      const resolvedNext = vi.fn();
+      const next = boundary.agent!.requestConfirmation("write_file", { path: "next.txt", content: "y" }).then(resolvedNext);
+      await vi.waitFor(() => expect(screen()).toContain("first.txt"));
+      const cell = yesCell();
+      await click(cell);
+      await expect(first).resolves.toBe("yes");
+      await vi.waitFor(() => expect(screen()).toContain("next.txt"));
+      expect(yesCell()).toBe(cell);
+
+      now += 100;
+      await click(cell);
+      expect(resolvedNext).not.toHaveBeenCalled();
+      expect(screen()).toContain("next.txt");
+
+      now += 400;
+      await click(cell);
+      await next;
+      expect(resolvedNext).toHaveBeenCalledExactlyOnceWith("yes");
+    } finally { clock.mockRestore(); }
+  });
   it.each([
     ["a different input", { path: "next.txt", content: "y" }],
     ["the same tool and input", { path: "first.txt", content: "x" }],

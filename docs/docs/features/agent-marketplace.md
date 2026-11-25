@@ -20,15 +20,16 @@ The marketplace tab fetches `index.json` from the configured marketplace URL and
 
 Agents are displayed three per page. Navigate with:
 
-| Key       | Action                                                             |
-| --------- | ------------------------------------------------------------------ |
-| `↑` / `↓` | Move selection within the current page                             |
+| Key / mouse | Action                                                             |
+| ----------- | ------------------------------------------------------------------ |
+| `↑` / `↓`, mouse wheel, hover, left-click | Move selection within the current page |
 | `←` / `→` | Previous / next page                                               |
-| `s`       | Open search — filter by name, description, category, or tag        |
-| `i`       | Inspect selected agent (shows tools, credentials, and description) |
-| `r`       | Refresh from the marketplace URL                                   |
-| `u`       | Update the selected agent to the latest marketplace version        |
-| `ESC`     | Clear search / exit                                                |
+| `s` | Open search — filter by name, description, category, or tag        |
+| `i` | Inspect selected agent (shows tools, credentials, and description) |
+| `r` | Refresh from the marketplace URL                                   |
+| `u` | Update the selected agent to the latest marketplace version        |
+| `ENTER` | Install the selected agent |
+| `ESC` | Clear search / exit                                                |
 
 Agents already installed on your system show a `✓ global` or `✓ project` badge.
 

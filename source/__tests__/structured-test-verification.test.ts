@@ -4,15 +4,27 @@ import { runAgentLoop } from "../agent/loop.js";
 import { ConversationState } from "../agent/conversation.js";
 import { ToolRegistry } from "../tools/registry.js";
 import { testRunnerTool } from "../tools/test-runner.js";
+import { executeBufferedCommand } from "../utils/sandbox.js";
 import { NEEDS_VERIFY_PROMPT, VERIFY_FAILED_PROMPT, TESTS_FAILED_PREFIX } from "../agent/internal-prompts.js";
 import type { StreamEvent, LLMProvider } from "../providers/types.js";
 import type { ToolResult } from "../tools/types.js";
 
 vi.mock("node:child_process", () => ({ execFile: vi.fn() }));
-function childOutput(stdout: string, err: Error | null = null, stderr = "") {
+function hookOutput(stdout: string, err: Error | null = null, stderr = "") {
   vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
     (args.at(-1) as (err: Error | null, stdout: string, stderr: string) => void)(err, stdout, stderr);
     return {} as ReturnType<typeof execFile>;
+  });
+}
+vi.mock("../utils/sandbox.js", async original => ({
+  ...await original<typeof import("../utils/sandbox.js")>(),
+  executeBufferedCommand: vi.fn(),
+}));
+function childOutput(stdout: string, err: Error | null = null, stderr = "", timedOut = false) {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  const exitCode = err ? (typeof code === "number" ? code : null) : 0;
+  vi.mocked(executeBufferedCommand).mockImplementation((_file, _args, _options, callback) => {
+    callback(err, stdout, stderr, { exitCode, timedOut });
   });
 }
 const ok: ToolResult = { output: "ok", isError: false };
@@ -109,7 +121,7 @@ describe("structured verification loop", () => {
     expect(result.events.some((e) => e.type === "tool_result" && e.isError)).toBe(true);
   });
   it("preserves hooks without letting hook output verify an edit", async () => {
-    childOutput("hook ok");
+    hookOutput("hook ok");
     const result = await scenario([[edit()], [shell()]], "auto-accept", { afterEdit: "echo edit", afterShell: "echo shell" });
     expect(result.requests).toBe(3);
     const outputs = result.events.filter((e) => e.type === "tool_result").map((e) => e.output);
@@ -161,7 +173,7 @@ describe("built-in test runner", () => {
     childOutput(" Tests  2 passed (2)");
     const controller = new AbortController();
     await testRunnerTool.execute({ framework: "vitest" }, { signal: controller.signal });
-    expect(execFile).toHaveBeenCalledWith("npx", expect.any(Array), expect.objectContaining({ signal: controller.signal }), expect.any(Function));
+    expect(executeBufferedCommand).toHaveBeenCalledWith("npx", expect.any(Array), expect.any(Object), expect.any(Function), controller.signal);
   });
   it("does not credit pytest warning text when the actual summary is skipped-only", async () => {
     childOutput("s [100%]\n================ warnings summary ================\ntest_value.py:3: UserWarning: previously 2 passed\n  warnings.warn('previously 2 passed')\n1 skipped, 1 warning in 0.01s\n");
@@ -208,7 +220,6 @@ describe("built-in test runner", () => {
   it.each([
     Object.assign(new Error("command failed"), { code: 2 }),
     Object.assign(new Error("spawn npx ENOENT"), { code: "ENOENT" }),
-    Object.assign(new Error("timed out"), { killed: true, signal: "SIGTERM" }),
     Object.assign(new Error("signal terminated"), { signal: "SIGINT" }),
   ])("reports process failures despite passing stdout: %s", async (err) => {
     childOutput(" Tests  2 passed (2)", err, "raw diagnostic");
@@ -216,6 +227,14 @@ describe("built-in test runner", () => {
     expect(result.isError).toBe(true);
     expect(result.verification?.status).toBe("failed");
     expect(result.output).toContain(err.message);
+    expect(result.output).toContain("raw diagnostic");
+  });
+  it("reports a timeout despite passing stdout", async () => {
+    childOutput(" Tests  2 passed (2)", new Error("Command timed out"), "raw diagnostic", true);
+    const result = await testRunnerTool.execute({ framework: "vitest", timeout_ms: 123 });
+    expect(result.isError).toBe(true);
+    expect(result.verification).toMatchObject({ status: "failed", passed: 2, exitCode: null });
+    expect(result.output).toContain("timed out after 123 ms");
     expect(result.output).toContain("raw diagnostic");
   });
   it.each([
@@ -244,7 +263,7 @@ describe("built-in test runner", () => {
   });
 
   it("handles synchronous startup exceptions", async () => {
-    vi.mocked(execFile).mockImplementation(() => { throw new Error("startup exception"); });
+    vi.mocked(executeBufferedCommand).mockImplementation(() => { throw new Error("startup exception"); });
     const result = await testRunnerTool.execute({ framework: "vitest" });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("startup exception");

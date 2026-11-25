@@ -10,8 +10,6 @@
 
 ![Agav preview](https://www.agav.dev/preview.gif)
 
-> ⚠️ **Experimental Beta** — Agav is under active development. Expect breaking changes, rough edges, and rapid iteration. Feedback and bug reports are welcome!
-
 ## Install
 
 No Node.js required. One command, self-contained binary:
@@ -67,6 +65,25 @@ Keep it current:
 ```bash
 agav update
 ```
+
+### Run local models through an OpenAI-compatible API
+
+Agav can connect to a local inference server using `--provider openai --openai-api chat`. For example, serve a GGUF model with [llama.cpp](https://github.com/ggml-org/llama.cpp):
+
+```bash
+llama-server -m /path/to/model.gguf --alias local-model --port 8080
+```
+
+In another terminal, point Agav at that server:
+
+```bash
+OPENAI_BASE_URL=http://127.0.0.1:8080/v1 OPENAI_API_KEY=local \
+  agav --provider openai --openai-api chat --model local-model
+```
+
+Here, `openai` selects the API format; inference runs locally, not on OpenAI's servers. `local` is a placeholder for an unauthenticated server. If your server requires authentication, use its actual key.
+
+[LM Studio](https://lmstudio.ai/docs/developer/openai-compat) works the same way for GGUF models and, on Apple Silicon, MLX models. Start its local server, use `http://127.0.0.1:1234/v1` (the default), and pass the model ID shown by LM Studio. For Agav to use tools, the model and chat template must support tool calling.
 
 ## Why harness efficiency matters
 

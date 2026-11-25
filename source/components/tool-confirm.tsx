@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text, ScrollBox, useInput, usePaste, useStdout, type DOMElement, type MouseEventData } from "../ink/index.js";
 import type { ScrollBoxControls } from "../ink/index.js";
+import wrapText from "../ink/wrap-text.js";
 import { getToolLabel, getToolSummary, getMcpServerName } from "../utils/tool-labels.js";
 import type { DiffLine } from "../utils/diff.js";
 import { getTheme } from "../config/theme.js";
@@ -12,9 +13,16 @@ import { isEscapeResidue } from "./input-prompt.js";
 import { writeClipboard } from "../ink/termio/clipboard.js";
 import stringWidth from "string-width";
 import { checkWrite, formatWorkspaceWarning } from "../utils/workspace-guard.js";
+import ConfirmControl, { useConfirmSurface } from "./confirm-control.js";
+import { HoverText, usePointerMotion } from "./hover-text.js";
 
 /** Write tools whose targets get an outside-the-project warning line. */
 const WARN_TOOLS = new Set(["write_file", "edit_file", "edit_notebook"]);
+
+/** Preserve line breaks, but display other terminal controls as text. */
+function visibleCommand(command: string): string {
+  return command.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, (char) => `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`);
+}
 
 /** Represents the user's approval decision for a tool request. */
 export type ConfirmChoice = ConfirmResult;
@@ -31,51 +39,6 @@ interface Props {
   /** Informational one-line warning, e.g. a write target outside the project. */
   warning?: string;
   detachAvailable?: boolean;
-}
-
-// A click only counts on a prompt that has been on screen this long: the second press of a
-// double-click must not answer the confirmation that replaced the first one under the pointer.
-const CLICK_SETTLE_MS = 400;
-
-/** One clickable choice: a single text node, padding included, so a press and its release always hit the
- *  same target. Its label keeps the keyboard shortcut visible, and it flashes when a press counts (hover would
- *  need any-motion mouse tracking, which the app leaves off). As in the feedback editor, a drag or a wheel
- *  turn while the button is held makes the press a selection or a scroll, so its release answers nothing;
- *  so does a release on another cell, for terminals that report only the press and the release. */
-function ConfirmControl({ label, color, onPress, onActivate }: {
-  label: string;
-  color: string;
-  onPress: () => boolean;
-  onActivate: () => void;
-}) {
-  const [pressed, setPressed] = React.useState(false);
-  const flash = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const pressedAtRef = React.useRef<{ x: number; y: number } | null>(null);
-  React.useEffect(() => () => clearTimeout(flash.current), []);
-  // The handlers sit on a Box because Text does not pass onMouseMove through.
-  return (
-    <Box
-      onMouseDown={(event: MouseEventData) => {
-        pressedAtRef.current = { x: event.x, y: event.y };
-        if (onPress()) {
-          setPressed(true);
-          clearTimeout(flash.current);
-          flash.current = setTimeout(() => setPressed(false), 150);
-        }
-        event.stopPropagation?.();
-      }}
-      onMouseMove={(event: MouseEventData) => { pressedAtRef.current = null; event.stopPropagation?.(); }}
-      onWheel={() => { pressedAtRef.current = null; }}
-      onClick={(event: MouseEventData) => {
-        const at = pressedAtRef.current;
-        pressedAtRef.current = null;
-        if (at?.x === event.x && at.y === event.y) onActivate();
-        event.stopPropagation?.();
-      }}
-    >
-      <Text bold color={color} inverse={pressed}>{` ${label} `}</Text>
-    </Box>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -126,10 +89,16 @@ function wordBoundsAt(text: string, offset: number): [number, number] {
 export default function ToolConfirm({ toolName, input, diffLines, mcpServerName, onConfirm, subagentTask, explicitApprovalOnly, keybindings, warning, detachAvailable }: Props) {
   const detachResolver = React.useRef(new KeybindingResolver(keybindings, ["detachSession"]));
   const keyResolver = React.useRef(new KeybindingResolver(keybindings, ["cancel", "submit", "clearInput", "deleteWordBackward"]));
+  usePointerMotion();
   const { stdout } = useStdout();
-  const [rows, setRows] = React.useState(stdout.rows || 24);
+  const [{ rows, columns }, setSize] = React.useState(() => ({ rows: stdout.rows || 24, columns: stdout.columns || 80 }));
+  const [expandedInput, setExpandedInput] = React.useState<Props["input"]>();
   const detailScroll = React.useRef<ScrollBoxControls | null>(null);
-  const [detailOffset, setDetailOffset] = React.useState(Number.POSITIVE_INFINITY);
+  const [detailPosition, setDetailPosition] = React.useState<{ input: Props["input"]; offset: number }>();
+  const detailOffset = detailPosition?.input === input ? detailPosition.offset : Number.POSITIVE_INFINITY;
+  const updateDetailOffset = (offset: number) => {
+    if (Number.isFinite(detailOffset) || offset > 0) setDetailPosition({ input, offset });
+  };
   const [isFeedbackMode, setIsFeedbackMode] = React.useState(false);
   const feedbackModeRef = React.useRef(false);
   const [, bumpCursor] = React.useState(0);
@@ -188,7 +157,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
   };
 
   React.useEffect(() => {
-    const resize = () => setRows(stdout.rows || 24);
+    const resize = () => setSize({ rows: stdout.rows || 24, columns: stdout.columns || 80 });
     stdout.on("resize", resize);
     return () => { stdout.off("resize", resize); };
   }, [stdout]);
@@ -218,6 +187,16 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
 
   // Background approval is reusable and runs unsandboxed, so show the spec in full.
   const background = toolName === "run_background_job" ? parseBackgroundConfirmInput(input) : undefined;
+  const shellCommand = (toolName === "run_command" || toolName === "skill_shell_block") && typeof input.command === "string"
+    ? input.command
+    : undefined;
+  const commandExpanded = shellCommand !== undefined && expandedInput === input;
+  const toggleCommand = (event: MouseEventData) => {
+    if (event.button !== 0 || event.ctrl || event.alt || event.shift) return;
+    event.stopPropagation?.();
+    setDetailPosition(undefined);
+    setExpandedInput(commandExpanded ? undefined : input);
+  };
 
   // Keys and clicks share these, so a click does exactly what its shortcut does.
   const approve = () => onConfirm("yes");
@@ -243,25 +222,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
     setIsFeedbackMode(false);
   };
 
-  // A click resolves only the set of controls it was pressed on, once they have settled. The set changes
-  // with the prompt and with the feedback editor, and is stamped while rendering: the next prompt can
-  // render and take a press within the same burst of mouse reports, before any effect has run.
-  const shownRef = React.useRef({ input, feedback: isFeedbackMode, at: Date.now() });
-  if (shownRef.current.input !== input || shownRef.current.feedback !== isFeedbackMode) {
-    shownRef.current = { input, feedback: isFeedbackMode, at: Date.now() };
-  }
-  const pressedRef = React.useRef<typeof shownRef.current | null>(null);
-  const pressControl = () => {
-    const shown = shownRef.current;
-    const counts = Date.now() - shown.at >= CLICK_SETTLE_MS;
-    pressedRef.current = counts ? shown : null;
-    return counts;
-  };
-  const activateControl = (action: () => void) => () => {
-    const pressedHere = pressedRef.current === shownRef.current;
-    pressedRef.current = null;
-    if (pressedHere) action();
-  };
+  const surface = useConfirmSurface(input, `${toolName}:${isFeedbackMode}:${Boolean(explicitApprovalOnly)}:${commandExpanded}`);
 
   useInput((rawChar, rawKey) => {
     const { input: char, key } = normalizeKeyEvent(rawChar, rawKey);
@@ -441,7 +402,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
       return;
     }
 
-    if (background && (key.upArrow || key.downArrow)) {
+    if ((background || commandExpanded) && (key.upArrow || key.downArrow)) {
       detailScroll.current?.scrollBy(key.upArrow ? 1 : -1);
       return;
     }
@@ -514,7 +475,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
   };
 
   const handleMouseMove = (event: MouseEventData) => {
-    if (selAnchorRef.current === null) return;
+    if (event.button !== 0 || selAnchorRef.current === null) return;
     const offset = eventToOffset(event);
     draggingRef.current = true;
     selFocusRef.current = offset;
@@ -556,6 +517,9 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
     return () => { cancelled = true; };
   }, [warning, toolName, targetPath]);
 
+  const detailWidth = Math.max(1, columns - 2);
+  const maxDetailRows = Math.max(3, Math.floor((rows - 6) / 2));
+
   if (background) {
     const info = describeBackgroundConfirmation(background.action, background.spec, background.subject);
     const lines: { text: string; color?: string; bold?: boolean; dim?: boolean }[] = info.job ? [
@@ -570,22 +534,20 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
       ...info.extras.map((text) => ({ text: `  ${text}` })),
       { text: `  ${info.reuse}`, dim: true },
     ];
-    const view = detailViewport(lines.map((line) => line.text), (stdout.columns || 80) - 2, Math.max(3, Math.floor((rows - 6) / 2)));
+    const view = detailViewport(lines.map((line) => line.text), detailWidth, maxDetailRows);
     return (
       <Box flexDirection="column" paddingX={1}>
         {subagentTask && (
           <Text dimColor>Subagent "{subagentTask}" requests:</Text>
         )}
         <Text bold color="yellow">{info.label}?</Text>
-        <ScrollBox height={view.rows} controls={detailScroll} scrollOffset={detailOffset} onScrollChange={(offset) => {
-          if (Number.isFinite(detailOffset) || offset > 0) setDetailOffset(offset);
-        }}>
+        <ScrollBox height={view.rows} controls={detailScroll} scrollOffset={detailOffset} onScrollChange={updateDetailOffset}>
           {lines.map((line, i) => <Text key={i} color={line.color} bold={line.bold} dimColor={line.dim}>{line.text}</Text>)}
         </ScrollBox>
         {view.overflows && <Text dimColor>  ↑↓: Scroll details</Text>}
-        <Box marginTop={view.overflows ? 0 : 1} flexWrap="wrap" key={shownRef.current.at}>
-          <ConfirmControl label="[Y]es" color="green" onPress={pressControl} onActivate={activateControl(approve)} />
-          <ConfirmControl label="[N]o" color="red" onPress={pressControl} onActivate={activateControl(deny)} />
+        <Box marginTop={view.overflows ? 0 : 1} flexWrap="wrap" key={surface.revision}>
+          <ConfirmControl label="[Y]es" color="green" surface={surface} onActivate={approve} />
+          <ConfirmControl label="[N]o" color="red" surface={surface} onActivate={deny} />
         </Box>
       </Box>
     );
@@ -593,7 +555,9 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
   const shownWarning = warning ?? computedWarning;
 
   const label = getToolLabel(toolName);
-  const summary = getToolSummary(toolName, input);
+  const summary = shellCommand === undefined ? getToolSummary(toolName, input) : "";
+  const commandText = commandExpanded ? visibleCommand(shellCommand) : "";
+  const commandRows = commandExpanded ? wrapText(commandText, detailWidth, "hard").split("\n").length : 0;
   const mcpServer = mcpServerName ?? getMcpServerName(toolName);
   const theme = getTheme();
 
@@ -603,9 +567,8 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
     .map(([k, v]) => {
       const formatted = terminalToolValue(k, v);
       const val = formatted.length > 80 ? formatted.slice(0, 80) + "..." : formatted;
-      return `  ${k}: ${val}`;
-    })
-    .join("\n");
+      return { key: k, text: `  ${k}: ${k === "command" && shellCommand !== undefined ? visibleCommand(val) : val}` };
+    });
 
   // Show max 20 diff lines in preview
   const maxDiffLines = 20;
@@ -620,8 +583,22 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
       <Text bold color="yellow">
         Allow {label}?{mcpServer ? <Text dimColor bold={false}>{` (MCP: ${mcpServer})`}</Text> : null}
       </Text>
-      {summary ? <Text dimColor>  {summary}</Text> : null}
-      {details ? <Text dimColor>{details}</Text> : null}
+      {summary && <Text dimColor>  {summary}</Text>}
+      {shellCommand === undefined ? (
+        details.length > 0 && <Text dimColor>{details.map(({ text }) => text).join("\n")}</Text>
+      ) : details.map(({ key, text }) => key !== "command" ? <Text key={key} dimColor>{text}</Text> : (
+        <React.Fragment key={key}>
+          <HoverText dimColor onClick={toggleCommand}>{commandExpanded ? "  command:" : text}</HoverText>
+          {commandExpanded && (
+            <>
+              <ScrollBox height={Math.min(commandRows, maxDetailRows)} controls={detailScroll} scrollOffset={detailOffset} onScrollChange={updateDetailOffset}>
+                <Text wrap="hard">{commandText}</Text>
+              </ScrollBox>
+              {commandRows > maxDetailRows && <Text dimColor>  ↑↓: Scroll command</Text>}
+            </>
+          )}
+        </React.Fragment>
+      ))}
       {shownWarning ? <Text color="yellow">  ⚠ {shownWarning}</Text> : null}
 
       {visibleDiff && visibleDiff.length > 0 && (
@@ -687,19 +664,19 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
                 );
               })()}
             </Box>
-            <Box flexWrap="wrap" key={shownRef.current.at}>
-              <ConfirmControl label="[Enter] Submit denial" color="red" onPress={pressControl} onActivate={activateControl(submitFeedback)} />
-              <ConfirmControl label="[Esc] Cancel" color="gray" onPress={pressControl} onActivate={activateControl(cancelFeedback)} />
+            <Box flexWrap="wrap" key={surface.revision}>
+              <ConfirmControl label="[Enter] Submit denial" color="red" surface={surface} onActivate={submitFeedback} />
+              <ConfirmControl label="[Esc] Cancel" color="gray" surface={surface} onActivate={cancelFeedback} />
               <Text dimColor> max {MAX_FEEDBACK_LENGTH} characters</Text>
             </Box>
           </Box>
         ) : (
-          <Box flexWrap="wrap" key={shownRef.current.at}>
-            <ConfirmControl label="[Y]es" color="green" onPress={pressControl} onActivate={activateControl(approve)} />
-            <ConfirmControl label="[N]o" color="red" onPress={pressControl} onActivate={activateControl(deny)} />
-            <ConfirmControl label="[D]eny with feedback" color="yellow" onPress={pressControl} onActivate={activateControl(startFeedback)} />
+          <Box flexWrap="wrap" key={surface.revision}>
+            <ConfirmControl label="[Y]es" color="green" surface={surface} onActivate={approve} />
+            <ConfirmControl label="[N]o" color="red" surface={surface} onActivate={deny} />
+            <ConfirmControl label="[D]eny with feedback" color="yellow" surface={surface} onActivate={startFeedback} />
             {!explicitApprovalOnly && (
-              <ConfirmControl label="[A]lways" color="cyan" onPress={pressControl} onActivate={activateControl(approveAlways)} />
+              <ConfirmControl label="[A]lways" color="cyan" surface={surface} onActivate={approveAlways} />
             )}
           </Box>
         )}

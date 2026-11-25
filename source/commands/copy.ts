@@ -22,10 +22,11 @@ function completeFencedBlocks(text: string): string[] {
 export const copyCommand: SlashCommand = {
   name: "copy",
   description: "Copy an assistant response to the clipboard",
-  argumentHint: "[N | code [N]]",
-  usage: "Usage: /copy [N | code [N]]\n\n"
+  argumentHint: "[N | code [N] [--response M]]",
+  usage: "Usage: /copy [N | code [N] [--response M]]\n\n"
     + "Use /copy [N] to copy the Nth-most-recent assistant response (default: latest).\n"
-    + "Use /copy code [N] to copy the Nth complete fenced code block in the latest response (default: first).",
+    + "Use /copy code [N] to copy the Nth complete fenced code block in the latest response (default: first).\n"
+    + "Add --response M to take the block from the Mth-most-recent response, numbered as in /copy M.",
   async execute(args: string, context: CommandContext): Promise<CommandResult> {
     const messages = context.conversation.getMessages();
     // Only count assistant turns that have at least one non-blank text block.
@@ -38,34 +39,51 @@ export const copyCommand: SlashCommand = {
         msg.content.some((b) => b.type === "text" && b.text?.trim()),
     );
 
-    if (assistantMessages.length === 0) {
-      return { type: "message", text: "Nothing to copy (no assistant messages found)." };
+    const noMessages: CommandResult = { type: "message", text: "Nothing to copy (no assistant messages found)." };
+    const input = args.trim();
+    const copyingCode = /^code(?:\s|$)/.test(input);
+    // /copy code reports a bad block or response number even when there is no history.
+    if (assistantMessages.length === 0 && !copyingCode) {
+      return noMessages;
     }
 
-    const input = args.trim();
-    if (/^code(?:\s|$)/.test(input)) {
-      const index = input.slice("code".length).trim();
+    if (copyingCode) {
+      const rest = input.slice("code".length).trim();
+      const flag = /(?:^|\s)--response(?:\s+(.*))?$/.exec(rest);
+      const index = flag ? rest.slice(0, flag.index).trim() : rest;
       const n = index ? Number(index) : 1;
       if ((index && !/^\d+$/.test(index)) || !Number.isSafeInteger(n) || n < 1) {
         return { type: "message", text: "Invalid code block number. Expected a positive integer." };
       }
-      const latestText = assistantMessages.at(-1)!.content
+      const response = flag?.[1]?.trim() ?? "";
+      const m = flag ? Number(response) : 1;
+      if (flag && (!/^\d+$/.test(response) || !Number.isSafeInteger(m) || m < 1)) {
+        return { type: "message", text: "Invalid response number. Expected a positive integer." };
+      }
+      if (assistantMessages.length === 0) {
+        return noMessages;
+      }
+      if (m > assistantMessages.length) {
+        return { type: "message", text: `Nothing to copy (only ${assistantMessages.length} assistant message${assistantMessages.length === 1 ? "" : "s"} available).` };
+      }
+      const where = m === 1 ? "the latest response" : `response -${m}`;
+      const responseText = assistantMessages[assistantMessages.length - m].content
         .filter((b) => b.type === "text")
         .map((b) => b.text)
         .join("\n");
-      const blocks = completeFencedBlocks(latestText);
+      const blocks = completeFencedBlocks(responseText);
       if (blocks.length === 0) {
-        return { type: "message", text: "Nothing to copy (no complete fenced code blocks in the latest response)." };
+        return { type: "message", text: `Nothing to copy (no complete fenced code blocks in ${where}).` };
       }
       const block = blocks[n - 1];
       if (block === undefined) {
         return {
           type: "message",
-          text: `Nothing to copy (only ${blocks.length} fenced code block${blocks.length === 1 ? "" : "s"} available).`,
+          text: `Nothing to copy (only ${blocks.length} fenced code block${blocks.length === 1 ? "" : "s"} available${m === 1 ? "" : ` in ${where}`}).`,
         };
       }
       writeClipboard(process.stdout, block);
-      return { type: "message", text: `Copied code block ${n} to clipboard.` };
+      return { type: "message", text: `Copied code block ${n}${m === 1 ? "" : ` from ${where}`} to clipboard.` };
     }
 
     let n = 1;

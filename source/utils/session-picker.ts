@@ -188,19 +188,16 @@ export async function pickSession(
   // session. The caller suspends Ink around this, so the screen is ours.
   process.stdout.write("\x1b[2J\x1b[H\x1b[?25l");
 
-  // Enable mouse reporting so users can scroll the list and click a row to
-  // select it. 1000 = button press/release events, 1006 = SGR extended
-  // coordinates (avoids the 223-column limit of the legacy encoding). Both
-  // MUST be disabled on every exit path (see disableMouse) or the host
-  // terminal keeps emitting mouse escape sequences into whatever runs next.
+  // Track pointer motion as well as clicks and wheel input. Keep SGR
+  // coordinates enabled when switching between the list and rename editor.
   let mouseEnabled = false;
   function enableMouse() {
-    process.stdout.write("\x1b[?1000h\x1b[?1006h");
+    process.stdout.write("\x1b[?1000h\x1b[?1006h\x1b[?1003h");
     mouseEnabled = true;
   }
   function disableMouse() {
     if (!mouseEnabled) return;
-    process.stdout.write("\x1b[?1006l\x1b[?1000l");
+    process.stdout.write("\x1b[?1003l\x1b[?1006l\x1b[?1000l");
     mouseEnabled = false;
   }
   enableMouse();
@@ -288,7 +285,7 @@ export async function pickSession(
     return out;
   }
 
-  function render() {
+  function render(keepWindow = false) {
     // Move cursor up to overwrite previous output
     if (totalLinesRendered > 0) {
       process.stdout.write(`\x1b[${totalLinesRendered}A\x1b[G`);
@@ -389,7 +386,7 @@ export async function pickSession(
       ? `  \x1b[31m${operationError}\x1b[0m`
       : searchActive
         ? `\x1b[2m  type to filter · Backspace delete · Enter/Esc done · Ctrl+N new\x1b[0m`
-        : `\x1b[2m  ↑↓/scroll/click · Enter resume · / search · ${editHint} · n new · q quit\x1b[0m`);
+        : `\x1b[2m  ↑↓/scroll · Enter/click resume · / search · ${editHint} · n new · q quit\x1b[0m`);
 
     // Header line 7 (conditional): the approval CTA banner. Shown whenever ANY
     // session needs approval, regardless of the active filters, so pending
@@ -401,10 +398,11 @@ export async function pickSession(
 
     lines.push("");
 
-    // Center the selection in the viewport, clamped so we never scroll past the
+    // Keep hovered rows stationary. Otherwise center the selection, clamped so we never scroll past the
     // ends. Because pageSize tracks the live terminal height, the selected row
     // is always inside [scrollStart, scrollEnd) even after the window shrinks.
-    const scrollStart = Math.max(0, Math.min(selected - Math.floor(pageSize / 2), items.length - pageSize));
+    const anchor = keepWindow ? visibleStart : selected - Math.floor(pageSize / 2);
+    const scrollStart = Math.max(0, Math.min(anchor, items.length - pageSize));
     const scrollEnd = Math.min(scrollStart + pageSize, items.length);
     visibleStart = scrollStart;
     visibleEnd = scrollEnd;
@@ -475,7 +473,7 @@ export async function pickSession(
         // Pad to the clamp budget so the reverse background covers the full row.
         const budget = Math.max(1, cols - 1);
         const padded = fitCells(plain, budget, true);
-        lines.push(`\x1b[7m${padded}\x1b[0m`);
+        lines.push(`\x1b[36m\x1b[7m${padded}\x1b[0m`);
       } else {
         const suffix = `  \x1b[2m${project}\x1b[0m\x1b[2m · ${age} · ${msgs} · ${id}\x1b[0m`;
         lines.push(`  ${gutter}${marker} \x1b[2m${title}\x1b[0m${suffix}`);
@@ -548,8 +546,10 @@ export async function pickSession(
     // resize there doesn't paint the list over the prompt. A resize can scramble
     // the cursor, so reset the overwrite counter and re-home before repainting.
     let listActive = true;
+    let pressedRow: { x: number; y: number; session: SessionRecord } | undefined;
     let resizeRenameEditor: (() => void) | null = null;
     function onResize() {
+      pressedRow = undefined;
       if (!listActive) {
         resizeRenameEditor?.();
         return;
@@ -668,7 +668,7 @@ export async function pickSession(
 
       // Button-motion tracking is needed for drag selection, but only while
       // editing. Keep SGR coordinates and restore list-only tracking on exit.
-      process.stdout.write("\x1b[?1002h");
+      process.stdout.write("\x1b[?1003l\x1b[?1002h");
 
       function clearRenameRecoveryTimer() {
         if (renameRecoveryTimer !== null) {
@@ -1059,7 +1059,14 @@ export async function pickSession(
       x: number;
       y: number;
       release: boolean;
-    }): boolean {
+    }): boolean | "resume" {
+      const pressed = pressedRow;
+      pressedRow = undefined;
+      if (ev.release) {
+        return ev.button === 0 && pressed && ev.x === pressed.x && ev.y === pressed.y
+          && items[visibleRowIndex(ev.y)] === pressed.session ? "resume" : false;
+      }
+
       // Wheel events set bit 6 (button codes 64 = up, 65 = down) and report on
       // press only. Scroll moves the selection so the viewport follows it,
       // reusing the same scrolling math as the arrow keys.
@@ -1076,9 +1083,8 @@ export async function pickSession(
         return true;
       }
 
-      // Left-button press (code 0). Ignore the release so a single click doesn't
-      // fire twice.
-      if (ev.button === 0 && !ev.release) {
+      // Select on press; open only after a matching release.
+      if (ev.button === 0) {
         // 1) Click INSIDE the search box focuses it (click-to-activate). The box
         //    spans searchBox.top..bottom rows and left..right columns.
         const insideSearch =
@@ -1100,16 +1106,38 @@ export async function pickSession(
 
         // 3) Click on a session row selects it. Map the 1-based terminal row to
         //    an item index via the header offset and the visible window.
-        const rowIndex = ev.y - 1 - headerLineCount(); // 0-based offset into visible rows
-        if (rowIndex < 0) return blurred; // other header row: repaint only if we blurred
-        const idx = visibleStart + rowIndex;
-        if (idx < visibleStart || idx >= visibleEnd) return blurred;
-        if (idx === selected) return blurred;
-        selected = idx;
-        return true;
+        const index = visibleRowIndex(ev.y);
+        const session = items[index];
+        if (!session) return blurred;
+        pressedRow = { x: ev.x, y: ev.y, session };
+        const changed = index !== selected;
+        selected = index;
+        return changed || blurred;
       }
 
-      return false;
+      // Button-free motion selects without blurring search or activating a row.
+      return ev.button === 35 && selectVisibleRow(ev.y);
+    }
+
+    function visibleRowIndex(y: number): number {
+      if (y > (process.stdout.rows || 21)) return -1;
+      const idx = visibleStart + y - 1 - headerLineCount();
+      return idx >= visibleStart && idx < visibleEnd ? idx : -1;
+    }
+
+    function selectVisibleRow(y: number): boolean {
+      const idx = visibleRowIndex(y);
+      if (idx < 0 || idx === selected) return false;
+      selected = idx;
+      return true;
+    }
+
+    function resumeSelected(drainLF = false): boolean {
+      const session = items[selected];
+      if (!session) return false;
+      cleanup(drainLF);
+      resolve(session);
+      return true;
     }
 
     // Handle one logical keyboard token (already separated from any mouse
@@ -1118,6 +1146,7 @@ export async function pickSession(
     // any remaining input in the current chunk.
     let searchCRDeadline = 0;
     function handleKey(key: string): boolean {
+      pressedRow = undefined;
       // A split CRLF is one Enter, not a search commit followed by resume.
       const swallowLF = searchCRDeadline > 0 && Date.now() <= searchCRDeadline;
       searchCRDeadline = 0;
@@ -1199,18 +1228,7 @@ export async function pickSession(
       }
 
       // Enter resumes the selected session (\r drains a trailing \n).
-      if (key === "\r") {
-        if (items.length === 0) return false; // nothing to resume (filtered out)
-        cleanup(true);
-        resolve(items[selected]!);
-        return true;
-      }
-      if (key === "\n" || key === "\r\n") {
-        if (items.length === 0) return false;
-        cleanup();
-        resolve(items[selected]!);
-        return true;
-      }
+      if (key === "\r" || key === "\n" || key === "\r\n") return resumeSelected(key === "\r");
 
       // Navigation: arrows plus vim-style j/k (safe now that typing only happens
       // in the focused search bar).
@@ -1364,12 +1382,21 @@ export async function pickSession(
       // batched scroll reports, reports split across chunks, and a report
       // immediately followed by a keypress (e.g. click then Enter) all working.
       let mouseChanged = false;
+      let keepWindow = true;
       while (input.length > 0) {
         const mouseMatch = mouseAtStart.exec(input);
         if (mouseMatch) {
           const events = parseMouseEvents(mouseMatch[0]);
           for (const ev of events) {
-            if (applyMouseEvent(ev)) mouseChanged = true;
+            const result = applyMouseEvent(ev);
+            if (result === "resume") {
+              resumeSelected();
+              return;
+            }
+            if (result) {
+              mouseChanged = true;
+              if (ev.button === 64 || ev.button === 65) keepWindow = false;
+            }
           }
           input = input.slice(mouseMatch[0].length);
           continue;
@@ -1380,7 +1407,7 @@ export async function pickSession(
         // trailing "M") would otherwise be parsed as a command. A generous
         // recovery timer only drops a report a peer starts but never finishes.
         if (incompleteMouse.test(input) && input.length <= MAX_PENDING) {
-          if (mouseChanged) render();
+          if (mouseChanged) render(keepWindow);
           pendingSeq = input;
           pendingTimer = setTimeout(() => {
             pendingTimer = null;
@@ -1395,7 +1422,7 @@ export async function pickSession(
         // timer fires and we dispatch the prefix as a keypress (a lone Esc then
         // cancels; a bare CSI is a no-op in handleKey).
         if (ambiguousEscPrefix.test(input)) {
-          if (mouseChanged) render();
+          if (mouseChanged) render(keepWindow);
           pendingSeq = input;
           pendingTimer = setTimeout(() => {
             pendingTimer = null;
@@ -1417,8 +1444,9 @@ export async function pickSession(
         }
         input = input.slice(key.length);
         if (mouseChanged) {
-          render();
+          render(keepWindow);
           mouseChanged = false;
+          keepWindow = true;
         }
         if (handleKey(key)) {
           // Control handed off. If the M/R key opened the rename editor, pass
@@ -1434,7 +1462,7 @@ export async function pickSession(
         }
       }
 
-      if (mouseChanged) render();
+      if (mouseChanged) render(keepWindow);
     }
 
     stdin.on("data", onData);

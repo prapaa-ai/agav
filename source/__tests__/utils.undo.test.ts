@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { getUndoStack, hasUndo, performUndo, pushUndo } from "../utils/undo.js";
+import { getUndoStack, hasUndo, performUndo, performUndoAt, pushUndo } from "../utils/undo.js";
 
 describe("utils/undo", () => {
   /** Directories created by these tests, removed after each one. */
@@ -83,5 +83,39 @@ describe("utils/undo", () => {
     expect(stack).toHaveLength(20);
     expect(stack[0]?.tool).toBe("tool-1");
     expect(stack.at(-1)?.tool).toBe("tool-20");
+  });
+
+  it("reverts only the entry at the given index", async () => {
+    const dir = await tempDir("agav-undo-at-");
+    const files: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const file = join(dir, `file-${i}.txt`);
+      await writeFile(file, `before-${i}`, "utf8");
+      await pushUndo(file, `tool-${i}`);
+      await writeFile(file, `after-${i}`, "utf8");
+      files.push(file);
+    }
+
+    const restored = await performUndoAt(0);
+
+    expect(restored?.tool).toBe("tool-0");
+    await expect(readFile(files[0]!, "utf8")).resolves.toBe("before-0");
+    await expect(readFile(files[1]!, "utf8")).resolves.toBe("after-1");
+    await expect(readFile(files[2]!, "utf8")).resolves.toBe("after-2");
+    expect(getUndoStack().map((e) => e.tool)).toEqual(["tool-1", "tool-2"]);
+  });
+
+  it("returns null for an out-of-range index without touching the stack", async () => {
+    const dir = await tempDir("agav-undo-at-range-");
+    const file = join(dir, "note.txt");
+    await writeFile(file, "before", "utf8");
+    await pushUndo(file, "file-write");
+    await writeFile(file, "after", "utf8");
+
+    await expect(performUndoAt(1)).resolves.toBeNull();
+    await expect(performUndoAt(-1)).resolves.toBeNull();
+
+    expect(getUndoStack()).toHaveLength(1);
+    await expect(readFile(file, "utf8")).resolves.toBe("after");
   });
 });

@@ -1138,6 +1138,7 @@ export default class Ink {
 		const base: MouseEventData = {
 			x: ev.x,
 			y,
+			screenY: ev.y,
 			button: ev.button,
 			ctrl: ev.ctrl,
 			alt: ev.alt,
@@ -1229,6 +1230,7 @@ export default class Ink {
 				}
 			}
 
+			if (ev.action === "move" && target) dispatchMouseMove(target, base);
 			dispatchHover(this.rootNode, this.prevHoverTarget, target, base);
 			this.prevHoverTarget = target;
 		}

@@ -32,16 +32,16 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/help [command]` | List available commands or show detailed usage for one command, including `/ps`. |
 | `/help --search <query>` | Find loaded commands by a literal phrase in their name or description, ignoring case. |
 | `/clear`, `/new` | Start a clean chat without deleting saved sessions. |
-| `/model [name]` | Open the model picker or switch to a specific model; Agav switches provider when needed. |
+| `/model [name]` | Open the model picker or switch to a specific model. In the picker, press Ctrl+Y to copy the highlighted model ID or drag to copy selected text. Enter selects the model and switches provider when needed. |
 | `/effort [minimal\|low\|medium\|high\|max]` | Show or set reasoning effort. |
 | `/fast`, `/deep` | Switch to the current provider's fast or most capable model shortcut. Vertex AI `/deep` requires location `global`, `us`, or `eu`; regional locations are rejected without changing the model or location. |
 | `/compact` | Summarize older conversation content to free context-window space. |
 | `/context` | Show the estimated current context-window occupancy: a breakdown for the system prompt, tools, MCP tools, skills, and messages, with Used and Free totals. While a turn is running, it excludes in-flight output. Session totals are cumulative across requests and can exceed the context window. |
 | `/status` | Show session, model, permissions, working directory, and token usage at a glance. |
 | `/permission [ask\|auto-accept\|deny-writes]` | Show the current permission mode, or change it for this session. Run bare `/permission` to open an interactive picker. The chosen mode persists for the session and is restored when you resume it. Organization policy may enforce a stricter minimum that cannot be loosened. Interactive sessions only. See [Security → Permission modes](/reference/security#permission-modes). |
-| `/export [json\|--full] [sanitize\|--sanitize]` | Write the retained conversation to a timestamped Markdown or JSON file in the working directory. Use `--full` for complete retained tool text in Markdown or add `sanitize` for best-effort redaction; review before sharing. See [export details](/workflows/sessions-and-memory#export-a-conversation). |
+| `/export [json\|--full] [sanitize\|--sanitize] [--branch-only]` | Write the retained conversation to a timestamped Markdown or JSON file. Add `--branch-only` to export messages added to the active conversation branch, `--full` for complete retained tool text in Markdown, or `sanitize` for best-effort redaction. See [export details](/workflows/sessions-and-memory#export-a-conversation). |
 | `/copy [N]` | Copy an assistant response to the clipboard. With no argument, it copies the most recent response that contains text; `/copy 2` copies the second-most-recent. `N` must be a positive integer, and it counts only responses with text, so turns that only call tools or contain blank text are skipped. |
-| `/copy code [N]` | Copy a fenced code block from the latest assistant response. Defaults to its first block. |
+| `/copy code [N] [--response M]` | Copy a fenced code block from the latest assistant response. Defaults to its first block. `--response M` takes the block from the Mth-most-recent response instead, numbered as in `/copy M`, so `/copy code 2 --response 3` copies the second block of the third-most-recent response. |
 | `/voice` | Dictate an editable prompt with offline Agav-managed native transcription; offers verified setup downloads and an idle prompt without attachments. See [Voice Input](/features/voice-input). |
 | `/ps <question>` | Run a brief independent side query with read-only conversation context, without interrupting the active main task. It cannot use tools or plugins. |
 
@@ -75,6 +75,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/memory search <query>` | Show memories whose name, description, or content contains the query, ignoring case, with an excerpt of each match. |
 | `/memory show <name>` | Show the complete memory by its exact stored name. |
 | `/memory delete <name>`, `/memory rm <name>` | Delete one memory by its listed name. |
+| `/memory rename <old-name> <new-name>` | Rename one memory by its listed name, keeping its type, description, and content. |
 | `/memory clear`, `/memory path` | Delete all project memories or show their storage directory. |
 | `/remember <text>` | Shortcut for `/memory add <text>`. |
 | `/forget [name]` | List memories when called without an argument, or delete a memory by name. |
@@ -98,7 +99,7 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 
 | Command | Purpose |
 | --- | --- |
-| `/customize` | Open the customization interface to show, hide, and reorder footer (status bar) segments. Changes apply to the footer live and persist across sessions in the `statusBar` config field. Interactive terminal sessions only. |
+| `/customize` | Open the customization interface to show, hide, and reorder footer (status bar) segments. Use the mouse wheel to move through entries, left-click an entry to open/select it, and left-click a checkbox to toggle it. Changes apply to the footer live and persist across sessions in the `statusBar` config field. Interactive terminal sessions only. |
 
 ## Account
 

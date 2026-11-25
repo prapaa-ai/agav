@@ -13,7 +13,7 @@ Agav needs one model provider. The easiest path is:
 3. launch Agav with that provider and model
 4. ask one read-only question to confirm it works
 
-The default provider is **Anthropic** — if you run `agav` with no flags and no config file, it will try to use Anthropic. If you are not sure which provider to pick, use OpenAI, Anthropic, or Gemini if you already have an API key. Use OpenRouter if you want access to multiple providers behind a single key. Use NVIDIA NIM for NVIDIA-hosted models. Use DeepSeek for DeepSeek's own models. Use Ollama if you want to run locally. Use Vertex AI if you already run on Google Cloud and want Gemini or Claude billed through that project.
+The default provider is **Anthropic** — if you run `agav` with no flags and no config file, it will try to use Anthropic. If you are not sure which provider to pick, use OpenAI, Anthropic, or Gemini if you already have an API key. Use OpenRouter if you want access to multiple providers behind a single key. Use NVIDIA NIM for NVIDIA-hosted models. Use DeepSeek for DeepSeek's own models. Use Ollama if you already have it installed, or [run a local model through an OpenAI-compatible server](/getting-started/local-models) with llama.cpp or LM Studio. Use Vertex AI if you already run on Google Cloud and want Gemini or Claude billed through that project.
 
 ## Fastest path
 
@@ -67,6 +67,8 @@ Or set it in `~/.agav/config.json`:
 
 The base URL applies only to the `openai` provider. When unset, Agav uses OpenAI's default endpoint. Most OpenAI-compatible endpoints implement Chat Completions rather than the Responses API, so pair a custom base URL with `--openai-api chat` if requests fail.
 
+For step-by-step examples with GGUF models in llama.cpp and GGUF or MLX models in LM Studio, see [Run Local Models](/getting-started/local-models).
+
 If your gateway needs extra HTTP headers — a custom auth header, a tenant selector, or routing metadata — set `openaiHeaders` in `~/.agav/config.json`. They are sent with every OpenAI-provider request:
 
 ```json
@@ -99,7 +101,7 @@ agav --provider openrouter --model openrouter/auto
 The default model is `openrouter/auto`, which lets OpenRouter choose the best model for each request. You can also specify any model available on OpenRouter:
 
 ```bash
-agav --provider openrouter --model anthropic/claude-sonnet-4-20250514
+agav --provider openrouter --model anthropic/claude-sonnet-5.5
 agav --provider openrouter --model openai/gpt-5.4-mini
 ```
 
@@ -182,7 +184,7 @@ Context window sizes are detected automatically from the DeepSeek API. The API b
 
 ```bash
 export ANTHROPIC_API_KEY="your-key"
-agav --provider anthropic --model claude-sonnet-4-20250514
+agav --provider anthropic --model claude-sonnet-5-5
 ```
 
 ## Google Gemini
