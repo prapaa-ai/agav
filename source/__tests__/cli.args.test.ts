@@ -81,4 +81,18 @@ describe("CLI argument parsing", () => {
     expect(flags.mcp).toBe(true);
     expect(flags.login).toBeUndefined();
   });
+
+  it.each([
+    { flag: "--provider", key: "provider", value: "ollama=custom" },
+    { flag: "--model", key: "model", value: "llama3.2:latest=q4" },
+    { flag: "--ollama-host", key: "ollamaHost", value: "host=internal" },
+    { flag: "--ollama-port", key: "ollamaPort", value: "11434=8443" },
+    { flag: "--ollama-endpoint", key: "ollamaEndpoint", value: "/api/chat?tag=a=b" },
+    { flag: "--ollama-api-key", key: "ollamaApiKey", value: "dummy-key==" },
+  ])("preserves every '=' in the inline value of $flag", ({ flag, key, value }) => {
+    const inline = parseArgs([`${flag}=${value}`]);
+    const separated = parseArgs([flag, value]);
+    expect(inline[key]).toBe(value);
+    expect(inline[key]).toBe(separated[key]);
+  });
 });
