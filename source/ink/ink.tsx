@@ -1138,6 +1138,7 @@ export default class Ink {
 		const base: MouseEventData = {
 			x: ev.x,
 			y,
+			screenY: ev.y,
 			button: ev.button,
 			ctrl: ev.ctrl,
 			alt: ev.alt,

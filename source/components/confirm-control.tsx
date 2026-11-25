@@ -1,23 +1,25 @@
 import React from "react";
-import { Box, Text, type MouseEventData } from "../ink/index.js";
+import { Box, Text, useStdin, type MouseEventData } from "../ink/index.js";
 import { useHover, usePointerMotion } from "./hover-text.js";
 import type { Key } from "../ink/hooks/use-input.js";
 
-// A second click must not answer a new prompt that appeared under the pointer.
-const CLICK_SETTLE_MS = 400;
+const DOUBLE_CLICK_MS = 400;
 
-type ConfirmSurface = { request: object; variant?: string; revision: number; shownAt: number };
+type ConfirmSurface = { revision: number };
 
-/** Identify the visible prompt, not routine repainting. Stamp it before mouse reports can arrive. */
+// Keep the last activation across prompt unmounts, but never across Ink instances.
+const lastActivation = new WeakMap<object, { x: number; y: number; time: number; surface: ConfirmSurface }>();
+
+/** Identify the visible prompt, not routine repainting. */
 export function useConfirmSurface(request: object, variant?: string): ConfirmSurface {
-  const shown = React.useRef<ConfirmSurface | null>(null);
+  const shown = React.useRef<{ request: object; variant?: string; surface: ConfirmSurface } | null>(null);
   if (!shown.current || shown.current.request !== request || shown.current.variant !== variant) {
-    shown.current = { request, variant, revision: (shown.current?.revision ?? 0) + 1, shownAt: Date.now() };
+    shown.current = { request, variant, surface: { revision: (shown.current?.surface.revision ?? 0) + 1 } };
   }
-  return shown.current;
+  return shown.current.surface;
 }
 
-/** Activate only a stationary left-button release on the same settled prompt. */
+/** Activate only a stationary left-button release on the same prompt. */
 export default function ConfirmControl({ label, color, surface, onActivate, padded = true, bold = true, active = false, hovered, onMouseEnter, onMouseLeave, onPoint }: {
   label: string;
   color?: string;
@@ -31,6 +33,7 @@ export default function ConfirmControl({ label, color, surface, onActivate, padd
   onMouseLeave?: (event: MouseEventData) => void;
   onPoint?: (event: MouseEventData) => void;
 }) {
+  const { internal_eventEmitter } = useStdin();
   const hover = useHover(onMouseEnter === undefined && onPoint === undefined);
   const [pressed, setPressed] = React.useState(false);
   const flash = React.useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -44,13 +47,15 @@ export default function ConfirmControl({ label, color, surface, onActivate, padd
       onMouseDown={(event: MouseEventData) => {
         pressedAt.current = null;
         if (event.button !== 0) return;
-        if (Date.now() - surface.shownAt >= CLICK_SETTLE_MS) {
-          pressedAt.current = { x: event.x, y: event.y, surface };
-          setPressed(true);
-          clearTimeout(flash.current);
-          flash.current = setTimeout(() => setPressed(false), 150);
-        }
         event.stopPropagation?.();
+        const last = lastActivation.get(internal_eventEmitter);
+        // Only suppress a rapid repeat at the same terminal cell on a different prompt.
+        if (last && last.surface !== surface && last.x === event.x && last.y === (event.screenY ?? event.y)
+          && Date.now() - last.time < DOUBLE_CLICK_MS) return;
+        pressedAt.current = { x: event.x, y: event.y, surface };
+        setPressed(true);
+        clearTimeout(flash.current);
+        flash.current = setTimeout(() => setPressed(false), 150);
       }}
       onMouseMove={(event: MouseEventData) => {
         if (event.button === 3) { onPoint?.(event); return; }
@@ -61,7 +66,10 @@ export default function ConfirmControl({ label, color, surface, onActivate, padd
       onClick={(event: MouseEventData) => {
         const at = pressedAt.current;
         pressedAt.current = null;
-        if (event.button === 0 && at?.surface === surface && at.x === event.x && at.y === event.y) onActivate();
+        if (event.button === 0 && at?.surface === surface && at.x === event.x && at.y === event.y) {
+          lastActivation.set(internal_eventEmitter, { x: event.x, y: event.screenY ?? event.y, time: Date.now(), surface });
+          onActivate();
+        }
         event.stopPropagation?.();
       }}
     >
