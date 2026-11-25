@@ -854,7 +854,7 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   });
 }
 
-// Serialize config and status-bar writes to prevent lost concurrent edits.
+// Serialize global config and scheduler writes to prevent lost concurrent edits.
 const CONFIG_LOCK_PATH = join(AGAV_DIR, ".config.lock");
 /** How long a blocking writer waits before rejecting without changing config. */
 const CONFIG_LOCK_WAIT_MS = 5_000;
@@ -935,7 +935,7 @@ async function tryAcquireConfigLock(): Promise<(() => Promise<void>) | null> {
  * Wrapped in the in-process mutex so same-process writers serialize deterministically
  * and only contend on the file lock against OTHER processes.
  */
-async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
+export async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
   return withInProcessLock(async () => {
     const deadline = Date.now() + CONFIG_LOCK_WAIT_MS;
     let release: (() => Promise<void>) | null = null;

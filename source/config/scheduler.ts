@@ -1,9 +1,8 @@
 import { readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import crypto from "node:crypto";
-import { getAgavDir } from "./config.js";
+import { getAgavDir, withConfigLock } from "./config.js";
 import { parseCronExpression } from "../background-jobs/schedule/cron.js";
-import { ensureDir } from "../utils/fs.js";
 
 export interface ScheduledTask {
   id: string;
@@ -19,16 +18,31 @@ function getSchedulerPath(): string {
   return join(getAgavDir(), "scheduled-tasks.json");
 }
 
-export async function loadScheduledTasks(): Promise<ScheduledTask[]> {
+// Writers must distinguish a missing file from an unreadable or corrupt one;
+// treating either of the latter as an empty list could overwrite saved tasks.
+async function readTasks(): Promise<ScheduledTask[]> {
+  let raw: string;
   try {
-    const data = JSON.parse(await readFile(getSchedulerPath(), "utf-8"));
-    if (Array.isArray(data)) return data;
-  } catch {}
-  return [];
+    raw = await readFile(getSchedulerPath(), "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const tasks = JSON.parse(raw);
+  if (!Array.isArray(tasks)) throw new Error("Expected a list of scheduled tasks in scheduled-tasks.json.");
+  return tasks;
 }
 
+export async function loadScheduledTasks(): Promise<ScheduledTask[]> {
+  try {
+    return await readTasks();
+  } catch {
+    return [];
+  }
+}
+
+// Called only while holding the config lock. Readers see old or new complete JSON.
 async function saveTasks(tasks: ScheduledTask[]): Promise<void> {
-  await ensureDir(getAgavDir());
   const path = getSchedulerPath();
   const temporary = `${path}.${crypto.randomUUID()}.tmp`;
   try {
@@ -40,36 +54,56 @@ async function saveTasks(tasks: ScheduledTask[]): Promise<void> {
   }
 }
 
+function validatePrompt(prompt: string): void {
+  if (!prompt.trim()) throw new Error("Prompt must not be empty.");
+}
+
 export async function addScheduledTask(
   name: string,
   cron: string,
   prompt: string,
 ): Promise<ScheduledTask> {
-  const tasks = await loadScheduledTasks();
-  const task: ScheduledTask = {
-    id: crypto.randomUUID().slice(0, 8),
-    name,
-    prompt,
-    cron,
-    enabled: true,
-    createdAt: new Date().toISOString(),
-  };
-  tasks.push(task);
-  await saveTasks(tasks);
-  return task;
+  parseCronExpression(cron);
+  validatePrompt(prompt);
+  return withConfigLock(async () => {
+    const tasks = await readTasks();
+    const task: ScheduledTask = {
+      id: crypto.randomUUID().slice(0, 8),
+      name,
+      prompt,
+      cron,
+      enabled: true,
+      createdAt: new Date().toISOString(),
+    };
+    tasks.push(task);
+    await saveTasks(tasks);
+    return task;
+  });
 }
 
 function findTask(tasks: ScheduledTask[], idOrPrefix: string): ScheduledTask | undefined {
   return tasks.find((t) => t.id === idOrPrefix) ?? tasks.find((t) => t.id.startsWith(idOrPrefix));
 }
 
+function findTaskForUpdate(tasks: ScheduledTask[], idOrPrefix: string): ScheduledTask | undefined {
+  const exact = tasks.find((t) => t.id === idOrPrefix);
+  if (exact || !idOrPrefix) return exact;
+  const matches = tasks.filter((t) => t.id.startsWith(idOrPrefix));
+  if (matches.length > 1) {
+    throw new Error(`Ambiguous task ID prefix "${idOrPrefix}". Use the full task ID.`);
+  }
+  return matches[0];
+}
+
 export async function removeScheduledTask(id: string): Promise<boolean> {
-  const tasks = await loadScheduledTasks();
-  const task = findTask(tasks, id);
-  if (!task) return false;
-  const filtered = tasks.filter((t) => t.id !== task.id);
-  await saveTasks(filtered);
-  return true;
+  return withConfigLock(async () => {
+    const tasks = await readTasks();
+    const task = findTask(tasks, id);
+    if (!task) return false;
+    const filtered = tasks.filter((t) => t.id !== task.id);
+    await saveTasks(filtered);
+    return true;
+  });
 }
 
 export async function updateScheduledTask(
@@ -79,33 +113,39 @@ export async function updateScheduledTask(
   const cron = update.cron?.trim();
   const prompt = update.prompt;
   if (cron !== undefined) parseCronExpression(cron);
-  if (prompt !== undefined && !prompt.trim()) throw new Error("Prompt must not be empty.");
+  if (prompt !== undefined) validatePrompt(prompt);
   if (cron === undefined && prompt === undefined) throw new Error("Specify a cron expression or prompt.");
-  const tasks = await loadScheduledTasks();
-  const task = tasks.find((candidate) => candidate.id === id);
-  if (!task) return undefined;
-  if (cron !== undefined) task.cron = cron;
-  if (prompt !== undefined) task.prompt = prompt;
-  await saveTasks(tasks);
-  return task;
+  return withConfigLock(async () => {
+    const tasks = await readTasks();
+    const task = findTaskForUpdate(tasks, id);
+    if (!task) return undefined;
+    if (cron !== undefined) task.cron = cron;
+    if (prompt !== undefined) task.prompt = prompt;
+    await saveTasks(tasks);
+    return task;
+  });
 }
 
 export async function setTaskEnabled(id: string, enabled: boolean): Promise<boolean> {
-  const tasks = await loadScheduledTasks();
-  const task = findTask(tasks, id);
-  if (!task) return false;
-  task.enabled = enabled;
-  await saveTasks(tasks);
-  return true;
+  return withConfigLock(async () => {
+    const tasks = await readTasks();
+    const task = findTask(tasks, id);
+    if (!task) return false;
+    task.enabled = enabled;
+    await saveTasks(tasks);
+    return true;
+  });
 }
 
 export async function markTaskRun(id: string): Promise<void> {
-  const tasks = await loadScheduledTasks();
-  const task = findTask(tasks, id);
-  if (task) {
-    task.lastRunAt = new Date().toISOString();
-    await saveTasks(tasks);
-  }
+  await withConfigLock(async () => {
+    const tasks = await readTasks();
+    const task = findTask(tasks, id);
+    if (task) {
+      task.lastRunAt = new Date().toISOString();
+      await saveTasks(tasks);
+    }
+  });
 }
 
 export function cronMatches(cron: string, date: Date): boolean {
@@ -125,13 +165,13 @@ export function cronMatches(cron: string, date: Date): boolean {
   return (
     fieldMatches(fields.minute, minute) &&
     fieldMatches(fields.hour, hour) &&
-    fieldMatches(fields.dayOfMonth, dayOfMonth) &&
-    fieldMatches(fields.month, month) &&
+    fieldMatches(fields.dayOfMonth, dayOfMonth, 1) &&
+    fieldMatches(fields.month, month, 1) &&
     fieldMatches(fields.dayOfWeek, dayOfWeek)
   );
 }
 
-function fieldMatches(field: string, value: number): boolean {
+function fieldMatches(field: string, value: number, min = 0): boolean {
   if (field === "*") return true;
 
   for (const part of field.split(",")) {
@@ -141,7 +181,7 @@ function fieldMatches(field: string, value: number): boolean {
       const step = parseInt(stepStr!, 10);
       if (isNaN(step) || step <= 0) continue;
       if (range === "*") {
-        if (value % step === 0) return true;
+        if (value >= min && (value - min) % step === 0) return true;
       } else {
         const [startText, endText] = range!.split("-");
         const start = Number(startText);

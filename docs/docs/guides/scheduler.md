@@ -39,7 +39,13 @@ Create a weekday morning prompt:
 /schedule add "0 9 * * 1-5" review counter.py and greeting.py for any TODO comments or missing error handling
 ```
 
-Use `/schedule list`, then enable, disable, or remove a task by ID.
+Use `/schedule list` to find the task ID. To move the review to 10 a.m. and change what it checks, update the existing task (replace `<id>` with the full ID or a unique prefix):
+
+```text
+/schedule update <id> --cron "0 10 * * 1-5" --prompt review counter.py and greeting.py for missing error handling
+```
+
+Use either flag on its own to change only the time or only the prompt. The task keeps its ID, enabled or disabled state, creation time, and last-run time. You can also enable, disable, or remove it by ID. See [Automation](/workflows/automation#schedule-persistent-tasks) for the cron format and more examples.
 
 ## Choose the right mechanism
 

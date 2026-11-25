@@ -1429,7 +1429,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           setShowToolDetail(false);
           setPsResponse(undefined);
           setSystemMessages([]);
-          const result = await commandRegistryRef.current.execute(trimmed, {
+          // Schedule updates can contain trailing whitespace in a free-form prompt.
+          const commandInput = /^\/schedule\s+update(?:\s|$)/i.test(trimmed) ? value.trimStart() : trimmed;
+          const result = await commandRegistryRef.current.execute(commandInput, {
             conversation,
             config,
             provider: activeProvider ?? undefined,
