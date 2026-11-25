@@ -943,15 +943,15 @@ describe("ToolConfirm clickable controls", () => {
     return null;
   };
   const event = { x: 0, y: 0, button: 0, ctrl: false, alt: false, shift: false };
-  const click = (control: any) => { control.onMouseDown(event); control.onClick(event); };
-  // a click only counts once the prompt has been on screen for the double-click window
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 450));
+  const click = (control: any, at = { ...event, x: control.internal_x, y: control.internal_y }) => {
+    control.onMouseDown(at);
+    control.onClick(at);
+  };
   const flush = async (instance: any) => { await new Promise((resolve) => setTimeout(resolve, 30)); await instance.waitUntilRenderFlush(); };
 
   it.each([["[Y]es", "yes"], ["[N]o", "no"], ["[A]lways", "always"]])("clicking %s answers %s", async (label, choice) => {
     const { instance, onConfirm } = await mount();
     try {
-      await settle();
       click(findControl((instance as any).rootNode, label));
       expect(onConfirm).toHaveBeenCalledWith(choice);
     } finally { instance.unmount(); }
@@ -968,23 +968,19 @@ describe("ToolConfirm clickable controls", () => {
   it("opens the feedback editor by click, then submits or cancels by click", async () => {
     const first = await mount();
     try {
-      await settle();
       click(findControl((first.instance as any).rootNode, "[D]eny with feedback"));
       await flush(first.instance);
       expect(first.getFrame()).toContain("Feedback for agent");
       first.stdin.emit("data", "use the helper");
       await flush(first.instance);
-      await settle();
       click(findControl((first.instance as any).rootNode, "Submit denial"));
       expect(first.onConfirm).toHaveBeenCalledWith({ choice: "no", feedback: "use the helper" });
     } finally { first.instance.unmount(); }
 
     const second = await mount();
     try {
-      await settle();
       click(findControl((second.instance as any).rootNode, "[D]eny with feedback"));
       await flush(second.instance);
-      await settle();
       click(findControl((second.instance as any).rootNode, "[Esc] Cancel"));
       await flush(second.instance);
       expect(second.getFrame()).toContain("[Y]es");
@@ -993,46 +989,39 @@ describe("ToolConfirm clickable controls", () => {
     } finally { second.instance.unmount(); }
   });
 
-  it("ignores a click on a prompt that just appeared or that was replaced after the press", async () => {
+  it("discards a press when its prompt is replaced before release", async () => {
     const { instance, onConfirm } = await mount();
     try {
-      // the second press of a double-click lands on a prompt shown moments ago
-      click(findControl((instance as any).rootNode, "[Y]es"));
-      expect(onConfirm).not.toHaveBeenCalled();
-
-      await settle();
-      const yes = findControl((instance as any).rootNode, "[Y]es");
-      yes.onMouseDown(event);
-      // the next queued confirmation replaces this one before the release
+      findControl((instance as any).rootNode, "[Y]es").onMouseDown(event);
       instance.render(h(ToolConfirm, { toolName: "write_file", input: { path: "next.txt", content: "x" }, onConfirm, keybindings: DEFAULT_KEYBINDINGS }));
       await flush(instance);
-      findControl((instance as any).rootNode, "[Y]es").onClick(event);
+      const yes = findControl((instance as any).rootNode, "[Y]es");
+      yes.onClick(event);
       expect(onConfirm).not.toHaveBeenCalled();
 
-      await settle();
-      click(findControl((instance as any).rootNode, "[Y]es"));
-      expect(onConfirm).toHaveBeenCalledWith("yes");
+      click(yes);
+      expect(onConfirm).toHaveBeenCalledExactlyOnceWith("yes");
     } finally { instance.unmount(); }
   });
 
-  it("ignores the second click of a double-click that opened or left the feedback editor", async () => {
+  it("blocks a rapid repeat at the same cell in the feedback editor, not a click elsewhere", async () => {
     const { instance, onConfirm, getFrame } = await mount();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
     try {
-      await settle();
-      click(findControl((instance as any).rootNode, "[D]eny with feedback"));
+      click(findControl((instance as any).rootNode, "[D]eny with feedback"), event);
       await flush(instance);
-      // the second press lands on Submit denial, now under the pointer
-      click(findControl((instance as any).rootNode, "Submit denial"));
+      click(findControl((instance as any).rootNode, "Submit denial"), event);
       expect(onConfirm).not.toHaveBeenCalled();
       expect(getFrame()).toContain("Feedback for agent");
 
-      await settle();
-      click(findControl((instance as any).rootNode, "[Esc] Cancel"));
+      const cancel = findControl((instance as any).rootNode, "[Esc] Cancel");
+      const elsewhere = { ...event, x: 1 };
+      cancel.onMouseDown(elsewhere);
+      cancel.onClick(elsewhere);
       await flush(instance);
-      // and here on Always, back on the main row
-      click(findControl((instance as any).rootNode, "[A]lways"));
+      expect(getFrame()).not.toContain("Feedback for agent");
       expect(onConfirm).not.toHaveBeenCalled();
-    } finally { instance.unmount(); }
+    } finally { clock.mockRestore(); instance.unmount(); }
   });
 
   it("answers a background-job prompt by click", async () => {
@@ -1046,7 +1035,6 @@ describe("ToolConfirm clickable controls", () => {
     };
     const { instance, onConfirm } = await mount({ toolName: "run_background_job", input });
     try {
-      await settle();
       expect(findControl((instance as any).rootNode, "[D]eny with feedback")).toBeNull();
       click(findControl((instance as any).rootNode, "[N]o"));
       expect(onConfirm).toHaveBeenCalledWith("no");
@@ -1070,20 +1058,20 @@ describe("ToolConfirm clickable controls", () => {
       await flush(instance);
     };
 
-    it("answers a press and release on a control", async () => {
-      const { instance, stdin, onConfirm } = await mount();
+    it.each([["[Y]es", "yes"], ["[N]o", "no"], ["[A]lways", "always"], ["[D]eny with feedback", undefined]])("accepts the first click on %s as soon as the prompt appears", async (label, choice) => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+      const { instance, stdin, onConfirm, getFrame } = await mount();
       try {
-        await settle();
-        const always = cellOf(instance, "[A]lways");
-        await send(instance, stdin, press(always), release(always));
-        expect(onConfirm).toHaveBeenCalledWith("always");
-      } finally { instance.unmount(); }
+        const at = cellOf(instance, label);
+        await send(instance, stdin, press(at), release(at));
+        if (choice) expect(onConfirm).toHaveBeenCalledExactlyOnceWith(choice);
+        else expect(getFrame()).toContain("Feedback for agent");
+      } finally { instance.unmount(); clock.mockRestore(); }
     });
 
     it("answers nothing for a press on one control and a release on another", async () => {
       const { instance, stdin, onConfirm } = await mount();
       try {
-        await settle();
         await send(instance, stdin, press(cellOf(instance, "[Y]es")), release(cellOf(instance, "[N]o")));
         expect(onConfirm).not.toHaveBeenCalled();
       } finally { instance.unmount(); }
@@ -1092,7 +1080,6 @@ describe("ToolConfirm clickable controls", () => {
     it("answers nothing for a text selection dragged onto a control", async () => {
       const { instance, stdin, onConfirm } = await mount();
       try {
-        await settle();
         const yes = cellOf(instance, "[Y]es");
         const above = { x: yes.x, y: yes.y - 1 };
         await send(instance, stdin, press(above), drag({ x: yes.x + 2, y: above.y }), drag(yes), release(yes));
@@ -1109,7 +1096,6 @@ describe("ToolConfirm clickable controls", () => {
     ])("answers nothing for a drag that starts on a control and moves %s", async (_name, gesture) => {
       const { instance, stdin, onConfirm } = await mount();
       try {
-        await settle();
         const start = cellOf(instance, "[A]lways");
         await send(instance, stdin, press(start), ...gesture(start));
         expect(onConfirm).not.toHaveBeenCalled();
@@ -1119,7 +1105,6 @@ describe("ToolConfirm clickable controls", () => {
     it("answers nothing when the wheel turns while a control is held", async () => {
       const { instance, stdin, onConfirm } = await mount();
       try {
-        await settle();
         const always = cellOf(instance, "[A]lways");
         await send(instance, stdin, press(always), wheelDown(always), wheelDown(always), release(always));
         expect(onConfirm).not.toHaveBeenCalled();
@@ -1133,7 +1118,6 @@ describe("ToolConfirm clickable controls", () => {
     it("answers nothing for a click outside the controls", async () => {
       const { instance, stdin, onConfirm } = await mount();
       try {
-        await settle();
         const always = cellOf(instance, "[A]lways");
         const beside = { x: always.x + 20, y: always.y };
         const above = { x: always.x, y: always.y - 1 };
@@ -1145,7 +1129,6 @@ describe("ToolConfirm clickable controls", () => {
     it("wraps the controls onto their own rows at 18 columns, and each still answers its own choice", async () => {
       const { instance, stdin, onConfirm } = await mount({}, { columns: 18, rows: 60 });
       try {
-        await settle();
         const labels = ["[Y]es", "[N]o", "[D]eny with feedback", "[A]lways"];
         const nodes = labels.map((label) => findControl((instance as any).rootNode, label));
         for (const node of nodes) expect(node.internal_x + node.internal_width).toBeLessThanOrEqual(18);
@@ -1168,7 +1151,6 @@ describe("ToolConfirm clickable controls", () => {
       const input = { path: "test.txt", content: "data" };
       const { instance, stdin, stdout, onConfirm } = await mount({ input }, { columns: 80, rows: 60 });
       try {
-        await settle();
         const before = cellOf(instance, "[N]o");
         Object.assign(stdout, { columns: 18 });
         stdout.emit("resize");

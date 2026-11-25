@@ -22,7 +22,6 @@ const findNode = (node: DOMNode, label: string): Exclude<DOMNode, { nodeName: "#
 const report = (code: number, { x, y }: { x: number; y: number }, final = "M") => `\x1b[<${code};${x + 1};${y + 1}${final}`;
 const press = (at: { x: number; y: number }) => report(0, at);
 const release = (at: { x: number; y: number }) => report(0, at, "m");
-const settleClicks = () => new Promise(resolve => setTimeout(resolve, 420));
 
 async function mountPrompt(prompt: ReactNode, { columns = 120, rows = 30 } = {}) {
   let output = "";
@@ -113,7 +112,6 @@ describe("WorkflowConsent mouse controls", () => {
   it("toggles a clicked row without deciding and approves the latest selection exactly once", async () => {
     const ui = await mount();
     try {
-      await settleClicks();
       await ui.click("[ ] BBB");
       expect(ui.screen()).toContain("❯ [x] BBB");
       expect(ui.onDecide).not.toHaveBeenCalled();
@@ -160,7 +158,6 @@ describe("WorkflowConsent mouse controls", () => {
     try {
       expect(ui.screen()).not.toContain("Space: Toggle");
       expect(ui.screen()).not.toContain("Always");
-      await settleClicks();
       await ui.click("y: Approve", "n");
       expect(ui.onDecide).toHaveBeenCalledExactlyOnceWith([]);
     } finally { ui.instance.unmount(); }
@@ -170,16 +167,13 @@ describe("WorkflowConsent mouse controls", () => {
     const ui = await mount();
     const next = vi.fn();
     try {
-      await settleClicks();
       await ui.key("a");
       await ui.key(press(ui.cell("y: Approve")));
       await ui.render(h(WorkflowConsent, { request: { ...request, workflowName: "next" }, onDecide: next }));
       await ui.key(release(ui.cell("y: Approve")));
-      await ui.click("y: Approve");
       expect(next).not.toHaveBeenCalled();
       expect(ui.onDecide).not.toHaveBeenCalled();
       expect(ui.screen()).toContain("0/3 selected");
-      await settleClicks();
       await ui.click("n/ESC: Deny", "y");
       expect(next).toHaveBeenCalledExactlyOnceWith(undefined);
     } finally { ui.instance.unmount(); }
@@ -198,7 +192,6 @@ describe("WorkflowToolConfirm", () => {
       expect(ui.screen()).toContain("Allow workflow tool write_file?");
       expect(ui.screen()).toContain("Single invocation only");
       expect(ui.screen()).not.toContain("Always");
-      await settleClicks();
       await ui.click(label, approved ? "n" : "y");
       expect(ui.onConfirm).toHaveBeenCalledExactlyOnceWith(approved);
     } finally { ui.instance.unmount(); }
@@ -219,7 +212,6 @@ describe("WorkflowToolConfirm", () => {
   it("does not approve from drag, wheel, or click outside a control", async () => {
     const ui = await mountTool({ path: "target.txt", lines: Array.from({ length: 40 }, (_, i) => `line ${i}`) });
     try {
-      await settleClicks();
       const approve = ui.cell("y: Approve");
       const otherCell = { ...approve, x: approve.x + 1 };
       await ui.key(press(approve) + report(32, otherCell) + report(32, approve) + release(approve));
