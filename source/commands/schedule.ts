@@ -6,6 +6,7 @@ import {
   addScheduledTask,
   removeScheduledTask,
   setTaskEnabled,
+  updateScheduledTask,
 } from "../config/scheduler.js"
 
 /**
@@ -18,8 +19,8 @@ import {
 export const scheduleCommand: SlashCommand = {
   name: "schedule",
   description: "Manage persistent scheduled tasks",
-  argumentHint: "[list|add|remove|enable|disable]",
-  usage: `Usage: /schedule [action]\n\n  /schedule                           Open manager (list in headless mode)\n  /schedule list                      Show all scheduled tasks\n  /schedule add "0 9 * * *" prompt    Add a cron-scheduled task\n  /schedule remove <id>               Remove a task by ID\n  /schedule enable <id>               Enable a disabled task\n  /schedule disable <id>              Disable a task\n\nCron format: minute hour day-of-month month day-of-week\nTasks persist across sessions in ${agavHomePath("scheduled-tasks.json")}.`,
+  argumentHint: "[list|add|remove|enable|disable|update]",
+  usage: `Usage: /schedule [action]\n\n  /schedule                           Open manager (list in headless mode)\n  /schedule list                      Show all scheduled tasks\n  /schedule add "0 9 * * *" prompt    Add a cron-scheduled task\n  /schedule remove <id>               Remove a task by ID\n  /schedule enable <id>               Enable a disabled task\n  /schedule disable <id>              Disable a task\n  /schedule update <id> [--cron "<cron>"] [--prompt <text>]  Update a task\n\nCron format: minute hour day-of-month month day-of-week\nTasks persist across sessions in ${agavHomePath("scheduled-tasks.json")}.`,
   /**
    * Handle schedule management actions.
    *
@@ -77,20 +78,44 @@ export const scheduleCommand: SlashCommand = {
       }
       const cron = cronMatch[1]!
       const prompt = cronMatch[2]!
-      /** Lightweight validation: require the standard five cron fields. */
-      const cronParts = cron.trim().split(/\s+/)
-      if (cronParts.length !== 5) {
-        return {
-          type: "message",
-          text: "Invalid cron expression. Must be 5 fields: minute hour day-of-month month day-of-week",
-        }
-      }
       /** Derive a short display name from the first 40 prompt characters. */
       const name = prompt.slice(0, 40)
-      const task = await addScheduledTask(name, cron, prompt)
-      return {
-        type: "message",
-        text: `Scheduled task ${task.id} created: "${cron}" -> ${prompt}`,
+      try {
+        const task = await addScheduledTask(name, cron, prompt)
+        return {
+          type: "message",
+          text: `Scheduled task ${task.id} created: "${cron}" -> ${prompt}`,
+        }
+      } catch (error) {
+        return { type: "message", text: error instanceof Error ? error.message : String(error) }
+      }
+    }
+
+    if (action === "update") {
+      const usage = 'Usage: /schedule update <id> [--cron "<cron>"] [--prompt <text>]'
+      const input = /^update\s+(\S+)\s+([\s\S]+)$/i.exec(args.trimStart())
+      if (!input) return { type: "message", text: usage }
+      const [, id, options] = input
+      const promptFirst = /^--prompt\s+"([^"]*)"\s+--cron\s+"([^"]*)"\s*$/i.exec(options!)
+      const cronFirst = /^(?:--cron\s+"([^"]*)")?(?:(?:^|\s+)--prompt[ \t]([\s\S]*))?\s*$/i.exec(options!)
+      const cron = promptFirst ? promptFirst[2] : cronFirst?.[1]
+      let prompt = promptFirst ? promptFirst[1] : cronFirst?.[2]
+      if (!promptFirst && prompt !== undefined) {
+        const quoted = /^"([^"]*)"\s*$/.exec(prompt)
+        if (quoted) prompt = quoted[1]
+        else if (/(?:^|\s)--(?:cron|prompt)(?:\s|$)/i.test(prompt)) {
+          return { type: "message", text: usage }
+        }
+      }
+      if (cron === undefined && prompt === undefined) return { type: "message", text: usage }
+      try {
+        const task = await updateScheduledTask(id!, { cron, prompt })
+        return {
+          type: "message",
+          text: task ? `Updated task ${task.id}: "${task.cron}" -> ${task.prompt}` : `Task ${id} not found.`,
+        }
+      } catch (error) {
+        return { type: "message", text: error instanceof Error ? error.message : String(error) }
       }
     }
 
@@ -132,7 +157,7 @@ export const scheduleCommand: SlashCommand = {
     /** Fallback help for unsupported schedule actions. */
     return {
       type: "message",
-      text: "Unknown action. Usage: /schedule list | add | remove | enable | disable",
+      text: "Unknown action. Usage: /schedule list | add | remove | enable | disable | update",
     }
   },
 }

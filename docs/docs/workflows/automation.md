@@ -29,21 +29,26 @@ Supported interval suffixes are `s`, `m`, and `h`. If you omit a suffix, Agav as
 | --- | --- |
 | `/schedule add "<cron>" <prompt>` | Save a recurring task using a five-field cron schedule. |
 | `/schedule list` | Show saved scheduled tasks and their state. |
+| `/schedule update <id> [--cron "<five-field cron>"] [--prompt <text>]` | Change an existing task's schedule, prompt, or both. |
 | `/schedule disable <id>` | Pause the scheduled task identified by `<id>`. |
 | `/schedule enable <id>` | Resume the scheduled task identified by `<id>`. |
 | `/schedule remove <id>` | Delete the scheduled task identified by `<id>`. |
 
-Scheduled tasks use standard five-field cron expressions and persist in `~/.agav/scheduled-tasks.json` (`%USERPROFILE%\.agav\scheduled-tasks.json` on Windows):
+Scheduled tasks persist in `~/.agav/scheduled-tasks.json` (`%USERPROFILE%\.agav\scheduled-tasks.json` on Windows). Use `/schedule list` to find the ID of the task you want to update:
 
 ```text
 /schedule add "0 9 * * 1-5" review open TODOs
 /schedule list
-/schedule disable <id>
-/schedule enable <id>
-/schedule remove <id>
+/schedule update <id> --cron "0 10 * * 1-5"
+/schedule update <id> --prompt summarize open TODOs by file
+/schedule update <id> --cron "0 11 * * 1-5" --prompt summarize open TODOs by file
 ```
 
-Cron fields support wildcards (`*`), lists (`1,2,3`), ranges (`1-5`), and steps (`*/15`). `/schedule add` currently validates only that the cron has five fields, so malformed numeric values can still be saved but will never match. Task IDs can be given as full IDs or prefixes.
+An update requires at least one of `--cron` or `--prompt`. Omit a flag to leave that value unchanged. Use the full ID or a unique prefix: an exact match takes precedence, and a prefix matching multiple tasks is rejected. Updating a task preserves its ID, enabled or disabled state, creation time, and last-run time.
+
+Quote the cron expression. Put `--prompt` last to enter free-form text without quotes. If `--prompt` comes first, quote its text: `/schedule update <id> --prompt "summarize open TODOs by file" --cron "0 11 * * 1-5"`.
+
+Both `/schedule add` and `/schedule update` validate the complete cron expression before saving it: five fields in the order `minute hour day-of-month month day-of-week`, with valid field values, ranges, and steps. Fields support wildcards (`*`), lists (`1,2,3`), ranges (`1-5`), and steps (`*/15`). Wildcard steps in the day-of-month and month fields start at `1`, not `0`: `*/2` matches days 1, 3, 5, and so on, or months January, March, May, and so on.
 
 The scheduler checks enabled tasks only while Agav is running in the interactive UI. It polls every 30 seconds and runs matching tasks at most once per minute. `/schedule` never installs an operating-system daemon, so Agav must be active when one of these tasks matches.
 
