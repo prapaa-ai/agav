@@ -37,6 +37,10 @@ error. Range results report the cells actually read and the notebook's
 total cell count. A range on an empty notebook reports that there are no
 cells.
 
+Set `cell_type` to `code`, `markdown`, or `raw` to filter cells within the
+selected range. The default, `all`, includes every cell type. Filtered results
+keep their original cell numbers.
+
 `web_search` is off by default. Enable it per session with the [`--search`](/reference/cli) flag, or turn it on by default with the `search` field in [configuration](/reference/configuration). Search requests time out after 30 seconds and report an error rather than waiting indefinitely. The optional `max_results` argument accepts integers from 1 to 30 and defaults to 8. The tool may return fewer results if the provider returns fewer matches.
 
 Connected MCP servers, installed plugins, and active skills can add more tools.
