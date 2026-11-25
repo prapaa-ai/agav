@@ -296,6 +296,19 @@ function renderUnicodeTable(headers: string[], rows: string[][], colWidths: numb
   return "\n" + lines.join("\n") + "\n\n";
 }
 
+function renderStackedTable(headers: string[], rows: string[][], width: number): string {
+  const prefix = width >= 4 ? "│ " : "";
+  const bodyWidth = Math.max(1, width - prefix.length);
+  const records = (rows.length > 0 ? rows : [[]]).map((row) =>
+    headers.flatMap((header, i) => {
+      const value = row[i];
+      const label = chalk.bold(`${header}:`);
+      return wrapStyled(value ? `${label} ${value}` : label, bodyWidth).map((line) => prefix + line);
+    }).join("\n")
+  );
+  return "\n" + records.join("\n\n") + "\n\n";
+}
+
 function makeTableExtension(termWidth: number) {
   return {
     name: "table",
@@ -303,6 +316,10 @@ function makeTableExtension(termWidth: number) {
       const { headers, rows } = extractCells(token);
       const colCount = headers.length;
       if (colCount === 0) return "";
+
+      // Borders and padding take three columns per field, plus the closing border.
+      const available = termWidth - (colCount * 3 + 1);
+      if (available < colCount) return renderStackedTable(headers, rows, termWidth);
 
       // Measure visible widths using string-width v8 — accurate for CJK,
       // emoji, Devanagari combining marks, flag sequences, etc.
@@ -314,9 +331,11 @@ function makeTableExtension(termWidth: number) {
         }
       }
 
-      // borders: colCount + 1 │ chars, padding: 1 space each side per column
-      const overhead = (colCount + 1) + (colCount * 2);
-      return renderUnicodeTable(headers, rows, fitColumns(naturalWidths, termWidth - overhead));
+      const grid = renderUnicodeTable(headers, rows, fitColumns(naturalWidths, available));
+      // A wide grapheme cannot be split to fit a one-column cell.
+      return grid.split("\n").some((line) => stringWidth(line) > termWidth)
+        ? renderStackedTable(headers, rows, termWidth)
+        : grid;
     },
   };
 }

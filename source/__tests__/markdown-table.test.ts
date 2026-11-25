@@ -210,6 +210,16 @@ describe("fitColumns", () => {
 });
 
 describe("renderMarkdown tables", () => {
+  const atWidth = (markdown: string, columns: number) => {
+    const original = process.stdout.columns;
+    process.stdout.columns = columns;
+    try {
+      return stripAnsi(renderMarkdown(markdown));
+    } finally {
+      process.stdout.columns = original;
+    }
+  };
+
   const table = [
     "| Fix | Effort | Impact |",
     "|-----|--------|--------|",
@@ -222,6 +232,53 @@ describe("renderMarkdown tables", () => {
     expect(out).toContain("┌");
     expect(out).toContain("└");
     expect(out).toContain("│");
+  });
+  it("stacks fields by row when the minimum grid cannot fit", () => {
+    const wide = [
+      "| Name | Team | Status | Region | Notes |",
+      "|------|------|--------|--------|-------|",
+      "| Ada | Platform | Ready | West | `**literal**` |",
+      "| Bea | Support | Pending | East | Review |",
+    ].join("\n");
+
+    const output = atWidth(wide, 24);
+    expect(output).not.toContain("┌");
+    expect(output.trim().split("\n\n")).toEqual([
+      expect.stringContaining("Name: Ada"),
+      expect.stringContaining("Name: Bea"),
+    ]);
+    for (const field of ["Team: Platform", "Region: West", "Notes: **literal**", "Team: Support", "Status: Pending", "Notes: Review"]) {
+      expect(output).toContain(field);
+    }
+    for (const line of output.split("\n")) expect(stringWidth(line)).toBeLessThanOrEqual(20);
+    expect(atWidth(wide, 80)).toContain("┌");
+  });
+  it("keeps wide graphemes intact when grid cells are too narrow", () => {
+    const value = "日本語🇯🇵".repeat(4);
+    const table = [
+      "| A | B | C | D | E |",
+      "|---|---|---|---|---|",
+      `| ${value} | 2 | 3 | 4 | 5 |`,
+    ].join("\n");
+
+    const output = atWidth(table, 25);
+    expect(output).not.toContain("┌");
+    const lines = output.trim().split("\n");
+    for (const line of lines) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(21);
+      expect((line.match(/\p{Regional_Indicator}/gu)?.length ?? 0) % 2).toBe(0);
+    }
+    const firstValue = lines
+      .slice(0, lines.findIndex((line) => line.includes("B: 2")))
+      .join("")
+      .replace(/[^日本語\p{Regional_Indicator}]/gu, "");
+    expect(firstValue).toBe(value);
+  });
+  it("keeps the grid when it fits exactly", () => {
+    const narrow = "| A | B | C | D | E |\n|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 |";
+    const output = atWidth(narrow, 25);
+    expect(output).toContain("┌");
+    expect(Math.max(...output.split("\n").map((line) => stringWidth(line)))).toBe(21);
   });
 
   it("rules only under the header, not between every row", () => {
