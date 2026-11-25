@@ -26,6 +26,8 @@ const USAGE = `Usage
 
 <run-id> is the full UUID or any unique prefix of at least 4 characters (list shows 8).
 --json prints the machine-readable form (status: full checkpoint; list/inbox: arrays).
+For run --json, stdout contains one launch result; consent and --wait progress use stderr.
+Consent still requires interactive stdin and stderr and explicit approval.
   agav workflows inbox [<run-id>] [--json]
   agav workflows approve|deny <run-id> <node-id|decision-id> [--note <text>]
   agav workflows resume|cancel <run-id>
@@ -155,7 +157,7 @@ export async function runWorkflowsCli(argv: string[], options: WorkflowCliOption
     const result = await startBackgroundRun(store, prepared, config.permissionMode, envNames, deps);
     write(asJson ? JSON.stringify({ status: result.status, run: result.run }, null, 2) + "\n" : launchSummary(result) + "\n");
     if (!wait) return 0;
-    return await waitForRun(store, result.run, deps, options.pollIntervalMs ?? 1000, write, warn);
+    return await waitForRun(store, result.run, deps, options.pollIntervalMs ?? 1000, report, warn);
   } catch (error) {
     err.write(`error: ${error instanceof Error ? error.message : String(error)}\n`);
     return 1;

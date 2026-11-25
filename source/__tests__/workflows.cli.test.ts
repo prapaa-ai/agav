@@ -8,7 +8,8 @@ import { consentEnvNames, parseEnvSelection, promptWorkflowConsent, type Consent
 import { buildConsent } from "../workflows/grant.js";
 import { createRun } from "../workflows/runtime.js";
 import { listRuns } from "../workflows/background.js";
-import { WorkflowStore } from "../workflows/store.js";
+import * as background from "../workflows/background.js";
+import { jobRequestId, WorkflowStore } from "../workflows/store.js";
 import { def, FakeCoordinator, registry, tempStore, testConfig } from "./helpers/workflow-fixtures.js";
 
 let store: WorkflowStore, cleanup: () => Promise<void>;
@@ -112,6 +113,65 @@ describe("agav workflows run --json", () => {
     expect(stderr.text()).toContain("$ echo hi");
     expect(stderr.text()).toContain("Approve this background run? [y/N]: ");
     expect(coordinator.starts).toHaveLength(1);
+  });
+
+  it.each([
+    [true, "passed", 0], [true, "failed", 1], [true, "waiting_approval", 0], [true, "interrupted", 1],
+    [false, "passed", 0], [false, "failed", 1], [false, "waiting_approval", 0], [false, "interrupted", 1],
+  ] as const)("preserves --wait output and exit codes (json=%s, status=%s)", async (asJson, status, exitCode) => {
+    const stdin = Object.assign(new PassThrough(), { isTTY: true });
+    const stdout = sink(!asJson), stderr = sink(true);
+    stdin.end("y\n");
+    vi.spyOn(background, "reconcileQuietly").mockImplementation(async (_store, id) => {
+      await store.lock(id!, async () => {
+        const run = await store.read(id!, registry);
+        run.status = status;
+        run.nodes[0]!.status = status === "passed" ? "passed" : "failed";
+        run.nodes[0]!.job = { requestId: jobRequestId(run.id, "a") };
+        run.nodes[0]!.error = "test progress detail";
+        await store.save(run);
+      });
+    });
+    const code = await runWorkflowsCli(["run", file, "--wait", ...(asJson ? ["--json"] : [])], {
+      config: testConfig(), store, stdin, stdout, stderr, env: {}, pollIntervalMs: 1,
+      getCoordinator: async () => new FakeCoordinator(), cliPath: "/x/cli.js",
+    });
+    expect(code).toBe(exitCode);
+    const [id] = await store.listIds();
+    if (asJson) {
+      expect(JSON.parse(stdout.text())).toMatchObject({ status: "started", run: { id, status: "queued" } });
+    } else {
+      expect(stdout.text()).toContain("Approve this background run? [y/N]: ");
+      expect(stdout.text()).toContain(`Workflow run ${id} (test) started`);
+      expect(stderr.text()).toBe("");
+    }
+    const progress = asJson ? stderr.text() : stdout.text();
+    expect(progress).toContain("test progress detail");
+    expect(progress).toContain(status);
+    if (status === "waiting_approval") expect(progress).toContain("Waiting for approval:");
+    if (status === "interrupted") expect(progress).toContain("Run is interrupted and was not relaunched:");
+  });
+
+  it("sends --wait detach guidance to stderr", async () => {
+    const stdin = Object.assign(new PassThrough(), { isTTY: true });
+    const stdout = sink(false), stderr = sink(true);
+    stdin.end("y\n");
+    const listenerCount = process.listenerCount("SIGINT");
+    let detachTimer: ReturnType<typeof setTimeout> | undefined;
+    stdout.once("data", () => {
+      detachTimer = setTimeout(() => { process.emit("SIGINT"); }, 0);
+    });
+    try {
+      const code = await runWorkflowsCli(["run", file, "--json", "--wait"], {
+        config: testConfig(), store, stdin, stdout, stderr, env: {}, pollIntervalMs: 100,
+        getCoordinator: async () => new FakeCoordinator(), cliPath: "/x/cli.js",
+      });
+      expect(code).toBe(0);
+      const [id] = await store.listIds();
+      expect(JSON.parse(stdout.text())).toMatchObject({ status: "started", run: { id } });
+      expect(stderr.text()).toContain(`Detached; workflow run ${id} continues in the background.`);
+      expect(process.listenerCount("SIGINT")).toBe(listenerCount);
+    } finally { clearTimeout(detachTimer); }
   });
 
   it.each(["n\n", "", "yes please\n"])("creates no run without explicit approval (%j)", async answer => {
