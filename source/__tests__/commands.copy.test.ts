@@ -195,6 +195,20 @@ describe("commands/copy", () => {
     expect(writeClipboardMock).not.toHaveBeenCalled();
   });
 
+  it("validates the code form before reporting an empty history", async () => {
+    const context = createContext([{ role: "user", content: [{ type: "text", text: "hello" }] } as any]);
+    const text = async (args: string) => ((await copyCommand.execute(args, context)) as any).text;
+
+    expect(await text("code 1 --response 0")).toBe("Invalid response number. Expected a positive integer.");
+    expect(await text("code 0")).toBe("Invalid code block number. Expected a positive integer.");
+    for (const valid of ["code", "code 1 --response 2"]) {
+      expect(await text(valid)).toBe("Nothing to copy (no assistant messages found).");
+    }
+    // Legacy /copy keeps answering with the empty history first.
+    expect(await text("0")).toBe("Nothing to copy (no assistant messages found).");
+    expect(writeClipboardMock).not.toHaveBeenCalled();
+  });
+
   it("does not accept a would-be closing fence followed by a nonbreaking space", async () => {
     const context = createContext([
       { role: "assistant", content: [{ type: "text", text: "~~~js\nbody\n~~~\u00a0" }] },

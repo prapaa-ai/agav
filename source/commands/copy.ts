@@ -39,12 +39,15 @@ export const copyCommand: SlashCommand = {
         msg.content.some((b) => b.type === "text" && b.text?.trim()),
     );
 
-    if (assistantMessages.length === 0) {
-      return { type: "message", text: "Nothing to copy (no assistant messages found)." };
+    const noMessages: CommandResult = { type: "message", text: "Nothing to copy (no assistant messages found)." };
+    const input = args.trim();
+    const copyingCode = /^code(?:\s|$)/.test(input);
+    // /copy code reports a bad block or response number even when there is no history.
+    if (assistantMessages.length === 0 && !copyingCode) {
+      return noMessages;
     }
 
-    const input = args.trim();
-    if (/^code(?:\s|$)/.test(input)) {
+    if (copyingCode) {
       const rest = input.slice("code".length).trim();
       const flag = /(?:^|\s)--response(?:\s+(.*))?$/.exec(rest);
       const index = flag ? rest.slice(0, flag.index).trim() : rest;
@@ -56,6 +59,9 @@ export const copyCommand: SlashCommand = {
       const m = flag ? Number(response) : 1;
       if (flag && (!/^\d+$/.test(response) || !Number.isSafeInteger(m) || m < 1)) {
         return { type: "message", text: "Invalid response number. Expected a positive integer." };
+      }
+      if (assistantMessages.length === 0) {
+        return noMessages;
       }
       if (m > assistantMessages.length) {
         return { type: "message", text: `Nothing to copy (only ${assistantMessages.length} assistant message${assistantMessages.length === 1 ? "" : "s"} available).` };
