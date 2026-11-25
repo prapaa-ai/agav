@@ -1273,29 +1273,41 @@ export async function main() {
     process.exit(1);
   }
 
-  /** Ids of background jobs still running (or of unknown state), for the exit hint. Never throws. */
-  async function runningJobIds(): Promise<string[]> {
+  /** Report active and unverified jobs, excluding abandoned records as the manager does by default. */
+  async function backgroundJobExitLines(): Promise<string[]> {
     if (config.backgroundJobsEnabled !== true) return [];
     try {
       const { getSharedCoordinator } = await import("./background-jobs-integration.js");
-      const { isTerminalLifecycle } = await import("./background-jobs/types.js");
+      const { BackgroundJobError, isLiveLifecycle, isTerminalLifecycle } = await import("./background-jobs/types.js");
       const coordinator = await getSharedCoordinator();
-      const active = (await coordinator.list()).filter((job) => !isTerminalLifecycle(job.state));
-      // list() reads persisted state; poll() reconciles with live evidence so a crashed job is not listed.
-      const fresh = await Promise.all(active.map((job) => coordinator.poll(job.jobId).catch(() => job)));
-      return fresh.filter((job) => !isTerminalLifecycle(job.state)).map((job) => job.jobId);
+      const pending = (await coordinator.list()).filter((job) => !job.abandonment && !isTerminalLifecycle(job.state));
+      // Reconcile persisted state before reporting a job as active.
+      const fresh = await Promise.all(pending.map((job) => coordinator.poll(job.jobId).catch((error: unknown) => {
+        if (error instanceof BackgroundJobError && error.code === "not-found") return undefined;
+        return { ...job, state: "unknown" as const };
+      })));
+      const active: string[] = [];
+      const unverified: string[] = [];
+      for (const job of fresh) {
+        if (!job || job.abandonment || isTerminalLifecycle(job.state)) continue;
+        (isLiveLifecycle(job.state) ? active : unverified).push(job.jobId);
+      }
+      const lines: string[] = [];
+      if (active.length > 0) lines.push(`Active background jobs: ${active.join(", ")}  (inspect with /job)`);
+      if (unverified.length > 0) lines.push(`Unverified background jobs: ${unverified.join(", ")}  (inspect with /job)`);
+      return lines;
     } catch {
       return [];
     }
   }
 
-  /** Print a subtle reminder pointing at the most recent resumable session, and any jobs left running. */
+  /** Print the most recent resumable session and any background job notices. */
   async function showResumeHint() {
     try {
       const { listSessions } = await import("./config/history.js");
       const sessions = await listSessions();
-      const jobIds = await Promise.race([
-        runningJobIds(),
+      const jobLines = await Promise.race([
+        backgroundJobExitLines(),
         new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 2000).unref()),
       ]);
       const lines: string[] = [];
@@ -1303,7 +1315,7 @@ export async function main() {
         lines.push(`Session ${detachedSessionRef.current} continues in the background.`);
         lines.push(`To resume: agav --resume ${detachedSessionRef.current}`);
       } else if (sessions.length > 0) lines.push(`To resume: agav --resume ${sessions[0]!.id}`);
-      if (jobIds.length > 0) lines.push(`Running background jobs: ${jobIds.join(", ")}  (inspect with /job)`);
+      lines.push(...jobLines);
       if (lines.length > 0) process.stderr.write(`\n${lines.map((line) => dim(line)).join("\n")}\n\n`);
     } catch { }
   }
