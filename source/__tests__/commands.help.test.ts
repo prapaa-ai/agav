@@ -16,6 +16,18 @@ const commands: SlashCommand[] = [...MID_TURN_SAFE_COMMANDS].map((name) => ({
 }));
 
 describe("commands/help", () => {
+  it("lists every registered built-in exactly once outside dynamic command sections", async () => {
+    const registry = new CommandRegistry();
+    const result = await registry.execute("/help", context);
+    if (result?.type !== "message") throw new Error("expected message result");
+
+    const listing = result.text.split("  While Agav is working:")[0]!;
+    const names = [...listing.matchAll(/^    \/(\S+)\s/gm)].map(match => match[1]);
+    expect(names.sort()).toEqual([...registry.list().map(command => command.name), "ps"].sort());
+    expect(listing).not.toContain("  Skill commands\n");
+    expect(listing).not.toContain("  Agent commands\n");
+  });
+
   it("lists commands that can run while Agav is working", async () => {
     const helpCommand = createHelpCommand(() => commands);
 
