@@ -76,9 +76,7 @@ export const editFileTool: ToolDefinition = {
         }
 
         const diffLines = computeEditDiffAt(content, oldString, newString, position);
-        const updated = occurrence === undefined
-          ? content.replace(oldString, newString)
-          : content.slice(0, position) + newString + content.slice(position + oldString.length);
+        const updated = content.slice(0, position) + newString + content.slice(position + oldString.length);
         await pushUndo(filePath, "edit_file");
         await writeFile(filePath, updated, "utf-8");
 
