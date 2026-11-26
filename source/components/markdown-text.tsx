@@ -224,44 +224,26 @@ function extractCells(token: any): { headers: string[]; rows: string[][] } {
 }
 
 /**
- * Choose column widths that always sum to at most `available`.
- *
- * Columns narrower than their fair share keep their natural width and donate
- * the remainder to the wider ones. The `minCol` floor is capped by the fair
- * share so it can never push the table past the terminal edge, and a final
- * shave pass guarantees the invariant even in degenerate cases.
+ * Reserve each column's minimum, then share the remaining width. Columns
+ * that need less than their share leave the rest for wider columns.
  */
-export function fitColumns(naturalWidths: number[], available: number): number[] {
-  const colCount = naturalWidths.length;
-  if (colCount === 0) return [];
-  if (available < colCount) return naturalWidths.map(() => 1);
+export function fitColumns(
+  naturalWidths: number[],
+  available: number,
+  minimumWidths = naturalWidths.map(() => 1),
+): number[] {
+  const widths = [...minimumWidths];
+  let remaining = available - widths.reduce((sum, width) => sum + width, 0);
+  if (remaining <= 0) return widths;
 
-  const total = naturalWidths.reduce((a, b) => a + b, 0);
-  if (total <= available) return [...naturalWidths];
-
-  const minCol = Math.max(1, Math.min(6, Math.floor(available / colCount)));
-  const order = naturalWidths.map((w, i) => ({ w, i })).sort((a, b) => a.w - b.w);
-  const widths = [...naturalWidths];
-  let remaining = available;
-  let flex = colCount;
-  for (const { w, i } of order) {
-    const share = Math.floor(remaining / flex);
-    widths[i] = w <= share ? w : Math.max(minCol, share);
-    remaining -= widths[i]!;
-    flex--;
+  const order = naturalWidths
+    .map((width, i) => ({ i, extra: Math.max(0, width - widths[i]!) }))
+    .sort((a, b) => a.extra - b.extra);
+  for (const [index, { i, extra }] of order.entries()) {
+    const growth = Math.min(extra, Math.floor(remaining / (order.length - index)));
+    widths[i]! += growth;
+    remaining -= growth;
   }
-
-  // Shave the widest columns back if the floor overshot, then hand any slack
-  // to the widest column so the table lines up flush.
-  let overflow = widths.reduce((a, b) => a + b, 0) - available;
-  for (let k = order.length - 1; k >= 0 && overflow > 0; k--) {
-    const i = order[k]!.i;
-    const take = Math.min(overflow, widths[i]! - 1);
-    widths[i]! -= take;
-    overflow -= take;
-  }
-  const slack = available - widths.reduce((a, b) => a + b, 0);
-  if (slack > 0) widths[order[order.length - 1]!.i]! += slack;
   return widths;
 }
 
@@ -296,6 +278,19 @@ function renderUnicodeTable(headers: string[], rows: string[][], colWidths: numb
   return "\n" + lines.join("\n") + "\n\n";
 }
 
+function renderStackedTable(headers: string[], rows: string[][], width: number): string {
+  const prefix = width >= 4 ? "│ " : "";
+  const bodyWidth = Math.max(1, width - prefix.length);
+  const records = (rows.length > 0 ? rows : [[]]).map((row) =>
+    headers.flatMap((header, i) => {
+      const value = row[i];
+      const label = chalk.bold(`${header}:`);
+      return wrapStyled(value ? `${label} ${value}` : label, bodyWidth).map((line) => prefix + line);
+    }).join("\n")
+  );
+  return "\n" + records.join("\n\n") + "\n\n";
+}
+
 function makeTableExtension(termWidth: number) {
   return {
     name: "table",
@@ -304,19 +299,28 @@ function makeTableExtension(termWidth: number) {
       const colCount = headers.length;
       if (colCount === 0) return "";
 
+      // Borders and padding take three columns per field, plus the closing border.
+      const available = termWidth - (colCount * 3 + 1);
+      if (available < colCount) return renderStackedTable(headers, rows, termWidth);
+
       // Measure visible widths using string-width v8 — accurate for CJK,
       // emoji, Devanagari combining marks, flag sequences, etc.
-      const allRows = [headers, ...rows].map((r) => r.map(stripAnsi));
-      const naturalWidths = Array(colCount).fill(0) as number[];
-      for (const row of allRows) {
+      const naturalWidths = headers.map(() => 1);
+      const minimumWidths = headers.map(() => 1);
+      for (const row of [headers, ...rows]) {
         for (let i = 0; i < colCount; i++) {
-          naturalWidths[i] = Math.max(naturalWidths[i]!, stringWidth(row[i] ?? ""));
+          const cell = stripAnsi(row[i] ?? "");
+          naturalWidths[i] = Math.max(naturalWidths[i]!, stringWidth(cell));
+          for (const { segment } of GRAPHEMES.segment(cell)) {
+            minimumWidths[i] = Math.max(minimumWidths[i]!, stringWidth(segment));
+          }
         }
       }
 
-      // borders: colCount + 1 │ chars, padding: 1 space each side per column
-      const overhead = (colCount + 1) + (colCount * 2);
-      return renderUnicodeTable(headers, rows, fitColumns(naturalWidths, termWidth - overhead));
+      if (minimumWidths.reduce((sum, width) => sum + width, 0) > available) {
+        return renderStackedTable(headers, rows, termWidth);
+      }
+      return renderUnicodeTable(headers, rows, fitColumns(naturalWidths, available, minimumWidths));
     },
   };
 }
