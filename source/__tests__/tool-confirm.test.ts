@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { createElement as h } from "react";
+import { act, createElement as h } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../ink/termio/clipboard.js", () => ({
@@ -79,11 +79,22 @@ describe("ToolConfirm shell commands", () => {
     await instance.waitUntilRenderFlush();
   };
 
+  const renderAfterInput = async (instance: Ink, sendInput: () => void) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    try {
+      await act(sendInput);
+      await instance.waitUntilRenderFlush();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  };
+
   const clickRow = async (ui: Awaited<ReturnType<typeof mount>>, text: string) => {
     const row = ui.getFrame().split("\n").findIndex((line) => line.includes(text));
     expect(row).toBeGreaterThanOrEqual(0);
-    ui.stdin.emit("data", `\x1b[<0;5;${row + 1}M\x1b[<0;5;${row + 1}m`);
-    await flush(ui.instance);
+    await renderAfterInput(ui.instance, () => {
+      ui.stdin.emit("data", `\x1b[<0;5;${row + 1}M\x1b[<0;5;${row + 1}m`);
+    });
   };
 
   it.each(["run_command", "skill_shell_block"])("starts with the compact %s preview and expands on click", async (toolName) => {
@@ -120,15 +131,15 @@ describe("ToolConfirm shell commands", () => {
       expect(getFrame()).toContain("timeout_ms: 5000");
       expect(getFrame()).toContain("[Y]es");
 
-      for (let i = 0; i < 20; i++) stdin.emit("data", "\x1b[B");
-      await flush(instance);
+      await renderAfterInput(instance, () => {
+        for (let i = 0; i < 20; i++) stdin.emit("data", "\x1b[B");
+      });
       expect(getFrame()).toContain("_END'");
       expect(getFrame()).not.toContain("START_");
       expect(getFrame()).toContain("[Y]es");
       expect(onConfirm).not.toHaveBeenCalled();
 
-      stdin.emit("data", "y");
-      await flush(instance);
+      await renderAfterInput(instance, () => { stdin.emit("data", "y"); });
       expect(onConfirm).toHaveBeenCalledExactlyOnceWith("yes");
     } finally { instance.unmount(); }
   });
