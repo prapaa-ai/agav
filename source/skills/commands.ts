@@ -179,7 +179,9 @@ export const skillsCommand: SlashCommand = {
         if (extra.length > 0) lines.push(`Metadata: ${extra.join(", ")}`);
       }
       lines.push(
-        `Usage: ${traces.length} runs · ${avgTokens} avg tokens · ${successRate}% success`,
+        traces.length === 0
+          ? "Usage: No recorded runs"
+          : `Usage: ${traces.length} runs · ${avgTokens} avg tokens · ${successRate}% success`,
         `Path: ${skill.filePath}`,
       );
       return { type: "message", text: lines.join("\n") };
