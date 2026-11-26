@@ -803,7 +803,7 @@ export async function main() {
     if (flags.denyWrites) config.permissionMode = "deny-writes";
     if (flags.sandboxRequired) config.sandboxRequired = true;
     if (flags.sandboxNetwork) config.sandboxNetwork = flags.sandboxNetwork;
-    process.exit(await runWorkflowsCli([...(flags._ as string[])], { config }));
+    process.exitCode = await runWorkflowsCli([...(flags._ as string[])], { config });
     return;
   }
 
