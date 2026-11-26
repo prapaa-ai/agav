@@ -30,18 +30,19 @@ export function formatSessionTitle(title: unknown): string | undefined {
   return label.slice(0, end).trimEnd() + "…";
 }
 
-const HISTORY_USAGE = "Usage: /history [list [--limit <count>] [--provider <name>] [--model <name>]]";
+const HISTORY_USAGE = "Usage: /history [list [--limit <count>] [--provider <name>] [--model <name>] [--full-ids]]";
 
 export const historyCommand: SlashCommand = {
   name: "history",
   description: "Browse saved sessions",
-  argumentHint: "[list [--limit <count>] [--provider <name>] [--model <name>]]",
+  argumentHint: "[list [--limit <count>] [--provider <name>] [--model <name>] [--full-ids]]",
   usage: `${HISTORY_USAGE} · /resume <id> to load a session`,
   async execute(args, context) {
     const input = args.trim();
     let limit: number | undefined;
     let provider: string | undefined;
     let model: string | undefined;
+    let fullIds = false;
     if (!input) {
       const interactive = openResourceManager("history", context);
       if (interactive) return interactive;
@@ -54,7 +55,11 @@ export const historyCommand: SlashCommand = {
         const value = options[i + 1];
         if (seen.has(flag)) return { type: "message", text: HISTORY_USAGE };
         seen.add(flag);
-        if (flag === "--limit") {
+        if (flag === "--full-ids") {
+          // A switch with no value: step back so the next token is read as a flag.
+          fullIds = true;
+          i -= 1;
+        } else if (flag === "--limit") {
           limit = Number(value);
           if (!value || !/^\d+$/.test(value) || !Number.isSafeInteger(limit) || limit < 1) {
             return { type: "message", text: "--limit requires a positive safe integer. " + HISTORY_USAGE };
@@ -82,7 +87,7 @@ export const historyCommand: SlashCommand = {
       return { type: "message", text: filtered ? "No saved sessions match the filters." : "No saved sessions." };
     }
     const shown = limit === undefined ? sessions : sessions.slice(0, limit);
-    const lines = shown.map((s) => `${s.id.slice(0, 8)} · ${formatSessionTitle(s.title) ?? "Untitled session"} · ${s.messages.length} messages`);
+    const lines = shown.map((s) => `${fullIds ? s.id : s.id.slice(0, 8)} · ${formatSessionTitle(s.title) ?? "Untitled session"} · ${s.messages.length} messages`);
     if (filtered || shown.length < sessions.length) lines.push(`Showing ${shown.length} of ${sessions.length} saved sessions.`);
     return { type: "message", text: lines.join("\n") };
   },

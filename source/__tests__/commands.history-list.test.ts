@@ -95,3 +95,32 @@ describe("/history list filters", () => {
     expect(read).not.toHaveBeenCalled();
   });
 });
+
+describe("/history list --full-ids", () => {
+  const full = [
+    "00000000-session · newest · 0 messages",
+    "00000001-session · middle · 0 messages",
+  ];
+
+  it("prints complete IDs and composes with the other flags in either order", async () => {
+    expect(await historyCommand.execute("list --full-ids", context)).toEqual({
+      type: "message", text: [...full, "00000002-session · oldest · 0 messages"].join("\n"),
+    });
+    const limited = { type: "message", text: [...full, "Showing 2 of 3 saved sessions."].join("\n") };
+    expect(await historyCommand.execute("list --full-ids --limit 2", context)).toEqual(limited);
+    expect(await historyCommand.execute("list --limit 2 --full-ids", context)).toEqual(limited);
+    expect(await historyCommand.execute("list --provider ollama --full-ids --model TEST --limit 2", context)).toEqual({
+      type: "message", text: [...full, "Showing 2 of 3 saved sessions."].join("\n"),
+    });
+  });
+
+  it("keeps short IDs by default and rejects a repeated or valued switch", async () => {
+    expect((await historyCommand.execute("list", context) as { text: string }).text).toMatch(/^00000000 · newest/);
+    expect(await historyCommand.execute("list --full-ids --full-ids", context)).toEqual({
+      type: "message", text: expect.stringMatching(/^Usage: \/history/),
+    });
+    expect(await historyCommand.execute("list --full-ids yes", context)).toEqual({
+      type: "message", text: expect.stringMatching(/^Usage: \/history/),
+    });
+  });
+});
