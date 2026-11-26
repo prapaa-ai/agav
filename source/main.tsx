@@ -165,9 +165,9 @@ export function parseArgs(argv: string[]) {
     } else if (arg === "--model" || arg === "-m") {
       flags.model = argv[++i] ?? "";
     } else if (arg.startsWith("--provider=")) {
-      flags.provider = arg.split("=")[1] ?? "";
+      flags.provider = arg.slice("--provider=".length);
     } else if (arg.startsWith("--model=")) {
-      flags.model = arg.split("=")[1] ?? "";
+      flags.model = arg.slice("--model=".length);
     } else if (arg === "--effort") {
       flags.effort = argv[++i] ?? "";
     } else if (arg.startsWith("--effort=")) {
@@ -232,19 +232,19 @@ export function parseArgs(argv: string[]) {
     } else if (arg === "--ollama-host") {
       flags.ollamaHost = argv[++i] ?? "";
     } else if (arg.startsWith("--ollama-host=")) {
-      flags.ollamaHost = arg.split("=")[1] ?? "";
+      flags.ollamaHost = arg.slice("--ollama-host=".length);
     } else if (arg === "--ollama-port") {
       flags.ollamaPort = argv[++i] ?? "";
     } else if (arg.startsWith("--ollama-port=")) {
-      flags.ollamaPort = arg.split("=")[1] ?? "";
+      flags.ollamaPort = arg.slice("--ollama-port=".length);
     } else if (arg === "--ollama-endpoint") {
       flags.ollamaEndpoint = argv[++i] ?? "";
     } else if (arg.startsWith("--ollama-endpoint=")) {
-      flags.ollamaEndpoint = arg.split("=")[1] ?? "";
+      flags.ollamaEndpoint = arg.slice("--ollama-endpoint=".length);
     } else if (arg === "--ollama-api-key") {
       flags.ollamaApiKey = argv[++i] ?? "";
     } else if (arg.startsWith("--ollama-api-key=")) {
-      flags.ollamaApiKey = arg.split("=")[1] ?? "";
+      flags.ollamaApiKey = arg.slice("--ollama-api-key=".length);
     } else if (arg === "--print" || arg === "-P") {
       flags.print = true;
       subcommandSeen = true;
