@@ -42,6 +42,25 @@ describe("CLI argument parsing", () => {
     expect(flags2.effort).toBe("minimal");
   });
 
+  it.each([
+    { option: "--provider", field: "provider", value: "ollama=extra" },
+    { option: "--model", field: "model", value: "=model=variant" },
+    { option: "--ollama-host", field: "ollamaHost", value: "ollama=example" },
+    { option: "--ollama-port", field: "ollamaPort", value: "11434=extra" },
+    { option: "--ollama-endpoint", field: "ollamaEndpoint", value: "/api/chat?tag=a=b" },
+  ])("preserves equals signs in $option values", ({ option, field, value }) => {
+    expect(parseArgs([option, value])[field]).toBe(value);
+    expect(parseArgs([`${option}=${value}`])[field]).toBe(value);
+  });
+
+  it("preserves trailing equals signs in Ollama API keys", () => {
+    const dummyKey = "placeholder==";
+    const separate = parseArgs(["--ollama-api-key", dummyKey]);
+    const inline = parseArgs([`--ollama-api-key=${dummyKey}`]);
+    expect(separate.ollamaApiKey === dummyKey).toBe(true);
+    expect(inline.ollamaApiKey === dummyKey).toBe(true);
+  });
+
   it("recognizes the login subcommand and passes its flags through", () => {
     const flags = parseArgs(["login", "--device", "--issuer", "https://idp", "--client-id", "cli"]);
     expect(flags.login).toBe(true);

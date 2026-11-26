@@ -42,7 +42,7 @@ export const readNotebookTool: ToolDefinition = {
         },
         cell_type: {
           type: "string",
-          enum: ["all", "code", "markdown"],
+          enum: ["all", "code", "markdown", "raw"],
           description: "Filter selected cells by type (default: all). Original cell numbers are retained.",
         },
         include_outputs: {
@@ -56,10 +56,10 @@ export const readNotebookTool: ToolDefinition = {
 
   async execute(input): Promise<ToolResult> {
     const cellType = input.cell_type;
-    if (cellType !== undefined && cellType !== "all" && cellType !== "code" && cellType !== "markdown") {
-      return { output: "cell_type must be all, code, or markdown", isError: true };
+    if (cellType !== undefined && cellType !== "all" && cellType !== "code" && cellType !== "markdown" && cellType !== "raw") {
+      return { output: "cell_type must be all, code, markdown, or raw", isError: true };
     }
-    const filterType = cellType === "code" || cellType === "markdown" ? cellType : undefined;
+    const filterType = cellType === "all" ? undefined : cellType;
     const includeOutputs = input.include_outputs;
     if (includeOutputs !== undefined && typeof includeOutputs !== "boolean") {
       return { output: "include_outputs must be a boolean", isError: true };
