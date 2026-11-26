@@ -17,6 +17,7 @@ order: 3
 | `/resume [id]` | List saved sessions, or resume one by ID or prefix match. |
 | `/history [list]` | Browse saved sessions; use `list` for plain text. |
 | `/history list --limit <count>` | Show the most recent saved sessions in a plain-text list. |
+| `/history list --full-ids` | Show complete session IDs instead of the first eight characters. Combines with `--limit`, `--provider` and `--model`. |
 | `/search <query>` | Find saved sessions that match `<query>`. |
 | `/name <name>` | Give the active session a recognizable name. |
 | `/clear` or `/new` | Start a clean chat while keeping saved sessions. |
