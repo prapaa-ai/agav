@@ -47,4 +47,19 @@ describe("edit_file occurrence selection", () => {
     expect(result.isError).toBe(false);
     expect(await readFile(path, "utf-8")).toBe("first\n  target\n  target\n");
   });
+
+  it.each([
+    "total=$$price",
+    "s.replace(/[.*]/g, '\\\\$&')",
+    "IFS=$'\\n'",
+    "['$`', '$1', '$<name>']",
+  ])("writes %s as is, with and without occurrence", async (newString) => {
+    for (const occurrence of [undefined, 1]) {
+      await writeFile(path, original);
+      const result = await editFileTool.execute({ path, old_string: "second", new_string: newString, occurrence });
+      expect(result.isError).toBe(false);
+      expect(await readFile(path, "utf-8")).toBe(`first\n  target\n${newString}\n  target\n`);
+      expect(result.diffLines).toEqual(expect.arrayContaining([{ type: "add", lineNo: 3, text: newString }]));
+    }
+  });
 });
