@@ -195,6 +195,8 @@ export default function ScrollBox({
 	// so repeated scroll-ups don't build a debt of downs to undo.
 	useEffect(() => {
 		if (isControlled) {
+			// Keep the initial top anchor while there is no scrollable content.
+			if (offset === Number.POSITIVE_INFINITY && maxScroll === 0) return;
 			if (offset > maxScroll) onScrollChange(maxScroll);
 			else if (offset < 0) onScrollChange(0);
 		}

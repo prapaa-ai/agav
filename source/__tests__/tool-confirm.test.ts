@@ -118,8 +118,11 @@ describe("ToolConfirm shell commands", () => {
     } finally { ui.instance.unmount(); }
   });
 
-  it("scrolls to the end of a wrapped command while keeping approval visible", async () => {
-    const input = { command: `printf '%s' 'START_${"x".repeat(400)}_END'`, timeout_ms: 5000 };
+  it.each([
+    { length: 175, presses: 1 },
+    { length: 400, presses: 20 },
+  ])("scrolls to the end of a wrapped command in $presses Down Arrow presses while keeping approval visible", async ({ length, presses }) => {
+    const input = { command: `printf '%s' 'START_${"x".repeat(length)}_END'`, timeout_ms: 5000 };
     const ui = await mount({ toolName: "run_command", input }, { columns: 40, rows: 16 });
     const { instance, stdin, onConfirm, getFrame } = ui;
     try {
@@ -132,7 +135,7 @@ describe("ToolConfirm shell commands", () => {
       expect(getFrame()).toContain("[Y]es");
 
       await renderAfterInput(instance, () => {
-        for (let i = 0; i < 20; i++) stdin.emit("data", "\x1b[B");
+        for (let i = 0; i < presses; i++) stdin.emit("data", "\x1b[B");
       });
       expect(getFrame()).toContain("_END'");
       expect(getFrame()).not.toContain("START_");

@@ -97,7 +97,7 @@ export default function ToolConfirm({ toolName, input, diffLines, mcpServerName,
   const [detailPosition, setDetailPosition] = React.useState<{ input: Props["input"]; offset: number }>();
   const detailOffset = detailPosition?.input === input ? detailPosition.offset : Number.POSITIVE_INFINITY;
   const updateDetailOffset = (offset: number) => {
-    if (Number.isFinite(detailOffset) || offset > 0) setDetailPosition({ input, offset });
+    setDetailPosition({ input, offset });
   };
   const [isFeedbackMode, setIsFeedbackMode] = React.useState(false);
   const feedbackModeRef = React.useRef(false);
