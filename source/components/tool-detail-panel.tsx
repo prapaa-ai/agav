@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "../ink/index.js";
-import { getToolLabel, getToolSummary } from "../utils/tool-labels.js";
+import { getMcpServerName, getToolLabel, getToolSummary } from "../utils/tool-labels.js";
 import type { DisplayMessage } from "./message-list.js";
 import { terminalRelativePaths, terminalToolValue, toolPathValues } from "../utils/display-path.js";
 
@@ -40,6 +40,7 @@ export default function ToolDetailPanel({ tools, closeKey }: Props) {
       */}
       {recent.map((tool) => {
         const label = tool.toolDisplayName ?? (tool.toolName ? getToolLabel(tool.toolName) : "Tool");
+        const mcpServer = tool.toolName ? getMcpServerName(tool.toolName) : undefined;
         const inputSummary = tool.toolName ? formatInput(tool.toolName, tool.toolInput) : null;
         const lines = terminalRelativePaths(tool.content, toolPathValues(tool.toolInput)).split("\n");
         const maxPreview = 30;
@@ -50,6 +51,7 @@ export default function ToolDetailPanel({ tools, closeKey }: Props) {
           <Box key={tool.id} flexDirection="column" marginTop={1}>
             <Box>
               <Text bold color={tool.isError ? "red" : "yellow"}>{label}</Text>
+              {mcpServer ? <Text dimColor>{` (MCP: ${mcpServer})`}</Text> : null}
               {inputSummary && <Text dimColor> {inputSummary}</Text>}
             </Box>
             {visible.map((line, i) => (
