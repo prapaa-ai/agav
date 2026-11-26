@@ -174,17 +174,16 @@ export class OllamaProvider implements LLMProvider {
 
         for await (const part of response) {
           const msg = part.message;
-          if (!msg) continue;
 
-          if (msg.thinking) {
+          if (msg?.thinking) {
             yield { type: "thinking_delta", text: msg.thinking };
           }
 
-          if (msg.content) {
+          if (msg?.content) {
             yield { type: "text_delta", text: msg.content };
           }
 
-          if (msg.tool_calls?.length) {
+          if (msg?.tool_calls?.length) {
             for (const tc of msg.tool_calls) {
               const argsJson =
                 typeof tc.function.arguments === "string"
