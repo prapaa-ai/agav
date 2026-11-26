@@ -139,6 +139,37 @@ describe("read_notebook cell range", () => {
 });
 
 describe("read_notebook cell type filter", () => {
+  const mixedNotebook = {
+    ...notebook,
+    cells: [
+      notebook.cells[0],
+      { cell_type: "raw", source: ["Export note\n", "Leave as written."] },
+      notebook.cells[1],
+      { cell_type: "raw", source: "Outside the requested range" },
+    ],
+  };
+
+  it("reads raw cells within an inclusive range using their original cell numbers", async () => {
+    mockRead.mockResolvedValueOnce(JSON.stringify(mixedNotebook));
+
+    expect(await readNotebookTool.execute({ path, cell_type: "raw", start_cell: 1, end_cell: 2 })).toEqual({
+      output: "--- Cell 2 [raw] ---\nExport note\nLeave as written.\n\n(Showing cells 1-2 of 4.)",
+      isError: false,
+    });
+    expect(readNotebookTool.schema.inputSchema).toMatchObject({
+      properties: { cell_type: { enum: expect.arrayContaining(["raw"]) } },
+    });
+    expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  it("reports when the selected range contains no raw cells", async () => {
+    mockRead.mockResolvedValueOnce(JSON.stringify(mixedNotebook));
+
+    expect(await readNotebookTool.execute({ path, cell_type: "raw", start_cell: 3, end_cell: 3 })).toEqual({
+      output: "No raw cells in the selected range.", isError: false,
+    });
+  });
+
   it("keeps original cell numbers and composes with range and output selection", async () => {
     const result = await readNotebookTool.execute({ path, cell_type: "code", start_cell: 1, end_cell: 3, include_outputs: false });
     expect(result.isError).toBe(false);
@@ -155,7 +186,7 @@ describe("read_notebook cell type filter", () => {
   });
 
   it("rejects unsupported cell types before reading", async () => {
-    expect(await readNotebookTool.execute({ path, cell_type: "raw" })).toMatchObject({ isError: true });
+    expect(await readNotebookTool.execute({ path, cell_type: "unknown" })).toMatchObject({ isError: true });
     expect(mockRead).not.toHaveBeenCalled();
   });
 });

@@ -4,6 +4,14 @@ import { resolve } from "node:path"
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js"
 
 let activeWatcher: ReturnType<typeof watch> | null = null
+let pendingRun: ReturnType<typeof setTimeout> | null = null
+
+function stopWatcher(): void {
+  if (pendingRun) clearTimeout(pendingRun)
+  pendingRun = null
+  activeWatcher?.close()
+  activeWatcher = null
+}
 
 function matchGlob(pattern: string, filename: string): boolean {
   const regex = pattern
@@ -40,8 +48,7 @@ export const watchCommand: SlashCommand = {
 
     if (trimmed === "stop") {
       if (activeWatcher) {
-        activeWatcher.close()
-        activeWatcher = null
+        stopWatcher()
         return { type: "message", text: "File watcher stopped." }
       }
       return { type: "message", text: "No active watcher." }
@@ -63,14 +70,10 @@ export const watchCommand: SlashCommand = {
       return { type: "message", text: "Missing command. Usage: /watch <path|glob> <command>" }
     }
 
-    if (activeWatcher) {
-      activeWatcher.close()
-    }
+    stopWatcher()
 
     const hasGlob = isGlob(watchPattern)
     const watchDir = hasGlob ? resolve(getWatchRoot(watchPattern)) : resolve(watchPattern)
-
-    let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
     try {
       activeWatcher = watch(watchDir, { recursive: true }, (_eventType, filename) => {
@@ -83,8 +86,9 @@ export const watchCommand: SlashCommand = {
           if (!matchGlob(watchPattern, fullRelative)) return
         }
 
-        if (debounceTimer) clearTimeout(debounceTimer)
-        debounceTimer = setTimeout(() => {
+        if (pendingRun) clearTimeout(pendingRun)
+        pendingRun = setTimeout(() => {
+          pendingRun = null
           _context.showStatus(`AUTOMATION  /watch · ${filename} changed → ${command}`)
           execFile("/bin/sh", ["-c", command], { timeout: 30_000, cwd: process.cwd() }, (_err, stdout, stderr) => {
             const output = (stdout + stderr).trim()

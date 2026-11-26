@@ -1,6 +1,8 @@
 import type { SlashCommand, CommandResult, CommandContext } from "./types.js";
 import type { InvocationReason } from "../providers/types.js";
 
+const MAX_LOOP_INTERVAL_MS = 2_147_483_647;
+
 /**
  * Tracks the state of the currently running automated prompt loop.
  *
@@ -126,20 +128,26 @@ export const loopCommand: SlashCommand = {
       return { type: "message", text: `Loop stopped after ${ticks} ticks.` };
     }
 
-    stopActiveLoop();
-
     const parts = trimmed.split(/\s+/);
     let intervalMs: number;
     let prompt: string;
 
     const parsed = parseInterval(parts[0]!);
     if (parsed !== null && parts.length > 1) {
+      if (parsed > MAX_LOOP_INTERVAL_MS) {
+        return {
+          type: "message",
+          text: `Loop interval must be at most ${MAX_LOOP_INTERVAL_MS.toLocaleString("en-US")} ms (about 24.9 days).`,
+        };
+      }
       intervalMs = parsed;
       prompt = parts.slice(1).join(" ");
     } else {
       intervalMs = 10 * 60_000;
       prompt = trimmed;
     }
+
+    stopActiveLoop();
 
     const submitFn = context.handleSubmit;
 

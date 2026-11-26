@@ -272,8 +272,8 @@ export function ResourceManager({ adapter, onExit, actions = [], onBusyChange, h
     }
     if (form) {
       if (key.escape) { setView("list"); setStatus(""); return; }
+      if (key.upArrow || (key.tab && key.shift)) { setFieldIndex((i) => (i + fields.length - 1) % fields.length); return; }
       if (key.tab || key.downArrow) { setFieldIndex((i) => (i + 1) % fields.length); return; }
-      if (key.upArrow) { setFieldIndex((i) => (i + fields.length - 1) % fields.length); return; }
       if (key.return) {
         void run(async () => {
           for (const f of fields) {

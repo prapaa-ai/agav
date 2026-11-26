@@ -41,6 +41,29 @@ beforeEach(() => {
   show.mockResolvedValue({ model_info: { "llama.context_length": 131_072 } });
 });
 
+describe("OllamaProvider stream completion", () => {
+  it.each([false, true])("emits completion metadata in order (final chunk has message: %s)", async (hasFinalMessage) => {
+    const message = {
+      thinking: "Checking",
+      content: "Hello",
+      tool_calls: [{ id: "call_abc", function: { name: "read_file", arguments: { path: "a.txt" } } }],
+    };
+    const completion = { ...done, done_reason: "length" };
+    replay(hasFinalMessage ? [{ ...completion, message }] : [{ message }, completion]);
+
+    expect(await collect()).toEqual([
+      { type: "message_start" },
+      { type: "thinking_delta", text: "Checking" },
+      { type: "text_delta", text: "Hello" },
+      { type: "tool_call_start", toolCallId: "call_abc", toolName: "read_file" },
+      { type: "tool_call_delta", toolCallId: "call_abc", argsJson: '{"path":"a.txt"}' },
+      { type: "tool_call_end", toolCallId: "call_abc" },
+      { type: "usage", inputTokens: 10, outputTokens: 5 },
+      { type: "message_end", stopReason: "length" },
+    ]);
+  });
+});
+
 describe("OllamaProvider tool-call identity", () => {
   // Ollama's ToolCall type has no id, so servers that omit it used to fall back
   // to a name+Date.now() id. Two parallel calls to the same tool land in the

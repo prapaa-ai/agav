@@ -295,6 +295,53 @@ describe("shared resource manager", () => {
     } finally { ui.instance.unmount(); }
   });
 
+  it.each([
+    { start: "Name", previous: "Content" },
+    { start: "Description", previous: "Name" },
+  ])("moves backward from $start to $previous with Shift+Tab", async ({ start, previous }) => {
+    const ui = await mount({
+      fields: [
+        { name: "name", label: "Name" },
+        { name: "description", label: "Description" },
+        { name: "content", label: "Content" },
+      ],
+      create: vi.fn(async () => {}),
+    });
+    try {
+      await ui.key("n");
+      if (start === "Description") await ui.key("\t");
+      expect(ui.frame()).toContain(`→ ${start}:`);
+
+      await ui.key("\x1b[Z");
+
+      expect(ui.frame()).toContain(`→ ${previous}:`);
+    } finally { ui.instance.unmount(); }
+  });
+
+  it("wraps forward with Tab and preserves values through arrow navigation and submission", async () => {
+    const create = vi.fn(async () => {});
+    const ui = await mount({
+      fields: [
+        { name: "name", label: "Name" },
+        { name: "content", label: "Content" },
+      ],
+      create,
+    });
+    try {
+      await ui.key("n");
+      await ui.key("draft");
+      await ui.key("\x1b[B");
+      expect(ui.frame()).toContain("→ Content:");
+      await ui.key("notes");
+      await ui.key("\t");
+      expect(ui.frame()).toContain("→ Name: draft");
+      await ui.key("\x1b[A");
+      expect(ui.frame()).toContain("→ Content: notes");
+      await ui.key("\r");
+      expect(create).toHaveBeenCalledExactlyOnceWith({ name: "draft", content: "notes" });
+    } finally { ui.instance.unmount(); }
+  });
+
   it("edits existing values and enforces item-specific delete restrictions", async () => {
     const update = vi.fn(async () => {});
     const remove = vi.fn(async () => {});
