@@ -281,6 +281,14 @@ describe("renderMarkdown tables", () => {
     expect(Math.max(...output.split("\n").map((line) => stringWidth(line)))).toBe(21);
   });
 
+  it("keeps the grid when moving one column of width makes room for a wide grapheme", () => {
+    const table = "| LongName | B | C | D | E |\n|---|---|---|---|---|\n| a | 界 | 3 | 4 | 5 |";
+    const output = atWidth(table, 26);
+    expect(output).toContain("┌");
+    expect(output).toContain("│ a │ 界 │ 3 │ 4 │ 5 │");
+    for (const line of output.split("\n")) expect(stringWidth(line)).toBeLessThanOrEqual(22);
+  });
+
   it("rules only under the header, not between every row", () => {
     const out = renderMarkdown(table);
     expect(out.split("\n").filter((l) => l.includes("├")).length).toBe(1);
