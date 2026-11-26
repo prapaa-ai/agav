@@ -11,8 +11,10 @@ async function mount(active = true) {
   const stdin = new EventEmitter() as NodeJS.ReadStream;
   Object.assign(stdin, { isTTY: true, setRawMode: () => stdin, resume: () => stdin, pause: () => stdin, read: () => null });
   const cancel = vi.fn(); const close = vi.fn();
+  let remove = (_ids: number[]) => {};
   function App() {
     const [requests, setRequests] = useState(Array.from({ length: 6 }, (_, i) => ({ id: 10 + i, text: `task${i}`, attachmentCount: 0 })));
+    remove = ids => setRequests(prev => prev.filter(request => !ids.includes(request.id)));
     return h(RequestQueue, { requests, active, onClose: close, onActivate: vi.fn(), columns: 80,
       onCancel: (id: number) => { cancel(id); setRequests(prev => prev.filter(request => request.id !== id)); } });
   }
@@ -20,7 +22,8 @@ async function mount(active = true) {
   const settle = async () => { await new Promise(resolve => setTimeout(resolve, 60)); await instance.waitUntilRenderFlush(); };
   const key = async (value: string) => { stdin.emit("data", Buffer.from(value)); await settle(); };
   await settle();
-  return { instance, key, cancel, close, output: () => chunks.join("").replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "") };
+  const removeExternally = async (...ids: number[]) => { remove(ids); await settle(); };
+  return { instance, key, cancel, close, removeExternally, output: () => chunks.join("").replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "") };
 }
 
 describe("queue controls", () => {
@@ -45,6 +48,29 @@ describe("queue controls", () => {
       await ui.key("\x1b[<0;12;3M\x1b[<0;12;3m");
       expect(ui.cancel).toHaveBeenCalledExactlyOnceWith(11);
       await ui.key("\x7f"); expect(ui.cancel).toHaveBeenCalledTimes(1);
+    } finally { ui.instance.unmount(); }
+  });
+  it("keeps the same request highlighted when an earlier row is cancelled by click", async () => {
+    const ui = await mount();
+    try {
+      await ui.key("\x1b[B");
+      // '  1. task0 ' occupies 11 cells on row 2; its × is at column 12.
+      await ui.key("\x1b[<0;12;2M\x1b[<0;12;2m");
+      expect(ui.cancel).toHaveBeenLastCalledWith(10);
+      await ui.key("\x7f"); expect(ui.cancel).toHaveBeenLastCalledWith(11);
+    } finally { ui.instance.unmount(); }
+  });
+  it("follows the highlighted request by ID and falls back to its nearest neighbour when it is removed", async () => {
+    const ui = await mount();
+    try {
+      await ui.key("\x1b[B"); await ui.key("\x1b[B");
+      await ui.removeExternally(10);
+      await ui.key("\x7f"); expect(ui.cancel).toHaveBeenLastCalledWith(12);
+      await ui.removeExternally(11, 13);
+      await ui.key("\x7f"); expect(ui.cancel).toHaveBeenLastCalledWith(14);
+      expect(ui.close).not.toHaveBeenCalled();
+      await ui.removeExternally(15);
+      expect(ui.close).toHaveBeenCalled();
     } finally { ui.instance.unmount(); }
   });
   it("Escape and Ctrl+Q return to the editor without cancelling requests", async () => {
