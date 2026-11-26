@@ -101,7 +101,8 @@ export const steerCommand: SlashCommand = {
     }
 
     if (trimmed.startsWith("remove ")) {
-      const num = parseInt(trimmed.slice(7).trim(), 10);
+      const arg = trimmed.slice(7).trim();
+      const num = /^\d+$/.test(arg) ? Number(arg) : NaN;
       if (isNaN(num) || num < 1 || num > activeSteers.length) {
         return { type: "message", text: `Invalid number. Use 1-${activeSteers.length}.` };
       }

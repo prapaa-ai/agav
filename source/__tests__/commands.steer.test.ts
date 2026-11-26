@@ -121,6 +121,28 @@ describe("commands/steer", () => {
     });
   });
 
+  it.each(["1.5", "1 extra", "1abc", "-1", "+1", "1e0"])("rejects malformed remove index %s without changing directives", async (index) => {
+    await steerCommand.execute("one", {} as any);
+    await steerCommand.execute("two", {} as any);
+
+    await expect(steerCommand.execute(`remove ${index}`, {} as any)).resolves.toEqual({
+      type: "message",
+      text: "Invalid number. Use 1-2.",
+    });
+    expect(getActiveSteers()).toEqual(["one", "two"]);
+  });
+
+  it("removes a directive by a plain in-range index", async () => {
+    await steerCommand.execute("one", {} as any);
+    await steerCommand.execute("two", {} as any);
+
+    await expect(steerCommand.execute("remove 2", {} as any)).resolves.toEqual({
+      type: "message",
+      text: 'Removed steer: "two"',
+    });
+    expect(getActiveSteers()).toEqual(["one"]);
+  });
+
   it("queues added directives for delivery and reports mid-turn status via isLoading", async () => {
     const { drainSteers } = await import("../commands/steer.js");
 
