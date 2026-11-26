@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { createElement as h } from "react";
+import { act, createElement as h } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../ink/termio/clipboard.js", () => ({
@@ -107,8 +107,11 @@ describe("ToolConfirm shell commands", () => {
     } finally { ui.instance.unmount(); }
   });
 
-  it("scrolls to the end of a wrapped command while keeping approval visible", async () => {
-    const input = { command: `printf '%s' 'START_${"x".repeat(400)}_END'`, timeout_ms: 5000 };
+  it.each([
+    { length: 175, presses: 1 },
+    { length: 400, presses: 20 },
+  ])("scrolls to the end of a wrapped command in $presses Down Arrow presses while keeping approval visible", async ({ length, presses }) => {
+    const input = { command: `printf '%s' 'START_${"x".repeat(length)}_END'`, timeout_ms: 5000 };
     const ui = await mount({ toolName: "run_command", input }, { columns: 40, rows: 16 });
     const { instance, stdin, onConfirm, getFrame } = ui;
     try {
@@ -120,8 +123,15 @@ describe("ToolConfirm shell commands", () => {
       expect(getFrame()).toContain("timeout_ms: 5000");
       expect(getFrame()).toContain("[Y]es");
 
-      for (let i = 0; i < 20; i++) stdin.emit("data", "\x1b[B");
-      await flush(instance);
+      vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+      try {
+        await act(() => {
+          for (let i = 0; i < presses; i++) stdin.emit("data", "\x1b[B");
+        });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      await instance.waitUntilRenderFlush();
       expect(getFrame()).toContain("_END'");
       expect(getFrame()).not.toContain("START_");
       expect(getFrame()).toContain("[Y]es");
