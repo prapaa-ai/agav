@@ -11,6 +11,7 @@ vi.mock("../config/config.js", () => ({
 import type { CommandContext } from "../commands/types.js";
 import { skillsCommand } from "../skills/commands.js";
 import { loadSkills } from "../skills/loader.js";
+import { recordSkillTrace } from "../skills/improvement.js";
 import { setSkillEnabled } from "../skills/skill-registry.js";
 
 const context = {} as CommandContext;
@@ -45,8 +46,21 @@ describe("/skills info", () => {
     expect(result).toHaveProperty("text", expect.stringContaining("Version: 1.0.0\nInvocation: both\nOrigin: bundled"));
     expect(result).toHaveProperty("text", expect.stringContaining("Tags: understanding, documentation"));
     expect(result).toHaveProperty("text", expect.stringContaining("Allowed tools: read_file, grep_search, find_files, list_directory\nDisallowed tools: none"));
-    expect(result).toHaveProperty("text", expect.stringContaining("Usage: 0 runs · 0 avg tokens · 0% success\nPath:"));
+    expect(result).toHaveProperty("text", expect.stringContaining("Usage: No recorded runs\nPath:"));
     expect(result).toHaveProperty("text", expect.stringContaining(join("bundled", "explain", "SKILL.md")));
+  });
+
+  it("keeps counts, average tokens and success rate once a skill has recorded runs", async () => {
+    await recordSkillTrace("explain", "first", 100, false);
+    await recordSkillTrace("explain", "second", 300, false);
+    expect(await skillsCommand.execute("info explain", context)).toHaveProperty(
+      "text", expect.stringContaining("Usage: 2 runs · 200 avg tokens · 0% success\nPath:"),
+    );
+    await recordSkillTrace("explain", "third", 200);
+    await recordSkillTrace("explain", "fourth", 200);
+    expect(await skillsCommand.execute("info explain", context)).toHaveProperty(
+      "text", expect.stringContaining("Usage: 4 runs · 200 avg tokens · 50% success\nPath:"),
+    );
   });
 
   it("still shows an explicitly enabled bundled skill", async () => {
