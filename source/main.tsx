@@ -161,13 +161,33 @@ export function parseArgs(argv: string[]) {
     } else if (arg === "--version" || arg === "-v") {
       flags.version = true;
     } else if (arg === "--provider" || arg === "-p") {
-      flags.provider = argv[++i] ?? "";
+      const nextArg = argv[i + 1];
+      if (!nextArg || nextArg.startsWith("-")) {
+        process.stderr.write(`Error: ${arg} requires a provider name.\n`);
+        process.exit(1);
+      }
+      flags.provider = argv[++i]!;
     } else if (arg === "--model" || arg === "-m") {
-      flags.model = argv[++i] ?? "";
+      const nextArg = argv[i + 1];
+      if (!nextArg || nextArg.startsWith("-")) {
+        process.stderr.write(`Error: ${arg} requires a model name.\n`);
+        process.exit(1);
+      }
+      flags.model = argv[++i]!;
     } else if (arg.startsWith("--provider=")) {
-      flags.provider = arg.slice("--provider=".length);
+      const val = arg.slice("--provider=".length);
+      if (!val.trim()) {
+        process.stderr.write("Error: --provider requires a provider name.\n");
+        process.exit(1);
+      }
+      flags.provider = val;
     } else if (arg.startsWith("--model=")) {
-      flags.model = arg.slice("--model=".length);
+      const val = arg.slice("--model=".length);
+      if (!val.trim()) {
+        process.stderr.write("Error: --model requires a model name.\n");
+        process.exit(1);
+      }
+      flags.model = val;
     } else if (arg === "--effort") {
       flags.effort = argv[++i] ?? "";
     } else if (arg.startsWith("--effort=")) {
