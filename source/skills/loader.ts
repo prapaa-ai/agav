@@ -160,7 +160,13 @@ async function scanDir(dir: string, origin: SkillDefinition["origin"]): Promise<
           filePath: skillPath,
           origin,
         });
-      } catch {}
+      } catch (error) {
+        const code = (error as { code?: unknown } | null)?.code;
+        if (code === "ENOENT") continue;
+        const message = error instanceof Error ? error.message : String(error);
+        const detail = message.split("\n")[0] ?? "";
+        console.error(`[skills] skipping ${skillPath}: ${detail}`);
+      }
     }
   } catch {}
   return skills;
