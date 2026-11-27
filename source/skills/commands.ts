@@ -179,7 +179,10 @@ export const skillsCommand: SlashCommand = {
         if (extra.length > 0) lines.push(`Metadata: ${extra.join(", ")}`);
       }
       lines.push(
-        `Usage: ${traces.length} runs · ${avgTokens} avg tokens · ${successRate}% success`,
+        // With no recorded runs there is no success rate: "0% success" would read as runs that all failed.
+        traces.length === 0
+          ? "Usage: No recorded runs"
+          : `Usage: ${traces.length} runs · ${avgTokens} avg tokens · ${successRate}% success`,
         `Path: ${skill.filePath}`,
       );
       return { type: "message", text: lines.join("\n") };
