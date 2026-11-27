@@ -10,6 +10,16 @@ import { validateSkill } from "./validate.js";
 import { slugify } from "./skill-utils.js";
 import type { SkillFrontmatter, SkillDefinition } from "./types.js";
 
+function isYAMLError(err: unknown): err is Error & { message: string } {
+  return (
+    err instanceof Error &&
+    (err.constructor.name === "YAMLException" ||
+      err.constructor.name === "YAMLError" ||
+      err.constructor.name === "YAMLParseError" ||
+      err.message.includes("YAML"))
+  );
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let cachedSkills: SkillDefinition[] | null = null;
@@ -160,7 +170,13 @@ async function scanDir(dir: string, origin: SkillDefinition["origin"]): Promise<
           filePath: skillPath,
           origin,
         });
-      } catch {}
+      } catch (err) {
+        if (isYAMLError(err)) {
+          console.error(`[skills] skipping ${skillPath}: malformed YAML — ${err.message}`);
+        } else if (err instanceof Error) {
+          console.error(`[skills] skipping ${skillPath}: ${err.message}`);
+        }
+      }
     }
   } catch {}
   return skills;
