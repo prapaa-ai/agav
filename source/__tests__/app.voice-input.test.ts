@@ -485,4 +485,20 @@ describe("offline /voice command", () => {
       expect(ui.output()).not.toContain("Queued 1");
     } finally { ui.instance.unmount(); }
   });
+  it("stops dictation for editing on Alt+S while recording without submitting", async () => {
+    const session = recognition(); const ui = await mount();
+    try {
+      await ui.key("/voice"); await ui.key("\r");
+      await vi.waitFor(() => expect(boundary.start).toHaveBeenCalledTimes(1));
+      expect(ui.output()).toContain("Alt+S Stop");
+      session.partial("draft text"); await ui.settle();
+      await ui.key("\x1bs"); // Alt+S
+      expect(session.stop).toHaveBeenCalledTimes(1);
+      session.accept("draft text final"); await ui.settle();
+      expect(boundary.submit).not.toHaveBeenCalled();
+      expect(boundary.prompt.value).toBe("draft text final ");
+      await ui.key("!"); await ui.key("\r");
+      expect(boundary.submit).toHaveBeenCalledWith("draft text final !", [], undefined, undefined, undefined);
+    } finally { ui.instance.unmount(); }
+  });
 });

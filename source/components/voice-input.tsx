@@ -29,7 +29,7 @@ export default function VoiceInputPanel({ phase, elapsedSeconds, level, partialT
       <Text dimColor>{tiny ? "Audio stays local" : "Audio stays on this machine"}</Text>}
     {partialText && <Text>{wrapToWidth(partialText, Math.max(1, columns)).slice(-3).join("\n")}</Text>}
     <Box>
-      {phase === "recording" && <Text color="cyan" onClick={onStop}>{tiny ? "Stop" : "click Stop to edit"}</Text>}
+      {phase === "recording" && <Text color="cyan" onClick={onStop}>{tiny ? "Stop" : "Alt+S Stop to edit"}</Text>}
       {phase === "recording" && <Text>{tiny ? " " : " · "}</Text>}
       {phase !== "cancelling" && <Text onClick={onCancel}>{tiny ? "Esc back" : "Esc cancel / Cancel"}</Text>}
       {phase === "cancelling" && <Text dimColor>{narrow ? "Releasing mic..." : "Releasing microphone and local processes..."}</Text>}

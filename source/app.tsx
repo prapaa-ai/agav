@@ -1017,6 +1017,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         return;
       }
       if (key.escape || (key.ctrl && char === "c")) cancelVoice();
+      else if (voice.phase === "recording" && key.meta && !key.ctrl && !key.super && !key.hyper && char.toLowerCase() === "s") {
+        stopVoiceForEditing();
+      }
       else if (key.return && !key.shift && !key.ctrl && !key.meta && !key.super && !key.hyper) {
         if (voice.phase === "recording" || voice.phase === "transcribing") {
           voiceRecordingEnded.current = true;
