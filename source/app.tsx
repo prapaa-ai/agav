@@ -2191,9 +2191,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             onSubmit={handleSubmit}
             onPaste={handlePaste}
             canExpandPaste={lastPasteRef.current !== null}
-            onRemoveAttachment={() => {
+            onRemoveAttachment={(id?: number) => {
               composerEditVersionRef.current++;
-              setAttachments((prev) => prev.slice(0, -1));
+              setAttachments((prev) => (id !== undefined ? prev.filter((a) => a.id !== id) : prev.slice(0, -1)));
               lastPasteRef.current = null;
             }}
             onClearAttachments={() => {
