@@ -8,7 +8,8 @@ import { consentEnvNames, parseEnvSelection, promptWorkflowConsent, type Consent
 import { buildConsent } from "../workflows/grant.js";
 import { createRun } from "../workflows/runtime.js";
 import { listRuns } from "../workflows/background.js";
-import { WorkflowStore } from "../workflows/store.js";
+import * as background from "../workflows/background.js";
+import { jobRequestId, WorkflowStore } from "../workflows/store.js";
 import { def, FakeCoordinator, registry, tempStore, testConfig } from "./helpers/workflow-fixtures.js";
 
 let store: WorkflowStore, cleanup: () => Promise<void>;
@@ -86,6 +87,127 @@ describe("agav workflows run", () => {
       expect(stdout.text()).toContain(`agav workflows cancel ${id!.slice(0, 8)}`);
     } finally { if (priorBbb === undefined) delete process.env.BBB; else process.env.BBB = priorBbb; await rm(dir, { recursive: true, force: true }); }
   });
+});
+
+describe("agav workflows run --json", () => {
+  let dir: string, file: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "agav-wf-json-"));
+    file = join(dir, "wf.json");
+    await writeFile(file, JSON.stringify(definition));
+  });
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
+
+  it.each([false, true])("keeps stdout parseable with stdout.isTTY=%s", async isTTY => {
+    const stdin = Object.assign(new PassThrough(), { isTTY: true });
+    const stdout = sink(isTTY), stderr = sink(true);
+    const coordinator = new FakeCoordinator();
+    stdin.end("y\n");
+    const code = await runWorkflowsCli(["run", file, "--json"], {
+      config: testConfig(), store, stdin, stdout, stderr, env: {},
+      getCoordinator: async () => coordinator, cliPath: "/x/cli.js",
+    });
+    expect(code).toBe(0);
+    const [id] = await store.listIds();
+    expect(JSON.parse(stdout.text())).toMatchObject({ status: "started", run: { id } });
+    expect(stderr.text()).toContain("$ echo hi");
+    expect(stderr.text()).toContain("Approve this background run? [y/N]: ");
+    expect(coordinator.starts).toHaveLength(1);
+  });
+
+  it.each([
+    [true, "passed", 0], [true, "failed", 1], [true, "waiting_approval", 0], [true, "interrupted", 1],
+    [false, "passed", 0], [false, "failed", 1], [false, "waiting_approval", 0], [false, "interrupted", 1],
+  ] as const)("preserves --wait output and exit codes (json=%s, status=%s)", async (asJson, status, exitCode) => {
+    const stdin = Object.assign(new PassThrough(), { isTTY: true });
+    const stdout = sink(!asJson), stderr = sink(true);
+    stdin.end("y\n");
+    vi.spyOn(background, "reconcileQuietly").mockImplementation(async (_store, id) => {
+      await store.lock(id!, async () => {
+        const run = await store.read(id!, registry);
+        run.status = status;
+        run.nodes[0]!.status = status === "passed" ? "passed" : "failed";
+        run.nodes[0]!.job = { requestId: jobRequestId(run.id, "a") };
+        run.nodes[0]!.error = "test progress detail";
+        await store.save(run);
+      });
+    });
+    const code = await runWorkflowsCli(["run", file, "--wait", ...(asJson ? ["--json"] : [])], {
+      config: testConfig(), store, stdin, stdout, stderr, env: {}, pollIntervalMs: 1,
+      getCoordinator: async () => new FakeCoordinator(), cliPath: "/x/cli.js",
+    });
+    expect(code).toBe(exitCode);
+    const [id] = await store.listIds();
+    if (asJson) {
+      expect(JSON.parse(stdout.text())).toMatchObject({ status: "started", run: { id, status: "queued" } });
+    } else {
+      expect(stdout.text()).toContain("Approve this background run? [y/N]: ");
+      expect(stdout.text()).toContain(`Workflow run ${id} (test) started`);
+      expect(stderr.text()).toBe("");
+    }
+    const progress = asJson ? stderr.text() : stdout.text();
+    expect(progress).toContain("test progress detail");
+    expect(progress).toContain(status);
+    if (status === "waiting_approval") expect(progress).toContain("Waiting for approval:");
+    if (status === "interrupted") expect(progress).toContain("Run is interrupted and was not relaunched:");
+  });
+
+  it("sends --wait detach guidance to stderr", async () => {
+    const stdin = Object.assign(new PassThrough(), { isTTY: true });
+    const stdout = sink(false), stderr = sink(true);
+    stdin.end("y\n");
+    const listenerCount = process.listenerCount("SIGINT");
+    let detachTimer: ReturnType<typeof setTimeout> | undefined;
+    stdout.once("data", () => {
+      detachTimer = setTimeout(() => { process.emit("SIGINT"); }, 0);
+    });
+    try {
+      const code = await runWorkflowsCli(["run", file, "--json", "--wait"], {
+        config: testConfig(), store, stdin, stdout, stderr, env: {}, pollIntervalMs: 100,
+        getCoordinator: async () => new FakeCoordinator(), cliPath: "/x/cli.js",
+      });
+      expect(code).toBe(0);
+      const [id] = await store.listIds();
+      expect(JSON.parse(stdout.text())).toMatchObject({ status: "started", run: { id } });
+      expect(stderr.text()).toContain(`Detached; workflow run ${id} continues in the background.`);
+      expect(process.listenerCount("SIGINT")).toBe(listenerCount);
+    } finally { clearTimeout(detachTimer); }
+  });
+
+  it.each(["n\n", "", "yes please\n"])("creates no run without explicit approval (%j)", async answer => {
+    const stdin = Object.assign(new PassThrough(), { isTTY: true });
+    const stdout = sink(true), stderr = sink(true);
+    const coordinator = new FakeCoordinator();
+    stdin.end(answer);
+    const code = await runWorkflowsCli(["run", file, "--json"], {
+      config: testConfig(), store, stdin, stdout, stderr, env: {},
+      getCoordinator: async () => coordinator, cliPath: "/x/cli.js",
+    });
+    expect(code).toBe(1);
+    expect(stdout.text()).toBe("");
+    expect(stderr.text()).toContain("Workflow run not approved.\n");
+    expect(await store.listIds()).toEqual([]);
+    expect(coordinator.starts).toHaveLength(0);
+  });
+
+  it.each([[false, true], [true, false], [false, false]])(
+    "requires interactive stdin=%s and stderr=%s even with auto-accept",
+    async (inputTTY, promptTTY) => {
+      const stdin = Object.assign(new PassThrough(), { isTTY: inputTTY });
+      const stdout = sink(true), stderr = sink(promptTTY);
+      const coordinator = new FakeCoordinator();
+      stdin.end("y\n");
+      const code = await runWorkflowsCli(["run", file, "--json"], {
+        config: testConfig(), store, stdin, stdout, stderr, env: {},
+        getCoordinator: async () => coordinator, cliPath: "/x/cli.js",
+      });
+      expect(code).toBe(1);
+      expect(stdout.text()).toBe("");
+      expect(stderr.text()).toContain("workflow run requires interactive consent");
+      expect(await store.listIds()).toEqual([]);
+      expect(coordinator.starts).toHaveLength(0);
+    },
+  );
 });
 
 describe("promptWorkflowConsent", () => {
