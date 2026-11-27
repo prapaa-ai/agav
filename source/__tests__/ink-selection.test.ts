@@ -56,6 +56,19 @@ describe("selectWordAt", () => {
 		expect(selectWordAt(lines, 100, 0)).toBeNull();
 		expect(selectWordAt(lines, 0, 5)).toBeNull();
 	});
+
+	it("selects words accurately after wide characters and emoji using display columns", () => {
+		const wideLines = ["界 hello", "🙂 world"];
+		// "界" takes columns 0..1, space is 2, "hello" is 3..7.
+		const wideRange = selectWordAt(wideLines, 3, 0);
+		expect(wideRange).toEqual({startX: 3, startY: 0, endX: 8, endY: 0});
+		expect(getSelectedText(wideLines, wideRange!)).toBe("hello");
+
+		// "🙂" takes columns 0..1, space is 2, "world" is 3..7.
+		const emojiRange = selectWordAt(wideLines, 4, 1);
+		expect(emojiRange).toEqual({startX: 3, startY: 1, endX: 8, endY: 1});
+		expect(getSelectedText(wideLines, emojiRange!)).toBe("world");
+	});
 });
 
 describe("selectLineAt", () => {
@@ -70,6 +83,13 @@ describe("selectLineAt", () => {
 	it("handles out-of-bounds rows gracefully", () => {
 		const range = selectLineAt(lines, 99);
 		expect(range).toEqual({startX: 0, startY: 99, endX: 0, endY: 99});
+	});
+
+	it("selects the full line when it contains wide characters", () => {
+		const wideLines = ["界 hello"];
+		const range = selectLineAt(wideLines, 0);
+		expect(range).toEqual({startX: 0, startY: 0, endX: 8, endY: 0});
+		expect(getSelectedText(wideLines, range)).toBe("界 hello");
 	});
 });
 

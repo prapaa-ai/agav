@@ -40,11 +40,30 @@ export const normalizeSelection = (a: Point, b: Point): SelectionRange => {
 const isWordChar = (ch: string | undefined): boolean =>
 	ch !== undefined && /\w/.test(ch);
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, {granularity: "grapheme"});
+
+type GraphemeColumn = {
+	text: string;
+	startCol: number;
+	endCol: number;
+};
+
+const getGraphemeColumns = (line: string): GraphemeColumn[] => {
+	const result: GraphemeColumn[] = [];
+	let col = 0;
+	for (const {segment} of graphemeSegmenter.segment(line)) {
+		const width = stringWidth(segment);
+		result.push({text: segment, startCol: col, endCol: col + width});
+		col += width;
+	}
+	return result;
+};
+
 /**
- * Expand to the word boundaries around (x, y) using \w-ish boundaries.
+ * Expand to the word boundaries around display column (x, y) using \w-ish boundaries.
  * Returns null if the coordinate is out of bounds or not on a word character.
- * The returned range is [startX, endX) — endX is exclusive (one past the last
- * word character), matching `getSelectedText`'s slicing.
+ * The returned range is [startX, endX) in terminal display columns, matching
+ * `getSelectedText`'s slicing.
  */
 export const selectWordAt = (
 	lines: string[],
@@ -56,36 +75,44 @@ export const selectWordAt = (
 	}
 
 	const line = lines[y];
-	if (line === undefined || x < 0 || x >= line.length) {
+	if (line === undefined || x < 0) {
 		return null;
 	}
 
-	if (!isWordChar(line[x])) {
+	const graphemes = getGraphemeColumns(line);
+	const idx = graphemes.findIndex((g) => x >= g.startCol && x < g.endCol);
+	if (idx < 0 || !isWordChar(graphemes[idx]!.text)) {
 		return null;
 	}
 
-	let start = x;
-	while (start > 0 && isWordChar(line[start - 1])) {
-		start--;
+	let startIdx = idx;
+	while (startIdx > 0 && isWordChar(graphemes[startIdx - 1]!.text)) {
+		startIdx--;
 	}
 
-	let end = x;
-	while (end < line.length && isWordChar(line[end])) {
-		end++;
+	let endIdx = idx;
+	while (endIdx + 1 < graphemes.length && isWordChar(graphemes[endIdx + 1]!.text)) {
+		endIdx++;
 	}
 
-	return {startX: start, startY: y, endX: end, endY: y};
+	return {
+		startX: graphemes[startIdx]!.startCol,
+		startY: y,
+		endX: graphemes[endIdx]!.endCol,
+		endY: y,
+	};
 };
 
 /**
- * Select the whole line `y`. The range spans from column 0 to the line length
- * (exclusive end). Out-of-bounds `y` yields an empty range on that row.
+ * Select the whole line `y`. The range spans from display column 0 to the
+ * line's terminal display width (exclusive end). Out-of-bounds `y` yields an
+ * empty range on that row.
  */
 export const selectLineAt = (lines: string[], y: number): SelectionRange => {
 	const line = y >= 0 && y < lines.length ? lines[y] : undefined;
-	const length = line?.length ?? 0;
+	const width = line !== undefined ? stringWidth(line) : 0;
 
-	return {startX: 0, startY: y, endX: length, endY: y};
+	return {startX: 0, startY: y, endX: width, endY: y};
 };
 
 /** Build a normalized selection from a drag: `anchor` down to `to`. */
