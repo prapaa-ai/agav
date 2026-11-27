@@ -56,7 +56,7 @@ describe("commands/steer", () => {
     } finally { child.dispose(); }
   });
 
-  it.each(["list", "", "clear", "remove 1"])("reports management unsupported for worker/inspector: %s", async (args) => {
+  it.each(["list", "", "clear", "remove 1", "remove"])("reports management unsupported for worker/inspector: %s", async (args) => {
     const child = createSteerQueue("child");
     try {
       await steerCommand.execute("main directive", {} as CommandContext);
@@ -130,6 +130,19 @@ describe("commands/steer", () => {
       text: "Invalid number. Use 1-2.",
     });
     expect(getActiveSteers()).toEqual(["one", "two"]);
+  });
+
+  it.each(["remove", "  remove  ", "remove\t", "remove\t1.5"])("rejects %j without adding or queueing a directive", async (args) => {
+    await steerCommand.execute("one", {} as any);
+    await steerCommand.execute("two", {} as any);
+    drainSteers();
+
+    await expect(steerCommand.execute(args, {} as any)).resolves.toEqual({
+      type: "message",
+      text: "Invalid number. Use 1-2.",
+    });
+    expect(getActiveSteers()).toEqual(["one", "two"]);
+    expect(drainSteers()).toEqual([]);
   });
 
   it("removes a directive by a plain in-range index", async () => {

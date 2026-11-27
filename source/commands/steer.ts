@@ -75,7 +75,8 @@ export const steerCommand: SlashCommand = {
     const trimmed = args.trim();
     const targetId = contextArg?.steerTargetId;
     const workerAttached = contextArg?.isWorkerAttached?.();
-    const management = !trimmed || trimmed === "list" || trimmed === "clear" || trimmed.startsWith("remove ");
+    const isRemove = /^remove(?:\s|$)/.test(trimmed);
+    const management = !trimmed || trimmed === "list" || trimmed === "clear" || isRemove;
     if (management && (targetId !== undefined || workerAttached)) {
       return {
         type: "message",
@@ -100,8 +101,8 @@ export const steerCommand: SlashCommand = {
       return { type: "message", text: count > 0 ? `Cleared ${count} steer(s).` : "No steers to clear." };
     }
 
-    if (trimmed.startsWith("remove ")) {
-      const arg = trimmed.slice(7).trim();
+    if (isRemove) {
+      const arg = trimmed.slice(6).trim();
       const num = /^\d+$/.test(arg) ? Number(arg) : NaN;
       if (isNaN(num) || num < 1 || num > activeSteers.length) {
         return { type: "message", text: `Invalid number. Use 1-${activeSteers.length}.` };
