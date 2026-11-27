@@ -175,17 +175,18 @@ function parseJsTest(output: string, framework: string): TestResults {
   return { framework, passed, failed, errors: 0, failures };
 }
 
-function parseGoTest(output: string): TestResults {
+export function parseGoTest(output: string): TestResults {
   const failures: TestFailure[] = [];
   let passed = 0;
   let failed = 0;
 
   for (const line of output.split("\n")) {
     if (line.startsWith("--- PASS")) passed++;
-    if (line.startsWith("--- FAIL")) {
-      failed++;
-      const nameMatch = line.match(/--- FAIL:\s+(\S+)/);
-      const testName = nameMatch?.[1] ?? "unknown";
+    if (line.startsWith("--- FAIL")) failed++;
+
+    const nameMatch = line.match(/^\s*--- FAIL:\s+(\S+)/);
+    if (nameMatch) {
+      const testName = nameMatch[1] ?? "unknown";
       const idx = output.indexOf(line);
       const context = output.slice(Math.max(0, idx - 200), idx).trim();
       const errLine = context.split("\n").reverse().find((l) => l.trim().length > 0);
