@@ -73,6 +73,14 @@ interface InputStage { kind: "inputs"; definition: WorkflowDefinition; values: R
 interface ConsentStage { kind: "consent"; prepared: PreparedLaunch }
 type Stage = InputStage | ConsentStage;
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function dropLastGrapheme(text: string): string {
+  const segments = [...graphemeSegmenter.segment(text)];
+  if (segments.length === 0) return "";
+  return text.slice(0, segments[segments.length - 1]!.index);
+}
+
 function InputForm({ stage, onChange, onSubmit, onCancel }: {
   stage: InputStage;
   onChange(stage: InputStage): void;
@@ -88,7 +96,7 @@ function InputForm({ stage, onChange, onSubmit, onCancel }: {
     if (key.return) { onSubmit(stage); return; }
     if (key.tab || key.downArrow) { onChange({ ...stage, field: (stage.field + 1) % fields.length }); return; }
     if (key.upArrow) { onChange({ ...stage, field: (stage.field + fields.length - 1) % fields.length }); return; }
-    if ((key.backspace || key.delete) && field) onChange({ ...stage, error: undefined, values: { ...stage.values, [field.name]: (stage.values[field.name] ?? "").slice(0, -1) } });
+    if ((key.backspace || key.delete) && field) onChange({ ...stage, error: undefined, values: { ...stage.values, [field.name]: dropLastGrapheme(stage.values[field.name] ?? "") } });
     else if (input && !key.ctrl && !key.meta) append(input);
   });
   return <Box flexDirection="column">
