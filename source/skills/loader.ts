@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parse as parseYAML } from "yaml";
+import { parse as parseYAML, YAMLError } from "yaml";
 import { getAgavDir } from "../config/config.js";
 import { BUNDLED_SKILL_FILES } from "./bundled-manifest.js";
 import { loadSkillRegistry, isSkillDisabled } from "./skill-registry.js";
@@ -160,7 +160,11 @@ async function scanDir(dir: string, origin: SkillDefinition["origin"]): Promise<
           filePath: skillPath,
           origin,
         });
-      } catch {}
+      } catch (err) {
+        if (err instanceof YAMLError) {
+          console.error(`[skills] skipping ${skillPath}: invalid YAML frontmatter`);
+        }
+      }
     }
   } catch {}
   return skills;
