@@ -12,6 +12,7 @@ interface OpenRouterModel {
 export class OpenRouterProvider extends OpenAIProvider {
   private readonly apiKey: string;
   private readonly contextWindows = new Map<string, { value: number | undefined; expiresAt: number }>();
+  private inFlightCatalogLookup: Promise<boolean> | null = null;
 
   constructor(apiKey: string) {
     super(apiKey, "chat", {
@@ -34,29 +35,42 @@ export class OpenRouterProvider extends OpenAIProvider {
     if (cached && cached.expiresAt > Date.now()) return cached.value;
     this.contextWindows.delete(model);
 
+    if (!this.inFlightCatalogLookup) {
+      this.inFlightCatalogLookup = this.fetchCatalog().finally(() => {
+        this.inFlightCatalogLookup = null;
+      });
+    }
+
+    const fetched = await this.inFlightCatalogLookup;
+    if (!fetched) return undefined;
+
+    if (!this.contextWindows.has(model)) {
+      // Retry absent models after the TTL in case OpenRouter's catalog changes.
+      // A cache entry here — as opposed to no entry at all — is what lets
+      // isContextWindowConfirmedMissing tell "the catalog was fetched and
+      // genuinely does not list this model" (e.g. a stealth model) apart from
+      // a transient fetch failure below, which leaves no entry behind.
+      this.contextWindows.set(model, { value: undefined, expiresAt: Date.now() + CONTEXT_CACHE_TTL_MS });
+    }
+    return this.contextWindows.get(model)?.value;
+  }
+
+  private async fetchCatalog(): Promise<boolean> {
     try {
       const response = await fetch(`${OPENROUTER_BASE_URL}/models`, {
         headers: { Authorization: `Bearer ${this.apiKey}` },
         signal: AbortSignal.timeout(5000),
       });
-      if (!response.ok) return undefined;
+      if (!response.ok) return false;
 
       const body = await response.json() as { data?: OpenRouterModel[] };
       const expiresAt = Date.now() + CONTEXT_CACHE_TTL_MS;
       for (const item of body.data ?? []) {
         this.contextWindows.set(item.id, { value: item.context_length, expiresAt });
       }
-      if (!this.contextWindows.has(model)) {
-        // Retry absent models after the TTL in case OpenRouter's catalog changes.
-        // A cache entry here — as opposed to no entry at all — is what lets
-        // isContextWindowConfirmedMissing tell "the catalog was fetched and
-        // genuinely does not list this model" (e.g. a stealth model) apart from
-        // a transient fetch failure below, which leaves no entry behind.
-        this.contextWindows.set(model, { value: undefined, expiresAt });
-      }
-      return this.contextWindows.get(model)?.value;
+      return true;
     } catch {
-      return undefined;
+      return false;
     }
   }
 
