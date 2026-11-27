@@ -3,7 +3,7 @@ import type { Plan } from "../agent/planner.js";
 import { Box, Text } from "../ink/index.js";
 import { renderMarkdown } from "./markdown-text.js";
 import ClickableLine from "./clickable-line.js";
-import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
+import { getMcpServerName, getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
 import { getTheme } from "../config/theme.js";
 import type { DiffLine } from "../utils/diff.js";
 import type { InvocationReason } from "../providers/types.js";
@@ -197,6 +197,7 @@ const DiffView = React.memo(function DiffView({ diffLines }: { diffLines: DiffLi
 /** Renders a single summarized tool result entry. */
 const ToolResultLine = React.memo(function ToolResultLine({ message }: { message: DisplayMessage }) {
   const label = message.toolDisplayName ?? (message.toolName ? getToolLabel(message.toolName) : "Tool");
+  const mcpServer = message.toolName ? getMcpServerName(message.toolName) : undefined;
   const summary = message.toolName && message.toolInput ? getToolSummary(message.toolName, message.toolInput) : "";
   const displayContent = terminalRelativePaths(message.content, toolPathValues(message.toolInput));
 
@@ -237,6 +238,7 @@ const ToolResultLine = React.memo(function ToolResultLine({ message }: { message
         <Text>
           <Text dimColor>{"  └─ "}</Text>
           <Text bold color="yellow">{label}</Text>
+          {mcpServer ? <Text dimColor>{` (MCP: ${mcpServer})`}</Text> : null}
           {summary ? <Text dimColor> {summary}</Text> : null}
           <Text dimColor> {displayContent}</Text>
         </Text>
@@ -259,6 +261,7 @@ const ToolResultLine = React.memo(function ToolResultLine({ message }: { message
       <Text>
         <Text dimColor>{"  └─ "}</Text>
         <Text bold={!muted} color={message.isError ? "red" : muted ? undefined : "yellow"} dimColor={muted}>{label}</Text>
+        {mcpServer ? <Text dimColor>{` (MCP: ${mcpServer})`}</Text> : null}
         {summary ? <Text dimColor> {summary}</Text> : null}
         <Text dimColor>{suffix}</Text>
       </Text>
