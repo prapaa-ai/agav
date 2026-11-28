@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
-import { buildSandboxedCommand, isSandboxRequired, requireSandbox } from "../utils/sandbox.js";
+import { buildSandboxedCommand, executeBufferedCommand, isSandboxRequired, requireSandbox } from "../utils/sandbox.js";
 
 interface TestFailure {
   test: string;
@@ -268,6 +268,9 @@ function formatResults(results: TestResults): string {
   return lines.join("\n");
 }
 
+const DEFAULT_TIMEOUT_MS = 120_000;
+const MAX_TIMEOUT_MS = 600_000;
+
 export const testRunnerTool: ToolDefinition = {
   schema: {
     name: "run_tests",
@@ -284,6 +287,12 @@ export const testRunnerTool: ToolDefinition = {
           type: "string",
           description: "Test file or directory to run (e.g. 'tests/test_auth.py', 'src/__tests__'). Defaults to running all tests.",
         },
+        timeout_ms: {
+          type: "integer",
+          minimum: 1,
+          maximum: MAX_TIMEOUT_MS,
+          description: "Test process timeout in milliseconds (default: 120000, maximum: 600000).",
+        },
         framework: {
           type: "string",
           enum: ["pytest", "vitest", "jest", "go", "cargo"],
@@ -294,6 +303,12 @@ export const testRunnerTool: ToolDefinition = {
   },
 
   async execute(input, context): Promise<ToolResult> {
+    const requestedTimeout = input.timeout_ms;
+    if (requestedTimeout !== undefined && (typeof requestedTimeout !== "number" ||
+        !Number.isSafeInteger(requestedTimeout) || requestedTimeout < 1 || requestedTimeout > MAX_TIMEOUT_MS)) {
+      return { output: "Invalid timeout_ms: expected an integer from 1 to 600000.", isError: true };
+    }
+    const timeout = requestedTimeout ?? DEFAULT_TIMEOUT_MS;
     const testPath = input.path ? String(input.path) : undefined;
     const cwd = process.cwd();
 
@@ -326,32 +341,40 @@ export const testRunnerTool: ToolDefinition = {
     }
 
     // Wrap the argv under the detected sandbox. Missing inner executables have
-    // wrapper diagnostics rather than execFile's ENOENT; classify those below.
+    // wrapper diagnostics rather than a spawn ENOENT; classify those below.
     let sandboxed: ReturnType<typeof buildSandboxedCommand>;
     try { sandboxed = buildSandboxedCommand({ cmd, args, cwd }); }
     catch (cause) {
       return { output: `Tests refused: ${cause instanceof Error ? cause.message : String(cause)}`, isError: true };
     }
 
-    const output = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; diagnostic?: string; errorCode?: string }>((resolve) => {
+    const output = await new Promise<{ stdout: string; stderr: string; exitCode: number | null; diagnostic?: string; errorCode?: string; timedOut?: boolean }>((resolve) => {
       try {
-        execFile(sandboxed.file, sandboxed.args, { timeout: 120_000, maxBuffer: 1024 * 1024, cwd, env: sandboxed.env, signal: context?.signal }, (err, stdout, stderr) => {
+        executeBufferedCommand(sandboxed.file, sandboxed.args, { timeout, maxBuffer: 1024 * 1024, cwd, env: sandboxed.env }, (err, stdout, stderr, outcome) => {
+          const cancelled = context?.signal?.aborted;
+          const { timedOut } = outcome;
+          if (cancelled && !timedOut) err ??= new Error("Command cancelled.");
+          let cleanupDiagnostic: string | undefined;
           try {
-            if (!err && !context?.signal?.aborted) sandboxed.publish?.();
+            if (!err && !timedOut && !cancelled && outcome.exitCode === 0) sandboxed.publish?.();
           } catch (cause) {
-            err = Object.assign(cause instanceof Error ? cause : new Error(String(cause)), { cmd });
+            err = cause instanceof Error ? cause : new Error(String(cause));
           } finally {
             try { sandboxed.cleanup(); }
-            catch (cause) { err ??= Object.assign(cause instanceof Error ? cause : new Error(String(cause)), { cmd }); }
+            catch (cause) {
+              cleanupDiagnostic = `Cleanup failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+            }
           }
+          const postRunFailure = outcome.exitCode === 0 && (err || cleanupDiagnostic);
           resolve({
             stdout: stdout ?? "",
             stderr: stderr ?? "",
-            exitCode: !err ? 0 : typeof err.code === "number" && !err.signal && !err.killed ? err.code : null,
-            diagnostic: err?.message,
-            errorCode: typeof err?.code === "string" ? err.code : undefined,
+            exitCode: timedOut || cancelled || postRunFailure ? null : outcome.exitCode,
+            diagnostic: [timedOut ? undefined : err?.message, cleanupDiagnostic].filter(Boolean).join("; ") || undefined,
+            timedOut,
+            errorCode: timedOut || cancelled ? undefined : (err as NodeJS.ErrnoException | null)?.code,
           });
-        });
+        }, context?.signal);
       } catch (err) {
         let diagnostic = err instanceof Error ? err.message : String(err);
         try { sandboxed.cleanup(); }
@@ -362,7 +385,7 @@ export const testRunnerTool: ToolDefinition = {
 
     const combined = output.stdout + "\n" + output.stderr;
     const results = parseOutput(framework, combined.replace(/\u001b\[[0-9;]*m/g, ""));
-    const isError = output.exitCode !== 0 || !!output.diagnostic || results.failed > 0 || results.errors > 0 || results.failures.length > 0;
+    const isError = output.timedOut === true || output.exitCode !== 0 || !!output.diagnostic || results.failed > 0 || results.errors > 0 || results.failures.length > 0;
     const noTestEvidence = results.passed === 0 && results.failed === 0 && results.errors === 0 && results.failures.length === 0;
     // Match only the selected wrapper's complete execvp diagnostic for this
     // runner, with no workload output. A numeric exit alone could be a real
@@ -386,7 +409,7 @@ export const testRunnerTool: ToolDefinition = {
     return {
       output: formatted + (runnerUnavailable
         ? "\n\nTest runner could not start. Use an available relevant check or report the blocker and what remains unverified. Do not modify source code merely to resolve a missing runner."
-        : "") + (output.diagnostic ? `\n\nProcess error: ${output.diagnostic}` : ""),
+        : "") + (output.timedOut ? `\n\nTest process timed out after ${timeout} ms.` : "") + (output.diagnostic ? `\n\nProcess error: ${output.diagnostic}` : ""),
       isError,
       verification: {
         status,

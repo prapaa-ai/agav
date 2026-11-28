@@ -12,7 +12,7 @@ Agents are named, purpose-built sub-agents that extend Agav with domain-specific
 
 When Agav starts, it loads all enabled agents and registers each one as a callable tool. The LLM reads a compact catalog (one line per agent, capped at ~500 tokens total) and chooses the right agent for the task.
 
-An agent invocation runs a nested agent loop with the agent's tools, system prompt, and credentials — fully isolated from the parent session. Results stream back to you normally.
+An agent invocation runs a nested agent loop with the agent's tools, system prompt, and credentials, with a separate conversation and tool registry. Results stream back to you normally.
 
 ## Loading order
 
@@ -67,28 +67,23 @@ When you delete a user-created agent, Agav automatically saves it as a **templat
 
 ## Per-agent MCP servers
 
-Agents can declare MCP servers in their manifest. Each server entry supports an `env` field for passing environment variables (API keys, base URLs, etc.) to the server process.
+Native agents can declare **stdio** MCP servers in their manifest. The `/agents` wizard can copy command-based servers from workspace configuration. It does not import URL-only HTTP/SSE entries, and subsequent edits preserve the agent’s saved server settings rather than resyncing them. See [per-agent MCP fields](/reference/agent-manifest#per-agent-mcp-servers) for environment precedence and tool selection.
 
-Servers are started when the agent runs and stopped when it finishes — they are fully scoped to the agent's lifecycle and do not affect the parent session or other agents.
+Servers are started when the agent runs and stopped when it finishes — their tools are scoped to that invocation. The server process itself is not sandboxed by the agent-tool runner.
 
 ## Credentials
 
 Each agent declares the environment variables it needs (`required-config` in the manifest). Credentials are:
 
-- Stored encrypted in `~/.agav/agents/<name>/config.json` — never in plain text
-- Injected into `process.env` only during that agent's execution — not shared with other agents or the parent session
+- Saved encrypted by the config editor in `config.json` inside the installed agent directory. Don’t commit a project agent’s `config.json`.
+- Passed to native tools at runtime and to any stdio MCP servers declared by that agent. MCP subprocesses also inherit Agav’s launch environment.
 - Editable from the agent inspect view: `/agents → inspect → e`
 
 Agents with missing credentials show a `⚠ Needs config` indicator in the List tab. The LLM receives an error message if it tries to call an unconfigured agent.
 
 ## Tool permissions and confirmation
 
-Every tool in an agent is classified as either `safe` (read-only) or `destructive` (creates, edits, or deletes data):
-
-- **Safe tools** run without a confirmation prompt.
-- **Destructive tools** pause and display a `[Y]es / [N]o / [A]lways` confirmation before executing.
-
-The classification is declared in the agent manifest (`tool-permissions`) and is visible in the inspect view.
+The manifest can classify tools as `safe` or `destructive`. In `ask` mode, marking an agent-local or MCP tool `safe` does **not** exempt it from confirmation. Trusted built-ins retain their normal permission rules. `deny-writes` refuses tool calls that still require confirmation. See [Security](/reference/security#external-tool-trust).
 
 ## Native tool access
 
@@ -96,17 +91,7 @@ Native agents do not automatically receive Agav's built-in tools. Select the too
 
 ### Agent sandbox
 
-Non-bundled agent tools run inside an OS-level sandbox that is **stricter than the shell sandbox** used by `run_command`:
-
-| Property | Agent sandbox | Shell sandbox |
-| --- | --- | --- |
-| Default policy | Deny all, then allow specific paths | Allow all, then deny specific paths |
-| Network | Denied | Allowed |
-| Filesystem writes | Working directory and temp directory only | Allowed except system directories |
-| Credential directories | `~/.ssh`, `~/.aws`, `~/.gnupg` denied | Same |
-| Environment secrets | Stripped (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, …) | Stripped |
-
-On macOS the agent sandbox uses a deny-default Seatbelt profile; on Linux it uses Bubblewrap with `--unshare-net`. Bundled agent tools are excluded from sandboxing since they ship with Agav.
+Non-bundled agent-local JavaScript runs in a subprocess. On macOS with Seatbelt or Linux with Bubblewrap, it uses a separate profile that blocks networking. On Windows, or when neither supported agent backend is available, it runs without OS sandboxing. The Windows restricted-token and Docker shell backends do not cover these tools, and `sandboxRequired` does not make them fail closed. Built-ins such as `run_command` keep their own policy; per-agent MCP and A2A processes do not use the agent-tool profile. Install only code you trust.
 
 ## Model and effort overrides
 
@@ -130,6 +115,8 @@ Open `/agents` to manage agents interactively. The three tabs are:
 - **`[1] List`** — view, inspect, enable/disable, and remove installed agents.
 - **`[2] Marketplace`** — browse and install community agents.
 - **`[3] Create`** — create new agents with the wizard, and manage your agents and templates.
+
+The tabs and visible list rows can be selected with a left-click. In list and marketplace views, the mouse wheel moves the selection; resource-manager footer controls such as search, inspect, and refresh are clickable when enabled. Keyboard shortcuts remain available as a fallback, and clicks do not bypass confirmation prompts.
 
 ## Related
 

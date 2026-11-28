@@ -8,7 +8,7 @@ order: 5
 
 ## Local plugins
 
-Agav loads `.js` and `.mjs` files from `~/.agav/plugins` (`%USERPROFILE%\.agav\plugins` on Windows). A module can default-export one tool or export a `tools` array.
+Agav loads `.js` and `.mjs` files from `~/.agav/plugins` (`%USERPROFILE%\.agav\plugins` on Windows). A module can default-export one tool or export a `tools` array. Use `.mjs` for ES-module syntax on macOS, Linux, and Windows.
 
 ```javascript
 export default {
@@ -29,7 +29,7 @@ export default {
 }
 ```
 
-Each tool needs `schema.name`, `schema.description`, `schema.inputSchema`, and an async `execute(input)` function returning `{ output, isError }`. The `input` argument is an object with the properties defined in `inputSchema`. Broken plugin modules are skipped. Plugins execute local JavaScript with the same operating-system access as Agav, so install only code you trust and restart Agav after changes.
+Each tool needs `schema.name`, `schema.description`, `schema.inputSchema`, and an async `execute(input)` function returning `{ output, isError }`. The `input` argument is an object with the properties defined in `inputSchema`. Broken plugin modules are skipped. Modules are imported at startup, before any tool-call approval. Plugins run in-process, outside the shell sandbox, with the same access as Agav. Install only trusted code and restart Agav after changes.
 
 ## Parallel subagents
 
@@ -55,7 +55,7 @@ Tasks whose description indicates file changes attempt to use an isolated Git wo
 
 Agav records the Git commit where each worker started. Delivery uses a normal merge commit, preserving all worker commits since that base along with any final uncommitted edits. An unchanged worker is a no-op; ignored files are excluded unless the worker explicitly tracks them. Both the parent and worker histories must still descend from the recorded base.
 
-Automatic integration requires a clean parent index and tracked working files, with no merge, rebase, or cherry-pick in progress. Parent commits made while the worker runs are preserved. Agav previews the merge before modifying the parent, including directory-rename destinations, and checks local untracked and ignored files for collisions using filesystem identity. This also protects case-equivalent file and directory names on case-insensitive volumes. Automatic integration ignores `branch.<name>.mergeOptions` for its Git commands so preview and execution agree; the saved repository configuration is unchanged. Automatic integration requires Git with `merge-tree --write-tree` support; if the preview is unavailable or conflicts, work is retained for manual integration.
+Automatic integration requires a clean parent index and tracked working files, with no merge, rebase, or cherry-pick in progress. Parent commits made while the worker runs are preserved. Agav previews the merge before modifying the parent, including directory-rename destinations, and checks local untracked and ignored files for collisions using filesystem identity. This also protects case-equivalent file and directory names on case-insensitive volumes. Automatic integration ignores `branch.<name>.mergeOptions` for its Git commands so preview and execution agree; the saved repository configuration is unchanged. Install Git on the `PATH` used to launch Agav. On Windows, model-invoked Git commands in a linked worktree can fail if the restricted-token shell sandbox blocks writes to repository metadata outside that worktree. Agav’s own delivery uses Git directly, not the model’s shell tool. Automatic integration requires Git with `merge-tree --write-tree` support; if the preview is unavailable or conflicts, work is retained for manual integration.
 
 If staging, committing, or merging fails, the tool reports an error and retains the worker directory and branch. The error includes both names so you can inspect the output, resolve conflicts, or integrate it manually. For example, using the actual path and branch from the error:
 

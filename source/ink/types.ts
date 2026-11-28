@@ -29,6 +29,8 @@ type ColorName = string;
 export type MouseEventData = {
 	x: number;
 	y: number;
+	/** Zero-based terminal row, before applying the frame's scroll offset. */
+	screenY?: number;
 	button: number;
 	ctrl: boolean;
 	alt: boolean;

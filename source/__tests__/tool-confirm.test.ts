@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { createElement as h } from "react";
+import { act, createElement as h } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../ink/termio/clipboard.js", () => ({
@@ -24,12 +24,12 @@ function findNodeWithHandler(node: any, handlerName: string): any {
   return null;
 }
 
-async function mount(props: Partial<Parameters<typeof ToolConfirm>[0]> = {}) {
+async function mount(props: Partial<Parameters<typeof ToolConfirm>[0]> = {}, { columns = 80, rows = 24 } = {}) {
   const chunks: string[] = [];
   const stdout = Object.assign(new EventEmitter(), {
     isTTY: true,
-    columns: 80,
-    rows: 24,
+    columns,
+    rows,
     write: (text: string) => { chunks.push(text); return true; },
   }) as unknown as NodeJS.WriteStream;
   const stdin = Object.assign(new EventEmitter(), {
@@ -72,6 +72,112 @@ async function mount(props: Partial<Parameters<typeof ToolConfirm>[0]> = {}) {
 
   return { instance, stdin, stdout, onConfirm, getFrame };
 }
+
+describe("ToolConfirm shell commands", () => {
+  const flush = async (instance: Ink) => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await instance.waitUntilRenderFlush();
+  };
+
+  const renderAfterInput = async (instance: Ink, sendInput: () => void) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    try {
+      await act(sendInput);
+      await instance.waitUntilRenderFlush();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  };
+
+  const clickRow = async (ui: Awaited<ReturnType<typeof mount>>, text: string) => {
+    const row = ui.getFrame().split("\n").findIndex((line) => line.includes(text));
+    expect(row).toBeGreaterThanOrEqual(0);
+    await renderAfterInput(ui.instance, () => {
+      ui.stdin.emit("data", `\x1b[<0;5;${row + 1}M\x1b[<0;5;${row + 1}m`);
+    });
+  };
+
+  it.each(["run_command", "skill_shell_block"])("starts with the compact %s preview and expands on click", async (toolName) => {
+    const first = `printf '%s' '${"x".repeat(90)}'`;
+    const last = `printf '%s' '${process.cwd()}/test.txt'`;
+    const ui = await mount({ toolName, input: { command: `${first}\n${last}` } }, { columns: 160 });
+    try {
+      const compact = ui.getFrame();
+      expect(compact).toContain(`command: ${first.slice(0, 80)}...`);
+      expect(compact.split(first.slice(0, 60))).toHaveLength(2);
+      expect(compact).not.toContain(last);
+
+      await clickRow(ui, "command:");
+      expect(ui.getFrame()).toContain(first);
+      expect(ui.getFrame()).toContain(last);
+      expect(ui.getFrame()).not.toContain("...");
+
+      await clickRow(ui, "command:");
+      expect(ui.getFrame()).toBe(compact);
+      expect(ui.onConfirm).not.toHaveBeenCalled();
+    } finally { ui.instance.unmount(); }
+  });
+
+  it.each([
+    { length: 175, presses: 1 },
+    { length: 400, presses: 20 },
+  ])("scrolls to the end of a wrapped command in $presses Down Arrow presses while keeping approval visible", async ({ length, presses }) => {
+    const input = { command: `printf '%s' 'START_${"x".repeat(length)}_END'`, timeout_ms: 5000 };
+    const ui = await mount({ toolName: "run_command", input }, { columns: 40, rows: 16 });
+    const { instance, stdin, onConfirm, getFrame } = ui;
+    try {
+      expect(getFrame()).not.toContain("Scroll command");
+      await clickRow(ui, "command:");
+      expect(getFrame()).toContain("START_");
+      expect(getFrame()).not.toContain("_END");
+      expect(getFrame()).toContain("Scroll command");
+      expect(getFrame()).toContain("timeout_ms: 5000");
+      expect(getFrame()).toContain("[Y]es");
+
+      await renderAfterInput(instance, () => {
+        for (let i = 0; i < presses; i++) stdin.emit("data", "\x1b[B");
+      });
+      expect(getFrame()).toContain("_END'");
+      expect(getFrame()).not.toContain("START_");
+      expect(getFrame()).toContain("[Y]es");
+      expect(onConfirm).not.toHaveBeenCalled();
+
+      await renderAfterInput(instance, () => { stdin.emit("data", "y"); });
+      expect(onConfirm).toHaveBeenCalledExactlyOnceWith("yes");
+    } finally { instance.unmount(); }
+  });
+
+  it("reflows on a width-only resize and scrolls with the mouse wheel", async () => {
+    const input = { command: `printf '%s' 'START_${"x".repeat(196)}_END'` };
+    const ui = await mount({ toolName: "run_command", input }, { columns: 80, rows: 16 });
+    const { instance, stdin, stdout, onConfirm, getFrame } = ui;
+    try {
+      await clickRow(ui, "command:");
+      expect(getFrame()).toContain("_END'");
+      expect(getFrame()).not.toContain("Scroll command");
+
+      stdout.columns = 35;
+      stdout.emit("resize");
+      await flush(instance);
+      expect(getFrame()).toContain("Scroll command");
+      expect(getFrame()).not.toContain("_END'");
+
+      const commandRow = getFrame().split("\n").findIndex((line) => line.includes("START_"));
+      stdin.emit("data", `\x1b[<65;5;${commandRow + 1}M`);
+      await flush(instance);
+      expect(getFrame()).toContain("_END'");
+      expect(onConfirm).not.toHaveBeenCalled();
+    } finally { instance.unmount(); }
+  });
+
+  it("displays terminal control bytes as text", async () => {
+    const ui = await mount({ toolName: "run_command", input: { command: "printf '\x1b[2J\r\tend'" } });
+    try {
+      await clickRow(ui, "command:");
+      expect(ui.getFrame()).toContain("printf '\\x1b[2J\\x0d\\x09end'");
+    } finally { ui.instance.unmount(); }
+  });
+});
 
 describe("ToolConfirm UI", () => {
   beforeEach(() => {
@@ -834,6 +940,273 @@ describe("ToolConfirm UI", () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(onConfirm).toHaveBeenCalledWith("no");
     } finally {
+      instance.unmount();
+    }
+  });
+});
+
+describe("ToolConfirm clickable controls", () => {
+  const textOf = (node: any): string =>
+    node?.nodeName === "#text" ? String(node.nodeValue ?? "") : (node?.childNodes ?? []).map(textOf).join("");
+  const findControl = (node: any, label: string): any => {
+    if (node && typeof node.onClick === "function" && textOf(node).includes(label)) return node;
+    for (const child of node?.childNodes ?? []) {
+      const found = findControl(child, label);
+      if (found) return found;
+    }
+    return null;
+  };
+  const event = { x: 0, y: 0, button: 0, ctrl: false, alt: false, shift: false };
+  const click = (control: any, at = { ...event, x: control.internal_x, y: control.internal_y }) => {
+    control.onMouseDown(at);
+    control.onClick(at);
+  };
+  const flush = async (instance: any) => { await new Promise((resolve) => setTimeout(resolve, 30)); await instance.waitUntilRenderFlush(); };
+
+  it.each([["[Y]es", "yes"], ["[N]o", "no"], ["[A]lways", "always"]])("clicking %s answers %s", async (label, choice) => {
+    const { instance, onConfirm } = await mount();
+    try {
+      click(findControl((instance as any).rootNode, label));
+      expect(onConfirm).toHaveBeenCalledWith(choice);
+    } finally { instance.unmount(); }
+  });
+
+  it("shows no Always control when explicit approval is required", async () => {
+    const { instance, getFrame } = await mount({ explicitApprovalOnly: true });
+    try {
+      expect(getFrame()).not.toContain("[A]lways");
+      expect(findControl((instance as any).rootNode, "[A]lways")).toBeNull();
+    } finally { instance.unmount(); }
+  });
+
+  it("opens the feedback editor by click, then submits or cancels by click", async () => {
+    const first = await mount();
+    try {
+      click(findControl((first.instance as any).rootNode, "[D]eny with feedback"));
+      await flush(first.instance);
+      expect(first.getFrame()).toContain("Feedback for agent");
+      first.stdin.emit("data", "use the helper");
+      await flush(first.instance);
+      click(findControl((first.instance as any).rootNode, "Submit denial"));
+      expect(first.onConfirm).toHaveBeenCalledWith({ choice: "no", feedback: "use the helper" });
+    } finally { first.instance.unmount(); }
+
+    const second = await mount();
+    try {
+      click(findControl((second.instance as any).rootNode, "[D]eny with feedback"));
+      await flush(second.instance);
+      click(findControl((second.instance as any).rootNode, "[Esc] Cancel"));
+      await flush(second.instance);
+      expect(second.getFrame()).toContain("[Y]es");
+      expect(second.getFrame()).not.toContain("Feedback for agent");
+      expect(second.onConfirm).not.toHaveBeenCalled();
+    } finally { second.instance.unmount(); }
+  });
+
+  it("discards a press when its prompt is replaced before release", async () => {
+    const { instance, onConfirm } = await mount();
+    try {
+      findControl((instance as any).rootNode, "[Y]es").onMouseDown(event);
+      instance.render(h(ToolConfirm, { toolName: "write_file", input: { path: "next.txt", content: "x" }, onConfirm, keybindings: DEFAULT_KEYBINDINGS }));
+      await flush(instance);
+      const yes = findControl((instance as any).rootNode, "[Y]es");
+      yes.onClick(event);
+      expect(onConfirm).not.toHaveBeenCalled();
+
+      click(yes);
+      expect(onConfirm).toHaveBeenCalledExactlyOnceWith("yes");
+    } finally { instance.unmount(); }
+  });
+
+  it("blocks a rapid repeat at the same cell in the feedback editor, not a click elsewhere", async () => {
+    const { instance, onConfirm, getFrame } = await mount();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    try {
+      click(findControl((instance as any).rootNode, "[D]eny with feedback"), event);
+      await flush(instance);
+      click(findControl((instance as any).rootNode, "Submit denial"), event);
+      expect(onConfirm).not.toHaveBeenCalled();
+      expect(getFrame()).toContain("Feedback for agent");
+
+      const cancel = findControl((instance as any).rootNode, "[Esc] Cancel");
+      const elsewhere = { ...event, x: 1 };
+      cancel.onMouseDown(elsewhere);
+      cancel.onClick(elsewhere);
+      await flush(instance);
+      expect(getFrame()).not.toContain("Feedback for agent");
+      expect(onConfirm).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); instance.unmount(); }
+  });
+
+  it("answers a background-job prompt by click", async () => {
+    const input = {
+      action: "start",
+      spec: {
+        invocation: { mode: "shell", commandText: "echo hi", interpreter: "cmd" },
+        cwd: process.cwd(), isolation: { backend: "none", required: false }, env: {}, credentialRefs: [],
+        ownershipScope: "unverified", limits: {}, headless: false,
+      },
+    };
+    const { instance, onConfirm } = await mount({ toolName: "run_background_job", input });
+    try {
+      expect(findControl((instance as any).rootNode, "[D]eny with feedback")).toBeNull();
+      click(findControl((instance as any).rootNode, "[N]o"));
+      expect(onConfirm).toHaveBeenCalledWith("no");
+    } finally { instance.unmount(); }
+  });
+
+  describe("through terminal mouse reports", () => {
+    // SGR reports go through stdin, hit-testing and dispatch, as a terminal's would.
+    const report = (code: number, at: { x: number; y: number }, final = "M") => `\x1b[<${code};${at.x + 1};${at.y + 1}${final}`;
+    const press = (at: { x: number; y: number }) => report(0, at);
+    const drag = (at: { x: number; y: number }) => report(32, at);
+    const release = (at: { x: number; y: number }) => report(0, at, "m");
+    const wheelDown = (at: { x: number; y: number }) => report(65, at);
+    // a terminal cell inside the control, in screen rows (the frame may have scrolled)
+    const cellOf = (instance: any, label: string, dx = 1, dy = 0) => {
+      const node = findControl(instance.rootNode, label);
+      return { x: node.internal_x + dx, y: node.internal_y + dy - instance.frameScrollOffset };
+    };
+    const send = async (instance: any, stdin: any, ...reports: string[]) => {
+      for (const sequence of reports) stdin.emit("data", sequence);
+      await flush(instance);
+    };
+
+    it.each([["[Y]es", "yes"], ["[N]o", "no"], ["[A]lways", "always"], ["[D]eny with feedback", undefined]])("accepts the first click on %s as soon as the prompt appears", async (label, choice) => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+      const { instance, stdin, onConfirm, getFrame } = await mount();
+      try {
+        const at = cellOf(instance, label);
+        await send(instance, stdin, press(at), release(at));
+        if (choice) expect(onConfirm).toHaveBeenCalledExactlyOnceWith(choice);
+        else expect(getFrame()).toContain("Feedback for agent");
+      } finally { instance.unmount(); clock.mockRestore(); }
+    });
+
+    it("answers nothing for a press on one control and a release on another", async () => {
+      const { instance, stdin, onConfirm } = await mount();
+      try {
+        await send(instance, stdin, press(cellOf(instance, "[Y]es")), release(cellOf(instance, "[N]o")));
+        expect(onConfirm).not.toHaveBeenCalled();
+      } finally { instance.unmount(); }
+    });
+
+    it("answers nothing for a text selection dragged onto a control", async () => {
+      const { instance, stdin, onConfirm } = await mount();
+      try {
+        const yes = cellOf(instance, "[Y]es");
+        const above = { x: yes.x, y: yes.y - 1 };
+        await send(instance, stdin, press(above), drag({ x: yes.x + 2, y: above.y }), drag(yes), release(yes));
+        expect(onConfirm).not.toHaveBeenCalled();
+      } finally { instance.unmount(); }
+    });
+
+    it.each([
+      ["within it", (start: { x: number; y: number }) => [drag({ x: start.x + 2, y: start.y }), drag({ x: start.x + 5, y: start.y }), release({ x: start.x + 5, y: start.y })]],
+      ["to another row and back", (start: { x: number; y: number }) => [drag({ x: 0, y: start.y - 2 }), drag(start), release(start)]],
+      ["off it, released elsewhere", (start: { x: number; y: number }) => [drag({ x: start.x + 20, y: start.y }), release({ x: start.x + 20, y: start.y })]],
+      // some terminals report only the press and the release
+      ["within it, with no drag reports", (start: { x: number; y: number }) => [release({ x: start.x + 4, y: start.y })]],
+    ])("answers nothing for a drag that starts on a control and moves %s", async (_name, gesture) => {
+      const { instance, stdin, onConfirm } = await mount();
+      try {
+        const start = cellOf(instance, "[A]lways");
+        await send(instance, stdin, press(start), ...gesture(start));
+        expect(onConfirm).not.toHaveBeenCalled();
+      } finally { instance.unmount(); }
+    });
+
+    it("answers nothing when the wheel turns while a control is held", async () => {
+      const { instance, stdin, onConfirm } = await mount();
+      try {
+        const always = cellOf(instance, "[A]lways");
+        await send(instance, stdin, press(always), wheelDown(always), wheelDown(always), release(always));
+        expect(onConfirm).not.toHaveBeenCalled();
+
+        // the next plain click still counts
+        await send(instance, stdin, press(always), release(always));
+        expect(onConfirm).toHaveBeenCalledWith("always");
+      } finally { instance.unmount(); }
+    });
+
+    it("answers nothing for a click outside the controls", async () => {
+      const { instance, stdin, onConfirm } = await mount();
+      try {
+        const always = cellOf(instance, "[A]lways");
+        const beside = { x: always.x + 20, y: always.y };
+        const above = { x: always.x, y: always.y - 1 };
+        await send(instance, stdin, press(beside), release(beside), press(above), release(above));
+        expect(onConfirm).not.toHaveBeenCalled();
+      } finally { instance.unmount(); }
+    });
+
+    it("wraps the controls onto their own rows at 18 columns, and each still answers its own choice", async () => {
+      const { instance, stdin, onConfirm } = await mount({}, { columns: 18, rows: 60 });
+      try {
+        const labels = ["[Y]es", "[N]o", "[D]eny with feedback", "[A]lways"];
+        const nodes = labels.map((label) => findControl((instance as any).rootNode, label));
+        for (const node of nodes) expect(node.internal_x + node.internal_width).toBeLessThanOrEqual(18);
+        // [Y]es and [N]o share the first row; the other two each start a row of their own
+        expect(nodes.map((node) => node.internal_y - nodes[0].internal_y)).toEqual([0, 0, 1, 3]);
+
+        for (const [label, choice] of [["[Y]es", "yes"], ["[N]o", "no"], ["[A]lways", "always"]]) {
+          const at = cellOf(instance, label);
+          await send(instance, stdin, press(at), release(at));
+          expect(onConfirm).toHaveBeenLastCalledWith(choice);
+        }
+        // "[D]eny with feedback" is wider than the terminal; its second row is still the control
+        const deny = cellOf(instance, "[D]eny with feedback", 1, 1);
+        await send(instance, stdin, press(deny), release(deny));
+        expect(findControl((instance as any).rootNode, "Submit denial")).not.toBeNull();
+      } finally { instance.unmount(); }
+    });
+
+    it("answers the control under the pointer after a resize", async () => {
+      const input = { path: "test.txt", content: "data" };
+      const { instance, stdin, stdout, onConfirm } = await mount({ input }, { columns: 80, rows: 60 });
+      try {
+        const before = cellOf(instance, "[N]o");
+        Object.assign(stdout, { columns: 18 });
+        stdout.emit("resize");
+        // the app re-renders the same pending confirmation at the new width
+        instance.render(h(ToolConfirm, { toolName: "write_file", input, onConfirm, keybindings: DEFAULT_KEYBINDINGS }));
+        await flush(instance);
+        const after = cellOf(instance, "[N]o");
+        expect(after).not.toEqual(before);
+        await send(instance, stdin, press(after), release(after));
+        expect(onConfirm).toHaveBeenCalledTimes(1);
+        expect(onConfirm).toHaveBeenCalledWith("no");
+      } finally { instance.unmount(); }
+    });
+  });
+});
+
+describe("ToolConfirm reused across prompts", () => {
+  const backgroundInput = {
+    action: "start",
+    spec: {
+      invocation: { mode: "shell", commandText: "echo hi", interpreter: "cmd" },
+      cwd: process.cwd(), isolation: { backend: "none", required: false }, env: {}, credentialRefs: [],
+      ownershipScope: "unverified", limits: {}, headless: false,
+    },
+  };
+  const flush = async (instance: any) => { await new Promise((resolve) => setTimeout(resolve, 30)); await instance.waitUntilRenderFlush(); };
+
+  it("keeps the same hooks when one instance goes from a background-job prompt to a normal one and back", async () => {
+    const { instance, onConfirm, getFrame } = await mount({ toolName: "run_background_job", input: backgroundInput });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(getFrame()).not.toContain("[D]eny with feedback");
+      instance.render(h(ToolConfirm, { toolName: "write_file", input: { path: "next.txt", content: "x" }, onConfirm, keybindings: DEFAULT_KEYBINDINGS }));
+      await flush(instance);
+      expect(errors).not.toHaveBeenCalled();
+      expect(getFrame()).toContain("[D]eny with feedback");
+      instance.render(h(ToolConfirm, { toolName: "run_background_job", input: backgroundInput, onConfirm, keybindings: DEFAULT_KEYBINDINGS }));
+      await flush(instance);
+      expect(errors).not.toHaveBeenCalled();
+      expect(getFrame()).not.toContain("[D]eny with feedback");
+    } finally {
+      errors.mockRestore();
       instance.unmount();
     }
   });

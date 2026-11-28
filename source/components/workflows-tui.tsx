@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, usePaste, useStdout } from "../ink/index.js";
 import { ResourceManager, type ResourceAction } from "./resource-manager.js";
+import { HoverText, usePointerMotion } from "./hover-text.js";
 import WorkflowConsent from "./workflow-consent.js";
 import type { AgavConfig } from "../config/config.js";
 import type { ClipboardNotice } from "../ink/termio/clipboard.js";
@@ -108,6 +109,7 @@ export function WorkflowsTUI({ onExit, config, deps: provided, initialTab = "wor
   const [stage, setStage] = useState<Stage | null>(null);
   const [notice, setNotice] = useState("");
   const [inboxCount, setInboxCount] = useState(0);
+  const [managerBusy, setManagerBusy] = useState(false);
   const [pending, setPending] = useState<PendingConfirmation | null>(null);
   const pendingRef = useRef<PendingConfirmation | null>(null);
   pendingRef.current = pending;
@@ -216,9 +218,17 @@ export function WorkflowsTUI({ onExit, config, deps: provided, initialTab = "wor
 
   const nextTab = WORKFLOW_TABS[(WORKFLOW_TABS.indexOf(tab) + 1) % WORKFLOW_TABS.length]!;
   const tabLabel = (t: WorkflowTab) => t === "inbox" && inboxCount > 0 ? `${TAB_LABELS[t]} (${inboxCount})` : TAB_LABELS[t];
-  const switchTab: ResourceAction = { key: "Tab", label: tabLabel(nextTab), run: () => { setNotice(""); setTab(nextTab); } };
+  const canSwitchTab = !managerBusy && !pending && !stage;
+  usePointerMotion(canSwitchTab);
+
+  const switchTab = (target: WorkflowTab) => {
+    if (!canSwitchTab || target === tab) return false;
+    setNotice("");
+    setTab(target);
+    return true;
+  };
   type Target = Parameters<ResourceAction["run"]>[0];
-  const actions: ResourceAction[] = [switchTab];
+  const actions: ResourceAction[] = [{ key: "Tab", label: tabLabel(nextTab), run: () => { switchTab(nextTab); } }];
   if (tab === "workflows") actions.push(
     { key: "R", label: "Run", inDetail: true, when: (item) => !item.title.endsWith("(invalid)"), run: async (item: Target) => { if (item) await beginRun(await loadWorkflow(deps, item.id)); } },
     { key: "v", label: "Validate", inDetail: true, run: async (item: Target) => item ? validateWorkflow(deps, item.id) : undefined },
@@ -253,12 +263,21 @@ export function WorkflowsTUI({ onExit, config, deps: provided, initialTab = "wor
     ? Math.max(8, (stdout.rows || 24) - 2 - extraRows)
     : Math.max(2, availableHeight - extraRows);
   return <Box flexDirection="column">
-    <Text>{WORKFLOW_TABS.map((t, i) => <Text key={t} color={t === tab ? "cyan" : undefined} bold={t === tab} dimColor={t !== tab}>{i ? " │ " : ""}{tabLabel(t)}</Text>)}</Text>
+    <Box>
+      {WORKFLOW_TABS.map((t, i) => <React.Fragment key={t}>
+        {i > 0 && <Text dimColor> │ </Text>}
+        <HoverText color={t === tab ? "cyan" : undefined} bold={t === tab} dimColor={t !== tab} onClick={canSwitchTab && t !== tab ? (event) => {
+          if (event.button !== 0 || event.ctrl || event.alt || event.shift) return;
+          if (switchTab(t)) event.stopPropagation?.();
+        } : undefined}>{tabLabel(t)}</HoverText>
+      </React.Fragment>)}
+    </Box>
     {notice && <Text color="yellow" wrap="truncate-end">{notice}</Text>}
     <ResourceManager
       key={tab}
       adapter={tab === "workflows" ? workflows : tab === "runs" ? runs : inbox}
       onExit={onExit}
+      onBusyChange={setManagerBusy}
       actions={actions}
       height={height}
       refreshIntervalMs={tab === "workflows" ? undefined : RUN_REFRESH_MS}

@@ -276,7 +276,7 @@ Skill bodies can contain fenced shell blocks (`` ```sh ``) that execute at runti
 
 Shell blocks execute before the restricted tool registry is built, so tool allow/disallow lists do not filter them. They use the shared shell runner with the default sandbox, credential-filtered environment, process-group cleanup, and the skill's cancellation signal when supplied. Confirmation does not bypass sandboxing. A shell failure fails the skill rather than silently substituting empty output. They do not use `run_command`'s destructive-command filtering or streamed logs. Install only trusted skills with shell blocks.
 
-Shell blocks have a 10-second timeout. On Windows, they run via `cmd.exe /c`; on other platforms, `/bin/sh -c`.
+Shell blocks have a 10-second timeout. With the default Windows restricted-token backend (or no backend on Windows), they use `cmd.exe`, even when Agav was launched from PowerShell or Git Bash. macOS/Linux and Docker use `/bin/sh`. The `sh` fence opts into execution; it does not select Bash or PowerShell. Use commands compatible with the target shell, or omit executable blocks in portable skills. `sandboxRequired` does not gate this preprocessing step.
 
 ## Execution sandboxing
 
@@ -303,8 +303,8 @@ Blocking failures prevent installation. Naming non-conformance produces warnings
 
 Agav tracks skill usage and automatically evolves trigger matching over time:
 
-- **Traces** — every skill execution is logged to `.agav/traces.jsonl` in the skill directory (timestamp, query snippet, tokens, success)
-- **Statistics** — `/skills info <name>` shows total runs, average tokens per run, and success rate
+- **Traces** — recorded executions are logged under `~/.agav/skills/<skill-slug>/.agav/traces.jsonl`, even for project or bundled skills (timestamp, query snippet, tokens, success)
+- **Statistics** — `/skills info <name>` shows `Usage: No recorded runs` until a trace exists. After that it shows total runs, average tokens per run, and success rate. `0% success` means recorded runs exist and none succeeded
 - **Trigger phrases** — auto-generated positive and negative triggers from the skill's name, description, and tags
 - **Trigger scoring** — user queries are scored against triggers to decide automatic activation (multi-word matches score higher, negative triggers reduce the score)
 - **Optimization notes** — after 3+ runs, Agav generates suggestions (e.g., "tighten instructions to reduce token usage")

@@ -34,7 +34,9 @@ The model is saved at `~/.agav/voice/ggml-base.en-q5_1.bin` and reused across se
 
 Invalid explicit overrides produce errors rather than silently replacing them. Unset overrides to use the embedded helper and managed model. `AGAV_VOICE_WHISPER_BIN` and `AGAV_VOICE_FFMPEG_BIN` are no longer used. Language settings are not configurable.
 
-Example for a development checkout:
+Examples for a development checkout (use an absolute path to your helper and model):
+
+**macOS / Linux:**
 
 ```sh
 export AGAV_VOICE_HELPER_BIN=/absolute/path/to/agav-voice
@@ -42,16 +44,24 @@ export AGAV_VOICE_MODEL=/absolute/path/to/ggml-base.en-q5_1.bin
 agav
 ```
 
+**Windows PowerShell:**
+
+```powershell
+$env:AGAV_VOICE_HELPER_BIN = "C:\tools\agav-voice.exe"
+$env:AGAV_VOICE_MODEL = "C:\models\ggml-base.en-q5_1.bin"
+agav
+```
+
 The helper links pinned whisper.cpp and miniaudio versions. See `native/voice/README.md` for its CMake build, model-free self-test, protocol tests, licenses, and optional microphone-free WAV validation. Build tooling is for maintainers only, not end-user setup. Native build artifacts belong outside the source tree.
 
 ## Microphone and platform support
 
-The helper supports macOS ARM64/x64, Linux ARM64/x64, and Windows x64. Windows ARM64 uses x64 Agav under emulation. The helper uses system audio backends through miniaudio: Core Audio, WASAPI, and available Linux audio services such as PulseAudio/ALSA. No audio server SDK is required by the client, but a working host audio device/service must exist.
+The helper supports macOS ARM64/x64, Linux ARM64/x64, and Windows x64. There is no native Windows ARM64 helper: Windows ARM64 uses x64 Agav and its x64 helper under emulation. The helper uses system audio backends through miniaudio: Core Audio, WASAPI, and available Linux audio services such as PulseAudio/ALSA. No audio server SDK is required by the client, but a working host audio device/service must exist.
 
 - **macOS:** allow microphone access for your terminal/helper in Privacy & Security → Microphone. The helper embeds a microphone-purpose description.
 - **Windows:** allow desktop-app microphone access in privacy settings. The default microphone requires no device configuration.
 - **Linux:** ensure your audio service/device is available to the current user.
-- **SSH, WSL, containers:** capture occurs on the host running Agav; laptop microphone forwarding is not provided.
+- **SSH, WSL, containers:** capture uses the audio devices visible to the Agav process. Agav does not forward the microphone from your client machine or from Windows into WSL.
 
 ## English-only recording and review
 

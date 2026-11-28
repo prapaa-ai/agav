@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "./types.js";
-import { computeEditDiff } from "../utils/diff.js";
+import { computeEditDiffAt, findEditOccurrence } from "../utils/diff.js";
 import { pushUndo } from "../utils/undo.js";
 import { withFileMutationLock } from "../utils/file-mutation-lock.js";
 
@@ -11,7 +11,7 @@ export const editFileTool: ToolDefinition = {
     description:
       "Make a surgical edit to a file by replacing a specific string with a new string. " +
       "The old_string must match exactly (including whitespace and indentation). " +
-      "Only the first occurrence is replaced. Use read_file first to see the current content.",
+      "Supply occurrence to select one exact match when the text appears more than once. Use read_file first.",
     inputSchema: {
       type: "object",
       properties: {
@@ -21,11 +21,16 @@ export const editFileTool: ToolDefinition = {
         },
         old_string: {
           type: "string",
-          description: "The exact string to find and replace (must be unique in the file)",
+          description: "The exact string to find and replace (must be unique unless occurrence is supplied)",
         },
         new_string: {
           type: "string",
           description: "The replacement string",
+        },
+        occurrence: {
+          type: "integer",
+          minimum: 1,
+          description: "One-based index of the exact match to replace",
         },
       },
       required: ["path", "old_string", "new_string"],
@@ -36,6 +41,12 @@ export const editFileTool: ToolDefinition = {
     const filePath = resolve(String(input.path));
     const oldString = String(input.old_string);
     const newString = String(input.new_string);
+    const occurrence = input.occurrence;
+    if (occurrence !== undefined && (
+      typeof occurrence !== "number" || !Number.isSafeInteger(occurrence) || occurrence < 1
+    )) {
+      return { output: "occurrence must be a positive safe integer", isError: true };
+    }
 
     if (!oldString) {
       return { output: "old_string cannot be empty", isError: true };
@@ -44,24 +55,28 @@ export const editFileTool: ToolDefinition = {
     try {
       return await withFileMutationLock(filePath, async (): Promise<ToolResult> => {
         const content = await readFile(filePath, "utf-8");
-        const occurrences = content.split(oldString).length - 1;
+        const { position, count } = findEditOccurrence(content, oldString, occurrence ?? 1);
 
-        if (occurrences === 0) {
+        if (count === 0) {
           return {
             output: `String not found in ${filePath}. Make sure old_string matches exactly, including whitespace.`,
             isError: true,
           };
         }
 
-        if (occurrences > 1) {
+        if (occurrence === undefined && count > 1) {
           return {
-            output: `Found ${occurrences} occurrences of old_string in ${filePath}. Provide more surrounding context to make it unique.`,
+            output: `Found ${count} occurrences of old_string in ${filePath}. Provide more surrounding context to make it unique.`,
             isError: true,
           };
         }
 
-        const diffLines = computeEditDiff(content, oldString, newString);
-        const updated = content.replace(oldString, newString);
+        if (position === -1) {
+          return { output: `Occurrence ${occurrence} is out of range: found ${count} exact match(es).`, isError: true };
+        }
+
+        const diffLines = computeEditDiffAt(content, oldString, newString, position);
+        const updated = content.slice(0, position) + newString + content.slice(position + oldString.length);
         await pushUndo(filePath, "edit_file");
         await writeFile(filePath, updated, "utf-8");
 

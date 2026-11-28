@@ -6,4 +6,6 @@ navHidden: true
 
 # BYOK with Ollama and OpenAI
 
-Provider credentials, local Ollama setup, model selection, and provider switching are documented in [Configure Providers](/getting-started/providers).
+- Use [the Ollama provider](/getting-started/providers#ollama) for Ollama's native API, locally or on a hosted Ollama server.
+- Use [the OpenAI provider](/getting-started/providers#openai) for hosted OpenAI or an OpenAI-compatible gateway. For llama.cpp or LM Studio, see [Run Local Models](/getting-started/local-models) for Chat Completions and PowerShell examples.
+- Save credentials in [user config](/getting-started/providers#make-it-stick) or set them in the shell that launches Agav, not in the repository's project config.

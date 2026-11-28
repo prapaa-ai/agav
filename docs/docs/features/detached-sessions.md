@@ -31,17 +31,23 @@ With `backgroundJobsEnabled: true`, ordinary interactive prompts start execution
    Session <session-id> is running in the background. Resume with: agav --resume <session-id>
    ```
 
-3. Keep that ID. From your shell, return with the printed command, replacing `<session-id>` with the actual ID:
+3. Keep that ID. From your shell, return with the printed command, replacing `YOUR_SESSION_ID` below with the actual ID:
 
-   ```bash
-   agav --resume <session-id>
+   ```sh
+   agav --resume YOUR_SESSION_ID
+   ```
+
+   In Windows PowerShell, use the same command with the actual ID and no angle brackets:
+
+   ```powershell
+   agav --resume YOUR_SESSION_ID
    ```
 
 You can also run `agav --resume` to open the picker at startup, or `/resume` inside Agav. `/resume <id>` selects a session directly; ID prefixes are supported, but the full printed ID avoids choosing the wrong session.
 
-**The detach shortcut works at a worker's approval prompt too.** It leaves the request pending; it is not Yes, No, or Always. Use it when the confirmation owns input and you cannot type `/detach`. The configurable `detachSession` action defaults to **Ctrl+D**. **Ctrl+X cuts prompt text; it is not detach.** **Ctrl+Q is not detach**: it opens the request queue when requests are queued, or exits while idle with an empty prompt.
+**The detach shortcut works at a live worker’s approval prompt too.** It leaves the request pending; it is not Yes, No, or Always. Use it when the confirmation owns input and you cannot type `/detach`. The configurable `detachSession` action defaults to **Ctrl+D**. **Ctrl+X cuts prompt text; it is not detach.** **Ctrl+Q is not detach**: it opens the request queue when requests are queued, or exits while idle with an empty prompt.
 
-Detaching continues the **current worker-owned turn**, not an unattended stream of future chat requests. Do not rely on unsent drafts or requests waiting in the terminal's queue being executed after the UI closes.
+Detaching continues the **current worker-owned turn**, not an unattended stream of future chat requests. Unsent drafts and requests in the terminal queue are not handed off. The UI’s `/loop`, `/watch`, and `/schedule` triggers do not continue after it closes.
 
 ## Status and session management
 
@@ -76,7 +82,7 @@ Detaching does **not** change the permission mode, widen tool access, or bypass 
 - **Local, not cloud execution.** The worker runs as a local process under your OS account. Closing the Agav UI is supported; laptop sleep, logout, reboot, power loss, process cleanup, or losing provider/network access are not guarantees of continued execution. Suspension can pause work and disrupt connections.
 - **Supervisor isolation is not tool isolation.** The background-job supervisor launches the session worker outside the shell sandbox (`isolation: none`). Inside the worker, tool execution still enforces its permission and sandbox requirements, including required-sandbox policy. Detaching is not a sandbox bypass. A shell command explicitly launched through `run_background_job` is a separate, unsandboxed background job.
 - **Credentials and overrides use a private launch path.** Workers reload trusted configuration and selected provider environment variables. Registered `-c`/`--config` overrides also propagate through a private launch environment, using effective values so dedicated flags still take precedence. The override payload is not stored in command arguments or durable runtime metadata and is consumed before tools launch; organization policy still applies. Unregistered transient credential changes that differ from reloadable credentials remain refused. Stored endpoint choices cannot silently redirect current credentials after routing policy changes.
-- **Durable state is not a replay engine.** Runtime state, events, and approvals live under `~/.agav/session-runtimes`, with supervisor state under `~/.agav/background-jobs`. A dead worker cannot resume its JavaScript promises. Agav does not automatically replay uncertain tool calls or restart that execution when you reopen the session.
+- **Durable state is not a replay engine.** Runtime state, events, and approvals live under `~/.agav/session-runtimes`, with supervisor state under `~/.agav/background-jobs`. A dead worker cannot resume its JavaScript promises. Agav does not automatically replay uncertain tool calls or restart that execution when you reopen the session. When a cancellation is pending and the owner is confirmed dead, Agav can mark the turn interrupted; it does not overwrite a recorded completion or assume death when owner identity cannot be verified.
 
 ## Supported paths and limitations
 

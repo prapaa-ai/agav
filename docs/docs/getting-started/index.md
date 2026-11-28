@@ -12,9 +12,9 @@ This path takes you from installation to a safe first change in an existing repo
 
 You need:
 
-- a terminal
+- a terminal on [a supported platform](/getting-started/installation): macOS, Linux, or Windows
 - a local Git repository to explore
-- an API key for OpenAI, Anthropic, Gemini, OpenRouter, NVIDIA NIM, or DeepSeek; a Google Cloud service-account JSON file for Vertex AI; or a running Ollama installation
+- an API key for OpenAI, Anthropic, Gemini, OpenRouter, NVIDIA NIM, or DeepSeek; a Google Cloud service-account JSON file for Vertex AI; or a running local server such as Ollama, [llama.cpp, or LM Studio](/getting-started/local-models)
 
 The prebuilt Agav release does not require Node.js. Node.js and pnpm are only needed when developing Agav itself.
 
@@ -22,7 +22,7 @@ The prebuilt Agav release does not require Node.js. Node.js and pnpm are only ne
 
 1. **[Install Agav](/getting-started/installation)** and verify that the `agav` command works.
 2. **[Connect a provider](/getting-started/providers)** so Agav can use a model.
-3. **[Complete your first task](/getting-started/quick-start)** in a real repository, beginning in read-only mode.
+3. **[Complete your first task](/getting-started/quick-start)** in a real repository, beginning with tool writes restricted.
 4. **[Configure your project](/getting-started/projects)** with shared instructions and defaults when you are ready.
 
 At the end, you will know how to open the correct workspace, give Agav exact context, review a proposed change, and check what changed.

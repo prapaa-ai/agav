@@ -274,12 +274,12 @@ export const fetchUrlTool: ToolDefinition = {
     name: "fetch_url",
     description:
       "Fetch content from a URL. Supports custom headers for authenticated API access. " +
-      "Returns the response body as text. For HTML pages, returns the raw HTML.",
+      "Returns the response body as text (raw HTML for pages), or only the status for HEAD.",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string", description: "The URL to fetch" },
-        method: { type: "string", enum: ["GET", "POST", "PUT", "DELETE", "PATCH"], description: "HTTP method (default: GET)" },
+        method: { type: "string", enum: ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH"], description: "HTTP method (default: GET)" },
         headers: {
           type: "object",
           description: "Custom headers (e.g. Authorization, Content-Type)",
@@ -294,6 +294,9 @@ export const fetchUrlTool: ToolDefinition = {
   async execute(input): Promise<ToolResult> {
     const url = String(input.url);
     const method = String(input.method ?? "GET").toUpperCase();
+    if (method === "HEAD" && input.body != null) {
+      return { output: "HEAD requests cannot include a body.", isError: true };
+    }
     const headers = (input.headers ?? {}) as Record<string, string>;
     const body = input.body ? String(input.body) : undefined;
     const transport = activeTransport ?? nodeTransport;
@@ -306,7 +309,10 @@ export const fetchUrlTool: ToolDefinition = {
       });
       const capture = new ResponseCapture();
       let readError: string | undefined;
-      if (res.body) {
+      if (method === "HEAD") {
+        // Only the status is useful for HEAD; release the stream without reading it.
+        try { await res.cancel(); } catch { }
+      } else if (res.body) {
         const decoder = new TextDecoder();
         let received = 0;
         let cancelled = false;

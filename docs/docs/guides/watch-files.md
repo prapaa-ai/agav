@@ -6,4 +6,4 @@ navHidden: true
 
 # Watch Files While You Code
 
-See [Automation](/workflows/automation#watch-files) for watcher syntax, lifecycle, safety constraints, and how `/watch` differs from loops and scheduled prompts.
+`/watch` runs commands through `/bin/sh`, so it is not a native Windows file watcher. See [Automation](/workflows/automation#watch-files) for watcher syntax, lifecycle, safety constraints, and how `/watch` differs from loops and scheduled prompts.

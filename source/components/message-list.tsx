@@ -3,7 +3,7 @@ import type { Plan } from "../agent/planner.js";
 import { Box, Text } from "../ink/index.js";
 import { renderMarkdown } from "./markdown-text.js";
 import ClickableLine from "./clickable-line.js";
-import { getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
+import { getMcpServerName, getToolLabel, getToolSummary, isBookkeepingTool } from "../utils/tool-labels.js";
 import { getTheme } from "../config/theme.js";
 import type { DiffLine } from "../utils/diff.js";
 import type { InvocationReason } from "../providers/types.js";
@@ -13,7 +13,7 @@ import { VERSION } from "../version.js";
 import { useDetectedTargets } from "../hooks/use-detected-targets.js";
 import { buildClickableLines } from "../utils/render-clickable.js";
 import { targetToRefId, wrapTextToRuns } from "../utils/wrap-runs.js";
-import { encodeOpenRef, type OpenRef } from "../utils/open-ref.js";
+import { decodeOpenRef, encodeOpenRef, type OpenRef } from "../utils/open-ref.js";
 
 /** Normalized message shape used for terminal rendering. */
 export interface DisplayMessage {
@@ -68,8 +68,8 @@ const ClickableMarkdown = React.memo(function ClickableMarkdown({
   }, { dimColor });
 
   const handleOpen = (targetId: string) => {
-    const ref = JSON.parse(targetId) as OpenRef;
-    onOpenRef(ref);
+    const ref = decodeOpenRef(targetId);
+    if (ref) onOpenRef(ref);
   };
 
   return (
@@ -106,8 +106,8 @@ const UserMessage = React.memo(function UserMessage({ message, columns, onOpenRe
     : undefined;
 
   const handleOpen = (targetId: string) => {
-    const ref = JSON.parse(targetId) as OpenRef;
-    onOpenRef?.(ref);
+    const ref = decodeOpenRef(targetId);
+    if (ref) onOpenRef?.(ref);
   };
 
   // Every line is padded out to the full width below, which only paints a
@@ -197,6 +197,7 @@ const DiffView = React.memo(function DiffView({ diffLines }: { diffLines: DiffLi
 /** Renders a single summarized tool result entry. */
 const ToolResultLine = React.memo(function ToolResultLine({ message }: { message: DisplayMessage }) {
   const label = message.toolDisplayName ?? (message.toolName ? getToolLabel(message.toolName) : "Tool");
+  const mcpServer = message.toolName ? getMcpServerName(message.toolName) : undefined;
   const summary = message.toolName && message.toolInput ? getToolSummary(message.toolName, message.toolInput) : "";
   const displayContent = terminalRelativePaths(message.content, toolPathValues(message.toolInput));
 
@@ -237,6 +238,7 @@ const ToolResultLine = React.memo(function ToolResultLine({ message }: { message
         <Text>
           <Text dimColor>{"  └─ "}</Text>
           <Text bold color="yellow">{label}</Text>
+          {mcpServer ? <Text dimColor>{` (MCP: ${mcpServer})`}</Text> : null}
           {summary ? <Text dimColor> {summary}</Text> : null}
           <Text dimColor> {displayContent}</Text>
         </Text>
@@ -259,6 +261,7 @@ const ToolResultLine = React.memo(function ToolResultLine({ message }: { message
       <Text>
         <Text dimColor>{"  └─ "}</Text>
         <Text bold={!muted} color={message.isError ? "red" : muted ? undefined : "yellow"} dimColor={muted}>{label}</Text>
+        {mcpServer ? <Text dimColor>{` (MCP: ${mcpServer})`}</Text> : null}
         {summary ? <Text dimColor> {summary}</Text> : null}
         <Text dimColor>{suffix}</Text>
       </Text>

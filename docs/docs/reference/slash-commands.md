@@ -15,11 +15,12 @@ Built-in commands are grouped by when they dispatch while Agav is streaming, exe
 | Behavior | Commands |
 | --- | --- |
 | Immediate | `/help`, `/exit`, `/detach`, `/loop`, `/steer`, `/context`, `/status`, `/name`, `/copy`, `/export`, `/open`, `/debug`, `/changelog`, `/remember`, `/forget` |
-| Deferred until idle | `/clear`, `/new`, `/model`, `/effort`, `/permission`, `/resume`, `/history`, `/search`, `/search-history`, `/watch`, `/branch`, `/compact`, `/memory`, `/fast`, `/deep`, `/undo`, `/plan`, `/schedule`, `/job`, `/workflows`, `/skills`, `/agents`, `/agent`, `/mcp`, `/customize`, `/login`, `/logout` |
+| Immediate for specific forms | `/branch` (list only), `/agent` (status only), `/agents list`, `/history list` (no filters), `/search <query>`, `/search-history <query>`, `/memory list [--type <type>]`, `/memory path`, `/undo list`, `/plan`, `/plan list`, `/schedule list`, `/skills list`, `/skills info <name>`, `/mcp`, `/mcp list`, `/watch`, `/watch stop`, `/job list`, `/job poll <id>`, `/job log <id>`, `/job stop <id>`, `/job capabilities`, `/job schedule [list]`, `/workflows help`, `/workflows validate <name-or-file>`, `/workflows inbox [run-id]` |
+| Other forms deferred until idle | `/clear`, `/new`, `/model`, `/effort`, `/permission`, `/resume`, `/history`, `/search`, `/search-history`, `/watch`, `/branch`, `/compact`, `/memory`, `/fast`, `/deep`, `/undo`, `/plan`, `/schedule`, `/job`, `/workflows`, `/skills`, `/agents`, `/agent`, `/mcp`, `/customize`, `/login`, `/logout` |
 | Rejected while busy (never queued) | `/voice` |
-| Immediate app handlers (outside the registry) | `/ps <question>`, `/queue`, `/queue retry` |
+| Immediate app handlers (outside the registry) | `/ps <question>`, `/queue`, `/queue retry`, `/notices` |
 
-Deferral is **command-level, not argument-aware**: every form of a deferred command, including read-only subcommands or help arguments, waits until idle. For example, `/memory list` and `/memory path` defer just like `/memory add`; `/remember` and `/forget` remain immediate. Deferred commands enter the FIFO request queue for automatic execution when idle, even if generation is paused; they are not treated as direction for the paused turn. Use `/queue` to manage queued requests.
+Dispatch is **argument-aware**. For example, `/undo list` can inspect the undo stack while working, but `/undo <n>` waits. `/history list` is immediate, but adding `--limit`, `--provider`, or `--model` queues it. All forms of `/model`, `/effort`, and `/permission` wait. Deferred commands show why they were queued and run in FIFO order when idle, even if submitted during a pause; they do not redirect the paused turn. Use `/queue` to open the request queue. `/queue retry` unblocks processing if the queue is paused after a failure. Immediate commands still enforce normal approval requirements; for example, `/job stop <id>` may require inline consent while busy.
 
 Ordinary immediate slash dispatch requires **no pending attachments**. With attachments, the command follows normal request serialization instead. `/voice` requires an idle prompt without attachments and rejects busy submissions rather than opening the microphone later.
 
@@ -32,15 +33,17 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/help [command]` | List available commands or show detailed usage for one command, including `/ps`. |
 | `/help --search <query>` | Find loaded commands by a literal phrase in their name or description, ignoring case. |
 | `/clear`, `/new` | Start a clean chat without deleting saved sessions. |
-| `/model [name]` | Open the model picker or switch to a specific model; Agav switches provider when needed. |
+| `/model [name]` | Open the model picker or switch to a specific model. In the picker, press Ctrl+Y to copy the highlighted model ID or drag to copy selected text. Enter selects the model and switches provider when needed. |
 | `/effort [minimal\|low\|medium\|high\|max]` | Show or set reasoning effort. |
 | `/fast`, `/deep` | Switch to the current provider's fast or most capable model shortcut. Vertex AI `/deep` requires location `global`, `us`, or `eu`; regional locations are rejected without changing the model or location. |
 | `/compact` | Summarize older conversation content to free context-window space. |
 | `/context` | Show the estimated current context-window occupancy: a breakdown for the system prompt, tools, MCP tools, skills, and messages, with Used and Free totals. While a turn is running, it excludes in-flight output. Session totals are cumulative across requests and can exceed the context window. |
-| `/status` | Show session, model, permissions, working directory, and token usage at a glance. |
+| `/context --json` | Return the same estimated occupancy as numeric JSON, without cumulative session totals. |
+| `/status` | Show the full session ID and saved title when available, plus model, permissions, working directory, token usage, and any locally signed-in consumer account. |
 | `/permission [ask\|auto-accept\|deny-writes]` | Show the current permission mode, or change it for this session. Run bare `/permission` to open an interactive picker. The chosen mode persists for the session and is restored when you resume it. Organization policy may enforce a stricter minimum that cannot be loosened. Interactive sessions only. See [Security → Permission modes](/reference/security#permission-modes). |
-| `/export [json\|--full] [sanitize\|--sanitize]` | Write the retained conversation to a timestamped Markdown or JSON file in the working directory. Use `--full` for complete retained tool text in Markdown or add `sanitize` for best-effort redaction; review before sharing. See [export details](/workflows/sessions-and-memory#export-a-conversation). |
+| `/export [json\|--full] [sanitize\|--sanitize] [--branch-only]` | Write the retained conversation to a timestamped Markdown or JSON file. Add `--branch-only` to export messages added to the active conversation branch, `--full` for complete retained tool text in Markdown, or `sanitize` for best-effort redaction. See [export details](/workflows/sessions-and-memory#export-a-conversation). |
 | `/copy [N]` | Copy an assistant response to the clipboard. With no argument, it copies the most recent response that contains text; `/copy 2` copies the second-most-recent. `N` must be a positive integer, and it counts only responses with text, so turns that only call tools or contain blank text are skipped. |
+| `/copy code [N] [--response M]` | Copy a fenced code block from the latest assistant response. Defaults to its first block. `--response M` takes the block from the Mth-most-recent response instead, numbered as in `/copy M`, so `/copy code 2 --response 3` copies the second block of the third-most-recent response. |
 | `/voice` | Dictate an editable prompt with offline Agav-managed native transcription; offers verified setup downloads and an idle prompt without attachments. See [Voice Input](/features/voice-input). |
 | `/ps <question>` | Run a brief independent side query with read-only conversation context, without interrupting the active main task. It cannot use tools or plugins. |
 
@@ -49,9 +52,9 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | Command | Purpose |
 | --- | --- |
 | `/resume [id]` | Open the saved/live session picker or resume one by ID or prefix match, including worker progress and pending approvals. An ambiguous prefix lists up to 10 matching IDs without loading a session. |
-| `/history [list [--limit <count>]]` | Browse saved sessions, or list them in plain text with an optional limit. |
+| `/history [list [--limit <count>] [--provider <name>] [--model <name>]]` | Browse saved sessions or list them in plain text. Filters match the exact provider and the full model ID (case-insensitive for the model); the limit applies after filtering. |
 | `/detach` | Close the UI while the current worker-owned turn continues locally. Requires `backgroundJobsEnabled: true` before starting the task; the configurable `detachSession` shortcut (default Ctrl+D) also works at approval prompts. See [Detached sessions](/features/detached-sessions). |
-| `/search <query>` | Search saved session messages, names, and titles by keyword. |
+| `/search [query]`, `/search-history [query]` | Search saved session messages, names, and titles. With no query, open the interactive history search. |
 | `/name <title>` | Give the current session a descriptive name. |
 | `/branch [name]` | List branches in the current session lineage, or fork the current conversation into a named branch. |
 | `/plan` | Show this session's plan and step progress. |
@@ -59,21 +62,25 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | `/plan <n> <status>` | Set step `<n>` to `pending`, `in_progress`, `done`, or `failed`. |
 | `/plan clear` | Delete this session's plan. Use `no plan` in a prompt to skip automatic planning. |
 | `/steer <directive>` | Redirect the main agent, or only the inspected subagent, at its next safe step in the same turn. Works while worker-attached, including after resume. Main directives are not inherited by children. Bare `/steer`, `list`, `remove <number>`, and `clear` manage foreground main directives only, not worker attachments or child inspectors. See [steering](/workflows/planning-and-steering#steering). |
-| `/loop` | Show the active loop. `/loop <interval> <prompt>` repeats an agent prompt; intervals support `s`, `m`, and `h`. `/loop <prompt>` defaults to ten minutes, and `/loop stop` cancels it. |
-| `/schedule` | List saved tasks. Use `/schedule add "<five-field cron>" <prompt>`, then `enable`, `disable`, or `remove <id>` to manage them. |
-| `/job` | Open the background-jobs manager (requires `backgroundJobsEnabled`). Subcommands: `list`, `poll <id>`, `log <id> [--stderr] [--tail N]`, `stop <id>`, `schedule list\|create\|revoke`, and `capabilities`. See [Background jobs](/features/background-jobs). |
-| `/watch <path\|glob> <command>` | Run a shell command after matching files change. `/watch stop` cancels it; glob patterns are supported. |
-| `/undo`, `/undo list` | Revert the most recent tracked file change or inspect the current in-memory undo stack. Unknown arguments show usage without changing files or consuming an undo entry. |
+| `/loop` | Show the active loop. `/loop <interval> <prompt>` repeats an agent prompt; intervals support `s`, `m`, and `h`. `/loop <prompt>` defaults to ten minutes, and `/loop stop` cancels it. The maximum interval is 2,147,483,647 ms (about 24.9 days). |
+| `/schedule`, `/schedule list` | Open the schedule manager or list saved tasks. Use `/schedule add "<five-field cron>" <prompt>` to create a task, or `enable`, `disable`, or `remove` with a task ID to manage it. |
+| `/schedule update <id> [--cron "<five-field cron>"] [--prompt <text>]` | Change the cron expression, prompt, or both. At least one flag is required. Use the full ID or a unique prefix; exact matches take precedence, and ambiguous prefixes are rejected. See [Automation](/workflows/automation#schedule-persistent-tasks) for examples. |
+| `/job` | Open the background-jobs manager (requires `backgroundJobsEnabled`). Subcommands: `list`, `poll <id>`, `log <id> [--stderr] [--tail N]`, `stop <id>`, `schedule list\|create\|revoke`, `abandon <full-id> --acknowledge-unverified`, and `capabilities`. Abandoning releases capacity without confirming that the process stopped. In the manager, **D** (Delete stopped) opens a confirmation to delete finished jobs and eligible inactive schedules across both tabs. See [Background jobs](/features/background-jobs). |
+| `/workflows` | Open the workflow manager. Use `/workflows help` for validation, launch, and run-management commands. Requires both workflow and background-job opt-ins; see [Workflow reference](/reference/workflows). |
+| `/watch <path\|glob> <command>` | Run a command with `/bin/sh` on matching changes. Bare `/watch` shows status; `/watch stop` stops the watcher and clears any pending callback. Not a native Windows shell runner. |
+| `/undo`, `/undo list`, `/undo <n>` | Revert the most recent tracked file change, list the undo stack, or revert only entry `<n>` from that list. Invalid arguments do not change files or consume an entry. |
+| `/open [n]` | List registered session attachments or open or preview attachment number `<n>`. |
 
 ## Memory and skills
 
 | Command | Purpose |
 | --- | --- |
-| `/memory`, `/memory list` | List project-scoped persistent memories. |
+| `/memory`, `/memory list [--type user\|feedback\|project\|reference]` | Open the memory manager or print project memories, optionally filtered by type. |
 | `/memory add <text>` | Save a persistent memory. |
 | `/memory search <query>` | Show memories whose name, description, or content contains the query, ignoring case, with an excerpt of each match. |
 | `/memory show <name>` | Show the complete memory by its exact stored name. |
 | `/memory delete <name>`, `/memory rm <name>` | Delete one memory by its listed name. |
+| `/memory rename <old-name> <new-name>` | Rename one memory by its listed name, keeping its type, description, and content. |
 | `/memory clear`, `/memory path` | Delete all project memories or show their storage directory. |
 | `/remember <text>` | Shortcut for `/memory add <text>`. |
 | `/forget [name]` | List memories when called without an argument, or delete a memory by name. |
@@ -92,26 +99,39 @@ Ordinary immediate slash dispatch requires **no pending attachments**. With atta
 | Command | Purpose |
 | --- | --- |
 | `/agents` | Open the agent management TUI. `[1]` List tab shows installed agents with credentials status, enable/disable toggle, and config editor, including native-tool selection for editable native agents. `[2]` Marketplace tab browses, searches, and installs community agents. `[3]` Create tab lists user-created agents and templates, and opens a 5-step wizard to create or edit agents. |
+| `/agent [name]`, `/agent off` | Check, set, or clear the session’s named-agent lock. |
+
+## MCP
+
+| Command | Purpose |
+| --- | --- |
+| `/mcp`, `/mcp list` | Show connected servers and servers awaiting authentication. |
+| `/mcp auth <name>`, `/mcp logout <name>` | Sign in explicitly to an MCP server or clear its cached local OAuth credentials. See [MCP](/features/mcp). |
+
+Completed MCP tool results identify the server that supplied them.
 
 ## Appearance
 
 | Command | Purpose |
 | --- | --- |
-| `/customize` | Open the customization interface to show, hide, and reorder footer (status bar) segments. Changes apply to the footer live and persist across sessions in the `statusBar` config field. Interactive terminal sessions only. |
+| `/customize` | Open the customization interface to show, hide, and reorder footer (status bar) segments. Use the mouse wheel to move through entries, left-click an entry to open/select it, and left-click a checkbox to toggle it. Changes apply to the footer live and persist across sessions in the `statusBar` config field. Interactive terminal sessions only. |
 
 ## Account
 
 | Command | Purpose |
 | --- | --- |
-| `/login` | Sign in to your organization (enterprise enrollment). Accepts the same flags as `agav login`: `--device`, `--oidc`, `--auth-code`, `--saml`, `--control-plane URL`, `--issuer URL`, and `--client-id ID`. Restart Agav to apply the new policy. |
+| `/login` | Open the consumer Agav account wizard. Choose **Sign in with your Agav account** for browser authorization, or **Paste an Agav API key** for secure key entry. Never include the key as a slash-command argument. |
+| `/logout --account` | Clear the local consumer account sign-in (`--consumer` is an alias). |
+| `/login --auth-code`, `/login --device`, `/login --oidc`, `/login --saml` | Enroll in your organization. An explicit enterprise flag is required; `--control-plane`, `--issuer`, and `--client-id` also select enterprise enrollment. See [enterprise login options](/reference/cli#enterprise-login-subcommands). Restart Agav to apply the new policy. |
 | `/logout` | Sign out of your organization and clear the cached enrollment. Restart Agav to apply. |
 
 ## Diagnostics and exit
 
 | Command | Purpose |
 | --- | --- |
+| `/notices` | Read details of session errors and warnings shown in the footer. |
 | `/debug` | Show conversation, plan, sandbox, token, plugin, MCP, undo, and memory state. |
-| `/changelog [on\|off]` | Show release notes from the latest update. Agav also shows the changelog automatically once on the first launch after an update. `/changelog off` stops that automatic display and `/changelog on` restores it; the choice persists across sessions. Bare `/changelog` shows the notes either way. |
+| `/changelog [on\|off\|status]` | Show release notes from the latest update. Agav also shows the changelog automatically once on the first launch after an update. `/changelog off` stops that automatic display and `/changelog on` restores it; the choice persists across sessions. `/changelog status` reports the current choice without changing it or fetching notes. Bare `/changelog` shows the notes either way. |
 | `/exit` | Save the current session and exit Agav. |
 
 MCP prompts appear as additional slash commands supplied by their connected server. Project skills and user-installed skills likewise add commands after Agav restarts; use `/help` or type `/` to see what is available in the current session.

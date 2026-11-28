@@ -6,4 +6,4 @@ navHidden: true
 
 # Create and Use Loops
 
-Loops are now documented alongside file watches and persisted schedule definitions in [Automate with Loops, Watch, and Schedules](/guides/scheduler).
+See [Repeat a prompt](/workflows/automation#repeat-a-prompt) for `/loop` syntax, interval limits, and how to stop it, or [Automate with Loops, Watch, and Schedules](/guides/scheduler) for a worked example.

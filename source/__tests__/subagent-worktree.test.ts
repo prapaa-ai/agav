@@ -477,16 +477,31 @@ describe("worker Git integration", () => {
     commit(tree.path);
     write(repo, "unrelated.txt", "keep\n");
     const marker = join(hooks, "merging");
-    hook("prepare-commit-msg", `if [ "$2" = merge ]; then touch '${marker}'; sleep 0.3; fi`);
+    const release = join(hooks, "continue-merge");
+    // Hold the merge at the hook until the test has cancelled it.
+    hook("prepare-commit-msg", `
+      if [ "$2" = merge ]; then
+        touch '${marker}'
+        while [ ! -f '${release}' ]; do sleep 0.05; done
+      fi
+    `);
     const controller = new AbortController();
     const pending = worktrees.applyWorktreeChanges(tree, controller.signal);
-    await vi.waitFor(() => expect(existsSync(marker)).toBe(true));
-    controller.abort();
+    try {
+      await Promise.race([
+        vi.waitFor(() => expect(existsSync(marker)).toBe(true), { timeout: 8_000 }),
+        pending.then(() => { throw new Error("Integration finished before reaching the merge hook"); }),
+      ]);
+    } finally {
+      controller.abort();
+      writeFileSync(release, "");
+      await pending;
+    }
     expect(await pending).toEqual({ applied: false, cancelled: true });
     expectParentClean(tree.baseCommit);
     expect(existsSync(join(repo, "committed.txt"))).toBe(false);
     expect(readFileSync(join(repo, "unrelated.txt"), "utf8")).toBe("keep\n");
-  });
+  }, 20_000);
 });
 
 function deps(signal?: AbortSignal): SubagentToolDeps {

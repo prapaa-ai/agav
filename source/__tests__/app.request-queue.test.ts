@@ -3,18 +3,20 @@ import { createElement as h, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import render from "../ink/render.js";
 import App from "../app.js";
+import { CommandRegistry } from "../commands/registry.js";
+import * as sandbox from "../utils/sandbox.js";
 import { DEFAULT_KEYBINDINGS } from "../config/keybindings.js";
 import type { DisplayMessage } from "../components/message-list.js";
 import type { AgavConfig } from "../config/config.js";
 
-const boundary = vi.hoisted(() => ({ submit: vi.fn(), intervene: vi.fn(), cancel: vi.fn(), promptProps: undefined as any, handleSubmit: undefined as undefined | ((value: string) => Promise<void>), busy: false, paused: false, detach: vi.fn(), canDetach: false, confirmation: undefined as any }));
+const boundary = vi.hoisted(() => ({ submit: vi.fn(), intervene: vi.fn(), cancel: vi.fn(), promptProps: undefined as any, handleSubmit: undefined as undefined | ((value: string) => Promise<void>), busy: false, paused: false, workerAttached: false, detach: vi.fn(), canDetach: false, confirmation: undefined as any }));
 vi.mock("../providers/registry.js", () => ({ createProvider: () => null }));
 vi.mock("../hooks/use-paste-handler.js", () => ({ useClipboardImageDetector: () => {} }));
 vi.mock("../components/input-prompt.js", () => ({ default: (props: any) => { boundary.promptProps = props; boundary.handleSubmit = props.onSubmit; return null; } }));
 vi.mock("../hooks/use-agent.js", () => ({ useAgent: () => {
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   return {
-    messages, isLoading: boundary.busy, isGenerationPaused: boundary.paused, toolCalls: [], subagentStates: [], loadedPlugins: [], mcpServers: [],
+    messages, isLoading: boundary.busy, isWorkerAttached: boundary.workerAttached, isGenerationPaused: boundary.paused, toolCalls: [], subagentStates: [], loadedPlugins: [], mcpServers: [],
     mcpPromptCommands: [], skillCommands: [], agentCommands: [], tokenUsage: { inputTokens: 0, outputTokens: 0 },
     conversation: { getMessages: () => [] }, submit: boundary.submit,
     addDisplayMessage: (message: DisplayMessage) => setMessages(prev => [...prev, message]),
@@ -42,6 +44,205 @@ async function mount(keybindings = DEFAULT_KEYBINDINGS) {
 }
 
 describe("request queuing", () => {
+
+  it("dispatches /job list, /job stop and bare /branch mid-turn but queues disruptive variants", async () => {
+    boundary.busy = true;
+    const execute = vi.spyOn(CommandRegistry.prototype, "execute").mockImplementation(async input => ({ type: "message", text: `Executed ${input}` }));
+    const ui = await mount();
+    try {
+      for (const input of ["/job list", "/job stop abc", "/branch"]) {
+        await boundary.handleSubmit!(input);
+        await vi.waitFor(() => expect(ui.output()).toContain(`Executed ${input}`));
+      }
+      expect(ui.output()).not.toContain("Queued 1");
+      for (const input of ["/model", "/effort", "/permission", "/job", "/branch experiment"]) {
+        await boundary.handleSubmit!(input);
+        expect(execute).not.toHaveBeenCalledWith(input, expect.anything());
+      }
+      await vi.waitFor(() => expect(ui.output()).toContain("Queued 5"));
+      expect(execute).toHaveBeenCalledTimes(3);
+    } finally { ui.instance.unmount(); boundary.busy = false; execute.mockRestore(); }
+  });
+
+  it.each([
+    ["/job", "Cannot open a new UI while working."],
+    ["/model", "Cannot open a new UI while working."],
+    ["/effort high", "Cannot modify execution or session state while working."],
+    ["/permission ask", "Cannot modify execution or session state while working."],
+    ["/unknown", "Cannot run this command in the current state."],
+  ])("notifies immediately when %s is queued with its reason", async (input, reason) => {
+    boundary.busy = true;
+    const ui = await mount();
+    try {
+      await boundary.handleSubmit!(input);
+      const name = input.split(" ")[0];
+      await vi.waitFor(() => expect(ui.output()).toContain(`Queued ${name}: ${reason} Waiting for idle.`));
+      expect(ui.output()).toContain("Queued 1");
+    } finally { ui.instance.unmount(); boundary.busy = false; }
+  });
+
+  it("expires notices after 18 seconds, resets the timer on another enqueue, and does not restart on drain", async () => {
+    boundary.busy = true;
+    const execute = vi.spyOn(CommandRegistry.prototype, "execute").mockResolvedValue({ type: "message", text: "Queued command executed" });
+    const ui = await mount();
+    // Keep Ink's rendering timers real; capture only the notification timeout.
+    const originalSetTimeout = globalThis.setTimeout;
+    const notices: { callback: () => void; timer: ReturnType<typeof setTimeout> }[] = [];
+    const schedule = vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+      const timer = originalSetTimeout(callback, delay, ...args);
+      if (delay === 18_000) notices.push({ callback: () => callback(...args), timer });
+      return timer;
+    }) as typeof setTimeout);
+    const clear = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      await boundary.handleSubmit!("/effort high");
+      await vi.waitFor(() => expect(ui.frame()).toContain("Queued /effort:"));
+      expect(notices).toHaveLength(1);
+      await boundary.handleSubmit!("/permission ask");
+      await vi.waitFor(() => expect(ui.frame()).toContain("Queued /permission:"));
+      expect(notices).toHaveLength(2);
+      expect(clear).toHaveBeenCalledWith(notices[0]!.timer);
+      // The captured callback represents the exact 18,000ms deadline, without
+      // waiting 18 real seconds or advancing unrelated Ink timers.
+      notices[1]!.callback();
+      await vi.waitFor(() => expect(ui.frame()).not.toContain("Queued /permission:"));
+      boundary.busy = false; ui.rerender();
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+      expect(notices).toHaveLength(2);
+      expect(ui.frame()).not.toContain("Queued /permission:");
+      await boundary.handleSubmit!("/help");
+      expect(notices).toHaveLength(2);
+    } finally {
+      ui.instance.unmount();
+      for (const notice of notices) clearTimeout(notice.timer);
+      clear.mockRestore(); schedule.mockRestore(); execute.mockRestore(); boundary.busy = false;
+    }
+  });
+
+  it("clears the queued notice timeout when unmounted", async () => {
+    boundary.busy = true;
+    const ui = await mount();
+    const schedule = vi.spyOn(globalThis, "setTimeout");
+    const clear = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      await boundary.handleSubmit!("/job");
+      const index = schedule.mock.calls.findIndex(call => call[1] === 18_000);
+      expect(index).toBeGreaterThanOrEqual(0);
+      const timer = schedule.mock.results[index]!.value;
+      ui.instance.unmount();
+      expect(clear).toHaveBeenCalledWith(timer);
+    } finally { ui.instance.unmount(); clear.mockRestore(); schedule.mockRestore(); boundary.busy = false; }
+  });
+
+  it.each(["paused", "worker-attached"])("keeps inspection immediate but settings queued while %s", async state => {
+    boundary.busy = true;
+    boundary.paused = state === "paused";
+    boundary.workerAttached = state === "worker-attached";
+    boundary.intervene.mockReset();
+    const execute = vi.spyOn(CommandRegistry.prototype, "execute").mockImplementation(async input => ({ type: "message", text: `Executed ${input}` }));
+    const ui = await mount();
+    try {
+      await boundary.handleSubmit!("/permission auto-accept");
+      await boundary.handleSubmit!("/job list");
+      await boundary.handleSubmit!("/branch");
+      await vi.waitFor(() => expect(ui.output()).toContain("Executed /branch"));
+      expect(execute.mock.calls.map(call => call[0])).toEqual(["/job list", "/branch"]);
+      expect(boundary.intervene).not.toHaveBeenCalled();
+      expect(ui.output()).toContain("Queued 1");
+    } finally {
+      ui.instance.unmount(); execute.mockRestore();
+      boundary.busy = false; boundary.paused = false; boundary.workerAttached = false;
+    }
+  });
+
+  it("allows inspection during pending preparation without releasing its ownership", async () => {
+    boundary.busy = false;
+    let finish!: (accepted: boolean) => void;
+    boundary.submit.mockReset().mockReturnValueOnce(new Promise<boolean>(resolve => { finish = resolve; }));
+    const execute = vi.spyOn(CommandRegistry.prototype, "execute").mockImplementation(async input => ({ type: "message", text: `Executed ${input}` }));
+    const ui = await mount();
+    try {
+      const preparing = boundary.handleSubmit!("preparing");
+      await vi.waitFor(() => expect(boundary.submit).toHaveBeenCalledTimes(1));
+      await boundary.handleSubmit!("/model");
+      await boundary.handleSubmit!("/job list");
+      await boundary.handleSubmit!("/branch");
+      await vi.waitFor(() => expect(ui.output()).toContain("Executed /branch"));
+      expect(execute.mock.calls.map(call => call[0])).toEqual(["/job list", "/branch"]);
+      // A handler's approval fallback must not open a manager during preparation.
+      expect(execute.mock.calls[0]![1].isLoading).toBe(true);
+      expect(boundary.submit).toHaveBeenCalledTimes(1);
+      boundary.busy = true;
+      finish(true); await preparing;
+      boundary.busy = false; ui.rerender();
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledWith("/model", expect.anything()));
+      expect(execute.mock.calls.map(call => call[0])).toEqual(["/job list", "/branch", "/model"]);
+    } finally { finish?.(false); ui.instance.unmount(); execute.mockRestore(); boundary.busy = false; }
+  });
+
+  it("queues slash text with attachments as a model submission rather than bypassing the worker", async () => {
+    boundary.busy = true;
+    boundary.submit.mockReset().mockResolvedValue(true);
+    const execute = vi.spyOn(CommandRegistry.prototype, "execute");
+    const ui = await mount();
+    try {
+      boundary.promptProps.onPaste("attached context without credentials".repeat(8), () => {});
+      // onPaste updates React state; wait for the fresh submit closure.
+      ui.rerender();
+      await new Promise(resolve => setTimeout(resolve, 60));
+      await boundary.handleSubmit!("/job list");
+      await vi.waitFor(() => expect(ui.output()).toContain("Queued /job: Cannot run this command in the current state."));
+      expect(execute).not.toHaveBeenCalled();
+      expect(boundary.submit).not.toHaveBeenCalled();
+      boundary.busy = false; ui.rerender();
+      await vi.waitFor(() => expect(boundary.submit).toHaveBeenCalledTimes(1));
+      expect(boundary.submit.mock.calls[0]![0]).toBe("/job list");
+      expect(boundary.submit.mock.calls[0]![1]).toEqual([expect.objectContaining({ type: "text", text: "attached context without credentials".repeat(8) })]);
+      expect(execute).not.toHaveBeenCalled();
+    } finally { ui.instance.unmount(); execute.mockRestore(); boundary.busy = false; }
+  });
+
+  it("allows inspection but prevents UI fallback during direct shell work", async () => {
+    boundary.busy = false;
+    boundary.submit.mockReset().mockResolvedValue(true);
+    let finish!: (value: Awaited<ReturnType<typeof sandbox.runInSandbox>>) => void;
+    const run = vi.spyOn(sandbox, "runInSandbox").mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    const execute = vi.spyOn(CommandRegistry.prototype, "execute").mockImplementation(async input => ({ type: "message", text: `Executed ${input}` }));
+    const ui = await mount();
+    try {
+      const shell = boundary.handleSubmit!("!echo held-shell");
+      await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+      await boundary.handleSubmit!("/job");
+      await boundary.handleSubmit!("/job list");
+      await boundary.handleSubmit!("/branch");
+      expect(execute.mock.calls.map(call => call[0])).toEqual(["/job list", "/branch"]);
+      expect(execute.mock.calls[0]![1].isLoading).toBe(true);
+      expect(boundary.submit).not.toHaveBeenCalled();
+      finish({ stdout: "held-shell", stderr: "", error: null } as Awaited<ReturnType<typeof sandbox.runInSandbox>>);
+      await shell;
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledWith("/job", expect.anything()));
+      expect(boundary.submit).toHaveBeenCalledTimes(1);
+    } finally {
+      finish?.({ stdout: "", stderr: "", error: null } as Awaited<ReturnType<typeof sandbox.runInSandbox>>);
+      ui.instance.unmount(); run.mockRestore(); execute.mockRestore(); boundary.busy = false;
+    }
+  });
+
+  it("executes disruptive commands normally when idle without queue feedback", async () => {
+    boundary.busy = false;
+    const execute = vi.spyOn(CommandRegistry.prototype, "execute").mockResolvedValue({ type: "message", text: "Executed while idle" });
+    const ui = await mount();
+    try {
+      for (const input of ["/model", "/effort high", "/permission ask", "/job", "/branch experiment"]) {
+        await boundary.handleSubmit!(input);
+        expect(execute).toHaveBeenCalledWith(input, expect.anything());
+      }
+      await vi.waitFor(() => expect(ui.output()).toContain("Executed while idle"));
+      expect(ui.output()).not.toContain("Queued 1");
+      expect(ui.output()).not.toContain("Waiting for idle.");
+    } finally { ui.instance.unmount(); execute.mockRestore(); }
+  });
+
   it("resolves configured detach before consent guards without waiting for the hint", async () => {
     boundary.canDetach = true;
     boundary.confirmation = { toolName: "write_file", input: {}, resolve: vi.fn() };

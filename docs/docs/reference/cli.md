@@ -19,9 +19,8 @@ agav update [version]        # Update the installed release
 
 `--max-turns <number>` caps agent iterations **per prompt** across interactive, print (`-P`), and run (`run`) modes.
 
-- Interactive: the cap applies to each user turn in the session. The budget resets for every new prompt and is shared with subagents, skills, and tool calls.
-- Print mode: a single prompt runs with the cap; when reached the agent summarizes its work and stops.
-- Run mode: the cap limits internal model/tool iterations for the task prompt.
+- Interactive: the cap applies to each user turn in the session. The budget resets for every new prompt and is shared with subagents, named agents, and skills. Tool execution itself does not spend an additional turn.
+- Print and run modes: the cap applies across model requests for the one-shot task, including retries.
 
 The value must contain decimal digits only and be between 1 and 9007199254740991; signs, fractions, scientific notation, and hexadecimal notation are rejected. Both `--max-turns 20` and `--max-turns=20` are accepted.
 
@@ -33,7 +32,7 @@ The flag overrides `maxIterations` in configuration for the current session only
 
 ```bash
 agav -c effort=low -c maxIterations=200
-agav -P -c provider=ollama "summarize this repo"
+agav -c provider=ollama -P "summarize this repo"
 ```
 
 - Repeatable; when the same key is given twice, the later one wins.
@@ -41,7 +40,7 @@ agav -P -c provider=ollama "summarize this repo"
 - `true`/`false` and numbers are coerced; object and array values are JSON: `-c 'hooks={"afterEdit":"npm test"}'`.
 - Unknown keys, malformed entries, or invalid values fail fast with a clear error, including a "did you mean" hint for typos.
 - Dedicated flags still win on conflict (`-c effort=low --effort high` → `high`), and overrides are never written back to `config.json`.
-- `agav login`, `agav logout`, `agav job`, `agav mcp`, and `agav workflows` reject `-c` outright: they dispatch before any session exists, so an override would be silently dropped. Use `agav login --control-plane <url>` to point login at a control plane.
+- `agav login`, `agav logout`, `agav job`, `agav mcp`, and `agav workflows` reject `-c` outright: they dispatch before any session exists, so an override would be silently dropped. Use `agav login --control-plane <url>` for enterprise enrollment at a specific control plane.
 - Organization-managed policy outranks `-c` on every field it enforces; enforcement keys such as `orgManagedProvider` or `orgPermissionFloor` are rejected outright.
 
 Registered overrides also propagate privately to interactive session workers, using their effective values after dedicated flags and organization policy are applied. See [Detached sessions](/features/detached-sessions#security-and-process-lifetime).
@@ -60,7 +59,8 @@ Registered overrides also propagate privately to interactive session workers, us
 | Option | Description |
 | --- | --- |
 | `--provider`, `-p` | `anthropic`, `openai`, `openrouter`, `nvidia`, `deepseek`, `gemini`, `vertex-ai`, or `ollama` |
-| `--model`, `-m` | Provider model identifier |
+| `--model`, `-m` | Provider model identifier; the default for a fresh Anthropic configuration is `claude-sonnet-5-5` |
+| `--cwd <dir>` | Set the working directory before loading session/project context and resolving relative paths (for example, `agav --cwd "my project"`) |
 | `--effort` | `minimal`, `low`, `medium`, `high`, or `max` |
 | `--ollama-host` | Ollama host when no complete endpoint is set |
 | `--ollama-port` | Ollama port |
@@ -69,11 +69,12 @@ Registered overrides also propagate privately to interactive session workers, us
 | `--print`, `-P` | Print mode |
 | `--stream` | Stream print-mode response text |
 | `--output-schema <json\|@file>` | Validate print-mode output against JSON Schema |
+| `--trajectory <path>` | Write a JSON transcript, token usage, and timing for `agav run` or print mode only. See [Trajectory export](/workflows/non-interactive#trajectory-export). |
 | `--permission <json>` | JSON tool policy for `agav run` (distinct from the interactive [`/permission`](/reference/slash-commands) session mode) |
 | `--max-turns <number>` | Limit the number of agent iterations per prompt in interactive, print, and run modes |
 | `--config`, `-c key=value` | Override one config value for the session; repeatable ([details](#--config--c)) |
 | `--provider-idle-timeout <ms>` | Idle timeout in milliseconds waiting for provider stream activity (1–2147483647 or `disabled`) |
-| `--resume`, `-r [id]` | Open the session picker or resume by ID prefix |
+| `--resume`, `-r [id]` | Open the session picker or resume by exact ID or unique prefix |
 | `--name <title>` | Set the initial name for a new interactive session. Interactive mode only; rejected with `-P`/`run`. |
 | `--search` | Enable the web search tool for this session |
 | `--auto-accept`, `-y` | Skip normal tool confirmations |
@@ -85,7 +86,7 @@ Registered overrides also propagate privately to interactive session workers, us
 | `--version`, `-v` | Print the version |
 | `--help`, `-h` | Print help |
 
-Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, and max turns  and provider idle timeout. 
+Both `--option value` and `--option=value` are accepted for provider, model, effort, Ollama values, output schema, permissions, max turns, provider idle timeout, working directory, and trajectory path.
 `--config` accepts `--config key=value` and `--config=key=value`; `-c` takes its `key=value` argument as a single token.
 
 ## Startup provider and model selection
@@ -124,6 +125,8 @@ When you start a plain `agav` session, the provider and model are resolved in th
 | `AGAV_MARKETPLACE_URL` | Override the default agent marketplace URL |
 | `LIBREOFFICE_PATH` | Office document conversion executable |
 | `AGAV_ORG_CONFIG` | Path to an organization-managed policy file (see [Configuration](./configuration#organization-managed-configuration)) |
+| `AGAV_ACCOUNT_SERVICE` | Override the consumer account-service URL (not the enterprise control plane) |
+| `AGAV_CONTROL_PLANE` | Override the enterprise control-plane URL (not the consumer account service) |
 | `AGAV_OIDC_TOKEN` | Pre-supplied OIDC token for `agav login --oidc` in automation |
 | `AGAV_AUDIT_SINK` | HTTPS endpoint that receives secret-free `agav login`/`logout` audit events (see [Audit events](#audit-events-siem)) |
 
@@ -182,12 +185,28 @@ agav sessions rm <id>                  # Alias for delete
 
 `delete` (and its `rm` alias) accept an exact session ID or a unique ID prefix. An unknown ID returns an error; an ambiguous prefix that matches more than one session is rejected rather than guessing. List session IDs with `--resume` or the `/resume` slash command.
 
+## MCP and workflow subcommands
+
+```text
+agav mcp auth <name>       Sign in to a configured OAuth-protected MCP server
+agav mcp logout <name>     Remove the server's cached local OAuth credentials
+agav workflows help        Show workflow commands and options
+```
+
+After CLI MCP sign-in or sign-out, restart running Agav sessions to apply the change. See [MCP](/features/mcp) and the [Workflow reference](/reference/workflows) for setup, consent, and run management.
+
+## Consumer account sign-in
+
+Bare `agav login` signs in to your **personal Agav account**. Create or copy an Agav API key at [agav.dev/account](https://agav.dev/account), run `agav login`, and paste it at the hidden key prompt. With piped input, the CLI reads one key line from stdin instead; feed it from a trusted secret source. Never pass the key as an argument: `--key` and bare key operands are not accepted.
+
+For browser sign-in, start interactive Agav and run [`/login`](/reference/slash-commands#account) to open the wizard. `--account` and `--consumer` explicitly select the consumer flow; `--account-service <url>` overrides `AGAV_ACCOUNT_SERVICE` and the hosted default (`https://agav.dev`). Do not mix these flags with enterprise options. Use `agav logout --account` to clear the local consumer sign-in. Bare `agav logout` is for enterprise enrollment.
+
 ## Enterprise login subcommands
 
-For organizations running an Agav control plane, `agav login` enrolls a developer: it authenticates through the organization's identity provider, retrieves the enforced [organization policy](./configuration#organization-managed-configuration), and caches it so subsequent sessions apply it.
+For organizations running an Agav control plane, `agav login` with an explicit enterprise flag enrolls a developer: it authenticates through the organization's identity provider, retrieves the enforced [organization policy](./configuration#organization-managed-configuration), and caches it so subsequent sessions apply it.
 
 ```bash
-agav login                              # Sign in; auto-selects the login flow
+agav login --control-plane https://auth.example.com  # Enroll; auto-select the flow
 agav login --auth-code                  # Force Authorization Code + PKCE (browser)
 agav login --device                     # Force the device flow (SSH / headless)
 agav login --oidc                       # Force OIDC token exchange (CI / automation)
@@ -200,17 +219,17 @@ Options:
 | Option | Purpose |
 | --- | --- |
 | `--control-plane <url>` | Control-plane address. See resolution order below. |
-| `--issuer <url>` | Identity-provider issuer (required for `--auth-code` and `--device`). |
-| `--client-id <id>` | OAuth client id registered for the Agav CLI (required for interactive flows). |
+| `--issuer <url>` | Identity-provider issuer for `--auth-code` and `--device`; can come from the control plane’s auth configuration. |
+| `--client-id <id>` | OAuth client ID for `--auth-code` and `--device`; can also come from the control plane’s auth configuration. |
 
-**Control-plane address resolution** (highest priority first). You do not need to set any of these for the hosted service — `agav login` works out of the box against Agav's hosted control plane:
+**Control-plane address resolution** (highest priority first). For the hosted control plane, select an enterprise flow (for example `agav login --auth-code`) without supplying an address:
 
 1. `--control-plane <url>`
 2. the `AGAV_CONTROL_PLANE` environment variable
 3. the `controlPlane` value in the organization policy (for a self-hosted control plane, shipped via MDM or a file)
-4. Agav's built-in hosted default
+4. `AGAV_DEFAULT_CONTROL_PLANE` if set, otherwise `https://auth.agav.dev`
 
-Flow selection when none is forced:
+Flow selection when enterprise enrollment is selected without a flow flag:
 
 - A CI OIDC token source (`AGAV_OIDC_TOKEN`, or a GitHub Actions-style token endpoint) or a non-interactive shell &rarr; **OIDC token exchange**.
 - An interactive terminal &rarr; **Authorization Code + PKCE**. If a browser cannot be opened (for example over SSH), rerun with `--device`.
@@ -221,7 +240,7 @@ The flows differ only in how the identity proof is obtained; all exchange it wit
 
 ### Audit events (SIEM)
 
-When an audit sink is configured, `agav login`/`agav logout` emit a secret-free JSON event per action (`login.attempt`, `login.success`, `login.failure`, `logout`) to the sink via `POST`. Each event carries the action, the login flow, the control-plane origin, the subject (on success), a reason **code** (on failure), an ISO-8601 timestamp, and `source: "agav-cli"` — never an `id_token`, gateway token, authorization code, or PKCE verifier. The failure `reason` is a fixed, allowlisted code (e.g. `unauthorized`, `network_error`, `timed_out`, `cancelled`, `protocol_error`, `error`), never a raw error message — so a message that happens to echo server content can never leak to the SIEM. Full error details still go to local stderr. Emission is best-effort: a slow, unreachable, or misconfigured sink never blocks or fails login.
+When an audit sink is configured, enterprise enrollment and sign-out emit a secret-free JSON event per action (`login.attempt`, `login.success`, `login.failure`, `logout`) to the sink via `POST`. Each event carries the action, the login flow, the control-plane origin, the subject (on success), a reason **code** (on failure), an ISO-8601 timestamp, and `source: "agav-cli"` — never an `id_token`, gateway token, authorization code, or PKCE verifier. The failure `reason` is a fixed, allowlisted code (e.g. `unauthorized`, `network_error`, `timed_out`, `cancelled`, `protocol_error`, `error`), never a raw error message — so a message that happens to echo server content can never leak to the SIEM. Full error details still go to local stderr. Emission is best-effort: a slow, unreachable, or misconfigured sink never blocks or fails login.
 
 Configure the sink (an HTTPS endpoint) by either:
 

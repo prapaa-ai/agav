@@ -11,18 +11,43 @@ interface Props {
   columns: number;
 }
 
+interface Selection { id?: number; ids: number[] }
+
+function sameIds(ids: number[], requests: Props["requests"]) {
+  return ids.length === requests.length && ids.every((id, i) => id === requests[i]!.id);
+}
+
+/** Index of the selected request, or of its nearest surviving neighbour (next first) once it is removed. */
+function selectedIndex(requests: Props["requests"], selection: Selection) {
+  const found = requests.findIndex(request => request.id === selection.id);
+  if (found >= 0 || !requests.length) return Math.max(0, found);
+  const at = selection.id === undefined ? -1 : selection.ids.indexOf(selection.id);
+  if (at < 0) return 0;
+  for (const id of [...selection.ids.slice(at + 1), ...selection.ids.slice(0, at).reverse()]) {
+    const neighbour = requests.findIndex(request => request.id === id);
+    if (neighbour >= 0) return neighbour;
+  }
+  return Math.min(at, requests.length - 1);
+}
+
 /** A bounded footer queue with stable-ID cancellation, independent of the editor. */
 export default function RequestQueue({ requests, onCancel, active, onClose, onActivate, columns }: Props) {
-  const [selected, setSelected] = useState(0);
-  const index = Math.min(selected, Math.max(0, requests.length - 1));
+  const [selection, setSelection] = useState<Selection>(() => ({ id: requests[0]?.id, ids: requests.map(request => request.id) }));
+  const index = selectedIndex(requests, selection);
+  const selectedId = requests[index]?.id;
   useEffect(() => {
-    setSelected(index);
+    setSelection(prev => prev.id === selectedId && sameIds(prev.ids, requests)
+      ? prev : { id: selectedId, ids: requests.map(request => request.id) });
     if (active && requests.length === 0) onClose();
-  }, [index, requests.length, active, onClose]);
+  }, [selectedId, requests, active, onClose]);
+  const select = (next: number) => {
+    const request = requests[next];
+    if (request) setSelection({ id: request.id, ids: requests.map(r => r.id) });
+  };
   useInput((input, key) => {
     if (key.escape || (key.ctrl && input === "q")) { onClose(); return; }
-    if (key.upArrow) setSelected(Math.max(0, index - 1));
-    if (key.downArrow) setSelected(Math.min(requests.length - 1, index + 1));
+    if (key.upArrow) select(Math.max(0, index - 1));
+    if (key.downArrow) select(Math.min(requests.length - 1, index + 1));
     if (key.delete || key.backspace) {
       const request = requests[index];
       if (request) onCancel(request.id);

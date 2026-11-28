@@ -73,3 +73,48 @@ describe("release build provenance attestations", () => {
     expect(body).toContain("--source-digest ${{ github.sha }}");
   });
 });
+
+// The release publishes two SBOMs, the production graph and the separate
+// dev/build graph, each with its own Sigstore SBOM attestation. Pin that wiring
+// so neither can be dropped or generated from anything but the release commit.
+describe("release SBOM attestations", () => {
+  const sbom = workflow.jobs["sbom"];
+  const sbomSteps = sbom.steps as any[];
+  const version = "${{ needs.check-version.outputs.version }}";
+  const files = [`agav-sbom-${version}.cdx.json`, `agav-build-sbom-${version}.cdx.json`];
+  const attests = sbomSteps.filter((step: any) => String(step.uses ?? "").startsWith("actions/attest-sbom"));
+
+  it("generates both SBOMs from the release commit and the frozen lockfile", () => {
+    const checkout = sbomSteps.find((step: any) => String(step.uses ?? "").startsWith("actions/checkout"));
+    expect(checkout.with.ref).toBe("${{ github.sha }}");
+    const install = sbomSteps.findIndex((step: any) => step.run === "pnpm install --frozen-lockfile");
+    const runs = sbomSteps.map((step: any) => String(step.run ?? ""));
+    const prod = runs.findIndex((run) => run === 'node scripts/gen-sbom.mjs "agav-sbom-${VERSION}.cdx.json"');
+    const build = runs.findIndex((run) => run === 'node scripts/gen-sbom.mjs --dev "agav-build-sbom-${VERSION}.cdx.json"');
+    expect(install).toBeGreaterThan(sbomSteps.indexOf(checkout));
+    expect(prod).toBeGreaterThan(install);
+    expect(build).toBeGreaterThan(install);
+  });
+
+  it("attests each SBOM on its own, pinned, with the required scopes, before upload", () => {
+    expect(sbom.permissions).toEqual({ contents: "read", "id-token": "write", attestations: "write" });
+    expect(attests.map((step: any) => step.with["sbom-path"])).toEqual(files);
+    const upload = sbomSteps.findIndex((step: any) => String(step.uses ?? "").startsWith("actions/upload-artifact"));
+    for (const step of attests) {
+      expect(step.uses).toMatch(/^actions\/attest-sbom@[0-9a-f]{40}$/);
+      expect(step.with["subject-path"]).toBe(step.with["sbom-path"]);
+      expect(step.if).toBeUndefined();
+      expect(step["continue-on-error"]).toBeUndefined();
+      expect(sbomSteps.indexOf(step)).toBeLessThan(upload);
+    }
+    const uploaded = String(sbomSteps[upload].with.path).split("\n").map((s) => s.trim()).filter(Boolean);
+    expect(uploaded).toEqual(files.flatMap((file) => [file, `${file}.sha256`]));
+  });
+
+  it("refuses to publish the release without either SBOM or its checksum", () => {
+    const prepare = (workflow.jobs["release"].steps as any[]).find((step: any) => step.name === "Prepare release assets");
+    const script = String(prepare.run);
+    expect(script).toContain('BUILD_SBOM="agav-build-sbom-${VERSION}.cdx.json"');
+    expect(script).toContain('for required in "$SBOM" "$SBOM.sha256" "$BUILD_SBOM" "$BUILD_SBOM.sha256"; do');
+  });
+});

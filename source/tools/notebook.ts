@@ -6,10 +6,12 @@ function isCellBound(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+type NotebookText = string | string[];
+
 interface NotebookCell {
   cell_type: string;
-  source: string[];
-  outputs?: Array<{ text?: string[]; output_type?: string; data?: Record<string, string[]> }>;
+  source: NotebookText;
+  outputs?: Array<{ text?: NotebookText; output_type?: string; data?: Record<string, NotebookText> }>;
 }
 
 interface Notebook {
@@ -38,6 +40,11 @@ export const readNotebookTool: ToolDefinition = {
           minimum: 1,
           description: "Last cell to include, numbered from 1 (default: last cell)",
         },
+        cell_type: {
+          type: "string",
+          enum: ["all", "code", "markdown", "raw"],
+          description: "Filter selected cells by type (default: all). Original cell numbers are retained.",
+        },
         include_outputs: {
           type: "boolean",
           description: "Include cached execution outputs (default: true).",
@@ -48,6 +55,11 @@ export const readNotebookTool: ToolDefinition = {
   },
 
   async execute(input): Promise<ToolResult> {
+    const cellType = input.cell_type;
+    if (cellType !== undefined && cellType !== "all" && cellType !== "code" && cellType !== "markdown" && cellType !== "raw") {
+      return { output: "cell_type must be all, code, markdown, or raw", isError: true };
+    }
+    const filterType = cellType === "all" ? undefined : cellType;
     const includeOutputs = input.include_outputs;
     if (includeOutputs !== undefined && typeof includeOutputs !== "boolean") {
       return { output: "include_outputs must be a boolean", isError: true };
@@ -80,20 +92,26 @@ export const readNotebookTool: ToolDefinition = {
 
       for (let i = first - 1; i < last; i++) {
         const cell = nb.cells[i]!;
-        const src = cell.source.join("");
+        if (filterType && cell.cell_type !== filterType) continue;
+        const src = notebookText(cell.source);
         lines.push(`--- Cell ${i + 1} [${cell.cell_type}] ---`);
         lines.push(src);
 
         if (includeOutputs !== false && cell.outputs && cell.outputs.length > 0) {
           lines.push("  Output:");
           for (const out of cell.outputs) {
-            if (out.text) lines.push("  " + out.text.join(""));
-            if (out.data?.["text/plain"]) lines.push("  " + out.data["text/plain"].join(""));
+            if (out.text !== undefined) lines.push("  " + notebookText(out.text));
+            if (out.data?.["text/plain"] !== undefined) {
+              lines.push("  " + notebookText(out.data["text/plain"]));
+            }
           }
         }
         lines.push("");
       }
 
+      if (filterType && lines.length === 0) {
+        return { output: `No ${filterType} cells in the selected range.`, isError: false };
+      }
       if (hasRange) lines.push(`(Showing cells ${first}-${last} of ${nb.cells.length}.)`);
       return { output: lines.join("\n"), isError: false };
     } catch (err) {
@@ -101,6 +119,10 @@ export const readNotebookTool: ToolDefinition = {
     }
   },
 };
+
+function notebookText(value: NotebookText): string {
+  return typeof value === "string" ? value : value.join("");
+}
 
 export const editNotebookTool: ToolDefinition = {
   schema: {

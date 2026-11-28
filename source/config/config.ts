@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { ensureDir } from "../utils/fs.js";
 import { decrypt, encrypt, isEncrypted } from "../utils/encrypt.js";
 import { loadOrgPolicy, applyOrgConfig, applyGatewayToken } from "./org-config.js";
+import { defaultModelForProvider } from "./provider-defaults.js";
 
 export type PermissionMode = "ask" | "auto-accept" | "deny-writes";
 export type EffortLevel = "minimal" | "low" | "medium" | "high" | "max";
@@ -381,7 +382,7 @@ export const PROJECT_CONFIG_TEMPLATE = {
 
 const DEFAULT_CONFIG: AgavConfig = {
   provider: "anthropic",
-  model: "claude-sonnet-4-20250514",
+  model: defaultModelForProvider("anthropic"),
   effort: "high",
   permissionMode: "ask",
   maxTokens: 16384,
@@ -853,7 +854,7 @@ export async function saveConfig(config: AgavConfig): Promise<void> {
   });
 }
 
-// Serialize config and status-bar writes to prevent lost concurrent edits.
+// Serialize global config and scheduler writes to prevent lost concurrent edits.
 const CONFIG_LOCK_PATH = join(AGAV_DIR, ".config.lock");
 /** How long a blocking writer waits before rejecting without changing config. */
 const CONFIG_LOCK_WAIT_MS = 5_000;
@@ -934,7 +935,7 @@ async function tryAcquireConfigLock(): Promise<(() => Promise<void>) | null> {
  * Wrapped in the in-process mutex so same-process writers serialize deterministically
  * and only contend on the file lock against OTHER processes.
  */
-async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
+export async function withConfigLock<T>(fn: () => Promise<T>): Promise<T> {
   return withInProcessLock(async () => {
     const deadline = Date.now() + CONFIG_LOCK_WAIT_MS;
     let release: (() => Promise<void>) | null = null;

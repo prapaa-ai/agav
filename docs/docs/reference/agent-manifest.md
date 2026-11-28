@@ -26,15 +26,19 @@ model: claude-sonnet-4-5
 effort: medium
 tags: [my-api, records]
 tool-permissions:
-  my_agent_list: safe
-  my_agent_create: modifies
-  my_agent_delete: modifies
+  my_agent_list_records: safe
+tools:
+  - name: my_agent_list_records
+    description: List records
+    inputSchema:
+      type: object
+      properties:
+        limit: { type: number, default: 20 }
 mcp-servers:
   - key: my-mcp
     command: npx
     args: [-y, "@scope/my-mcp-server"]
-    env:
-      MY_API_KEY: "${MY_API_KEY}"
+    tools: [list_records]
 ---
 
 # My Agent
@@ -48,18 +52,19 @@ System prompt content here.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `name` | string | yes | — | Unique identifier. Used as the tool name: `<name>_agent`. Must be lowercase with hyphens only. |
+| `name` | string | yes | — | Unique identifier. Used as the tool name: `<name>_agent`. For installation, use at most 64 characters: start with a letter or digit; the rest may also include dots, hyphens, or underscores. |
 | `description` | string | yes | — | One-line description shown in the agent catalog and marketplace search. Guides the LLM when routing queries. |
 | `version` | string | yes | — | Semver version string (e.g. `1.0.0`). |
-| `type` | `native` \| `a2a` | no | `native` | Execution model. `native` runs JS tools in-process; `a2a` delegates to an external HTTP process. |
-| `enabled` | boolean | no | `true` | Whether the agent is active at startup. Bundled agents ship with `enabled: false` — users opt in after configuring credentials. |
+| `type` | `native` \| `a2a` | no | `native` | Execution model. `native` runs agent-local JavaScript in a subprocess for installed agents; `a2a` delegates to a local HTTP process. |
+| `enabled` | boolean | no | `true` | Whether the agent is active at startup. A saved registry entry overrides this field; `agav agents install` registers the agent as enabled. |
 
 ### Configuration
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `required-config` | string[] | no | — | Environment variable names the agent needs. Agav collects these in the config editor and stores them encrypted in `~/.agav/agents/<name>/config.json` (`%USERPROFILE%\.agav\agents\<name>\config.json` on Windows). Injected into `process.env` during the agent's execution only. |
-| `tools-dir` | string | no | `./tools` | Relative path to the directory containing `.mjs` tool files. |
+| `required-config` | string[] | no | — | Environment variable names the agent needs. The config editor encrypts saved values in `config.json` inside the installed agent directory. Native tools and declared MCP subprocesses receive the saved configuration at runtime. |
+| `tools-dir` | string | no | `./tools` | Relative path to the directory containing `.mjs` or `.js` tool files. |
+| `tools` | object[] | no | — | Tool schemas exposed to the model: `name`, `description`, `inputSchema`, and optional `destructive`. See [Tool file format](#tool-file-format). |
 | `native-tools` | string[] | no | none | Explicit allowlist of built-in Agav tools available to a **native** agent. Each value is a built-in tool schema name, such as `read_file` or `web_search`. When omitted or empty, no built-in Agav tools are added; the agent can still use its agent-local tools and declared MCP tools. |
 
 ### Model and effort
@@ -80,7 +85,7 @@ System prompt content here.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `tool-permissions` | Record\<string, `safe` \| `modifies`\> | no | — | Per-tool HITL classification. `safe` runs without confirmation. `modifies` pauses and shows `[Y]es / [N]o / [A]lways` before executing. Keys must match the `schema.name` values in the `.mjs` tool files. |
+| `tool-permissions` | Record\<string, `safe` \| `destructive`\> | no | — | Overrides the `destructive` flag on the discovered schema. Keys must match the exposed tool names. Marking an external tool `safe` does not bypass [confirmation](/reference/security#external-tool-trust). |
 
 ### Per-agent MCP servers
 
@@ -90,10 +95,11 @@ mcp-servers:
     command: npx
     args: [-y, "@scope/my-mcp-server"]
     env:
-      MY_API_KEY: "${MY_API_KEY}"
+      LOG_LEVEL: warn
+    tools: [list_records]
 ```
 
-MCP servers declared here are started when the agent runs and stopped when it finishes. They are scoped to the agent — other agents and the parent session cannot access them. `env` provides per-server environment variables that are layered on top of the process environment and agent credentials from `required-config`.
+Only stdio servers are supported here. They start for the native agent invocation and stop when it finishes. Their tools are not added to the parent session. The server environment starts with Agav’s launch environment, then applies literal `env` values, then the agent’s saved configuration (which wins on conflicts). There is no `${VAR}` interpolation. `tools` is an optional list of unprefixed server tool names, with the same selection and fallback rules as [workspace MCP servers](/features/mcp#limiting-which-tools-are-exposed).
 
 ### A2A fields (experimental)
 
@@ -101,26 +107,15 @@ Used when `type: a2a`. See [Build a Native Agent — A2A section](/guides/build-
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `start-command` | string | yes (A2A) | Shell command to launch the external process. |
-| `endpoint` | string | yes (A2A) | HTTP base URL of the running process (e.g. `http://localhost:4000`). |
+| `start-command` | string | yes (A2A) | Executable and arguments, run directly without a shell from the agent directory. |
+| `endpoint` | string | yes (A2A) | Loopback HTTP base URL (e.g. `http://127.0.0.1:4000`). Remote hosts are unsupported. |
 
 ## Tool file format
 
-Each `.mjs` file in `tools-dir` exports a default object:
+Each tool file exports an `execute(input)` function, usually on a default-exported object. For example, save this as `tools/my-agent-list-records.mjs`:
 
 ```js
 export default {
-  schema: {
-    name: "my_agent_list_records",   // must match tool-permissions key
-    description: "List records",
-    destructive: false,              // false = safe, true = modifies
-    inputSchema: {
-      type: "object",
-      properties: {
-        limit: { type: "number", description: "Max results", default: 20 }
-      }
-    }
-  },
   async execute(input) {
     const { MY_API_KEY } = process.env;  // credentials injected by Agav
     // ...
@@ -129,11 +124,11 @@ export default {
 };
 ```
 
-`schema.destructive` must match the `tool-permissions` classification: `destructive: false` → `safe`, `destructive: true` → `modifies`.
+For installed agents, declare each schema in the manifest’s `tools` list or in a sibling `<basename>.schema.json` file. Agav prefers the manifest, then the sidecar, then a generic `{ task: string }` schema. It does not import the JavaScript to discover the schema. Use a matching basename, converting hyphens to underscores for manifest lookup (for example, `list-records.mjs` → `list_records`).
 
 ## System prompt body
 
-The Markdown content after the `---` closing delimiter becomes the agent's system prompt. It is prepended to the base Agav system prompt at runtime. Keep it focused:
+The Markdown content after the `---` closing delimiter becomes the agent's system prompt. It is appended to the configured base system prompt, if there is one. Keep it focused:
 
 - One role sentence: "You are a \<service\> assistant..."
 - 3–5 guideline bullets covering precision, confirmation for modifying tools, output formatting, and error handling

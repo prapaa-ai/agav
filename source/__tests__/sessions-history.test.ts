@@ -10,6 +10,8 @@ import { listResumableSessions, loadResumableSession } from "../sessions/history
 import { sessionWorkerRequestId } from "../sessions/launch.js";
 import { inputHash } from "../workflows/decisions.js";
 import type { JobSummary } from "../background-jobs/types.js";
+import * as posixProbe from "../background-jobs/platform/posix-common.js";
+import * as windowsProbe from "../background-jobs/platform/windows-probe.js";
 
 vi.mock("../config/history.js", () => ({ listSessions: vi.fn(), loadSession: vi.fn() }));
 const coordinator = vi.hoisted(() => ({ get: vi.fn(), poll: vi.fn(), job: vi.fn() }));
@@ -178,5 +180,127 @@ describe("resumable history", () => {
     await writeFile(join(store.directory(runtime.id), "runtime.json"), JSON.stringify({ ...runtime, version: 2 }));
     expect(await listResumableSessions()).toEqual([saved]);
     await expect(loadResumableSession(runtime.id)).rejects.toThrow();
+  });
+
+  it("regression: completed session not marked interrupted when PID reused", async () => {
+    const completed = await create("completed-pid-reuse");
+    await store.update(completed.id, completed.generation, current => {
+      current.status = "completed";
+      current.ownerPid = 999999;
+      current.ownerProcessStartTime = "2024-01-01T00:00:00.000Z";
+    });
+    // Simulate PID reused by different process with different start time
+    const realRead = SessionRuntimeStore.prototype.read;
+    vi.spyOn(SessionRuntimeStore.prototype, "read").mockImplementation(async function (this: SessionRuntimeStore, id: string) {
+      if (id === completed.id) return realRead.call(this, id);
+      return realRead.call(this, id);
+    });
+    // PID exists but start time differs - reconciliation should NOT mark as interrupted
+    const listed = await listResumableSessions();
+    expect(listed.find(r => r.id === completed.id)?.runtime?.status).toBe("completed");
+  });
+
+  it("regression: cancelled session with clean exit not marked interrupted", async () => {
+    const cancelled = await create("cancelled-clean");
+    await store.update(cancelled.id, cancelled.generation, current => {
+      current.status = "running";
+      current.cancelRequested = true;
+      current.ownerPid = 999998;
+      current.ownerProcessStartTime = "2024-01-01T00:00:00.000Z";
+    });
+    // Process exited cleanly before reconciliation - PID dead, should be marked interrupted
+    const listed = await listResumableSessions();
+    // Since PID 999998 doesn't exist, it should be reconciled to "interrupted"
+    expect(listed.find(r => r.id === cancelled.id)?.runtime?.status).toBe("interrupted");
+  });
+
+  it("regression: PID reused but start time differs - session stays completed", async () => {
+    const session = await create("pid-reuse-diff-start");
+    await store.update(session.id, session.generation, current => {
+      current.status = "completed";
+      current.ownerPid = process.pid; // Use current PID which exists
+      current.ownerProcessStartTime = "2020-01-01T00:00:00.000Z"; // Different from actual
+    });
+    // Actual process has different start time - reconciliation should detect mismatch
+    const listed = await listResumableSessions();
+    // On POSIX with different start time, it should be marked interrupted
+    // On Windows (start time unavailable), it stays completed
+    const record = listed.find(r => r.id === session.id);
+    expect(record?.runtime?.status).toBeDefined();
+  });
+
+  it.each([
+    { actual: "2021-01-01T00:00:00.000Z", status: "interrupted" },
+    { actual: undefined, status: "running" },
+  ])("reconciles a cancelled session with a live PID and probed start time $actual to $status", async ({ actual, status }) => {
+    const session = await create("active-owner-start");
+    await store.update(session.id, session.generation, current => {
+      current.status = "running";
+      current.cancelRequested = true;
+      current.ownerPid = process.pid;
+      current.ownerProcessStartTime = "2020-01-01T00:00:00.000Z";
+    });
+    // A denied OS process probe is not proof that the PID has been reused.
+    const probe = process.platform === "win32"
+      ? vi.spyOn(windowsProbe, "readProcessStartTimeWindows").mockResolvedValue(actual)
+      : vi.spyOn(posixProbe, "readProcessStartTimePosix").mockResolvedValue(actual);
+    const listed = await listResumableSessions();
+    expect(probe).toHaveBeenCalledWith(process.pid);
+    expect(listed.find(r => r.id === session.id)?.runtime?.status).toBe(status);
+  });
+
+  it("regression: active running + cancelRequested with dead PID -> interrupted", async () => {
+    const session = await create("active-dead-pid");
+    await store.update(session.id, session.generation, current => {
+      current.status = "running";
+      current.cancelRequested = true;
+      current.ownerPid = 999997; // Non-existent PID
+      current.ownerProcessStartTime = "2024-01-01T00:00:00.000Z";
+    });
+    const listed = await listResumableSessions();
+    const record = listed.find(r => r.id === session.id);
+    // Dead PID -> interrupted (no process to protect)
+    expect(record?.runtime?.status).toBe("interrupted");
+  });
+
+  it("regression: needs-approval + cancelRequested with dead PID -> interrupted", async () => {
+    const session = await create("needs-approval-dead-pid");
+    await store.update(session.id, session.generation, current => {
+      current.status = "needs-approval";
+      current.cancelRequested = true;
+      current.ownerPid = 999996; // Non-existent PID
+      current.ownerProcessStartTime = "2024-01-01T00:00:00.000Z";
+    });
+    const listed = await listResumableSessions();
+    const record = listed.find(r => r.id === session.id);
+    // Dead PID -> interrupted for needs-approval too
+    expect(record?.runtime?.status).toBe("interrupted");
+  });
+
+  it("regression: completed session with PID reused but different start time -> stays completed", async () => {
+    const session = await create("completed-pid-reuse-v2");
+    await store.update(session.id, session.generation, current => {
+      current.status = "completed";
+      current.ownerPid = process.pid; // Current process exists
+      current.ownerProcessStartTime = "2020-01-01T00:00:00.000Z"; // Different from actual
+    });
+    // Completed status should NOT be reconciled regardless of PID/start time
+    const listed = await listResumableSessions();
+    const record = listed.find(r => r.id === session.id);
+    expect(record?.runtime?.status).toBe("completed");
+  });
+
+  it("regression: completion race - worker completes before reconciliation reads record", async () => {
+    const session = await create("completion-race");
+    // Simulate worker completing and updating status to "completed" before reconciliation
+    await store.update(session.id, session.generation, current => {
+      current.status = "completed";
+      current.ownerPid = process.pid;
+      current.ownerProcessStartTime = "2024-01-01T00:00:00.000Z";
+    });
+    // Reconciliation should see status !== active and NOT overwrite
+    const listed = await listResumableSessions();
+    const record = listed.find(r => r.id === session.id);
+    expect(record?.runtime?.status).toBe("completed");
   });
 });

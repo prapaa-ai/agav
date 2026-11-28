@@ -18,16 +18,18 @@ export { setWindowsSandboxEnabled, isWindowsSandboxEnabled } from "./windows-san
 const activeCommands = new Set<() => void>();
 let exitCleanupInstalled = false;
 
-/** Own the whole POSIX process group, not just the shell at its head. */
-function execCommand(
+type ProcessOutcome = { exitCode: number | null; timedOut: boolean };
+
+/** Run argv with process-tree cleanup and bounded capture for each output stream. */
+export function executeBufferedCommand(
   file: string,
   args: string[],
   options: { timeout: number; maxBuffer: number; cwd?: string; env?: Record<string, string>; windowsVerbatimArguments?: boolean },
-  callback: (error: Error | null, stdout: string, stderr: string) => void,
+  callback: (error: Error | null, stdout: string, stderr: string, outcome: ProcessOutcome) => void,
   signal?: AbortSignal,
 ): void {
   if (signal?.aborted) {
-    callback(new Error("Command cancelled."), "", "");
+    callback(new Error("Command cancelled."), "", "", { exitCode: null, timedOut: false });
     return;
   }
   const stdout: Buffer[] = [];
@@ -40,8 +42,8 @@ function execCommand(
     (stream === "stdout" ? stdout : stderr).push(chunk.subarray(0, remaining));
     bytes[stream] += chunk.length;
     if (chunk.length > remaining) throw new Error("Command output exceeded maxBuffer.");
-  }, error => {
-    callback(error, Buffer.concat(stdout).toString(), Buffer.concat(stderr).toString());
+  }, (error, _stdout, _stderr, outcome) => {
+    callback(error, Buffer.concat(stdout).toString(), Buffer.concat(stderr).toString(), outcome);
   }, signal);
 }
 import { platform } from "node:os";
@@ -251,22 +253,22 @@ function seatbeltProfile(network: SandboxNetwork, policy: SandboxPathPolicy): st
 type OutputCallback = (chunk: Buffer, stream: "stdout" | "stderr") => void;
 
 // Streaming callers own output capture; buffered non-Docker callers retain
-// process-group ownership and cancellation through execCommand.
+// process-group ownership and cancellation through executeBufferedCommand.
 function executeProcess(
   file: string,
   args: string[],
   options: { timeout: number; maxBuffer: number; cwd?: string; env?: Record<string, string>; windowsVerbatimArguments?: boolean },
   onOutput: OutputCallback | undefined,
-  callback: (error: Error | null, stdout: string, stderr: string) => void,
+  callback: (error: Error | null, stdout: string, stderr: string, outcome: ProcessOutcome) => void,
   signal?: AbortSignal,
 ): void {
   if (!onOutput) {
-    execCommand(file, args, options, callback, signal);
+    executeBufferedCommand(file, args, options, callback, signal);
     return;
   }
 
   if (signal?.aborted) {
-    callback(new Error("Command cancelled."), "", "");
+    callback(new Error("Command cancelled."), "", "", { exitCode: null, timedOut: false });
     return;
   }
 
@@ -311,12 +313,14 @@ function executeProcess(
     if (stopping) killTree(true);
     // Bound inherited pipes without turning a successful leader into a timeout.
     const leaderSucceeded = exitStatus?.code === 0 && !exitStatus.signal;
+    // Only an ordinary exit is evidence for exit-code based classification.
+    const exitCode = error || timedOut || exitSignal ? null : code;
     if (timedOut && !leaderSucceeded) error = new Error(`Command timed out after ${options.timeout}ms`);
     else if (!error && (code !== 0 || exitSignal)) {
       error = new Error(exitSignal ? `Command terminated by signal ${exitSignal}` : `Command exited with code ${code}`);
     }
     // Streaming callers own output capture; do not retain a second copy here.
-    callback(error, "", "");
+    callback(error, "", "", { exitCode, timedOut });
   };
   const stop = () => {
     if (stopping || completed) return;
@@ -337,6 +341,7 @@ function executeProcess(
     stop();
   };
   const timer = options.timeout > 0 ? setTimeout(() => {
+    if (stopping) return;
     timedOut = true;
     stop();
   }, options.timeout) : undefined;
@@ -816,9 +821,8 @@ export interface SandboxedCommand {
 /**
  * Wrap an explicit `cmd` + `args` argv so it runs under the auto-detected OS
  * sandbox, without going through a shell. Returns the executable, arguments,
- * credential-filtered env, and a cleanup handle. Unlike `runInSandbox`, this
- * preserves the caller's `execFile` error object (code/signal/exit code), which
- * callers such as `run_tests` need to classify runner-startup failures.
+ * credential-filtered env, and a cleanup handle. `run_tests` uses the
+ * buffered runner's structured outcome to classify runner-startup failures.
  *
  * Only the auto-detectable backends are wrapped: `seatbelt`, `bubblewrap`,
  * `windows` (opt-in), and `none` (no wrapping). The `docker` backend is not applied here because it is

@@ -165,9 +165,9 @@ export function parseArgs(argv: string[]) {
     } else if (arg === "--model" || arg === "-m") {
       flags.model = argv[++i] ?? "";
     } else if (arg.startsWith("--provider=")) {
-      flags.provider = arg.split("=")[1] ?? "";
+      flags.provider = arg.slice("--provider=".length);
     } else if (arg.startsWith("--model=")) {
-      flags.model = arg.split("=")[1] ?? "";
+      flags.model = arg.slice("--model=".length);
     } else if (arg === "--effort") {
       flags.effort = argv[++i] ?? "";
     } else if (arg.startsWith("--effort=")) {
@@ -232,19 +232,19 @@ export function parseArgs(argv: string[]) {
     } else if (arg === "--ollama-host") {
       flags.ollamaHost = argv[++i] ?? "";
     } else if (arg.startsWith("--ollama-host=")) {
-      flags.ollamaHost = arg.split("=")[1] ?? "";
+      flags.ollamaHost = arg.slice("--ollama-host=".length);
     } else if (arg === "--ollama-port") {
       flags.ollamaPort = argv[++i] ?? "";
     } else if (arg.startsWith("--ollama-port=")) {
-      flags.ollamaPort = arg.split("=")[1] ?? "";
+      flags.ollamaPort = arg.slice("--ollama-port=".length);
     } else if (arg === "--ollama-endpoint") {
       flags.ollamaEndpoint = argv[++i] ?? "";
     } else if (arg.startsWith("--ollama-endpoint=")) {
-      flags.ollamaEndpoint = arg.split("=")[1] ?? "";
+      flags.ollamaEndpoint = arg.slice("--ollama-endpoint=".length);
     } else if (arg === "--ollama-api-key") {
       flags.ollamaApiKey = argv[++i] ?? "";
     } else if (arg.startsWith("--ollama-api-key=")) {
-      flags.ollamaApiKey = arg.split("=")[1] ?? "";
+      flags.ollamaApiKey = arg.slice("--ollama-api-key=".length);
     } else if (arg === "--print" || arg === "-P") {
       flags.print = true;
       subcommandSeen = true;
@@ -1009,6 +1009,7 @@ export async function main() {
     config.permissionMode = "deny-writes";
   }
 
+  let startupWarning: string | undefined;
   if (flags.sandboxRequired) {
     config.sandboxRequired = true;
   }
@@ -1026,7 +1027,10 @@ export async function main() {
       configValue: config.sandboxRequired,
       detectBackend: detectSandboxBackend,
       setRequired: setSandboxRequired,
-      warn: (message) => { process.stderr.write(message); },
+      warn: (message) => {
+        if (flags.print || flags.run || !process.stdin.isTTY) process.stderr.write(message);
+        else startupWarning = message;
+      },
     });
     setSandboxNetwork(config.sandboxNetwork === "deny" ? "deny" : "allow");
   }
@@ -1269,29 +1273,41 @@ export async function main() {
     process.exit(1);
   }
 
-  /** Ids of background jobs still running (or of unknown state), for the exit hint. Never throws. */
-  async function runningJobIds(): Promise<string[]> {
+  /** Report active and unverified jobs, excluding abandoned records as the manager does by default. */
+  async function backgroundJobExitLines(): Promise<string[]> {
     if (config.backgroundJobsEnabled !== true) return [];
     try {
       const { getSharedCoordinator } = await import("./background-jobs-integration.js");
-      const { isTerminalLifecycle } = await import("./background-jobs/types.js");
+      const { BackgroundJobError, isLiveLifecycle, isTerminalLifecycle } = await import("./background-jobs/types.js");
       const coordinator = await getSharedCoordinator();
-      const active = (await coordinator.list()).filter((job) => !isTerminalLifecycle(job.state));
-      // list() reads persisted state; poll() reconciles with live evidence so a crashed job is not listed.
-      const fresh = await Promise.all(active.map((job) => coordinator.poll(job.jobId).catch(() => job)));
-      return fresh.filter((job) => !isTerminalLifecycle(job.state)).map((job) => job.jobId);
+      const pending = (await coordinator.list()).filter((job) => !job.abandonment && !isTerminalLifecycle(job.state));
+      // Reconcile persisted state before reporting a job as active.
+      const fresh = await Promise.all(pending.map((job) => coordinator.poll(job.jobId).catch((error: unknown) => {
+        if (error instanceof BackgroundJobError && error.code === "not-found") return undefined;
+        return { ...job, state: "unknown" as const };
+      })));
+      const active: string[] = [];
+      const unverified: string[] = [];
+      for (const job of fresh) {
+        if (!job || job.abandonment || isTerminalLifecycle(job.state)) continue;
+        (isLiveLifecycle(job.state) ? active : unverified).push(job.jobId);
+      }
+      const lines: string[] = [];
+      if (active.length > 0) lines.push(`Active background jobs: ${active.join(", ")}  (inspect with /job)`);
+      if (unverified.length > 0) lines.push(`Unverified background jobs: ${unverified.join(", ")}  (inspect with /job)`);
+      return lines;
     } catch {
       return [];
     }
   }
 
-  /** Print a subtle reminder pointing at the most recent resumable session, and any jobs left running. */
+  /** Print the most recent resumable session and any background job notices. */
   async function showResumeHint() {
     try {
       const { listSessions } = await import("./config/history.js");
       const sessions = await listSessions();
-      const jobIds = await Promise.race([
-        runningJobIds(),
+      const jobLines = await Promise.race([
+        backgroundJobExitLines(),
         new Promise<string[]>((resolve) => setTimeout(() => resolve([]), 2000).unref()),
       ]);
       const lines: string[] = [];
@@ -1299,7 +1315,7 @@ export async function main() {
         lines.push(`Session ${detachedSessionRef.current} continues in the background.`);
         lines.push(`To resume: agav --resume ${detachedSessionRef.current}`);
       } else if (sessions.length > 0) lines.push(`To resume: agav --resume ${sessions[0]!.id}`);
-      if (jobIds.length > 0) lines.push(`Running background jobs: ${jobIds.join(", ")}  (inspect with /job)`);
+      lines.push(...jobLines);
       if (lines.length > 0) process.stderr.write(`\n${lines.map((line) => dim(line)).join("\n")}\n\n`);
     } catch { }
   }
@@ -1346,7 +1362,7 @@ export async function main() {
     // Never block startup on changelog/launch-state failures.
   }
 
-  const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} resumePermissionMode={resumePermissionMode} resumeRuntime={resumeRuntime} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} shutdownRef={shutdownRef} detachedSessionRef={detachedSessionRef} />, {
+  const instance = render(<App config={config} keybindings={keybindings} resumeMessages={resumeMessages} resumeSessionId={resumeSessionId} resumeTokenUsage={resumeTokenUsage} resumeCompacted={resumeCompacted} resumeSessionName={initialSessionName} resumePermissionMode={resumePermissionMode} resumeRuntime={resumeRuntime} repoBranch={gitContext?.branch} enhancedKeyboard={enhancedKeyboard} showChangelogOnLaunch={showChangelogOnLaunch} startupWarning={startupWarning} shutdownRef={shutdownRef} detachedSessionRef={detachedSessionRef} />, {
     // App owns Ctrl+C so foreground workflows can abort and checkpoint before exit.
     exitOnCtrlC: false,
     // Alt-screen keeps the UI self-contained (no scrollback pollution, no
