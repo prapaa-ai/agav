@@ -2,6 +2,18 @@ import React, { useRef, useState } from "react";
 import { Box, Text, useInput, usePaste } from "../ink/index.js";
 import { HoverText, usePointerMotion } from "./hover-text.js";
 
+/**
+ * Normalizes a pasted token count to plain digits. Accepts plain digits and
+ * correctly comma-grouped integers such as `32,768`, the form model cards and
+ * this prompt display; returns null for anything else, including malformed
+ * grouping such as `32,76`.
+ */
+export function normalizePastedTokens(text: string): string | null {
+  if (/^[0-9]+$/.test(text)) return text;
+  if (/^[0-9]{1,3}(,[0-9]{3})+$/.test(text)) return text.replace(/,/g, "");
+  return null;
+}
+
 interface Props {
   model: string;
   defaultValue: number;
@@ -55,11 +67,12 @@ export default function ContextWindowPrompt({ model, defaultValue, onSubmit }: P
 
   usePaste((text) => {
     if (finished.current) return;
-    if (!/^[0-9]+$/.test(text)) {
+    const digits = normalizePastedTokens(text);
+    if (digits === null) {
       setError("Enter digits only, or press Esc to use the default.");
       return;
     }
-    updateValue(valueRef.current + text);
+    updateValue(valueRef.current + digits);
   });
 
   return (
