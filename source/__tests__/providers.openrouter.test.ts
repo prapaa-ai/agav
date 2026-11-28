@@ -149,6 +149,76 @@ describe("OpenRouterProvider getContextWindow", () => {
     const result = await provider.getContextWindow("anthropic/claude-sonnet-4.5");
     expect(result).toBeUndefined();
   });
+
+  it("shares one in-flight catalog fetch across concurrent lookups for distinct models", async () => {
+    let resolveFetch!: (value: any) => void;
+    const fetchMock = vi.fn(
+      () => new Promise((resolve) => {
+        resolveFetch = resolve;
+      }),
+    ) as any;
+    globalThis.fetch = fetchMock;
+
+    const provider = new OpenRouterProvider("test-key");
+    const p1 = provider.getContextWindow("anthropic/claude-sonnet-4.5");
+    const p2 = provider.getContextWindow("google/gemini-flash-1.5");
+    const p3 = provider.getContextWindow("stealth/unlisted");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resolveFetch({
+      ok: true,
+      json: async () => ({
+        data: [
+          { id: "anthropic/claude-sonnet-4.5", context_length: 200000 },
+          { id: "google/gemini-flash-1.5", context_length: 1000000 },
+        ],
+      }),
+    });
+
+    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+    expect(r1).toBe(200000);
+    expect(r2).toBe(1000000);
+    expect(r3).toBeUndefined();
+    expect(provider.isContextWindowConfirmedMissing("stealth/unlisted")).toBe(true);
+    expect(provider.isContextWindowConfirmedMissing("anthropic/claude-sonnet-4.5")).toBe(false);
+  });
+
+  it("does not cache transient failures and allows the next lookup to retry", async () => {
+    let attempt = 0;
+    let rejectFirst!: (err: Error) => void;
+    const fetchMock = vi.fn(() => {
+      attempt++;
+      if (attempt === 1) {
+        return new Promise((_, reject) => {
+          rejectFirst = reject;
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          data: [{ id: "anthropic/claude-sonnet-4.5", context_length: 200000 }],
+        }),
+      });
+    }) as any;
+    globalThis.fetch = fetchMock;
+
+    const provider = new OpenRouterProvider("test-key");
+    const p1 = provider.getContextWindow("anthropic/claude-sonnet-4.5");
+    const p2 = provider.getContextWindow("stealth/unlisted");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    rejectFirst(new Error("transient network error"));
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1).toBeUndefined();
+    expect(r2).toBeUndefined();
+    expect(provider.isContextWindowConfirmedMissing("stealth/unlisted")).toBe(false);
+
+    // Next lookup retries and succeeds.
+    const retry = await provider.getContextWindow("anthropic/claude-sonnet-4.5");
+    expect(retry).toBe(200000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("OpenRouterProvider streaming chat completions", () => {
