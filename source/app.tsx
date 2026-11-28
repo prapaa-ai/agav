@@ -160,7 +160,13 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const [showToolDetail, setShowToolDetail] = useState(false);
   const [showPlanDetail, setShowPlanDetail] = useState(false);
   const [showThinking, setShowThinking] = useState(initialConfig.showThinking ?? false);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [, setAttachments] = useState<Attachment[]>([]);
+  const attachmentsRef = useRef<Attachment[]>([]);
+  const updateAttachments = useCallback((next: Attachment[] | ((prev: Attachment[]) => Attachment[])) => {
+    const updated = typeof next === "function" ? next(attachmentsRef.current) : next;
+    attachmentsRef.current = updated;
+    setAttachments(updated);
+  }, []);
   const [preview, setPreview] = useState<PreviewContent | null>(null);
   const [focusedSubagentId, setFocusedSubagentId] = useState<string | null>(null);
   const [selectedSubagentIdx, setSelectedSubagentIdx] = useState(0);
@@ -702,9 +708,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
   const handlePaste = useCallback((text: string, insertLabel: (label: string) => void) => {
     composerEditVersionRef.current++;
     const attachment = createTextAttachment(text);
-    setAttachments((prev) => [...prev, attachment]);
+    updateAttachments((prev) => [...prev, attachment]);
     insertLabel(attachment.label);
-  }, []);
+  }, [updateAttachments]);
 
   const expandTileRef = useRef<((id: number, fullText: string) => boolean) | null>(null);
   // The most recent paste that was compacted into a tile, so an identical
@@ -722,9 +728,9 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     // tile is always resolvable back to a record.
     composerEditVersionRef.current++;
     const attachment = createImageAttachmentFromData(img.base64, img.mediaType, img.width || undefined, img.height || undefined);
-    setAttachments((prev) => [...prev, attachment]);
+    updateAttachments((prev) => [...prev, attachment]);
     insertLabelRef.current?.(attachment.label);
-  }, []);
+  }, [updateAttachments]);
 
   const handleLargePaste = useCallback((text: string) => {
     composerEditVersionRef.current++;
@@ -737,17 +743,17 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
       // instead of silently doing nothing.
       const expanded = expandTileRef.current?.(last.attachmentId, text) ?? false;
       if (expanded) {
-        setAttachments((prev) => prev.filter((a) => a.id !== last.attachmentId));
+        updateAttachments((prev) => prev.filter((a) => a.id !== last.attachmentId));
         unregisterAttachment(last.attachmentId);
         lastPasteRef.current = null;
         return;
       }
     }
     const attachment = createTextAttachment(text);
-    setAttachments((prev) => [...prev, attachment]);
+    updateAttachments((prev) => [...prev, attachment]);
     insertLabelRef.current?.(attachment.label);
     lastPasteRef.current = { text, attachmentId: attachment.id };
-  }, []);
+  }, [updateAttachments]);
 
   const handleShortPaste = useCallback((text: string) => {
     composerEditVersionRef.current++;
@@ -1192,7 +1198,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
     async (value: string, invocationReason?: InvocationReason, queued?: QueuedRequest) => {
       if (voice.isActive()) return;
       setVoiceFeedback(null);
-      const promptAttachments = queued?.attachments ?? attachments;
+      const promptAttachments = queued?.attachments ?? attachmentsRef.current;
       const trimmed = value.trim();
       const composerEditVersion = composerEditVersionRef.current;
 
@@ -1222,7 +1228,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           composerEditVersionRef.current++;
           setInput("");
           for (const a of promptAttachments) unregisterAttachment(a.id);
-          setAttachments([]);
+          updateAttachments([]);
           lastPasteRef.current = null;
           reportNotice(
             "For your security, don't paste your Agav API key into the prompt — it could be saved or sent to the model.\n" +
@@ -1333,7 +1339,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
         composerEditVersionRef.current++;
         setInput("");
-        setAttachments([]);
+        updateAttachments([]);
         lastPasteRef.current = null;
         return;
       }
@@ -1347,7 +1353,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
           lastPasteRef.current = null;
         }
         const submittedIds = new Set(promptAttachments.map(attachment => attachment.id));
-        setAttachments(previous => previous.filter(attachment => !submittedIds.has(attachment.id)));
+        updateAttachments(previous => previous.filter(attachment => !submittedIds.has(attachment.id)));
         if (lastPasteRef.current && submittedIds.has(lastPasteRef.current.attachmentId)) lastPasteRef.current = null;
       };
       try {
@@ -1714,7 +1720,7 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
         }
       }
     },
-    [steer, focusedSubagent, detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, attachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, reportNotice, notices, showQueuedCommandNotice, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
+    [steer, focusedSubagent, detachCurrentSession, config, conversation, clearMessages, refreshPlan, exit, submit, addDisplayMessage, updateAttachments, isLoading, isWorkerAttached, pendingConfirmation, isGenerationPaused, interveneWhilePaused, tokenUsage, loadedPlugins, mcpServers, getMCPAuthenticationRequired, authenticateMCPServer, logoutMCPServer, mcpResourceCount, mcpPromptCount, runPsQuery, refreshDisplay, loadSession, activateSession, renameSession, sessionId, updateQueue, showStatusLine, reportNotice, notices, showQueuedCommandNotice, voice.start, voice.isActive, stdout.isTTY, stdin.isTTY, createWorkflowJobDeps],
   );
 
   // Explicit Enter sends the snapshot only after the helper has released ownership.
@@ -2191,14 +2197,14 @@ export default function App({ config: initialConfig, keybindings, resumeMessages
             onSubmit={handleSubmit}
             onPaste={handlePaste}
             canExpandPaste={lastPasteRef.current !== null}
-            onRemoveAttachment={() => {
+            onRemoveAttachment={(id?: number) => {
               composerEditVersionRef.current++;
-              setAttachments((prev) => prev.slice(0, -1));
+              updateAttachments((prev) => (id !== undefined ? prev.filter((a) => a.id !== id) : prev.slice(0, -1)));
               lastPasteRef.current = null;
             }}
             onClearAttachments={() => {
               composerEditVersionRef.current++;
-              setAttachments([]);
+              updateAttachments([]);
               lastPasteRef.current = null;
             }}
             onRegisterReplace={(replace) => { replaceVoicePromptRef.current = replace; }}

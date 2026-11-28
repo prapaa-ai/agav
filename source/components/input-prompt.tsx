@@ -28,7 +28,7 @@ interface Props {
   onPaste?: (text: string, insertLabel: (label: string) => void) => void;
   /** Whether App is tracking a compact paste eligible for immediate-repeat expansion. */
   canExpandPaste?: boolean;
-  onRemoveAttachment?: () => void;
+  onRemoveAttachment?: (id?: number) => void;
   onClearAttachments?: () => void;
   /** Replace externally owned text without reporting it as a user edit. */
   onRegisterReplace?: (replace: (text: string, preserveCursor?: boolean) => void) => void;
@@ -126,6 +126,7 @@ export function isEscapeResidue(input: string): boolean {
  * actually built.
  */
 const ATTACHMENT_BEFORE_CURSOR_RE = new RegExp(ATTACHMENT_TILE_RE.source + " ?$");
+const ATTACHMENT_AFTER_CURSOR_RE = new RegExp("^" + ATTACHMENT_TILE_RE.source + " ?");
 
 
 /**
@@ -937,7 +938,7 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           if (labelMatch && onRemoveAttachment) {
             const labelStart = cursorPos - labelMatch[0].length;
             applyEdit(value.slice(0, labelStart) + value.slice(cursorPos), labelStart);
-            onRemoveAttachment();
+            onRemoveAttachment(Number(labelMatch[1]));
           } else {
             const prev = prevGraphemeOffset(value, cursorPos);
             applyEdit(value.slice(0, prev) + value.slice(cursorPos), prev);
@@ -953,8 +954,15 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
           return;
         }
         if (cursorPos < value.length) {
-          const next = nextGraphemeOffset(value, cursorPos);
-          applyEdit(value.slice(0, cursorPos) + value.slice(next), cursorPos);
+          const textAfter = value.slice(cursorPos);
+          const labelMatch = textAfter.match(ATTACHMENT_AFTER_CURSOR_RE);
+          if (labelMatch && onRemoveAttachment) {
+            applyEdit(value.slice(0, cursorPos) + value.slice(cursorPos + labelMatch[0].length), cursorPos);
+            onRemoveAttachment(Number(labelMatch[1]));
+          } else {
+            const next = nextGraphemeOffset(value, cursorPos);
+            applyEdit(value.slice(0, cursorPos) + value.slice(next), cursorPos);
+          }
           setSelectedSuggestion(0);
         }
         return;
