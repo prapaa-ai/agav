@@ -175,20 +175,33 @@ function parseJsTest(output: string, framework: string): TestResults {
   return { framework, passed, failed, errors: 0, failures };
 }
 
-function parseGoTest(output: string): TestResults {
+export function parseGoTest(output: string): TestResults {
   const failures: TestFailure[] = [];
   let passed = 0;
   let failed = 0;
 
-  for (const line of output.split("\n")) {
+  const lines = output.split("\n");
+  const isGoStatusLine = (l: string) =>
+    /^(?:=== (?:RUN|PAUSE|CONT|NAME)\b|--- (?:PASS|FAIL|SKIP):)/.test(l.trim());
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
     if (line.startsWith("--- PASS")) passed++;
-    if (line.startsWith("--- FAIL")) {
-      failed++;
-      const nameMatch = line.match(/--- FAIL:\s+(\S+)/);
-      const testName = nameMatch?.[1] ?? "unknown";
-      const idx = output.indexOf(line);
-      const context = output.slice(Math.max(0, idx - 200), idx).trim();
-      const errLine = context.split("\n").reverse().find((l) => l.trim().length > 0);
+    if (line.startsWith("--- FAIL")) failed++;
+
+    const nameMatch = line.match(/^\s*--- FAIL:\s+(\S+)/);
+    if (nameMatch) {
+      const testName = nameMatch[1] ?? "unknown";
+      let errLine: string | undefined;
+      let chars = 0;
+      for (let j = i - 1; j >= 0 && chars < 200; j--) {
+        const candidate = lines[j]!;
+        chars += candidate.length + 1;
+        if (candidate.trim().length > 0 && !isGoStatusLine(candidate)) {
+          errLine = candidate;
+          break;
+        }
+      }
       failures.push({
         test: testName,
         error: errLine ?? "Test failed",
