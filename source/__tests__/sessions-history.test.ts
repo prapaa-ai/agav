@@ -10,6 +10,8 @@ import { listResumableSessions, loadResumableSession } from "../sessions/history
 import { sessionWorkerRequestId } from "../sessions/launch.js";
 import { inputHash } from "../workflows/decisions.js";
 import type { JobSummary } from "../background-jobs/types.js";
+import * as posixProbe from "../background-jobs/platform/posix-common.js";
+import * as windowsProbe from "../background-jobs/platform/windows-probe.js";
 
 vi.mock("../config/history.js", () => ({ listSessions: vi.fn(), loadSession: vi.fn() }));
 const coordinator = vi.hoisted(() => ({ get: vi.fn(), poll: vi.fn(), job: vi.fn() }));
@@ -227,23 +229,24 @@ describe("resumable history", () => {
     expect(record?.runtime?.status).toBeDefined();
   });
 
-  it("regression: active running + cancelRequested with live PID but mismatched start time -> interrupted", async () => {
-    const session = await create("active-mismatched-start");
+  it.each([
+    { actual: "2021-01-01T00:00:00.000Z", status: "interrupted" },
+    { actual: undefined, status: "running" },
+  ])("reconciles a cancelled session with a live PID and probed start time $actual to $status", async ({ actual, status }) => {
+    const session = await create("active-owner-start");
     await store.update(session.id, session.generation, current => {
       current.status = "running";
       current.cancelRequested = true;
-      current.ownerPid = process.pid; // Current process exists
-      current.ownerProcessStartTime = "2020-01-01T00:00:00.000Z"; // Mismatched start time
+      current.ownerPid = process.pid;
+      current.ownerProcessStartTime = "2020-01-01T00:00:00.000Z";
     });
-    // Process exists but start time differs -> should be marked interrupted (POSIX detects mismatch)
-    // On Windows (start time unavailable), it stays running since process exists
+    // A denied OS process probe is not proof that the PID has been reused.
+    const probe = process.platform === "win32"
+      ? vi.spyOn(windowsProbe, "readProcessStartTimeWindows").mockResolvedValue(actual)
+      : vi.spyOn(posixProbe, "readProcessStartTimePosix").mockResolvedValue(actual);
     const listed = await listResumableSessions();
-    const record = listed.find(r => r.id === session.id);
-    // POSIX: "interrupted" (start time mismatch)
-    // Windows: "running" (process exists, start time check skipped)
-    // Fail-closed: if start time cannot be verified (mismatch or unavailable), treat as dead
-    // Both POSIX and Windows now return "interrupted" when identity cannot be confirmed
-    expect(record?.runtime?.status).toBe("interrupted");
+    expect(probe).toHaveBeenCalledWith(process.pid);
+    expect(listed.find(r => r.id === session.id)?.runtime?.status).toBe(status);
   });
 
   it("regression: active running + cancelRequested with dead PID -> interrupted", async () => {
