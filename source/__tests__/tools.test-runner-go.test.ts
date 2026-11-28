@@ -25,6 +25,10 @@ describe("tools/test-runner — parseGoTest", () => {
       "TestParse",
       "TestParse/invalid_input",
     ]);
+    for (const failure of results.failures) {
+      expect(failure.error).toContain("parse_test.go:24: unexpected nil");
+      expect(failure.error).not.toContain("--- PASS:");
+    }
   });
 
   it("handles deeply nested failing subtests while keeping top-level counts", () => {
@@ -38,10 +42,10 @@ describe("tools/test-runner — parseGoTest", () => {
 
     expect(results.passed).toBe(0);
     expect(results.failed).toBe(1);
-    expect(results.failures.map((f) => f.test)).toEqual([
-      "TestSuite",
-      "TestSuite/group",
-      "TestSuite/group/edge_case",
+    expect(results.failures).toEqual([
+      { test: "TestSuite", error: "Test failed" },
+      { test: "TestSuite/group", error: "Test failed" },
+      { test: "TestSuite/group/edge_case", error: "Test failed" },
     ]);
   });
 });
