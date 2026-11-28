@@ -62,11 +62,14 @@ The `cancel` action is configurable. Ctrl+C is also handled by the terminal UI b
 
 During `/voice`, the prompt remains editable while listening and finalizing.
 **Enter** sends the displayed draft once microphone cleanup is acknowledged;
-click **Stop** to finish without sending and continue editing. **Esc** or
-**Ctrl+C** cancels dictation or a pending voice send instead of exiting Agav.
-During model-download consent, **Y** approves and **N/Esc** declines; Enter alone
-does not approve. These voice controls use their fixed keys rather than the
-configurable prompt-submit/cancel bindings. See [Voice Input](/features/voice-input).
+press **Option+S** on macOS (**Alt+S** elsewhere) or click **Stop** to finish
+without sending and continue editing. **Esc** or **Ctrl+C** cancels dictation
+or a pending voice send instead of exiting Agav. During model-download consent,
+**Y** approves and **N/Esc** declines; Enter alone does not approve. These voice
+controls use their fixed keys rather than the configurable prompt-submit/cancel
+bindings. See [Voice Input](/features/voice-input).
+
+> **macOS Terminal.app:** Enable **Use Option as Meta key** (Settings → Profiles → Keyboard) for **Option+S** to reach Agav; if your terminal does not forward the keypress, click **Stop** with your pointer instead.
 
 ## Override bindings
 
