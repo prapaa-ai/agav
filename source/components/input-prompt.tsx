@@ -613,14 +613,19 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const completeFileSuggestion = (selected: FileSuggestion, token: ActiveFileToken) => {
     const completedPath = `${selected.path}${selected.isDirectory ? "/" : ""}`;
     const needsQuotes = completedPath.includes(" ");
+    const buf = liveRef.current.value;
+    const hadClosingQuote = token.quoted && buf[token.end - 1] === "\"";
+    const keepClosingQuote = selected.isDirectory && needsQuotes && hadClosingQuote;
     const mention = needsQuotes
-      ? `@"${completedPath}${selected.isDirectory ? "" : "\""}`
+      ? `@"${completedPath}${!selected.isDirectory || keepClosingQuote ? "\"" : ""}`
       : `@${completedPath}`;
     const suffix = selected.isDirectory ? "" : " ";
-    const buf = liveRef.current.value;
     const nextValue = buf.slice(0, token.start) + mention + suffix + buf.slice(token.end);
+    const nextCursor = keepClosingQuote
+      ? token.start + mention.length - 1
+      : token.start + mention.length + suffix.length;
     clearSelection();
-    applyEdit(nextValue, token.start + mention.length + suffix.length);
+    applyEdit(nextValue, nextCursor);
     setSelectedSuggestion(0);
   };
 
