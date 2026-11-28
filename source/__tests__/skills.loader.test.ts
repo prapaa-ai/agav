@@ -627,3 +627,68 @@ describe("skills/loader — disable/enable", () => {
     expect(helper!.origin).toBe("global");
   });
 });
+
+describe("skills/loader — malformed YAML handling", () => {
+  let tmpBase: string;
+  let globalSkillsDir: string;
+  let projectSkillsDir: string;
+
+  beforeEach(async () => {
+    tmpBase = await mkdtemp(join(tmpdir(), "agav-yaml-test-"));
+    globalSkillsDir = join(tmpBase, "global", "skills");
+    projectSkillsDir = join(tmpBase, "project", ".agav", "skills");
+    await mkdir(globalSkillsDir, { recursive: true });
+    await mkdir(projectSkillsDir, { recursive: true });
+    mockAgavDir = join(tmpBase, "global");
+    vi.spyOn(process, "cwd").mockReturnValue(join(tmpBase, "project"));
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await rm(tmpBase, { recursive: true, force: true });
+  });
+
+  it("reports malformed YAML on stderr without dumping file contents and still loads valid siblings", async () => {
+    const brokenDir = join(projectSkillsDir, "broken-skill");
+    const validDir = join(projectSkillsDir, "valid-skill");
+    const brokenPath = join(brokenDir, "SKILL.md");
+
+    await mkdir(brokenDir, { recursive: true });
+    await writeFile(
+      brokenPath,
+      "---\nname: [unclosed\nsecret-token: DO_NOT_LEAK_THIS\n---\nBody content DO_NOT_LEAK_BODY\n",
+    );
+
+    await mkdir(validDir, { recursive: true });
+    await writeFile(
+      join(validDir, "SKILL.md"),
+      "---\nname: valid-skill\ndescription: A valid sibling skill\n---\nWorks fine.\n",
+    );
+
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const skills = await loadSkills();
+
+    expect(skills.some((s) => s.slug === "valid-skill")).toBe(true);
+    expect(skills.some((s) => s.slug === "broken-skill")).toBe(false);
+
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    const msg = String(errSpy.mock.calls[0]?.[0] ?? "");
+    expect(msg).toContain(brokenPath);
+    expect(msg.toLowerCase()).toContain("invalid yaml");
+    expect(msg).not.toContain("DO_NOT_LEAK_THIS");
+    expect(msg).not.toContain("DO_NOT_LEAK_BODY");
+    expect(msg).not.toContain("[unclosed");
+  });
+
+  it("remains quiet for directories without a SKILL.md", async () => {
+    await mkdir(join(globalSkillsDir, "empty-dir"), { recursive: true });
+    await writeFile(join(globalSkillsDir, "empty-dir", "README.md"), "not a skill");
+
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await loadSkills();
+
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+});
