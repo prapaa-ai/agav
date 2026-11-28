@@ -107,6 +107,49 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+async function openSharedIdPicker(provider: AgavConfig["provider"], model: string) {
+  stubFetch(["claude-demo", "shared-model"], ["shared-model"]);
+  const context = createContext({
+    provider, model, anthropicApiKey: "test-anthropic", openrouterApiKey: "test-openrouter",
+  });
+  const stdin = Object.assign(new EventEmitter(), {
+    isRaw: false, setRawMode: vi.fn(), resume: vi.fn(), pause: vi.fn(),
+  });
+  const stdout = { rows: 24, columns: 100, write: vi.fn() };
+  vi.spyOn(process, "stdin", "get").mockReturnValue(stdin as unknown as typeof process.stdin);
+  vi.spyOn(process, "stdout", "get").mockReturnValue(stdout as unknown as typeof process.stdout);
+  const result = modelCommand.execute("", context);
+  await vi.waitFor(() => expect(stdin.listenerCount("data")).toBe(1));
+  const rows = () => (stdout.write.mock.lastCall?.[0] as string).split("\r\n").filter((line) => line.includes("-model") || line.includes("claude-demo"));
+  return { rows, result, finish: () => stdin.emit("data", Buffer.from("\x1b")) };
+}
+
+describe("model picker active row", () => {
+  it("marks and highlights only the current provider's row when two providers share a model ID", async () => {
+    const { rows, result, finish } = await openSharedIdPicker("openrouter", "shared-model");
+    try {
+      const active = rows().filter((line) => line.includes("◀"));
+      expect(active).toHaveLength(1);
+      expect(active[0]).toContain("❯ shared-model ◀");
+      expect(rows().find((line) => line.includes("[anthropic]") && line.includes("shared-model"))).not.toContain("◀");
+    } finally {
+      finish();
+      await result;
+    }
+  });
+
+  it("highlights the first row without marking it when the exact pair is absent", async () => {
+    const { rows, result, finish } = await openSharedIdPicker("ollama", "shared-model");
+    try {
+      expect(rows().some((line) => line.includes("◀"))).toBe(false);
+      expect(rows()[0]).toContain("❯ claude-demo");
+    } finally {
+      finish();
+      await result;
+    }
+  });
+});
+
 describe("commands/model", () => {
   it("copies the highlighted filtered ID without switching until Enter", async () => {
     const { context, stdout, result, send } = await openPicker();

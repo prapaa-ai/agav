@@ -276,7 +276,10 @@ function pickModel(
   stdin.setRawMode(true);
   stdin.resume();
 
-  let selected = Math.max(0, models.findIndex((m) => m.id === currentModel));
+  // Two providers can offer the same model ID, so the active row is the
+  // provider and model together; without that exact pair, start on the first row.
+  const isActive = (m: FetchedModel) => m.id === currentModel && m.provider === currentProvider;
+  let selected = Math.max(0, models.findIndex(isActive));
   let filter = "";
   let visibleLines: string[] = [];
   let visibleStart = 0;
@@ -320,7 +323,7 @@ function pickModel(
     for (let i = scrollStart; i < scrollEnd; i++) {
       const m = filtered[i]!;
       const isSel = i === selected;
-      const active = m.id === currentModel ? " ◀" : "";
+      const active = isActive(m) ? " ◀" : "";
       const providerTag = m.provider !== currentProvider ? ` [${m.provider}]` : "";
       const contextTag = m.contextWindow ? ` (${formatContextWindow(m.contextWindow)} ctx)` : "";
 
