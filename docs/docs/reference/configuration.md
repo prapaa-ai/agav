@@ -63,7 +63,7 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | Field | Values or behavior |
 | --- | --- |
 | `provider` | `anthropic`, `openai`, `openrouter`, `nvidia`, `deepseek`, `gemini`, `vertex-ai`, or `ollama` |
-| `model` | Provider-specific model identifier |
+| `model` | Provider-specific model identifier. Fresh Anthropic configurations default to `claude-sonnet-5-5`. |
 | `anthropicApiKey` | Anthropic API key. Global config only — encrypted at rest. Prefer `ANTHROPIC_API_KEY`. |
 | `openaiApiKey` | OpenAI API key. Global config only — encrypted at rest. Prefer `OPENAI_API_KEY`. |
 | `openrouterApiKey` | OpenRouter API key. Global config only — encrypted at rest. Prefer `OPENROUTER_API_KEY`. |
@@ -94,6 +94,8 @@ Because the key fields are removed from project config, a value like `openaiApiK
 | `search` | When `true`, enable the `web_search` tool (off by default). Also settable per session with `--search`. See [Built-in tools](/features/built-in-tools). |
 | `systemPrompt` | Additional project instructions |
 | `backgroundJobsEnabled` | Opt in (default `false`) to `run_background_job`, `/job`, and worker-owned ordinary interactive turns with `/detach`. Set `true` before starting the task; no separate flag is needed for detached sessions. Shell jobs run outside the shell sandbox; session tools retain their permission and sandbox policy. See [Background jobs](/features/background-jobs) and [Detached sessions](/features/detached-sessions). |
+| `workflowsEnabled` | Opt in to JSON/YAML workflows (default `false`). Requires `backgroundJobsEnabled: true`. Set it in global config, not project config. See the [Workflow reference](/reference/workflows). |
+| `maxConcurrentWorkflowRuns` | Maximum simultaneous workflow runs (default `2`); additional runs wait in the queue. |
 | `backgroundAutomation` | `on` (default) or `paused`. `paused` makes `agav job tick` and `agav job daemon` do nothing. Global config only. |
 | `hooks` | Optional commands for `afterEdit`, `afterShell`, and `preCommit` |
 | `theme` | Partial terminal color overrides |
@@ -141,6 +143,24 @@ When a key is saved to global config (for example through the setup flow), Agav 
 
 Vertex AI is the exception: it authenticates with a service-account JSON file referenced by `vertexAICredentialsPath` (or `VERTEX_AI_CREDENTIALS_PATH`), not an API key, and that file is **never** encrypted into `config.json`. Protect it yourself — see [Connect a Provider](/getting-started/providers).
 
+Set shell environment variables before launching Agav. For example, to point the OpenAI provider at a local compatible server:
+
+**POSIX shell**
+
+```bash
+export OPENAI_BASE_URL="http://localhost:1234/v1"
+```
+
+**Windows PowerShell**
+
+```powershell
+$env:OPENAI_BASE_URL = 'http://localhost:1234/v1'
+```
+
+These examples configure the shell that launches Agav, not the shell Agav uses for tools. See [Files and Context](/workflows/files-and-context#run-a-shell-command) for the distinction.
+
+Personal Agav account sign-in stores an encrypted record in `~/.agav/account/account.json`, separate from provider credentials and enterprise policy. Sign-in does not replace provider configuration. See [Consumer account sign-in](/reference/cli#consumer-account-sign-in).
+
 Prefer environment variables on shared machines. Values in `config.json` are convenient but tied to a single account and easier to leak into backups or version control.
 
 ### Project config restrictions
@@ -151,9 +171,10 @@ To prevent a malicious repository from redirecting API requests or escalating pe
 - **API keys:** `anthropicApiKey`, `openaiApiKey`, `openrouterApiKey`, `nvidiaApiKey`, `deepseekApiKey`, `geminiApiKey`, `ollamaApiKey`
 - **Permission escalation:** `permissionMode`
 - **Sandbox policy:** `sandboxRequired`, `sandboxNetwork`, `windowsSandbox`
-- **Unattended automation:** `backgroundAutomation`
+- **Automation opt-in and unattended scheduling:** `workflowsEnabled`, `backgroundAutomation`
+- **Enterprise routing:** `controlPlane`, `auditSink` (use the organization policy or their documented CLI/environment options, not user config)
 
-These fields are stripped from `./.agav/config.json` before it is merged, so a value placed there is **silently ignored** rather than applied — Agav does not warn about it. This ensures that cloning an untrusted repository cannot silently redirect your credentials to a third-party server or bypass tool confirmations. Set these fields in global config, via environment variables, or with `-c` instead.
+These fields are stripped from `./.agav/config.json` before it is merged, so a value placed there is **silently ignored** rather than applied — Agav does not warn about it. This ensures that cloning an untrusted repository cannot silently redirect your credentials to a third-party server or bypass tool confirmations. Use the supported global, environment, or CLI setting for each field.
 
 > **This is not the same as gitignore.** Ignoring `.agav/` in a repository only stops *you* from accidentally committing *your own* project config. It does not protect you when you clone *someone else's* repo: a malicious author can commit a poisoned `./.agav/config.json` anyway (for example with `git add -f`, which overrides `.gitignore`), and it arrives on your disk as a tracked file the moment you clone. Your local `.gitignore` never applies to it. The deny-list above is the actual defense against that clone-and-run threat, because it strips the dangerous fields at load time regardless of how the file got there. Do not rely on gitignore for credential safety.
 
@@ -163,7 +184,7 @@ Organizations can enforce a policy that takes precedence over every other config
 
 ### Where the policy comes from
 
-Agav reads the organization policy from the first source available, in order:
+Agav looks for an administrator-provided policy file in this order:
 
 1. the path named by the `AGAV_ORG_CONFIG` environment variable
 2. a known system path:
@@ -171,9 +192,9 @@ Agav reads the organization policy from the first source available, in order:
    - **Linux:** `/etc/agav/org-config.json`
    - **Windows:** `%ProgramData%\Agav\org-config.json`
 
-Deliver the file through your device-management (MDM) tooling or your fleet provisioning. If no policy file is present, Agav behaves exactly as before — this feature is inert for non-enterprise use.
+Deliver the file through your device-management (MDM) tooling or your fleet provisioning. If there is no file or cached policy, no organization policy is enforced.
 
-A missing, unreadable, or malformed policy file never breaks startup; Agav simply proceeds without an org policy.
+If no policy file exists, Agav falls back to policy cached by [enterprise enrollment](/reference/cli#enterprise-login-subcommands). A present but unreadable or invalid file is a policy error, not a reason to fall back.
 
 ### What a policy can enforce
 
@@ -196,10 +217,10 @@ A missing, unreadable, or malformed policy file never breaks startup; Agav simpl
 | `provider`, `model` | **Hard pin** — the org value is used regardless of user config. |
 | `openaiBaseURL`, `openaiHeaders` | **Hard pin** — route all OpenAI-compatible traffic through the organization's gateway. |
 | `permissionMode` | **Floor** — the user may choose a *stricter* mode but never a looser one (strictness order: `deny-writes` > `ask` > `auto-accept`). |
-| `allowedProviders` | **Allowlist** — selecting a provider outside the list is rejected at startup. An empty or omitted list means no restriction. |
-| `allowedModels` | **Allowlist** — selecting a model outside the list is rejected at startup. An empty or omitted list means no restriction. |
+| `allowedProviders` | **Allowlist** — selecting a provider outside the list is rejected at startup. Omit the list for no restriction; an explicit empty list is rejected. |
+| `allowedModels` | **Allowlist** — selecting a model outside the list is rejected at startup. Omit the list for no restriction; an explicit empty list is rejected. |
 | `allowedTools` | **Additive** — the org's required tools are merged with the user's allowlist. |
-| `controlPlane` | Address of a self-hosted control plane that `agav login` signs in to. Optional — omit it to use Agav's hosted control plane. |
+| `controlPlane` | Address of a self-hosted control plane used by enterprise enrollment. Optional — omit it to use Agav's hosted control plane. |
 | `auditSink` | HTTPS endpoint that receives secret-free `agav login`/`logout` audit events for your SIEM. Optional. See [Audit events](./cli#audit-events-siem). |
 
 ### How enforcement behaves
@@ -208,4 +229,4 @@ A missing, unreadable, or malformed policy file never breaks startup; Agav simpl
 - Choosing a provider or model outside an allowlist produces a clear policy error at startup (reported before any missing-credential message), rather than silently falling back.
 - `permissionMode` is treated as a minimum: a developer can tighten it locally but cannot drop below the org floor.
 
-> The organization policy is a *delivery mechanism* for enforcement. The same policy shape can later be delivered by an authenticated enrollment flow instead of a file; the enforcement behavior is identical regardless of source.
+> The organization policy is a *delivery mechanism* for enforcement. The same policy shape can be delivered by authenticated enterprise enrollment instead of a file; the enforcement behavior is identical regardless of source.

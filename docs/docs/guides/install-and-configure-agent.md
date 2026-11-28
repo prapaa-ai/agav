@@ -7,12 +7,13 @@ order: 10
 
 # Install and Configure an Agent
 
-This guide walks through installing the Jira agent from the marketplace, configuring its credentials, and using it in a session. The same steps apply to any marketplace agent.
+This guide walks through installing the Jira agent from the marketplace, configuring its credentials, and using it in a session. Use the same flow for other marketplace agents, but check their required credentials, tools, and permissions before installing.
 
 ## Prerequisites
 
 - Agav installed and connected to an LLM provider
 - Credentials for the service you're connecting (e.g. a Jira API token)
+- A trusted agent source. The Windows shell sandbox does not cover marketplace agent JavaScript; on macOS/Linux, Agav's separate agent sandbox can block outbound network access. Read the [agent sandbox notes](/features/agents#agent-sandbox) before using a network-dependent agent.
 
 ## Step 1: Open the marketplace
 
@@ -46,11 +47,11 @@ Press `1` to install globally. Agav copies the agent files and registers it. You
 
 ## Step 4: Switch to the List tab
 
-Press `1` to open the **List** tab. You should see the jira agent under **Global:** with status `[disabled] ⚠ Needs config`.
+Installation returns you to the **List** tab. If you switched away, press `1` to return. Find the `jira` entry with origin `global`. New installs are enabled by default, but the agent still needs its required credentials.
 
 ## Step 5: Inspect the agent
 
-Navigate to the jira entry and press `i`. The inspect view shows:
+Highlight the `jira` entry and press `v` for **Agent diagnostics**. The diagnostics view shows:
 
 - **Required Config** — credentials the agent needs
 - **Tools** — individual tool names with `safe` / `modifies` labels
@@ -58,7 +59,7 @@ Navigate to the jira entry and press `i`. The inspect view shows:
 
 ## Step 6: Open the config editor
 
-Press `e` to open the credential and settings editor. Each required credential appears in the list with its status:
+Press `e` from diagnostics, or `c` from the List tab, to open the credential and settings editor. Each required credential appears in the list with its status:
 
 ```
 → JIRA_URL         ✗ not set
@@ -76,15 +77,15 @@ For **JIRA_URL**: type or paste your Jira base URL (e.g. `https://your-org.atlas
 
 For **JIRA_EMAIL**: enter your Atlassian account email, then `ENTER`.
 
-For **JIRA_API_TOKEN**: paste your [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens) — paste with `Ctrl+V` / `Cmd+V`, then `ENTER`.
+For **JIRA_API_TOKEN**: paste your [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens) using your terminal's paste shortcut, then press `ENTER`.
 
-After saving each value, the status changes to `✓ configured`.
+The editor saves each value in the agent's own encrypted `config.json` (for this install, `~/.agav/agents/jira/config.json`, or `$HOME\.agav\agents\jira\config.json` in PowerShell). Do not commit the credential file if you install into a project.
 
 Press `ESC` to return to the inspect view.
 
-## Step 8: Enable the agent
+## Step 8: Check readiness
 
-Press `b` to return to the List tab. Navigate to jira and press `ENTER` to toggle it **enabled**. The status changes to `[enabled] Ready ✓`.
+In diagnostics, check that all required values are configured. If the agent was disabled, return to the List tab with `b`, highlight `jira`, and press `t` to enable it. `ENTER` opens details; it does not toggle the agent.
 
 ## Step 9: Use the agent
 
@@ -94,22 +95,15 @@ Return to your main chat and ask Agav something Jira-related:
 what are my open Jira tickets?
 ```
 
-Agav routes the query to the jira agent. The first time it calls a `modifies` tool (like creating or updating an issue), you'll see a confirmation prompt:
-
-```
-jira_create_issue — input: { ... }
-[Y]es  [N]o  [A]lways
-```
-
-Read-only (`safe`) tools like `jira_search_issues` run without prompting.
+If Agav does not delegate, ask it to use the Jira agent explicitly. In `ask` mode, agent tools can require approval even when the catalog marks them `safe`. In `deny-writes` mode, third-party tools are blocked. Review any request before approving it. A ready status only means the required settings are present; it does not validate your service credentials or prove the tool can reach Jira.
 
 ## Troubleshooting
 
 **`⚠ Needs config` after entering credentials** — credentials are checked immediately on save. If the indicator persists, press `e` again and verify the values, particularly that there are no leading or trailing spaces.
 
-**Agent not appearing in the list** — press `r` in the marketplace to refresh, or restart Agav if you just installed.
+**Agent not appearing in the list** — press `r` in the List tab to reload installed agents. If Jira is missing from the marketplace, press `r` there and check which marketplace catalog is configured.
 
-**Credential forgotten** — open the config editor again and re-enter the value. Old values are overwritten.
+**Replace a credential** — open the config editor again, select the field, press `Delete` to clear the existing value, and save the replacement with `ENTER`.
 
 ## Related
 

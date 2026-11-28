@@ -14,11 +14,12 @@ Agav exposes these tools to its agent loop.
 | `write_file` | Create or replace a file |
 | `edit_file` | Replace an exact string in a file; use the optional one-based `occurrence` to select a match when text repeats |
 | `find_files` | Find files by glob; use `relative_paths: true` for paths relative to the search directory. A matching file searched directly is shown by its basename in relative mode. Set `max_results` to a positive safe integer to change the default cap of 200 files. |
-| `grep_search` | Search file contents with regular expressions |
+| `grep_search` | Search file contents with regular expressions or literal text |
 | `list_directory` | List a directory; optionally set `type` to `files` or `directories` |
 | `overview` | Map a repository's directory and symbol structure |
 | `run_command` | Execute a shell command with sandbox detection |
 | `run_tests` | Detect and run a supported project test framework |
+| `run_background_job` | Start and manage persistent shell jobs and cron schedules (opt-in; see [Background jobs](/features/background-jobs)) |
 | `lsp_query` | Request definitions, references, or hover data from a language server; diagnostic notifications are not yet fully surfaced |
 | `read_notebook` | Read Jupyter notebook cells, optionally by range |
 | `edit_notebook` | Change a notebook cell or its type |
@@ -39,7 +40,9 @@ cells.
 
 Set `cell_type` to `code`, `markdown`, or `raw` to filter cells within the
 selected range. The default, `all`, includes every cell type. Filtered results
-keep their original cell numbers.
+keep their original cell numbers. Cached text output is included by default;
+set `include_outputs: false` to return just the selected cells’ source
+and metadata such as cell numbers and types.
 
 `web_search` is off by default. Enable it per session with the [`--search`](/reference/cli) flag, or turn it on by default with the `search` field in [configuration](/reference/configuration). Search requests time out after 30 seconds and report an error rather than waiting indefinitely. The optional `max_results` argument accepts integers from 1 to 30 and defaults to 8. The tool may return fewer results if the provider returns fewer matches.
 
@@ -75,7 +78,7 @@ Use the path in the notice with `read_file` and `start_line`/`end_line`, or `gre
 
 ### `read_file`
 
-`path` can be absolute or relative to the working directory. Text ranges use **1-based, inclusive** `start_line` and `end_line`. If only `end_line` is provided, reading starts at line 1; if only `start_line` is provided, reading continues toward EOF until the output limit. Ends beyond EOF are clamped, while a start beyond EOF is an error. Invalid or reversed ranges are rejected.
+`path` can be absolute or relative to the working directory. Text ranges use **1-based, inclusive** `start_line` and `end_line`. If only `end_line` is provided, reading starts at line 1; if only `start_line` is provided, reading continues toward EOF until the output limit. Ends beyond EOF are clamped, while a start beyond EOF is an error. Invalid or reversed ranges are rejected. For text, set `encoding` explicitly to `utf-8`, `utf-16le`, `utf-16be`, or `latin1`; omit it for the default UTF-8 detection. Include the same encoding when continuing a ranged read.
 
 Large text files are streamed rather than loaded in full. A bounded text read returns a contiguous prefix of the requested range, reserving room for headers and recovery instructions (at most 1,995 selected whole lines). Its continuation notice identifies the next `start_line` in the **original file**, preserving any requested `end_line`; no duplicate temporary copy is needed. Follow that notice rather than treating the returned excerpt as the whole file. If the first requested line alone is too long, Agav returns a bounded excerpt and recommends targeted byte extraction with `run_command`; repeating that same line range will not advance through the line.
 
@@ -106,6 +109,11 @@ Depth must be a non-negative safe integer; invalid values fail before traversal.
 
 ### `grep_search`
 
+Search is case-sensitive and uses regular expressions by default. Set
+`ignore_case: true` to ignore case, or `fixed_strings: true` to treat the
+pattern literally (literal patterns cannot contain a newline). Set
+`files_only: true` to return each matching file once without its contents.
+
 Use `max_results` to cap matching lines, or file paths in `files_only` mode.
 It accepts positive safe integers and defaults to 100.
 
@@ -119,7 +127,12 @@ Use `context_before` and `context_after` (integers from 0 to 50) to show
 surrounding lines. Matches keep the `path:N:text` format, context lines
 use `path-N-text`, overlapping windows are merged, and `--` separates
 non-adjacent groups. `max_results` still counts matches only. Context
-cannot be combined with `files_only`.
+cannot be combined with `files_only` unless both context counts are zero.
+
+Both `grep_search` and `find_files` skip common generated and dependency
+directories during traversal: `node_modules`, `.git`, `build`, `dist`,
+`.next`, `.venv`, `__pycache__`, and `coverage`. To search one of these
+locations, specify it (or a path inside it) explicitly as `path`.
 
 ## Structured test runs and verification
 
@@ -127,7 +140,7 @@ cannot be combined with `files_only`.
 
 `run_tests` uses the same auto-detected OS sandbox, network policy, credential filtering, and `sandboxRequired` enforcement as `run_command`. It has no `sandbox` parameter or Docker override. If a required sandbox is unavailable or cannot launch, tests are refused without an unsandboxed retry.
 
-The test process has a **120-second timeout** and a **1 MiB output-buffer limit**, separate from `run_command`'s streaming capture. Results show framework and actual test pass/fail counts, up to ten highlighted failures, and short traceback excerpts. Failed or inconclusive runs also show the last **2,000 characters** of raw output, plus any process error; this is not a full log.
+The test process defaults to a **120-second timeout**; set `timeout_ms` to an integer from **1 to 600,000** (10 minutes) to override it. A timeout is a failure even if partial output shows passing tests. The runner has a **1 MiB output-buffer limit per stream**, separate from `run_command`'s streaming capture. Results show framework and actual test pass/fail counts, up to ten highlighted failures, and short traceback excerpts. Failed or inconclusive runs also show the last **2,000 characters** of raw output, plus any process error; this is not a full log.
 
 Agav attaches structured verification metadata with `status`, `passed`, `failed`, `errors`, and `exitCode`:
 
@@ -168,9 +181,13 @@ Explain the flow in execution order. Do not change files.
 
 Agav combines language-server results with file reads and repository search. If the server is unavailable, confirm that its executable is on `PATH` in the shell that started Agav. Diagnostic notifications are not yet fully surfaced, so use the project's normal diagnostic command when complete output matters.
 
+## GitHub operations
+
+`github` requires the `gh` CLI to be installed and authenticated. Set `repo` to `OWNER/REPO` or `HOST/OWNER/REPO`, or omit it to use `gh` repository discovery. Use `operation: "comment_issue"` or `"comment_pr"` with a positive issue or PR `number` and non-empty `body`.
+
 ## Confirmations and undo
 
-Writes, edits, and sensitive commands can display a confirmation prompt. Edit confirmations include a diff. Choosing the session-wide approval option releases ordinary queued confirmations as well, but does not approve `fetch_url` mutations that require explicit per-call consent.
+Writes, edits, and sensitive commands can display a confirmation prompt. Edit confirmations include a diff. `edit_file` treats replacement text literally, including dollar patterns such as `$&`. Choosing the session-wide approval option releases ordinary queued confirmations as well, but does not approve `fetch_url` mutations that require explicit per-call consent.
 
 Agav records prior content for tracked file edits in an in-memory undo stack:
 
@@ -188,7 +205,7 @@ The file tools (`read_file`, `write_file`, `edit_file`) enforce path boundary ch
 
 ## Shell execution
 
-Shell commands have a 30-second default timeout and [bounded output](#output-limits-and-recovery). Agav auto-detects macOS Seatbelt, Linux Bubblewrap, or the Windows restricted-token helper (enabled by default on Windows); Docker can be requested as a `run_command` override.
+Shell commands have a 30-second default timeout (`timeout_ms` accepts integers from 1 to 120,000) and [bounded output](#output-limits-and-recovery). Agav auto-detects macOS Seatbelt, Linux Bubblewrap, or the Windows restricted-token helper (enabled by default on Windows); Docker can be requested as a `run_command` override when available. The tool schema advertises the overrides available to the current session.
 
 `run_command` streams stdout/stderr, so a large output no longer fails merely by exceeding the old shell buffer. Small results show stdout followed by stderr; oversized results and saved logs use observed arrival order across the two streams. Above 40,000 decoded UTF-8 bytes (or when status/separator formatting crosses that limit), it saves a log and returns a Unicode-safe head/tail preview. The shared registry can additionally truncate results exceeding 2,000 lines.
 
@@ -200,13 +217,13 @@ On Unix, native, Seatbelt, and Bubblewrap shell runners own a process group. Fai
 
 Under native and Seatbelt execution, successful background children are not killed merely because the shell leader finishes. Bubblewrap's private PID namespace and the Windows sandbox's Job Object prevent descendants from outliving the invocation. Output from children sharing the inherited pipes is collected until the pipes close or the command timeout bounds that wait. A successful leader can still be reported as successful when only pipe drainage reaches the timeout; do not interpret that status as proof that every background job completed. Manage persistent services explicitly, or use [background jobs](/features/background-jobs) when a command must outlive the turn.
 
-The buffered runners used by some integrations still enforce their own output-buffer limits. Agent subprocesses and Seatbelt/unsandboxed test runners receive cancellation signals but do not inherit the shell runner's process-group cleanup guarantees; Bubblewrap and Windows sandboxed tests retain backend lifecycle isolation. MCP cancellation stops Agav's request wait without killing the shared server; server-side work may continue. Docker cancellation signals the local CLI but does **not** guarantee daemon/container cleanup. See [Security](/reference/security#cancellation-is-not-isolation).
+The buffered runners used by some integrations still enforce their own output-buffer limits. `run_tests` shares the shell runner’s process-tree cleanup and bounded pipe drainage. Agent subprocesses do not inherit the shell runner’s process-group cleanup guarantees. MCP cancellation stops Agav's request wait without killing the shared server; server-side work may continue. Docker cancellation signals the local CLI but does **not** guarantee daemon/container cleanup. See [Security](/reference/security#cancellation-is-not-isolation).
 
 ## HTTP responses
 
 `fetch_url` supports GET (default), HEAD, POST, PUT, PATCH, and DELETE, with optional headers and body. It streams the response as decoded text, including raw HTML, with a 30-second request timeout. Once started, it does not consume the turn cancellation signal; Esc does not immediately stop that request or undo a POST or other server-side action. Small results include the HTTP status and body unchanged; above **38,000 decoded UTF-8 bytes**, a response log and bounded head/tail preview are used.
 
-GET and HEAD are read-only for permission checks and run without a confirmation prompt. POST, PUT, PATCH, and DELETE are blocked in `deny-writes` and require explicit approval for each call in other modes, including `auto-accept`. This requirement still applies if `fetch_url` is allowlisted or you choose “always.” Agav refuses these methods when no confirmation handler is available.
+HEAD returns only status and rejects a request body. GET and HEAD are read-only for permission checks and run without a confirmation prompt. POST, PUT, PATCH, and DELETE are blocked in `deny-writes` and require explicit approval for each call in other modes, including `auto-accept`. This requirement still applies if `fetch_url` is allowlisted or you choose “always.” Agav refuses these methods when no confirmation handler is available.
 
 To protect against server-side request forgery (SSRF), `fetch_url` accepts only HTTP(S) URLs and blocks loopback, private, link-local, reserved, and cloud metadata addresses. Agav rejects hostnames that resolve to any blocked address and pins each connection to a validated address. It applies the same destination checks to every redirect and follows at most five redirects. Cross-origin redirects strip `Authorization`, `Cookie`, and `Proxy-Authorization`. See [HTTP request safety](/reference/security#http-request-safety).
 

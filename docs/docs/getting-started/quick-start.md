@@ -16,7 +16,7 @@ cd hello-agav
 git status --short
 ```
 
-Start Agav from the directory that contains the whole project. Agav treats that folder as the project root, so it uses it to decide which files it can see, which project settings to load, and which `@file` suggestions to offer.
+These commands also work in PowerShell. Start Agav from the directory that contains the whole project. Agav treats that folder as the project root, so it uses it to decide which files it can see, which project settings to load, and which `@file` suggestions to offer.
 
 ## 2. Start read-only mode
 
@@ -24,9 +24,9 @@ Start Agav from the directory that contains the whole project. Agav treats that 
 agav --provider openai --model gpt-5.4-mini --deny-writes
 ```
 
-`--deny-writes` lets Agav inspect the repository while blocking edits. Replace the provider and model if you configured a different one.
+`--deny-writes` lets Agav inspect the repository while blocking write and approval-required tools. It is a [tool permission mode](/reference/security#deny-writes-mode), not an operating-system sandbox. Replace the provider and model if you configured a different one.
 
-The interactive session opens with a compact Unicode braille shell logo, `Agav v<version>`, and **Stay in the Shell.** The name and tagline sit beside the logo on wider terminals and stack below it on narrow ones. The footer shows your provider, model, effort, and session token usage; the logo is a static banner, not a new thinking animation.
+The interactive session opens with a compact shell logo (braille on macOS/Linux, block characters on Windows), `Agav v<version>`, and **Stay in the Shell.** The name and tagline sit beside the logo on wider terminals and stack below it on narrow ones. The footer shows your provider, model, effort, and session token usage; the logo is a static banner, not a new thinking animation.
 
 ## 3. Ask a focused first question
 
@@ -67,7 +67,7 @@ Terminal replies also render a supported subset of LaTeX math as Unicode: for ex
 
 ## 5. Make one controlled change
 
-Exit Agav, then restart without `--deny-writes`:
+Exit Agav, then start a new session without `--deny-writes` (resuming can keep the previous session's permission mode):
 
 ```bash
 agav --provider openai --model gpt-5.4-mini
@@ -81,7 +81,7 @@ project has no external dependencies — it is pure Python. Fix the setup
 instructions to be accurate. Preserve the existing style, change no other files.
 ```
 
-The default `ask` mode pauses before sensitive actions and shows edit diffs. Check the file path and proposed change before approving. Reject the action and clarify your request if it is broader than expected.
+Check `/permission` and choose `ask` if your settings use a different mode. `ask` pauses before sensitive actions and shows edit diffs. Check the file path and proposed change before approving. Reject the action and clarify your request if it is broader than expected.
 
 ## 6. Review the result
 
@@ -92,7 +92,7 @@ git status --short
 git diff
 ```
 
-These commands distinguish Agav's work from changes that already existed. Use `/undo` before exiting Agav to restore a tracked file edit, or use your normal Git workflow afterward.
+These commands distinguish Agav's work from changes that already existed. Use `/undo list` and `/undo <n>` to revert a specific Agav file change, or use your normal Git workflow afterward.
 
 ## Tips for longer sessions
 

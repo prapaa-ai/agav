@@ -6,7 +6,7 @@ A modern, production-grade documentation platform built with Next.js, TypeScript
 
 - **📝 Markdown Support** - Write docs in GitHub Flavored Markdown
 - **🎨 Syntax Highlighting** - Beautiful code highlighting with Shiki (100+ languages)
-- **🔍 Full-Text Search** - Fast client-side search with keyboard shortcuts (⌘K)
+- **🔍 Full-Text Search** - Fast client-side search with keyboard shortcuts (⌘K on macOS, Ctrl+K on Windows/Linux)
 - **🌓 Dark Mode** - Automatic dark mode with system preference detection
 - **📱 Responsive** - Mobile-first responsive design
 - **⚡ Fast** - Static generation with Next.js App Router
@@ -17,22 +17,17 @@ A modern, production-grade documentation platform built with Next.js, TypeScript
 
 ### Prerequisites
 
-- Node.js 20.x or higher
-- npm
+- Node.js 22 (use the version in [`docs/.nvmrc`](.nvmrc) to match the docs site)
+- pnpm 10 for this checkout's lockfile and dependency overrides
 
-### Installation
+Run from the repository's `docs/` directory. These commands work in Windows PowerShell and in macOS/Linux shells:
 
-1. Install dependencies:
-```bash
-npm install
+```sh
+npx --yes pnpm@10.34.9 install --frozen-lockfile
+npx --yes pnpm@10.34.9 dev
 ```
 
-2. Start the development server:
-```bash
-npm run dev
-```
-
-3. Open http://localhost:3000 in your browser
+Open <http://localhost:3000>. The `npx` invocation selects the pnpm version; it does not install Agav or use an npm lockfile for the docs project.
 
 ## Writing Documentation
 
@@ -42,13 +37,13 @@ Documentation files are organized in the `docs/` directory:
 
 ```
 docs/
-├── index.md                 # Home page (/docs)
+├── index.md                 # Home page (/)
 ├── getting-started/
-│   ├── index.md            # /docs/getting-started
-│   ├── installation.md     # /docs/getting-started/installation
-│   └── quick-start.md      # /docs/getting-started/quick-start
+│   ├── index.md            # /getting-started
+│   ├── installation.md     # /getting-started/installation
+│   └── quick-start.md      # /getting-started/quick-start
 └── guides/
-    └── index.md            # /docs/guides
+    └── index.md            # /guides
 ```
 
 ### Frontmatter
@@ -99,7 +94,7 @@ docs/
 ├── app/                    # Next.js App Router
 │   ├── [...slug]/         # Dynamic doc pages
 │   ├── layout.tsx         # Root layout
-│   ├── page.tsx           # Home page (redirects to /docs)
+│   ├── page.tsx           # Docs homepage
 │   ├── not-found.tsx      # 404 page
 │   ├── robots.ts          # robots.txt generation
 │   └── sitemap.ts         # Sitemap generation
@@ -134,10 +129,10 @@ docs/
 
 ## Scripts
 
-- `npm run dev` - Start development server
-- `npm run build` - Build for production (includes search index generation)
-- `npm run start` - Start production server
-- `npm run lint` - Run ESLint
+- `npx --yes pnpm@10.34.9 dev` - Start development server
+- `npx --yes pnpm@10.34.9 build` - Build for production (includes search index generation)
+- `npx --yes pnpm@10.34.9 start` - Start production server
+- `npx --yes pnpm@10.34.9 lint` - Run ESLint
 
 ## Customization
 
@@ -196,24 +191,6 @@ The search functionality uses a client-side search index generated at build time
 
 ## Deployment
 
-### Docker (Recommended for Self-Hosting)
-
-Build and run with Docker:
-
-```bash
-# Build the image
-docker build -t docs-platform .
-
-# Run the container
-docker run -p 3000:3000 docs-platform
-```
-
-The Docker image is optimized with:
-- Multi-stage build for minimal size (~150MB)
-- Non-root user for security
-- Health checks
-- Standalone Next.js output
-
 ### Vercel
 
 1. Push code to GitHub
@@ -224,27 +201,23 @@ The Docker image is optimized with:
 
 ### Static Export
 
-For static hosting (Netlify, Cloudflare Pages, etc.):
+From the docs project directory, build the static site and deploy `out/`. No changes to `next.config.ts` are needed.
 
-1. Change `output: 'standalone'` to `output: 'export'` in `next.config.ts`
-2. Run `npm run build`
-3. Deploy the `out/` directory
+macOS / Linux:
 
-## Version Management (Future)
-
-The platform is designed to support multiple documentation versions:
-
-```
-docs/
-├── latest/
-├── v2.0/
-└── v1.5/
+```sh
+npx --yes pnpm@10.34.9 build:cf
 ```
 
-To implement:
-1. Organize docs by version
-2. Update routing to `app/docs/[version]/[...slug]/page.tsx`
-3. Add version selector in navbar
+Windows PowerShell:
+
+```powershell
+$env:STATIC_EXPORT = '1'
+npx --yes pnpm@10.34.9 build
+Remove-Item Env:STATIC_EXPORT
+```
+
+Cloudflare Pages and Workers Builds already signal static export in their build environments.
 
 ## Tech Stack
 

@@ -21,7 +21,7 @@ Agav loads defaults, then `~/.agav/keybindings.json`, then `./.agav/keybindings.
 | Select subagent | `↑` / `↓` |
 | Inspect subagent | `Enter` |
 | Back to overview | `Tab` |
-| Insert newline | `Shift+Enter`, or `Option+Return` on macOS terminals that support it |
+| Insert newline | `Ctrl+J`, or `Shift+Enter` / `Alt+Enter` when the terminal sends them |
 | Submit | `Enter` |
 | Prompt history | `Up` / `Down` |
 | Exit, or copy an active Agav selection | `Ctrl+C` |
@@ -44,6 +44,8 @@ Interactive Agav sessions support terminal mouse input when the terminal forward
 - **Hover** over supported list rows to move the same highlight used by the arrow keys, without opening or applying anything.
 - **Mouse-wheel** navigation moves the active selection in pickers and lists, including login options, permission modes, customization, agents, marketplace results, workflow environment checklists, and resource managers. Screens with their own scrollable details handle the wheel locally.
 - **Drag** over Agav output selects text and copies it when the drag ends. Dragging across an input prompt positions or selects text according to the prompt editor. A drag or wheel movement over a confirmation control does not count as a click.
+- **In the model picker**, Ctrl+Y copies the highlighted model ID without switching models. Click a model or press Enter to switch.
+- **In a shell-tool approval**, click the command preview to expand or collapse it without making an approval decision. In resource-manager forms, use **Tab** and **Shift+Tab** to move forward and backward.
 - **Right- and middle-click** are left to the terminal's normal behavior; Agav does not use them for in-app actions. A terminal context menu may temporarily interrupt mouse reporting, and Agav re-establishes tracking for later left-clicks.
 
 Mouse controls are intentionally conservative around confirmations: the press and release must remain on the same visible left-click control, and a newly displayed prompt cannot be answered by the tail of an earlier double-click. If mouse input is unavailable, use the displayed keyboard labels.
@@ -105,11 +107,11 @@ Terminal protocols determine which key combinations Agav can distinguish. Many t
 
 Press **Shift+Enter** to insert a newline instead of sending the message. This requires the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) — without it your terminal transmits the exact same byte for Shift+Enter and Enter, so the modifier is lost before Agav sees it. Kitty, Ghostty, WezTerm, foot, Alacritty, and recent iTerm2 support it; terminals that don't are left untouched.
 
-**Ctrl+J** inserts a newline on **every terminal and every platform**, with no configuration. It is the fallback to reach for when Shift+Enter does nothing.
+**Ctrl+J** is the default fallback on macOS, Linux, and Windows when Shift+Enter does nothing. Terminal shortcuts can still intercept keys before Agav receives them.
 
 **Alt+Enter** (`Option+Enter` on macOS) also works where the terminal sends Option as Meta.
 
-The prompt footer only advertises the bindings your terminal can actually send, so whatever it shows will work. Set `AGAV_KITTY_KEYBOARD=0` to force legacy encoding if a terminal answers the protocol query but handles it badly, or `AGAV_KITTY_KEYBOARD=1` to force the protocol on.
+The prompt footer accounts for whether enhanced keyboard encoding is active. Set `AGAV_KITTY_KEYBOARD=0` to force legacy encoding if a terminal answers the protocol query but handles it badly, or `AGAV_KITTY_KEYBOARD=1` to force the protocol on.
 
 > **macOS Terminal.app** implements neither the Kitty protocol nor CSI-u. Use `Ctrl+J`, or enable **Option+Enter** via Settings → Profiles → Keyboard → check "Use Option as Meta key".
 

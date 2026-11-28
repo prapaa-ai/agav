@@ -13,11 +13,12 @@ This guide connects Agav to GitHub's official MCP server, then uses its read-onl
 
 | Command | Intent |
 | --- | --- |
+| `/mcp` | List connected servers and servers awaiting authentication. |
 | `/debug` | Confirm that Agav started the GitHub server and discovered its MCP capabilities. |
 
 ## 1. Prepare a read-only GitHub connection
 
-GitHub's local MCP server runs in Docker. Install and start Docker, then create a GitHub personal access token with only the repository access needed for the repositories you will inspect. Keep the token out of project configuration and version control.
+GitHub's local MCP server runs in Docker. Install and start Docker (in Linux container mode on Windows), make sure `docker` is available on the launch terminal’s `PATH`, then create a GitHub personal access token with only the repository access needed for the repositories you will inspect. Keep the token out of project configuration and version control.
 
 In the terminal that will start Agav, set the token and restrict the server to repository and issue tools:
 
@@ -61,11 +62,11 @@ Add the following server definition to `./.agav/config.json`. This file is proje
 }
 ```
 
-The `-e` entries pass the exported values into Docker; they do not put the token in the configuration file. Agav merges the global configuration first and then the project configuration, so a project server with the same name overrides its global definition. Restart Agav after changing MCP configuration.
+The `-e` entries pass the exported values into Docker; they do not put the token in the configuration file. Agav merges the global configuration first and then the project configuration, field by field. Use a distinct name if an existing `github` entry would contribute incompatible fields. Restart Agav after changing MCP configuration.
 
 ## 2. Verify the server
 
-Run `/debug`. Under **MCP servers**, confirm that `github` is listed. If it is not, first run the Docker command from the configuration directly in your terminal to check that Docker is running and that the exported token is available. MCP startup failures do not prevent Agav from starting, so `/debug` is the quickest way to distinguish an unavailable server from a normal Agav session.
+Run `/mcp` and confirm that `github` is connected. `/debug` also lists connected servers under **MCP servers**. If it is not, first run the Docker command from the configuration directly in your terminal to check that Docker is running and that the exported token is available. MCP startup failures do not prevent Agav from starting, so `/debug` is the quickest way to distinguish an unavailable server from a normal Agav session.
 
 ## 3. Use GitHub tools for a repository task
 
@@ -91,7 +92,7 @@ This separates external research from local changes: GitHub remains read-only, w
 
 | Symptom | What to check |
 | --- | --- |
-| `github` is absent from `/debug` | Docker is running, the image can be pulled, and `GITHUB_PERSONAL_ACCESS_TOKEN` is exported in the same terminal session that starts Agav. |
+| `github` is absent from `/mcp` and `/debug` | Docker is running, the image can be pulled, and `GITHUB_PERSONAL_ACCESS_TOKEN` is exported in the same terminal session that starts Agav. |
 | GitHub requests are unauthorized | Recreate or adjust the token with the minimum access required for the target repository, then restart Agav. |
 | Too many unrelated tools appear | Keep `GITHUB_TOOLSETS` limited to the task, such as `repos,issues`; GitHub documents the available toolsets and individual-tool options. |
 | You need to create or update GitHub content | Remove read-only mode only after reviewing the required token permissions and the task's intended write scope. |

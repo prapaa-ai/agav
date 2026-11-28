@@ -26,9 +26,9 @@ Add `mcpServers` to `~/.agav/config.json` or `./.agav/config.json`:
 }
 ```
 
-Each server supports a command, optional argument list, and optional environment overrides. Restart Agav after changing server configuration.
+Each server supports a command, optional argument list, and optional environment overrides. Install the runner (such as Node.js/npm for `npx`) and put it on the `PATH` used to launch Agav. Stdio servers run outside the shell sandbox and inherit Agav’s launch environment, with configured `env` values applied on top. Review project configs before starting Agav in unfamiliar checkouts. Restart Agav after changing server configuration.
 
-> **Windows:** `~/.agav/` resolves to `%USERPROFILE%\.agav\`.
+> **Windows:** `~/.agav/` resolves to `%USERPROFILE%\.agav\`. Agav uses `cmd.exe` for `.cmd` shim compatibility, regardless of your interactive shell. Keep `command` and `args` simple and separate; shell metacharacters and literal double quotes in either are rejected. On macOS and Linux arguments are passed directly, without a shell. See [MCP command validation](/reference/security#mcp-command-validation).
 
 ## Remote servers (HTTP / SSE)
 
@@ -84,7 +84,7 @@ If you know which transport the server speaks, pin it with `transport`:
 | `transport` | `"http"` or `"sse"` | no | Force a specific transport; omit to auto-detect |
 | `headers` | Record\<string, string\> | no | Extra headers sent with every request |
 
-`headers` are sent with every request and can pass static authentication tokens. Explicit `Authorization` headers take precedence over OAuth. The `command`, `args`, and `env` fields are not used for remote servers.
+`headers` are sent with every request and can pass static authentication tokens. Put real tokens in global config, not in a committed project file. Explicit `Authorization` headers take precedence over OAuth. The `command`, `args`, and `env` fields are not used for remote servers.
 
 ## Limiting which tools are exposed
 
@@ -147,7 +147,7 @@ The desktop server has different availability and capabilities from the remote s
 For servers that accept Agav's client registration, you can also sign in explicitly before starting Agav:
 
 ```bash
-agav mcp auth figma
+agav mcp auth my-remote-server
 ```
 
 Standalone CLI sign-in does not require an LLM provider. Restart Agav after using `agav mcp auth <name>`. In an existing Agav session, `/mcp auth <name>` reconnects immediately; success feedback names the connected server and reports how many still require authentication. The startup warning updates as servers connect and disappears when none remain. Failed, denied, or canceled sign-in never reports success. If OAuth succeeds but MCP discovery fails, the error distinguishes those outcomes.
@@ -159,7 +159,7 @@ OAuth tokens and registered client credentials are encrypted using Agav's existi
 To remove a server's cached credentials:
 
 ```bash
-agav mcp logout figma
+agav mcp logout my-remote-server
 ```
 
 Restart running Agav sessions after standalone CLI logout. In an existing session, run `/mcp logout <name>` instead: it immediately disconnects that server, removes its tools/resources/prompt commands, cancels any pending sign-in, and deletes its cached OAuth credentials without restarting. Other servers stay connected. Run `/mcp auth <name>` to sign in again.
@@ -187,7 +187,7 @@ See [Figma's remote MCP setup](https://developers.figma.com/docs/figma-mcp-serve
 - **Resources** are summarized in model context and read on demand through `mcp_read_resource`.
 - **Prompts** become slash commands. Agav requests the rendered prompt from the owning server and submits its messages to the conversation.
 
-If one server fails to start, Agav continues without it. Run `/debug` to see connected server names and counts for discovered resources and prompts.
+If one server fails to start, Agav continues without it. Run `/mcp` to see connected servers or servers requiring sign-in, or `/debug` for discovered resource and prompt counts. Completed MCP tool results in the interactive UI identify the server.
 
 ## Live refresh
 

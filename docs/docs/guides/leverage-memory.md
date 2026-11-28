@@ -15,14 +15,18 @@ Use memory for verified facts that should influence future conversations, not fo
 | --- | --- |
 | `/remember <text>` | Save `<text>` as a durable project memory. |
 | `/memory list` | List saved memories for the current project. |
-| `/memory add <text>` | Save `<text>` as a project memory. |
+| `/memory list --type <type>` | List only `user`, `feedback`, `project`, or `reference` memories. |
+| `/memory add <text>` | Save a project memory, or a feedback memory if the text starts with `prefer`, `always`, `never`, or `don't`. |
 | `/memory search <query>` | Find saved memories whose name, description, or content contains `<query>`, ignoring case. |
+| `/memory show <name>` | Read the full entry. Use the exact name from `/memory list`. |
 | `/memory path` | Show where the current project's memories are stored. |
 | `/memory delete <memory name>` | Remove the saved memory named `<memory name>`. |
 | `/memory rename <old-name> <new-name>` | Rename the saved memory named `<old-name>`, keeping its type, description, and content. |
 | `/forget` | List memories so you can select one to remove. |
 | `/forget <memory name>` | Remove the saved memory named `<memory name>`. |
 | `/memory clear` | Remove every memory for the current project. |
+
+Search treats the whole query as one literal phrase and returns a short excerpt for each match. Use `/memory show` for the complete content. If more than one entry has the same exact name, `show` reports the ambiguity rather than choosing one.
 
 ## Scenario: preserve the project data contract
 
@@ -38,10 +42,11 @@ hello-agav persists its run counter in `state.json`. Save that stable convention
 /remember counter.py reads and writes state.json with a {"count": N} shape. Any module that touches the counter must preserve this format and use the path parameter for testability.
 ```
 
-Inspect the saved entry:
+Find and inspect the saved entry (replace `<name>` with the exact name in the search results):
 
 ```text
-/memory list
+/memory search state.json
+/memory show <name>
 /memory path
 ```
 

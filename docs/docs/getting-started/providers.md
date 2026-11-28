@@ -1,6 +1,6 @@
 ---
 title: Connect a Provider
-description: Connect Agav to OpenAI, OpenRouter, NVIDIA NIM, Anthropic, Gemini, Vertex AI, or Ollama
+description: Connect Agav to OpenAI, OpenRouter, NVIDIA NIM, DeepSeek, Anthropic, Gemini, Vertex AI, or Ollama
 order: 3
 ---
 
@@ -13,7 +13,7 @@ Agav needs one model provider. The easiest path is:
 3. launch Agav with that provider and model
 4. ask one read-only question to confirm it works
 
-The default provider is **Anthropic** — if you run `agav` with no flags and no config file, it will try to use Anthropic. If you are not sure which provider to pick, use OpenAI, Anthropic, or Gemini if you already have an API key. Use OpenRouter if you want access to multiple providers behind a single key. Use NVIDIA NIM for NVIDIA-hosted models. Use DeepSeek for DeepSeek's own models. Use Ollama if you already have it installed, or [run a local model through an OpenAI-compatible server](/getting-started/local-models) with llama.cpp or LM Studio. Use Vertex AI if you already run on Google Cloud and want Gemini or Claude billed through that project.
+Anthropic is the default provider, with `claude-sonnet-5-5` on a fresh 0.2.9 configuration. If that provider is not configured, plain `agav` can select another configured cloud provider. Use `--provider ollama` for a local Ollama server; it is not discovered as a fallback. If you are not sure which provider to pick, use OpenAI, Anthropic, or Gemini if you already have an API key. Use OpenRouter if you want access to multiple providers behind a single key. Use NVIDIA NIM for NVIDIA-hosted models. Use DeepSeek for DeepSeek's own models. Use Ollama if you already have it installed, or [run a local model through an OpenAI-compatible server](/getting-started/local-models) with llama.cpp or LM Studio. Use Vertex AI if you already run on Google Cloud and want Gemini or Claude billed through that project.
 
 ## Fastest path
 
@@ -24,7 +24,14 @@ export OPENAI_API_KEY="your-key"
 agav --provider openai --model gpt-5.4-mini --deny-writes
 ```
 
-> **Windows:** Use `set OPENAI_API_KEY=your-key` in Command Prompt or `$env:OPENAI_API_KEY="your-key"` in PowerShell. All `export` commands on this page follow the same pattern.
+In Windows PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY = 'your-key'
+agav --provider openai --model gpt-5.4-mini --deny-writes
+```
+
+Use the same `$env:NAME = 'value'` pattern for other providers (`set "NAME=value"` in Command Prompt). These assignments affect the current shell and processes launched from it.
 
 Then ask:
 
@@ -65,11 +72,11 @@ Or set it in `~/.agav/config.json`:
 }
 ```
 
-The base URL applies only to the `openai` provider. When unset, Agav uses OpenAI's default endpoint. Most OpenAI-compatible endpoints implement Chat Completions rather than the Responses API, so pair a custom base URL with `--openai-api chat` if requests fail.
+The base URL applies only to the `openai` provider. An explicit `openaiBaseURL` takes precedence over the SDK's `OPENAI_BASE_URL` fallback. If neither is set and no managed gateway applies, requests go to OpenAI. Most OpenAI-compatible endpoints implement Chat Completions rather than the Responses API, so pair a custom base URL with `--openai-api chat` if requests fail.
 
 For step-by-step examples with GGUF models in llama.cpp and GGUF or MLX models in LM Studio, see [Run Local Models](/getting-started/local-models).
 
-If your gateway needs extra HTTP headers — a custom auth header, a tenant selector, or routing metadata — set `openaiHeaders` in `~/.agav/config.json`. They are sent with every OpenAI-provider request:
+If your gateway needs extra HTTP headers — a custom auth header, a tenant selector, or routing metadata — set `openaiHeaders` in `~/.agav/config.json`. They are sent with OpenAI-provider requests. Custom headers are not the encrypted API-key fields, so protect the user config if you put a token there:
 
 ```json
 {
@@ -203,6 +210,8 @@ export VERTEX_AI_CREDENTIALS_PATH=/path/to/service-account.json
 agav --provider vertex-ai --model vertex/gemini-3.5-flash
 ```
 
+On Windows PowerShell, use an absolute path and quote it, for example `$env:VERTEX_AI_CREDENTIALS_PATH = 'C:\Users\you\keys\service-account.json'`.
+
 Setting the credentials path is what enables the provider; there is no separate on/off flag to keep in sync with it. Agav uses the multi-region `global` endpoint by default — set `VERTEX_AI_LOCATION` (for example `us-east5`) to pin a region instead, which some Claude partner models require.
 
 Claude partner models are supported by the same provider and credentials, addressed with the same `vertex/` prefix. Use the model ID that Vertex AI exposes, including an `@YYYYMMDD` suffix when required by that model:
@@ -226,15 +235,15 @@ ollama list
 agav --provider ollama
 ```
 
-Agav lists the models available at the default `http://localhost:11434` endpoint. You can also select one directly:
+If no model is configured, Agav queries the default `http://localhost:11434` endpoint, starts with the first model returned, and names the other installed models. You can select one directly:
 
 ```bash
 agav --provider ollama --model llama3.2
 ```
 
-For a remote Ollama server, set `OLLAMA_ENDPOINT` and, when required, `OLLAMA_API_KEY`. If you prefer host and port separately, Agav also supports `OLLAMA_HOST` and `OLLAMA_PORT`.
+For a remote Ollama server, set `OLLAMA_ENDPOINT` and, when required, `OLLAMA_API_KEY`. Use the server root URL, not an `/api` or `/v1` path. `OLLAMA_HOST` and `OLLAMA_PORT` are alternatives when no full endpoint is configured. For hosted endpoints that require authentication for model discovery, pass `--model` explicitly: startup discovery queries `/api/tags` without an API key, even though the Ollama provider sends the key on its own requests.
 
-Agav sizes the context window per model. Set `AGAV_OLLAMA_NUM_CTX` to override that cap when you know your hardware can take more.
+Agav uses the model's reported context length up to a default cap of 32,768 tokens. Set `AGAV_OLLAMA_NUM_CTX` to change that cap; lowering it can help on memory-constrained machines.
 
 ## `/fast` and `/deep` models
 
@@ -256,7 +265,7 @@ Every provider has a preset for `/fast` (lightweight, quick answers) and `/deep`
 If you do not want to pass `--provider` and `--model` every time, save defaults in your user config file:
 
 - macOS or Linux: `~/.agav/config.json`
-- Windows: `%USERPROFILE%\\.agav\\config.json`
+- Windows: `%USERPROFILE%\.agav\config.json` (`$HOME\.agav\config.json` in PowerShell)
 
 Example:
 
@@ -267,18 +276,18 @@ Example:
 }
 ```
 
-Agav can also store provider API keys directly in `config.json` — they are **encrypted at rest** with AES-256-GCM, so the file never contains plaintext secrets. Even so, environment variables are the safer choice on shared machines and less likely to end up in version control.
+Agav encrypts provider API-key fields with AES-256-GCM when it saves the user config. A manually entered plaintext key remains plaintext until Agav saves the file. Legacy `keychain:` references from older builds are not read; supply a fresh key through the environment or replace the reference in user config.
 
 Two rules apply to keys stored in `config.json`:
 
 - **Global only.** Keys must live in `~/.agav/config.json`, not a project's `./.agav/config.json`. Agav strips API keys (and endpoint overrides) from project config before using it, so a key placed in a repository is silently ignored. This protects you from a cloned repo redirecting your credentials.
-- **Environment variables win.** If both the environment variable (e.g. `OPENAI_API_KEY`) and the `config.json` field are set, the environment variable is used. So `export OPENAI_API_KEY=...` in your shell always overrides whatever is saved in the file.
+- **Environment variables win.** If both the environment variable (e.g. `OPENAI_API_KEY`) and the `config.json` field are set, the environment variable is used. An empty overridden key can leave the provider unconfigured; when switching back to a saved key, remove the override rather than setting it to an empty string.
 
 See [Provider credentials](/reference/configuration) in the configuration reference for the full field-to-variable mapping.
 
 ## Verify the connection
 
-Start a read-only session in any repository:
+Start a session with tool writes restricted:
 
 ```bash
 agav --provider openai --model gpt-5.4-mini --deny-writes

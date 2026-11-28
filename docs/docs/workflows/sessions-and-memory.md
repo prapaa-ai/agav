@@ -11,12 +11,13 @@ order: 3
 | Command | Intent |
 | --- | --- |
 | `agav --resume` | Open an interactive picker for a saved session at startup. |
-| `agav --resume <id>` | Resume the saved session whose ID starts with `<id>`. |
+| `agav --resume <id>` | Resume a saved session by exact ID or unique prefix. An ambiguous prefix is rejected; use a longer ID or open the picker. |
 | `agav --name <title>` | Start a new interactive session with an initial name. |
 | `agav sessions delete <id>` | Delete a saved session by ID or unique prefix (alias: `rm`). |
 | `/resume [id]` | List saved sessions, or resume one by ID or prefix match. |
 | `/history [list]` | Browse saved sessions; use `list` for plain text. |
-| `/history list --limit <count>` | Show the most recent saved sessions in a plain-text list. |
+| `/history list --limit <count>` | Limit the plain-text list (most recently updated first) to a positive integer count. |
+| `/history list --provider <name> --model <id>` | Filter saved sessions by exact provider and full model ID (case-insensitive for the model). Combine either filter with `--limit` to cap results after filtering. |
 | `/search <query>` | Find saved sessions that match `<query>`. |
 | `/name <name>` | Give the active session a recognizable name. |
 | `/clear` or `/new` | Start a clean chat while keeping saved sessions. |
@@ -29,15 +30,17 @@ Ordinary `/exit` or Ctrl+C requests durable, generation-bound cancellation of a 
 
 > **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\`.
 
-`agav --resume` opens a picker listing all saved sessions, with the total count shown in the header. You can move the selection with `↑/↓`, `j/k`, or the mouse wheel, or click a row to select it. Press `Enter` to resume the selected session, `D` to delete saved or terminal sessions (not active workers), `M` or `R` to rename active or terminal sessions, `N` to start a new session instead of resuming one (`Ctrl+N` also works while typing in the search bar), and `Esc` or `q` to cancel. In the rename view, type the new name and press `Enter` to save, or press `Esc` to cancel and return to the list without renaming.
+`agav --resume` opens a picker listing all saved sessions, with the total count shown in the header. You can move the selection with `↑/↓`, `j/k`, or the mouse wheel, or click a row to resume it. Press `Enter` to resume the selected session, `D` to delete saved or terminal sessions (not active workers), `M` or `R` to rename active or terminal sessions, `N` to start a new session instead of resuming one (`Ctrl+N` also works while typing in the search bar), and `Esc` or `q` to cancel. In the rename view, type the new name and press `Enter` to save, or press `Esc` to cancel and return to the list without renaming.
 
-Filter the picker by session name with `/` or a click in its search bar. While search is focused, `Enter` or `Esc` finishes editing the search without resuming a session or closing the picker. Outside search, `Tab` cycles project scope, `s` toggles updated/created sorting, and `a` cycles all/running/needs-approval status filters. The running filter includes workers waiting for approval; an approval banner highlights sessions needing a decision. This name filter is separate from `/search`, which searches saved conversation content.
+Filter the picker by session name with `/` or a click in its search bar. While search is focused, `Enter` or `Esc` finishes editing the search without resuming a session or closing the picker. Outside search, `Tab` cycles project scope, `s` toggles updated/created sorting, and `a` cycles all/running/needs-approval status filters. The running filter includes workers waiting for approval; an approval banner highlights sessions needing a decision. This name filter is separate from `/search`, which searches saved messages, names, and titles.
 
 Note: resuming a session created with `--max-turns` keeps the session's own history but the turn cap is reapplied to each new prompt.
 
 A session also remembers its permission mode. If you changed the mode mid-session with [`/permission`](/reference/slash-commands) (for example escalating to `auto-accept` or tightening to `deny-writes`), resuming restores that saved mode rather than the configured launch default. An explicit `-c permissionMode=...` (or `--config permissionMode=...`) at startup overrides the saved mode. Dedicated `--auto-accept` (`-y`) or `--deny-writes` flags take precedence over `-c`, regardless of argument order, and an organization minimum is always enforced. See [Security → Changing the mode during a session](/reference/security#changing-the-mode-during-a-session).
 
-`/resume` opens the same interactive picker in newest-first order. If a prefix matches multiple sessions, `/resume <prefix>` lists up to 10 full IDs and titles so you can choose one without loading a session. `/search` performs a case-insensitive substring search across saved message text and string tool results, returns up to 10 matching sessions, and shows up to 3 snippets per session. To reopen a result directly, use its ID prefix with `agav --resume <id-prefix>`.
+`/resume` opens the same interactive picker in newest-first order. If a prefix matches multiple sessions, `/resume <prefix>` lists up to 10 full IDs and titles so you can choose one without loading a session. `/search` performs a case-insensitive substring search across saved names, titles, message text, and string tool results. It returns up to 10 matching sessions and up to 3 snippets per session. To reopen a result directly, use its ID prefix with `agav --resume <id-prefix>`.
+
+The footer shows the saved session name when set. Run `/status` for the full session ID and available saved title.
 
 ## Export a conversation
 
@@ -80,7 +83,7 @@ the branch session ID in the header. JSON sets `scope` to `"branch-only"` and in
 branches with no new retained messages produce a message instead of a file.
 Review exports before sharing because new replies can still quote earlier context.
 
-Exports cover the **retained conversation**, not a complete session archive.
+Exports cover the **retained conversation**, not a complete session archive. For a one-shot CLI run instead, see [Trajectory export](/workflows/non-interactive#trajectory-export).
 Context management may already have trimmed tool results or replaced old messages
 with a summary. Export cannot recover discarded content; a known compaction is
 reported in command feedback and JSON metadata. Expanded file attachments and
@@ -180,18 +183,22 @@ A practical pattern is to branch before a risky refactor, compare the result wit
 | --- | --- |
 | `/compact` | Summarize older conversation context now to make room for continued work. |
 | `/context` | Show the estimated current context-window occupancy: system prompt, tools, skills, MCP, and messages. |
+| `/context --json` | Return numeric context-window totals and component counts, without cumulative session totals. |
 
 Agav automatically compacts long histories and preserves a summary of important decisions, paths, bugs, and preferences. Run `/compact` to force compaction. Use `/context` to see what the context window currently holds. Its Used and Free rows are an estimate of current occupancy, not cumulative token usage. The session totals it also lists add up every request in the session, so they can exceed the context window. While a turn is running, `/context` is a snapshot of committed messages and excludes the output still being generated. When a compaction summary exists, press `Ctrl+O` in the UI to show or hide it.
+
+If Agav asks for the context window of an unlisted model, enter the known count in tokens. You can paste a comma-grouped count such as `32,768`, or press Esc to use the displayed default.
 
 ## Project memory
 
 | Command | Intent |
 | --- | --- |
 | `/remember <text>` | Save `<text>` as a durable project memory. |
-| `/memory list` | List the project's saved memories. |
+| `/memory list [--type user\|feedback\|project\|reference]` | List the project's saved memories, optionally filtered by type. |
 | `/memory add <text>` | Save `<text>` as a project memory. |
 | `/memory search <query>` | Find saved memories whose name, description, or content contains `<query>`, ignoring case. |
 | `/memory show <name>` | Print one memory in full by exact name. |
+| `/memory rename <old-name> <new-name>` | Change the stored name without changing the type, description, or content. |
 | `/memory delete <memory name>` | Remove the saved memory named `<memory name>`. |
 | `/memory path` | Show the active project's memory directory. |
 | `/forget` | List the saved memories. |

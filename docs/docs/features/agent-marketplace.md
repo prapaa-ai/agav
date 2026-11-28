@@ -6,7 +6,7 @@ order: 6
 
 # Agent Marketplace
 
-The agent marketplace is a catalog of community-built agents hosted on GitHub. Agav reads the catalog at startup (when you open the Marketplace tab) and lets you install agents directly into your global or project configuration.
+The agent marketplace is a catalog of community-built agents hosted on GitHub. Agav reads the catalog when you open the Marketplace tab and lets you install agents directly into your global or project configuration.
 
 ## Opening the marketplace
 
@@ -63,12 +63,11 @@ The config editor shows each required credential with its current status (`✓ c
 Install without opening the TUI:
 
 ```bash
-agav agents install <marketplace-url>/agents/jira
 agav agents install ./path/to/local-agent --destination project
 agav agents install https://github.com/org/repo/tree/main/agents/my-agent
 ```
 
-Remote installs are restricted to trusted git hosts: **github.com**, **gitlab.com**, **bitbucket.org**, and **raw.githubusercontent.com**. Set `AGAV_ALLOWED_GIT_HOSTS` (comma-separated) to allow additional hosts. Agent names must start with a letter or digit and contain only lowercase letters, digits, dots, hyphens, or underscores (max 64 characters).
+CLI HTTP(S) installs clone a Git repository and require `git` on `PATH`; a marketplace’s raw file URL is not a Git clone URL. Use the Marketplace tab to install from an HTTP file catalog. CLI Git URLs are restricted to these hosts: **github.com**, **gitlab.com**, **bitbucket.org**, and **raw.githubusercontent.com**. Set `AGAV_ALLOWED_GIT_HOSTS` (comma-separated) to allow additional hosts. Agent names must start with a letter or digit and contain only letters, digits, dots, hyphens, or underscores (max 64 characters).
 
 > **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\`.
 
@@ -82,11 +81,13 @@ For local development and testing, clone the marketplace repo and set:
 }
 ```
 
-The `AGAV_MARKETPLACE_URL` environment variable overrides the config file value and the built-in default.
+On Windows, use a drive-letter URL such as `file:///C:/dev/my-marketplace`. Use a directory path without spaces for the local TUI catalog: it does not decode percent-encoded paths.
+
+`agentMarketplace` takes precedence over `AGAV_MARKETPLACE_URL`; the environment variable replaces the built-in default when no config value is set.
 
 ## Hosting a marketplace
 
-Any GitHub repository (or static file server) can act as a marketplace. The minimum structure:
+Use a static file server or a raw GitHub content URL as the catalog base. A GitHub repository’s normal browser URL serves HTML, not `index.json`. For HTTP installs, each catalog entry must include `files`, an explicit list relative to the entry’s `path` (for example, `["AGENT.md", "tools/list-records.mjs", "tools/list-records.schema.json"]`). The minimum structure:
 
 ```
 my-marketplace/

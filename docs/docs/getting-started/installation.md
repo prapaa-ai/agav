@@ -8,6 +8,14 @@ order: 2
 
 One command, no Node.js required — Agav ships as a self-contained binary compiled with [Bun](https://bun.sh). Use the prebuilt release unless you are developing Agav itself.
 
+These docs describe the 0.2.9 release line. The default installer follows the latest **published stable** release, which can lag behind the source tree. Check [Releases](https://github.com/prapaa-ai/agav/releases) for available versions and use `agav --version` to see what you actually installed.
+
+| Platform | Release binaries |
+| --- | --- |
+| macOS | Apple Silicon (`darwin-arm64`) and Intel (`darwin-x64`). The installer selects arm64 on Apple Silicon even when launched from a Rosetta shell. |
+| Linux | x64 and arm64. |
+| Windows | x64 `.exe` and x64 baseline `.exe`. The PowerShell installer selects baseline when it does not detect AVX2. On ARM64 it installs an x64 executable, which requires x64 emulation; there is no native Windows ARM64 artifact. |
+
 ## macOS or Linux
 
 ```bash
@@ -20,7 +28,7 @@ curl -fsSL https://agav.dev/install.sh | bash
 irm https://www.agav.dev/install.ps1 | iex
 ```
 
-> **Note:** The `www.` prefix is deliberate. `agav.dev` redirects with a 308 status, and Windows PowerShell 5.1 cannot follow that redirect — it fails with `(308) Permanent Redirect`. `curl` follows it fine, so the other commands on this page use the short host.
+> **Note:** Use the `www.` URL in Windows PowerShell. It avoids a `(308) Permanent Redirect` error if the short host redirects; Windows PowerShell 5.1 cannot follow that redirect.
 
 ## Windows Command Prompt
 
@@ -28,9 +36,9 @@ irm https://www.agav.dev/install.ps1 | iex
 curl -fsSL https://agav.dev/install.cmd -o install.cmd && install.cmd && del install.cmd
 ```
 
-Or download a specific platform binary from [Releases](https://github.com/prapaa-ai/agav/releases).
+Command Prompt uses a wrapper around the PowerShell installer. Alternatively, download the binary for your platform from [Releases](https://github.com/prapaa-ai/agav/releases), compare its SHA-256 against the published checksum, and make it executable on macOS/Linux (`chmod +x <file>`).
 
-The installer adds `agav` to your `PATH` automatically. Open a new terminal, then verify the installation:
+The installers normally configure `PATH` for you. A manual binary download does not. Open a new terminal, then verify the installation (these commands work in PowerShell too):
 
 ```bash
 agav --version
@@ -40,11 +48,13 @@ agav --help
 If `agav` is still not found, your shell probably has not picked up the updated `PATH` yet. First open a fresh terminal window or start a new shell. If that still does not work, add the install directory to `PATH` manually:
 
 - macOS or Linux default install directory: `~/.local/bin`
-- Windows default install directory: `%LOCALAPPDATA%\\agav`
+- Windows default install directory: `%LOCALAPPDATA%\agav` (`$env:LOCALAPPDATA\agav` in PowerShell)
+
+On macOS, the installer writes to `~/.zprofile` for zsh or `~/.bash_profile` for bash; on Linux, it uses `~/.zshrc` or `~/.bashrc`. Other shells fall back to `~/.profile`, which your shell may not read. On Windows it tries to update your user `Path`. If a different copy is being picked up, see [installation troubleshooting](/reference/troubleshooting#agav-is-not-found-or-runs-an-older-version).
 
 ## Pre-release builds
 
-Betas ship as GitHub pre-releases, and the commands above deliberately skip them. Pass `--beta` to install the newest one instead:
+Betas ship as GitHub pre-releases. `--beta` asks the installer for the newest entry returned by the GitHub releases list, which includes both stable and pre-release builds. It can therefore select a stable build. To install a particular published beta, use `--version=<tag>` instead.
 
 **macOS / Linux:**
 
@@ -68,29 +78,25 @@ install.cmd --beta
 del install.cmd
 ```
 
-Setting `AGAV_BETA=1` in the environment does the same thing, which is handy when the flag is awkward to thread through.
-
-Once you're on a pre-release, `agav update` leaves you there: it only ever looks at the latest stable release, and it compares `major.minor.patch` with the suffix stripped. From `0.2.0-beta.1` that means you won't be pulled back to `0.1.9`, but you won't move to `0.2.0` final either — you stay until `0.2.1` ships. To rejoin the stable channel sooner, re-run the installer without `--beta`.
+Setting `AGAV_BETA=1` has the same effect (`export AGAV_BETA=1` on macOS/Linux, `$env:AGAV_BETA = '1'` in PowerShell). Both installers also accept `--version=<tag>` and `--dir=<path>` or their environment equivalents, `AGAV_VERSION` and `AGAV_INSTALL_DIR`. For a PowerShell install path with spaces, pass the whole argument as one string, for example `'--dir=C:\My Tools\Agav'`, after the script block above.
 
 ## Update Agav
 
-Agav checks for a newer release on startup and updates itself. Run it by hand at any time:
+Standalone builds can check for updates on startup. To check manually:
 
 ```bash
 agav update
 ```
 
-To install a specific release, pass the version explicitly:
+On builds with channel-aware updates, both the startup check and untargeted `agav update` follow the installed version: stable installs stay on stable; `-beta.N` installs can move to a higher beta number with the same version core or a release with a higher `major.minor.patch`. A beta is not downgraded to the same-core stable automatically. After updating to a stable build, subsequent checks stay on stable. Older binaries may behave differently.
 
-```bash
-agav update 0.3.0
-```
+To switch explicitly, run `agav update <version>` with a published tag (with or without the leading `v`), or rerun the installer with `--version=<tag>`. To return to the latest stable with the installer, omit `--beta` and clear any `AGAV_BETA` or explicit version override first. If you need the Windows baseline build, **use the PowerShell installer to update**: the in-app updater in this release line requests the standard x64 asset, not the baseline asset. Set `$env:AGAV_NO_UPDATE = '1'` before launching Agav to disable the startup check in that PowerShell session.
 
-The automatic check is skipped when `CI` is set, when `AGAV_NO_UPDATE=1`, and when stdout is not a terminal — so scripted runs never block on it.
+The startup check is skipped when `CI` is nonempty, `AGAV_NO_UPDATE=1`, or stdout is not a terminal. This does not disable explicit `agav update`. Source checkouts must be updated through Git, not by replacing the Node or Bun executable.
 
 ## Uninstall
 
-Both installers accept two flags: `--uninstall` removes the binary and takes the `PATH` entry back out, and `--purge` does that *and* deletes your settings and history. `--purge` implies `--uninstall`, so you never need to pass both.
+Both installers accept two flags: `--uninstall` removes the installed binary and cleans up its `PATH` configuration; `--purge` also deletes the Agav user data directory. `--purge` implies `--uninstall`. If you installed into a custom directory, pass the same `--dir=<path>` or `AGAV_INSTALL_DIR` again. For a manually downloaded executable, remove it and any `PATH` entry you added yourself.
 
 **macOS / Linux:**
 
@@ -125,36 +131,35 @@ del install.cmd
 | macOS / Linux | `~/.local/bin/agav`, `~/.agav/packages/standalone/`, the installer's block in your shell profile | `~/.agav/` |
 | Windows | `%LOCALAPPDATA%\agav\agav.exe`, the `PATH` entry in your user environment | `%USERPROFILE%\.agav\` |
 
-`--purge` deletes `config.json` (which holds your **encrypted API keys**), `prompt-history.json`, `keybindings.json`, and any installed `plugins/` and `skills/`. There is no undo.
+`--purge` deletes user data such as `config.json` (which can contain saved credentials), session and prompt history, keybindings, installed extensions, and the local voice model. Back up anything you want to keep; there is no undo.
 
-Open a new terminal afterwards — the one you ran this in keeps the `PATH` it started with.
+Open a new terminal afterwards so its `PATH` reflects the change.
 
-Agav also writes per-project directories inside repositories you've worked in: `.agav/` (cached images) and `.agav-worktrees/`. Uninstalling never touches those; delete them yourself if you want them gone.
+Uninstalling does not remove repository `.agav/` directories (which can hold project settings, agents, and attachments) or `.agav-worktrees/`. Review those directories for files or uncommitted work before removing them.
 
 ## Optional external tools
 
-Agav ships as a single binary with no bundled media libraries — those were 30 MB of download for features most sessions never touch. Attachments still work without any of these; the tools only widen what can be sent.
+The release executable does not bundle these attachment converters. They are optional, but without them some previews are text-only or some images cannot be attached. The native helper for [voice input](/features/voice-input) is separate from these tools and is embedded in release builds; the speech model is downloaded separately with your approval.
 
 | Tool | What it adds | Install |
 | --- | --- | --- |
 | Poppler (`pdftoppm`) | Page images for PDFs. Without it, a PDF is read as text only. | `brew install poppler` · `apt install poppler-utils` · `winget install oschwartz10612.Poppler` |
-| `sips` or ImageMagick | Downscales oversized images, and converts formats a model won't accept. Without either, PNG/JPEG/GIF/WebP under 3.5 MB are sent as-is and anything larger or in another format is refused. | `sips` ships with macOS · `brew install imagemagick` · `apt install imagemagick` · `winget install ImageMagick.ImageMagick` |
-| LibreOffice | Higher-fidelity `.docx` and `.pptx` conversion. Without it, Agav extracts the text, tabs, and speaker notes itself. | `brew install --cask libreoffice` · point `LIBREOFFICE_PATH` at a non-standard install |
+| `sips` or ImageMagick | Downscales oversized images, and converts formats a model won't accept. Without either, PNG/JPEG/GIF/WebP up to 3.5 MiB are sent as-is and anything larger or in another format is refused. | `sips` ships with macOS · `brew install imagemagick` · `apt install imagemagick` · `winget install ImageMagick.ImageMagick` |
+| LibreOffice | Higher-fidelity `.docx` and `.pptx` conversion. Without it, Agav extracts the text, tabs, and speaker notes itself. | `brew install --cask libreoffice` · `apt install libreoffice` on Debian/Ubuntu · on Windows, put `soffice.exe` on `PATH` or set `LIBREOFFICE_PATH` to the full executable path |
 
 Agav says which tool is missing when it hits one of these limits, so there is nothing to configure up front.
 
 ## Develop Agav from source
 
-This route requires Node.js 22 or newer, pnpm 9 or newer, and Git:
+This route requires Git, Node.js 22.13.0 or newer, and the pnpm version pinned in the root `package.json`. Install pnpm first (or enable it with `corepack enable` if Corepack is installed):
 
 ```bash
 git clone https://github.com/prapaa-ai/agav.git
 cd agav
-corepack enable
-pnpm install
+pnpm install --frozen-lockfile
 pnpm start
 ```
 
-Use the repository's `pnpm-lock.yaml` rather than mixing package managers. Run `pnpm link --global` if you want this checkout to provide the global `agav` command.
+Use the repository's `pnpm-lock.yaml` rather than mixing package managers. A plain source run does not embed the native release helpers. Use the standalone release for normal use, especially on Windows, where [shell and test tools require the sandbox helper by default](/reference/security#windows).
 
 Next: [connect a model provider](/getting-started/providers).

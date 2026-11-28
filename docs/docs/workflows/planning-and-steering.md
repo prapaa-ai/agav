@@ -30,6 +30,8 @@ Plans belong to the session that created them and survive restarts. Resume a ses
 
 `plan:` and `plan - ...` are explicit opt-ins. Agav also recognizes opt-outs such as `no plan`, `skip plan`, `don't plan`, `without a plan`, and `do not ... plan`. Use `/plan <n> <status>` to manually update a step, or press `Ctrl+G` to view the full plan detail panel.
 
+Use the plan panel to check progress while a turn is running. `/plan` and `/plan list` can also report progress mid-turn; edits such as `/plan 2 done` or `/plan clear` queue until idle. Use `/steer` when you want to redirect the active work now. Non-interactive `agav run` and `agav -P` do not create session plans or expose `update_plan`.
+
 ## Steering
 
 | Command | Intent |
@@ -53,6 +55,12 @@ Use steering when constraints change mid-task or a deadline narrows the scope. I
 From the overview, `/steer` targets the main agent. Open a live subagent inspector to target only that child, then return with **Tab** to steer the main agent again. Main-agent directives are **not inherited by children**, and child directives do not go to the parent or siblings. Skill executions do not support steering.
 
 Foreground main-agent directives remain in memory for subsequent main-agent turns until removed; they are not restored as an active directive list in a later CLI process. Worker delivery instead uses a **durable, execution-bound inbox** for the selected recipient, not a saved list for future executions. In the foreground main view, bare `/steer` behaves like `/steer list`. Bare `/steer`, `list`, `remove`, and `clear` are unavailable while attached to a worker or in a subagent inspector. **Pause remains unsupported for worker-owned turns**; see [Detached sessions](/features/detached-sessions).
+
+## Verify and revert edits
+
+For a targeted verification run, ask Agav to use `run_tests` with a test path and, if needed, `timeout_ms` up to `600000` (10 minutes). A timeout is a failed verification even if the partial output reports passing tests.
+
+Run `/undo list` to inspect the in-memory stack of tracked file changes, even during a turn. Once idle, run `/undo <n>` with the number from the current list to revert just that entry, or bare `/undo` to revert the most recent tracked change. If the same text occurs several times in a file, ask the agent to target the specific one-based `occurrence` with `edit_file` rather than replacing every match.
 
 ## Independent subagents
 

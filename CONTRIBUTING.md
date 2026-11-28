@@ -173,8 +173,10 @@ Agav dogfoods itself in CI:
 
 ### Release
 
-Triggered by version bump in `package.json` on `main` or `beta` branches:
-1. Builds binaries for 5 platforms (darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64)
+On pushes to `main` or `beta`, the workflow checks whether the version in `package.json` still needs publication. A version bump normally triggers the release; a fix for a failed release can retry the same unpublished version. Already published versions are skipped.
+
+The workflow:
+1. Builds macOS and Linux x64 and arm64 binaries, plus standard and baseline Windows x64 binaries
 2. Signs binaries (macOS codesign, Linux cosign)
 3. Compresses binaries (gzip) and generates SHA256 checksums
 4. Creates GitHub release with assets
@@ -186,20 +188,15 @@ Triggered by version bump in `package.json` on `main` or `beta` branches:
 | `beta` | `x.y.z-beta.N` (e.g. `0.2.0-beta.1`) | GitHub Pre-release |
 | `main` | `x.y.z` (e.g. `0.2.0`) | GitHub Latest release |
 
-**Typical release flow:**
+**Typical release flow (example):**
 
 ```
-main (0.1.9)                          ← current stable
+main: v0.2.8                            ← published stable
   │
-  ├── beta branch (created from main)
-  │     ├── PR → beta, bump to 0.2.0-beta.1  → Pre-release
-  │     ├── PR → beta, bump to 0.2.0-beta.2  → Pre-release
-  │     └── PR → beta, no version bump        → no release
+  ├── beta: 0.2.8-beta.1                → Pre-release
+  ├── beta: 0.2.8-beta.2                → Pre-release
   │
-  ├── PR: beta → main, bump to 0.2.0         → Stable release
-  │
-  ├── beta branch (reset from main)
-  │     └── ...next cycle...
+  └── release PR into main: 0.2.9       → Next stable release
 ```
 
 - **Pre-releases** are visible on the releases page but not served by `install.sh` by default
@@ -292,16 +289,19 @@ Contributors section when verifying the published release.
 
 **Installing a beta version:**
 
+macOS / Linux:
+
 ```bash
-# macOS / Linux
 curl -fsSL https://agav.dev/install.sh | bash -s -- --beta
-
-# Windows
-irm https://www.agav.dev/install.ps1 | iex -- --beta
-
-# Or via environment variable
-AGAV_BETA=1 curl -fsSL https://agav.dev/install.sh | bash
 ```
+
+Windows PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://www.agav.dev/install.ps1))) --beta
+```
+
+The flag includes pre-releases in the selection; it can still pick a stable build. Use `--version=<tag>` to install a specific published build. See the [installation guide](https://docs.agav.dev/getting-started/installation) for more examples.
 
 ## Pull requests
 

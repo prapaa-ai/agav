@@ -12,7 +12,9 @@
 
 ## Install
 
-No Node.js required. One command, self-contained binary:
+No Node.js required. Install the latest published stable binary.
+
+macOS or Linux:
 
 ```bash
 curl -fsSL https://agav.dev/install.sh | bash
@@ -32,10 +34,10 @@ install.cmd
 del install.cmd
 ```
 
-Download binaries or pre-releases from [Releases](../../releases). See [docs.agav.dev/getting-started/installation](https://docs.agav.dev/getting-started/installation) for detailed installation steps.
+Open a new terminal and run `agav --version`. macOS and Linux ship x64 and arm64 builds; Windows ships x64 and x64 baseline builds (ARM64 requires x64 emulation). The version on the source branch may be newer than the available binaries. See [Releases](../../releases) and the [installation guide](https://docs.agav.dev/getting-started/installation) for specific versions, betas, and update instructions.
 
-## **Free daily usage**
-OpenRouter and NVIDIA NIM offer free daily LLM API credits, no paid plan required. [Create free OpenRouter API key](https://openrouter.ai/keys) · [Create free NVIDIA NIM API key](https://build.nvidia.com/)
+## Free model options
+OpenRouter and NVIDIA NIM offer free API options; model availability and limits depend on the provider. [Create free OpenRouter API key](https://openrouter.ai/keys) · [Create free NVIDIA NIM API key](https://build.nvidia.com/)
 
 ## Run
 
@@ -46,11 +48,13 @@ agav
 Pick a provider and model, or use defaults:
 
 ```bash
-agav --provider openai --model gpt-4o
+agav --provider openai --model gpt-5.4-mini
 agav --provider openrouter --model openrouter/free
-agav --provider nvidia --model meta/muse-glimmer-30b
+agav --provider nvidia
 agav --provider ollama --model llama3.2
 ```
+
+Set the provider credential in the terminal that launches Agav (for example, `export OPENAI_API_KEY="your-key"` on macOS/Linux or `$env:OPENAI_API_KEY = "your-key"` in PowerShell). See [Connect a Provider](https://docs.agav.dev/getting-started/providers) for the other providers.
 
 Non-interactive for scripts and CI:
 
@@ -71,17 +75,17 @@ agav update
 Agav can connect to a local inference server using `--provider openai --openai-api chat`. For example, serve a GGUF model with [llama.cpp](https://github.com/ggml-org/llama.cpp):
 
 ```bash
-llama-server -m /path/to/model.gguf --alias local-model --port 8080
+llama-server -m "/path/to/model.gguf" --alias local-model --host 127.0.0.1 --port 8080
 ```
 
-In another terminal, point Agav at that server:
+In another terminal, point Agav at that server (macOS/Linux syntax; see [Run Local Models](https://docs.agav.dev/getting-started/local-models) for PowerShell):
 
 ```bash
 OPENAI_BASE_URL=http://127.0.0.1:8080/v1 OPENAI_API_KEY=local \
   agav --provider openai --openai-api chat --model local-model
 ```
 
-Here, `openai` selects the API format; inference runs locally, not on OpenAI's servers. `local` is a placeholder for an unauthenticated server. If your server requires authentication, use its actual key.
+Here, `openai` selects the API format, not the host. Inference runs locally when the loopback URL is the effective endpoint. `local` is a placeholder for an unauthenticated server. If your server requires authentication, use its actual key.
 
 [LM Studio](https://lmstudio.ai/docs/developer/openai-compat) works the same way for GGUF models and, on Apple Silicon, MLX models. Start its local server, use `http://127.0.0.1:1234/v1` (the default), and pass the model ID shown by LM Studio. For Agav to use tools, the model and chat template must support tool calling.
 
@@ -97,9 +101,9 @@ This is a cost result, not a claim of higher accuracy: in that comparison, Agav 
 
 You own it. Agav is Apache 2.0 open source, with no lock-in, hidden telemetry, or closed hosted runtime required.
 
-You choose the brain. Use Anthropic, OpenAI, OpenRouter, NVIDIA NIM, Gemini, Vertex AI, or Ollama. Switch models mid-session with /model, use local models with Ollama, or route through OpenRouter.
+You choose the brain. Use Anthropic, OpenAI, OpenRouter, NVIDIA NIM, DeepSeek, Gemini, Vertex AI, or Ollama. Switch models mid-session with /model, use local models with Ollama, or route through OpenRouter.
 
-You control the data and actions. API keys are encrypted, local-first operation is supported, tools have per-action permissions, and commands can run in a sandbox on macOS and Linux.
+You control the data and actions. API keys are encrypted, local-first operation is supported, tools have per-action permissions, and shell and test tools can run in [platform-specific sandboxes](https://docs.agav.dev/reference/security). Windows release builds include a native helper and require sandboxing for these tools by default.
 
 You can verify the work. Agav creates and tracks plans, keeps sessions resumable, supports human approval for destructive actions, and provides non-interactive agav run for CI with optional JSON Schema output.
 
@@ -140,4 +144,4 @@ Email: contact@agav.dev
 
 ---
 
-*Documentation source lives in* [`docs/`](./docs/)*. To run locally:* `cd docs && npm install && npm run dev`*.*
+*To edit or run the documentation site locally, see the* [docs project setup](./docs/README.md)*.*

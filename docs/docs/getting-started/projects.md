@@ -21,7 +21,7 @@ agav
 
 ## Add repository instructions
 
-Create `AGAV.md` or `.agavrc` at the project root. Agav uses the first non-empty file it finds.
+Create `AGAV.md` or `.agavrc` at the project root. Agav tries `AGAV.md` first and falls back to `.agavrc` if needed.
 
 ```markdown
 # Project instructions
@@ -66,7 +66,7 @@ MCP servers can be declared in project config so every session in the repository
 
 Do not commit API keys. Use provider environment variables or secure user-level configuration for credentials. See the [configuration reference](/reference/configuration) for every field and the full precedence rules.
 
-API keys, endpoint overrides, and `permissionMode` cannot be set from project config at all — Agav strips them before use — so a committed `./.agav/config.json` can never carry a working secret or redirect your requests. This protection comes from that deny-list, **not** from gitignore: ignoring `.agav/` only guards against committing your own config by accident, and a cloned repo can ship a `./.agav/config.json` regardless (even `git add -f` overrides `.gitignore`). See [project config restrictions](/reference/configuration) for details.
+API keys, endpoint overrides, and `permissionMode` cannot be set from project config at all — Agav strips them before use — so those fields in a committed `./.agav/config.json` are not used. That does not make project config safe to trust: it can still declare MCP servers that launch local commands. Review unfamiliar project configuration before starting Agav. This protection comes from that deny-list, **not** from gitignore: ignoring `.agav/` only guards against committing your own config by accident, and a cloned repo can ship a `./.agav/config.json` regardless (even `git add -f` overrides `.gitignore`). See [project config restrictions](/reference/configuration) for details.
 
 ## Know what is shared
 
@@ -84,8 +84,8 @@ API keys, endpoint overrides, and `permissionMode` cannot be set from project co
 
 > **Windows:** `~/.agav/` paths resolve to `%USERPROFILE%\.agav\` (e.g. `C:\Users\you\.agav\`).
 
-Agav also ships with built-in skills (like `code-review`, `git-commit`, `test-writer`) that are always available. Project and user skills can override a built-in skill of the same name.
+Agav also ships with built-in skills (like `code-review`, `git-commit`, `test-writer`) that are disabled by default. Enable the ones you want with `/skills enable <name>`. Project and user skills can override a built-in skill of the same name.
 
-Per-project memory is keyed by a hash of the git root, so Agav remembers context about each repository without storing anything inside the repo itself. See [sessions and memory](/workflows/sessions-and-memory) for details.
+Per-project memory is keyed by a hash of the Git root path (or the working directory outside Git), so Agav remembers context about each repository without storing anything inside the repo itself. See [sessions and memory](/workflows/sessions-and-memory) for details.
 
 You have completed the beginner path. Continue with [daily workflows](/workflows) or use the [task finder](/#find-what-you-need).

@@ -35,9 +35,20 @@ The `read_file` tool and file mentions understand:
 - PDFs, with inclusive page ranges of up to ten pages
 - Word and PowerPoint documents (`.doc`, `.docx`, `.ppt`, `.pptx`)
 
-For text files, `read_file` accepts absolute or relative file paths. Without a line range, text reads are limited to 1MB; ranged reads can still be truncated at 1MB with a warning.
+For text files, `read_file` accepts absolute or relative paths and inclusive, one-based `start_line` and `end_line` bounds. Omit `encoding` for default UTF-8 detection, or specify `utf-8`, `utf-16le`, `utf-16be`, or `latin1`. Large reads return a bounded excerpt and, when possible, the next line to read in the original file. See [Tool output limits](/features/built-in-tools#output-limits-and-recovery).
 
 LibreOffice improves Office handling when it is installed locally, and you can point Agav to it with `LIBREOFFICE_PATH`. Legacy `.doc` and `.ppt` files require LibreOffice. Without LibreOffice, `.docx` and `.pptx` fall back to text extraction only; `.pptx` keeps slide-based ranges, but `.docx` does not preserve page ranges or layout. Vision content is useful only when the selected model can process images.
+
+## Explore a repository without attaching files
+
+These are agent tools, not slash commands. Ask Agav to use them when you want a narrower view than an attachment:
+
+- `overview`: set `include_symbols: false` to map source paths without opening files for symbol extraction. Set `include_hidden: true` to include hidden source paths.
+- `find_files`: set `relative_paths: true` for paths relative to the search root, or `max_results` to change the result cap. `list_directory` can filter by `type` (`files` or `directories`) and show dot-prefixed entries with `include_hidden: true`.
+- `grep_search`: use `fixed_strings: true` for literal text, `ignore_case: true` for case-insensitive matching, and `exclude` for a basename glob. Use `context_before` and `context_after` for nearby lines or `max_results` to change the match cap.
+- `read_notebook`: select an inclusive one-based cell range with `start_cell`/`end_cell` and filter by `cell_type` (`code`, `markdown`, or `raw`). For source only, set `include_outputs: false`.
+
+See [Built-in Tools](/features/built-in-tools#file-reads-and-repository-maps) for limits and options.
 
 ## Paste content
 
@@ -45,7 +56,19 @@ Large text pastes become numbered attachments so the prompt stays readable. Text
 
 Paste the same text again immediately, without editing the prompt, to expand the latest attachment into editable text. The “paste again to expand” hint appears only while that action is available. Expansion opens at the beginning of the pasted text; use **↑/↓** to navigate its visual rows. Long input scrolls with the caret and shows the visible row range, so you can inspect and edit the full paste. Editing the prompt clears repeat-paste eligibility; pasting again then creates a new attachment.
 
-Paste an image from the clipboard to attach it when the terminal and operating system integration supports clipboard image extraction. Clipboard images are saved under `.agav/images/` in the working directory and rely on platform clipboard helpers: on macOS, `pngpaste` or `osascript`; on Linux, `wl-paste` (Wayland) or `xclip` (X11). Backspace immediately after an attachment label removes it before submission.
+Paste an image from the clipboard to attach it when the terminal and operating system integration supports clipboard image extraction. Clipboard images are saved under `.agav/images/` in the working directory and rely on platform clipboard helpers: on macOS, `pngpaste` or `osascript`; on Linux, `wl-paste` (Wayland) or `xclip` (X11). On native Windows, save the image as a local file and attach it with `@<path>` instead. Use `/open` to list registered session attachments and `/open <n>` to open or preview one. Backspace immediately after an attachment label removes it before submission.
+
+## Run a shell command
+
+At the Agav prompt, `! <command>` runs a command directly from the working directory, shows the raw output, and submits the command and output to the agent for analysis. Use it only for commands you intend to run yourself: unlike the `run_command` tool, it runs outside the tool sandbox and inherits your environment.
+
+Agav uses `/bin/sh` for direct commands on macOS and Linux and `cmd.exe` on native Windows, even when you launched it from PowerShell. The `run_command` tool also uses the backend’s shell, not your interactive shell. For example, to display a local log:
+
+| Where you type | Command |
+| --- | --- |
+| Agav prompt on macOS/Linux | `! cat error.log` |
+| Agav prompt on native Windows | `! type error.log` |
+| Windows PowerShell, outside Agav | `Get-Content -Raw -Encoding UTF8 .\error.log` |
 
 ## Ask a side question
 

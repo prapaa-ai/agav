@@ -6,7 +6,7 @@ order: 6
 
 # Run Local Models
 
-Agav can use a local inference server that exposes an OpenAI-compatible Chat Completions API. Agav sends requests to the server; it does not load model files itself. `--provider openai` selects the API format, not the host. When the endpoint is on `127.0.0.1`, model requests go to your local server rather than OpenAI.
+Agav can use a local inference server that exposes an OpenAI-compatible Chat Completions API. Agav sends requests to the server; it does not load model files itself. `--provider openai` selects the API format, not the host. When the effective endpoint is on `127.0.0.1`, model requests go to your local server rather than OpenAI. Before using the environment examples below, check for a saved `openaiBaseURL` or a managed gateway that takes precedence over `OPENAI_BASE_URL`.
 
 | What you want to run | Server | Base URL in these examples |
 | --- | --- | --- |
@@ -48,9 +48,11 @@ OPENAI_BASE_URL=http://127.0.0.1:1234/v1 OPENAI_API_KEY=local \
   agav --provider openai --openai-api chat --model 'YOUR_MODEL_ID' --deny-writes
 ```
 
-In Windows PowerShell, set the environment variables before launching Agav. This example uses LM Studio's port; for llama.cpp, use `8080` and `local-model`:
+In Windows PowerShell, set the environment variables before launching Agav. To start llama.cpp, use the same server command with your Windows model path (for example `C:\Models\model.gguf`), and use port `8080` and model ID `local-model` below. This example uses LM Studio:
 
 ```powershell
+Invoke-RestMethod http://127.0.0.1:1234/v1/models
+
 $env:OPENAI_BASE_URL = 'http://127.0.0.1:1234/v1'
 $env:OPENAI_API_KEY = 'local'
 agav --provider openai --openai-api chat --model 'YOUR_MODEL_ID' --deny-writes
@@ -71,7 +73,7 @@ To make local inference the default, merge these fields into your [user config](
 }
 ```
 
-Continue to supply `OPENAI_API_KEY` when you start Agav, or set `openaiApiKey` in your user config. Keep credentials and endpoint overrides out of the repository's `.agav/config.json`. If you also use hosted OpenAI, prefer the per-launch examples; a saved `openaiBaseURL` applies to all requests made through the `openai` provider, not just one model.
+Continue to supply `OPENAI_API_KEY` when you start Agav, or set `openaiApiKey` in your user config. Keep credentials and endpoint overrides out of the repository's `.agav/config.json`. The inline macOS/Linux assignments apply only to that launch; PowerShell assignments persist in the current terminal. Before switching back to hosted OpenAI, use a fresh terminal or remove `Env:OPENAI_BASE_URL` and `Env:OPENAI_API_KEY` with `Remove-Item` and set your hosted credentials. If you also use hosted OpenAI, prefer the per-launch examples; a saved `openaiBaseURL` applies to all requests made through the `openai` provider, not just one model.
 
 ## Verify chat and tool calls
 

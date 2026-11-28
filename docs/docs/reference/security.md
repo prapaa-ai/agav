@@ -32,7 +32,7 @@ Sensitive configuration fields are blocked from project-level `.agav/config.json
 
 ### deny-writes mode
 
-In `deny-writes` mode, `edit_file`, `write_file`, and `edit_notebook`, and tools classified as destructive, are blocked even when allowlisted. A `run_command` not classified as destructive can execute when allowlisted. `fetch_url` mutations (POST, PUT, PATCH, and DELETE) are also blocked. This is not a universal read-only boundary: command classification is heuristic, and even a remote GET can have server-side effects. Do not rely on this mode alone to prevent external side effects.
+In `deny-writes` mode, `edit_file`, `write_file`, and `edit_notebook`, and tools classified as destructive, are blocked even when allowlisted. Extension tools that still require confirmation are also blocked; an external tool’s claim to be read-only does not exempt it. A `run_command` not classified as destructive can execute when allowlisted. `fetch_url` mutations (POST, PUT, PATCH, and DELETE) are also blocked. This is not a universal read-only boundary: command classification is heuristic, and even a remote GET can have server-side effects. Do not rely on this mode alone to prevent external side effects.
 
 ### Safe tools
 
@@ -44,7 +44,7 @@ These tools are treated as safe by the permission gate and normally do not requi
 
 ### External tool trust
 
-External agents and MCP tools **cannot** mark themselves as non-destructive to skip confirmation. Only built-in safe tools are trusted with the `destructive: false` flag. All other tools require confirmation in `ask` mode regardless of their declared destructive status.
+External agents and MCP tools **cannot** mark themselves as non-destructive to skip confirmation. Only built-in safe tools are trusted with the `destructive: false` flag. In `ask` mode, untrusted extension tools need confirmation unless an applicable policy already allows them. A tool’s own declaration does not grant that approval.
 
 ## Shell sandbox
 
@@ -61,7 +61,7 @@ If no backend is available, `run_command` and `run_tests` are refused when `sand
 
 The footer shows the **shell default**, not proof of isolation for every tool or command. `run_command` reports the execution backend when it differs from that default. Direct user `!` shell commands intentionally remain unsandboxed with an inherited environment; this does not grant the model the same privilege. These shell policies do not provide OS isolation for native file tools.
 
-The Seatbelt and Bubblewrap sections below describe **`run_command` and `run_tests` execution**. Agent `.mjs` tool processes use separate profiles: their Seatbelt profile is deny-default, blocks network, and allows writes only in the working directory and temp; their Bubblewrap runner uses `--unshare-net`, binds host `/tmp`, and masks existing credential and `.config` directories. Do not assume shell and agent-tool network policies are identical. Bundled agents are trusted and run unsandboxed; global and project agent tools use the available agent sandbox backend.
+The Seatbelt and Bubblewrap sections below describe **`run_command` and `run_tests` execution**. Agent `.mjs` tool processes use separate profiles: their Seatbelt profile is deny-default, blocks network, and allows writes only in the working directory and temp; their Bubblewrap runner uses `--unshare-net`, binds host `/tmp`, and masks existing credential and `.config` directories. Do not assume shell and agent-tool network policies are identical. Bundled agents are trusted and run unsandboxed; global and project agent tools use Seatbelt or Bubblewrap when detected. Windows restricted-token and Docker shell backends do not sandbox agent-local JavaScript. If neither supported agent backend is available, agent tools run in an unsandboxed subprocess; `sandboxRequired` does not cover them.
 
 ### Seatbelt (macOS)
 
@@ -129,15 +129,15 @@ Large tool results may be saved outside the repository in private OS temporary f
 
 ### MCP command validation
 
-On Windows, MCP server subprocesses use `shell: true` for `.cmd` shim compatibility. Before spawning, Agav validates both the command and all arguments against a set of blocked shell metacharacters: `` & | < > ^ ; \` $ ( ) { } [ ] ! % " \n \r ``. If any metacharacter is found, the server startup is rejected immediately — preventing shell injection attacks through crafted MCP server configurations.
+On Windows, MCP server subprocesses use `shell: true` for `.cmd` shim compatibility. Before spawning, Agav validates both the command and all arguments against a set of blocked shell metacharacters: `` & | < > ^ ; \` $ ( ) { } [ ] ! % " \n \r ``. If a blocked character appears, Agav rejects startup before launching the server. Validation does not make the configured server executable trustworthy.
 
-Single quotes (`'`) are explicitly allowed since they are not dangerous in `cmd.exe`.
+Single quotes are not rejected by the validator, but they do not quote arguments in `cmd.exe`.
 
 On macOS and Linux, `shell: false` is used, so arguments are passed directly to the process without shell interpretation and no validation is needed.
 
 ### Credential filtering
 
-Across **all** sandbox backends (including unsandboxed), environment variables whose names match `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL`, or `AUTH` are stripped before spawning child processes.
+For model-invoked shell commands and test runners, Agav filters inherited environment variables whose names contain `KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL`, or `AUTH`, including when no sandbox is used. Skill shell blocks and non-bundled agent-local tool subprocesses also filter inherited secrets; agent-local tools receive their own saved credentials. This is not a process-wide rule: stdio MCP and A2A subprocesses inherit the launch environment, and plugins run in-process. Review project MCP configuration before starting Agav in an unfamiliar checkout.
 
 ### Requiring a sandbox
 
@@ -188,7 +188,7 @@ Writes are always denied to:
 
 - `<cwd>/.git/` — repository metadata
 - `<cwd>/.agav/` — local Agav project configuration
-- Paths outside the working directory (e.g., `/etc/passwd`, `~/Desktop/file.txt`)
+- Paths outside the working directory, system temp directory, and global Agav data directory
 
 ### Read restrictions
 
@@ -217,7 +217,7 @@ High-risk patterns are blocked by the shell tool before they reach the sandbox, 
 - Remote code execution: `curl ... | sh`, `wget ... | sh/bash`
 - File truncation: `truncate --size 0`
 
-These patterns match **POSIX/Unix command syntax**. The `git` patterns apply on every platform, but the filesystem, disk, permission, and process examples above are Unix forms. Windows-native equivalents — such as PowerShell `Remove-Item -Recurse -Force`, `rmdir /s`, `del`, `Format-Volume`, or `Stop-Process` — are **not** on this blocklist and are not pre-blocked. On Windows, rely on `ask` mode confirmations and the file-tool path boundaries above rather than this list, and review commands before approving `auto-accept`.
+These patterns match **POSIX/Unix command syntax**. The `git` patterns apply on every platform, but the filesystem, disk, permission, and process examples above are Unix forms. Windows-native equivalents — such as PowerShell `Remove-Item -Recurse -Force`, `rmdir /s`, `del`, `Format-Volume`, or `Stop-Process` — are **not** on this blocklist and are not pre-blocked. On Windows, review shell commands in `ask` mode and keep the restricted-token sandbox enabled. File-tool guards do not apply to shell commands.
 
 ## Secrets and extensions
 
