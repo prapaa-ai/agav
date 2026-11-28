@@ -126,6 +126,32 @@ function pickProviderForModel(model: string, matches: FetchedModel[]): Promise<F
   });
 }
 
+export type ResumeLookupResult<T extends { id: string }> =
+  | { kind: "empty" }
+  | { kind: "match"; session: T }
+  | { kind: "ambiguous"; prefix: string }
+  | { kind: "not_found"; prefix: string };
+
+/** Resolve an explicit `--resume <id|prefix>` lookup against saved sessions. */
+export function resolveResumeLookup<T extends { id: string }>(
+  sessions: T[],
+  resume: true | string,
+): ResumeLookupResult<T> {
+  if (resume === true) {
+    return { kind: "empty" };
+  }
+  const prefix = String(resume);
+  const matches = sessions.filter((s) => s.id.startsWith(prefix));
+  const match = sessions.find((s) => s.id === prefix) ?? (matches.length === 1 ? matches[0] : undefined);
+  if (!match && matches.length > 1) {
+    return { kind: "ambiguous", prefix };
+  }
+  if (!match) {
+    return { kind: "not_found", prefix };
+  }
+  return { kind: "match", session: match };
+}
+
 export function parseArgs(argv: string[]) {
   const flags: Record<string, any> = {};
   flags._ = [];
@@ -1051,12 +1077,11 @@ export async function main() {
     const { listResumableSessions, loadResumableSession } = await import("./sessions/history.js");
     const sessions = await listResumableSessions();
 
-    if (sessions.length === 0) {
-      console.error("\n  No saved sessions found.\n");
-      process.exit(0);
-    }
-
     if (flags.resume === true) {
+      if (sessions.length === 0) {
+        console.error("\n  No saved sessions found.\n");
+        process.exit(0);
+      }
       const { pickSession, START_NEW_SESSION } = await import("./utils/session-picker.js");
       const picked = await pickSession(sessions);
       if (!picked) {
@@ -1081,20 +1106,19 @@ export async function main() {
       }
     } else {
       // ID prefix given — find matching session
-      const prefix = String(flags.resume);
-      const matches = sessions.filter((s) => s.id.startsWith(prefix));
-      const match = sessions.find((s) => s.id === prefix) ?? (matches.length === 1 ? matches[0] : undefined);
-      if (!match && matches.length > 1) {
-        console.error(`\n  Ambiguous session ID prefix "${prefix}". Use a longer ID.\n`);
+      const lookup = resolveResumeLookup(sessions, flags.resume);
+      if (lookup.kind === "ambiguous") {
+        console.error(`\n  Ambiguous session ID prefix "${lookup.prefix}". Use a longer ID.\n`);
         process.exit(1);
       }
-      if (!match) {
+      if (lookup.kind !== "match") {
+        const prefix = lookup.kind === "not_found" ? lookup.prefix : String(flags.resume);
         console.error(`\n  No session matching "${prefix}". Use --resume to list all.\n`);
         process.exit(1);
       }
-      const session = await loadResumableSession(match.id);
+      const session = await loadResumableSession(lookup.session.id);
       if (!session) {
-        console.error(`\n  Failed to load session ${match.id}.\n`);
+        console.error(`\n  Failed to load session ${lookup.session.id}.\n`);
         process.exit(1);
       }
       console.error(`\n  Resuming: ${session.title} (${session.messages.length} msgs)\n`);
