@@ -59,7 +59,7 @@ The helper supports macOS ARM64/x64, Linux ARM64/x64, and Windows x64. Windows A
 2. Complete setup if prompted, then wait for **Listening**. The meter reflects real audio and shows elapsed time. Partial English transcripts appear live while speaking; the current draft can revise itself as more audio arrives.
 3. New speech appears directly in the visible composer. You can type, delete and move the caret while recognition continues; incoming updates preserve your edits and do not send anything automatically.
 4. Press **Enter** once to send the exact displayed draft after microphone cleanup; late recognition revisions do not alter what you chose to send.
-5. Alternatively, click **Stop** to finish without sending, reconcile the final recognition result, then edit and submit normally. Recording is limited to two minutes.
+5. Alternatively, press **Option+S** on macOS (**Alt+S** elsewhere) or click **Stop** to finish without sending, reconcile the final recognition result, then edit and submit normally. (On macOS Terminal.app, enable **Use Option as Meta key** in profile keyboard settings, or click **Stop** when the terminal doesn't forward the keypress.) Recording is limited to two minutes.
 
 The helper fixes recognition to English, keeps base.en Q5 (no tiny fallback), disables language detection/translation, and rejects multilingual model files. The default download is Whisper's `.en` variant. Recognized slash commands and shell text are never executed automatically.
 

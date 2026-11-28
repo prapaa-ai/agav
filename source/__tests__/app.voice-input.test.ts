@@ -490,7 +490,7 @@ describe("offline /voice command", () => {
     try {
       await ui.key("/voice"); await ui.key("\r");
       await vi.waitFor(() => expect(boundary.start).toHaveBeenCalledTimes(1));
-      expect(ui.output()).toContain("Alt+S Stop");
+      expect(ui.output()).toContain(process.platform === "darwin" ? "Option+S Stop to edit" : "Alt+S Stop to edit");
       session.partial("draft text"); await ui.settle();
       await ui.key("\x1bs"); // Alt+S
       expect(session.stop).toHaveBeenCalledTimes(1);

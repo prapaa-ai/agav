@@ -21,6 +21,13 @@ export default function VoiceInputPanel({ phase, elapsedSeconds, level, partialT
   const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   const labels = { preparing: "Preparing microphone", recording: "Listening", stopping: "Stopping microphone", transcribing: "Transcribing locally", cancelling: "Cancelling" };
   const title = tiny ? { preparing: "Preparing", recording: "Listening", stopping: "Stopping", transcribing: "Transcribing", cancelling: "Cancelling" }[phase] : labels[phase];
+  const isMac = process.platform === "darwin";
+  const stopLabel = tiny
+    ? (isMac ? "⌥S Stop" : "Alt+S Stop")
+    : narrow
+      ? (isMac ? "Option+S Stop" : "Alt+S Stop")
+      : (isMac ? "Option+S Stop to edit" : "Alt+S Stop to edit");
+  const cancelLabel = tiny ? "Esc back" : narrow ? "Esc cancel" : "Esc cancel / Cancel";
   const count = narrow ? 6 : 12;
   const filled = Math.round(Math.max(0, Math.min(1, Number.isFinite(level) ? level : 0)) * count);
   return <Box flexDirection="column" marginTop={1}>
@@ -29,9 +36,9 @@ export default function VoiceInputPanel({ phase, elapsedSeconds, level, partialT
       <Text dimColor>{tiny ? "Audio stays local" : "Audio stays on this machine"}</Text>}
     {partialText && <Text>{wrapToWidth(partialText, Math.max(1, columns)).slice(-3).join("\n")}</Text>}
     <Box>
-      {phase === "recording" && <Text color="cyan" onClick={onStop}>{tiny ? "Stop" : "Alt+S Stop to edit"}</Text>}
+      {phase === "recording" && <Text color="cyan" onClick={onStop}>{stopLabel}</Text>}
       {phase === "recording" && <Text>{tiny ? " " : " · "}</Text>}
-      {phase !== "cancelling" && <Text onClick={onCancel}>{tiny ? "Esc back" : "Esc cancel / Cancel"}</Text>}
+      {phase !== "cancelling" && <Text onClick={onCancel}>{cancelLabel}</Text>}
       {phase === "cancelling" && <Text dimColor>{narrow ? "Releasing mic..." : "Releasing microphone and local processes..."}</Text>}
     </Box>
     {!narrow && <Text dimColor>{phase === "recording" ? "Enter sends draft · Ctrl+C cancels" : "Your typed prompt is preserved · Ctrl+C cancels"}</Text>}

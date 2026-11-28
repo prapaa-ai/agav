@@ -25,12 +25,54 @@ describe("compact voice controls", () => {
         expect(ui.frame).toContain("Voice");
         expect(ui.frame.split("\n").every(line => stringWidth(line) <= columns)).toBe(true);
         expect(ui.frame.split("\n").filter(line => line.trim()).length).toBeLessThanOrEqual(5);
-        if (phase === "recording") { expect(ui.frame).toContain("1:05"); expect(ui.frame).toContain("Stop"); }
+        if (phase === "recording") {
+          expect(ui.frame).toContain("1:05");
+          expect(ui.frame).toContain("Stop");
+          const expectedShortcut = columns < 28
+            ? (process.platform === "darwin" ? "⌥S Stop" : "Alt+S Stop")
+            : columns < 48
+              ? (process.platform === "darwin" ? "Option+S Stop" : "Alt+S Stop")
+              : (process.platform === "darwin" ? "Option+S Stop to edit" : "Alt+S Stop to edit");
+          expect(ui.frame).toContain(expectedShortcut);
+          if (columns === 20) {
+            const controlRow = ui.frame.split("\n").find((line) => line.includes("Stop"));
+            expect(controlRow).toContain("Esc back");
+            expect(stringWidth(controlRow!)).toBeLessThanOrEqual(columns);
+          }
+        }
         if (phase !== "cancelling") expect(ui.frame).toContain("Esc");
         else expect(ui.frame).toContain("Releasing");
       } finally { ui.instance.unmount(); }
     });
   }
+  it("shows platform-appropriate Stop shortcuts at compact and full widths", async () => {
+    const originalPlatform = process.platform;
+    try {
+      for (const [platform, tinyLabel, fullLabel] of [
+        ["darwin", "⌥S Stop", "Option+S Stop to edit"],
+        ["linux", "Alt+S Stop", "Alt+S Stop to edit"],
+      ] as const) {
+        Object.defineProperty(process, "platform", { value: platform, configurable: true });
+        const tinyUi = await mount("recording", 20);
+        try {
+          const row = tinyUi.frame.split("\n").find((line) => line.includes("Stop"));
+          expect(row).toContain(tinyLabel);
+          expect(row).toContain("Esc back");
+          expect(stringWidth(row!)).toBeLessThanOrEqual(20);
+        } finally {
+          tinyUi.instance.unmount();
+        }
+        const wideUi = await mount("recording", 80);
+        try {
+          expect(wideUi.frame).toContain(fullLabel);
+        } finally {
+          wideUi.instance.unmount();
+        }
+      }
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
   it.each([0, 1, NaN])("uses a bounded real audio level of %s without animation", async level => {
     const ui = await mount("recording", 80, level);
     try { expect(ui.frame).toContain(level === 1 ? "[||||||||||||]" : "[............]"); }
