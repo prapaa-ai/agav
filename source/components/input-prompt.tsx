@@ -90,13 +90,30 @@ interface FileSuggestion {
 }
 
 /** Finds the current @file token being edited, if any. */
-function getActiveFileToken(value: string, cursorPos: number): ActiveFileToken | null {
+export function getActiveFileToken(value: string, cursorPos: number): ActiveFileToken | null {
   const before = value.slice(0, cursorPos);
   const match = before.match(/(^|[\s([{])@(?:(?:"([^"]*))|([^\s)\]}>,;]*))$/);
   if (!match || match[0].includes("@@")) return null;
   const prefixLength = (match[1] ?? "").length;
   const start = before.length - match[0].length + prefixLength;
-  return { start, end: cursorPos, query: match[2] ?? match[3] ?? "", quoted: match[2] !== undefined };
+  const quoted = match[2] !== undefined;
+  const after = value.slice(cursorPos);
+
+  let end = cursorPos;
+  if (quoted) {
+    const closeQuote = after.search(/["\r\n]/);
+    if (closeQuote >= 0 && after[closeQuote] === "\"") {
+      end = cursorPos + closeQuote + 1;
+    } else {
+      const tail = after.match(/^[^\s)\]}>,;]*/)?.[0] ?? "";
+      end = cursorPos + tail.length;
+    }
+  } else {
+    const tail = after.match(/^[^\s)\]}>,;]*/)?.[0] ?? "";
+    end = cursorPos + tail.length;
+  }
+
+  return { start, end, query: match[2] ?? match[3] ?? "", quoted };
 }
 
 /**
@@ -596,14 +613,19 @@ export default function InputPrompt({ value, onChange: emitValue, onSubmit, onPa
   const completeFileSuggestion = (selected: FileSuggestion, token: ActiveFileToken) => {
     const completedPath = `${selected.path}${selected.isDirectory ? "/" : ""}`;
     const needsQuotes = completedPath.includes(" ");
+    const buf = liveRef.current.value;
+    const hadClosingQuote = token.quoted && buf[token.end - 1] === "\"";
+    const keepClosingQuote = selected.isDirectory && needsQuotes && hadClosingQuote;
     const mention = needsQuotes
-      ? `@"${completedPath}${selected.isDirectory ? "" : "\""}`
+      ? `@"${completedPath}${!selected.isDirectory || keepClosingQuote ? "\"" : ""}`
       : `@${completedPath}`;
     const suffix = selected.isDirectory ? "" : " ";
-    const buf = liveRef.current.value;
     const nextValue = buf.slice(0, token.start) + mention + suffix + buf.slice(token.end);
+    const nextCursor = keepClosingQuote
+      ? token.start + mention.length - 1
+      : token.start + mention.length + suffix.length;
     clearSelection();
-    applyEdit(nextValue, token.start + mention.length + suffix.length);
+    applyEdit(nextValue, nextCursor);
     setSelectedSuggestion(0);
   };
 
