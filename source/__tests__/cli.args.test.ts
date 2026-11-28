@@ -107,11 +107,17 @@ describe("CLI argument parsing", () => {
     { argv: ["--model", "--version"], expected: "--model" },
     { argv: ["--model", "--"], expected: "--model" },
     { argv: ["--model="], expected: "--model" },
+    { argv: ["--model", "   "], expected: "--model" },
+    { argv: ["-m", "   "], expected: "-m" },
+    { argv: ["--model=   "], expected: "--model" },
     { argv: ["--provider"], expected: "--provider" },
     { argv: ["-p"], expected: "-p" },
     { argv: ["--provider", "--help"], expected: "--provider" },
     { argv: ["--provider", "--"], expected: "--provider" },
     { argv: ["--provider="], expected: "--provider" },
+    { argv: ["--provider", "   "], expected: "--provider" },
+    { argv: ["-p", "   "], expected: "-p" },
+    { argv: ["--provider=   "], expected: "--provider" },
   ])("exits nonzero with an option-specific error for $argv", ({ argv, expected }) => {
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {

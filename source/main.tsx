@@ -162,14 +162,14 @@ export function parseArgs(argv: string[]) {
       flags.version = true;
     } else if (arg === "--provider" || arg === "-p") {
       const nextArg = argv[i + 1];
-      if (!nextArg || nextArg.startsWith("-")) {
+      if (!nextArg?.trim() || nextArg.startsWith("-")) {
         process.stderr.write(`Error: ${arg} requires a provider name.\n`);
         process.exit(1);
       }
       flags.provider = argv[++i]!;
     } else if (arg === "--model" || arg === "-m") {
       const nextArg = argv[i + 1];
-      if (!nextArg || nextArg.startsWith("-")) {
+      if (!nextArg?.trim() || nextArg.startsWith("-")) {
         process.stderr.write(`Error: ${arg} requires a model name.\n`);
         process.exit(1);
       }
