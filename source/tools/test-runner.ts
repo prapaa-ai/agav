@@ -180,20 +180,29 @@ function parseGoTest(output: string): TestResults {
   let passed = 0;
   let failed = 0;
 
-  for (const line of output.split("\n")) {
-    if (line.startsWith("--- PASS")) passed++;
-    if (line.startsWith("--- FAIL")) {
-      failed++;
-      const nameMatch = line.match(/--- FAIL:\s+(\S+)/);
-      const testName = nameMatch?.[1] ?? "unknown";
-      const idx = output.indexOf(line);
-      const context = output.slice(Math.max(0, idx - 200), idx).trim();
-      const errLine = context.split("\n").reverse().find((l) => l.trim().length > 0);
-      failures.push({
-        test: testName,
-        error: errLine ?? "Test failed",
-      });
+  const lines = output.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith("--- PASS")) {
+      passed++;
+      continue;
     }
+    if (!trimmed.startsWith("--- FAIL")) continue;
+    failed++;
+    const nameMatch = trimmed.match(/--- FAIL:\s+(\S+)/);
+    const testName = nameMatch?.[1] ?? "unknown";
+    // Go prints subtest failures indented under the parent `--- FAIL` line,
+    // so look back for the nearest preceding error line instead of assuming it
+    // sits immediately before the failure line.
+    let error = "Test failed";
+    for (let j = i - 1; j >= 0 && j >= i - 8; j--) {
+      const prev = lines[j]!.trim();
+      if (prev === "" || prev.startsWith("=== RUN") || prev.startsWith("--- PASS") || prev.startsWith("--- FAIL")) continue;
+      error = prev;
+      break;
+    }
+    failures.push({ test: testName, error });
   }
 
   return { framework: "go test", passed, failed, errors: 0, failures };

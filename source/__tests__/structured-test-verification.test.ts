@@ -197,6 +197,28 @@ describe("built-in test runner", () => {
     expect(result.verification?.status).toBe("passed");
     expect(result.output).not.toContain("Failures:");
   });
+  it("includes failing Go subtest names in results", async () => {
+    childOutput(`=== RUN   TestFoo
+=== RUN   TestFoo/Subtest1
+=== RUN   TestFoo/Subtest2
+    main_test.go:7: boom
+=== RUN   TestFoo/Subtest3
+    main_test.go:8: kaboom
+--- FAIL: TestFoo (0.00s)
+    --- PASS: TestFoo/Subtest1 (0.00s)
+    --- FAIL: TestFoo/Subtest2 (0.00s)
+    --- FAIL: TestFoo/Subtest3 (0.00s)
+FAIL
+FAIL\tgotest\t0.026s
+FAIL`);
+    const result = await testRunnerTool.execute({ framework: "go" });
+    expect(result.isError).toBe(true);
+    expect(result.verification).toMatchObject({ status: "failed", passed: 1, failed: 3 });
+    expect(result.output).toContain("TestFoo/Subtest2");
+    expect(result.output).toContain("TestFoo/Subtest3");
+    expect(result.output).toContain("TestFoo");
+    expect(result.output).toContain("kaboom");
+  });
   it.each([
     ["vitest", " Test Files  9 passed (9)\n Tests  2 passed (2)", 2],
     ["jest", "Test Suites: 9 passed, 9 total\nTests: 2 passed, 2 total", 2],
