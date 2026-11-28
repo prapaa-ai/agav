@@ -22,7 +22,7 @@ export const CHANGELOG_DISABLE_HINT = [
 export const changelogCommand: SlashCommand = {
   name: "changelog",
   description: "Show release notes for the current version",
-  usage: "Usage: /changelog [on|off]\n\nDisplays the release notes from the last update.\nAlso shown automatically once on the first launch after an update.\n\n/changelog off  Stop showing release notes automatically after updates.\n/changelog on   Resume showing release notes automatically after updates.",
+  usage: "Usage: /changelog [on|off|status]\n\nDisplays the release notes from the last update.\nAlso shown automatically once on the first launch after an update.\n\n/changelog off  Stop showing release notes automatically after updates.\n/changelog on   Resume showing release notes automatically after updates.\n/changelog status  Show whether release notes are shown automatically after updates.",
   async execute(args: string): Promise<CommandResult> {
     const sub = args.trim().toLowerCase();
 
@@ -41,8 +41,18 @@ export const changelogCommand: SlashCommand = {
       };
     }
 
+    if (sub === "status") {
+      const { isChangelogAutoDisplayEnabled } = await import("../config/launch-state.js");
+      return {
+        type: "message",
+        text: (await isChangelogAutoDisplayEnabled())
+          ? "Automatic changelog display is enabled. Release notes show once after each update; /changelog off disables it."
+          : "Automatic changelog display is disabled. Run /changelog any time to see release notes, or /changelog on to re-enable.",
+      };
+    }
+
     if (sub.length > 0) {
-      return { type: "message", text: `Unknown option "${sub}". Usage: /changelog [on|off]` };
+      return { type: "message", text: `Unknown option "${sub}". Usage: /changelog [on|off|status]` };
     }
 
     const { getChangelog } = await import("../utils/auto-update.js");
