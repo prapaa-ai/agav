@@ -15,7 +15,7 @@ export function createPromptCommand(prompt: MCPPrompt, manager: MCPManager): Sla
     ...(argumentHint ? { argumentHint } : {}),
     async execute(args: string, _context: CommandContext): Promise<CommandResult> {
       const values = args.trim().length > 0 ? args.trim().split(/\s+/) : [];
-      const parsedArgs: Record<string, string> = {};
+      const parsedArgs = Object.create(null) as Record<string, string>;
       declaredArgs.forEach((arg, i) => {
         if (values[i] !== undefined) parsedArgs[arg.name] = values[i];
       });

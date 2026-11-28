@@ -85,4 +85,23 @@ describe("mcp/prompt-command", () => {
     });
     expect(result).toEqual({ type: "submit", text: "Reviewing my-repo #42" });
   });
+
+  it("treats inherited property names like constructor as missing when not supplied", async () => {
+    const manager = makeManager();
+    const prompt: MCPPrompt = {
+      name: "build",
+      serverName: "github",
+      arguments: [{ name: "constructor", required: true }],
+    };
+
+    const cmd = createPromptCommand(prompt, manager);
+    const result = await cmd.execute("", dummyContext);
+
+    expect(manager.getPrompt).not.toHaveBeenCalled();
+    expect(result.type).toBe("message");
+    if (result.type === "message") {
+      expect(result.text).toContain("Missing required argument: constructor");
+      expect(result.text).toContain("/build <constructor>");
+    }
+  });
 });
