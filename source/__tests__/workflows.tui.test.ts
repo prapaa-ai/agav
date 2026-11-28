@@ -241,6 +241,31 @@ describe("WorkflowsTUI", () => {
       expect(await store.listIds()).toEqual([]);
     } finally { ui.instance.unmount(); }
   });
+
+  it("deletes a whole grapheme (emoji and combining marks) on Backspace and Delete", async () => {
+    const dir = join(deps.cwd, ".agav", "workflows");
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "emoji.json"), JSON.stringify(def([{ id: "gate", type: "approval", prompt: "hi ${inputs.who}?" }], { name: "emoji", inputs: { who: { type: "string", required: true } } })));
+    const ui = await mount();
+    try {
+      await ui.key("R");
+      expect(ui.frame()).toContain("Run emoji · Inputs");
+      await ui.key("a🙂");
+      await ui.key("\x7f"); // Backspace
+      expect(ui.frame()).toContain("who: a█");
+      await ui.key("e\u0301");
+      await ui.key("\x1b[3~"); // Delete
+      expect(ui.frame()).toContain("who: a█");
+      await ui.key("\r");
+      expect(ui.frame()).toContain('Run workflow "emoji" in the background?');
+      await ui.key("y");
+      await vi.waitFor(() => {
+        expect(coordinator.starts).toHaveLength(1);
+      }, { timeout: 2500 });
+      const [id] = await store.listIds();
+      expect((await store.read(id!, registry)).inputs).toEqual({ who: "a" });
+    } finally { ui.instance.unmount(); }
+  });
 });
 
 describe("WorkflowsTUI layout", () => {
