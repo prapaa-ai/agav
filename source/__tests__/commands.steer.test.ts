@@ -115,10 +115,13 @@ describe("commands/steer", () => {
   it("validates remove indexes", async () => {
     await steerCommand.execute("only", {} as any);
 
-    await expect(steerCommand.execute("remove 0", {} as any)).resolves.toEqual({
-      type: "message",
-      text: "Invalid number. Use 1-1.",
-    });
+    for (const args of ["remove 0", "remove 1.5", "remove 1 extra", "remove -1", "remove 1e0", "remove 1,2"]) {
+      await expect(steerCommand.execute(args, {} as any)).resolves.toEqual({
+        type: "message",
+        text: "Invalid number. Use 1-1.",
+      });
+      expect(getActiveSteers()).toEqual(["only"]);
+    }
   });
 
   it("queues added directives for delivery and reports mid-turn status via isLoading", async () => {
