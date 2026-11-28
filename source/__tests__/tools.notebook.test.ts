@@ -138,6 +138,101 @@ describe("read_notebook cell range", () => {
   });
 });
 
+describe("read_notebook execution count", () => {
+  it("shows execution count for code cells when include_execution_count is true", async () => {
+    const notebookWithCount = {
+      ...notebook,
+      cells: [
+        notebook.cells[0],
+        {
+          ...notebook.cells[1],
+          execution_count: 7,
+        },
+        { cell_type: "code", source: ["pass"], execution_count: null },
+        { cell_type: "code", source: ["value = 1"] },
+      ],
+    };
+    mockRead.mockResolvedValueOnce(JSON.stringify(notebookWithCount));
+
+    const result = await readNotebookTool.execute({
+      path,
+      include_execution_count: true,
+    });
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("(execution count: 7)");
+    expect(result.output).toContain("(execution count: none)");
+    expect(mockRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves markdown/raw headers unannotated when include_execution_count is true", async () => {
+    const notebookWithCount = {
+      ...notebook,
+      cells: [
+        { cell_type: "markdown", source: ["# Notes\n"], execution_count: 7 },
+        {
+          ...notebook.cells[1],
+          cell_type: "markdown",
+          execution_count: 7,
+        },
+        { cell_type: "raw", source: ["raw content\n"], execution_count: 7 },
+      ],
+    };
+    mockRead.mockResolvedValueOnce(JSON.stringify(notebookWithCount));
+
+    const result = await readNotebookTool.execute({
+      path,
+      include_execution_count: true,
+    });
+    expect(result.isError).toBe(false);
+    expect(result.output).not.toContain("(execution count:)");
+    expect(mockRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("composes with include_outputs: false", async () => {
+    const notebookWithCount = {
+      ...notebook,
+      cells: [
+        notebook.cells[0],
+        {
+          ...notebook.cells[1],
+          execution_count: 7,
+        },
+        { cell_type: "code", source: ["pass"], execution_count: null },
+        { cell_type: "code", source: ["value = 1"] },
+      ],
+    };
+    mockRead.mockResolvedValueOnce(JSON.stringify(notebookWithCount));
+
+    const result = await readNotebookTool.execute({
+      path,
+      include_execution_count: true,
+      include_outputs: false,
+    });
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain("(execution count: 7)");
+    expect(result.output).not.toContain("  Output:");
+    expect(mockRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects non-boolean include_execution_count before readFile", async () => {
+    const nonBooleanValues = ["false", 0, null];
+    for (const value of nonBooleanValues) {
+      const result = await readNotebookTool.execute({ path, include_execution_count: value });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("include_execution_count must be a boolean");
+    }
+    expect(mockRead).not.toHaveBeenCalled();
+  });
+
+  it("default call output is unchanged without include_execution_count", async () => {
+    mockRead.mockResolvedValueOnce(JSON.stringify(notebook));
+    const result = await readNotebookTool.execute({ path });
+    expect(result.isError).toBe(false);
+    expect(result.output).not.toContain("(execution count:");
+    expect(mockRead).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("read_notebook cell type filter", () => {
   const mixedNotebook = {
     ...notebook,

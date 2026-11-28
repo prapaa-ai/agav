@@ -11,6 +11,7 @@ type NotebookText = string | string[];
 interface NotebookCell {
   cell_type: string;
   source: NotebookText;
+  execution_count?: number | null;
   outputs?: Array<{ text?: NotebookText; output_type?: string; data?: Record<string, NotebookText> }>;
 }
 
@@ -49,6 +50,11 @@ export const readNotebookTool: ToolDefinition = {
           type: "boolean",
           description: "Include cached execution outputs (default: true).",
         },
+        include_execution_count: {
+          type: "boolean",
+          description:
+            "Annotate code cells with their saved execution count, or a no-count label when null (default: false).",
+        },
       },
       required: ["path"],
     },
@@ -63,6 +69,10 @@ export const readNotebookTool: ToolDefinition = {
     const includeOutputs = input.include_outputs;
     if (includeOutputs !== undefined && typeof includeOutputs !== "boolean") {
       return { output: "include_outputs must be a boolean", isError: true };
+    }
+    const includeExecCount = input.include_execution_count;
+    if (includeExecCount !== undefined && typeof includeExecCount !== "boolean") {
+      return { output: "include_execution_count must be a boolean", isError: true };
     }
     const { start_cell: start, end_cell: end } = input;
     if (start !== undefined && !isCellBound(start)) {
@@ -94,7 +104,7 @@ export const readNotebookTool: ToolDefinition = {
         const cell = nb.cells[i]!;
         if (filterType && cell.cell_type !== filterType) continue;
         const src = notebookText(cell.source);
-        lines.push(`--- Cell ${i + 1} [${cell.cell_type}] ---`);
+        lines.push(`--- Cell ${i + 1} [${cell.cell_type}]${includeExecCount === true && cell.cell_type === "code" ? ` (execution count: ${typeof cell.execution_count === "number" ? cell.execution_count : "none"})` : ""} ---`);
         lines.push(src);
 
         if (includeOutputs !== false && cell.outputs && cell.outputs.length > 0) {
