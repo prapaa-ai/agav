@@ -90,6 +90,8 @@ classified, such as broken links, appear only in `"all"` mode. By default,
 all modes skip names starting with a dot, such as `.git`. Set
 `include_hidden: true` to include them; the listing still does not descend
 into subdirectories or read file contents.
+Set `directories_first: true` to list directories before all other entries,
+keeping alphabetical order within each group.
 
 ### `overview`
 

@@ -72,6 +72,35 @@ describe("list_directory entry type", () => {
     expect(mockRead).not.toHaveBeenCalled();
   });
 
+  it("lists directories first only when directories_first is true", async () => {
+    expect((await listDirectoryTool.execute({ directories_first: true })).output).toBe(
+      "a-dir-link/\nz-dir/\nw-file  7B\nx-other  7B\ny-unclassified",
+    );
+    expect((await listDirectoryTool.execute({ directories_first: false })).output).toBe(
+      "a-dir-link/\nw-file  7B\nx-other  7B\ny-unclassified\nz-dir/",
+    );
+    expect((await listDirectoryTool.execute({ directories_first: true, type: "files" })).output).toBe("w-file  7B");
+    expect((await listDirectoryTool.execute({ directories_first: true, type: "directories" })).output).toBe("a-dir-link/\nz-dir/");
+  });
+
+  it("keeps hidden directories in the directory group when both options are set", async () => {
+    mockRead.mockResolvedValue(["z-dir", ".hidden-dir", "w-file", ".hidden-file"] as never);
+    mockStat.mockImplementation(async (path) => {
+      const name = basename(String(path));
+      return { isDirectory: () => name.endsWith("-dir"), isFile: () => name.endsWith("-file"), size: 7 } as Awaited<ReturnType<typeof stat>>;
+    });
+
+    expect((await listDirectoryTool.execute({ include_hidden: true, directories_first: true })).output).toBe(
+      ".hidden-dir/\nz-dir/\n.hidden-file  7B\nw-file  7B",
+    );
+  });
+
+  it.each([null, 1, "true"])("rejects directories_first %s before reading", async (directories_first) => {
+    const result = await listDirectoryTool.execute({ directories_first });
+    expect(result).toEqual({ output: "directories_first must be a boolean", isError: true });
+    expect(mockRead).not.toHaveBeenCalled();
+  });
+
   it("preserves directory read errors", async () => {
     mockRead.mockRejectedValue(new Error("permission denied"));
     const result = await listDirectoryTool.execute({ type: "files", path: "missing" });

@@ -7,7 +7,8 @@ export const listDirectoryTool: ToolDefinition = {
     name: "list_directory",
     description:
       "List contents of a directory with file types and sizes. " +
-      "Optionally show only files or only directories. Dot-prefixed names are skipped unless include_hidden is true.",
+      "Optionally show only files or only directories. Dot-prefixed names are skipped unless include_hidden is true. " +
+      "Set directories_first to list directories before other entries.",
     inputSchema: {
       type: "object",
       properties: {
@@ -24,6 +25,10 @@ export const listDirectoryTool: ToolDefinition = {
           type: "boolean",
           description: "Include names starting with a dot (default: false)",
         },
+        directories_first: {
+          type: "boolean",
+          description: "List directories before other entries, each group in alphabetical order (default: false)",
+        },
       },
       required: [],
     },
@@ -38,12 +43,17 @@ export const listDirectoryTool: ToolDefinition = {
     if (includeHidden !== undefined && typeof includeHidden !== "boolean") {
       return { output: "include_hidden must be a boolean", isError: true };
     }
+    const directoriesFirst = input.directories_first;
+    if (directoriesFirst !== undefined && typeof directoriesFirst !== "boolean") {
+      return { output: "directories_first must be a boolean", isError: true };
+    }
     const filter = type === "files" || type === "directories" ? type : undefined;
     const dirPath = resolve(String(input.path ?? "."));
 
     try {
       const entries = await readdir(dirPath);
       const lines: string[] = [];
+      const directories: string[] = [];
 
       for (const entry of entries.sort()) {
         if (!includeHidden && entry.startsWith(".")) continue;
@@ -51,7 +61,7 @@ export const listDirectoryTool: ToolDefinition = {
           const fullPath = join(dirPath, entry);
           const info = await stat(fullPath);
           if (info.isDirectory()) {
-            if (filter !== "files") lines.push(`${entry}/`);
+            if (filter !== "files") (directoriesFirst ? directories : lines).push(`${entry}/`);
           } else if (!filter || (filter === "files" && info.isFile())) {
             const size = formatSize(info.size);
             lines.push(`${entry}  ${size}`);
@@ -60,6 +70,8 @@ export const listDirectoryTool: ToolDefinition = {
           if (!filter) lines.push(entry);
         }
       }
+
+      lines.unshift(...directories);
 
       if (lines.length === 0) {
         return { output: filter ? `No ${filter} found.` : "Directory is empty.", isError: false };
