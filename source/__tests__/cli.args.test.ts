@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { parseArgs } from "../main.js";
 
 describe("CLI argument parsing", () => {
@@ -99,5 +99,39 @@ describe("CLI argument parsing", () => {
     const flags = parseArgs(["mcp", "login", "figma"]);
     expect(flags.mcp).toBe(true);
     expect(flags.login).toBeUndefined();
+  });
+
+  it.each([
+    { argv: ["--model"], expected: "--model" },
+    { argv: ["-m"], expected: "-m" },
+    { argv: ["--model", "--version"], expected: "--model" },
+    { argv: ["--model", "--"], expected: "--model" },
+    { argv: ["--model="], expected: "--model" },
+    { argv: ["--model", "   "], expected: "--model" },
+    { argv: ["-m", "   "], expected: "-m" },
+    { argv: ["--model=   "], expected: "--model" },
+    { argv: ["--provider"], expected: "--provider" },
+    { argv: ["-p"], expected: "-p" },
+    { argv: ["--provider", "--help"], expected: "--provider" },
+    { argv: ["--provider", "--"], expected: "--provider" },
+    { argv: ["--provider="], expected: "--provider" },
+    { argv: ["--provider", "   "], expected: "--provider" },
+    { argv: ["-p", "   "], expected: "-p" },
+    { argv: ["--provider=   "], expected: "--provider" },
+  ])("exits nonzero with an option-specific error for $argv", ({ argv, expected }) => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`EXIT:${code}`);
+    }) as never);
+
+    try {
+      expect(() => parseArgs(argv)).toThrow("EXIT:1");
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      const output = stderrSpy.mock.calls.map((c) => String(c[0])).join("");
+      expect(output).toContain(expected);
+    } finally {
+      stderrSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
   });
 });
